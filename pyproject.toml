@@ -1,9 +1,44 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "caffeinated-whale-cli"
 version = "0.1.0"
-description = "Add your description here"
+authors = [
+  { name = "Christopher McKay", email = "mckay.christopher73@outlook.com" },
+]
+description = "A CLI tool to help manage Frappe Docker instances."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: System :: Systems Administration",
+    "Topic :: Software Development :: Build Tools",
+    "Intended Audience :: Developers",
+]
+
 dependencies = [
     "docker>=7.1.0",
+    "typer>=0.16.0",
+    "rich>=14.0.0",
 ]
+
+[project.optional-dependencies.dev]
+black = ">=24.8.0"
+
+[tool.black]
+line-length = 100
+target-version = ["py39"]
+skip-string-normalization = false
+
+
+[project.urls]
+Homepage = "https://github.com/karotkriss/caffeinated-whale-cli"
+Issues = "https://github.com/karotkriss/caffeinated-whale-cli/issues"
+
+[project.scripts]
+caffeinated-whale = "caffeinated_whale_cli.main:app"
