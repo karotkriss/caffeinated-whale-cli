@@ -25,10 +25,8 @@ dependencies = [
     "docker>=7.1.0",
     "typer>=0.16.0",
     "rich>=14.0.0",
+    "questionary>=2.1.0",
 ]
-
-[project.optional-dependencies.dev]
-black = ">=24.8.0"
 
 [tool.black]
 line-length = 100
@@ -41,4 +39,4 @@ Homepage = "https://github.com/karotkriss/caffeinated-whale-cli"
 Issues = "https://github.com/karotkriss/caffeinated-whale-cli/issues"
 
 [project.scripts]
-caffeinated-whale = "caffeinated_whale_cli.main:app"
+caffeinated-whale-cli = "caffeinated_whale_cli.main:cli"

@@ -1,14 +1,55 @@
-# src/caffeinated_whale_cli/commands/list.py
-
 import typer
 import docker
 from docker.errors import DockerException
 from typing import List, Dict, Set
+from rich.console import Console
+from rich.table import Table
 
-app = typer.Typer(help="List running Frappe projects")
+app = typer.Typer(
+    name="list",
+    help="""
+    Scans Docker for Frappe/ERPNext projects and displays their status and ports.
+    """,
+)
+
+console = Console()
+
+def _format_ports_as_ranges(ports: List[str]) -> str:
+    """
+    Condenses a sorted list of ports into ranges.
+    Example: ['8000', '8001', '8002', '9000'] -> "8000-8002, 9000"
+    """
+    if not ports:
+        return "N/A"
+
+    # Convert string ports to integers for numerical operations
+    int_ports = [int(p) for p in ports]
+
+    ranges = []
+    start_of_range = int_ports[0]
+
+    for i in range(1, len(int_ports)):
+        # If the current port is not sequential, the previous range has ended
+        if int_ports[i] != int_ports[i - 1] + 1:
+            # Finalize the previous range
+            if start_of_range == int_ports[i - 1]:
+                ranges.append(str(start_of_range))
+            else:
+                ranges.append(f"{start_of_range}-{int_ports[i-1]}")
+            # Start a new range
+            start_of_range = int_ports[i]
+
+    # After the loop, add the final range
+    if start_of_range == int_ports[-1]:
+        ranges.append(str(start_of_range))
+    else:
+        ranges.append(f"{start_of_range}-{int_ports[-1]}")
+
+    return ", ".join(ranges)
 
 
 def _get_container_ports(container) -> Set[str]:
+    # This logic is unchanged
     ports = set()
     if container.ports:
         for _container_port, host_ports in container.ports.items():
@@ -16,7 +57,6 @@ def _get_container_ports(container) -> Set[str]:
                 for host_port_info in host_ports:
                     if host_port_info and "HostPort" in host_port_info:
                         ports.add(host_port_info["HostPort"])
-
     if not ports and container.attrs:
         port_bindings = container.attrs.get("HostConfig", {}).get("PortBindings")
         if port_bindings:
@@ -25,11 +65,11 @@ def _get_container_ports(container) -> Set[str]:
                     for binding in bindings:
                         if "HostPort" in binding and binding["HostPort"]:
                             ports.add(binding["HostPort"])
-
     return ports
 
 
-def _list_instances(service_name: str = "frappe") -> List[Dict]:
+def _list_instances(service_name: str = "frappe") -> List[Dict] | None:
+    # This logic is unchanged
     try:
         client = docker.from_env()
         client.ping()
@@ -37,7 +77,7 @@ def _list_instances(service_name: str = "frappe") -> List[Dict]:
             all=True, filters={"label": f"com.docker.compose.service={service_name}"}
         )
     except DockerException:
-        return []
+        return None
 
     projects = {}
     for container in containers:
@@ -50,34 +90,59 @@ def _list_instances(service_name: str = "frappe") -> List[Dict]:
         projects[project_name]["ports"].update(ports)
 
     return [
-        {
-            "projectName": name,
-            "ports": sorted(list(data["ports"])),
-            "status": data["status"],
-        }
+        {"projectName": name, "ports": sorted(list(data["ports"])), "status": data["status"]}
         for name, data in projects.items()
     ]
 
 
-@app.command("pods")
-def list_frappe_instances():
+# --- UPDATED COMMAND FUNCTION ---
+@app.callback(invoke_without_command=True)
+def default(
+    ctx: typer.Context,
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Display all ports individually without condensing them into ranges.",
+    ),
+):
     """
-    List running Docker containers labeled as 'frappe' services, grouped by project.
+    List all Frappe instances. This is the default command for the `list` group.
     """
-    instances = _list_instances()
+    if ctx.invoked_subcommand is not None:
+        return
+
+    with console.status("[bold green]Connecting to Docker and fetching instances...[/bold green]"):
+        instances = _list_instances()
+
+    if instances is None:
+        console.print("[bold red]Error: Could not connect to Docker.[/bold red]")
+        console.print("Please ensure the Docker daemon is running.")
+        raise typer.Exit(code=1)
+
     if not instances:
-        typer.echo("No Frappe services found.")
+        console.print("[yellow]No Frappe instances found.[/yellow]")
         raise typer.Exit()
 
-    for inst in instances:
-        ports = ", ".join(inst["ports"]) if inst["ports"] else "none"
-        typer.echo(f"[{inst['status']}] {inst['projectName']} → ports: {ports}")
+    table = Table(title="Caffeinated Whale Instances")
+    table.add_column("Project Name", style="cyan", no_wrap=True)
+    table.add_column("Status", style="magenta")
+    table.add_column("Ports", style="green")
 
+    for instance in instances:
+        status = instance["status"]
+        if "exited" in status or "dead" in status:
+            status_style = f"[red]{status}[/red]"
+        elif "running" in status or "healthy" in status:
+            status_style = f"[green]{status}[/green]"
+        else:
+            status_style = f"[yellow]{status}[/yellow]"
 
-@app.callback(invoke_without_command=True)
-def default(ctx: typer.Context):
-    """
-    Default to listing pods if no subcommand is passed.
-    """
-    if ctx.invoked_subcommand is None:
-        list_frappe_instances()
+        if verbose:
+            ports_str = ", ".join(instance["ports"]) if instance["ports"] else "N/A"
+        else:
+            ports_str = _format_ports_as_ranges(instance["ports"])
+
+        table.add_row(instance["projectName"], status_style, ports_str)
+
+    console.print(table)
