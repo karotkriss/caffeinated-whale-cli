@@ -1,6 +1,8 @@
 import typer
 
 from .commands import list as list_cmd
+from .commands import start as start_cmd
+from .commands import stop as stop_cmd
 
 app = typer.Typer(
     help="""
@@ -13,6 +15,9 @@ app = typer.Typer(
 )
 
 app.add_typer(list_cmd.app, name="ls")
+
+app.add_typer(start_cmd.app, name="start")
+app.add_typer(stop_cmd.app, name="stop")
 
 
 def cli():
