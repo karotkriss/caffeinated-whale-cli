@@ -1,3 +1,5 @@
+# src/caffeinated_whale_cli/commands/list.py
+
 import typer
 import docker
 from docker.errors import DockerException
@@ -13,6 +15,7 @@ app = typer.Typer(
 )
 
 console = Console()
+
 
 def _format_ports_as_ranges(ports: List[str]) -> str:
     """
@@ -95,7 +98,6 @@ def _list_instances(service_name: str = "frappe") -> List[Dict] | None:
     ]
 
 
-# --- UPDATED COMMAND FUNCTION ---
 @app.callback(invoke_without_command=True)
 def default(
     ctx: typer.Context,
@@ -103,11 +105,19 @@ def default(
         False,
         "--verbose",
         "-v",
-        help="Display all ports individually without condensing them into ranges.",
+        help="Display all ports individually, without condensing them into ranges.",
+        rich_help_panel="Display Options",
+    ),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        "-q",
+        help="Only display project names, one per line. Useful for scripting.",
+        rich_help_panel="Display Options",
     ),
 ):
     """
-    List all Frappe instances. This is the default command for the `list` group.
+    List all Frappe instances managed by Docker Compose.
     """
     if ctx.invoked_subcommand is not None:
         return
@@ -116,12 +126,19 @@ def default(
         instances = _list_instances()
 
     if instances is None:
-        console.print("[bold red]Error: Could not connect to Docker.[/bold red]")
-        console.print("Please ensure the Docker daemon is running.")
+        if not quiet:
+            console.print("[bold red]Error: Could not connect to Docker.[/bold red]")
+            console.print("Please ensure the Docker daemon is running.")
         raise typer.Exit(code=1)
 
     if not instances:
-        console.print("[yellow]No Frappe instances found.[/yellow]")
+        if not quiet:
+            console.print("[yellow]No Frappe instances found.[/yellow]")
+        raise typer.Exit()
+
+    if quiet:
+        for instance in instances:
+            typer.echo(instance["projectName"])
         raise typer.Exit()
 
     table = Table(title="Caffeinated Whale Instances")
