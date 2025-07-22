@@ -1,7 +1,6 @@
-# src/caffeinated_whale_cli/commands/list.py
-
 import typer
 import docker
+import json
 from docker.errors import DockerException
 from typing import List, Dict, Set
 from rich.console import Console
@@ -52,7 +51,6 @@ def _format_ports_as_ranges(ports: List[str]) -> str:
 
 
 def _get_container_ports(container) -> Set[str]:
-    # This logic is unchanged
     ports = set()
     if container.ports:
         for _container_port, host_ports in container.ports.items():
@@ -72,7 +70,6 @@ def _get_container_ports(container) -> Set[str]:
 
 
 def _list_instances(service_name: str = "frappe") -> List[Dict] | None:
-    # This logic is unchanged
     try:
         client = docker.from_env()
         client.ping()
@@ -106,14 +103,20 @@ def default(
         "--verbose",
         "-v",
         help="Display all ports individually, without condensing them into ranges.",
-        rich_help_panel="Display Options",
+        rich_help_panel="Output Formatting",  # Changed panel name for clarity
     ),
     quiet: bool = typer.Option(
         False,
         "--quiet",
         "-q",
         help="Only display project names, one per line. Useful for scripting.",
-        rich_help_panel="Display Options",
+        rich_help_panel="Output Formatting",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Output the list of instances as a raw JSON string.",
+        rich_help_panel="Output Formatting",
     ),
 ):
     """
@@ -122,23 +125,37 @@ def default(
     if ctx.invoked_subcommand is not None:
         return
 
-    with console.status("[bold green]Connecting to Docker and fetching instances...[/bold green]"):
+    # In quiet or json mode, we don't want the spinner.
+    if not quiet and not json_output:
+        with console.status(
+            "[bold green]Connecting to Docker and fetching instances...[/bold green]"
+        ):
+            instances = _list_instances()
+    else:
         instances = _list_instances()
 
     if instances is None:
         if not quiet:
-            console.print("[bold red]Error: Could not connect to Docker.[/bold red]")
-            console.print("Please ensure the Docker daemon is running.")
+            console.print("[bold red]Error: Could not connect to Docker.[/bold red]", err=True)
+            console.print("Please ensure the Docker daemon is running.", err=True)
         raise typer.Exit(code=1)
 
     if not instances:
-        if not quiet:
+        if not quiet and not json_output:
             console.print("[yellow]No Frappe instances found.[/yellow]")
         raise typer.Exit()
+
+    # --- UPDATED LOGIC FOR OUTPUT MODES ---
 
     if quiet:
         for instance in instances:
             typer.echo(instance["projectName"])
+        raise typer.Exit()
+
+    if json_output:
+        # Dump the instances list to a formatted JSON string
+        json_string = json.dumps(instances, indent=4)
+        typer.echo(json_string)
         raise typer.Exit()
 
     table = Table(title="Caffeinated Whale Instances")
