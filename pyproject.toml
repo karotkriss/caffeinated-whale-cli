@@ -10,7 +10,7 @@ authors = [
 ]
 description = "A CLI tool to help manage Frappe Docker instances."
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 classifiers = [
     "Development Status :: 4 - Beta",
