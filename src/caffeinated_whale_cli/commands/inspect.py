@@ -54,7 +54,7 @@ def _find_bench_instances(container: docker.models.containers.Container, verbose
     """Finds all potential bench directories using default and custom TOML config paths."""
     benches_found = []
     
-    default_search_roots = ["/home/frappe", "/workspace/development"]
+    default_search_roots = ["/home/frappe", "/home/frappe/workspace/development", "/workspace/development"]
     config = config_utils.load_config()
     custom_search_roots = config.get("search_paths", {}).get("custom_bench_paths", [])
     
