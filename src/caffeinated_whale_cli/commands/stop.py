@@ -49,7 +49,6 @@ def stop(
         console.print(
             "[bold red]Error:[/bold red] Please provide at least one project name or pipe a list of names."
         )
-        console.print("Example: `cwc stop my-project` or `cwc ls -q | cwc stop`")
         raise typer.Exit(code=1)
 
     console.print(
