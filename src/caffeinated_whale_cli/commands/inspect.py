@@ -6,6 +6,7 @@ from rich.console import Console
 from rich.tree import Tree
 from typing import List, Optional, Tuple, Dict
 from .utils import get_project_containers
+from .. import config_utils
 
 console_out = Console()
 console_err = Console(stderr=True)
@@ -50,10 +51,16 @@ def _get_available_apps(container: docker.models.containers.Container, bench_dir
     return [app for app in output.split('\n') if app]
 
 def _find_bench_instances(container: docker.models.containers.Container, verbose: bool = False) -> List[str]:
-    """Finds all potential bench directories within common search paths."""
+    """Finds all potential bench directories using default and custom TOML config paths."""
     benches_found = []
-    search_roots = ["/home/frappe", "/workspace/development"]
-    for root in search_roots:
+    
+    default_search_roots = ["/home/frappe", "/workspace/development"]
+    config = config_utils.load_config()
+    custom_search_roots = config.get("search_paths", {}).get("custom_bench_paths", [])
+    
+    all_search_roots = list(set(default_search_roots + custom_search_roots))
+
+    for root in all_search_roots:
         if verbose: console_err.print(f"VERBOSE: Searching for benches in '{root}'...")
         # Find directories named 'apps' which are a reliable indicator of a bench's parent.
         find_cmd = f"find {root} -maxdepth 2 -type d -name 'apps'"
@@ -65,7 +72,8 @@ def _find_bench_instances(container: docker.models.containers.Container, verbose
                     bench_dir = path.removesuffix('/apps')
                     if _is_bench_directory(container, bench_dir, verbose):
                         benches_found.append(bench_dir)
-    return list(set(benches_found)) # Use set to ensure uniqueness
+                        
+    return list(set(benches_found))
 
 def _gather_bench_data(
     frappe_container: docker.models.containers.Container,
