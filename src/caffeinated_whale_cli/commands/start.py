@@ -49,7 +49,6 @@ def start(
         console.print(
             "[bold red]Error:[/bold red] Please provide at least one project name or pipe a list of names."
         )
-        console.print("Example: `cwc start my-project` or `cwc ls -q | cwc start`")
         raise typer.Exit(code=1)
 
     console.print(
