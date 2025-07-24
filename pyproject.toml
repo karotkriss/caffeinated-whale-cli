@@ -29,11 +29,13 @@ dependencies = [
     "rich>=14.0.0",
     "questionary>=2.1.0",
     "toml>=0.10.2",
+    "peewee>=3.17.0",
+    "platformdirs>=4.2.0",
 ]
 
 [tool.black]
 line-length = 100
-target-version = ["py39"]
+target-version = ["py313"]
 skip-string-normalization = false
 
 
