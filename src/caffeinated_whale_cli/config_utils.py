@@ -3,8 +3,8 @@ import toml
 from pathlib import Path
 from typing import Dict, List
 
-APP_NAME = "caffeinated-whale"
-CONFIG_DIR: Path = Path(typer.get_app_dir(APP_NAME))
+APP_NAME = "caffeinated-whale-cli"
+CONFIG_DIR: Path = Path.home() / APP_NAME / "config"
 CONFIG_FILE: Path = CONFIG_DIR / "config.toml"
 
 DEFAULT_CONFIG_CONTENT = """
@@ -22,12 +22,14 @@ DEFAULT_CONFIG_CONTENT = """
 custom_bench_paths = []
 """
 
+
 def _ensure_config_exists():
     """Ensures the config directory and a default config file exist."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     if not CONFIG_FILE.is_file():
         with open(CONFIG_FILE, "w") as f:
             f.write(DEFAULT_CONFIG_CONTENT)
+
 
 def load_config() -> Dict:
     """Loads the configuration from the TOML file."""
@@ -43,11 +45,13 @@ def load_config() -> Dict:
         except toml.TomlDecodeError:
             return {"search_paths": {"custom_bench_paths": []}}
 
+
 def save_config(config_data: Dict):
     """Saves the given configuration data to the TOML file."""
     _ensure_config_exists()
     with open(CONFIG_FILE, "w") as f:
         toml.dump(config_data, f)
+
 
 def add_custom_path(path: str) -> bool:
     """Adds a new path to the custom search paths."""
@@ -57,6 +61,7 @@ def add_custom_path(path: str) -> bool:
         save_config(config)
         return True
     return False
+
 
 def remove_custom_path(path: str) -> bool:
     """Removes a path from the custom search paths."""
