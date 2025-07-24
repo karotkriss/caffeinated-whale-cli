@@ -8,6 +8,7 @@ from typing import List, Optional, Tuple, Dict
 from .utils import get_project_containers
 from .. import config_utils
 from .. import db_utils
+from ..docker_utils import handle_docker_errors
 
 console_out = Console()
 console_err = Console(stderr=True)
@@ -120,6 +121,7 @@ def _gather_bench_data(
     return {"path": bench_dir, "sites": sites_info, "available_apps": available_apps}
 
 
+@handle_docker_errors
 def inspect(
     project_name: str = typer.Argument(..., help="The Docker Compose project to inspect."),
     verbose: bool = typer.Option(

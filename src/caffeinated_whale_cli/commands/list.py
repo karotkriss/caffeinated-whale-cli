@@ -5,6 +5,7 @@ from docker.errors import DockerException
 from typing import List, Dict, Set
 from rich.console import Console
 from rich.table import Table
+from ..docker_utils import handle_docker_errors
 
 app = typer.Typer(
     name="list",
@@ -69,15 +70,12 @@ def _get_container_ports(container) -> Set[str]:
     return ports
 
 
-def _list_instances(service_name: str = "frappe") -> List[Dict] | None:
-    try:
-        client = docker.from_env()
-        client.ping()
-        containers = client.containers.list(
-            all=True, filters={"label": f"com.docker.compose.service={service_name}"}
-        )
-    except DockerException:
-        return None
+@handle_docker_errors
+def _list_instances(service_name: str = "frappe") -> List[Dict]:
+    client = docker.from_env()
+    containers = client.containers.list(
+        all=True, filters={"label": f"com.docker.compose.service={service_name}"}
+    )
 
     projects = {}
     for container in containers:
@@ -133,12 +131,6 @@ def default(
             instances = _list_instances()
     else:
         instances = _list_instances()
-
-    if instances is None:
-        if not quiet:
-            console.print("[bold red]Error: Could not connect to Docker.[/bold red]", err=True)
-            console.print("Please ensure the Docker daemon is running.", err=True)
-        raise typer.Exit(code=1)
 
     if not instances:
         if not quiet and not json_output:
