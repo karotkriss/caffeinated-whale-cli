@@ -3,18 +3,16 @@ import sys
 from rich.console import Console
 from typing import List
 from .utils import get_project_containers
+from ..docker_utils import handle_docker_errors
 
 app = typer.Typer(help="Stop a Frappe project's containers.")
 console = Console()
 
 
+@handle_docker_errors
 def _stop_project(project_name: str):
     """The core logic for stopping a single project's containers."""
     containers = get_project_containers(project_name)
-
-    if containers is None:
-        console.print("[bold red]Error: Could not connect to Docker.[/bold red]")
-        raise typer.Exit(code=1)
 
     if not containers:
         console.print(f"[bold red]Error: Project '{project_name}' not found.[/bold red]")
