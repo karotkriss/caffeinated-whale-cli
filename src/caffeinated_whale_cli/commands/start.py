@@ -3,7 +3,7 @@ import sys
 from rich.console import Console
 from typing import List
 from .utils import get_project_containers
-from ..docker_utils import handle_docker_errors
+from ..utils.docker_utils import handle_docker_errors
 
 app = typer.Typer(help="Start a Frappe project's containers.")
 console = Console()

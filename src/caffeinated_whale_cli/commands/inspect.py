@@ -6,9 +6,9 @@ from rich.console import Console
 from rich.tree import Tree
 from typing import List, Optional, Tuple, Dict
 from .utils import get_project_containers
-from .. import config_utils
-from .. import db_utils
-from ..docker_utils import handle_docker_errors
+from ..utils import config_utils
+from ..utils import db_utils
+from ..utils.docker_utils import handle_docker_errors
 
 console_out = Console()
 console_err = Console(stderr=True)

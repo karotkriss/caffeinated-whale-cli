@@ -5,7 +5,7 @@ from docker.errors import DockerException
 from typing import List, Dict, Set
 from rich.console import Console
 from rich.table import Table
-from ..docker_utils import handle_docker_errors
+from ..utils.docker_utils import handle_docker_errors
 
 app = typer.Typer(
     name="list",
