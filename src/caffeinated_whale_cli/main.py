@@ -1,6 +1,5 @@
 import typer
-import toml
-from pathlib import Path
+import importlib.metadata
 
 from .commands import list as list_cmd
 from .commands import start as start_cmd
@@ -8,7 +7,7 @@ from .commands import stop as stop_cmd
 from .commands.inspect import inspect as inspect_cmd_func
 from .commands import config as config_cmd
 
-__version__ = toml.load(Path(__file__).parent.parent.parent / "pyproject.toml")["project"]["version"]
+__version__ = importlib.metadata.version("caffeinated-whale-cli")
 
 app = typer.Typer(
     help="""

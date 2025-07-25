@@ -45,3 +45,4 @@ Issues = "https://github.com/karotkriss/caffeinated-whale-cli/issues"
 
 [project.scripts]
 caffeinated-whale-cli = "caffeinated_whale_cli.main:cli"
+cwcli = "caffeinated_whale_cli.main:cli"
