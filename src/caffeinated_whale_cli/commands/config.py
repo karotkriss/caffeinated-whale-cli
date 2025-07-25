@@ -2,7 +2,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 import questionary
-from .. import db_utils, config_utils
+from ..utils import db_utils, config_utils
 
 app = typer.Typer(help="Manage CLI configuration and cache.")
 cache_app = typer.Typer(help="Manage the cache.")
