@@ -2,6 +2,8 @@ import typer
 import docker
 import json
 import time
+import questionary
+import sys
 from rich.console import Console
 from rich.tree import Tree
 from typing import List, Optional, Tuple, Dict
@@ -9,6 +11,7 @@ from .utils import get_project_containers
 from ..utils import config_utils
 from ..utils import db_utils
 from ..utils.docker_utils import handle_docker_errors
+from .start import _start_project
 
 console_out = Console()
 console_err = Console(stderr=True)
@@ -139,7 +142,7 @@ def inspect(
 ):
     """
     Inspects a Project to find all Bench Instances, Sites, and Apps within it.
-    Caches the results for faster subsequent inspections.
+    Caches the results for faster subsequent inspects.
     """
     if verbose:
         console_err.print(f"VERBOSE: --- Inspecting Project: {project_name} ---")
@@ -154,7 +157,7 @@ def inspect(
             bench_instances_data = cached_data["bench_instances"]
         else:
             if verbose:
-                console_err.print("VERBOSE: No cached data found, proceeding with inspection.")
+                console_err.print("VERBOSE: No cached data found, proceeding with inspect.")
             bench_instances_data = None
     else:
         if verbose:
@@ -176,6 +179,47 @@ def inspect(
                 f"Error: No 'frappe' service container found for project '{project_name}'."
             )
             raise typer.Exit(code=1)
+
+        # Check if the Frappe container is running
+        if frappe_container.status != "running":
+            console_err.print(
+                f"[yellow]Warning: Frappe container for project '{project_name}' is not running.[/yellow]"
+            )
+            if not sys.stdin.isatty():
+                console_err.print(
+                    "[bold red]Error: Cannot prompt to start project in non-interactive environment.[/bold red]"
+                )
+                console_err.print("Please start the project manually or run in an interactive terminal.")
+                raise typer.Exit(code=1)
+            
+            # If we reach here, it means sys.stdin.isatty() is True, so we can prompt
+            try:
+                confirm_start = questionary.confirm(
+                    f"Do you want to start project '{project_name}' to proceed with inspect?"
+                ).ask()
+            except Exception:
+                console_err.print(
+                    "[bold red]Error: Cannot prompt to start project in non-interactive environment.[/bold red]"
+                )
+                console_err.print("Please start the project manually or run in an interactive terminal.")
+                raise typer.Exit(code=1)
+
+            if confirm_start:
+                with console_err.status(f"[bold green]Starting '{project_name}'...[/bold green]"):
+                    _start_project(project_name)
+                # Re-fetch the container to get its updated status
+                client = docker.from_env()
+                frappe_container = client.containers.get(frappe_container.id)
+                if frappe_container.status != "running":
+                    console_err.print(
+                        f"[bold red]Error: Failed to start project '{project_name}'. Cannot inspect.[/bold red]"
+                    )
+                    raise typer.Exit(code=1)
+                else:
+                    console_err.print(f"[green]Project '{project_name}' started successfully.[/green]")
+            else:
+                console_err.print("[bold red]Inspect cancelled. Project not running.[/bold red]")
+                raise typer.Exit(code=1)
 
         bench_instances_data = []
         with console_err.status(f"Inspecting '{project_name}'...", spinner="dots"):
