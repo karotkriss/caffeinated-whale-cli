@@ -1,4 +1,5 @@
 import typer
+from typing import Optional
 import importlib.metadata
 
 from .commands import list as list_cmd
@@ -24,11 +25,25 @@ def version_callback(value: bool):
 
 @app.callback()
 def main(
+    ctx: typer.Context,
     version: bool = typer.Option(
-        None, "--version", callback=version_callback, is_eager=True, help="Show the application's version and exit."
-    )
+        None,
+        "--version",
+        callback=version_callback,
+        is_eager=True,
+        help="Show the application's version and exit.",
+    ),
+    bench: Optional[str] = typer.Option(
+        None,
+        "--bench",
+        "-b",
+        help="Only operate on the specified bench alias",
+        rich_help_panel="Global Options",
+    ),
 ):
-    pass
+    # Initialize context object and store global bench filter
+    ctx.ensure_object(dict)
+    ctx.obj["bench"] = bench
 
 app.command("inspect")(inspect_cmd_func)
 
@@ -36,6 +51,9 @@ app.add_typer(list_cmd.app, name="ls")
 app.add_typer(start_cmd.app, name="start")
 app.add_typer(stop_cmd.app, name="stop")
 app.add_typer(config_cmd.app, name="config")
+# Register apps subcommands for bench alias operations
+from .commands.apps import list_apps as _list_apps_cmd
+app.command("list-apps")(_list_apps_cmd)
 
 def cli():
     """
