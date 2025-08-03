@@ -7,6 +7,8 @@ from ..utils import db_utils, config_utils
 app = typer.Typer(help="Manage CLI configuration and cache.")
 cache_app = typer.Typer(help="Manage the cache.")
 app.add_typer(cache_app, name="cache")
+bench_app = typer.Typer(help="Manage bench aliases (set or clear alias for bench instances)")
+app.add_typer(bench_app, name="bench")
 
 console = Console()
 
@@ -99,3 +101,31 @@ def list_cached_projects():
         table.add_row(project.name, str(project.last_updated))
 
     console.print(table)
+
+
+@bench_app.command("alias")
+def bench_alias(
+    project_name: str = typer.Argument(..., help="The project name containing the bench."),
+    bench_path: str = typer.Argument(..., help="The full path of the bench instance to alias."),
+    alias: str = typer.Argument(..., help="The alias to assign to the bench instance."),
+):
+    """
+    Assign or update an alias for a bench instance by project and bench path.
+    """
+    if db_utils.set_bench_alias(project_name, bench_path, alias):
+        console.print(f"[green]Alias '{alias}' set for bench '{bench_path}' in project '{project_name}'.[/green]")
+    else:
+        console.print(f"[red]Could not find bench '{bench_path}' in project '{project_name}'.[/red]")
+
+
+@bench_app.command("unalias")
+def bench_unalias(
+    alias: str = typer.Argument(..., help="The alias to clear from the bench instance."),
+):
+    """
+    Remove an alias from a bench instance matching the given alias.
+    """
+    if db_utils.clear_bench_alias(alias):
+        console.print(f"[green]Alias '{alias}' cleared.[/green]")
+    else:
+        console.print(f"[red]No bench instance found with alias '{alias}'.[/red]")
