@@ -39,12 +39,29 @@ class AvailableApp(BaseModel):
     bench = ForeignKeyField(Bench, backref="available_apps")
     name = CharField()
 
+    class Meta:
+        table_name = "available_apps"
+
+
+class InstalledAppDetail(BaseModel):
+    """
+    Stores installed app details (name, version, branch) for each site.
+    """
+    # backref kept distinct so it does not shadow Site.installed_apps column
+    site = ForeignKeyField(Site, backref="installed_app_details")
+    name = CharField()
+    version = CharField()
+    branch = CharField()
+
+    class Meta:
+        table_name = "installed_apps"
+
 
 def initialize_database():
     if db.is_closed():
         db.connect()
     # Create tables if missing
-    db.create_tables([Project, Bench, Site, AvailableApp], safe=True)
+    db.create_tables([Project, Bench, Site, AvailableApp, InstalledAppDetail], safe=True)
     # Ensure alias column exists for Bench
     cursor = db.execute_sql("PRAGMA table_info(bench)")
     cols = [row[1] for row in cursor.fetchall()]
@@ -88,11 +105,26 @@ def cache_project_data(project_name, bench_instances_data):
             AvailableApp.create(bench=bench, name=app_name)
 
         for site_data in bench_data["sites"]:
-            Site.create(
+            site = Site.create(
                 bench=bench,
                 name=site_data["name"],
                 installed_apps=json.dumps(site_data["installed_apps"]),
             )
+            # parse and store detailed installed app info
+            for app_entry in site_data["installed_apps"]:
+                parts = app_entry.split(maxsplit=2)
+                if len(parts) == 3:
+                    app_name, version, branch = parts
+                else:
+                    app_name = parts[0]
+                    version = parts[1] if len(parts) > 1 else ""
+                    branch = parts[2] if len(parts) > 2 else ""
+                InstalledAppDetail.create(
+                    site=site,
+                    name=app_name,
+                    version=version,
+                    branch=branch,
+                )
 
 
 def get_cached_project_data(project_name):
@@ -130,3 +162,33 @@ def get_cached_project_data(project_name):
 def get_all_cached_projects():
     initialize_database()
     return list(Project.select())
+
+
+def get_bench_by_alias(alias: str):
+    """
+    Retrieve a single bench (with its sites and apps) by its unique alias.
+    Returns a dict with project_name and bench data or None if not found.
+    """
+    initialize_database()
+    try:
+        bench = Bench.get(Bench.alias == alias)
+        project = bench.project
+        # Gather available apps
+        available_apps = [app.name for app in bench.available_apps]
+        # Gather sites
+        sites_info = []
+        for site in bench.sites:
+            sites_info.append(
+                {"name": site.name, "installed_apps": json.loads(site.installed_apps)}
+            )
+        return {
+            "project_name": project.name,
+            "bench": {
+                "path": bench.path,
+                "alias": bench.alias,
+                "available_apps": available_apps,
+                "sites": sites_info,
+            },
+        }
+    except Bench.DoesNotExist:
+        return None
