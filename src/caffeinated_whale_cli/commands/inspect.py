@@ -257,6 +257,8 @@ def inspect(
                 console_err.print(f"\n[red]Error during interactive input: {e}[/red]")
                 bench['alias'] = ''
 
+        db_utils.cache_project_data(project_name, bench_instances_data)
+
     if json_output:
         result = {"project_name": project_name, "bench_instances": bench_instances_data}
         print(json.dumps(result, indent=2))
