@@ -49,7 +49,9 @@ def initialize_database():
     cursor = db.execute_sql("PRAGMA table_info(bench)")
     cols = [row[1] for row in cursor.fetchall()]
     if 'alias' not in cols:
-        db.execute_sql("ALTER TABLE bench ADD COLUMN alias TEXT DEFAULT ''")
+        # Add alias column in a transaction to ensure schema integrity
+        with db.atomic():
+            db.execute_sql("ALTER TABLE bench ADD COLUMN alias TEXT DEFAULT ''")
 
 
 def clear_cache_for_project(project_name):
@@ -128,4 +130,3 @@ def get_cached_project_data(project_name):
 def get_all_cached_projects():
     initialize_database()
     return list(Project.select())
-
