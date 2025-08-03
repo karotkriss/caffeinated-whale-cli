@@ -139,6 +139,9 @@ def inspect(
     show_apps: bool = typer.Option(
         False, "--show-apps", "-a", help="Show available apps in the output tree."
     ),
+    interactive: bool = typer.Option(
+        False, "--interactive", "-i", help="Prompt to name each bench instance interactively."
+    ),
 ):
     """
     Inspects a Project to find all Bench Instances, Sites, and Apps within it.
@@ -235,13 +238,37 @@ def inspect(
 
         db_utils.cache_project_data(project_name, bench_instances_data)
 
+    # Interactive naming: ask for bench aliases before output
+    if interactive:
+        for bench in bench_instances_data:
+            try:
+                alias = questionary.text(
+                    f"Bench found {bench['path']} on '{project_name}'.\n"
+                    "What would you like to name this bench? "
+                ).ask()
+                if alias is None:  # User pressed Ctrl+C
+                    console_err.print("\n[yellow]Interactive naming cancelled.[/yellow]")
+                    break
+                bench['alias'] = alias.strip() if alias else ''
+            except KeyboardInterrupt:
+                console_err.print("\n[yellow]Interactive naming cancelled.[/yellow]")
+                break
+            except Exception as e:
+                console_err.print(f"\n[red]Error during interactive input: {e}[/red]")
+                bench['alias'] = ''
+
+        db_utils.cache_project_data(project_name, bench_instances_data)
+
     if json_output:
         result = {"project_name": project_name, "bench_instances": bench_instances_data}
         print(json.dumps(result, indent=2))
     else:
         tree = Tree(f"Project [bold cyan]{project_name}[/bold cyan]", guide_style="bright_blue")
         for bench_instance in bench_instances_data:
-            bench_node = tree.add(f"Bench Instance at [green]{bench_instance['path']}[/green]")
+            # Display alias if provided, otherwise show path
+            alias = bench_instance.get('alias')
+            label = f"{alias} ({bench_instance['path']})" if alias else bench_instance['path']
+            bench_node = tree.add(f"Bench Instance at [green]{label}[/green]")
 
             apps_branch = bench_node.add(
                 f"Available Apps ({len(bench_instance['available_apps'])})"
