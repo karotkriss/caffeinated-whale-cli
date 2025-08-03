@@ -26,6 +26,7 @@ class Project(BaseModel):
 class Bench(BaseModel):
     project = ForeignKeyField(Project, backref="benches")
     path = CharField()
+    alias = CharField(default="")
 
 
 class Site(BaseModel):
@@ -42,7 +43,13 @@ class AvailableApp(BaseModel):
 def initialize_database():
     if db.is_closed():
         db.connect()
-        db.create_tables([Project, Bench, Site, AvailableApp], safe=True)
+    # Create tables if missing
+    db.create_tables([Project, Bench, Site, AvailableApp], safe=True)
+    # Ensure alias column exists for Bench
+    cursor = db.execute_sql("PRAGMA table_info(bench)")
+    cols = [row[1] for row in cursor.fetchall()]
+    if 'alias' not in cols:
+        db.execute_sql("ALTER TABLE bench ADD COLUMN alias TEXT DEFAULT ''")
 
 
 def clear_cache_for_project(project_name):
@@ -69,7 +76,11 @@ def cache_project_data(project_name, bench_instances_data):
     project = Project.create(name=project_name, last_updated=datetime.datetime.now())
 
     for bench_data in bench_instances_data:
-        bench = Bench.create(project=project, path=bench_data["path"])
+        bench = Bench.create(
+            project=project,
+            path=bench_data["path"],
+            alias=bench_data.get("alias", ""),
+        )
 
         for app_name in bench_data["available_apps"]:
             AvailableApp.create(bench=bench, name=app_name)
@@ -97,7 +108,12 @@ def get_cached_project_data(project_name):
                 )
 
             bench_instances_data.append(
-                {"path": bench.path, "sites": sites_info, "available_apps": available_apps}
+                {
+                    "path": bench.path,
+                    "sites": sites_info,
+                    "available_apps": available_apps,
+                    "alias": bench.alias or "",
+                }
             )
 
         return {
@@ -112,5 +128,4 @@ def get_cached_project_data(project_name):
 def get_all_cached_projects():
     initialize_database()
     return list(Project.select())
-
 
