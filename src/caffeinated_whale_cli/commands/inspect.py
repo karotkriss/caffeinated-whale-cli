@@ -241,10 +241,21 @@ def inspect(
     # Interactive naming: ask for bench aliases before output
     if interactive:
         for bench in bench_instances_data:
-            alias = questionary.text(
-                f"Bench found {bench['path']} on '{project_name}'.\nWhat would you like to name this bench? "
-            ).ask()
-            bench['alias'] = alias.strip() if alias else ''
+            try:
+                alias = questionary.text(
+                    f"Bench found {bench['path']} on '{project_name}'.\n"
+                    "What would you like to name this bench? "
+                ).ask()
+                if alias is None:  # User pressed Ctrl+C
+                    console_err.print("\n[yellow]Interactive naming cancelled.[/yellow]")
+                    break
+                bench['alias'] = alias.strip() if alias else ''
+            except KeyboardInterrupt:
+                console_err.print("\n[yellow]Interactive naming cancelled.[/yellow]")
+                break
+            except Exception as e:
+                console_err.print(f"\n[red]Error during interactive input: {e}[/red]")
+                bench['alias'] = ''
 
     if json_output:
         result = {"project_name": project_name, "bench_instances": bench_instances_data}
