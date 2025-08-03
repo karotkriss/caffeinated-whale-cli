@@ -7,9 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- ## [Unreleased] -->
 
-## [0.2.4] - 2025-08-03
+## [0.3.0] - 2025-08-03
 
 ### Added
 
-- Interactive bench naming support for `cwcli inspect` (via `--interactive`, `-i`).
-
+- Interactive bench naming support for `cwcli inspect` (via `--interactive`, `-i`)
