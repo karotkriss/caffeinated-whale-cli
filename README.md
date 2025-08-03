@@ -162,6 +162,7 @@ frappe-one
 | `--json`, `-j`    | Output the result as a JSON object. |
 | `--update`, `-u`  | Update the cache by re-inspecting the project. |
 | `--show-apps`, `-a` | Show available apps in the output tree. |
+| `--interactive`, `-i` | Prompt to name each bench instance interactively. |
 
 ---
 
