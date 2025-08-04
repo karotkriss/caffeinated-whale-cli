@@ -56,6 +56,8 @@ app.add_typer(config_cmd.app, name="config")
 from .commands.apps import list_apps as _list_apps_cmd
 app.command("list-apps")(_list_apps_cmd)
 app.command("run")(_run_cmd)
+from .commands.status import status as _status_cmd
+app.command("status")(_status_cmd)
 
 def cli():
     """
