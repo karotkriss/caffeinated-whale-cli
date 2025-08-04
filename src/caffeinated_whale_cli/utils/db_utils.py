@@ -164,6 +164,37 @@ def get_all_cached_projects():
     return list(Project.select())
 
 
+def set_bench_alias(project_name: str, bench_path: str, alias: str) -> bool:
+    """
+    Set or update the alias for a bench identified by project and bench path.
+    Returns True if updated successfully, False if no matching bench was found.
+    """
+    initialize_database()
+    try:
+        project = Project.get(Project.name == project_name)
+        bench = Bench.get((Bench.project == project) & (Bench.path == bench_path))
+        bench.alias = alias
+        bench.save()
+        return True
+    except (Project.DoesNotExist, Bench.DoesNotExist):
+        return False
+
+
+def clear_bench_alias(alias: str) -> bool:
+    """
+    Remove the alias from a bench entry matching the given alias.
+    Returns True if alias was cleared, False if not found.
+    """
+    initialize_database()
+    try:
+        bench = Bench.get(Bench.alias == alias)
+        bench.alias = ''
+        bench.save()
+        return True
+    except Bench.DoesNotExist:
+        return False
+
+
 def get_bench_by_alias(alias: str):
     """
     Retrieve a single bench (with its sites and apps) by its unique alias.
