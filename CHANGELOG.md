@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Global `--bench`/`-b` option for targeting a bench alias across commands (no project name needed when alias is unique)
 - `list-apps` command: new subcommand to display apps for a bench alias
+- `config bench alias` and `config bench unalias` commands to assign or clear aliases for bench instances by project and bench path
 
 ### Changed
 
