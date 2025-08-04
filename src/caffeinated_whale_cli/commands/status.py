@@ -77,7 +77,7 @@ def status(
     if exit_code == 0 and http_code and http_code != "000":
         if verbose:
             stderr_console.print(
-                "[bold green]VERBOSE: bench is started and running.[/dim green]"
+                "[bold green]VERBOSE: bench is started and running.[/bold green]"
             )
         typer.echo("running")
     else:
