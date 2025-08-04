@@ -6,6 +6,7 @@ from rich.console import Console
 from ..utils import db_utils
 from .utils import get_project_containers
 from ..utils.docker_utils import handle_docker_errors
+from docker.errors import APIError, NotFound
 
 app = typer.Typer(help="Check the HTTP status of a bench instance via its frappe container.")
 stderr_console = Console(stderr=True)
@@ -54,9 +55,11 @@ def status(
     # Refresh status info
     try:
         frappe_container.reload()
-    except Exception:
+    except (APIError, NotFound) as e:
+        if verbose:
+            stderr_console.print(f"[dim]Failed to reload container: {e}[/dim]")
         typer.echo("offline")
-        raise typer.Exit(code=0)
+        raise typer.Exit(code=0) from e
 
     if frappe_container.status != "running":
         typer.echo("offline")
