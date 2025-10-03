@@ -26,7 +26,6 @@ class Project(BaseModel):
 class Bench(BaseModel):
     project = ForeignKeyField(Project, backref="benches")
     path = CharField()
-    alias = CharField(default="")
 
 
 class Site(BaseModel):
@@ -62,13 +61,6 @@ def initialize_database():
         db.connect()
     # Create tables if missing
     db.create_tables([Project, Bench, Site, AvailableApp, InstalledAppDetail], safe=True)
-    # Ensure alias column exists for Bench
-    cursor = db.execute_sql("PRAGMA table_info(bench)")
-    cols = [row[1] for row in cursor.fetchall()]
-    if 'alias' not in cols:
-        # Add alias column in a transaction to ensure schema integrity
-        with db.atomic():
-            db.execute_sql("ALTER TABLE bench ADD COLUMN alias TEXT DEFAULT ''")
 
 
 def clear_cache_for_project(project_name):
@@ -98,7 +90,6 @@ def cache_project_data(project_name, bench_instances_data):
         bench = Bench.create(
             project=project,
             path=bench_data["path"],
-            alias=bench_data.get("alias", ""),
         )
 
         for app_name in bench_data["available_apps"]:
@@ -146,7 +137,6 @@ def get_cached_project_data(project_name):
                     "path": bench.path,
                     "sites": sites_info,
                     "available_apps": available_apps,
-                    "alias": bench.alias or "",
                 }
             )
 
@@ -164,62 +154,3 @@ def get_all_cached_projects():
     return list(Project.select())
 
 
-def set_bench_alias(project_name: str, bench_path: str, alias: str) -> bool:
-    """
-    Set or update the alias for a bench identified by project and bench path.
-    Returns True if updated successfully, False if no matching bench was found.
-    """
-    initialize_database()
-    try:
-        project = Project.get(Project.name == project_name)
-        bench = Bench.get((Bench.project == project) & (Bench.path == bench_path))
-        bench.alias = alias
-        bench.save()
-        return True
-    except (Project.DoesNotExist, Bench.DoesNotExist):
-        return False
-
-
-def clear_bench_alias(alias: str) -> bool:
-    """
-    Remove the alias from a bench entry matching the given alias.
-    Returns True if alias was cleared, False if not found.
-    """
-    initialize_database()
-    try:
-        bench = Bench.get(Bench.alias == alias)
-        bench.alias = ''
-        bench.save()
-        return True
-    except Bench.DoesNotExist:
-        return False
-
-
-def get_bench_by_alias(alias: str):
-    """
-    Retrieve a single bench (with its sites and apps) by its unique alias.
-    Returns a dict with project_name and bench data or None if not found.
-    """
-    initialize_database()
-    try:
-        bench = Bench.get(Bench.alias == alias)
-        project = bench.project
-        # Gather available apps
-        available_apps = [app.name for app in bench.available_apps]
-        # Gather sites
-        sites_info = []
-        for site in bench.sites:
-            sites_info.append(
-                {"name": site.name, "installed_apps": json.loads(site.installed_apps)}
-            )
-        return {
-            "project_name": project.name,
-            "bench": {
-                "path": bench.path,
-                "alias": bench.alias,
-                "available_apps": available_apps,
-                "sites": sites_info,
-            },
-        }
-    except Bench.DoesNotExist:
-        return None
