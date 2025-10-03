@@ -1,11 +1,15 @@
 import shutil
 import subprocess
+import platform
 from typing import Literal
 import typer
 import questionary
 from rich.console import Console
 
 console_err = Console(stderr=True)
+
+# Use shell=True on Windows to resolve .cmd files in PATH
+IS_WINDOWS = platform.system() == "Windows"
 
 
 def is_vscode_installed() -> bool:
@@ -65,6 +69,7 @@ def is_dev_containers_installed(vscode_command: str, verbose: bool = False) -> b
             capture_output=True,
             text=True,
             timeout=5,
+            shell=IS_WINDOWS,
         )
         return "ms-vscode-remote.remote-containers" in result.stdout.lower()
     except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
@@ -82,6 +87,7 @@ def is_docker_extension_installed(vscode_command: str, verbose: bool = False) ->
             capture_output=True,
             text=True,
             timeout=5,
+            shell=IS_WINDOWS,
         )
         return "ms-azuretools.vscode-docker" in result.stdout.lower()
     except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
@@ -100,6 +106,7 @@ def install_extension(vscode_command: str, extension_id: str, extension_name: st
             capture_output=True,
             text=True,
             timeout=30,
+            shell=IS_WINDOWS,
         )
 
         if result.returncode == 0:
@@ -213,7 +220,7 @@ def open_in_vscode(vscode_command: str, container_name: str, bench_path: str, ve
             cmd = [vscode_command, "--folder-uri", uri]
             if verbose:
                 console_err.print(f"[dim]$ {' '.join(cmd)}[/dim]")
-            subprocess.run(cmd, check=True)
+            subprocess.run(cmd, check=True, shell=IS_WINDOWS)
         except subprocess.CalledProcessError as e:
             console_err.print(f"[bold red]✗ Failed to open VS Code: {e}[/bold red]")
             raise typer.Exit(code=1)
