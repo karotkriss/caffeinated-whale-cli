@@ -17,6 +17,12 @@ def open_bench(
         "-p",
         help="Path inside the container to open (uses cached bench path from inspect if not specified)",
     ),
+    app: str = typer.Option(
+        None,
+        "--app",
+        "-a",
+        help="App name to open (opens the app's directory within the bench)",
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -130,6 +136,39 @@ def open_bench(
         vscode_insiders = vscode_utils.is_vscode_insiders_installed()
         if verbose:
             stderr_console.print(f"[dim]VERBOSE: VS Code stable: {vscode_stable}, Insiders: {vscode_insiders}[/dim]")
+
+    # Handle app option - verify app exists and update path
+    if app:
+        # Get cached data to check available apps
+        cached_data = db_utils.get_cached_project_data(project_name)
+        if not cached_data or not cached_data.get("bench_instances"):
+            stderr_console.print(
+                f"[bold red]Error:[/bold red] No cached bench data found. Run 'cwcli inspect {project_name}' first."
+            )
+            raise typer.Exit(code=1)
+
+        # Get the list of apps from the first bench instance
+        bench_instance = cached_data["bench_instances"][0]
+        available_apps = bench_instance.get("available_apps", [])
+
+        if not available_apps:
+            stderr_console.print(
+                f"[bold red]Error:[/bold red] No apps found in cached data. Run 'cwcli inspect {project_name}' first."
+            )
+            raise typer.Exit(code=1)
+
+        # Check if the requested app exists
+        if app not in available_apps:
+            stderr_console.print(
+                f"[bold red]Error:[/bold red] App '{app}' not found in bench instance."
+            )
+            stderr_console.print(f"Available apps: {', '.join(available_apps)}")
+            raise typer.Exit(code=1)
+
+        # Update bench_path to point to the app directory
+        bench_path = f"{bench_path}/apps/{app}"
+        if verbose:
+            stderr_console.print(f"[dim]VERBOSE: Opening app path: {bench_path}[/dim]")
 
     # Build choices and prompt user (outside spinner)
     choices = []
