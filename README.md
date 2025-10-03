@@ -166,6 +166,110 @@ frappe-one
 
 ---
 
+#### `open`
+
+Opens a Frappe project instance in VS Code (with Dev Containers) or executes into the container with Docker.
+
+**Usage:**
+
+```bash
+cwcli open [PROJECT_NAME]
+```
+
+**Arguments:**
+
+| Argument       | Description                               |
+|----------------|-------------------------------------------|
+| `PROJECT_NAME` | The Docker Compose project name to open. |
+
+**Options:**
+
+| Option      | Description                               |
+|-------------|-------------------------------------------|
+| `--path`, `-p` | Path inside the container to open (uses cached bench path from inspect if not specified). |
+| `--verbose`, `-v` | Enable verbose diagnostic output. |
+
+**Features:**
+
+- Auto-detects VS Code and VS Code Insiders installations
+- Interactive editor selection menu
+- Automatically installs required VS Code extensions (Docker and Dev Containers)
+- Uses cached bench paths from `inspect` command
+- Fallback to Docker exec if VS Code is not available
+
+**Expected Behavior:**
+
+If VS Code is installed, you'll be prompted to choose:
+```
+How would you like to open this instance?
+> VS Code - Open in development container
+  Docker - Execute interactive shell in container
+```
+
+---
+
+#### `run`
+
+Executes bench commands inside a project's frappe container.
+
+**Usage:**
+
+```bash
+cwcli run [PROJECT_NAME] [BENCH_COMMANDS]...
+```
+
+**Arguments:**
+
+| Argument       | Description                               |
+|----------------|-------------------------------------------|
+| `PROJECT_NAME` | The Docker Compose project name. |
+| `BENCH_COMMANDS` | Bench command and arguments to run. |
+
+**Options:**
+
+| Option      | Description                               |
+|-------------|-------------------------------------------|
+| `--path`, `-p` | Path to the bench directory inside the container (default: /workspace/frappe-bench). |
+| `--verbose`, `-v` | Enable verbose output. |
+
+**Example:**
+
+```bash
+cwcli run frappe-one migrate
+```
+
+---
+
+#### `status`
+
+Checks the health status of a Frappe project instance.
+
+**Usage:**
+
+```bash
+cwcli status [PROJECT_NAME]
+```
+
+**Arguments:**
+
+| Argument       | Description                               |
+|----------------|-------------------------------------------|
+| `PROJECT_NAME` | The Docker Compose project name to check. |
+
+**Options:**
+
+| Option      | Description                               |
+|-------------|-------------------------------------------|
+| `--verbose`, `-v` | Show the health-check command, raw curl output, and explain the reported status. |
+
+**Expected Output:**
+
+- `offline`: Container is not running
+- `online`: Container is running but HTTP probe failed
+- `running`: Container is running and HTTP probe succeeded
+
+---
+
 #### `config`
 
 Manages the CLI configuration.
