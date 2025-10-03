@@ -4,49 +4,31 @@ from typing import List
 
 from rich.console import Console
 
-from ..utils import db_utils
 from .utils import get_project_containers
 from ..utils.docker_utils import handle_docker_errors
-import docker
-from .inspect import _run_command  # retained for backwards-compatibility if needed
-
-app = typer.Typer(help="Run an arbitrary bench command inside a bench instance (by alias).")
 
 stderr_console = Console(stderr=True)
 
 
-@app.command("run")
 @handle_docker_errors
 def run(
-    ctx: typer.Context,
+    project_name: str = typer.Argument(..., help="The Docker Compose project name."),
     bench_args: List[str] = typer.Argument(
         ..., help="Bench command and arguments to run."
+    ),
+    bench_path: str = typer.Option(
+        "/workspace/frappe-bench",
+        "--path",
+        "-p",
+        help="Path to the bench directory inside the container (default: /workspace/frappe-bench)",
     ),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Enable verbose output."
     ),
 ):
     """
-    Execute 'bench <command>' inside the specified bench's frappe container.
-    Requires --bench <alias> to target a bench instance.
+    Execute 'bench <command>' inside the specified project's frappe container.
     """
-    bench_alias = ctx.obj.get("bench")
-    if not bench_alias:
-        typer.echo(
-            "Error: --bench <alias> is required to run bench commands.", err=True
-        )
-        raise typer.Exit(code=1)
-
-    bench_data = db_utils.get_bench_by_alias(bench_alias)
-    if not bench_data:
-        stderr_console.print(
-            f"[bold red]Error:[/bold red] Bench alias '{bench_alias}' not found."
-        )
-        raise typer.Exit(code=1)
-
-    project_name = bench_data["project_name"]
-    bench_path = bench_data["bench"]["path"]
-
     containers = get_project_containers(project_name)
     if not containers:
         stderr_console.print(
@@ -66,7 +48,7 @@ def run(
 
     if frappe_container.status != "running":
         stderr_console.print(
-            f"[bold red]Error:[/bold red] Frappe container for bench '{bench_alias}' is not running."
+            f"[bold red]Error:[/bold red] Frappe container for project '{project_name}' is not running."
         )
         raise typer.Exit(code=1)
 

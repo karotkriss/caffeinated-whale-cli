@@ -3,19 +3,16 @@ import typer
 
 from rich.console import Console
 
-from ..utils import db_utils
 from .utils import get_project_containers
 from ..utils.docker_utils import handle_docker_errors
 from docker.errors import APIError, NotFound
 
-app = typer.Typer(help="Check the HTTP status of a bench instance via its frappe container.")
 stderr_console = Console(stderr=True)
 
 
-@app.command("status")
 @handle_docker_errors
 def status(
-    ctx: typer.Context,
+    project_name: str = typer.Argument(..., help="The Docker Compose project name to check."),
     verbose: bool = typer.Option(
         False,
         "--verbose", "-v",
@@ -23,22 +20,8 @@ def status(
     ),
 ):
     """
-    Run a HTTP health check (curl to localhost:8000) inside the bench's frappe container.
-    If the container is not running, reports 'offline'.
-    If curl inside the container succeeds (non-'000' HTTP code), reports 'running'.
-    Otherwise (container running but no HTTP response), reports 'online'.
+    Check the health status of a Frappe project instance.
     """
-    bench_alias = ctx.obj.get("bench")
-    if not bench_alias:
-        typer.echo("Error: --bench <alias> is required to check status.", err=True)
-        raise typer.Exit(code=1)
-
-    bench_data = db_utils.get_bench_by_alias(bench_alias)
-    if not bench_data:
-        stderr_console.print(f"[bold red]Error:[/bold red] Bench alias '{bench_alias}' not found.")
-        raise typer.Exit(code=1)
-
-    project_name = bench_data["project_name"]
     containers = get_project_containers(project_name)
     if not containers:
         typer.echo("offline")
