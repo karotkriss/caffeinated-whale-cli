@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2025-10-03
+
+### Changed
+- `open` command now automatically runs `inspect` if no cached bench path is found
+- Improved spinner behavior: single persistent spinner that exits before running nested commands
+- Fixed spinner conflicts when `open` command calls `inspect` command
+
+### Removed
+- Unused `platformdirs` dependency
+
 ## [0.4.0] - 2025-10-03
 
 ### Added
