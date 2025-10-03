@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2025-10-03
+
+### Added
+- `open` command: `--app`/`-a` option to open a specific app directory within the bench
+  - Verifies app exists in cached bench data
+  - Shows available apps if requested app not found
+  - Opens path at `{bench_path}/apps/{app_name}`
+
 ## [0.4.2] - 2025-10-03
 
 ### Fixed
