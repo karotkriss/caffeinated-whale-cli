@@ -5,25 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-# <!-- ## [Unreleased] -->
 ## [Unreleased]
 
--### Added
-- `run` command: execute arbitrary `bench` commands inside a bench alias’s frappe container
-- Support for real-time streaming of bench command output (via Docker exec API)
-- `status` command: report `offline` if container not running; `online` if container running; `running` only when HTTP probe succeeds (exit code=0 & non-000 HTTP code)
-- Enhanced `--verbose`/`-v` option for `status` to show the curl command, exit code, raw output, and explanation of the reported status
-- Global `--bench`/`-b` option for targeting a bench alias across commands (no project name needed when alias is unique)
-- `list-apps` command: new subcommand to display apps for a bench alias
-- `config bench alias` and `config bench unalias` commands to assign or clear aliases for bench instances by project and bench path
+## [0.4.0] - 2025-10-03
 
--### Changed
-- `run` subcommand now streams the underlying bench process output in real time instead of buffering until completion
-- Default `list-apps` output is now a table of App | Version | Branch | Sites
-- Added `--quiet`/`-q` flag to `list-apps` for name-only output suitable for scripting
-- Persist interactive aliases immediately to cache in `inspect --interactive`
-- Renamed `AvailableApp` table to `available_apps`; renamed join model to `installed_apps` for clarity
-- Introduced `InstalledAppDetail` (`installed_apps` table) to store per-site app version and branch
+### Added
+- `open` command: open Frappe project instances in VS Code dev containers or Docker exec
+  - Auto-detects VS Code and VS Code Insiders installations
+  - Interactive editor selection with custom styled menu
+  - Automatic installation of required VS Code extensions (Docker and Dev Containers)
+  - Uses cached bench paths from `inspect` command
+  - Spinners and verbose mode for progress feedback
+  - Support for cancelling selection with Escape or Ctrl+C
+- Enhanced UX with Rich spinners across multiple stages of operations
+- Verbose mode (`-v`) shows all executed commands with `$ <command>` prefix
+
+### Changed
+- **BREAKING**: Removed bench alias system entirely
+  - Removed `--bench`/`-b` global flag
+  - Removed `config bench alias` and `config bench unalias` commands
+  - Removed `list-apps` command
+- **BREAKING**: Commands now use project names (from `cwcli ls`) instead of bench aliases
+  - `run` command: `cwcli run <project_name> <bench_commands>`
+  - `status` command: `cwcli status <project_name>`
+  - `open` command: `cwcli open <project_name>`
+- All commands now accept project name as first argument for consistency
+- Updated help descriptions to be more concise and high-level
+- `open` command automatically retrieves bench path from inspect cache
+
+### Removed
+- Bench alias database schema and all related functions
+- `list-apps` command (functionality replaced by `inspect` with `--show-apps`)
+- Global `--bench`/`-b` option
 
 ## [0.3.2] - 2025-08-03
 
