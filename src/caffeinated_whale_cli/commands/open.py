@@ -27,8 +27,10 @@ def open_bench(
     """
     Open a project's frappe container in VS Code (with Dev Containers) or exec into it.
     """
-    # Get containers for the project
-    with stderr_console.status(f"[bold green]Finding project '{project_name}'...[/bold green]", spinner="dots"):
+    # Single spinner that stays at the bottom and updates its message
+    with stderr_console.status(f"[bold green]Preparing to open '{project_name}'...[/bold green]", spinner="dots") as status:
+        # Find containers
+        status.update(f"[bold green]Finding project '{project_name}'...[/bold green]")
         containers = get_project_containers(project_name)
         if not containers:
             stderr_console.print(
@@ -61,12 +63,11 @@ def open_bench(
         if verbose:
             stderr_console.print(f"[dim]VERBOSE: Found frappe container: {frappe_container.name}[/dim]")
 
-    # Get container name
-    container_name = frappe_container.name
+        container_name = frappe_container.name
 
-    # Get bench path from cache if not provided
-    if not bench_path:
-        with stderr_console.status("[bold green]Looking up bench path...[/bold green]", spinner="dots"):
+        # Get bench path from cache if not provided
+        if not bench_path:
+            status.update("[bold green]Looking up bench path...[/bold green]")
             cached_data = db_utils.get_cached_project_data(project_name)
             if cached_data and cached_data.get("bench_instances"):
                 # Use the first bench instance path
@@ -74,17 +75,57 @@ def open_bench(
                 if verbose:
                     stderr_console.print(f"[dim]VERBOSE: Using cached bench path: {bench_path}[/dim]")
             else:
-                # Fallback to default
+                # No cache found, need to run inspect
+                # Exit the spinner context before running inspect (it has its own spinner)
+                pass  # Will handle this outside the spinner context
+
+        # Detect VS Code installations
+        status.update("[bold green]Detecting VS Code installations...[/bold green]")
+        vscode_stable = vscode_utils.is_vscode_installed()
+        vscode_insiders = vscode_utils.is_vscode_insiders_installed()
+        if verbose:
+            stderr_console.print(f"[dim]VERBOSE: VS Code stable: {vscode_stable}, Insiders: {vscode_insiders}[/dim]")
+
+    # Handle inspect outside spinner context if needed
+    if not bench_path:
+        stderr_console.print(f"[yellow]No cached bench path found. Running inspect...[/yellow]")
+
+        try:
+            # Run inspect to populate cache (it has its own spinner)
+            from .inspect import inspect as inspect_cmd_func
+
+            # Call inspect directly with just the parameters it needs
+            inspect_cmd_func(
+                project_name=project_name,
+                verbose=verbose,
+                json_output=False,
+                update=False,
+                show_apps=False,
+                interactive=False
+            )
+
+            # Try to get cached data again
+            cached_data = db_utils.get_cached_project_data(project_name)
+            if cached_data and cached_data.get("bench_instances"):
+                bench_path = cached_data["bench_instances"][0]["path"]
+                if verbose:
+                    stderr_console.print(f"[dim]VERBOSE: Using cached bench path from inspect: {bench_path}[/dim]")
+            else:
+                # Still no cache, use default
                 bench_path = "/workspace/frappe-bench"
                 stderr_console.print(
-                    f"[yellow]Warning: No cached bench path found. Using default: {bench_path}[/yellow]"
+                    f"[yellow]Warning: Could not detect bench path. Using default: {bench_path}[/yellow]"
                 )
-                stderr_console.print(
-                    f"[yellow]Run 'cwcli inspect {project_name}' first to cache the bench path.[/yellow]"
-                )
+        except Exception as e:
+            # Inspect failed, use default
+            bench_path = "/workspace/frappe-bench"
+            stderr_console.print(
+                f"[yellow]Warning: Inspect failed. Using default bench path: {bench_path}[/yellow]"
+            )
+            if verbose:
+                stderr_console.print(f"[dim]VERBOSE: Inspect error: {e}[/dim]")
 
-    # Detect VS Code installations (don't prompt inside spinner)
-    with stderr_console.status("[bold green]Detecting VS Code installations...[/bold green]", spinner="dots"):
+        # Re-detect VS Code after inspect (if we ran it)
         vscode_stable = vscode_utils.is_vscode_installed()
         vscode_insiders = vscode_utils.is_vscode_insiders_installed()
         if verbose:
