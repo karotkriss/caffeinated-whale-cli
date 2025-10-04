@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2025-10-04
+
+### Added
+- `logs` command: view bench logs in real-time with `tail -f`
+  - `--follow/-f` flag to follow logs (default: true)
+  - `--no-follow` to show logs and exit
+  - `--lines/-n` to specify number of lines to show (default: 100)
+  - Logs stored in `/tmp/bench-{project_name}.log` inside container
+- Shared console instances across all commands for consistent spinner behavior
+  - Created `utils/console.py` with shared `console` and `stderr_console`
+  - Fixes spinner artifacts and ensures verbose output is properly buffered
+
+### Changed
+- **BREAKING**: Replaced tmux session management with log file approach
+  - `start` command now runs bench in background with nohup, logging to file
+  - Simpler, more reliable - logs persist across laptop sleep/wake cycles
+  - No more tmux dependencies or configuration needed
+- Enhanced spinner UX for `start`, `stop`, and `restart` commands
+  - Spinners now dynamically update to show which container is being started/stopped
+  - Spinner shows bench startup status with log file location
+  - All verbose output properly buffered until after spinner exits
+- Improved output messages:
+  - `start` and `restart` now show log file location and `cwcli logs` usage
+  - Removed tmux-specific instructions
+
+### Removed
+- Tmux session management and configuration
+- Tmux-related keybinding setup and config file creation
+
 ## [0.5.0] - 2025-10-03
 
 ### Added
