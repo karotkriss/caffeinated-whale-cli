@@ -3,44 +3,41 @@ import sys
 from typing import List
 from .utils import get_project_containers
 from ..utils.docker_utils import handle_docker_errors
+from .stop import _stop_project
+from .start import _start_project
 from ..utils.console import console, stderr_console
 
-app = typer.Typer(help="Stop a Frappe project's containers.")
+app = typer.Typer(help="Restart a Frappe project's containers.")
 
 
 @handle_docker_errors
-def _stop_project(project_name: str, verbose: bool = False, status=None):
-    """The core logic for stopping a single project's containers."""
+def _restart_project(project_name: str, verbose: bool = False, status=None):
+    """The core logic for restarting a single project's containers."""
     containers = get_project_containers(project_name)
 
     if not containers:
         console.print(f"[bold red]Error: Project '{project_name}' not found.[/bold red]")
-        return 0
+        return None, 0
 
-    # Check which containers are running
+    # Check if any containers are running
     running_containers = [c for c in containers if c.status == "running"]
 
-    if verbose:
-        stderr_console.print(f"[dim]VERBOSE: Found {len(containers)} total container(s), {len(running_containers)} running[/dim]")
-
-    if not running_containers:
+    if running_containers:
         if verbose:
-            stderr_console.print(f"[dim]VERBOSE: No running containers to stop for '{project_name}'[/dim]")
-        console.print(f"Instance '{project_name}' is already stopped.")
-        return 0
-
-    for container in running_containers:
+            stderr_console.print(f"[dim]VERBOSE: Found {len(running_containers)} running container(s) for '{project_name}'[/dim]")
+    else:
         if verbose:
-            stderr_console.print(f"[dim]VERBOSE: Stopping container '{container.name}'[/dim]")
-        if status:
-            status.update(f"[bold yellow]Stopping '{container.name}'...[/bold yellow]")
-        container.stop()
+            stderr_console.print(f"[dim]VERBOSE: No running containers found for '{project_name}'[/dim]")
 
-    return len(running_containers)
+    # Stop then start
+    stopped = _stop_project(project_name, verbose=verbose, status=status)
+    log_file = _start_project(project_name, verbose=verbose, status=status)
+
+    return log_file, stopped
 
 
 @app.callback(invoke_without_command=True)
-def stop(
+def restart(
     ctx: typer.Context,
     verbose: bool = typer.Option(
         False,
@@ -49,11 +46,11 @@ def stop(
         help="Enable verbose diagnostic output.",
     ),
     project_name: List[str] = typer.Argument(
-        None, help="The name(s) of the Frappe project(s) to stop. Can be piped from stdin."
+        None, help="The name(s) of the Frappe project(s) to restart. Can be piped from stdin."
     ),
 ):
     """
-    Stops all containers for a given project or for all projects piped from stdin.
+    Restarts all containers for a project and runs bench start in tmux.
     """
     project_names_to_process = []
 
@@ -80,16 +77,19 @@ def stop(
         raise typer.Exit(code=1)
 
     console.print(
-        f"Attempting to stop [bold yellow]{len(project_names_to_process)}[/bold yellow] project(s)..."
+        f"Attempting to restart [bold cyan]{len(project_names_to_process)}[/bold cyan] project(s)..."
     )
 
     for name in project_names_to_process:
-        with stderr_console.status(f"[bold yellow]Stopping '{name}'...[/bold yellow]", spinner="dots") as status:
-            result = _stop_project(name, verbose=actual_verbose, status=status)
+        with stderr_console.status(f"[bold cyan]Restarting '{name}'...[/bold cyan]", spinner="dots") as status:
+            log_file, stopped = _restart_project(name, verbose=actual_verbose, status=status)
 
         # Print outside spinner context
-        if result > 0:
+        if stopped > 0:
             console.print(f"Instance '{name}' stopped.")
-        # If result is 0, the "already stopped" message was already printed
+        console.print(f"Instance '{name}' started.")
+        if log_file:
+            console.print(f"[bold green]✓ Started bench (logs: {log_file})[/bold green]")
+            console.print(f"[dim]View logs with: cwcli logs {name}[/dim]")
 
-    console.print("\n[bold yellow]Stop command finished.[/bold yellow]")
+    console.print("\n[bold green]Restart command finished.[/bold green]")
