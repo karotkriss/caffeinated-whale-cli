@@ -273,9 +273,8 @@ def inspect(
             apps_branch = bench_node.add(
                 f"Available Apps ({len(bench_instance['available_apps'])})"
             )
-            if verbose or show_apps:
-                for app in bench_instance["available_apps"]:
-                    apps_branch.add(f"[dim]{app}[/dim]")
+            for app in bench_instance["available_apps"]:
+                apps_branch.add(f"[dim]{app}[/dim]")
 
             sites_branch = bench_node.add(f"Sites ({len(bench_instance['sites'])})")
             for site_data in bench_instance["sites"]:
