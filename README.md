@@ -113,6 +113,75 @@ frappe-one stopped successfully.
 
 ---
 
+#### `restart`
+
+Restarts a project's containers and bench instance.
+
+**Usage:**
+
+```bash
+cwcli restart [PROJECT_NAME]...
+```
+
+**Arguments:**
+
+| Argument       | Description                               |
+|----------------|-------------------------------------------|
+| `PROJECT_NAME` | The name(s) of the project(s) to restart. Can be piped from stdin. |
+
+**Expected Output:**
+
+A confirmation message indicating the project has restarted.
+
+```
+Attempting to restart 1 project(s)...
+Instance 'frappe-one' stopped.
+Instance 'frappe-one' started.
+✓ Started bench (logs: /tmp/bench-frappe-one.log)
+View logs with: cwcli logs frappe-one
+
+Restart command finished.
+```
+
+---
+
+#### `logs`
+
+View bench logs in real-time from the log file.
+
+**Usage:**
+
+```bash
+cwcli logs [PROJECT_NAME]
+```
+
+**Arguments:**
+
+| Argument       | Description                               |
+|----------------|-------------------------------------------|
+| `PROJECT_NAME` | The name of the Frappe project to view logs for. |
+
+**Options:**
+
+| Option      | Description                               |
+|-------------|-------------------------------------------|
+| `--follow/--no-follow`, `-f` | Follow log output in real-time (default: true). |
+| `--lines`, `-n` | Number of lines to show from the end of the logs (default: 100). |
+| `--verbose`, `-v` | Enable verbose diagnostic output. |
+
+**Expected Output:**
+
+Real-time log output from the bench instance.
+
+```
+Viewing bench logs for 'frappe-one'...
+Press Ctrl+c to exit
+
+[timestamp] Log output...
+```
+
+---
+
 #### `inspect`
 
 Shows detailed information about a specific project.
