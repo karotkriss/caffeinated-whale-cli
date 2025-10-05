@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2025-10-04
+
+### Fixed
+- `inspect` command now correctly displays available app names without requiring `--verbose` or `--show-apps` flags
+
 ## [0.6.0] - 2025-10-04
 
 ### Added
