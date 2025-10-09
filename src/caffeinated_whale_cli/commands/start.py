@@ -42,12 +42,52 @@ def _start_project(project_name: str, verbose: bool = False, status=None):
 
     # Get bench path from cache
     cached_data = db_utils.get_cached_project_data(project_name)
+    bench_path = None
+
     if cached_data and cached_data.get("bench_instances"):
         bench_path = cached_data["bench_instances"][0]["path"]
     else:
-        bench_path = "/workspace/frappe-bench"
+        # No cache found, run inspect
         if verbose:
-            stderr_console.print(f"[dim]VERBOSE: Using default bench path: {bench_path}[/dim]")
+            stderr_console.print(f"[dim]VERBOSE: No cached bench path found. Running inspect...[/dim]")
+
+        # Exit spinner context to run inspect (it has its own spinner)
+        if status:
+            status.stop()
+
+        stderr_console.print(f"[yellow]No cached bench path found. Running inspect...[/yellow]")
+
+        try:
+            from .inspect import inspect as inspect_cmd_func
+
+            inspect_cmd_func(
+                project_name=project_name,
+                verbose=verbose,
+                json_output=False,
+                update=False,
+                show_apps=False,
+                interactive=False
+            )
+
+            # Try to get cached data again
+            cached_data = db_utils.get_cached_project_data(project_name)
+            if cached_data and cached_data.get("bench_instances"):
+                bench_path = cached_data["bench_instances"][0]["path"]
+                if verbose:
+                    stderr_console.print(f"[dim]VERBOSE: Using cached bench path from inspect: {bench_path}[/dim]")
+        except Exception as e:
+            if verbose:
+                stderr_console.print(f"[dim]VERBOSE: Inspect error: {e}[/dim]")
+
+        # Resume spinner if it was active
+        if status:
+            status.start()
+
+    # If we still don't have a bench path, skip bench start but continue with container start
+    if not bench_path:
+        stderr_console.print(f"[yellow]Warning: Could not detect bench path. Skipping bench start.[/yellow]")
+        stderr_console.print(f"[dim]Containers started, but bench was not started automatically.[/dim]")
+        return None
 
     container_name = frappe_container.name
     log_file = f"/tmp/bench-{project_name}.log"
