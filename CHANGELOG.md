@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2025-10-10
+
+### Changed
+- Updated `.gitignore` to exclude `frappe_docker/` directory
+
 ## [0.6.1] - 2025-10-04
 
 ### Fixed
