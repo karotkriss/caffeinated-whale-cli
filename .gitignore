@@ -8,3 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Frappe Docker repository (for reference/testing only)
+frappe_docker/
