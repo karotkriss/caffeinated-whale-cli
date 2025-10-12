@@ -277,6 +277,82 @@ How would you like to open this instance?
 
 ---
 
+#### `update`
+
+Updates specified Frappe apps and migrates all sites where they are installed.
+
+**Usage:**
+
+```bash
+cwcli update [PROJECT_NAME] --app [APP_NAME]...
+```
+
+**Arguments:**
+
+| Argument       | Description                               |
+|----------------|-------------------------------------------|
+| `PROJECT_NAME` | The name of the project to update. |
+
+**Options:**
+
+| Option      | Description                               |
+|-------------|-------------------------------------------|
+| `--app`, `-a` | App name(s) to update (required). Specify multiple apps with `--app app1 --app app2` or `--app app1 app2`. |
+| `--build`, `-b` | Build assets after updating apps using `bench build`. |
+| `--clear-cache`, `-c` | Clear cache for all affected sites after migration. |
+| `--clear-website-cache`, `-w` | Clear website cache for all affected sites after migration. |
+| `--path`, `-p` | Path to the bench directory inside the container (uses cached path from inspect if not specified). |
+| `--verbose`, `-v` | Enable verbose output with streaming command execution. |
+
+**What it does:**
+
+1. Runs `git pull` in each specified app directory
+2. Identifies all sites where the updated apps are installed
+3. Runs `bench --site <site> migrate` for each affected site
+4. (Optional) Runs `bench build --app <app>` for each successfully updated app
+5. (Optional) Runs `bench --site <site> clear-cache` for each affected site
+6. (Optional) Runs `bench --site <site> clear-website-cache` for each affected site
+
+**Examples:**
+
+```bash
+# Update a single app
+cwcli update frappe-one --app erpnext
+
+# Update multiple apps
+cwcli update frappe-one --app frappe --app erpnext
+
+# Update with build and cache clearing
+cwcli update frappe-one --app erpnext --build --clear-cache --clear-website-cache
+
+# Update with verbose output
+cwcli update frappe-one --app custom_app -v
+```
+
+**Expected Output:**
+
+```
+Updating project: frappe-one
+
+Updating 1 app(s) for project 'frappe-one'
+
+→ Updating app: erpnext
+✓ Successfully updated 'erpnext'
+  Found 2 site(s) with 'erpnext' installed
+
+Migrating 2 affected site(s)
+
+✓ Migration complete for all affected sites
+
+✓ Successfully updated 1 app(s)
+```
+
+**Error Handling:**
+
+The command tracks failures at each step and provides detailed error messages if any operation fails. The command exits with code 1 if any step fails.
+
+---
+
 #### `run`
 
 Executes bench commands inside a project's frappe container.
