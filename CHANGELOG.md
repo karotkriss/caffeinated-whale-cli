@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## 0.7.0
+
+### Added
+- `update` command: update Frappe apps and migrate affected sites
+  - `--app/-a` flag to specify apps to update (required, can specify multiple)
+  - `--build/-b` flag to rebuild assets after updating apps
+  - `--clear-cache/-c` flag to clear cache for all affected sites
+  - `--clear-website-cache/-w` flag to clear website cache for all affected sites
+  - `--path/-p` flag to specify bench path (uses cached path from inspect by default)
+  - `--verbose/-v` flag for detailed output with streaming command execution
+  - Automatically runs `inspect` if no cached bench path is found
+  - Progress tracking with spinners in non-verbose mode
+  - Comprehensive error tracking and reporting for all operations
+  - Operations run in sequence: git pull → migrate → build → clear cache → clear website cache
+  - Exits with error code 1 if any step fails, with detailed error summary
+
 ## [0.6.2] - 2025-10-10
 
 ### Changed
