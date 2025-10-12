@@ -312,6 +312,7 @@ cwcli update [PROJECT_NAME] --app [APP_NAME]...
 4. (Optional) Runs `bench build --app <app>` for each successfully updated app
 5. (Optional) Runs `bench --site <site> clear-cache` for each affected site
 6. (Optional) Runs `bench --site <site> clear-website-cache` for each affected site
+7. Automatically clears locks folder for all affected sites to prevent stale locks
 
 **Examples:**
 
@@ -350,6 +351,61 @@ Migrating 2 affected site(s)
 **Error Handling:**
 
 The command tracks failures at each step and provides detailed error messages if any operation fails. The command exits with code 1 if any step fails.
+
+---
+
+#### `unlock`
+
+Removes the locks folder for a specified site to unlock it.
+
+**Usage:**
+
+```bash
+cwcli unlock [PROJECT_NAME] --site [SITE_NAME]
+```
+
+**Arguments:**
+
+| Argument       | Description                               |
+|----------------|-------------------------------------------|
+| `PROJECT_NAME` | The Docker Compose project name. |
+
+**Options:**
+
+| Option      | Description                               |
+|-------------|-------------------------------------------|
+| `--site`, `-s` | Site name to unlock (removes the locks folder). Required. |
+| `--path`, `-p` | Path to the bench directory inside the container (uses cached path from inspect if not specified). |
+| `--verbose`, `-v` | Enable verbose output and stream rm command output. |
+
+**What it does:**
+
+Removes the `{bench_path}/sites/{site_name}/locks` directory, which can help resolve issues when a site is stuck in a locked state due to incomplete migrations or background jobs.
+
+**Example:**
+
+```bash
+# Unlock a site
+cwcli unlock my-project --site development.localhost
+
+# Unlock with verbose output to see files being removed
+cwcli unlock my-project --site development.localhost -v
+```
+
+**Expected Output:**
+
+```
+✓ Successfully unlocked site 'development.localhost'
+Removed locks folder: /workspace/frappe-bench/sites/development.localhost/locks
+```
+
+**When to use:**
+
+- After a migration fails or is interrupted
+- When you see "This document is currently locked and queued for execution" errors
+- When background jobs don't complete properly
+
+**Note:** The `update` command automatically clears locks after completion, so manual unlocking is typically only needed for interrupted operations.
 
 ---
 
