@@ -10,6 +10,7 @@ from .commands import config as config_cmd
 from .commands.run import run as _run_cmd
 from .commands.logs import logs as _logs_cmd
 from .commands.update import update as _update_cmd
+from .commands.unlock import unlock as _unlock_cmd
 
 __version__ = importlib.metadata.version("caffeinated-whale-cli")
 
@@ -55,6 +56,7 @@ app.command("status")(_status_cmd)
 from .commands.open import open_bench as _open_cmd
 app.command("open")(_open_cmd)
 app.command("logs")(_logs_cmd)
+app.command("unlock")(_unlock_cmd)
 
 def cli():
     """
