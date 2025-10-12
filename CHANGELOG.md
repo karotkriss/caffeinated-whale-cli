@@ -7,7 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## 0.7.0
+## [0.8.0] - 2025-10-12
+
+### Added
+- `unlock` command: remove locks folder for a specified site to unlock it
+  - `--site/-s` flag to specify site name (required)
+  - `--path/-p` flag to specify bench path (uses cached path from inspect by default)
+  - `--verbose/-v` flag for streaming rm command output
+  - Automatically runs `inspect` if no cached bench path is found
+  - Uses `rm -rfv` in verbose mode to show files being removed
+  - Helps resolve "document is currently locked" errors
+
+### Changed
+- **BREAKING**: `update` command now automatically clears locks for all affected sites after completion
+  - Prevents stale locks from causing DocumentLockedError on subsequent runs
+  - Clears locks after all operations complete (pull, migrate, build, cache clear)
+  - Shows "Clearing locks: {site}" in progress spinner
+- Enhanced `update` command reliability:
+  - Added proper command completion waiting for streamed commands
+  - Added polling loop to ensure ExitCode is available before proceeding
+  - Added 0.5s delay after migrations to allow background processes to release locks
+  - Increased Live display refresh rate to 20 per second for smoother animations
+  - Made progress display transient (disappears after completion)
+  - Fixed spinner freezing during blocking operations with manual `live.refresh()` calls
+
+### Fixed
+- Spinner animation now continues smoothly during all blocking Docker operations
+- Commands properly wait for full completion before moving to next operation
+- Lock files are automatically cleaned up, preventing migration failures
+
+## [0.7.0] - 2025-10-10
 
 ### Added
 - `update` command: update Frappe apps and migrate affected sites
