@@ -1,6 +1,6 @@
 import typer
 import subprocess
-from .utils import get_project_containers
+from .utils import get_project_containers, ensure_containers_running
 from ..utils.docker_utils import handle_docker_errors
 from ..utils.console import console, stderr_console
 
@@ -30,6 +30,9 @@ def logs(
     """
     View bench logs in real-time from the log file.
     """
+    # Ensure containers are running, prompt user if not
+    ensure_containers_running(project_name, require_running=True, verbose=verbose)
+
     containers = get_project_containers(project_name)
 
     if not containers:
@@ -43,12 +46,6 @@ def logs(
     )
     if not frappe_container:
         stderr_console.print(f"[bold red]Error: No 'frappe' service found for project '{project_name}'.[/bold red]")
-        raise typer.Exit(code=1)
-
-    # Check if container is running
-    if frappe_container.status != "running":
-        stderr_console.print(f"[bold red]Error: Frappe container for project '{project_name}' is not running.[/bold red]")
-        stderr_console.print(f"[dim]Start it with: cwcli start {project_name}[/dim]")
         raise typer.Exit(code=1)
 
     container_name = frappe_container.name
