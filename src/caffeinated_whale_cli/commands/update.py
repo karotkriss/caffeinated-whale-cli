@@ -128,6 +128,10 @@ def _update_project(
     build: bool = False
 ):
     """Core logic for updating a single project."""
+    from .utils import ensure_containers_running
+
+    # Ensure containers are running, prompt user if not
+    ensure_containers_running(project_name, require_running=True, verbose=verbose)
 
     # Get containers
     containers = get_project_containers(project_name)
@@ -142,12 +146,6 @@ def _update_project(
     if not frappe_container:
         stderr_console.print(
             f"[bold red]Error:[/bold red] No 'frappe' service found for project '{project_name}'."
-        )
-        raise typer.Exit(code=1)
-
-    if frappe_container.status != "running":
-        stderr_console.print(
-            f"[bold red]Error:[/bold red] Frappe container for project '{project_name}' is not running."
         )
         raise typer.Exit(code=1)
 

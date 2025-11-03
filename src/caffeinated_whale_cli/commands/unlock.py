@@ -2,7 +2,7 @@ import sys
 import typer
 from typing import List
 
-from .utils import get_project_containers
+from .utils import get_project_containers, ensure_containers_running
 from ..utils.docker_utils import handle_docker_errors
 from ..utils import db_utils
 from ..utils.console import console, stderr_console
@@ -36,6 +36,9 @@ def unlock(
     Example:
         cwcli unlock my-project --site example.com
     """
+    # Ensure containers are running, prompt user if not
+    ensure_containers_running(project_name, require_running=True, verbose=verbose)
+
     containers = get_project_containers(project_name)
     if not containers:
         stderr_console.print(
@@ -50,12 +53,6 @@ def unlock(
     if not frappe_container:
         stderr_console.print(
             f"[bold red]Error:[/bold red] No 'frappe' service found for project '{project_name}'."
-        )
-        raise typer.Exit(code=1)
-
-    if frappe_container.status != "running":
-        stderr_console.print(
-            f"[bold red]Error:[/bold red] Frappe container for project '{project_name}' is not running."
         )
         raise typer.Exit(code=1)
 

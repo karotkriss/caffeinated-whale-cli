@@ -2,7 +2,7 @@ import typer
 from rich.console import Console
 
 from ..utils import vscode_utils, db_utils
-from .utils import get_project_containers
+from .utils import get_project_containers, ensure_containers_running
 from ..utils.docker_utils import handle_docker_errors
 
 stderr_console = Console(stderr=True)
@@ -33,6 +33,9 @@ def open_bench(
     """
     Open a project's frappe container in VS Code (with Dev Containers) or exec into it.
     """
+    # Ensure containers are running, prompt user if not
+    ensure_containers_running(project_name, require_running=True, verbose=verbose)
+
     # Single spinner that stays at the bottom and updates its message
     with stderr_console.status(f"[bold green]Preparing to open '{project_name}'...[/bold green]", spinner="dots") as status:
         # Find containers
@@ -56,13 +59,6 @@ def open_bench(
         if not frappe_container:
             stderr_console.print(
                 f"[bold red]Error:[/bold red] No 'frappe' service found for project '{project_name}'."
-            )
-            raise typer.Exit(code=1)
-
-        # Check if container is running
-        if frappe_container.status != "running":
-            stderr_console.print(
-                f"[bold red]Error:[/bold red] Frappe container for project '{project_name}' is not running."
             )
             raise typer.Exit(code=1)
 
