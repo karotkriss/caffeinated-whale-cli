@@ -409,10 +409,16 @@ def start(
         # Check for port conflicts BEFORE starting containers
         try:
             _check_port_conflicts(name, verbose=actual_verbose)
-        except typer.Exit:
-            # Port conflict couldn't be resolved, skip this project
-            console.print(f"[yellow]Skipping project '{name}' due to port conflicts.[/yellow]")
-            continue
+        except typer.Exit as e:
+            # Exit code 0 = user cancelled (Ctrl+C), should exit entire operation
+            # Exit code 1 = port conflict couldn't be resolved, skip this project
+            if e.exit_code == 0:
+                # User cancelled, propagate the exit to cancel entire operation
+                raise
+            else:
+                # Port conflict couldn't be resolved, skip this project and continue
+                console.print(f"[yellow]Skipping project '{name}' due to port conflicts.[/yellow]")
+                continue
 
         with stderr_console.status(
             f"[bold green]Starting '{name}'...[/bold green]", spinner="dots"
