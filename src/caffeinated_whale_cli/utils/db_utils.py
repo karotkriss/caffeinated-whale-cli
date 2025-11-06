@@ -46,6 +46,7 @@ class InstalledAppDetail(BaseModel):
     """
     Stores installed app details (name, version, branch) for each site.
     """
+
     # backref kept distinct so it does not shadow Site.installed_apps column
     site = ForeignKeyField(Site, backref="installed_app_details")
     name = CharField()
@@ -152,5 +153,3 @@ def get_cached_project_data(project_name):
 def get_all_cached_projects():
     initialize_database()
     return list(Project.select())
-
-

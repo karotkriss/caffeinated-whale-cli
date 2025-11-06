@@ -94,7 +94,9 @@ def is_docker_extension_installed(vscode_command: str, verbose: bool = False) ->
         return False
 
 
-def install_extension(vscode_command: str, extension_id: str, extension_name: str, verbose: bool = False) -> bool:
+def install_extension(
+    vscode_command: str, extension_id: str, extension_name: str, verbose: bool = False
+) -> bool:
     """Install a VS Code extension."""
     try:
         cmd = [vscode_command, "--install-extension", extension_id]
@@ -128,20 +130,14 @@ def install_extension(vscode_command: str, extension_id: str, extension_name: st
 def install_dev_containers_extension(vscode_command: str, verbose: bool = False) -> bool:
     """Install Dev Containers extension."""
     return install_extension(
-        vscode_command,
-        "ms-vscode-remote.remote-containers",
-        "Dev Containers extension",
-        verbose
+        vscode_command, "ms-vscode-remote.remote-containers", "Dev Containers extension", verbose
     )
 
 
 def install_docker_extension(vscode_command: str, verbose: bool = False) -> bool:
     """Install Docker extension."""
     return install_extension(
-        vscode_command,
-        "ms-azuretools.vscode-docker",
-        "Docker extension",
-        verbose
+        vscode_command, "ms-azuretools.vscode-docker", "Docker extension", verbose
     )
 
 
@@ -150,7 +146,9 @@ def container_name_to_hex(container_name: str) -> str:
     return container_name.encode().hex()
 
 
-def open_in_vscode(vscode_command: str, container_name: str, bench_path: str, verbose: bool = False) -> None:
+def open_in_vscode(
+    vscode_command: str, container_name: str, bench_path: str, verbose: bool = False
+) -> None:
     """
     Open a dev container in VS Code.
 
@@ -160,7 +158,10 @@ def open_in_vscode(vscode_command: str, container_name: str, bench_path: str, ve
         bench_path: Path inside the container to open
         verbose: Enable verbose output
     """
-    with console_err.status(f"[bold green]Preparing to open '{container_name}' in VS Code...[/bold green]", spinner="dots") as status:
+    with console_err.status(
+        f"[bold green]Preparing to open '{container_name}' in VS Code...[/bold green]",
+        spinner="dots",
+    ) as status:
         # Verify container exists
         status.update("[bold green]Verifying container exists...[/bold green]")
         try:
@@ -174,7 +175,9 @@ def open_in_vscode(vscode_command: str, container_name: str, bench_path: str, ve
                 timeout=5,
             )
             if result.returncode != 0:
-                console_err.print(f"[bold red]✗ Container '{container_name}' does not exist.[/bold red]")
+                console_err.print(
+                    f"[bold red]✗ Container '{container_name}' does not exist.[/bold red]"
+                )
                 raise typer.Exit(code=1)
             if verbose:
                 console_err.print(f"[dim]VERBOSE: Container '{container_name}' verified[/dim]")
@@ -200,9 +203,13 @@ def open_in_vscode(vscode_command: str, container_name: str, bench_path: str, ve
         status.update("[bold green]Checking Dev Containers extension...[/bold green]")
         if not is_dev_containers_installed(vscode_command, verbose):
             if verbose:
-                console_err.print("[dim]VERBOSE: Dev Containers extension not found, installing...[/dim]")
+                console_err.print(
+                    "[dim]VERBOSE: Dev Containers extension not found, installing...[/dim]"
+                )
             if not install_dev_containers_extension(vscode_command, verbose):
-                console_err.print("[bold red]✗ Cannot open without Dev Containers extension.[/bold red]")
+                console_err.print(
+                    "[bold red]✗ Cannot open without Dev Containers extension.[/bold red]"
+                )
                 raise typer.Exit(code=1)
         elif verbose:
             console_err.print("[dim]VERBOSE: Dev Containers extension already installed[/dim]")

@@ -2,7 +2,8 @@ import typer
 from rich.console import Console
 
 from ..utils import vscode_utils, db_utils
-from .utils import get_project_containers, ensure_containers_running
+from .utils import ensure_containers_running
+from ..utils.docker_utils import get_project_containers
 from ..utils.docker_utils import handle_docker_errors
 
 stderr_console = Console(stderr=True)
@@ -37,23 +38,19 @@ def open_bench(
     ensure_containers_running(project_name, require_running=True, verbose=verbose)
 
     # Single spinner that stays at the bottom and updates its message
-    with stderr_console.status(f"[bold green]Preparing to open '{project_name}'...[/bold green]", spinner="dots") as status:
+    with stderr_console.status(
+        f"[bold green]Preparing to open '{project_name}'...[/bold green]", spinner="dots"
+    ) as status:
         # Find containers
         status.update(f"[bold green]Finding project '{project_name}'...[/bold green]")
         containers = get_project_containers(project_name)
         if not containers:
-            stderr_console.print(
-                f"[bold red]Error:[/bold red] Project '{project_name}' not found."
-            )
+            stderr_console.print(f"[bold red]Error:[/bold red] Project '{project_name}' not found.")
             raise typer.Exit(code=1)
 
         # Find the frappe container
         frappe_container = next(
-            (
-                c
-                for c in containers
-                if c.labels.get("com.docker.compose.service") == "frappe"
-            ),
+            (c for c in containers if c.labels.get("com.docker.compose.service") == "frappe"),
             None,
         )
         if not frappe_container:
@@ -63,7 +60,9 @@ def open_bench(
             raise typer.Exit(code=1)
 
         if verbose:
-            stderr_console.print(f"[dim]VERBOSE: Found frappe container: {frappe_container.name}[/dim]")
+            stderr_console.print(
+                f"[dim]VERBOSE: Found frappe container: {frappe_container.name}[/dim]"
+            )
 
         container_name = frappe_container.name
 
@@ -75,7 +74,9 @@ def open_bench(
                 # Use the first bench instance path
                 bench_path = cached_data["bench_instances"][0]["path"]
                 if verbose:
-                    stderr_console.print(f"[dim]VERBOSE: Using cached bench path: {bench_path}[/dim]")
+                    stderr_console.print(
+                        f"[dim]VERBOSE: Using cached bench path: {bench_path}[/dim]"
+                    )
             else:
                 # No cache found, need to run inspect
                 # Exit the spinner context before running inspect (it has its own spinner)
@@ -86,7 +87,9 @@ def open_bench(
         vscode_stable = vscode_utils.is_vscode_installed()
         vscode_insiders = vscode_utils.is_vscode_insiders_installed()
         if verbose:
-            stderr_console.print(f"[dim]VERBOSE: VS Code stable: {vscode_stable}, Insiders: {vscode_insiders}[/dim]")
+            stderr_console.print(
+                f"[dim]VERBOSE: VS Code stable: {vscode_stable}, Insiders: {vscode_insiders}[/dim]"
+            )
 
     # Handle inspect outside spinner context if needed
     if not bench_path:
@@ -103,7 +106,7 @@ def open_bench(
                 json_output=False,
                 update=False,
                 show_apps=False,
-                interactive=False
+                interactive=False,
             )
 
             # Try to get cached data again
@@ -111,7 +114,9 @@ def open_bench(
             if cached_data and cached_data.get("bench_instances"):
                 bench_path = cached_data["bench_instances"][0]["path"]
                 if verbose:
-                    stderr_console.print(f"[dim]VERBOSE: Using cached bench path from inspect: {bench_path}[/dim]")
+                    stderr_console.print(
+                        f"[dim]VERBOSE: Using cached bench path from inspect: {bench_path}[/dim]"
+                    )
             else:
                 # Still no cache, use default
                 bench_path = "/workspace/frappe-bench"
@@ -131,7 +136,9 @@ def open_bench(
         vscode_stable = vscode_utils.is_vscode_installed()
         vscode_insiders = vscode_utils.is_vscode_insiders_installed()
         if verbose:
-            stderr_console.print(f"[dim]VERBOSE: VS Code stable: {vscode_stable}, Insiders: {vscode_insiders}[/dim]")
+            stderr_console.print(
+                f"[dim]VERBOSE: VS Code stable: {vscode_stable}, Insiders: {vscode_insiders}[/dim]"
+            )
 
     # Handle app option - verify app exists and update path
     if app:
@@ -191,23 +198,25 @@ def open_bench(
         import questionary
         from questionary import Style
 
-        custom_style = Style([
-            ('qmark', 'fg:#00ff00 bold'),           # Bright green question mark
-            ('question', 'fg:#00ffff bold'),         # Bright cyan question text
-            ('answer', 'fg:#00ff00 bold'),           # Bright green answer
-            ('pointer', 'fg:#ffff00 bold'),          # Bright yellow pointer
-            ('highlighted', 'fg:#ffff00 bold'),      # Bright yellow highlighted option
-            ('selected', 'fg:#00ff00'),              # Green for selected
-            ('separator', 'fg:#666666'),             # Gray separator
-            ('instruction', 'fg:#888888'),           # Gray instructions
-            ('text', 'fg:#ffffff'),                  # White text
-        ])
+        custom_style = Style(
+            [
+                ("qmark", "fg:#00ff00 bold"),  # Bright green question mark
+                ("question", "fg:#00ffff bold"),  # Bright cyan question text
+                ("answer", "fg:#00ff00 bold"),  # Bright green answer
+                ("pointer", "fg:#ffff00 bold"),  # Bright yellow pointer
+                ("highlighted", "fg:#ffff00 bold"),  # Bright yellow highlighted option
+                ("selected", "fg:#00ff00"),  # Green for selected
+                ("separator", "fg:#666666"),  # Gray separator
+                ("instruction", "fg:#888888"),  # Gray instructions
+                ("text", "fg:#ffffff"),  # White text
+            ]
+        )
 
         choice = questionary.select(
             "How would you like to open this instance?",
             choices=choices,
             style=custom_style,
-            pointer=">"
+            pointer=">",
         ).ask()
 
         if choice is None:

@@ -1,19 +1,161 @@
 import typer
 import sys
 import subprocess
-import shutil
+import questionary
 from typing import List
-from .utils import get_project_containers
-from ..utils.docker_utils import handle_docker_errors
+from ..utils.docker_utils import handle_docker_errors, get_project_containers
 from ..utils import db_utils
 from ..utils.console import console, stderr_console
+from ..utils.port_utils import (
+    get_project_ports,
+    find_project_using_ports,
+    check_ports_in_use,
+    get_ports_in_use_with_processes,
+    format_port_list,
+)
 
 app = typer.Typer(help="Start a Frappe project's containers.")
 
 
+def _check_port_conflicts(project_name: str, verbose: bool = False) -> bool:
+    """
+    Check for port conflicts before starting a project.
+
+    Args:
+        project_name: The name of the docker-compose project.
+        verbose: Enable verbose output.
+
+    Returns:
+        True if no conflicts or conflicts were resolved, False otherwise.
+
+    Raises:
+        typer.Exit: If port conflicts cannot be resolved.
+    """
+    project_ports = get_project_ports(project_name)
+
+    if not project_ports:
+        if verbose:
+            stderr_console.print(
+                f"[dim]VERBOSE: No ports configured for project '{project_name}'[/dim]"
+            )
+        return True
+
+    if verbose:
+        stderr_console.print(
+            f"[dim]VERBOSE: Project '{project_name}' uses ports: {project_ports}[/dim]"
+        )
+
+    # Check which ports are in use
+    ports_status = check_ports_in_use(project_ports, verbose=verbose)
+    ports_in_use = [port for port, in_use in ports_status.items() if in_use]
+
+    if not ports_in_use:
+        if verbose:
+            stderr_console.print(f"[dim]VERBOSE: All required ports are available[/dim]")
+        return True
+
+    if verbose:
+        stderr_console.print(f"[dim]VERBOSE: Ports in use: {ports_in_use}[/dim]")
+
+    # Find which Frappe projects are using these ports
+    frappe_projects_on_ports = find_project_using_ports(ports_in_use, exclude_project=project_name)
+
+    if frappe_projects_on_ports:
+        # Ports are used by other Frappe projects
+        conflicting_projects = set(frappe_projects_on_ports.values())
+
+        # Group ports by project for better display
+        project_to_ports = {}
+        for port, proj in frappe_projects_on_ports.items():
+            if proj not in project_to_ports:
+                project_to_ports[proj] = []
+            project_to_ports[proj].append(port)
+
+        stderr_console.print(
+            f"\n[yellow]Warning:[/yellow] Some ports needed by '{project_name}' are in use by other Frappe projects:"
+        )
+
+        for proj, ports in project_to_ports.items():
+            formatted_ports = format_port_list(ports)
+            stderr_console.print(f"  • Project '{proj}': {formatted_ports}")
+
+        # Ask user if they want to stop conflicting projects
+        try:
+            for conflicting_project in conflicting_projects:
+                answer = questionary.confirm(
+                    f"Stop project '{conflicting_project}' to free up its ports?",
+                    default=True,
+                    auto_enter=False,
+                ).ask()
+
+                if answer:
+                    # Stop the conflicting project
+                    from .stop import _stop_project
+
+                    stderr_console.print(
+                        f"[yellow]Stopping project '{conflicting_project}'...[/yellow]"
+                    )
+                    with stderr_console.status(
+                        f"[bold yellow]Stopping '{conflicting_project}'...[/bold yellow]",
+                        spinner="dots",
+                    ):
+                        _stop_project(conflicting_project, verbose=verbose)
+                    console.print(
+                        f"[bold green]✓[/bold green] Stopped project '{conflicting_project}'"
+                    )
+                else:
+                    stderr_console.print(
+                        f"[bold red]Error:[/bold red] Cannot start '{project_name}' while '{conflicting_project}' is using required ports."
+                    )
+                    raise typer.Exit(code=1)
+        except KeyboardInterrupt:
+            stderr_console.print("\n[yellow]Operation cancelled.[/yellow]")
+            raise typer.Exit(code=0)
+
+    else:
+        # Ports are in use by non-Frappe processes
+        ports_with_processes = get_ports_in_use_with_processes(ports_in_use, verbose=verbose)
+
+        # Group ports by process
+        process_to_ports = {}
+        for port in ports_in_use:
+            process = ports_with_processes.get(port, "unknown")
+            if process not in process_to_ports:
+                process_to_ports[process] = []
+            process_to_ports[process].append(port)
+
+        stderr_console.print(
+            f"\n[bold red]Error:[/bold red] Cannot start '{project_name}'. Required ports are in use by other processes:"
+        )
+
+        for process, ports in process_to_ports.items():
+            formatted_ports = format_port_list(ports)
+            if process == "unknown":
+                stderr_console.print(f"  • Ports {formatted_ports}: process unknown")
+            else:
+                stderr_console.print(f"  • Ports {formatted_ports}: {process}")
+
+        stderr_console.print(
+            f"\n[dim]Please stop these processes before starting '{project_name}'.[/dim]"
+        )
+        raise typer.Exit(code=1)
+
+    return True
+
+
 @handle_docker_errors
 def _start_project(project_name: str, verbose: bool = False, status=None):
-    """The core logic for starting a single project's containers."""
+    """
+    The core logic for starting a single project's containers.
+
+    Note: Port conflict checks should be performed by the caller before
+    calling this function. This function only handles container startup.
+
+    Args:
+        project_name: The name of the docker-compose project.
+        verbose: Enable verbose output.
+        status: Optional rich status object for progress updates.
+    """
     containers = get_project_containers(project_name)
 
     if not containers:
@@ -37,7 +179,9 @@ def _start_project(project_name: str, verbose: bool = False, status=None):
         None,
     )
     if not frappe_container:
-        stderr_console.print(f"[yellow]Warning: No 'frappe' service found for project '{project_name}'. Skipping bench start.[/yellow]")
+        stderr_console.print(
+            f"[yellow]Warning: No 'frappe' service found for project '{project_name}'. Skipping bench start.[/yellow]"
+        )
         return
 
     # Get bench path from cache
@@ -49,7 +193,9 @@ def _start_project(project_name: str, verbose: bool = False, status=None):
     else:
         # No cache found, run inspect
         if verbose:
-            stderr_console.print(f"[dim]VERBOSE: No cached bench path found. Running inspect...[/dim]")
+            stderr_console.print(
+                f"[dim]VERBOSE: No cached bench path found. Running inspect...[/dim]"
+            )
 
         # Exit spinner context to run inspect (it has its own spinner)
         if status:
@@ -66,7 +212,7 @@ def _start_project(project_name: str, verbose: bool = False, status=None):
                 json_output=False,
                 update=False,
                 show_apps=False,
-                interactive=False
+                interactive=False,
             )
 
             # Try to get cached data again
@@ -74,7 +220,9 @@ def _start_project(project_name: str, verbose: bool = False, status=None):
             if cached_data and cached_data.get("bench_instances"):
                 bench_path = cached_data["bench_instances"][0]["path"]
                 if verbose:
-                    stderr_console.print(f"[dim]VERBOSE: Using cached bench path from inspect: {bench_path}[/dim]")
+                    stderr_console.print(
+                        f"[dim]VERBOSE: Using cached bench path from inspect: {bench_path}[/dim]"
+                    )
         except Exception as e:
             if verbose:
                 stderr_console.print(f"[dim]VERBOSE: Inspect error: {e}[/dim]")
@@ -85,8 +233,12 @@ def _start_project(project_name: str, verbose: bool = False, status=None):
 
     # If we still don't have a bench path, skip bench start but continue with container start
     if not bench_path:
-        stderr_console.print(f"[yellow]Warning: Could not detect bench path. Skipping bench start.[/yellow]")
-        stderr_console.print(f"[dim]Containers started, but bench was not started automatically.[/dim]")
+        stderr_console.print(
+            f"[yellow]Warning: Could not detect bench path. Skipping bench start.[/yellow]"
+        )
+        stderr_console.print(
+            f"[dim]Containers started, but bench was not started automatically.[/dim]"
+        )
         return None
 
     container_name = frappe_container.name
@@ -104,21 +256,30 @@ def _start_project(project_name: str, verbose: bool = False, status=None):
         if verbose:
             stderr_console.print(f"[dim]VERBOSE: Checking for existing bench processes[/dim]")
         kill_cmd = [
-            "docker", "exec", container_name,
-            "bash", "-c",
-            f"pkill -f 'bench start' || true"
+            "docker",
+            "exec",
+            container_name,
+            "bash",
+            "-c",
+            f"pkill -f 'bench start' || true",
         ]
         subprocess.run(kill_cmd, check=False)
 
         # Start bench in background with nohup, redirecting all output to log file
         cmd = [
-            "docker", "exec", "-d", container_name,
-            "bash", "-c",
-            f"cd {bench_path} && nohup bench start > {log_file} 2>&1 &"
+            "docker",
+            "exec",
+            "-d",
+            container_name,
+            "bash",
+            "-c",
+            f"cd {bench_path} && nohup bench start > {log_file} 2>&1 &",
         ]
 
         if verbose:
-            stderr_console.print(f"[dim]VERBOSE: $ docker exec -d {container_name} bash -c \"cd {bench_path} && nohup bench start > {log_file} 2>&1 &\"[/dim]")
+            stderr_console.print(
+                f'[dim]VERBOSE: $ docker exec -d {container_name} bash -c "cd {bench_path} && nohup bench start > {log_file} 2>&1 &"[/dim]'
+            )
 
         subprocess.run(cmd, check=True)
 
@@ -130,9 +291,9 @@ def _start_project(project_name: str, verbose: bool = False, status=None):
         stderr_console.print(f"[bold red]Error:[/bold red] {e}")
         return None
 
+
 @app.callback(invoke_without_command=True)
 def start(
-    ctx: typer.Context,
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -176,7 +337,17 @@ def start(
     )
 
     for name in project_names_to_process:
-        with stderr_console.status(f"[bold green]Starting '{name}'...[/bold green]", spinner="dots") as status:
+        # Check for port conflicts BEFORE starting containers
+        try:
+            _check_port_conflicts(name, verbose=actual_verbose)
+        except typer.Exit:
+            # Port conflict couldn't be resolved, skip this project
+            console.print(f"[yellow]Skipping project '{name}' due to port conflicts.[/yellow]")
+            continue
+
+        with stderr_console.status(
+            f"[bold green]Starting '{name}'...[/bold green]", spinner="dots"
+        ) as status:
             log_file = _start_project(name, verbose=actual_verbose, status=status)
 
         # Print outside spinner context

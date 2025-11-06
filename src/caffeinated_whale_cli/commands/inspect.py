@@ -7,7 +7,8 @@ import sys
 from rich.console import Console
 from rich.tree import Tree
 from typing import List, Optional, Tuple, Dict
-from .utils import get_project_containers, ensure_containers_running
+from .utils import ensure_containers_running
+from ..utils.docker_utils import get_project_containers
 from ..utils import config_utils
 from ..utils import db_utils
 from ..utils.docker_utils import handle_docker_errors
@@ -211,13 +212,13 @@ def inspect(
                 if alias is None:  # User pressed Ctrl+C
                     console_err.print("\n[yellow]Interactive naming cancelled.[/yellow]")
                     break
-                bench['alias'] = alias.strip() if alias else ''
+                bench["alias"] = alias.strip() if alias else ""
             except KeyboardInterrupt:
                 console_err.print("\n[yellow]Interactive naming cancelled.[/yellow]")
                 break
             except Exception as e:
                 console_err.print(f"\n[red]Error during interactive input: {e}[/red]")
-                bench['alias'] = ''
+                bench["alias"] = ""
 
         db_utils.cache_project_data(project_name, bench_instances_data)
 
@@ -228,8 +229,8 @@ def inspect(
         tree = Tree(f"Project [bold cyan]{project_name}[/bold cyan]", guide_style="bright_blue")
         for bench_instance in bench_instances_data:
             # Display alias if provided, otherwise show path
-            alias = bench_instance.get('alias')
-            label = f"{alias} ({bench_instance['path']})" if alias else bench_instance['path']
+            alias = bench_instance.get("alias")
+            label = f"{alias} ({bench_instance['path']})" if alias else bench_instance["path"]
             bench_node = tree.add(f"Bench Instance at [green]{label}[/green]")
 
             apps_branch = bench_node.add(
