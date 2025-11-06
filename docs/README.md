@@ -12,6 +12,8 @@ This directory contains documentation for the caffeinated-whale-cli project.
 
 - **[ci-cd/overview.md](./ci-cd/overview.md)** - GitHub Actions workflows implementation overview
 - **[ci-cd/setup-guide.md](./ci-cd/setup-guide.md)** - Complete setup guide for GitHub Actions
+- **[ci-cd/linting.md](./ci-cd/linting.md)** - Code quality and linting tools
+- **[ci-cd/dependency-management.md](./ci-cd/dependency-management.md)** - Managing dependencies with uv
 
 ## Quick Links
 
