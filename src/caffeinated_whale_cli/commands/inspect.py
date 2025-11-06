@@ -13,6 +13,7 @@ from ..utils import config_utils
 from ..utils import db_utils
 from ..utils.docker_utils import handle_docker_errors
 from .start import _start_project
+from ..utils.completion_utils import complete_project_names
 
 console_out = Console()
 console_err = Console(stderr=True)
@@ -127,7 +128,9 @@ def _gather_bench_data(
 
 @handle_docker_errors
 def inspect(
-    project_name: str = typer.Argument(..., help="The Docker Compose project to inspect."),
+    project_name: str = typer.Argument(
+        ..., help="The Docker Compose project to inspect.", autocompletion=complete_project_names
+    ),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Enable verbose diagnostic output."
     ),

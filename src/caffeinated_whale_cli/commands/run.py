@@ -7,13 +7,16 @@ from rich.console import Console
 from .utils import ensure_containers_running
 from ..utils.docker_utils import get_project_containers
 from ..utils.docker_utils import handle_docker_errors
+from ..utils.completion_utils import complete_project_names
 
 stderr_console = Console(stderr=True)
 
 
 @handle_docker_errors
 def run(
-    project_name: str = typer.Argument(..., help="The Docker Compose project name."),
+    project_name: str = typer.Argument(
+        ..., help="The Docker Compose project name.", autocompletion=complete_project_names
+    ),
     bench_args: List[str] = typer.Argument(..., help="Bench command and arguments to run."),
     bench_path: str = typer.Option(
         "/workspace/frappe-bench",
