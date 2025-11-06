@@ -1,0 +1,32 @@
+name: Lint
+
+on:
+  push:
+    branches: ["**"]  # Run on all branches
+  pull_request:
+    branches: ["**"]  # Run on PRs to all branches
+
+jobs:
+  lint:
+    name: Lint & Format Check
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/astral-sh/uv:python3.12-bookworm
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Check code formatting with Black
+        run: uv run black --check src/
+
+      - name: Lint with Ruff
+        run: uv run ruff check src/
+        continue-on-error: true
+
+      - name: Type check with mypy
+        run: uv run mypy src/ --install-types --non-interactive
+        continue-on-error: true
