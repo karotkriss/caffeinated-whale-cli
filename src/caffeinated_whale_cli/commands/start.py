@@ -21,6 +21,10 @@ def _check_port_conflicts(project_name: str, verbose: bool = False) -> bool:
     """
     Check for port conflicts before starting a project.
 
+    Handles mixed scenarios where ports may be held by both Frappe projects
+    and external processes. After stopping conflicting Frappe projects,
+    re-checks all ports to ensure no external process conflicts remain.
+
     Args:
         project_name: The name of the docker-compose project.
         verbose: Enable verbose output.
@@ -60,8 +64,22 @@ def _check_port_conflicts(project_name: str, verbose: bool = False) -> bool:
     # Find which Frappe projects are using these ports
     frappe_projects_on_ports = find_project_using_ports(ports_in_use, exclude_project=project_name)
 
+    # Split ports into Frappe-owned vs non-Frappe-owned
+    frappe_ports = set(frappe_projects_on_ports.keys())
+    non_frappe_ports = set(ports_in_use) - frappe_ports
+
+    if verbose:
+        if frappe_ports:
+            stderr_console.print(
+                f"[dim]VERBOSE: Ports owned by Frappe projects: {sorted(frappe_ports)}[/dim]"
+            )
+        if non_frappe_ports:
+            stderr_console.print(
+                f"[dim]VERBOSE: Ports owned by non-Frappe processes: {sorted(non_frappe_ports)}[/dim]"
+            )
+
+    # Handle Frappe project conflicts first
     if frappe_projects_on_ports:
-        # Ports are used by other Frappe projects
         conflicting_projects = set(frappe_projects_on_ports.values())
 
         # Group ports by project for better display
@@ -112,13 +130,64 @@ def _check_port_conflicts(project_name: str, verbose: bool = False) -> bool:
             stderr_console.print("\n[yellow]Operation cancelled.[/yellow]")
             raise typer.Exit(code=0)
 
-    else:
-        # Ports are in use by non-Frappe processes
-        ports_with_processes = get_ports_in_use_with_processes(ports_in_use, verbose=verbose)
+        # After stopping Frappe projects, re-check ALL originally required ports
+        # to catch any remaining conflicts from non-Frappe processes
+        if verbose:
+            stderr_console.print(
+                f"[dim]VERBOSE: Re-checking all ports after stopping Frappe projects...[/dim]"
+            )
+
+        ports_status = check_ports_in_use(project_ports, verbose=verbose)
+        remaining_ports_in_use = [port for port, in_use in ports_status.items() if in_use]
+
+        if remaining_ports_in_use:
+            if verbose:
+                stderr_console.print(
+                    f"[dim]VERBOSE: Ports still in use: {remaining_ports_in_use}[/dim]"
+                )
+
+            # These must be non-Frappe processes since we just stopped all Frappe conflicts
+            ports_with_processes = get_ports_in_use_with_processes(
+                remaining_ports_in_use, verbose=verbose
+            )
+
+            # Group ports by process
+            process_to_ports = {}
+            for port in remaining_ports_in_use:
+                process = ports_with_processes.get(port, "unknown")
+                if process not in process_to_ports:
+                    process_to_ports[process] = []
+                process_to_ports[process].append(port)
+
+            stderr_console.print(
+                f"\n[bold red]Error:[/bold red] Cannot start '{project_name}'. Required ports are still in use by other processes:"
+            )
+
+            for process, ports in process_to_ports.items():
+                formatted_ports = format_port_list(ports)
+                if process == "unknown":
+                    stderr_console.print(f"  • Ports {formatted_ports}: process unknown")
+                else:
+                    stderr_console.print(f"  • Ports {formatted_ports}: {process}")
+
+            stderr_console.print(
+                f"\n[dim]Please stop these processes before starting '{project_name}'.[/dim]"
+            )
+            raise typer.Exit(code=1)
+        else:
+            if verbose:
+                stderr_console.print(f"[dim]VERBOSE: All ports are now available[/dim]")
+
+    # Handle pure non-Frappe conflicts (no Frappe projects involved)
+    elif non_frappe_ports:
+        # Ports are in use by non-Frappe processes only
+        ports_with_processes = get_ports_in_use_with_processes(
+            list(non_frappe_ports), verbose=verbose
+        )
 
         # Group ports by process
         process_to_ports = {}
-        for port in ports_in_use:
+        for port in non_frappe_ports:
             process = ports_with_processes.get(port, "unknown")
             if process not in process_to_ports:
                 process_to_ports[process] = []
@@ -129,7 +198,7 @@ def _check_port_conflicts(project_name: str, verbose: bool = False) -> bool:
         )
 
         for process, ports in process_to_ports.items():
-            formatted_ports = format_port_list(ports)
+            formatted_ports = format_port_list(sorted(ports))
             if process == "unknown":
                 stderr_console.print(f"  • Ports {formatted_ports}: process unknown")
             else:

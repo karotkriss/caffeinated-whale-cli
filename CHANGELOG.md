@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2025-11-05
+
+### Fixed
+- **Critical:** Port conflict detection now properly handles mixed scenarios where ports are held by both Frappe projects and external processes
+  - Previously, if port 8000 was owned by a Frappe project and port 8080 by Postgres, stopping the Frappe project would allow the start to proceed, causing Docker to fail on the Postgres port
+  - Now splits ports into Frappe-owned vs non-Frappe-owned, handles Frappe conflicts first, then re-checks ALL ports to catch remaining external conflicts
+  - Ensures all port conflicts are resolved before allowing container startup
+
 ## [0.9.0] - 2025-11-05
 
 ### Added
