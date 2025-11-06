@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Previously, if port 8000 was owned by a Frappe project and port 8080 by Postgres, stopping the Frappe project would allow the start to proceed, causing Docker to fail on the Postgres port
   - Now splits ports into Frappe-owned vs non-Frappe-owned, handles Frappe conflicts first, then re-checks ALL ports to catch remaining external conflicts
   - Ensures all port conflicts are resolved before allowing container startup
+- **Critical:** Pressing Ctrl+C during port conflict prompts now cancels the entire start operation instead of just skipping to the next project
+  - Previously, `typer.Exit(code=0)` from KeyboardInterrupt was caught indiscriminately, allowing the loop to continue
+  - Now checks exit code: code 0 (user cancellation) propagates to exit entire command, code 1 (port conflicts) skips only the current project
+  - Provides proper user control to cancel batch operations
 
 ## [0.9.0] - 2025-11-05
 
