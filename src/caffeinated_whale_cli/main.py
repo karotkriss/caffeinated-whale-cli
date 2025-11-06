@@ -22,10 +22,12 @@ app = typer.Typer(
     rich_markup_mode="markdown",
 )
 
+
 def version_callback(value: bool):
     if value:
         print(f"Caffeinated Whale CLI Version: {__version__}")
         raise typer.Exit()
+
 
 @app.callback()
 def main(
@@ -41,6 +43,7 @@ def main(
     # Initialize context object
     ctx.ensure_object(dict)
 
+
 app.command("inspect")(inspect_cmd_func)
 
 app.add_typer(list_cmd.app, name="ls")
@@ -49,14 +52,18 @@ app.add_typer(stop_cmd.app, name="stop")
 app.add_typer(restart_cmd.app, name="restart")
 app.add_typer(config_cmd.app, name="config")
 from .commands.run import run as _run_cmd
+
 app.command("run")(_run_cmd)
 app.command("update")(_update_cmd)
 from .commands.status import status as _status_cmd
+
 app.command("status")(_status_cmd)
 from .commands.open import open_bench as _open_cmd
+
 app.command("open")(_open_cmd)
 app.command("logs")(_logs_cmd)
 app.command("unlock")(_unlock_cmd)
+
 
 def cli():
     """
@@ -64,6 +71,7 @@ def cli():
     This is what `pyproject.toml` calls.
     """
     app()
+
 
 if __name__ == "__main__":
     cli()

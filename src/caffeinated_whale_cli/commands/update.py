@@ -9,7 +9,7 @@ from rich.live import Live
 from rich.console import Group
 from rich.text import Text
 
-from .utils import get_project_containers
+from ..utils.docker_utils import get_project_containers
 from ..utils.docker_utils import handle_docker_errors
 from ..utils import db_utils
 from ..utils.console import console, stderr_console
@@ -20,7 +20,7 @@ def _stream_command(
     cmd: str,
     workdir: str,
     verbose: bool = False,
-    status_msg: str = None
+    status_msg: str = None,
 ) -> int:
     """Execute command and optionally stream output in real-time."""
     if verbose:
@@ -31,6 +31,7 @@ def _stream_command(
             with stderr_console.status(f"[bold green]{status_msg}[/bold green]", spinner="dots"):
                 # Give the spinner a moment to render
                 import time
+
                 time.sleep(0.1)
 
         # Stream output in verbose mode
@@ -65,10 +66,7 @@ def _stream_command(
 
 
 def _run_command_quiet(
-    container: docker.models.containers.Container,
-    cmd: str,
-    workdir: str,
-    verbose: bool = False
+    container: docker.models.containers.Container, cmd: str, workdir: str, verbose: bool = False
 ) -> tuple[int, str]:
     """Execute command and return exit code and output."""
     if verbose:
@@ -84,7 +82,7 @@ def _get_sites_with_app(
     container: docker.models.containers.Container,
     bench_path: str,
     app_name: str,
-    verbose: bool = False
+    verbose: bool = False,
 ) -> List[str]:
     """Get list of sites that have the specified app installed."""
     # Get all sites from inspect cache or live query
@@ -95,7 +93,9 @@ def _get_sites_with_app(
         return []
 
     excluded = {"apps.txt", "assets", "common_site_config.json", "example.com", "apps.json"}
-    all_sites = [item.strip() for item in output.split("\n") if item.strip() and item.strip() not in excluded]
+    all_sites = [
+        item.strip() for item in output.split("\n") if item.strip() and item.strip() not in excluded
+    ]
 
     # Check which sites have this app installed
     sites_with_app = []
@@ -125,7 +125,7 @@ def _update_project(
     verbose: bool = False,
     clear_cache: bool = False,
     clear_website_cache: bool = False,
-    build: bool = False
+    build: bool = False,
 ):
     """Core logic for updating a single project."""
     from .utils import ensure_containers_running
@@ -170,7 +170,7 @@ def _update_project(
                     json_output=False,
                     update=False,
                     show_apps=False,
-                    interactive=False
+                    interactive=False,
                 )
 
                 # Try to get cached data again
@@ -178,7 +178,9 @@ def _update_project(
                 if cached_data and cached_data.get("bench_instances"):
                     bench_path = cached_data["bench_instances"][0]["path"]
                     if verbose:
-                        stderr_console.print(f"[dim]Using cached bench path from inspect: {bench_path}[/dim]")
+                        stderr_console.print(
+                            f"[dim]Using cached bench path from inspect: {bench_path}[/dim]"
+                        )
                 else:
                     # Still no cache, use default
                     bench_path = "/workspace/frappe-bench"
@@ -199,12 +201,18 @@ def _update_project(
         f'sh -c "test -d {bench_path}/apps && test -d {bench_path}/sites"'
     )
     if verbose:
-        stderr_console.print(f'[dim]$ sh -c "test -d {bench_path}/apps && test -d {bench_path}/sites"[/dim]')
+        stderr_console.print(
+            f'[dim]$ sh -c "test -d {bench_path}/apps && test -d {bench_path}/sites"[/dim]'
+        )
         stderr_console.print(f"[dim]Exit code: {exit_code}[/dim]")
 
     if exit_code != 0:
-        stderr_console.print(f"[bold red]Error:[/bold red] Bench directory not found at {bench_path}")
-        stderr_console.print(f"[dim]Make sure the bench path is correct. Current path: {bench_path}[/dim]")
+        stderr_console.print(
+            f"[bold red]Error:[/bold red] Bench directory not found at {bench_path}"
+        )
+        stderr_console.print(
+            f"[dim]Make sure the bench path is correct. Current path: {bench_path}[/dim]"
+        )
         raise typer.Exit(code=1)
 
     # Track all sites that need migration
@@ -217,7 +225,9 @@ def _update_project(
 
     if verbose:
         # VERBOSE MODE - Show output directly
-        console.print(f"[bold cyan]Updating {len(apps)} app(s) for project '{project_name}'[/bold cyan]\n")
+        console.print(
+            f"[bold cyan]Updating {len(apps)} app(s) for project '{project_name}'[/bold cyan]\n"
+        )
 
         # Update each app
         for app in apps:
@@ -240,7 +250,7 @@ def _update_project(
                 "git pull",
                 app_path,
                 verbose=True,
-                status_msg=f"Pulling latest changes for '{app}'..."
+                status_msg=f"Pulling latest changes for '{app}'...",
             )
 
             if exit_code != 0:
@@ -261,28 +271,36 @@ def _update_project(
 
         # Report failed apps
         if failed_apps:
-            console.print(f"\n[bold yellow]Warning:[/bold yellow] Failed to update {len(failed_apps)} app(s):")
+            console.print(
+                f"\n[bold yellow]Warning:[/bold yellow] Failed to update {len(failed_apps)} app(s):"
+            )
             for app in failed_apps:
                 console.print(f"  [red]✗ {app}[/red]")
 
         # Migrate affected sites
         if all_affected_sites:
-            console.print(f"[bold cyan]Migrating {len(all_affected_sites)} affected site(s)[/bold cyan]\n")
+            console.print(
+                f"[bold cyan]Migrating {len(all_affected_sites)} affected site(s)[/bold cyan]\n"
+            )
 
             for i, site in enumerate(sorted(all_affected_sites), 1):
-                console.print(f"\n[bold]Migrating site {i}/{len(all_affected_sites)}: {site}[/bold]")
+                console.print(
+                    f"\n[bold]Migrating site {i}/{len(all_affected_sites)}: {site}[/bold]"
+                )
                 cmd = f"bench --site {site} migrate"
                 exit_code = _stream_command(
                     frappe_container,
                     cmd,
                     bench_path,
                     verbose=True,
-                    status_msg=f"Migrating {site}..."
+                    status_msg=f"Migrating {site}...",
                 )
 
                 if exit_code != 0:
                     failed_migrations.append(site)
-                    stderr_console.print(f"[bold red]✗[/bold red] Migration failed for site '{site}'")
+                    stderr_console.print(
+                        f"[bold red]✗[/bold red] Migration failed for site '{site}'"
+                    )
                 else:
                     console.print(f"[bold green]✓[/bold green] Migration completed for '{site}'")
 
@@ -295,7 +313,9 @@ def _update_project(
             successful_updated_apps = [app for app in apps if app not in failed_apps]
 
             if successful_updated_apps:
-                console.print(f"[bold cyan]Building assets for {len(successful_updated_apps)} app(s)[/bold cyan]")
+                console.print(
+                    f"[bold cyan]Building assets for {len(successful_updated_apps)} app(s)[/bold cyan]"
+                )
 
                 for app in successful_updated_apps:
                     cmd = f"bench build --app {app}"
@@ -305,59 +325,80 @@ def _update_project(
                         cmd,
                         bench_path,
                         verbose=True,
-                        status_msg=f"Building {app}..."
+                        status_msg=f"Building {app}...",
                     )
 
                     if exit_code == 0:
-                        console.print(f"[bold green]✓[/bold green] Assets built successfully for '{app}'")
+                        console.print(
+                            f"[bold green]✓[/bold green] Assets built successfully for '{app}'"
+                        )
                     else:
                         failed_builds.append(app)
-                        stderr_console.print(f"[bold red]✗[/bold red] Failed to build assets for '{app}'")
+                        stderr_console.print(
+                            f"[bold red]✗[/bold red] Failed to build assets for '{app}'"
+                        )
 
         # Clear cache if requested (after build)
         if clear_cache and all_affected_sites:
-            console.print(f"\n[bold cyan]Clearing cache for {len(all_affected_sites)} site(s)[/bold cyan]")
+            console.print(
+                f"\n[bold cyan]Clearing cache for {len(all_affected_sites)} site(s)[/bold cyan]"
+            )
 
             for site in sorted(all_affected_sites):
                 cmd = f"bench --site {site} clear-cache"
                 stderr_console.print(f"[dim]$ {cmd}[/dim]")
 
-                with console.status(f"[bold green]Clearing cache for '{site}'...[/bold green]", spinner="dots"):
+                with console.status(
+                    f"[bold green]Clearing cache for '{site}'...[/bold green]", spinner="dots"
+                ):
                     exit_code, _ = frappe_container.exec_run(cmd, workdir=bench_path)
 
                 if exit_code == 0:
                     console.print(f"[bold green]✓[/bold green] Cache cleared for '{site}'")
                 else:
                     failed_cache_clears.append(site)
-                    stderr_console.print(f"[bold red]✗[/bold red] Failed to clear cache for '{site}'")
+                    stderr_console.print(
+                        f"[bold red]✗[/bold red] Failed to clear cache for '{site}'"
+                    )
 
         # Clear website cache if requested (after build)
         if clear_website_cache and all_affected_sites:
-            console.print(f"\n[bold cyan]Clearing website cache for {len(all_affected_sites)} site(s)[/bold cyan]")
+            console.print(
+                f"\n[bold cyan]Clearing website cache for {len(all_affected_sites)} site(s)[/bold cyan]"
+            )
 
             for site in sorted(all_affected_sites):
                 cmd = f"bench --site {site} clear-website-cache"
                 stderr_console.print(f"[dim]$ {cmd}[/dim]")
 
-                with console.status(f"[bold green]Clearing website cache for '{site}'...[/bold green]", spinner="dots"):
+                with console.status(
+                    f"[bold green]Clearing website cache for '{site}'...[/bold green]",
+                    spinner="dots",
+                ):
                     exit_code, _ = frappe_container.exec_run(cmd, workdir=bench_path)
 
                 if exit_code == 0:
                     console.print(f"[bold green]✓[/bold green] Website cache cleared for '{site}'")
                 else:
                     failed_website_cache_clears.append(site)
-                    stderr_console.print(f"[bold red]✗[/bold red] Failed to clear website cache for '{site}'")
+                    stderr_console.print(
+                        f"[bold red]✗[/bold red] Failed to clear website cache for '{site}'"
+                    )
 
         # Clear locks for all affected sites
         if all_affected_sites:
-            console.print(f"\n[bold cyan]Clearing locks for {len(all_affected_sites)} site(s)[/bold cyan]")
+            console.print(
+                f"\n[bold cyan]Clearing locks for {len(all_affected_sites)} site(s)[/bold cyan]"
+            )
 
             for site in sorted(all_affected_sites):
                 locks_path = f"{bench_path}/sites/{site}/locks"
                 cmd = f"rm -rf {locks_path}"
                 stderr_console.print(f"[dim]$ {cmd}[/dim]")
 
-                with console.status(f"[bold green]Clearing locks for '{site}'...[/bold green]", spinner="dots"):
+                with console.status(
+                    f"[bold green]Clearing locks for '{site}'...[/bold green]", spinner="dots"
+                ):
                     exit_code, _ = frappe_container.exec_run(cmd, workdir=bench_path)
 
                 if exit_code == 0:
@@ -372,7 +413,7 @@ def _update_project(
             TextColumn("[progress.description]{task.description}"),
             BarColumn(),
             TaskProgressColumn(),
-            console=console
+            console=console,
         )
 
         # First, quickly determine affected sites count
@@ -414,7 +455,9 @@ def _update_project(
             # Step 1: Pull apps
             for i, app in enumerate(apps, 1):
                 app_path = f"{bench_path}/apps/{app}"
-                spinner.update(text=f"[bold green]Pulling app: {app} ({i}/{len(apps)})[/bold green]")
+                spinner.update(
+                    text=f"[bold green]Pulling app: {app} ({i}/{len(apps)})[/bold green]"
+                )
                 live.refresh()
 
                 # Check if app exists
@@ -422,7 +465,9 @@ def _update_project(
                 if exit_code != 0:
                     failed_apps.append(app)
                     completed_steps += 1
-                    progress.update(overall_task, completed=int((completed_steps / total_steps) * 100))
+                    progress.update(
+                        overall_task, completed=int((completed_steps / total_steps) * 100)
+                    )
                     live.refresh()
                     continue
 
@@ -445,7 +490,9 @@ def _update_project(
             if all_affected_sites:
                 sorted_sites = sorted(all_affected_sites)
                 for i, site in enumerate(sorted_sites, 1):
-                    spinner.update(text=f"[bold green]Migrating site: {site} ({i}/{len(sorted_sites)})[/bold green]")
+                    spinner.update(
+                        text=f"[bold green]Migrating site: {site} ({i}/{len(sorted_sites)})[/bold green]"
+                    )
                     live.refresh()
                     cmd = f"bench --site {site} migrate"
                     exit_code = _stream_command(frappe_container, cmd, bench_path, verbose=False)
@@ -457,7 +504,9 @@ def _update_project(
                     time.sleep(0.5)
 
                     completed_steps += 1
-                    progress.update(overall_task, completed=int((completed_steps / total_steps) * 100))
+                    progress.update(
+                        overall_task, completed=int((completed_steps / total_steps) * 100)
+                    )
                     live.refresh()
 
             # Step 3: Build assets (if requested)
@@ -465,7 +514,9 @@ def _update_project(
                 successful_updated_apps = [app for app in apps if app not in failed_apps]
 
                 for i, app in enumerate(successful_updated_apps, 1):
-                    spinner.update(text=f"[bold green]Building app: {app} ({i}/{len(successful_updated_apps)})[/bold green]")
+                    spinner.update(
+                        text=f"[bold green]Building app: {app} ({i}/{len(successful_updated_apps)})[/bold green]"
+                    )
                     live.refresh()
                     cmd = f"bench build --app {app}"
                     exit_code = _stream_command(frappe_container, cmd, bench_path, verbose=False)
@@ -474,14 +525,18 @@ def _update_project(
                         failed_builds.append(app)
 
                     completed_steps += 1
-                    progress.update(overall_task, completed=int((completed_steps / total_steps) * 100))
+                    progress.update(
+                        overall_task, completed=int((completed_steps / total_steps) * 100)
+                    )
                     live.refresh()
 
             # Step 4: Clear cache (if requested)
             if clear_cache and all_affected_sites:
                 sorted_sites = sorted(all_affected_sites)
                 for i, site in enumerate(sorted_sites, 1):
-                    spinner.update(text=f"[bold green]Clearing cache: {site} ({i}/{len(sorted_sites)})[/bold green]")
+                    spinner.update(
+                        text=f"[bold green]Clearing cache: {site} ({i}/{len(sorted_sites)})[/bold green]"
+                    )
                     live.refresh()
                     cmd = f"bench --site {site} clear-cache"
                     exit_code, _ = frappe_container.exec_run(cmd, workdir=bench_path)
@@ -490,14 +545,18 @@ def _update_project(
                         failed_cache_clears.append(site)
 
                     completed_steps += 1
-                    progress.update(overall_task, completed=int((completed_steps / total_steps) * 100))
+                    progress.update(
+                        overall_task, completed=int((completed_steps / total_steps) * 100)
+                    )
                     live.refresh()
 
             # Step 5: Clear website cache (if requested)
             if clear_website_cache and all_affected_sites:
                 sorted_sites = sorted(all_affected_sites)
                 for i, site in enumerate(sorted_sites, 1):
-                    spinner.update(text=f"[bold green]Clearing website cache: {site} ({i}/{len(sorted_sites)})[/bold green]")
+                    spinner.update(
+                        text=f"[bold green]Clearing website cache: {site} ({i}/{len(sorted_sites)})[/bold green]"
+                    )
                     live.refresh()
                     cmd = f"bench --site {site} clear-website-cache"
                     exit_code, _ = frappe_container.exec_run(cmd, workdir=bench_path)
@@ -506,14 +565,18 @@ def _update_project(
                         failed_website_cache_clears.append(site)
 
                     completed_steps += 1
-                    progress.update(overall_task, completed=int((completed_steps / total_steps) * 100))
+                    progress.update(
+                        overall_task, completed=int((completed_steps / total_steps) * 100)
+                    )
                     live.refresh()
 
             # Step 6: Clear locks for all affected sites
             if all_affected_sites:
                 sorted_sites = sorted(all_affected_sites)
                 for i, site in enumerate(sorted_sites, 1):
-                    spinner.update(text=f"[bold green]Clearing locks: {site} ({i}/{len(sorted_sites)})[/bold green]")
+                    spinner.update(
+                        text=f"[bold green]Clearing locks: {site} ({i}/{len(sorted_sites)})[/bold green]"
+                    )
                     live.refresh()
                     locks_path = f"{bench_path}/sites/{site}/locks"
                     cmd = f"rm -rf {locks_path}"
@@ -526,7 +589,9 @@ def _update_project(
 
         # Show errors after progress bars
         if failed_apps:
-            console.print(f"\n[bold yellow]Warning:[/bold yellow] Failed to update {len(failed_apps)} app(s):")
+            console.print(
+                f"\n[bold yellow]Warning:[/bold yellow] Failed to update {len(failed_apps)} app(s):"
+            )
             for app in failed_apps:
                 stderr_console.print(f"  [red]✗ {app}[/red]")
 
@@ -544,11 +609,19 @@ def _update_project(
 
         if failed_website_cache_clears:
             for site in failed_website_cache_clears:
-                stderr_console.print(f"[bold red]✗[/bold red] Failed to clear website cache for '{site}'")
+                stderr_console.print(
+                    f"[bold red]✗[/bold red] Failed to clear website cache for '{site}'"
+                )
 
     # Summary and error reporting
     successful_apps = len(apps) - len(failed_apps)
-    has_errors = bool(failed_apps or failed_migrations or failed_builds or failed_cache_clears or failed_website_cache_clears)
+    has_errors = bool(
+        failed_apps
+        or failed_migrations
+        or failed_builds
+        or failed_cache_clears
+        or failed_website_cache_clears
+    )
 
     if successful_apps > 0:
         console.print(f"\n[bold green]✓ Successfully updated {successful_apps} app(s)[/bold green]")
@@ -563,22 +636,30 @@ def _update_project(
                 console.print(f"  • {app}: Git pull failed")
 
         if failed_migrations:
-            console.print(f"[bold red]✗ Failed to migrate {len(failed_migrations)} site(s):[/bold red]")
+            console.print(
+                f"[bold red]✗ Failed to migrate {len(failed_migrations)} site(s):[/bold red]"
+            )
             for site in failed_migrations:
                 console.print(f"  • {site}: Migration failed")
 
         if failed_builds:
-            console.print(f"[bold red]✗ Failed to build assets for {len(failed_builds)} app(s):[/bold red]")
+            console.print(
+                f"[bold red]✗ Failed to build assets for {len(failed_builds)} app(s):[/bold red]"
+            )
             for app in failed_builds:
                 console.print(f"  • {app}: Build failed")
 
         if failed_cache_clears:
-            console.print(f"[bold red]✗ Failed to clear cache for {len(failed_cache_clears)} site(s):[/bold red]")
+            console.print(
+                f"[bold red]✗ Failed to clear cache for {len(failed_cache_clears)} site(s):[/bold red]"
+            )
             for site in failed_cache_clears:
                 console.print(f"  • {site}: Cache clearing failed")
 
         if failed_website_cache_clears:
-            console.print(f"[bold red]✗ Failed to clear website cache for {len(failed_website_cache_clears)} site(s):[/bold red]")
+            console.print(
+                f"[bold red]✗ Failed to clear website cache for {len(failed_website_cache_clears)} site(s):[/bold red]"
+            )
             for site in failed_website_cache_clears:
                 console.print(f"  • {site}: Website cache clearing failed")
 
@@ -588,46 +669,32 @@ def _update_project(
 
 @handle_docker_errors
 def update(
-    project_name: str = typer.Argument(
-        ...,
-        help="The name of the project to update."
-    ),
+    project_name: str = typer.Argument(..., help="The name of the project to update."),
     apps: List[str] = typer.Option(
         None,
         "--app",
         "-a",
-        help="App name(s) to update. Specify multiple app names after --app or use --app multiple times."
+        help="App name(s) to update. Specify multiple app names after --app or use --app multiple times.",
     ),
     bench_path: str = typer.Option(
         None,
         "--path",
         "-p",
-        help="Path to the bench directory inside the container (uses cached path from inspect if not specified)."
+        help="Path to the bench directory inside the container (uses cached path from inspect if not specified).",
     ),
     verbose: bool = typer.Option(
-        False,
-        "--verbose",
-        "-v",
-        help="Enable verbose output with streaming command output."
+        False, "--verbose", "-v", help="Enable verbose output with streaming command output."
     ),
     clear_cache: bool = typer.Option(
-        False,
-        "--clear-cache",
-        "-c",
-        help="Clear cache for all affected sites after migration."
+        False, "--clear-cache", "-c", help="Clear cache for all affected sites after migration."
     ),
     clear_website_cache: bool = typer.Option(
         False,
         "--clear-website-cache",
         "-w",
-        help="Clear website cache for all affected sites after migration."
+        help="Clear website cache for all affected sites after migration.",
     ),
-    build: bool = typer.Option(
-        False,
-        "--build",
-        "-b",
-        help="Build assets after updating apps."
-    ),
+    build: bool = typer.Option(False, "--build", "-b", help="Build assets after updating apps."),
 ):
     """
     Update specified apps and migrate all sites where they are installed.
@@ -648,4 +715,6 @@ def update(
         raise typer.Exit(code=1)
 
     console.print(f"[bold cyan]Updating project: {project_name}[/bold cyan]\n")
-    _update_project(project_name, list(apps), bench_path, verbose, clear_cache, clear_website_cache, build)
+    _update_project(
+        project_name, list(apps), bench_path, verbose, clear_cache, clear_website_cache, build
+    )

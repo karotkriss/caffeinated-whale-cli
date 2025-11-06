@@ -2,7 +2,8 @@ import sys
 import typer
 from typing import List
 
-from .utils import get_project_containers, ensure_containers_running
+from .utils import ensure_containers_running
+from ..utils.docker_utils import get_project_containers
 from ..utils.docker_utils import handle_docker_errors
 from ..utils import db_utils
 from ..utils.console import console, stderr_console
@@ -23,9 +24,7 @@ def unlock(
         "-p",
         help="Path to the bench directory inside the container (uses cached path from inspect if not specified).",
     ),
-    verbose: bool = typer.Option(
-        False, "--verbose", "-v", help="Enable verbose output."
-    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output."),
 ):
     """
     Remove the locks folder for a specified site to unlock it.
@@ -41,9 +40,7 @@ def unlock(
 
     containers = get_project_containers(project_name)
     if not containers:
-        stderr_console.print(
-            f"[bold red]Error:[/bold red] Project '{project_name}' not found."
-        )
+        stderr_console.print(f"[bold red]Error:[/bold red] Project '{project_name}' not found.")
         raise typer.Exit(code=1)
 
     frappe_container = next(
@@ -71,15 +68,15 @@ def unlock(
             )
 
     # Verify bench path exists
-    exit_code, _ = frappe_container.exec_run(
-        f'sh -c "test -d {bench_path}/sites"'
-    )
+    exit_code, _ = frappe_container.exec_run(f'sh -c "test -d {bench_path}/sites"')
     if verbose:
         stderr_console.print(f'[dim]$ sh -c "test -d {bench_path}/sites"[/dim]')
         stderr_console.print(f"[dim]Exit code: {exit_code}[/dim]")
 
     if exit_code != 0:
-        stderr_console.print(f"[bold red]Error:[/bold red] Bench directory not found at {bench_path}")
+        stderr_console.print(
+            f"[bold red]Error:[/bold red] Bench directory not found at {bench_path}"
+        )
         raise typer.Exit(code=1)
 
     # Check if site exists

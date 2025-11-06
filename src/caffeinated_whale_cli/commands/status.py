@@ -3,7 +3,7 @@ import typer
 
 from rich.console import Console
 
-from .utils import get_project_containers
+from ..utils.docker_utils import get_project_containers
 from ..utils.docker_utils import handle_docker_errors
 from docker.errors import APIError, NotFound
 
@@ -15,7 +15,8 @@ def status(
     project_name: str = typer.Argument(..., help="The Docker Compose project name to check."),
     verbose: bool = typer.Option(
         False,
-        "--verbose", "-v",
+        "--verbose",
+        "-v",
         help="Show the health-check command, raw curl output, and explain the reported status.",
     ),
 ):
@@ -62,9 +63,7 @@ def status(
     http_code = (output or b"").decode("utf-8").strip()
     if exit_code == 0 and http_code and http_code != "000":
         if verbose:
-            stderr_console.print(
-                "[bold green]VERBOSE: bench is started and running.[/bold green]"
-            )
+            stderr_console.print("[bold green]VERBOSE: bench is started and running.[/bold green]")
         typer.echo("running")
     else:
         if verbose:
