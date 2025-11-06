@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2025-11-05
+
+### Fixed
+- **Critical:** Port conflict detection now properly handles mixed scenarios where ports are held by both Frappe projects and external processes
+  - Previously, if port 8000 was owned by a Frappe project and port 8080 by Postgres, stopping the Frappe project would allow the start to proceed, causing Docker to fail on the Postgres port
+  - Now splits ports into Frappe-owned vs non-Frappe-owned, handles Frappe conflicts first, then re-checks ALL ports to catch remaining external conflicts
+  - Ensures all port conflicts are resolved before allowing container startup
+- **Critical:** Pressing Ctrl+C during port conflict prompts now cancels the entire start operation instead of just skipping to the next project
+  - Previously, `typer.Exit(code=0)` from KeyboardInterrupt was caught indiscriminately, allowing the loop to continue
+  - Now checks exit code: code 0 (user cancellation) propagates to exit entire command, code 1 (port conflicts) skips only the current project
+  - Provides proper user control to cancel batch operations
+
+## [0.9.0] - 2025-11-05
+
+### Added
+- **Port conflict detection and resolution system**
+  - New `utils/port_utils.py` module with comprehensive port management functions
+  - `get_project_ports()`: Extract all host ports used by a project's containers
+  - `find_project_using_ports()`: Identify which Frappe projects are using specific ports
+  - `is_port_in_use()`: Socket-based port availability checking
+  - `check_ports_in_use()`: Batch port checking with verbose output option
+  - `get_ports_in_use_with_processes()`: Cross-platform process identification (Linux/macOS/Windows)
+  - `format_port_list()`: Smart port range formatting (e.g., "8000-8005, 9000")
+  - `report_port_conflicts()`: User-friendly conflict reporting
+- **Interactive port conflict resolution in `start` command**
+  - Automatically detects port conflicts before starting containers
+  - Identifies ports used by other Frappe projects vs. external processes
+  - Offers to automatically stop conflicting Frappe projects via interactive prompts
+  - Groups ports by project/process for cleaner, more readable output
+  - Provides actionable error messages for non-Frappe port conflicts
+  - Uses `questionary` for user-friendly confirmation prompts
+- Cross-platform process identification using platform-specific tools:
+  - **Linux/macOS**: `lsof` + `ps` to identify PID and process name
+  - **Windows**: `netstat` + `tasklist` for process information
+  - Graceful fallbacks when tools are unavailable
+  - 2-second timeout protection on all system commands
+
+### Changed
+- **Enhanced `start` command workflow**
+  - Now performs port conflict checks before attempting to start containers
+  - Interactive conflict resolution prevents cryptic Docker port binding errors
+  - Shows which projects/processes are blocking required ports
+  - Improved error messages with specific guidance for resolution
+- **Refactored `commands/utils.py` for better separation of concerns**
+  - Removed ~500 lines of port management code (moved to dedicated module)
+  - Focused on container lifecycle management only
+  - `ensure_containers_running()`: Simplified to check container status without port checks
+  - `_start_containers_for_command()`: Now delegates port checks to `start` command
+  - Added documentation clarifying when port checks are performed
+- **Standardized imports across all command modules**
+  - All commands now import from `utils/docker_utils` instead of `commands/utils`
+  - Consistent use of new `port_utils` module where needed
+  - Updated: `inspect.py`, `logs.py`, `open.py`, `restart.py`, `run.py`, `status.py`, `stop.py`, `unlock.py`, `update.py`
+- Enhanced `utils/docker_utils.py` with additional container management utilities
+- Improved `utils/vscode_utils.py` with better VS Code integration
+- Updated `utils/console.py` to export `stderr_console` for error reporting
+
+### Fixed
+- Eliminated "port is already allocated" Docker errors through proactive detection
+- Port conflict messages now show process information for better debugging
+- Container startup failures due to port conflicts are now prevented, not just reported
+
 ## [0.8.0] - 2025-10-12
 
 ### Added

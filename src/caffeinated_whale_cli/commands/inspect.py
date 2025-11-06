@@ -7,7 +7,8 @@ import sys
 from rich.console import Console
 from rich.tree import Tree
 from typing import List, Optional, Tuple, Dict
-from .utils import get_project_containers
+from .utils import ensure_containers_running
+from ..utils.docker_utils import get_project_containers
 from ..utils import config_utils
 from ..utils import db_utils
 from ..utils.docker_utils import handle_docker_errors
@@ -168,6 +169,9 @@ def inspect(
         bench_instances_data = None
 
     if bench_instances_data is None:
+        # Ensure containers are running, prompt user if not (only in interactive mode)
+        ensure_containers_running(project_name, require_running=True, verbose=verbose)
+
         all_containers = get_project_containers(project_name)
         if not all_containers:
             console_err.print(f"Error: No containers found for project '{project_name}'.")
@@ -182,47 +186,6 @@ def inspect(
                 f"Error: No 'frappe' service container found for project '{project_name}'."
             )
             raise typer.Exit(code=1)
-
-        # Check if the Frappe container is running
-        if frappe_container.status != "running":
-            console_err.print(
-                f"[yellow]Warning: Frappe container for project '{project_name}' is not running.[/yellow]"
-            )
-            if not sys.stdin.isatty():
-                console_err.print(
-                    "[bold red]Error: Cannot prompt to start project in non-interactive environment.[/bold red]"
-                )
-                console_err.print("Please start the project manually or run in an interactive terminal.")
-                raise typer.Exit(code=1)
-            
-            # If we reach here, it means sys.stdin.isatty() is True, so we can prompt
-            try:
-                confirm_start = questionary.confirm(
-                    f"Do you want to start project '{project_name}' to proceed with inspect?"
-                ).ask()
-            except Exception:
-                console_err.print(
-                    "[bold red]Error: Cannot prompt to start project in non-interactive environment.[/bold red]"
-                )
-                console_err.print("Please start the project manually or run in an interactive terminal.")
-                raise typer.Exit(code=1)
-
-            if confirm_start:
-                with console_err.status(f"[bold green]Starting '{project_name}'...[/bold green]"):
-                    _start_project(project_name)
-                # Re-fetch the container to get its updated status
-                client = docker.from_env()
-                frappe_container = client.containers.get(frappe_container.id)
-                if frappe_container.status != "running":
-                    console_err.print(
-                        f"[bold red]Error: Failed to start project '{project_name}'. Cannot inspect.[/bold red]"
-                    )
-                    raise typer.Exit(code=1)
-                else:
-                    console_err.print(f"[green]Project '{project_name}' started successfully.[/green]")
-            else:
-                console_err.print("[bold red]Inspect cancelled. Project not running.[/bold red]")
-                raise typer.Exit(code=1)
 
         bench_instances_data = []
         with console_err.status(f"Inspecting '{project_name}'...", spinner="dots"):
@@ -249,13 +212,13 @@ def inspect(
                 if alias is None:  # User pressed Ctrl+C
                     console_err.print("\n[yellow]Interactive naming cancelled.[/yellow]")
                     break
-                bench['alias'] = alias.strip() if alias else ''
+                bench["alias"] = alias.strip() if alias else ""
             except KeyboardInterrupt:
                 console_err.print("\n[yellow]Interactive naming cancelled.[/yellow]")
                 break
             except Exception as e:
                 console_err.print(f"\n[red]Error during interactive input: {e}[/red]")
-                bench['alias'] = ''
+                bench["alias"] = ""
 
         db_utils.cache_project_data(project_name, bench_instances_data)
 
@@ -266,8 +229,8 @@ def inspect(
         tree = Tree(f"Project [bold cyan]{project_name}[/bold cyan]", guide_style="bright_blue")
         for bench_instance in bench_instances_data:
             # Display alias if provided, otherwise show path
-            alias = bench_instance.get('alias')
-            label = f"{alias} ({bench_instance['path']})" if alias else bench_instance['path']
+            alias = bench_instance.get("alias")
+            label = f"{alias} ({bench_instance['path']})" if alias else bench_instance["path"]
             bench_node = tree.add(f"Bench Instance at [green]{label}[/green]")
 
             apps_branch = bench_node.add(

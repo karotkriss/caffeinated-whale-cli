@@ -1,6 +1,15 @@
 # Caffeinated Whale CLI
 
-A simple command-line interface (CLI) to help manage Frappe Docker instances for local development.
+A command-line interface (CLI) for managing Frappe/ERPNext Docker instances during local development. Simplify container management, bench operations, and development workflows with an intuitive set of commands.
+
+## Features
+
+- **Smart Port Management** - Automatic port conflict detection and resolution
+- **Project Discovery** - Scan and list all Frappe Docker projects
+- **Container Lifecycle** - Start, stop, and restart projects with ease
+- **Development Tools** - VS Code integration, log viewing, and command execution
+- **Cache System** - Fast project inspection with SQLite-based caching
+- **Update Management** - App updates with automatic migrations and lock cleanup
 
 ## Installation
 
@@ -12,251 +21,306 @@ pip install caffeinated-whale-cli
 
 ### Troubleshooting
 
-After installation, if you see an error like `'cwcli' is not recognized...`, it means the installation directory is not in your system's `PATH`. This is a common issue, especially on Windows.
+After installation, if you see an error like `'cwcli' is not recognized...`, the installation directory is not in your system's `PATH`.
 
 To fix this:
 
-1.  **Find the script's location:** Run `pip show -f caffeinated-whale-cli` and look for the location of `cwcli.exe` (or `cwcli` on macOS/Linux) in the output. It is typically in a `Scripts` or `bin` folder within your Python installation directory.
-2.  **Add the location to your PATH:** Follow the instructions for your operating system to add this directory to your `PATH` environment variable.
-3.  **Restart your terminal:** You must close and reopen your terminal for the changes to take effect.
+1. **Find the script's location:** Run `pip show -f caffeinated-whale-cli` and look for the location of `cwcli.exe` (or `cwcli` on macOS/Linux). It's typically in a `Scripts` or `bin` folder within your Python installation directory.
+2. **Add to PATH:** Follow your operating system's instructions to add this directory to your `PATH` environment variable.
+3. **Restart your terminal:** Close and reopen your terminal for changes to take effect.
 
-## Usage
-
-The Caffeinated Whale CLI provides a main command, `cwcli`, which serves as the entry point for all operations.
+## Quick Start
 
 ```bash
-cwcli [COMMAND]
-```
-
-### Commands
-
-#### `ls`
-
-Lists all your Frappe/ERPNext projects and their status.
-
-**Usage:**
-
-```bash
+# List all Frappe projects
 cwcli ls
+
+# Start a project (with automatic port conflict detection)
+cwcli start my-project
+
+# View bench logs in real-time
+cwcli logs my-project
+
+# Open project in VS Code
+cwcli open my-project
+
+# Update apps and migrate sites
+cwcli update my-project --app erpnext --build
 ```
 
-**Expected Output:**
+## Command Reference
 
-A table displaying the key details of your managed projects.
+### `ls` - List Projects
 
-| Project Name | Status  | Ports         |
-|--------------|---------|---------------|
-| frappe-one   | running | 8000->8000/tcp|
-| frappe-two   | exited  |               |
+Scans Docker for Frappe/ERPNext projects and displays their status and ports.
+
+```bash
+cwcli ls [OPTIONS]
+```
 
 **Options:**
 
-| Option      | Description                               |
-|-------------|-------------------------------------------|
-| `--verbose`, `-v` | Display all ports individually, without condensing them into ranges. |
-| `--quiet`, `-q`   | Only display project names, one per line. Useful for scripting. |
-| `--json`      | Output the list of instances as a raw JSON string. |
+| Option | Description |
+|--------|-------------|
+| `-v`, `--verbose` | Display all ports individually, without condensing them into ranges |
+| `-q`, `--quiet` | Only display project names, one per line (useful for scripting) |
+| `--json` | Output the list of instances as a raw JSON string |
+
+**Example Output:**
+
+```
+┌──────────────┬─────────┬──────────────────┐
+│ Project Name │ Status  │ Ports            │
+├──────────────┼─────────┼──────────────────┤
+│ frappe-one   │ running │ 8000-8005, 9000  │
+│ frappe-two   │ exited  │                  │
+└──────────────┴─────────┴──────────────────┘
+```
 
 ---
 
-#### `start`
+### `start` - Start Containers
 
-Starts a stopped project's containers.
-
-**Usage:**
+Starts a project's containers with **automatic port conflict detection and resolution**.
 
 ```bash
-cwcli start [PROJECT_NAME]...
+cwcli start [OPTIONS] [PROJECT_NAME]...
 ```
 
 **Arguments:**
 
-| Argument       | Description                               |
-|----------------|-------------------------------------------|
-| `PROJECT_NAME` | The name(s) of the project(s) to start. Can be piped from stdin. |
+| Argument | Description |
+|----------|-------------|
+| `PROJECT_NAME` | The name(s) of the Frappe project(s) to start (can be piped from stdin) |
 
-**Expected Output:**
+**Options:**
 
-A confirmation message indicating the project has started.
+| Option | Description |
+|--------|-------------|
+| `-v`, `--verbose` | Enable verbose diagnostic output |
+
+**Features:**
+
+- **Port Conflict Detection:** Automatically checks if required ports are available
+- **Interactive Resolution:** Offers to stop conflicting Frappe projects
+- **Process Identification:** Shows which processes are using ports (cross-platform)
+- **Smart Error Messages:** Provides actionable guidance for resolution
+
+**Example:**
+
+```bash
+# Start a single project
+cwcli start frappe-one
+
+# Start multiple projects
+cwcli start frappe-one frappe-two
+
+# Pipe from ls
+cwcli ls --quiet | cwcli start
+```
+
+**Port Conflict Example:**
 
 ```
-Starting frappe-one...
-frappe-one started successfully.
+Warning: Some ports needed by 'frappe-one' are in use by other Frappe projects:
+  • Project 'frappe-two': 8000-8005
+
+? Stop project 'frappe-two' to free up its ports? (Y/n)
 ```
 
 ---
 
-#### `stop`
+### `stop` - Stop Containers
 
 Stops a running project's containers.
 
-**Usage:**
-
 ```bash
-cwcli stop [PROJECT_NAME]...
+cwcli stop [OPTIONS] [PROJECT_NAME]...
 ```
 
 **Arguments:**
 
-| Argument       | Description                               |
-|----------------|-------------------------------------------|
-| `PROJECT_NAME` | The name(s) of the project(s) to stop. Can be piped from stdin. |
-
-**Expected Output:**
-
-A confirmation message indicating the project has stopped.
-
-```
-Stopping frappe-one...
-frappe-one stopped successfully.
-```
-
----
-
-#### `restart`
-
-Restarts a project's containers and bench instance.
-
-**Usage:**
-
-```bash
-cwcli restart [PROJECT_NAME]...
-```
-
-**Arguments:**
-
-| Argument       | Description                               |
-|----------------|-------------------------------------------|
-| `PROJECT_NAME` | The name(s) of the project(s) to restart. Can be piped from stdin. |
-
-**Expected Output:**
-
-A confirmation message indicating the project has restarted.
-
-```
-Attempting to restart 1 project(s)...
-Instance 'frappe-one' stopped.
-Instance 'frappe-one' started.
-✓ Started bench (logs: /tmp/bench-frappe-one.log)
-View logs with: cwcli logs frappe-one
-
-Restart command finished.
-```
-
----
-
-#### `logs`
-
-View bench logs in real-time from the log file.
-
-**Usage:**
-
-```bash
-cwcli logs [PROJECT_NAME]
-```
-
-**Arguments:**
-
-| Argument       | Description                               |
-|----------------|-------------------------------------------|
-| `PROJECT_NAME` | The name of the Frappe project to view logs for. |
+| Argument | Description |
+|----------|-------------|
+| `PROJECT_NAME` | The name(s) of the Frappe project(s) to stop (can be piped from stdin) |
 
 **Options:**
 
-| Option      | Description                               |
-|-------------|-------------------------------------------|
-| `--follow/--no-follow`, `-f` | Follow log output in real-time (default: true). |
-| `--lines`, `-n` | Number of lines to show from the end of the logs (default: 100). |
-| `--verbose`, `-v` | Enable verbose diagnostic output. |
+| Option | Description |
+|--------|-------------|
+| `-v`, `--verbose` | Enable verbose diagnostic output |
 
-**Expected Output:**
+**Example:**
 
-Real-time log output from the bench instance.
+```bash
+# Stop a single project
+cwcli stop frappe-one
 
-```
-Viewing bench logs for 'frappe-one'...
-Press Ctrl+c to exit
-
-[timestamp] Log output...
+# Stop multiple projects
+cwcli stop frappe-one frappe-two
 ```
 
 ---
 
-#### `inspect`
+### `restart` - Restart Containers
 
-Shows detailed information about a specific project.
-
-**Usage:**
+Restarts a project's containers and bench instance.
 
 ```bash
-cwcli inspect [PROJECT_NAME]
+cwcli restart [OPTIONS] [PROJECT_NAME]...
 ```
 
 **Arguments:**
 
-| Argument       | Description                               |
-|----------------|-------------------------------------------|
-| `PROJECT_NAME` | The Docker Compose project to inspect. |
+| Argument | Description |
+|----------|-------------|
+| `PROJECT_NAME` | The name(s) of the Frappe project(s) to restart (can be piped from stdin) |
 
-**Expected Output:**
+**Options:**
 
-A detailed view of the project's configuration and status.
+| Option | Description |
+|--------|-------------|
+| `-v`, `--verbose` | Enable verbose diagnostic output |
+
+**Example:**
+
+```bash
+cwcli restart frappe-one
+```
+
+**Example Output:**
+
+```
+Attempting to restart 1 project(s)...
+✓ Instance 'frappe-one' stopped.
+✓ Instance 'frappe-one' started.
+✓ Started bench (logs: /tmp/bench-frappe-one.log)
+View logs with: cwcli logs frappe-one
+```
+
+---
+
+### `logs` - View Bench Logs
+
+View bench logs in real-time from the log file inside the container.
+
+```bash
+cwcli logs [OPTIONS] PROJECT_NAME
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `PROJECT_NAME` | The name of the Frappe project to view logs for (required) |
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `-f`, `--follow` / `--no-follow` | Follow log output in real-time (default: follow) |
+| `-n`, `--lines INTEGER` | Number of lines to show from the end of the logs (default: 100) |
+| `-v`, `--verbose` | Enable verbose diagnostic output |
+
+**Examples:**
+
+```bash
+# Follow logs in real-time (default)
+cwcli logs frappe-one
+
+# Show last 50 lines and exit
+cwcli logs frappe-one --no-follow --lines 50
+
+# Show last 200 lines and follow
+cwcli logs frappe-one -n 200
+```
+
+**Note:** Logs are stored at `/tmp/bench-{project_name}.log` inside the container.
+
+---
+
+### `inspect` - Inspect Project Structure
+
+Inspects a project to find all bench instances, sites, and apps within it. Results are cached for faster subsequent operations.
+
+```bash
+cwcli inspect [OPTIONS] PROJECT_NAME
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `PROJECT_NAME` | The Docker Compose project to inspect (required) |
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `-v`, `--verbose` | Enable verbose diagnostic output |
+| `-j`, `--json` | Output the result as a JSON object |
+| `-u`, `--update` | Update the cache by re-inspecting the project |
+| `-a`, `--show-apps` | Show available apps in the output tree |
+| `-i`, `--interactive` | Prompt to name each bench instance interactively |
+
+**Example Output:**
 
 ```
 frappe-one
 ├── Bench: bench
 │   ├── Site: frappe-one.localhost
-│   │   ├── App: frappe
-│   │   │   └── Version: 15.0.0
-│   │   └── App: erpnext
-│   │       └── Version: 15.0.0
+│   │   ├── App: frappe (v15.0.0, develop)
+│   │   └── App: erpnext (v15.0.0, version-15)
 │   └── Site: site2.localhost
-│       ├── App: frappe
-│       │   └── Version: 15.0.0
-│       └── App: erpnext
-│           └── Version: 15.0.0
+│       ├── App: frappe (v15.0.0, develop)
+│       └── App: erpnext (v15.0.0, version-15)
 └── Bench: bench2
     └── Site: site3.localhost
-        ├── App: frappe
-        │   └── Version: 15.0.0
-        └── App: erpnext
-            └── Version: 15.0.0
+        └── App: frappe (v15.0.0, develop)
 ```
 
-**Options:**
+**Examples:**
 
-| Option      | Description                               |
-|-------------|-------------------------------------------|
-| `--verbose`, `-v` | Enable verbose diagnostic output. |
-| `--json`, `-j`    | Output the result as a JSON object. |
-| `--update`, `-u`  | Update the cache by re-inspecting the project. |
-| `--show-apps`, `-a` | Show available apps in the output tree. |
-| `--interactive`, `-i` | Prompt to name each bench instance interactively. |
+```bash
+# Inspect and cache project structure
+cwcli inspect frappe-one
+
+# Force refresh the cache
+cwcli inspect frappe-one --update
+
+# Show available apps
+cwcli inspect frappe-one --show-apps
+
+# Get JSON output
+cwcli inspect frappe-one --json
+
+# Interactive bench naming
+cwcli inspect frappe-one --interactive
+```
 
 ---
 
-#### `open`
+### `open` - Open in VS Code or Docker Exec
 
-Opens a Frappe project instance in VS Code (with Dev Containers) or executes into the container with Docker.
-
-**Usage:**
+Opens a project's frappe container in VS Code (with Dev Containers) or executes into it.
 
 ```bash
-cwcli open [PROJECT_NAME]
+cwcli open [OPTIONS] PROJECT_NAME
 ```
 
 **Arguments:**
 
-| Argument       | Description                               |
-|----------------|-------------------------------------------|
-| `PROJECT_NAME` | The Docker Compose project name to open. |
+| Argument | Description |
+|----------|-------------|
+| `PROJECT_NAME` | The Docker Compose project name to open (required) |
 
 **Options:**
 
-| Option      | Description                               |
-|-------------|-------------------------------------------|
-| `--path`, `-p` | Path inside the container to open (uses cached bench path from inspect if not specified). |
-| `--verbose`, `-v` | Enable verbose diagnostic output. |
+| Option | Description |
+|--------|-------------|
+| `-p`, `--path TEXT` | Path inside the container to open (uses cached bench path from inspect if not specified) |
+| `-a`, `--app TEXT` | App name to open (opens the app's directory within the bench) |
+| `-v`, `--verbose` | Enable verbose diagnostic output |
 
 **Features:**
 
@@ -264,54 +328,64 @@ cwcli open [PROJECT_NAME]
 - Interactive editor selection menu
 - Automatically installs required VS Code extensions (Docker and Dev Containers)
 - Uses cached bench paths from `inspect` command
-- Fallback to Docker exec if VS Code is not available
+- Falls back to Docker exec if VS Code is unavailable
 
-**Expected Behavior:**
+**Examples:**
 
-If VS Code is installed, you'll be prompted to choose:
+```bash
+# Open project (uses cached bench path)
+cwcli open frappe-one
+
+# Open specific app directory
+cwcli open frappe-one --app erpnext
+
+# Open custom path
+cwcli open frappe-one --path /workspace/custom-bench
+```
+
+**Interactive Prompt:**
+
 ```
 How would you like to open this instance?
-> VS Code - Open in development container
+❯ VS Code - Open in development container
   Docker - Execute interactive shell in container
 ```
 
 ---
 
-#### `update`
+### `update` - Update Apps and Migrate
 
 Updates specified Frappe apps and migrates all sites where they are installed.
 
-**Usage:**
-
 ```bash
-cwcli update [PROJECT_NAME] --app [APP_NAME]...
+cwcli update [OPTIONS] PROJECT_NAME
 ```
 
 **Arguments:**
 
-| Argument       | Description                               |
-|----------------|-------------------------------------------|
-| `PROJECT_NAME` | The name of the project to update. |
+| Argument | Description |
+|----------|-------------|
+| `PROJECT_NAME` | The name of the project to update (required) |
 
 **Options:**
 
-| Option      | Description                               |
-|-------------|-------------------------------------------|
-| `--app`, `-a` | App name(s) to update (required). Specify multiple apps with `--app app1 --app app2` or `--app app1 app2`. |
-| `--build`, `-b` | Build assets after updating apps using `bench build`. |
-| `--clear-cache`, `-c` | Clear cache for all affected sites after migration. |
-| `--clear-website-cache`, `-w` | Clear website cache for all affected sites after migration. |
-| `--path`, `-p` | Path to the bench directory inside the container (uses cached path from inspect if not specified). |
-| `--verbose`, `-v` | Enable verbose output with streaming command execution. |
+| Option | Description |
+|--------|-------------|
+| `-a`, `--app TEXT` | App name(s) to update (specify multiple apps after `--app` or use `--app` multiple times) |
+| `-p`, `--path TEXT` | Path to the bench directory inside the container (uses cached path from inspect if not specified) |
+| `-v`, `--verbose` | Enable verbose output with streaming command execution |
+| `-c`, `--clear-cache` | Clear cache for all affected sites after migration |
+| `-w`, `--clear-website-cache` | Clear website cache for all affected sites after migration |
+| `-b`, `--build` | Build assets after updating apps |
 
-**What it does:**
+**What It Does:**
 
 1. Runs `git pull` in each specified app directory
 2. Identifies all sites where the updated apps are installed
 3. Runs `bench --site <site> migrate` for each affected site
-4. (Optional) Runs `bench build --app <app>` for each successfully updated app
-5. (Optional) Runs `bench --site <site> clear-cache` for each affected site
-6. (Optional) Runs `bench --site <site> clear-website-cache` for each affected site
+4. (Optional) Runs `bench build --app <app>` for successfully updated apps
+5. (Optional) Runs `bench --site <site> clear-cache` for affected sites
+6. (Optional) Runs `bench --site <site> clear-website-cache` for affected sites
 7. Automatically clears locks folder for all affected sites to prevent stale locks
 
 **Examples:**
@@ -330,7 +404,7 @@ cwcli update frappe-one --app erpnext --build --clear-cache --clear-website-cach
 cwcli update frappe-one --app custom_app -v
 ```
 
-**Expected Output:**
+**Example Output:**
 
 ```
 Updating project: frappe-one
@@ -348,41 +422,41 @@ Migrating 2 affected site(s)
 ✓ Successfully updated 1 app(s)
 ```
 
-**Error Handling:**
-
-The command tracks failures at each step and provides detailed error messages if any operation fails. The command exits with code 1 if any step fails.
-
 ---
 
-#### `unlock`
+### `unlock` - Unlock Site
 
 Removes the locks folder for a specified site to unlock it.
 
-**Usage:**
-
 ```bash
-cwcli unlock [PROJECT_NAME] --site [SITE_NAME]
+cwcli unlock [OPTIONS] PROJECT_NAME
 ```
 
 **Arguments:**
 
-| Argument       | Description                               |
-|----------------|-------------------------------------------|
-| `PROJECT_NAME` | The Docker Compose project name. |
+| Argument | Description |
+|----------|-------------|
+| `PROJECT_NAME` | The Docker Compose project name (required) |
 
 **Options:**
 
-| Option      | Description                               |
-|-------------|-------------------------------------------|
-| `--site`, `-s` | Site name to unlock (removes the locks folder). Required. |
-| `--path`, `-p` | Path to the bench directory inside the container (uses cached path from inspect if not specified). |
-| `--verbose`, `-v` | Enable verbose output and stream rm command output. |
+| Option | Description |
+|--------|-------------|
+| `-s`, `--site TEXT` | Site name to unlock (removes the locks folder) - **required** |
+| `-p`, `--path TEXT` | Path to the bench directory inside the container (uses cached path from inspect if not specified) |
+| `-v`, `--verbose` | Enable verbose output and stream rm command output |
 
-**What it does:**
+**What It Does:**
 
 Removes the `{bench_path}/sites/{site_name}/locks` directory, which can help resolve issues when a site is stuck in a locked state due to incomplete migrations or background jobs.
 
-**Example:**
+**When to Use:**
+
+- After a migration fails or is interrupted
+- When you see "This document is currently locked and queued for execution" errors
+- When background jobs don't complete properly
+
+**Examples:**
 
 ```bash
 # Unlock a site
@@ -392,102 +466,231 @@ cwcli unlock my-project --site development.localhost
 cwcli unlock my-project --site development.localhost -v
 ```
 
-**Expected Output:**
+**Example Output:**
 
 ```
 ✓ Successfully unlocked site 'development.localhost'
 Removed locks folder: /workspace/frappe-bench/sites/development.localhost/locks
 ```
 
-**When to use:**
-
-- After a migration fails or is interrupted
-- When you see "This document is currently locked and queued for execution" errors
-- When background jobs don't complete properly
-
 **Note:** The `update` command automatically clears locks after completion, so manual unlocking is typically only needed for interrupted operations.
 
 ---
 
-#### `run`
+### `run` - Execute Bench Commands
 
 Executes bench commands inside a project's frappe container.
 
-**Usage:**
-
 ```bash
-cwcli run [PROJECT_NAME] [BENCH_COMMANDS]...
+cwcli run [OPTIONS] PROJECT_NAME BENCH_ARGS...
 ```
 
 **Arguments:**
 
-| Argument       | Description                               |
-|----------------|-------------------------------------------|
-| `PROJECT_NAME` | The Docker Compose project name. |
-| `BENCH_COMMANDS` | Bench command and arguments to run. |
+| Argument | Description |
+|----------|-------------|
+| `PROJECT_NAME` | The Docker Compose project name (required) |
+| `BENCH_ARGS` | Bench command and arguments to run (required) |
 
 **Options:**
 
-| Option      | Description                               |
-|-------------|-------------------------------------------|
-| `--path`, `-p` | Path to the bench directory inside the container (default: /workspace/frappe-bench). |
-| `--verbose`, `-v` | Enable verbose output. |
+| Option | Description |
+|--------|-------------|
+| `-p`, `--path TEXT` | Path to the bench directory inside the container (default: `/workspace/frappe-bench`) |
+| `-v`, `--verbose` | Enable verbose output |
+
+**Examples:**
+
+```bash
+# Run bench migrate
+cwcli run frappe-one migrate
+
+# Run bench with specific site
+cwcli run frappe-one --site development.localhost migrate
+
+# Execute a custom bench command
+cwcli run frappe-one console
+
+# Use custom bench path
+cwcli run frappe-one migrate --path /workspace/custom-bench
+```
+
+---
+
+### `status` - Check Health Status
+
+Checks the health status of a Frappe project instance.
+
+```bash
+cwcli status [OPTIONS] PROJECT_NAME
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `PROJECT_NAME` | The Docker Compose project name to check (required) |
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `-v`, `--verbose` | Show the health-check command, raw curl output, and explain the reported status |
+
+**Status Values:**
+
+- **`offline`** - Container is not running
+- **`online`** - Container is running but HTTP probe failed
+- **`running`** - Container is running and HTTP probe succeeded
 
 **Example:**
 
 ```bash
-cwcli run frappe-one migrate
+cwcli status frappe-one
 ```
 
 ---
 
-#### `status`
+### `config` - Manage Configuration
 
-Checks the health status of a Frappe project instance.
-
-**Usage:**
-
-```bash
-cwcli status [PROJECT_NAME]
-```
-
-**Arguments:**
-
-| Argument       | Description                               |
-|----------------|-------------------------------------------|
-| `PROJECT_NAME` | The Docker Compose project name to check. |
-
-**Options:**
-
-| Option      | Description                               |
-|-------------|-------------------------------------------|
-| `--verbose`, `-v` | Show the health-check command, raw curl output, and explain the reported status. |
-
-**Expected Output:**
-
-- `offline`: Container is not running
-- `online`: Container is running but HTTP probe failed
-- `running`: Container is running and HTTP probe succeeded
-
----
-
-#### `config`
-
-Manages the CLI configuration.
-
-**Usage:**
+Manages the CLI configuration and cache.
 
 ```bash
 cwcli config [SUBCOMMAND]
 ```
 
-**Subcommands:**
+#### Subcommands
 
-*   **`path`**: Displays the path to the configuration file.
-*   **`add-path`**: Adds a custom bench search path to the configuration.
-*   **`remove-path`**: Removes a custom bench search path from the configuration.
-*   **`cache`**: Manages the cache.
+##### `config path` - Show Config Path
+
+Displays the path to the configuration file.
+
+```bash
+cwcli config path
+```
+
+##### `config add-path` - Add Custom Bench Path
+
+Adds a custom bench search path to the configuration.
+
+```bash
+cwcli config add-path PATH
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `PATH` | The absolute path to add to the custom search paths (required) |
+
+**Example:**
+
+```bash
+cwcli config add-path /home/user/custom-bench
+```
+
+##### `config remove-path` - Remove Custom Bench Path
+
+Removes a custom bench search path from the configuration.
+
+```bash
+cwcli config remove-path PATH
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `PATH` | The path to remove from the custom search paths (required) |
+
+**Example:**
+
+```bash
+cwcli config remove-path /home/user/custom-bench
+```
+
+##### `config cache` - Manage Cache
+
+Manages the cache for project inspection data.
+
+```bash
+cwcli config cache [SUBCOMMAND]
+```
+
+**Cache Subcommands:**
+
+- **`clear [PROJECT_NAME]`** - Clear cache for a specific project or the entire cache
+  - Options: `-a`, `--all` - Clear the entire cache
+  - Example: `cwcli config cache clear frappe-one`
+  - Example: `cwcli config cache clear --all`
+
+- **`path`** - Display the path to the cache file
+  - Example: `cwcli config cache path`
+
+- **`list`** - List all projects currently in the cache
+  - Example: `cwcli config cache list`
+
+---
+
+## Tips and Tricks
+
+### Piping Commands
+
+Many commands support piping project names from stdin:
+
+```bash
+# Start all projects
+cwcli ls --quiet | cwcli start
+
+# Stop specific projects using grep
+cwcli ls --quiet | grep "frappe-" | cwcli stop
+```
+
+### Scripting with JSON
+
+Use JSON output for programmatic access:
+
+```bash
+# Get project data as JSON
+cwcli ls --json | jq '.[] | select(.status=="running")'
+
+# Parse inspect output
+cwcli inspect frappe-one --json | jq '.benches[0].sites'
+```
+
+### Verbose Mode for Debugging
+
+Use `-v` flag on any command to see detailed diagnostic output:
+
+```bash
+cwcli start frappe-one -v
+cwcli update frappe-one --app erpnext -v
+```
+
+### Shell Completion
+
+Install shell completion for faster command entry:
+
+```bash
+cwcli --install-completion
+```
+
+## Architecture
+
+The CLI uses:
+
+- **Docker SDK for Python** - Container management
+- **Typer** - CLI framework with type hints
+- **Rich** - Terminal formatting and spinners
+- **Questionary** - Interactive prompts
+- **Peewee ORM** - SQLite-based caching
+
+**Cache Location:** `~/caffeinated-whale-cli/cache/cwc-cache.db`
 
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
+## Contributing
+
+Contributions are welcome! Please open an issue or submit a pull request on [GitHub](https://github.com/karotkriss/caffeinated-whale-cli).
