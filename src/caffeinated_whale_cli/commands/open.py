@@ -5,13 +5,16 @@ from ..utils import vscode_utils, db_utils
 from .utils import ensure_containers_running
 from ..utils.docker_utils import get_project_containers
 from ..utils.docker_utils import handle_docker_errors
+from ..utils.completion_utils import complete_project_names, complete_app_names
 
 stderr_console = Console(stderr=True)
 
 
 @handle_docker_errors
 def open_bench(
-    project_name: str = typer.Argument(..., help="The Docker Compose project name to open."),
+    project_name: str = typer.Argument(
+        ..., help="The Docker Compose project name to open.", autocompletion=complete_project_names
+    ),
     bench_path: str = typer.Option(
         None,
         "--path",
@@ -23,6 +26,7 @@ def open_bench(
         "--app",
         "-a",
         help="App name to open (opens the app's directory within the bench)",
+        autocompletion=complete_app_names,
     ),
     verbose: bool = typer.Option(
         False,

@@ -669,11 +669,53 @@ cwcli update frappe-one --app erpnext -v
 
 ### Shell Completion
 
-Install shell completion for faster command entry:
+cwcli supports intelligent tab completion for project names, apps, and sites across all shells (Bash, Zsh, Fish, PowerShell).
+
+**One-time setup:**
 
 ```bash
+# Install completion for your current shell
 cwcli --install-completion
+
+# Restart your shell or source your shell config
+source ~/.bashrc  # For Bash
+source ~/.zshrc   # For Zsh
 ```
+
+**What gets completed:**
+
+- **Project names** - All commands that accept project names (start, stop, restart, inspect, logs, open, status, run, update, unlock)
+- **App names** - Commands with `--app` option (open, update)
+- **Site names** - Commands with `--site` option (unlock)
+
+**Examples:**
+
+```bash
+# Press TAB after typing partial project name
+cwcli start frap<TAB>
+# Completes to: cwcli start frappe-one
+
+# Press TAB to see available apps for a project
+cwcli update frappe-one --app <TAB>
+# Shows: erpnext  frappe  hrms  custom_app
+
+# Press TAB to see available sites
+cwcli unlock frappe-one --site <TAB>
+# Shows: site1.localhost  site2.localhost
+```
+
+**How it works:**
+
+- **Projects**: Queried from Docker containers in real-time
+- **Apps/Sites**: Loaded from cached project data (run `cwcli inspect` first)
+- **Fast & Context-aware**: Completions adapt based on the project specified
+
+**Troubleshooting:**
+
+If completion doesn't work:
+1. Ensure you've run `cwcli --install-completion`
+2. Restart your shell
+3. For apps/sites, run `cwcli inspect <project>` to populate the cache
 
 ## Architecture
 

@@ -7,16 +7,20 @@ from ..utils.docker_utils import get_project_containers
 from ..utils.docker_utils import handle_docker_errors
 from ..utils import db_utils
 from ..utils.console import console, stderr_console
+from ..utils.completion_utils import complete_project_names, complete_site_names
 
 
 @handle_docker_errors
 def unlock(
-    project_name: str = typer.Argument(..., help="The Docker Compose project name."),
+    project_name: str = typer.Argument(
+        ..., help="The Docker Compose project name.", autocompletion=complete_project_names
+    ),
     site: str = typer.Option(
         ...,
         "--site",
         "-s",
         help="Site name to unlock (removes the locks folder).",
+        autocompletion=complete_site_names,
     ),
     bench_path: str = typer.Option(
         None,

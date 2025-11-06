@@ -4,12 +4,15 @@ from .utils import ensure_containers_running
 from ..utils.docker_utils import get_project_containers
 from ..utils.docker_utils import handle_docker_errors
 from ..utils.console import console, stderr_console
+from ..utils.completion_utils import complete_project_names
 
 
 @handle_docker_errors
 def logs(
     project_name: str = typer.Argument(
-        ..., help="The name of the Frappe project to view logs for."
+        ...,
+        help="The name of the Frappe project to view logs for.",
+        autocompletion=complete_project_names,
     ),
     follow: bool = typer.Option(
         True,
