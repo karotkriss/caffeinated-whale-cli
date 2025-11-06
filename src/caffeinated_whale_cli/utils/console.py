@@ -1,4 +1,5 @@
 """Shared console instances for consistent output across all commands."""
+
 from rich.console import Console
 
 # Shared console instances

@@ -1,7 +1,7 @@
 import typer
 import sys
 from typing import List
-from .utils import get_project_containers
+from ..utils.docker_utils import get_project_containers
 from ..utils.docker_utils import handle_docker_errors
 from .stop import _stop_project
 from .start import _start_project
@@ -24,10 +24,14 @@ def _restart_project(project_name: str, verbose: bool = False, status=None):
 
     if running_containers:
         if verbose:
-            stderr_console.print(f"[dim]VERBOSE: Found {len(running_containers)} running container(s) for '{project_name}'[/dim]")
+            stderr_console.print(
+                f"[dim]VERBOSE: Found {len(running_containers)} running container(s) for '{project_name}'[/dim]"
+            )
     else:
         if verbose:
-            stderr_console.print(f"[dim]VERBOSE: No running containers found for '{project_name}'[/dim]")
+            stderr_console.print(
+                f"[dim]VERBOSE: No running containers found for '{project_name}'[/dim]"
+            )
 
     # Stop then start
     stopped = _stop_project(project_name, verbose=verbose, status=status)
@@ -81,7 +85,9 @@ def restart(
     )
 
     for name in project_names_to_process:
-        with stderr_console.status(f"[bold cyan]Restarting '{name}'...[/bold cyan]", spinner="dots") as status:
+        with stderr_console.status(
+            f"[bold cyan]Restarting '{name}'...[/bold cyan]", spinner="dots"
+        ) as status:
             log_file, stopped = _restart_project(name, verbose=actual_verbose, status=status)
 
         # Print outside spinner context

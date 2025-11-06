@@ -1,7 +1,7 @@
 import typer
 import sys
 from typing import List
-from .utils import get_project_containers
+from ..utils.docker_utils import get_project_containers
 from ..utils.docker_utils import handle_docker_errors
 from ..utils.console import console, stderr_console
 
@@ -21,11 +21,15 @@ def _stop_project(project_name: str, verbose: bool = False, status=None):
     running_containers = [c for c in containers if c.status == "running"]
 
     if verbose:
-        stderr_console.print(f"[dim]VERBOSE: Found {len(containers)} total container(s), {len(running_containers)} running[/dim]")
+        stderr_console.print(
+            f"[dim]VERBOSE: Found {len(containers)} total container(s), {len(running_containers)} running[/dim]"
+        )
 
     if not running_containers:
         if verbose:
-            stderr_console.print(f"[dim]VERBOSE: No running containers to stop for '{project_name}'[/dim]")
+            stderr_console.print(
+                f"[dim]VERBOSE: No running containers to stop for '{project_name}'[/dim]"
+            )
         console.print(f"Instance '{project_name}' is already stopped.")
         return 0
 
@@ -84,7 +88,9 @@ def stop(
     )
 
     for name in project_names_to_process:
-        with stderr_console.status(f"[bold yellow]Stopping '{name}'...[/bold yellow]", spinner="dots") as status:
+        with stderr_console.status(
+            f"[bold yellow]Stopping '{name}'...[/bold yellow]", spinner="dots"
+        ) as status:
             result = _stop_project(name, verbose=actual_verbose, status=status)
 
         # Print outside spinner context
