@@ -40,6 +40,8 @@ import questionary
 import typer
 from rich.console import Console
 
+from caffeinated_whale_cli.commands.config import add_path
+
 from ..utils import db_utils
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import get_project_containers, handle_docker_errors
@@ -379,6 +381,9 @@ def init(
     bench_parent_path = bench_parent.rstrip("/") or "/workspace"
     bench_full_path = f"{bench_parent_path}/{inputs.bench_name}"
 
+    # Add path to config for open to work
+    added_path = add_path(bench_full_path)
+     
     try:
         # Create parent directory inside the container
         _ensure_directory(frappe_container, bench_parent_path)
