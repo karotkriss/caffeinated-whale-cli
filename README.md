@@ -735,4 +735,31 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 ## Contributing
 
-Contributions are welcome! Please open an issue or submit a pull request on [GitHub](https://github.com/karotkriss/caffeinated-whale-cli).
+Contributions are welcome! Please see our [Contributing Guide](./CONTRIBUTING.md) for detailed information.
+
+**Quick Links:**
+- [Git Workflow](./docs/contributing/git-workflow.md) - Complete contribution workflow
+- [Commit Messages](./docs/contributing/commit-messages.md) - Conventional commit standards
+- [Code Quality](./docs/contributing/code-quality.md) - Formatting with Black, linting with Ruff
+- [Testing Guide](./docs/testing/guide.md) - How to write and run tests
+- [CI/CD](./docs/contributing/ci-cd.md) - GitHub Actions workflows
+
+**Getting Started:**
+
+```bash
+# Clone the repository
+git clone https://github.com/karotkriss/caffeinated-whale-cli.git
+cd caffeinated-whale-cli
+
+# Install dependencies
+uv sync --all-extras
+
+# Run tests
+uv run pytest --cov
+
+# Format and lint
+uv run black src/ tests/
+uv run ruff check src/ --fix
+```
+
+For questions or issues, please open an issue on [GitHub](https://github.com/karotkriss/caffeinated-whale-cli).
