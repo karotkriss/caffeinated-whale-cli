@@ -32,6 +32,7 @@ Complete contributing documentation is available in the [`docs/contributing/`](.
 - **[Git Workflow Guide](./docs/contributing/git-workflow.md)** - Complete workflow, PR process, release workflow
 - **[Commit Message Guide](./docs/contributing/commit-messages.md)** - How to write conventional commits
 - **[Branch Naming Guide](./docs/contributing/branch-naming.md)** - Branch naming standards
+- **[Code Quality Guide](./docs/contributing/code-quality.md)** - Formatting with Black, linting with Ruff
 - **[Chores Guide](./docs/contributing/chores.md)** - Maintenance task management
 
 ## Commit Messages
