@@ -1,0 +1,391 @@
+# Technical Documentation
+
+This directory contains technical documentation, API references, and deep-dives into the caffeinated-whale-cli architecture.
+
+## Current Documentation
+
+| Document | Purpose | Topics Covered |
+|----------|---------|----------------|
+| **[Bench Management](./bench.md)** | Bench system deep-dive | Bench instances, sites, apps, cache system |
+
+## Overview
+
+Caffeinated Whale CLI is a command-line tool for managing Frappe/ERPNext Docker instances during local development.
+
+### Architecture
+
+```
+caffeinated-whale-cli/
+├── src/caffeinated_whale_cli/
+│   ├── main.py                 # CLI entry point
+│   ├── commands/               # Command implementations
+│   │   ├── start.py           # Start containers + port detection
+│   │   ├── stop.py            # Stop containers
+│   │   ├── inspect.py         # Project inspection
+│   │   ├── update.py          # App updates + migrations
+│   │   └── ...                # Other commands
+│   └── utils/                  # Utility modules
+│       ├── docker_utils.py    # Docker client management
+│       ├── port_utils.py      # Port conflict detection
+│       ├── db_utils.py        # SQLite cache
+│       ├── completion_utils.py # Tab completion
+│       └── ...                # Other utilities
+└── tests/                      # Test suite
+```
+
+### Technology Stack
+
+- **Python 3.10+** - Runtime
+- **Typer** - CLI framework
+- **Rich** - Terminal formatting
+- **Questionary** - Interactive prompts
+- **Docker SDK for Python** - Container management
+- **Peewee ORM** - SQLite caching
+- **pytest** - Testing framework
+
+### Core Systems
+
+#### 1. Docker Container Management
+
+**Module:** `utils/docker_utils.py`
+
+Manages Docker container lifecycle:
+- Container discovery via labels
+- Status checking
+- Start/stop operations
+- Error handling
+
+#### 2. Port Conflict Detection
+
+**Module:** `utils/port_utils.py`, `commands/start.py`
+
+Intelligent port conflict detection:
+- Detects Frappe project conflicts
+- Detects external process conflicts
+- Interactive resolution
+- Cross-platform process identification
+
+#### 3. Project Inspection & Caching
+
+**Modules:** `commands/inspect.py`, `utils/db_utils.py`
+
+Project structure discovery and caching:
+- Finds bench instances
+- Discovers sites and apps
+- SQLite-based caching
+- Cache invalidation
+
+See [Bench Management](./bench.md) for detailed documentation.
+
+#### 4. Tab Completion
+
+**Module:** `utils/completion_utils.py`
+
+Context-aware tab completion:
+- Project names from Docker
+- Apps/sites from cache
+- 2-second TTL caching
+- Cross-shell support
+
+See [Testing Guide](../testing/guide.md) for test coverage details.
+
+#### 5. VS Code Integration
+
+**Module:** `utils/vscode_utils.py`
+
+Development container integration:
+- Auto-detects VS Code/Insiders
+- Extension installation
+- Container attachment
+- Fallback to docker exec
+
+### Command Architecture
+
+Each command follows this pattern:
+
+```python
+import typer
+from ..utils.docker_utils import handle_docker_errors
+
+@handle_docker_errors
+def command_name(
+    project_name: str = typer.Argument(...),
+    option: bool = typer.Option(False),
+):
+    """Command description."""
+    # 1. Validate inputs
+    # 2. Get Docker containers
+    # 3. Perform operations
+    # 4. Handle errors
+    # 5. Display results
+```
+
+### Error Handling
+
+**Decorator Pattern:**
+
+```python
+@handle_docker_errors
+def my_command():
+    # Automatically handles:
+    # - Docker not installed
+    # - Docker daemon not running
+    # - Connection errors
+    pass
+```
+
+### Cache System
+
+**Location:** `~/caffeinated-whale-cli/cache/cwc-cache.db`
+
+**Schema:**
+```sql
+Project
+  └── Bench
+      ├── AvailableApp
+      └── Site
+          └── InstalledAppDetail
+```
+
+**Operations:**
+- `db_utils.cache_project_data()` - Store
+- `db_utils.get_cached_project_data()` - Retrieve
+- `db_utils.clear_cache_for_project()` - Invalidate
+
+### Configuration
+
+**Location:** `~/caffeinated-whale-cli/config/`
+
+**Customization:**
+- Custom bench search paths
+- Project-specific settings
+
+### Performance Considerations
+
+1. **Docker Queries** - Use sparse=True for faster queries
+2. **Caching** - 2-second TTL for completion, persistent for project data
+3. **Process Detection** - Platform-specific optimizations
+
+### Security
+
+1. **Docker Socket** - Requires Docker daemon access
+2. **No Credentials** - CLI doesn't store credentials
+3. **Local Only** - Designed for local development
+
+## API Reference
+
+### Docker Utilities
+
+```python
+from caffeinated_whale_cli.utils.docker_utils import (
+    get_project_containers,
+    handle_docker_errors,
+)
+
+# Get containers for a project
+containers = get_project_containers("frappe-one")
+
+# Use error handling decorator
+@handle_docker_errors
+def my_function():
+    pass
+```
+
+### Database Utilities
+
+```python
+from caffeinated_whale_cli.utils.db_utils import (
+    cache_project_data,
+    get_cached_project_data,
+    clear_cache_for_project,
+)
+
+# Cache project data
+cache_project_data(project_name, bench_instances_data)
+
+# Retrieve cached data
+cached_data = get_cached_project_data(project_name)
+
+# Clear cache
+clear_cache_for_project(project_name)
+```
+
+### Completion Utilities
+
+```python
+from caffeinated_whale_cli.utils.completion_utils import (
+    complete_project_names,
+    complete_app_names,
+    complete_site_names,
+)
+
+# Get project names (from Docker)
+projects = complete_project_names()
+
+# Get app names (from cache, requires context)
+apps = complete_app_names(typer_context)
+```
+
+## Design Patterns
+
+### 1. Decorator Pattern
+
+Used for:
+- Error handling (`@handle_docker_errors`)
+- Caching (internal)
+
+### 2. Factory Pattern
+
+Used for:
+- Docker client creation
+- Database connections
+
+### 3. Repository Pattern
+
+Used for:
+- Cache operations (db_utils)
+
+### 4. Command Pattern
+
+Used for:
+- CLI commands (Typer structure)
+
+## Development Guidelines
+
+### Adding a New Command
+
+1. Create file in `src/caffeinated_whale_cli/commands/`
+2. Implement command function with Typer decorators
+3. Add `@handle_docker_errors` decorator
+4. Register in `main.py`
+5. Add tests
+6. Update documentation
+
+Example:
+```python
+# commands/mycommand.py
+import typer
+from ..utils.docker_utils import handle_docker_errors
+
+@handle_docker_errors
+def mycommand(
+    project_name: str = typer.Argument(...),
+):
+    """Description of command."""
+    # Implementation
+    pass
+
+# main.py
+from .commands.mycommand import mycommand
+app.command("mycommand")(mycommand)
+```
+
+### Adding a New Utility
+
+1. Create module in `src/caffeinated_whale_cli/utils/`
+2. Follow existing patterns
+3. Add comprehensive docstrings
+4. Write tests (80%+ coverage)
+5. Update technical docs
+
+## Testing
+
+See [Testing Documentation](../testing/) for comprehensive testing guides.
+
+**Quick reference:**
+- **Unit tests** - Test individual functions
+- **Integration tests** - Test command workflows
+- **Mocking** - Mock Docker, filesystem, external APIs
+
+## Future Architecture Plans
+
+### Planned Enhancements
+
+1. **Plugin System** - Allow custom commands
+2. **Configuration API** - Programmatic configuration
+3. **Async Operations** - Parallel container operations
+4. **Webhook Support** - Event notifications
+5. **API Mode** - Run as HTTP API
+
+### Scalability
+
+Current design supports:
+- Multiple projects simultaneously
+- Large bench instances
+- Many containers
+- Cross-platform operation
+
+## Debugging
+
+### Enable Verbose Mode
+
+Most commands support `-v` or `--verbose`:
+
+```bash
+cwcli start frappe-one -v
+cwcli inspect frappe-one -v
+```
+
+### Check Cache
+
+```bash
+# View cache database
+sqlite3 ~/caffeinated-whale-cli/cache/cwc-cache.db
+
+# List cached projects
+.tables
+SELECT * FROM project;
+```
+
+### Docker Issues
+
+```bash
+# Check Docker is running
+docker ps
+
+# Check Docker version
+docker --version
+
+# Test Docker SDK
+python -c "import docker; docker.from_env().ping()"
+```
+
+## Performance Metrics
+
+### Typical Operation Times
+
+| Operation | Time | Notes |
+|-----------|------|-------|
+| `ls` | <1s | Fast label queries |
+| `start` | 2-5s | Container startup time |
+| `inspect` (first) | 3-8s | Docker exec queries |
+| `inspect` (cached) | <1s | SQLite lookup |
+| Tab completion | <200ms | 2s TTL cache |
+
+### Optimization Opportunities
+
+1. **Parallel container operations** - Start/stop multiple at once
+2. **Batch Docker queries** - Reduce API calls
+3. **Incremental cache updates** - Don't re-inspect everything
+
+## Contributing
+
+See [Contributing Guide](../contributing/) for:
+- Code style guidelines
+- Commit message format
+- Testing requirements
+- Review process
+
+## Resources
+
+- [Bench Management](./bench.md) - Detailed bench system docs
+- [Testing Guide](../testing/guide.md) - Testing documentation
+- [API Documentation](https://docs.python.org/3/) - Python standard library
+- [Typer Documentation](https://typer.tiangolo.com/) - CLI framework
+- [Docker SDK Documentation](https://docker-py.readthedocs.io/) - Docker Python SDK
+
+## Questions?
+
+- **Issues:** Report on [GitHub Issues](https://github.com/karotkriss/caffeinated-whale-cli/issues)
+- **Discussions:** Start a discussion on GitHub
+- **Documentation:** Check other guides in `docs/`
