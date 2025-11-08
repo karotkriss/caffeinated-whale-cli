@@ -18,6 +18,7 @@ docs/
 │   ├── git-workflow.md    # Complete workflow guide
 │   ├── commit-messages.md # Commit message conventions
 │   ├── branch-naming.md   # Branch naming standards
+│   ├── code-quality.md    # Formatting, linting, standards
 │   └── chores.md          # Maintenance task management
 │
 ├── testing/               # Testing documentation
@@ -40,6 +41,7 @@ Everything you need to contribute to the project.
 | **[Git Workflow](./contributing/git-workflow.md)** | Complete contribution workflow | You're new to contributing |
 | **[Commit Messages](./contributing/commit-messages.md)** | How to write commit messages | You need commit help |
 | **[Branch Naming](./contributing/branch-naming.md)** | How to name branches | You're creating a branch |
+| **[Code Quality](./contributing/code-quality.md)** | Formatting, linting, standards | You're writing code |
 | **[Chores](./contributing/chores.md)** | Maintenance tasks | You're doing version bumps |
 
 ### Quick Reference

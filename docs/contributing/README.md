@@ -21,6 +21,7 @@ Welcome! This directory contains all documentation related to contributing to th
 | **[Git Workflow](./git-workflow.md)** | Complete workflow overview | You're new to contributing |
 | **[Commit Messages](./commit-messages.md)** | How to write commits | You need commit message help |
 | **[Branch Naming](./branch-naming.md)** | How to name branches | You're creating a new branch |
+| **[Code Quality](./code-quality.md)** | Formatting, linting, standards | You're writing code |
 | **[Chores](./chores.md)** | Maintenance tasks | You're doing version bumps or maintenance |
 
 ### Workflow Overview
