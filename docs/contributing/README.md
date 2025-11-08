@@ -23,6 +23,7 @@ Welcome! This directory contains all documentation related to contributing to th
 | **[Branch Naming](./branch-naming.md)** | How to name branches | You're creating a new branch |
 | **[Code Quality](./code-quality.md)** | Formatting, linting, standards | You're writing code |
 | **[Chores](./chores.md)** | Maintenance tasks | You're doing version bumps or maintenance |
+| **[CI/CD](./ci-cd.md)** | GitHub Actions workflows | You're setting up CI or releasing |
 
 ### Workflow Overview
 

@@ -19,7 +19,8 @@ docs/
 │   ├── commit-messages.md # Commit message conventions
 │   ├── branch-naming.md   # Branch naming standards
 │   ├── code-quality.md    # Formatting, linting, standards
-│   └── chores.md          # Maintenance task management
+│   ├── chores.md          # Maintenance task management
+│   └── ci-cd.md           # GitHub Actions & releases
 │
 ├── testing/               # Testing documentation
 │   ├── guide.md          # Complete testing guide
@@ -43,6 +44,7 @@ Everything you need to contribute to the project.
 | **[Branch Naming](./contributing/branch-naming.md)** | How to name branches | You're creating a branch |
 | **[Code Quality](./contributing/code-quality.md)** | Formatting, linting, standards | You're writing code |
 | **[Chores](./contributing/chores.md)** | Maintenance tasks | You're doing version bumps |
+| **[CI/CD](./contributing/ci-cd.md)** | GitHub Actions workflows | You're setting up CI or releasing |
 
 ### Quick Reference
 
@@ -298,9 +300,11 @@ See [Contributing Guides](./contributing/) for detailed decision trees.
 
 ### Latest Additions
 - ✅ Reorganized documentation into categories
+- ✅ CI/CD Documentation - GitHub Actions workflows and automation
 - ✅ Git Workflow Guide - Complete workflow documentation
 - ✅ Commit Message Guide - Conventional commit standards
 - ✅ Branch Naming Guide - Branch naming conventions
+- ✅ Code Quality Guide - Black and Ruff standards
 - ✅ Chores Guide - Maintenance task management
 - ✅ Testing Guide - Comprehensive testing documentation
 - ✅ Category READMEs - Quick navigation for each section
@@ -317,7 +321,7 @@ See [Contributing Guides](./contributing/) for detailed decision trees.
 - 📝 Add tests for Docker utilities
 - 📝 Integration tests for commands
 - 📝 Performance benchmarks
-- 📝 CI/CD pipeline documentation
+- 📝 API reference documentation
 
 ## Contributing to Documentation
 
