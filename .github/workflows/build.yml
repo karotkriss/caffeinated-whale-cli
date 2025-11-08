@@ -1,0 +1,67 @@
+name: Build
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:  # Allow manual triggers
+
+jobs:
+  build:
+    name: Build Package
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/astral-sh/uv:python3.12-bookworm
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Verify version consistency
+        run: |
+          # Extract version from __init__.py
+          INIT_VERSION=$(grep -oP '__version__ = "\K[^"]+' src/caffeinated_whale_cli/__init__.py)
+          echo "Version in __init__.py: $INIT_VERSION"
+
+          # Extract version from pyproject.toml
+          TOML_VERSION=$(grep -oP '^version = "\K[^"]+' pyproject.toml)
+          echo "Version in pyproject.toml: $TOML_VERSION"
+
+          # Compare versions
+          if [ "$INIT_VERSION" != "$TOML_VERSION" ]; then
+            echo "::error::Version mismatch! __init__.py has $INIT_VERSION but pyproject.toml has $TOML_VERSION"
+            exit 1
+          fi
+
+          echo "VERSION=$INIT_VERSION" >> $GITHUB_ENV
+
+      - name: Build wheel and sdist
+        run: uv build
+
+      - name: Verify build artifacts
+        run: |
+          echo "Build artifacts:"
+          ls -lh dist/
+
+          # Verify wheel and sdist were created
+          if [ ! -f dist/*.whl ] || [ ! -f dist/*.tar.gz ]; then
+            echo "::error::Build artifacts missing!"
+            exit 1
+          fi
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ env.VERSION }}
+          path: dist/
+          retention-days: 30
+
+      - name: Create build summary
+        run: |
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ env.VERSION }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Artifacts:**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          ls -lh dist/ >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
