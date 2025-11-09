@@ -3,7 +3,7 @@ from rich.console import Console
 
 from ..utils import vscode_utils, db_utils
 from .utils import ensure_containers_running
-from ..utils.docker_utils import get_project_containers
+from ..utils.docker_utils import get_project_containers, exec_into_container
 from ..utils.docker_utils import handle_docker_errors
 from ..utils.completion_utils import complete_project_names, complete_app_names
 
@@ -281,7 +281,7 @@ def open_bench(
     if editor == "docker":
         # Open with docker exec
         stderr_console.print(f"[bold green]Opening shell in {container_name}...[/bold green]")
-        vscode_utils.exec_into_container(container_name)
+        exec_into_container(container_name, working_dir=bench_path)
     else:
         # Open in VS Code with Dev Containers
         vscode_utils.open_in_vscode(editor, container_name, bench_path, verbose=verbose)

@@ -71,3 +71,22 @@ def get_project_containers(
 
     except DockerException:
         return None
+
+
+def exec_into_container(container_name: str, working_dir: str = None) -> None:
+    """
+    Execute into a Docker container using bash.
+
+    Args:
+        container_name: Docker container name
+        working_dir: Working directory to start in (optional)
+    """
+    import os
+
+    typer.echo(f"Opening shell in {container_name}...")
+
+    if working_dir:
+        # Use -w flag to set working directory
+        os.execvp("docker", ["docker", "exec", "-it", "-w", working_dir, container_name, "bash"])
+    else:
+        os.execvp("docker", ["docker", "exec", "-it", container_name, "bash"])
