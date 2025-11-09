@@ -96,6 +96,8 @@ def _is_macos_startup_installed() -> bool:
 
 def _install_macos_startup() -> bool:
     """Install macOS LaunchAgent plist file."""
+    import subprocess
+
     plist_path = _get_macos_plist_path()
     plist_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -130,20 +132,21 @@ def _install_macos_startup() -> bool:
         f.write(plist_content)
 
     # Load the LaunchAgent
-    os.system(f"launchctl load {plist_path}")
-
-    return True
+    result = subprocess.run(["launchctl", "load", str(plist_path)], capture_output=True)
+    return result.returncode == 0
 
 
 def _uninstall_macos_startup() -> bool:
     """Remove macOS LaunchAgent plist file."""
+    import subprocess
+
     plist_path = _get_macos_plist_path()
 
     if not plist_path.exists():
         return False
 
     # Unload the LaunchAgent
-    os.system(f"launchctl unload {plist_path}")
+    subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True)
 
     # Remove the plist file
     plist_path.unlink()
@@ -167,6 +170,8 @@ def _is_linux_startup_installed() -> bool:
 
 def _install_linux_startup() -> bool:
     """Install Linux systemd user service."""
+    import subprocess
+
     service_path = _get_linux_service_path()
     service_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -191,29 +196,43 @@ WantedBy=default.target
         f.write(service_content)
 
     # Reload systemd and enable the service
-    os.system("systemctl --user daemon-reload")
-    os.system("systemctl --user enable caffeinated-whale-cli-auto-inspect.service")
-    os.system("systemctl --user start caffeinated-whale-cli-auto-inspect.service")
+    subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+    subprocess.run(
+        ["systemctl", "--user", "enable", "caffeinated-whale-cli-auto-inspect.service"],
+        capture_output=True,
+    )
+    result = subprocess.run(
+        ["systemctl", "--user", "start", "caffeinated-whale-cli-auto-inspect.service"],
+        capture_output=True,
+    )
 
-    return True
+    return result.returncode == 0
 
 
 def _uninstall_linux_startup() -> bool:
     """Remove Linux systemd user service."""
+    import subprocess
+
     service_path = _get_linux_service_path()
 
     if not service_path.exists():
         return False
 
     # Stop and disable the service
-    os.system("systemctl --user stop caffeinated-whale-cli-auto-inspect.service")
-    os.system("systemctl --user disable caffeinated-whale-cli-auto-inspect.service")
+    subprocess.run(
+        ["systemctl", "--user", "stop", "caffeinated-whale-cli-auto-inspect.service"],
+        capture_output=True,
+    )
+    subprocess.run(
+        ["systemctl", "--user", "disable", "caffeinated-whale-cli-auto-inspect.service"],
+        capture_output=True,
+    )
 
     # Remove the service file
     service_path.unlink()
 
     # Reload systemd
-    os.system("systemctl --user daemon-reload")
+    subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
 
     return True
 
