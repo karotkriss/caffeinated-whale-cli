@@ -11,6 +11,7 @@ using platform-specific mechanisms:
 import os
 import sys
 import platform
+import subprocess
 from pathlib import Path
 import shutil
 
@@ -97,8 +98,6 @@ def _is_macos_startup_installed() -> bool:
 
 def _install_macos_startup() -> bool:
     """Install macOS LaunchAgent plist file."""
-    import subprocess
-
     plist_path = _get_macos_plist_path()
     plist_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -133,14 +132,17 @@ def _install_macos_startup() -> bool:
         f.write(plist_content)
 
     # Load the LaunchAgent
-    result = subprocess.run(["launchctl", "load", str(plist_path)], capture_output=True)
+    result = subprocess.run(["launchctl", "load", str(plist_path)], capture_output=True, text=True)
+    if result.returncode != 0 and result.stderr:
+        # Log error for debugging but still return the result
+        import sys
+
+        print(f"launchctl load failed: {result.stderr}", file=sys.stderr)
     return result.returncode == 0
 
 
 def _uninstall_macos_startup() -> bool:
     """Remove macOS LaunchAgent plist file."""
-    import subprocess
-
     plist_path = _get_macos_plist_path()
 
     if not plist_path.exists():
@@ -174,8 +176,6 @@ def _is_linux_startup_installed() -> bool:
 
 def _install_linux_startup() -> bool:
     """Install Linux systemd user service."""
-    import subprocess
-
     service_path = _get_linux_service_path()
     service_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -200,29 +200,37 @@ WantedBy=default.target
         f.write(service_content)
 
     # Reload systemd and enable the service
-    result = subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+    result = subprocess.run(
+        ["systemctl", "--user", "daemon-reload"], capture_output=True, text=True
+    )
     if result.returncode != 0:
+        if result.stderr:
+            print(f"systemctl daemon-reload failed: {result.stderr}", file=sys.stderr)
         return False
 
     result = subprocess.run(
         ["systemctl", "--user", "enable", "caffeinated-whale-cli-auto-inspect.service"],
         capture_output=True,
+        text=True,
     )
     if result.returncode != 0:
+        if result.stderr:
+            print(f"systemctl enable failed: {result.stderr}", file=sys.stderr)
         return False
 
     result = subprocess.run(
         ["systemctl", "--user", "start", "caffeinated-whale-cli-auto-inspect.service"],
         capture_output=True,
+        text=True,
     )
+    if result.returncode != 0 and result.stderr:
+        print(f"systemctl start failed: {result.stderr}", file=sys.stderr)
 
     return result.returncode == 0
 
 
 def _uninstall_linux_startup() -> bool:
     """Remove Linux systemd user service."""
-    import subprocess
-
     service_path = _get_linux_service_path()
 
     if not service_path.exists():
@@ -254,8 +262,6 @@ def _uninstall_linux_startup() -> bool:
 
 def _is_windows_startup_installed() -> bool:
     """Check if Windows Task Scheduler task exists."""
-    import subprocess
-
     try:
         result = subprocess.run(
             ["schtasks", "/Query", "/TN", "CaffeinatedWhaleCliAutoInspect"],
@@ -269,8 +275,6 @@ def _is_windows_startup_installed() -> bool:
 
 def _install_windows_startup() -> bool:
     """Install Windows Task Scheduler task."""
-    import subprocess
-
     cwcli_path = get_cwcli_path()
 
     # Create a scheduled task that runs at logon
@@ -289,16 +293,16 @@ def _install_windows_startup() -> bool:
     ]
 
     try:
-        subprocess.run(command, check=True, capture_output=True)
+        result = subprocess.run(command, check=True, capture_output=True, text=True)
         return True
-    except subprocess.CalledProcessError:
+    except subprocess.CalledProcessError as e:
+        if e.stderr:
+            print(f"schtasks create failed: {e.stderr}", file=sys.stderr)
         return False
 
 
 def _uninstall_windows_startup() -> bool:
     """Remove Windows Task Scheduler task."""
-    import subprocess
-
     try:
         subprocess.run(
             ["schtasks", "/Delete", "/TN", "CaffeinatedWhaleCliAutoInspect", "/F"],
