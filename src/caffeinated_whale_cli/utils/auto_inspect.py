@@ -61,10 +61,16 @@ def get_pid() -> Optional[int]:
 
 def _log(message: str):
     """Write a message to the log file."""
-    _ensure_pid_dir()
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    with open(LOG_FILE, "a") as f:
-        f.write(f"[{timestamp}] {message}\n")
+    try:
+        _ensure_pid_dir()
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with open(LOG_FILE, "a") as f:
+            f.write(f"[{timestamp}] {message}\n")
+    except (OSError, IOError) as e:
+        # Fallback to stderr if logging fails
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[{timestamp}] {message}", file=sys.stderr)
+        print(f"Logging error: {e}", file=sys.stderr)
 
 
 def _get_running_projects() -> list[str]:
@@ -153,9 +159,9 @@ def start_daemon():
         os.setsid()
 
         # Redirect standard file descriptors
-        sys.stdin = open("/dev/null", "r")
-        sys.stdout = open("/dev/null", "a+")
-        sys.stderr = open("/dev/null", "a+")
+        sys.stdin = open(os.devnull, "r")
+        sys.stdout = open(os.devnull, "a+")
+        sys.stderr = open(os.devnull, "a+")
 
         # Write PID file
         _write_pid_file()
@@ -173,10 +179,14 @@ def start_daemon():
     except (AttributeError, OSError):
         # Windows or fork failed - spawn a detached subprocess
         import subprocess
-        import sys
+        import json
 
         # Get the path to the current Python interpreter and cwcli
         python_exe = sys.executable
+
+        # Safely encode the path to avoid injection issues
+        module_path = str(Path(__file__).parent.parent.parent)
+        safe_path = json.dumps(module_path)
 
         # Spawn a new detached process that runs the service loop
         # Use CREATE_NEW_PROCESS_GROUP on Windows to fully detach
@@ -191,7 +201,8 @@ def start_daemon():
                     "-c",
                     f"""
 import sys
-sys.path.insert(0, '{Path(__file__).parent.parent.parent}')
+import json
+sys.path.insert(0, json.loads({safe_path}))
 from caffeinated_whale_cli.utils.auto_inspect import _write_pid_file, _log, _run_service_loop
 
 _write_pid_file()
@@ -213,7 +224,8 @@ _run_service_loop({interval})
                     "-c",
                     f"""
 import sys
-sys.path.insert(0, '{Path(__file__).parent.parent.parent}')
+import json
+sys.path.insert(0, json.loads({safe_path}))
 from caffeinated_whale_cli.utils.auto_inspect import _write_pid_file, _log, _run_service_loop
 
 _write_pid_file()
@@ -274,7 +286,12 @@ def stop_daemon():
 
             # Force kill if still running
             if is_running():
-                os.kill(pid, signal.SIGKILL)
+                if sys.platform == "win32":
+                    # On Windows, use taskkill for force termination
+                    import subprocess
+                    subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
+                else:
+                    os.kill(pid, signal.SIGKILL)
                 _log("Auto-inspect service force killed")
         except OSError as e:
             _log(f"Error stopping service: {e}")
