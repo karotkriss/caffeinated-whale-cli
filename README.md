@@ -10,6 +10,8 @@ A command-line interface (CLI) for managing Frappe/ERPNext Docker instances duri
 - **Development Tools** - VS Code integration, log viewing, and command execution
 - **Cache System** - Fast project inspection with SQLite-based caching
 - **Update Management** - App updates with automatic migrations and lock cleanup
+- **Auto-Inspection** - Background process to keep project cache fresh automatically
+- **System Integration** - Auto-start on system boot with platform-specific configurations
 
 ## Installation
 
@@ -629,6 +631,82 @@ cwcli config cache [SUBCOMMAND]
 
 - **`list`** - List all projects currently in the cache
   - Example: `cwcli config cache list`
+
+##### `config auto-inspect` - Automatic Project Inspection
+
+Manages automatic background inspection of running Frappe projects to keep cached data fresh.
+
+```bash
+cwcli config auto-inspect [SUBCOMMAND]
+```
+
+**Auto-Inspect Subcommands:**
+
+- **`enable`** - Enable automatic project inspection
+  - Options:
+    - `--interval INTEGER` - Inspection interval in seconds (minimum 60, default 3600)
+    - `--startup` - Also enable automatic startup on system boot/login
+  - Example: `cwcli config auto-inspect enable --interval 1800 --startup`
+
+- **`disable`** - Disable automatic inspection and stop background process
+  - Example: `cwcli config auto-inspect disable`
+
+- **`start`** - Start the auto-inspect background process
+  - Options:
+    - `--startup` - Also enable automatic startup on system boot
+  - Example: `cwcli config auto-inspect start --startup`
+
+- **`stop`** - Stop the auto-inspect background process
+  - Example: `cwcli config auto-inspect stop`
+
+- **`restart`** - Restart the auto-inspect background process
+  - Example: `cwcli config auto-inspect restart`
+
+- **`status`** - Show detailed status (enabled, interval, process state, PID, startup)
+  - Example: `cwcli config auto-inspect status`
+
+- **`logs`** - View recent background process logs
+  - Options: `--lines INTEGER` - Number of log lines to show (default 20)
+  - Example: `cwcli config auto-inspect logs --lines 50`
+
+- **`set-interval`** - Change the inspection interval
+  - Example: `cwcli config auto-inspect set-interval 7200`
+
+- **`install-startup`** - Install platform-specific startup configuration
+  - Creates LaunchAgent (macOS), systemd service (Linux), or Task Scheduler task (Windows)
+  - Example: `cwcli config auto-inspect install-startup`
+
+- **`uninstall-startup`** - Remove startup configuration
+  - Example: `cwcli config auto-inspect uninstall-startup`
+
+**What it does:**
+
+The auto-inspect feature runs a background daemon process that periodically inspects all running Frappe projects. This keeps your project cache fresh for:
+- Tab completion (project names, apps, sites)
+- Project status queries
+- Other commands that rely on cached data
+
+**Quick Setup:**
+
+```bash
+# Enable with 1-hour interval and auto-start on boot
+cwcli config auto-inspect enable --interval 3600 --startup
+
+# Start the background process
+cwcli config auto-inspect start
+
+# Check status
+cwcli config auto-inspect status
+
+# View logs
+cwcli config auto-inspect logs
+```
+
+**Notes:**
+- Background process survives terminal closure
+- Process stops on system restart unless startup is enabled
+- Logs stored in `~/caffeinated-whale-cli/run/auto-inspect.log`
+- PID file stored in `~/caffeinated-whale-cli/run/auto-inspect.pid`
 
 ---
 
