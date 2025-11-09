@@ -4,6 +4,7 @@ from typing import List
 from ..utils.docker_utils import get_project_containers
 from ..utils.docker_utils import handle_docker_errors
 from ..utils.console import console, stderr_console
+from ..utils.completion_utils import complete_project_names
 
 app = typer.Typer(help="Stop a Frappe project's containers.")
 
@@ -53,7 +54,9 @@ def stop(
         help="Enable verbose diagnostic output.",
     ),
     project_name: List[str] = typer.Argument(
-        None, help="The name(s) of the Frappe project(s) to stop. Can be piped from stdin."
+        None,
+        help="The name(s) of the Frappe project(s) to stop. Can be piped from stdin.",
+        autocompletion=complete_project_names,
     ),
 ):
     """

@@ -5,7 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+<!-- ## [Unreleased] -->
+
+## [0.10.2] - 2025-11-08
+
+### Fixed
+- **Critical:** Tab completion function signatures for Typer compatibility
+  - Added required parameters (ctx, args, incomplete) to all completion functions
+  - Fixed TypeError when Typer calls completion callbacks
+  - Removed `sparse=True` from Docker query that prevented label access
+  - Fixed DockerException: "Label data is not available for sparse objects"
+
+### Changed
+- Corrected `_cache` type annotation from `Dict[str, Dict[str, Any]]` to `Dict[str, Tuple[float, List[str]]]`
+
+## [0.10.0] - 2025-11-08
+
+### Added
+- **Tab completion support** for project names, apps, and sites across all shells (Bash, Zsh, Fish, PowerShell)
+  - Context-aware completions for all commands that accept project names
+  - App name completions for `--app` option (open, update commands)
+  - Site name completions for `--site` option (unlock command)
+  - Fast completion with 2-second TTL caching
+  - Install with `cwcli --install-completion`
+- **CI/CD workflows** with GitHub Actions
+  - Lint workflow: Runs Black, Ruff, and mypy on all branches and PRs
+  - Build workflow: Builds package and verifies version consistency on master branch
+  - Release workflow: Publishes to PyPI and creates GitHub releases on version tags
+  - All workflows use `ghcr.io/astral-sh/uv` Docker images for fast, reproducible builds
+- **Comprehensive documentation** in `docs/` directory
+  - Contributing guides: git workflow, commit messages, branch naming, code quality, chores, CI/CD
+  - Testing guide with examples and best practices
+  - Technical documentation for bench management
+  - Reorganized into logical categories: contributing, testing, technical
+
+### Changed
+- Bumped version to 0.10.0
+- Enhanced main README with expanded Contributing section and quick links
+- Consolidated CI/CD documentation into minimal `docs/contributing/ci-cd.md` guide
 
 ## [0.9.1] - 2025-11-05
 
