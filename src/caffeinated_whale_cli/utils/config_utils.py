@@ -1,7 +1,6 @@
-import typer
 import toml
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict
 
 APP_NAME = "caffeinated-whale-cli"
 CONFIG_DIR: Path = Path.home() / APP_NAME / "config"
@@ -20,6 +19,24 @@ DEFAULT_CONFIG_CONTENT = """
 #   "/opt/shared_benches",
 # ]
 custom_bench_paths = []
+
+[auto_inspect]
+# Automatic project inspection settings
+# When enabled, cwcli will automatically inspect all running projects periodically
+# to keep cached data fresh for tab completion and other features.
+
+# Enable or disable automatic inspection (true/false)
+enabled = false
+
+# Inspection interval in seconds (default: 3600 = 1 hour)
+# Minimum: 60 seconds (1 minute)
+# Recommended: 3600 seconds (1 hour)
+interval = 3600
+
+# Start auto-inspect on system boot/login (true/false)
+# When true, the auto-inspect background process will start automatically
+# Platform-specific: Uses LaunchAgent (macOS), systemd (Linux), or Task Scheduler (Windows)
+startup_enabled = false
 """
 
 
@@ -41,9 +58,20 @@ def load_config() -> Dict:
                 config_data["search_paths"] = {}
             if "custom_bench_paths" not in config_data["search_paths"]:
                 config_data["search_paths"]["custom_bench_paths"] = []
+            if "auto_inspect" not in config_data:
+                config_data["auto_inspect"] = {
+                    "enabled": False,
+                    "interval": 3600,
+                    "startup_enabled": False,
+                }
+            elif "startup_enabled" not in config_data["auto_inspect"]:
+                config_data["auto_inspect"]["startup_enabled"] = False
             return config_data
         except toml.TomlDecodeError:
-            return {"search_paths": {"custom_bench_paths": []}}
+            return {
+                "search_paths": {"custom_bench_paths": []},
+                "auto_inspect": {"enabled": False, "interval": 3600, "startup_enabled": False},
+            }
 
 
 def save_config(config_data: Dict):
@@ -71,3 +99,43 @@ def remove_custom_path(path: str) -> bool:
         save_config(config)
         return True
     return False
+
+
+def get_auto_inspect_config() -> Dict:
+    """Get auto-inspect configuration."""
+    config = load_config()
+    return config.get(
+        "auto_inspect", {"enabled": False, "interval": 3600, "startup_enabled": False}
+    )
+
+
+def set_auto_inspect_enabled(enabled: bool):
+    """Enable or disable auto-inspect."""
+    config = load_config()
+    if "auto_inspect" not in config:
+        config["auto_inspect"] = {"enabled": enabled, "interval": 3600}
+    else:
+        config["auto_inspect"]["enabled"] = enabled
+    save_config(config)
+
+
+def set_auto_inspect_interval(interval: int):
+    """Set auto-inspect interval in seconds (minimum 60)."""
+    if interval < 60:
+        raise ValueError("Interval must be at least 60 seconds")
+    config = load_config()
+    if "auto_inspect" not in config:
+        config["auto_inspect"] = {"enabled": False, "interval": interval, "startup_enabled": False}
+    else:
+        config["auto_inspect"]["interval"] = interval
+    save_config(config)
+
+
+def set_auto_inspect_startup(enabled: bool):
+    """Enable or disable auto-inspect on system startup."""
+    config = load_config()
+    if "auto_inspect" not in config:
+        config["auto_inspect"] = {"enabled": False, "interval": 3600, "startup_enabled": enabled}
+    else:
+        config["auto_inspect"]["startup_enabled"] = enabled
+    save_config(config)
