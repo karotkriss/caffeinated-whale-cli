@@ -12,6 +12,7 @@ A command-line interface (CLI) for managing Frappe/ERPNext Docker instances duri
 - **Update Management** - App updates with automatic migrations and lock cleanup
 - **Auto-Inspection** - Background process to keep project cache fresh automatically
 - **System Integration** - Auto-start on system boot with platform-specific configurations
+- **Contextual Tips** - Helpful tips displayed during long-running operations to help you discover features
 
 ## Installation
 
@@ -696,6 +697,33 @@ cwcli config auto-inspect [SUBCOMMAND]
 
 The auto-inspect feature runs a background daemon process that periodically inspects all running Frappe projects. This keeps your project cache fresh for:
 - Tab completion (project names, apps, sites)
+
+##### `config tips` - Manage Contextual Tips
+
+Control the display of helpful tips during long-running operations.
+
+```bash
+cwcli config tips [enable|disable]
+```
+
+**Subcommands:**
+
+- **`enable`** - Enable contextual tips during long operations
+  - Example: `cwcli config tips enable`
+
+- **`disable`** - Disable contextual tips
+  - Example: `cwcli config tips disable`
+
+**What it does:**
+
+When enabled (default), cwcli displays rotating helpful tips alongside spinners during long-running operations like `inspect`, `update`, and `open`. Tips help you discover features and best practices while waiting for operations to complete.
+
+**Examples of tips shown:**
+
+- 💡 Enable VS Code integration by adding 'code' to your PATH
+- 💡 Install tab completion with 'cwcli --install-completion' for faster workflows
+- 💡 Use 'cwcli inspect <project>' to cache project structure for faster commands
+- 💡 cwcli automatically detects and resolves port conflicts when starting projects
 - Project status queries
 - Other commands that rely on cached data
 
