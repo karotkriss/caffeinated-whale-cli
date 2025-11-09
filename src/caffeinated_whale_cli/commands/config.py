@@ -138,9 +138,7 @@ def enable_auto_inspect(
                     f"[green]Startup enabled. Auto-inspect will start automatically on system boot.[/green]"
                 )
             else:
-                console.print(
-                    "[yellow]Warning: Could not install startup configuration.[/yellow]"
-                )
+                console.print("[yellow]Warning: Could not install startup configuration.[/yellow]")
 
         config = config_utils.get_auto_inspect_config()
         console.print(
@@ -250,7 +248,9 @@ def status_auto_inspect():
     table.add_row("Interval", f"{config.get('interval', 3600)} seconds")
 
     running = auto_inspect.is_running()
-    table.add_row("Background Process", "[green]Running[/green]" if running else "[red]Stopped[/red]")
+    table.add_row(
+        "Background Process", "[green]Running[/green]" if running else "[red]Stopped[/red]"
+    )
 
     if running:
         pid = auto_inspect.get_pid()
@@ -325,6 +325,7 @@ def restart_auto_inspect():
             console.print("[green]Background process stopped.[/green]")
 
         import time
+
         time.sleep(1)  # Give it a moment to fully stop
 
         config = config_utils.get_auto_inspect_config()
@@ -356,15 +357,11 @@ def install_startup_cmd():
         # Check if auto-inspect is enabled
         config = config_utils.get_auto_inspect_config()
         if not config.get("enabled"):
-            console.print(
-                "[yellow]Warning: Auto-inspect is not enabled.[/yellow]"
-            )
+            console.print("[yellow]Warning: Auto-inspect is not enabled.[/yellow]")
             console.print(
                 "[dim]The startup will be installed, but auto-inspect won't run until you enable it.[/dim]"
             )
-            console.print(
-                "[dim]Run 'cwcli config auto-inspect enable' first.[/dim]\n"
-            )
+            console.print("[dim]Run 'cwcli config auto-inspect enable' first.[/dim]\n")
 
         # Check if already installed
         if startup.is_startup_installed():
@@ -378,12 +375,8 @@ def install_startup_cmd():
         if startup.install_startup():
             config_utils.set_auto_inspect_startup(True)
             console.print("[green]Startup configuration installed successfully![/green]")
-            console.print(
-                f"[cyan]Platform: {plat.title()}[/cyan]"
-            )
-            console.print(
-                "[dim]Auto-inspect will start automatically on system boot/login.[/dim]"
-            )
+            console.print(f"[cyan]Platform: {plat.title()}[/cyan]")
+            console.print("[dim]Auto-inspect will start automatically on system boot/login.[/dim]")
         else:
             console.print("[red]Failed to install startup configuration.[/red]")
 
@@ -409,9 +402,7 @@ def uninstall_startup_cmd():
         if startup.uninstall_startup():
             config_utils.set_auto_inspect_startup(False)
             console.print("[green]Startup configuration removed successfully![/green]")
-            console.print(
-                "[dim]Auto-inspect will no longer start automatically on boot.[/dim]"
-            )
+            console.print("[dim]Auto-inspect will no longer start automatically on boot.[/dim]")
             console.print(
                 "[dim]You can still start it manually with 'cwcli config auto-inspect start'.[/dim]"
             )

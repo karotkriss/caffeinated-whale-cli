@@ -84,6 +84,7 @@ def uninstall_startup() -> bool:
 # macOS (LaunchAgent)
 # =============================================================================
 
+
 def _get_macos_plist_path() -> Path:
     """Get the path to the LaunchAgent plist file."""
     return Path.home() / "Library" / "LaunchAgents" / "com.caffeinated-whale-cli.auto-inspect.plist"
@@ -158,9 +159,12 @@ def _uninstall_macos_startup() -> bool:
 # Linux (systemd)
 # =============================================================================
 
+
 def _get_linux_service_path() -> Path:
     """Get the path to the systemd user service file."""
-    return Path.home() / ".config" / "systemd" / "user" / "caffeinated-whale-cli-auto-inspect.service"
+    return (
+        Path.home() / ".config" / "systemd" / "user" / "caffeinated-whale-cli-auto-inspect.service"
+    )
 
 
 def _is_linux_startup_installed() -> bool:
@@ -241,6 +245,7 @@ def _uninstall_linux_startup() -> bool:
 # Windows (Task Scheduler)
 # =============================================================================
 
+
 def _is_windows_startup_installed() -> bool:
     """Check if Windows Task Scheduler task exists."""
     import subprocess
@@ -266,10 +271,14 @@ def _install_windows_startup() -> bool:
     command = [
         "schtasks",
         "/Create",
-        "/TN", "CaffeinatedWhaleCliAutoInspect",
-        "/TR", f'"{cwcli_path}" config auto-inspect start',
-        "/SC", "ONLOGON",
-        "/RL", "HIGHEST",
+        "/TN",
+        "CaffeinatedWhaleCliAutoInspect",
+        "/TR",
+        f'"{cwcli_path}" config auto-inspect start',
+        "/SC",
+        "ONLOGON",
+        "/RL",
+        "HIGHEST",
         "/F",  # Force create (overwrite if exists)
     ]
 

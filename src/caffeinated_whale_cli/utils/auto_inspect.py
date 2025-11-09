@@ -186,7 +186,10 @@ def start_daemon():
             CREATE_NEW_PROCESS_GROUP = 0x00000200
 
             subprocess.Popen(
-                [python_exe, "-c", f"""
+                [
+                    python_exe,
+                    "-c",
+                    f"""
 import sys
 sys.path.insert(0, '{Path(__file__).parent.parent.parent}')
 from caffeinated_whale_cli.utils.auto_inspect import _write_pid_file, _log, _run_service_loop
@@ -194,7 +197,8 @@ from caffeinated_whale_cli.utils.auto_inspect import _write_pid_file, _log, _run
 _write_pid_file()
 _log("Auto-inspect service started (interval: {interval}s)")
 _run_service_loop({interval})
-"""],
+""",
+                ],
                 creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
                 close_fds=True,
                 stdin=subprocess.DEVNULL,
@@ -204,7 +208,10 @@ _run_service_loop({interval})
         else:
             # Other platforms that don't support fork - use nohup-like approach
             subprocess.Popen(
-                [python_exe, "-c", f"""
+                [
+                    python_exe,
+                    "-c",
+                    f"""
 import sys
 sys.path.insert(0, '{Path(__file__).parent.parent.parent}')
 from caffeinated_whale_cli.utils.auto_inspect import _write_pid_file, _log, _run_service_loop
@@ -212,7 +219,8 @@ from caffeinated_whale_cli.utils.auto_inspect import _write_pid_file, _log, _run
 _write_pid_file()
 _log("Auto-inspect service started (interval: {interval}s)")
 _run_service_loop({interval})
-"""],
+""",
+                ],
                 start_new_session=True,
                 close_fds=True,
                 stdin=subprocess.DEVNULL,
