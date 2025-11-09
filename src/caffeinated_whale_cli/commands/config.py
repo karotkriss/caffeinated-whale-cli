@@ -1,15 +1,19 @@
 import time
+
+import questionary
 import typer
 from rich.console import Console
 from rich.table import Table
-import questionary
-from ..utils import db_utils, config_utils, auto_inspect, startup
+
+from ..utils import auto_inspect, config_utils, db_utils, startup
 
 app = typer.Typer(help="Manage CLI configuration and cache.")
 cache_app = typer.Typer(help="Manage the cache.")
 auto_inspect_app = typer.Typer(help="Manage automatic project inspection.")
+tips_app = typer.Typer(help="Manage contextual tips display.")
 app.add_typer(cache_app, name="cache")
 app.add_typer(auto_inspect_app, name="auto-inspect")
+app.add_typer(tips_app, name="tips")
 
 console = Console()
 
@@ -136,7 +140,7 @@ def enable_auto_inspect(
             if startup.install_startup():
                 config_utils.set_auto_inspect_startup(True)
                 console.print(
-                    f"[green]Startup enabled. Auto-inspect will start automatically on system boot.[/green]"
+                    "[green]Startup enabled. Auto-inspect will start automatically on system boot.[/green]"
                 )
             else:
                 console.print("[yellow]Warning: Could not install startup configuration.[/yellow]")
@@ -410,3 +414,62 @@ def uninstall_startup_cmd():
 
     except Exception as e:
         console.print(f"[red]Error removing startup: {e}[/red]")
+
+
+@tips_app.command("enable")
+def enable_tips():
+    """
+    Enable contextual tips during long-running operations.
+
+    When enabled, cwcli will display rotating helpful tips alongside spinners
+    during operations like inspect, update, and open. Tips help you discover
+    features and best practices while waiting.
+    """
+    try:
+        config_utils.set_show_tips(True)
+        console.print("[green]Contextual tips enabled.[/green]")
+        console.print(
+            "[dim]Tips will be shown during long-running operations like inspect and update.[/dim]"
+        )
+    except Exception as e:
+        console.print(f"[red]Error enabling tips: {e}[/red]")
+
+
+@tips_app.command("disable")
+def disable_tips():
+    """
+    Disable contextual tips during long-running operations.
+
+    When disabled, cwcli will show simpler status messages without tips.
+    """
+    try:
+        config_utils.set_show_tips(False)
+        console.print("[green]Contextual tips disabled.[/green]")
+        console.print("[dim]Only basic status messages will be shown during operations.[/dim]")
+    except Exception as e:
+        console.print(f"[red]Error disabling tips: {e}[/red]")
+
+
+@tips_app.command("status")
+def tips_status():
+    """
+    Show the current tips display setting.
+    """
+    show_tips = config_utils.get_show_tips()
+    status_text = "[green]Enabled[/green]" if show_tips else "[red]Disabled[/red]"
+
+    table = Table(title="Tips Display Status")
+    table.add_column("Setting", style="cyan")
+    table.add_column("Value", style="magenta")
+    table.add_row("Tips Display", status_text)
+
+    console.print(table)
+
+    if show_tips:
+        console.print(
+            "\n[dim]Tips are shown during long-running operations to help you discover features.[/dim]"
+        )
+        console.print("[dim]Use 'cwcli config tips disable' to turn them off.[/dim]")
+    else:
+        console.print("\n[dim]Tips are currently disabled.[/dim]")
+        console.print("[dim]Use 'cwcli config tips enable' to turn them back on.[/dim]")
