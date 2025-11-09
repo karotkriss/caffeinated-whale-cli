@@ -284,7 +284,7 @@ def _install_windows_startup() -> bool:
         "/SC",
         "ONLOGON",
         "/RL",
-        "HIGHEST",
+        "LIMITED",
         "/F",  # Force create (overwrite if exists)
     ]
 
