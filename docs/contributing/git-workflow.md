@@ -6,9 +6,9 @@ This is the master guide for Git workflows in the caffeinated-whale-cli project.
 
 ## Quick Links
 
-- [Commit Message Guide](./commit-message-guide.md) - How to write commit messages
-- [Branch Naming Guide](./branch-naming-guide.md) - How to name branches
-- [Chores Guide](./chores-guide.md) - Managing maintenance tasks
+- [Commit Message Guide](./commit-messages.md) - How to write commit messages
+- [Branch Naming Guide](./branch-naming.md) - How to name branches
+- [Chores Guide](./chores.md) - Managing maintenance tasks
 
 ## Project Analysis Summary
 
@@ -682,10 +682,10 @@ git commit -m "test: add tests"
 
 ## Resources
 
-- [Commit Message Guide](./commit-message-guide.md)
-- [Branch Naming Guide](./branch-naming-guide.md)
-- [Chores Guide](./chores-guide.md)
-- [Testing Guide](./testing-guide.md)
+- [Commit Message Guide](./commit-messages.md)
+- [Branch Naming Guide](./branch-naming.md)
+- [Chores Guide](./chores.md)
+- [Testing Guide](../testing/guide.md)
 - [Conventional Commits](https://www.conventionalcommits.org/)
 - [Git Flow](https://nvie.com/posts/a-successful-git-branching-model/)
 - [GitHub Flow](https://guides.github.com/introduction/flow/)
