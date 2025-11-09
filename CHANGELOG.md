@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `inspect` command during project inspection
     - `open` command when preparing VS Code integration
     - Extension installation and container verification steps
+  - TipSpinner context manager supports reuse across multiple operations
 
 ## [0.12.1] - 2025-11-10
 
