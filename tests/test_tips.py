@@ -157,6 +157,25 @@ class TestTipSpinner:
 
         # Should complete without errors
 
+    def test_tip_spinner_reuse(self):
+        """Test that TipSpinner can be reused multiple times."""
+        console = Console(file=StringIO())
+        spinner = TipSpinner("Test", console=console, enabled=True, tip_interval=0.5)
+
+        # First use
+        with spinner:
+            time.sleep(0.1)
+
+        # Second use - should work without issues
+        with spinner:
+            time.sleep(0.1)
+
+        # Third use - verify stop event is properly reset
+        with spinner:
+            time.sleep(0.1)
+
+        # All uses should complete without errors
+
 
 class TestGetTip:
     """Test cases for get_tip utility function."""
