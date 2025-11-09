@@ -322,30 +322,43 @@ cwcli open [OPTIONS] PROJECT_NAME
 |--------|-------------|
 | `-p`, `--path TEXT` | Path inside the container to open (uses cached bench path from inspect if not specified) |
 | `-a`, `--app TEXT` | App name to open (opens the app's directory within the bench) |
+| `--code` | Open with VS Code directly (skips interactive prompt) |
+| `--code-insiders` | Open with VS Code Insiders directly (skips interactive prompt) |
+| `--docker` | Open with Docker exec directly (skips interactive prompt) |
 | `-v`, `--verbose` | Enable verbose diagnostic output |
 
 **Features:**
 
 - Auto-detects VS Code and VS Code Insiders installations
-- Interactive editor selection menu
+- Interactive editor selection menu (when no editor flag specified)
+- Direct editor selection via `--code`, `--code-insiders`, or `--docker` flags
 - Automatically installs required VS Code extensions (Docker and Dev Containers)
 - Uses cached bench paths from `inspect` command
+- Docker exec opens in bench directory (respects working directory)
 - Falls back to Docker exec if VS Code is unavailable
 
 **Examples:**
 
 ```bash
-# Open project (uses cached bench path)
+# Open project with interactive prompt (uses cached bench path)
 cwcli open frappe-one
 
-# Open specific app directory
-cwcli open frappe-one --app erpnext
+# Open directly with VS Code (skip prompt)
+cwcli open frappe-one --code
+
+# Open directly with Docker exec (skip prompt)
+cwcli open frappe-one --docker
+
+# Open specific app directory with VS Code Insiders
+cwcli open frappe-one --app erpnext --code-insiders
 
 # Open custom path
 cwcli open frappe-one --path /workspace/custom-bench
 ```
 
 **Interactive Prompt:**
+
+When no editor flag is specified, you'll see:
 
 ```
 How would you like to open this instance?
