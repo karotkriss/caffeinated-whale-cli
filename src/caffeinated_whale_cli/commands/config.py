@@ -1,3 +1,4 @@
+import time
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -323,8 +324,6 @@ def restart_auto_inspect():
             console.print("[yellow]Stopping auto-inspect background process...[/yellow]")
             auto_inspect.stop_daemon()
             console.print("[green]Background process stopped.[/green]")
-
-        import time
 
         time.sleep(1)  # Give it a moment to fully stop
 

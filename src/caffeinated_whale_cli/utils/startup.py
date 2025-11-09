@@ -8,7 +8,6 @@ using platform-specific mechanisms:
 - Windows: Task Scheduler
 """
 
-import os
 import sys
 import platform
 import subprocess
@@ -135,8 +134,6 @@ def _install_macos_startup() -> bool:
     result = subprocess.run(["launchctl", "load", str(plist_path)], capture_output=True, text=True)
     if result.returncode != 0 and result.stderr:
         # Log error for debugging but still return the result
-        import sys
-
         print(f"launchctl load failed: {result.stderr}", file=sys.stderr)
     return result.returncode == 0
 
@@ -293,7 +290,7 @@ def _install_windows_startup() -> bool:
     ]
 
     try:
-        result = subprocess.run(command, check=True, capture_output=True, text=True)
+        subprocess.run(command, check=True, capture_output=True, text=True)
         return True
     except subprocess.CalledProcessError as e:
         if e.stderr:
