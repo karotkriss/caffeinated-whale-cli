@@ -63,13 +63,18 @@ def _set_cached(key: str, value: List[str]) -> None:
     _cache[key] = (time.time(), value)
 
 
-def complete_project_names() -> List[str]:
+def complete_project_names(ctx: typer.Context = None, args: List[str] = None, incomplete: str = "") -> List[str]:
     """
     Complete Frappe project names from Docker containers.
 
     Queries Docker for all containers with the frappe service label and
     extracts unique project names. Results are cached for 2 seconds to
     improve performance during tab completion sessions.
+
+    Args:
+        ctx: Typer context (unused but required by Typer's autocompletion).
+        args: List of arguments (unused but required by Typer's autocompletion).
+        incomplete: Partial string being completed (unused but required by Typer's autocompletion).
 
     Returns:
         Sorted list of project names. Empty list if Docker is unavailable.
@@ -86,10 +91,10 @@ def complete_project_names() -> List[str]:
             return []
 
         # Query with filters to reduce data transfer
+        # Note: Cannot use sparse=True because we need access to labels
         containers = client.containers.list(
             all=True,
             filters={"label": "com.docker.compose.service=frappe"},
-            sparse=True,  # Fetch minimal data
         )
 
         projects: Set[str] = set()
@@ -106,7 +111,7 @@ def complete_project_names() -> List[str]:
         return []
 
 
-def complete_app_names(ctx: typer.Context) -> List[str]:
+def complete_app_names(ctx: typer.Context = None, args: List[str] = None, incomplete: str = "") -> List[str]:
     """
     Complete app names for a given project.
 
@@ -115,11 +120,15 @@ def complete_app_names(ctx: typer.Context) -> List[str]:
 
     Args:
         ctx: Typer context containing command parameters.
+        args: List of arguments (unused).
+        incomplete: Partial string being completed (unused).
 
     Returns:
         Sorted list of app names. Empty list if no project or cache data available.
     """
     # Get project name from context parameters
+    if not ctx:
+        return []
     project_name = ctx.params.get("project_name")
     if not project_name:
         return []
@@ -148,7 +157,7 @@ def complete_app_names(ctx: typer.Context) -> List[str]:
         return []
 
 
-def complete_site_names(ctx: typer.Context) -> List[str]:
+def complete_site_names(ctx: typer.Context = None, args: List[str] = None, incomplete: str = "") -> List[str]:
     """
     Complete site names for a given project.
 
@@ -157,11 +166,15 @@ def complete_site_names(ctx: typer.Context) -> List[str]:
 
     Args:
         ctx: Typer context containing command parameters.
+        args: List of arguments (unused).
+        incomplete: Partial string being completed (unused).
 
     Returns:
         Sorted list of site names. Empty list if no project or cache data available.
     """
     # Get project name from context parameters
+    if not ctx:
+        return []
     project_name = ctx.params.get("project_name")
     if not project_name:
         return []
@@ -192,7 +205,7 @@ def complete_site_names(ctx: typer.Context) -> List[str]:
         return []
 
 
-def complete_bench_names(ctx: typer.Context) -> List[str]:
+def complete_bench_names(ctx: typer.Context = None, args: List[str] = None, incomplete: str = "") -> List[str]:
     """
     Complete bench names for a given project.
 
@@ -201,11 +214,15 @@ def complete_bench_names(ctx: typer.Context) -> List[str]:
 
     Args:
         ctx: Typer context containing command parameters.
+        args: List of arguments (unused).
+        incomplete: Partial string being completed (unused).
 
     Returns:
         Sorted list of bench names. Empty list if no project or cache data available.
     """
     # Get project name from context parameters
+    if not ctx:
+        return []
     project_name = ctx.params.get("project_name")
     if not project_name:
         return []
