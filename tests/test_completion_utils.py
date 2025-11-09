@@ -105,7 +105,6 @@ class TestCompleteProjectNames:
         mock_docker_client.containers.list.assert_called_once_with(
             all=True,
             filters={"label": "com.docker.compose.service=frappe"},
-            sparse=True,
         )
 
     @patch("caffeinated_whale_cli.utils.completion_utils.docker.from_env")
@@ -339,58 +338,6 @@ class TestCompleteSiteNames:
         result = completion_utils.complete_site_names(ctx)
 
         assert result == ["valid.localhost"]
-
-
-class TestCompleteBenchNames:
-    """Tests for complete_bench_names function."""
-
-    @patch("caffeinated_whale_cli.utils.completion_utils.db_utils.get_cached_project_data")
-    def test_returns_sorted_bench_names(self, mock_get_cached):
-        """Should return sorted bench names from cache."""
-        data = {
-            "project_name": "frappe-one",
-            "bench_instances": [
-                {"name": "production", "path": "/workspace/bench1"},
-                {"name": "development", "path": "/workspace/bench2"},
-            ],
-        }
-        mock_get_cached.return_value = data
-
-        ctx = Mock(spec=typer.Context)
-        ctx.params = {"project_name": "frappe-one"}
-
-        result = completion_utils.complete_bench_names(ctx)
-
-        assert result == ["development", "production"]
-
-    @patch("caffeinated_whale_cli.utils.completion_utils.db_utils.get_cached_project_data")
-    def test_returns_empty_list_when_no_project_in_context(self, mock_get_cached):
-        """Should return empty list if project_name not in context."""
-        ctx = Mock(spec=typer.Context)
-        ctx.params = {}
-
-        result = completion_utils.complete_bench_names(ctx)
-
-        assert result == []
-
-    @patch("caffeinated_whale_cli.utils.completion_utils.db_utils.get_cached_project_data")
-    def test_handles_benches_without_name(self, mock_get_cached):
-        """Should skip benches without name field."""
-        data = {
-            "project_name": "frappe-one",
-            "bench_instances": [
-                {"name": "valid-bench", "path": "/workspace/bench1"},
-                {"path": "/workspace/bench2"},  # No name
-            ],
-        }
-        mock_get_cached.return_value = data
-
-        ctx = Mock(spec=typer.Context)
-        ctx.params = {"project_name": "frappe-one"}
-
-        result = completion_utils.complete_bench_names(ctx)
-
-        assert result == ["valid-bench"]
 
 
 class TestCacheHelpers:

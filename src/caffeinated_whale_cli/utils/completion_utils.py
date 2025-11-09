@@ -8,7 +8,7 @@ caching to reduce latency.
 
 import docker
 import time
-from typing import List, Set, Optional, Dict, Any, Tuple
+from typing import List, Set, Optional, Dict, Tuple
 import typer
 from . import db_utils
 
@@ -205,47 +205,3 @@ def complete_site_names(ctx: typer.Context = None, args: List[str] = None, incom
         return []
 
 
-def complete_bench_names(ctx: typer.Context = None, args: List[str] = None, incomplete: str = "") -> List[str]:
-    """
-    Complete bench names for a given project.
-
-    Uses cached project data to get bench instance names. Requires the
-    project_name parameter to be set in the context. Results are cached per project.
-
-    Args:
-        ctx: Typer context containing command parameters.
-        args: List of arguments (unused).
-        incomplete: Partial string being completed (unused).
-
-    Returns:
-        Sorted list of bench names. Empty list if no project or cache data available.
-    """
-    # Get project name from context parameters
-    if not ctx:
-        return []
-    project_name = ctx.params.get("project_name")
-    if not project_name:
-        return []
-
-    # Check cache first
-    cache_key = f"benches:{project_name}"
-    cached = _get_cached(cache_key)
-    if cached is not None:
-        return cached
-
-    try:
-        cached_data = db_utils.get_cached_project_data(project_name)
-        if not cached_data or not cached_data.get("bench_instances"):
-            return []
-
-        benches: Set[str] = set()
-        for bench in cached_data["bench_instances"]:
-            bench_name = bench.get("name")
-            if bench_name:
-                benches.add(bench_name)
-
-        result = sorted(benches)
-        _set_cached(cache_key, result)
-        return result
-    except Exception:
-        return []
