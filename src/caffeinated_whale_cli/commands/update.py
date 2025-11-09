@@ -13,6 +13,7 @@ from ..utils.docker_utils import get_project_containers
 from ..utils.docker_utils import handle_docker_errors
 from ..utils import db_utils
 from ..utils.console import console, stderr_console
+from ..utils.completion_utils import complete_project_names, complete_app_names
 
 
 def _stream_command(
@@ -669,12 +670,15 @@ def _update_project(
 
 @handle_docker_errors
 def update(
-    project_name: str = typer.Argument(..., help="The name of the project to update."),
+    project_name: str = typer.Argument(
+        ..., help="The name of the project to update.", autocompletion=complete_project_names
+    ),
     apps: List[str] = typer.Option(
         None,
         "--app",
         "-a",
         help="App name(s) to update. Specify multiple app names after --app or use --app multiple times.",
+        autocompletion=complete_app_names,
     ),
     bench_path: str = typer.Option(
         None,

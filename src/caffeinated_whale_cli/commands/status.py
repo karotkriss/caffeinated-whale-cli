@@ -6,13 +6,16 @@ from rich.console import Console
 from ..utils.docker_utils import get_project_containers
 from ..utils.docker_utils import handle_docker_errors
 from docker.errors import APIError, NotFound
+from ..utils.completion_utils import complete_project_names
 
 stderr_console = Console(stderr=True)
 
 
 @handle_docker_errors
 def status(
-    project_name: str = typer.Argument(..., help="The Docker Compose project name to check."),
+    project_name: str = typer.Argument(
+        ..., help="The Docker Compose project name to check.", autocompletion=complete_project_names
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
