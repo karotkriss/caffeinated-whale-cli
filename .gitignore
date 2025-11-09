@@ -19,3 +19,6 @@ coverage.xml
 
 # Frappe Docker repository (for reference/testing only)
 frappe_docker/
+
+# documentation tools
+.obsidian
