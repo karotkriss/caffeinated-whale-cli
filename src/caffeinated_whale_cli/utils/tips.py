@@ -171,6 +171,9 @@ class TipSpinner:
 
     def __enter__(self):
         """Enter context: start spinner and tip rotation."""
+        # Reset the stop event to allow reuse of the same TipSpinner instance
+        self._stop_event.clear()
+
         # Initialize first tip
         self._current_tip = self.rotator.get_next_tip() if self.enabled else ""
 
