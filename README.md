@@ -723,7 +723,7 @@ When enabled (default), cwcli displays rotating helpful tips alongside spinners 
 
 **Examples of tips shown:**
 
-- 💡 Enable VS Code integration by adding 'code' to your PATH
+- 💡 Add VS Code to PATH via Command Palette: 'Shell Command: Install code command in PATH'
 - 💡 Install tab completion with 'cwcli --install-completion' for faster workflows
 - 💡 Use 'cwcli inspect <project>' to cache project structure for faster commands
 - 💡 cwcli automatically detects and resolves port conflicts when starting projects
