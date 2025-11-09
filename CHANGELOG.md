@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- ## [Unreleased] -->
 
+## [0.10.2] - 2025-11-08
+
+### Fixed
+- **Critical:** Tab completion function signatures for Typer compatibility
+  - Added required parameters (ctx, args, incomplete) to all completion functions
+  - Fixed TypeError when Typer calls completion callbacks
+  - Removed `sparse=True` from Docker query that prevented label access
+  - Fixed DockerException: "Label data is not available for sparse objects"
+
+### Changed
+- Corrected `_cache` type annotation from `Dict[str, Dict[str, Any]]` to `Dict[str, Tuple[float, List[str]]]`
+
 ## [0.10.0] - 2025-11-08
 
 ### Added
