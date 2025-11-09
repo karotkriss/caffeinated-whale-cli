@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- ## [Unreleased] -->
 
+## [0.11.0] - 2025-11-09
+
+### Added
+- **Automatic project inspection** - Background service to keep project cache fresh
+  - New `cwcli config auto-inspect` command group with full management suite
+  - `enable` - Enable auto-inspection with configurable interval (default: 1 hour, minimum: 60 seconds)
+  - `disable` - Disable auto-inspection and stop background process
+  - `start` - Start the background daemon process
+  - `stop` - Stop the background daemon process
+  - `restart` - Restart the background process
+  - `status` - Show detailed status (enabled, interval, process state, PID, startup configuration)
+  - `logs` - View recent background process logs with `--lines` option
+  - `set-interval` - Change inspection interval (requires restart to apply)
+  - Cross-platform daemon support: fork (Unix/Linux/macOS) and threading (Windows)
+  - Automatic inspection of all running Frappe projects at configured intervals
+  - Background logging to `~/caffeinated-whale-cli/run/auto-inspect.log`
+  - PID tracking in `~/caffeinated-whale-cli/run/auto-inspect.pid`
+
+- **Automatic startup on system boot/login** - Platform-specific system integration
+  - `install-startup` - Install platform-specific startup configuration
+  - `uninstall-startup` - Remove startup configuration
+  - `--startup` flag for `enable` and `start` commands to enable startup in one step
+  - **macOS**: LaunchAgent plist file (`~/Library/LaunchAgents/com.caffeinated-whale-cli.auto-inspect.plist`)
+  - **Linux**: systemd user service (`~/.config/systemd/user/caffeinated-whale-cli-auto-inspect.service`)
+  - **Windows**: Task Scheduler task ("CaffeinatedWhaleCliAutoInspect")
+  - Startup status shown in `status` command
+
+- **Configuration options** in `config.toml`:
+  - `auto_inspect.enabled` - Enable/disable auto-inspection (default: false)
+  - `auto_inspect.interval` - Inspection interval in seconds (default: 3600)
+  - `auto_inspect.startup_enabled` - Track startup configuration state (default: false)
+
 ## [0.10.2] - 2025-11-08
 
 ### Fixed
