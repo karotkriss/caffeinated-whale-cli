@@ -1,10 +1,14 @@
+import platform
 import shutil
 import subprocess
-import platform
 from typing import Literal
-import typer
+
 import questionary
+import typer
 from rich.console import Console
+
+from . import config_utils
+from .tips import TipSpinner
 
 console_err = Console(stderr=True)
 
@@ -158,12 +162,13 @@ def open_in_vscode(
         bench_path: Path inside the container to open
         verbose: Enable verbose output
     """
-    with console_err.status(
-        f"[bold green]Preparing to open '{container_name}' in VS Code...[/bold green]",
-        spinner="dots",
+    show_tips = config_utils.get_show_tips()
+
+    with TipSpinner(
+        f"Preparing to open '{container_name}' in VS Code", console=console_err, enabled=show_tips
     ) as status:
         # Verify container exists
-        status.update("[bold green]Verifying container exists...[/bold green]")
+        status.update("Verifying container exists")
         try:
             cmd = ["docker", "inspect", container_name]
             if verbose:
@@ -183,13 +188,13 @@ def open_in_vscode(
                 console_err.print(f"[dim]VERBOSE: Container '{container_name}' verified[/dim]")
         except subprocess.TimeoutExpired:
             console_err.print("[bold red]✗ Docker inspect timed out.[/bold red]")
-            raise typer.Exit(code=1)
+            raise typer.Exit(code=1) from None
         except FileNotFoundError:
             console_err.print("[bold red]✗ Docker command not found.[/bold red]")
-            raise typer.Exit(code=1)
+            raise typer.Exit(code=1) from None
 
         # Check for Docker extension
-        status.update("[bold green]Checking Docker extension...[/bold green]")
+        status.update("Checking Docker extension")
         if not is_docker_extension_installed(vscode_command, verbose):
             if verbose:
                 console_err.print("[dim]VERBOSE: Docker extension not found, installing...[/dim]")
@@ -200,7 +205,7 @@ def open_in_vscode(
             console_err.print("[dim]VERBOSE: Docker extension already installed[/dim]")
 
         # Check for Dev Containers extension
-        status.update("[bold green]Checking Dev Containers extension...[/bold green]")
+        status.update("Checking Dev Containers extension")
         if not is_dev_containers_installed(vscode_command, verbose):
             if verbose:
                 console_err.print(
@@ -222,7 +227,7 @@ def open_in_vscode(
             console_err.print(f"[dim]VERBOSE: Opening URI: {uri}[/dim]")
 
         # Open VS Code
-        status.update("[bold green]Opening VS Code...[/bold green]")
+        status.update("Opening VS Code")
         try:
             cmd = [vscode_command, "--folder-uri", uri]
             if verbose:
@@ -230,6 +235,6 @@ def open_in_vscode(
             subprocess.run(cmd, check=True, shell=IS_WINDOWS)
         except subprocess.CalledProcessError as e:
             console_err.print(f"[bold red]✗ Failed to open VS Code: {e}[/bold red]")
-            raise typer.Exit(code=1)
+            raise typer.Exit(code=1) from e
 
     console_err.print(f"[bold green]✓ Opened {container_name} in VS Code[/bold green]")
