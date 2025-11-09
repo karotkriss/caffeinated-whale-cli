@@ -187,8 +187,8 @@ After=network.target
 
 [Service]
 Type=forking
-ExecStart={cwcli_path} config auto-inspect start
-ExecStop={cwcli_path} config auto-inspect stop
+ExecStart="{cwcli_path}" config auto-inspect start
+ExecStop="{cwcli_path}" config auto-inspect stop
 Restart=on-failure
 RestartSec=10
 
@@ -200,11 +200,17 @@ WantedBy=default.target
         f.write(service_content)
 
     # Reload systemd and enable the service
-    subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
-    subprocess.run(
+    result = subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+    if result.returncode != 0:
+        return False
+
+    result = subprocess.run(
         ["systemctl", "--user", "enable", "caffeinated-whale-cli-auto-inspect.service"],
         capture_output=True,
     )
+    if result.returncode != 0:
+        return False
+
     result = subprocess.run(
         ["systemctl", "--user", "start", "caffeinated-whale-cli-auto-inspect.service"],
         capture_output=True,
