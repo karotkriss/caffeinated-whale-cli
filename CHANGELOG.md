@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- ## [Unreleased] -->
 
+## [0.12.1] - 2025-11-10
+
+### Added
+- **Editor selection flags for `open` command** - Skip interactive prompt with direct flags
+  - `--code` - Open directly with VS Code (validates installation)
+  - `--code-insiders` - Open directly with VS Code Insiders (validates installation)
+  - `--docker` - Open directly with Docker exec
+  - Mutual exclusivity validation ensures only one flag can be specified
+  - Backward compatible: interactive prompt still appears when no flag is specified
+
+### Fixed
+- **Docker exec now respects working directory** - `open` command with `--docker` or Docker selection
+  - Container shell now opens in bench directory instead of container default
+  - Respects `--app` flag to open in specific app directory
+  - Uses Docker's `-w` flag to set working directory on exec
+
+### Changed
+- Moved `exec_into_container` function from `vscode_utils.py` to `docker_utils.py` for better organization
+
 ## [0.11.0] - 2025-11-09
 
 ### Added
