@@ -8,14 +8,14 @@ caching to reduce latency.
 
 import docker
 import time
-from typing import List, Set, Optional, Dict, Any
+from typing import List, Set, Optional, Dict, Any, Tuple
 import typer
 from . import db_utils
 
 # Cache configuration
 _CACHE_TTL = 2.0  # Cache results for 2 seconds (enough for tab completion session)
 _docker_client: Optional[docker.DockerClient] = None
-_cache: Dict[str, Dict[str, Any]] = {}
+_cache: Dict[str, Tuple[float, List[str]]] = {}
 
 
 def _get_docker_client() -> Optional[docker.DockerClient]:
