@@ -1,6 +1,6 @@
-import toml
 from pathlib import Path
-from typing import Dict
+
+import toml
 
 APP_NAME = "caffeinated-whale-cli"
 CONFIG_DIR: Path = Path.home() / APP_NAME / "config"
@@ -37,6 +37,13 @@ interval = 3600
 # When true, the auto-inspect background process will start automatically
 # Platform-specific: Uses LaunchAgent (macOS), systemd (Linux), or Task Scheduler (Windows)
 startup_enabled = false
+
+[ui]
+# User interface settings
+
+# Show contextual tips during long-running operations (true/false)
+# Tips help you discover features and best practices while waiting
+show_tips = true
 """
 
 
@@ -48,10 +55,10 @@ def _ensure_config_exists():
             f.write(DEFAULT_CONFIG_CONTENT)
 
 
-def load_config() -> Dict:
+def load_config() -> dict:
     """Loads the configuration from the TOML file."""
     _ensure_config_exists()
-    with open(CONFIG_FILE, "r") as f:
+    with open(CONFIG_FILE) as f:
         try:
             config_data = toml.load(f)
             if "search_paths" not in config_data:
@@ -66,15 +73,20 @@ def load_config() -> Dict:
                 }
             elif "startup_enabled" not in config_data["auto_inspect"]:
                 config_data["auto_inspect"]["startup_enabled"] = False
+            if "ui" not in config_data:
+                config_data["ui"] = {"show_tips": True}
+            elif "show_tips" not in config_data["ui"]:
+                config_data["ui"]["show_tips"] = True
             return config_data
         except toml.TomlDecodeError:
             return {
                 "search_paths": {"custom_bench_paths": []},
                 "auto_inspect": {"enabled": False, "interval": 3600, "startup_enabled": False},
+                "ui": {"show_tips": True},
             }
 
 
-def save_config(config_data: Dict):
+def save_config(config_data: dict):
     """Saves the given configuration data to the TOML file."""
     _ensure_config_exists()
     with open(CONFIG_FILE, "w") as f:
@@ -101,7 +113,7 @@ def remove_custom_path(path: str) -> bool:
     return False
 
 
-def get_auto_inspect_config() -> Dict:
+def get_auto_inspect_config() -> dict:
     """Get auto-inspect configuration."""
     config = load_config()
     return config.get(
@@ -138,4 +150,30 @@ def set_auto_inspect_startup(enabled: bool):
         config["auto_inspect"] = {"enabled": False, "interval": 3600, "startup_enabled": enabled}
     else:
         config["auto_inspect"]["startup_enabled"] = enabled
+    save_config(config)
+
+
+def get_show_tips() -> bool:
+    """
+    Get whether tips should be shown during long-running operations.
+
+    Returns:
+        True if tips should be shown, False otherwise (default: True)
+    """
+    config = load_config()
+    return config.get("ui", {}).get("show_tips", True)
+
+
+def set_show_tips(enabled: bool):
+    """
+    Enable or disable tips during long-running operations.
+
+    Args:
+        enabled: True to show tips, False to hide them
+    """
+    config = load_config()
+    if "ui" not in config:
+        config["ui"] = {"show_tips": enabled}
+    else:
+        config["ui"]["show_tips"] = enabled
     save_config(config)

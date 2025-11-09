@@ -1,19 +1,17 @@
-import typer
-import docker
 import json
 import time
+
+import docker
 import questionary
-import sys
+import typer
 from rich.console import Console
 from rich.tree import Tree
-from typing import List, Optional, Tuple, Dict
-from .utils import ensure_containers_running
-from ..utils.docker_utils import get_project_containers
-from ..utils import config_utils
-from ..utils import db_utils
-from ..utils.docker_utils import handle_docker_errors
-from .start import _start_project
+
+from ..utils import config_utils, db_utils
 from ..utils.completion_utils import complete_project_names
+from ..utils.docker_utils import get_project_containers, handle_docker_errors
+from ..utils.tips import TipSpinner
+from .utils import ensure_containers_running
 
 console_out = Console()
 console_err = Console(stderr=True)
@@ -23,8 +21,8 @@ def _run_command(
     container: docker.models.containers.Container,
     cmd: str,
     verbose: bool = False,
-    workdir: Optional[str] = None,
-) -> Tuple[int, str]:
+    workdir: str | None = None,
+) -> tuple[int, str]:
     if verbose:
         console_err.print(f"[dim]$ {cmd}[/dim]")
     exit_code, output = container.exec_run(cmd, workdir=workdir)
@@ -48,7 +46,7 @@ def _is_bench_directory(
 
 def _get_sites(
     container: docker.models.containers.Container, bench_dir: str, verbose: bool = False
-) -> List[str]:
+) -> list[str]:
     exit_code, output = _run_command(container, f"ls -1 {bench_dir}/sites", verbose)
     if exit_code != 0:
         return []
@@ -58,7 +56,7 @@ def _get_sites(
 
 def _get_installed_apps(
     container: docker.models.containers.Container, bench_dir: str, site: str, verbose: bool = False
-) -> List[str]:
+) -> list[str]:
     cmd = f"bench --site {site} list-apps"
     exit_code, output = _run_command(container, cmd, verbose, workdir=bench_dir)
     if exit_code != 0:
@@ -68,7 +66,7 @@ def _get_installed_apps(
 
 def _get_available_apps(
     container: docker.models.containers.Container, bench_dir: str, verbose: bool = False
-) -> List[str]:
+) -> list[str]:
     exit_code, output = _run_command(container, f"ls -1 {bench_dir}/apps", verbose)
     if exit_code != 0:
         return []
@@ -77,7 +75,7 @@ def _get_available_apps(
 
 def _find_bench_instances(
     container: docker.models.containers.Container, verbose: bool = False
-) -> List[str]:
+) -> list[str]:
     """Finds all potential bench directories using default and custom TOML config paths."""
     benches_found = []
 
@@ -110,7 +108,7 @@ def _find_bench_instances(
 
 def _gather_bench_data(
     frappe_container: docker.models.containers.Container, bench_dir: str, verbose: bool
-) -> Dict:
+) -> dict:
     """Gathers sites and apps for a single bench instance."""
     if verbose:
         console_err.print(f"VERBOSE: Inspecting Bench Instance: {bench_dir}")
@@ -191,7 +189,9 @@ def inspect(
             raise typer.Exit(code=1)
 
         bench_instances_data = []
-        with console_err.status(f"Inspecting '{project_name}'...", spinner="dots"):
+        show_tips = config_utils.get_show_tips()
+
+        with TipSpinner(f"Inspecting '{project_name}'", console=console_err, enabled=show_tips):
             time.sleep(0.1)
             bench_paths = _find_bench_instances(frappe_container, verbose)
             if not bench_paths:
