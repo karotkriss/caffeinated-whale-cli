@@ -63,7 +63,9 @@ def _set_cached(key: str, value: List[str]) -> None:
     _cache[key] = (time.time(), value)
 
 
-def complete_project_names(ctx: typer.Context = None, args: List[str] = None, incomplete: str = "") -> List[str]:
+def complete_project_names(
+    ctx: typer.Context = None, args: List[str] = None, incomplete: str = ""
+) -> List[str]:
     """
     Complete Frappe project names from Docker containers.
 
@@ -111,7 +113,9 @@ def complete_project_names(ctx: typer.Context = None, args: List[str] = None, in
         return []
 
 
-def complete_app_names(ctx: typer.Context = None, args: List[str] = None, incomplete: str = "") -> List[str]:
+def complete_app_names(
+    ctx: typer.Context = None, args: List[str] = None, incomplete: str = ""
+) -> List[str]:
     """
     Complete app names for a given project.
 
@@ -157,7 +161,9 @@ def complete_app_names(ctx: typer.Context = None, args: List[str] = None, incomp
         return []
 
 
-def complete_site_names(ctx: typer.Context = None, args: List[str] = None, incomplete: str = "") -> List[str]:
+def complete_site_names(
+    ctx: typer.Context = None, args: List[str] = None, incomplete: str = ""
+) -> List[str]:
     """
     Complete site names for a given project.
 
@@ -203,5 +209,3 @@ def complete_site_names(ctx: typer.Context = None, args: List[str] = None, incom
         return result
     except Exception:
         return []
-
-

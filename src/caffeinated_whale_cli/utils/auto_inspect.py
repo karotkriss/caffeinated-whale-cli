@@ -289,6 +289,7 @@ def stop_daemon():
                 if sys.platform == "win32":
                     # On Windows, use taskkill for force termination
                     import subprocess
+
                     subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
                 else:
                     os.kill(pid, signal.SIGKILL)

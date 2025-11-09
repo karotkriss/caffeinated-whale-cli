@@ -94,7 +94,9 @@ class TestCompleteProjectNames:
     """Tests for complete_project_names function."""
 
     @patch("caffeinated_whale_cli.utils.completion_utils.docker.from_env")
-    def test_returns_unique_sorted_project_names(self, mock_from_env, mock_docker_client, mock_containers):
+    def test_returns_unique_sorted_project_names(
+        self, mock_from_env, mock_docker_client, mock_containers
+    ):
         """Should return unique, sorted project names from Docker containers."""
         mock_from_env.return_value = mock_docker_client
         mock_docker_client.containers.list.return_value = mock_containers
