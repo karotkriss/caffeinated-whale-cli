@@ -1,8 +1,8 @@
 """
 Tests for tab completion utilities.
 
-Tests cover completion functions for projects, apps, sites, and benches
-with various scenarios including caching, error handling, and context-awareness.
+Tests cover completion functions for projects, apps, and sites with scenarios
+including caching, TTL expiration, error handling, and context-awareness.
 """
 
 import time
