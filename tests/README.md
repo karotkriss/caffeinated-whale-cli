@@ -71,7 +71,7 @@ Current overall coverage: **7.46%** (only completion_utils tested)
 
 ## Writing New Tests
 
-See [../docs/testing-guide.md](../docs/testing-guide.md) for detailed testing guidelines.
+See [../docs/testing/guide.md](../docs/testing/guide.md) for detailed testing guidelines.
 
 ### Quick Start
 
@@ -202,7 +202,7 @@ This can happen if pytest finds tests in multiple locations. Use `testpaths` in 
 
 ## Resources
 
-- [Testing Guide](../docs/testing-guide.md) - Comprehensive testing documentation
+- [Testing Guide](../docs/testing/guide.md) - Comprehensive testing documentation
 - [pytest Documentation](https://docs.pytest.org/)
 - [pytest-cov Plugin](https://pytest-cov.readthedocs.io/)
 - [unittest.mock](https://docs.python.org/3/library/unittest.mock.html)
