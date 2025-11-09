@@ -233,16 +233,3 @@ def open_in_vscode(
             raise typer.Exit(code=1)
 
     console_err.print(f"[bold green]✓ Opened {container_name} in VS Code[/bold green]")
-
-
-def exec_into_container(container_name: str) -> None:
-    """
-    Execute into a Docker container using bash.
-
-    Args:
-        container_name: Docker container name
-    """
-    import os
-
-    typer.echo(f"Opening shell in {container_name}...")
-    os.execvp("docker", ["docker", "exec", "-it", container_name, "bash"])
