@@ -18,6 +18,7 @@ docs/
 │   ├── git-workflow.md    # Complete workflow guide
 │   ├── commit-messages.md # Commit message conventions
 │   ├── branch-naming.md   # Branch naming standards
+│   ├── pull-requests.md   # Pull request guidelines
 │   ├── code-quality.md    # Formatting, linting, standards
 │   ├── chores.md          # Maintenance task management
 │   └── ci-cd.md           # GitHub Actions & releases
@@ -42,6 +43,7 @@ Everything you need to contribute to the project.
 | **[Git Workflow](./contributing/git-workflow.md)** | Complete contribution workflow | You're new to contributing |
 | **[Commit Messages](./contributing/commit-messages.md)** | How to write commit messages | You need commit help |
 | **[Branch Naming](./contributing/branch-naming.md)** | How to name branches | You're creating a branch |
+| **[Pull Requests](./contributing/pull-requests.md)** | How to create and manage PRs | You're creating a pull request |
 | **[Code Quality](./contributing/code-quality.md)** | Formatting, linting, standards | You're writing code |
 | **[Chores](./contributing/chores.md)** | Maintenance tasks | You're doing version bumps |
 | **[CI/CD](./contributing/ci-cd.md)** | GitHub Actions workflows | You're setting up CI or releasing |

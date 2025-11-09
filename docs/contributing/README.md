@@ -21,13 +21,14 @@ Welcome! This directory contains all documentation related to contributing to th
 | **[Git Workflow](./git-workflow.md)** | Complete workflow overview | You're new to contributing |
 | **[Commit Messages](./commit-messages.md)** | How to write commits | You need commit message help |
 | **[Branch Naming](./branch-naming.md)** | How to name branches | You're creating a new branch |
+| **[Pull Requests](./pull-requests.md)** | How to create and manage PRs | You're creating a pull request |
 | **[Code Quality](./code-quality.md)** | Formatting, linting, standards | You're writing code |
 | **[Chores](./chores.md)** | Maintenance tasks | You're doing version bumps or maintenance |
 | **[CI/CD](./ci-cd.md)** | GitHub Actions workflows | You're setting up CI or releasing |
 
 ### Workflow Overview
 
-```
+```text
 develop
   ├── feat-your-feature       Create branch with type prefix
   │   ├── feat: add feature   Commit with conventional format
@@ -38,7 +39,7 @@ develop
 
 ## Commit Message Format
 
-```
+```text
 <type>: <subject>
 
 [optional body]
@@ -49,7 +50,7 @@ develop
 **Types:** `feat`, `fix`, `chore`, `docs`, `test`, `refactor`, `perf`, `style`, `build`, `ci`
 
 **Examples:**
-```
+```text
 feat: add tab completion
 fix: ctrl + c loop in start command
 chore: bump version to 0.9.2
@@ -61,12 +62,12 @@ See [Commit Messages Guide](./commit-messages.md) for detailed documentation.
 
 ## Branch Naming Format
 
-```
+```text
 <type>-<description>
 ```
 
 **Examples:**
-```
+```text
 feat-tab-completion
 fix-port-conflicts
 chore-update-deps
