@@ -28,21 +28,6 @@ def open_bench(
         help="App name to open (opens the app's directory within the bench)",
         autocompletion=complete_app_names,
     ),
-    code: bool = typer.Option(
-        False,
-        "--code",
-        help="Open with VS Code (skips interactive prompt)",
-    ),
-    code_insiders: bool = typer.Option(
-        False,
-        "--code-insiders",
-        help="Open with VS Code Insiders (skips interactive prompt)",
-    ),
-    docker: bool = typer.Option(
-        False,
-        "--docker",
-        help="Open with Docker exec (skips interactive prompt)",
-    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -53,14 +38,6 @@ def open_bench(
     """
     Open a project's frappe container in VS Code (with Dev Containers) or exec into it.
     """
-    # Validate that only one editor flag is specified
-    editor_flags = [code, code_insiders, docker]
-    if sum(editor_flags) > 1:
-        stderr_console.print(
-            "[bold red]Error:[/bold red] Only one of --code, --code-insiders, or --docker can be specified."
-        )
-        raise typer.Exit(code=1)
-
     # Ensure containers are running, prompt user if not
     ensure_containers_running(project_name, require_running=True, verbose=verbose)
 
@@ -200,80 +177,57 @@ def open_bench(
         if verbose:
             stderr_console.print(f"[dim]VERBOSE: Opening app path: {bench_path}[/dim]")
 
-    # Determine editor based on flags or interactive prompt
-    editor = None
+    # Build choices and prompt user (outside spinner)
+    choices = []
+    choice_map = {}
 
-    # Check if a specific editor was requested via flags
-    if code:
-        if not vscode_stable:
-            stderr_console.print(
-                "[bold red]Error:[/bold red] VS Code is not installed. Install it from https://code.visualstudio.com/"
-            )
-            raise typer.Exit(code=1)
-        editor = "code"
-    elif code_insiders:
-        if not vscode_insiders:
-            stderr_console.print(
-                "[bold red]Error:[/bold red] VS Code Insiders is not installed. Install it from https://code.visualstudio.com/insiders/"
-            )
-            raise typer.Exit(code=1)
-        editor = "code-insiders"
-    elif docker:
+    if vscode_stable:
+        choice_text = "VS Code - Open in development container"
+        choices.append(choice_text)
+        choice_map[choice_text] = "code"
+
+    if vscode_insiders:
+        choice_text = "VS Code Insiders - Open in development container"
+        choices.append(choice_text)
+        choice_map[choice_text] = "code-insiders"
+
+    docker_choice = "Docker - Execute interactive shell in container"
+    choices.append(docker_choice)
+    choice_map[docker_choice] = "docker"
+
+    # Select editor
+    if len(choices) == 1:
         editor = "docker"
+    else:
+        import questionary
+        from questionary import Style
 
-    # If no flag was specified, show interactive prompt
-    if editor is None:
-        # Build choices and prompt user (outside spinner)
-        choices = []
-        choice_map = {}
+        custom_style = Style(
+            [
+                ("qmark", "fg:#00ff00 bold"),  # Bright green question mark
+                ("question", "fg:#00ffff bold"),  # Bright cyan question text
+                ("answer", "fg:#00ff00 bold"),  # Bright green answer
+                ("pointer", "fg:#ffff00 bold"),  # Bright yellow pointer
+                ("highlighted", "fg:#ffff00 bold"),  # Bright yellow highlighted option
+                ("selected", "fg:#00ff00"),  # Green for selected
+                ("separator", "fg:#666666"),  # Gray separator
+                ("instruction", "fg:#888888"),  # Gray instructions
+                ("text", "fg:#ffffff"),  # White text
+            ]
+        )
 
-        if vscode_stable:
-            choice_text = "VS Code - Open in development container"
-            choices.append(choice_text)
-            choice_map[choice_text] = "code"
+        choice = questionary.select(
+            "How would you like to open this instance?",
+            choices=choices,
+            style=custom_style,
+            pointer=">",
+        ).ask()
 
-        if vscode_insiders:
-            choice_text = "VS Code Insiders - Open in development container"
-            choices.append(choice_text)
-            choice_map[choice_text] = "code-insiders"
+        if choice is None:
+            stderr_console.print("[yellow]Operation cancelled.[/yellow]")
+            raise typer.Exit(code=0)
 
-        docker_choice = "Docker - Execute interactive shell in container"
-        choices.append(docker_choice)
-        choice_map[docker_choice] = "docker"
-
-        # Select editor
-        if len(choices) == 1:
-            editor = "docker"
-        else:
-            import questionary
-            from questionary import Style
-
-            custom_style = Style(
-                [
-                    ("qmark", "fg:#00ff00 bold"),  # Bright green question mark
-                    ("question", "fg:#00ffff bold"),  # Bright cyan question text
-                    ("answer", "fg:#00ff00 bold"),  # Bright green answer
-                    ("pointer", "fg:#ffff00 bold"),  # Bright yellow pointer
-                    ("highlighted", "fg:#ffff00 bold"),  # Bright yellow highlighted option
-                    ("selected", "fg:#00ff00"),  # Green for selected
-                    ("separator", "fg:#666666"),  # Gray separator
-                    ("instruction", "fg:#888888"),  # Gray instructions
-                    ("text", "fg:#ffffff"),  # White text
-                ]
-            )
-
-            choice = questionary.select(
-                "How would you like to open this instance?",
-                choices=choices,
-                style=custom_style,
-                pointer=">",
-            ).ask()
-
-            if choice is None:
-                stderr_console.print("[yellow]Operation cancelled.[/yellow]")
-                raise typer.Exit(code=0)
-
-            editor = choice_map.get(choice, "docker")
+        editor = choice_map.get(choice, "docker")
 
     if verbose:
         stderr_console.print(f"[dim]VERBOSE: Selected editor: {editor}[/dim]")
