@@ -171,16 +171,54 @@ def start_daemon():
         _run_service_loop(interval)
 
     except (AttributeError, OSError):
-        # Windows or fork failed - use threading instead
-        import threading
+        # Windows or fork failed - spawn a detached subprocess
+        import subprocess
+        import sys
 
-        def run_service():
-            _write_pid_file()
-            _log(f"Auto-inspect service started (interval: {interval}s)")
-            _run_service_loop(interval)
+        # Get the path to the current Python interpreter and cwcli
+        python_exe = sys.executable
 
-        thread = threading.Thread(target=run_service, daemon=False)
-        thread.start()
+        # Spawn a new detached process that runs the service loop
+        # Use CREATE_NEW_PROCESS_GROUP on Windows to fully detach
+        if sys.platform == "win32":
+            # Windows: Use DETACHED_PROCESS and CREATE_NEW_PROCESS_GROUP
+            DETACHED_PROCESS = 0x00000008
+            CREATE_NEW_PROCESS_GROUP = 0x00000200
+
+            subprocess.Popen(
+                [python_exe, "-c", f"""
+import sys
+sys.path.insert(0, '{Path(__file__).parent.parent.parent}')
+from caffeinated_whale_cli.utils.auto_inspect import _write_pid_file, _log, _run_service_loop
+
+_write_pid_file()
+_log("Auto-inspect service started (interval: {interval}s)")
+_run_service_loop({interval})
+"""],
+                creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                close_fds=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            # Other platforms that don't support fork - use nohup-like approach
+            subprocess.Popen(
+                [python_exe, "-c", f"""
+import sys
+sys.path.insert(0, '{Path(__file__).parent.parent.parent}')
+from caffeinated_whale_cli.utils.auto_inspect import _write_pid_file, _log, _run_service_loop
+
+_write_pid_file()
+_log("Auto-inspect service started (interval: {interval}s)")
+_run_service_loop({interval})
+"""],
+                start_new_session=True,
+                close_fds=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
 
 
 def _write_pid_file():
