@@ -14,7 +14,7 @@ from rich.console import Console
 # Curated tips aligned with cwcli features
 TIPS = [
     # VS Code Integration
-    "💡 Enable VS Code integration by adding 'code' to your PATH",
+    "💡 Add VS Code to PATH via Command Palette: 'Shell Command: Install code command in PATH'",
     "💡 Use 'cwcli open <project> --code' to skip the editor selection prompt",
     "💡 VS Code Dev Containers extension is auto-installed when opening projects",
     "💡 Open specific apps with 'cwcli open <project> --app <app-name>'",
