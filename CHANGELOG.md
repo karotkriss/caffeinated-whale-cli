@@ -5,7 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-<!-- ## [Unreleased] -->
+## [Unreleased]
+
+### Added
+- **Contextual tips during long-running operations** - Inspired by Claude Code's tip system
+  - Rotating helpful tips displayed alongside spinners during operations like `inspect`, `update`, and `open`
+  - Tips help users discover features and best practices while waiting
+  - 40+ curated tips covering VS Code integration, tab completion, caching, port management, and more
+  - Tips rotate every 4 seconds during long operations to show variety
+  - New `cwcli config tips` command group to manage tip display
+    - `enable` - Enable contextual tips (default)
+    - `disable` - Disable tips for simpler status messages
+    - `status` - Check current tips display setting
+  - Configurable via `show_tips` setting in config.toml (default: true)
+  - Tips integrated into:
+    - `inspect` command during project inspection
+    - `open` command when preparing VS Code integration
+    - Extension installation and container verification steps
 
 ## [0.12.1] - 2025-11-10
 
