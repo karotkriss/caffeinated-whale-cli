@@ -703,7 +703,7 @@ The auto-inspect feature runs a background daemon process that periodically insp
 Control the display of helpful tips during long-running operations.
 
 ```bash
-cwcli config tips [enable|disable]
+cwcli config tips [enable|disable|status]
 ```
 
 **Subcommands:**
@@ -713,6 +713,9 @@ cwcli config tips [enable|disable]
 
 - **`disable`** - Disable contextual tips
   - Example: `cwcli config tips disable`
+
+- **`status`** - Show whether contextual tips are enabled
+  - Example: `cwcli config tips status`
 
 **What it does:**
 
