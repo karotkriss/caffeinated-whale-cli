@@ -301,6 +301,8 @@ See [Contributing Guides](./contributing/) for detailed decision trees.
 ## Recent Documentation Updates
 
 ### Latest Additions
+- ✅ Tab Completion Fixes (v0.10.1) - Fixed function signatures for Typer compatibility
+- ✅ Pull Request Guidelines - Comprehensive PR naming and management guide
 - ✅ Reorganized documentation into categories
 - ✅ CI/CD Documentation - GitHub Actions workflows and automation
 - ✅ Git Workflow Guide - Complete workflow documentation
