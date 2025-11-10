@@ -9,7 +9,23 @@ APP_NAME = "caffeinated-whale-cli"
 CACHE_DIR = Path.home() / APP_NAME / "cache"
 DB_PATH = CACHE_DIR / "cwc-cache.db"
 
-os.makedirs(CACHE_DIR, exist_ok=True)
+# SECURITY WARNING: Cache contains sensitive data (DB credentials, Redis URLs, API keys)
+# We implement strict filesystem permissions as the primary security control.
+# Future enhancement: Implement field-level encryption for sensitive config_json fields.
+
+# Create cache directory with restricted permissions (0700 = owner-only access)
+# This prevents other users on the system from reading cached credentials
+CACHE_DIR.mkdir(parents=True, mode=0o700, exist_ok=True)
+
+# Ensure existing directory has correct permissions
+if CACHE_DIR.exists():
+    try:
+        CACHE_DIR.chmod(0o700)
+    except (OSError, PermissionError):
+        # On Windows or restricted filesystems, chmod may fail
+        # Still proceed but permissions may not be as strict
+        pass
+
 db = SqliteDatabase(DB_PATH)
 
 
@@ -61,10 +77,20 @@ class CommonSiteConfig(BaseModel):
     """
     Stores common_site_config.json data for each bench.
     This config applies to all sites within a bench.
+
+    SECURITY WARNING: Contains sensitive data including Redis URLs, API keys.
+    Data is stored in plaintext with filesystem permissions (0600) as protection.
+
+    TODO: Implement field-level encryption using a project-specific key from
+    environment variable or OS keyring (cryptography.fernet or similar).
+    Key management considerations:
+    - Store key in OS keyring (keyring library) or environment variable
+    - Never commit key material to repository
+    - Implement transparent encrypt/decrypt in model hooks
     """
 
     bench = ForeignKeyField(Bench, backref="common_config", unique=True)
-    config_json = TextField()  # Stores the full JSON as text
+    config_json = TextField()  # Stores the full JSON as text (PLAINTEXT - see security warning)
 
     class Meta:
         table_name = "common_site_config"
@@ -74,13 +100,40 @@ class SiteConfig(BaseModel):
     """
     Stores site_config.json data for each individual site.
     Contains site-specific settings like database credentials.
+
+    SECURITY WARNING: Contains sensitive data including database credentials.
+    Data is stored in plaintext with filesystem permissions (0600) as protection.
+
+    TODO: Implement field-level encryption using a project-specific key from
+    environment variable or OS keyring (cryptography.fernet or similar).
+    Key management considerations:
+    - Store key in OS keyring (keyring library) or environment variable
+    - Never commit key material to repository
+    - Implement transparent encrypt/decrypt in model hooks
     """
 
     site = ForeignKeyField(Site, backref="site_config", unique=True)
-    config_json = TextField()  # Stores the full JSON as text
+    config_json = TextField()  # Stores the full JSON as text (PLAINTEXT - see security warning)
 
     class Meta:
         table_name = "site_config"
+
+
+def _set_secure_db_permissions():
+    """
+    Set restrictive permissions on database file (0600 = owner read/write only).
+
+    This is critical for protecting sensitive data stored in SiteConfig and
+    CommonSiteConfig tables (DB credentials, Redis URLs, API keys).
+    """
+    if DB_PATH.exists():
+        try:
+            # Set permissions to 0600 (rw-------)
+            DB_PATH.chmod(0o600)
+        except (OSError, PermissionError):
+            # On Windows or restricted filesystems, chmod may fail
+            # Still proceed but permissions may not be as strict
+            pass
 
 
 def initialize_database():
@@ -91,6 +144,8 @@ def initialize_database():
         [Project, Bench, Site, AvailableApp, InstalledAppDetail, CommonSiteConfig, SiteConfig],
         safe=True,
     )
+    # Secure the database file with restrictive permissions
+    _set_secure_db_permissions()
 
 
 def clear_cache_for_project(project_name):
