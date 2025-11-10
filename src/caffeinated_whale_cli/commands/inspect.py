@@ -106,22 +106,112 @@ def _find_bench_instances(
     return list(set(benches_found))
 
 
+def _get_common_site_config(
+    frappe_container: docker.models.containers.Container, bench_dir: str, verbose: bool
+) -> dict | None:
+    """Fetches common_site_config.json from the bench directory."""
+    config_path = f"{bench_dir}/sites/common_site_config.json"
+    cmd = f"cat {config_path}"
+
+    if verbose:
+        console_err.print(f"[dim]VERBOSE: Reading common_site_config from {config_path}[/dim]")
+
+    exit_code, output = frappe_container.exec_run(cmd)
+
+    if exit_code == 0 and output:
+        try:
+            config = json.loads(output.decode("utf-8"))
+            if verbose:
+                console_err.print(
+                    f"[dim]VERBOSE: Found common_site_config with {len(config)} keys[/dim]"
+                )
+            return config
+        except json.JSONDecodeError:
+            if verbose:
+                console_err.print(
+                    "[dim yellow]VERBOSE: Failed to parse common_site_config.json[/dim yellow]"
+                )
+            return None
+    else:
+        if verbose:
+            console_err.print(
+                "[dim yellow]VERBOSE: common_site_config.json not found or not readable[/dim yellow]"
+            )
+        return None
+
+
+def _get_site_config(
+    frappe_container: docker.models.containers.Container,
+    bench_dir: str,
+    site_name: str,
+    verbose: bool,
+) -> dict | None:
+    """Fetches site_config.json for a specific site."""
+    config_path = f"{bench_dir}/sites/{site_name}/site_config.json"
+    cmd = f"cat {config_path}"
+
+    if verbose:
+        console_err.print(f"[dim]VERBOSE: Reading site_config for {site_name}[/dim]")
+
+    exit_code, output = frappe_container.exec_run(cmd)
+
+    if exit_code == 0 and output:
+        try:
+            config = json.loads(output.decode("utf-8"))
+            if verbose:
+                console_err.print(
+                    f"[dim]VERBOSE: Found site_config for {site_name} with {len(config)} keys[/dim]"
+                )
+            return config
+        except json.JSONDecodeError:
+            if verbose:
+                console_err.print(
+                    f"[dim yellow]VERBOSE: Failed to parse site_config.json for {site_name}[/dim yellow]"
+                )
+            return None
+    else:
+        if verbose:
+            console_err.print(
+                f"[dim yellow]VERBOSE: site_config.json not found for {site_name}[/dim yellow]"
+            )
+        return None
+
+
 def _gather_bench_data(
     frappe_container: docker.models.containers.Container, bench_dir: str, verbose: bool
 ) -> dict:
-    """Gathers sites and apps for a single bench instance."""
+    """Gathers sites, apps, and configs for a single bench instance."""
     if verbose:
         console_err.print(f"VERBOSE: Inspecting Bench Instance: {bench_dir}")
+
     available_apps = _get_available_apps(frappe_container, bench_dir, verbose)
+
+    # Fetch common site config
+    common_site_config = _get_common_site_config(frappe_container, bench_dir, verbose)
+
     sites = _get_sites(frappe_container, bench_dir, verbose)
     sites_info = []
     for site in sites:
         if verbose:
             console_err.print(f"VERBOSE:   - Found Site: {site}")
-        installed_apps = _get_installed_apps(frappe_container, bench_dir, site, verbose)
-        sites_info.append({"name": site, "installed_apps": installed_apps})
 
-    return {"path": bench_dir, "sites": sites_info, "available_apps": available_apps}
+        installed_apps = _get_installed_apps(frappe_container, bench_dir, site, verbose)
+
+        # Fetch site-specific config
+        site_config = _get_site_config(frappe_container, bench_dir, site, verbose)
+
+        site_data = {"name": site, "installed_apps": installed_apps}
+        if site_config:
+            site_data["site_config"] = site_config
+
+        sites_info.append(site_data)
+
+    bench_data = {"path": bench_dir, "sites": sites_info, "available_apps": available_apps}
+
+    if common_site_config:
+        bench_data["common_site_config"] = common_site_config
+
+    return bench_data
 
 
 @handle_docker_errors
@@ -242,9 +332,21 @@ def inspect(
             for app in bench_instance["available_apps"]:
                 apps_branch.add(f"[dim]{app}[/dim]")
 
+            # Get default site from common config
+            default_site = None
+            if "common_site_config" in bench_instance:
+                default_site = bench_instance["common_site_config"].get("default_site")
+
             sites_branch = bench_node.add(f"Sites ({len(bench_instance['sites'])})")
             for site_data in bench_instance["sites"]:
-                site_node = sites_branch.add(f"[yellow]{site_data['name']}[/yellow]")
+                site_name = site_data["name"]
+                # Label default site
+                if default_site and site_name == default_site:
+                    site_label = f"[yellow]{site_name}[/yellow] [dim](default)[/dim]"
+                else:
+                    site_label = f"[yellow]{site_name}[/yellow]"
+
+                site_node = sites_branch.add(site_label)
                 installed_apps_node = site_node.add(
                     f"Installed Apps ({len(site_data['installed_apps'])})"
                 )
