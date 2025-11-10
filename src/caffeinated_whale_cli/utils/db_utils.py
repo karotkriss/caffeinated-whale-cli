@@ -435,3 +435,20 @@ def get_all_site_configs(project_name: str, bench_path: str = None) -> dict[str,
 
     except (Project.DoesNotExist, Bench.DoesNotExist):
         return {}
+
+
+def get_default_site(project_name: str, bench_path: str = None) -> str | None:
+    """
+    Get the default site for a project from the common_site_config.
+
+    Args:
+        project_name: Name of the project
+        bench_path: Optional bench path to get default site for specific bench
+
+    Returns:
+        Default site name or None if not found
+    """
+    common_config = get_common_site_config(project_name, bench_path)
+    if common_config:
+        return common_config.get("default_site")
+    return None
