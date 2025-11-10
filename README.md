@@ -8,7 +8,8 @@ A command-line interface (CLI) for managing Frappe/ERPNext Docker instances duri
 - **Project Discovery** - Scan and list all Frappe Docker projects
 - **Container Lifecycle** - Start, stop, and restart projects with ease
 - **Development Tools** - VS Code integration, log viewing, and command execution
-- **Cache System** - Fast project inspection with SQLite-based caching
+- **Cache System** - Fast project inspection with SQLite-based caching and configuration storage
+- **Default Site Support** - Optional `--site` flag when default site is configured
 - **Update Management** - App updates with automatic migrations and lock cleanup
 - **Auto-Inspection** - Background process to keep project cache fresh automatically
 - **System Integration** - Auto-start on system boot with platform-specific configurations
@@ -268,12 +269,19 @@ cwcli inspect [OPTIONS] PROJECT_NAME
 | `-a`, `--show-apps` | Show available apps in the output tree |
 | `-i`, `--interactive` | Prompt to name each bench instance interactively |
 
+**What It Caches:**
+- Bench instances and their paths
+- Sites and installed apps for each bench
+- Site configurations (database credentials, developer mode settings)
+- Common site configuration (Redis URLs, ports, default site, etc.)
+- Default site is labeled with `(default)` in output
+
 **Example Output:**
 
 ```
 frappe-one
 ├── Bench: bench
-│   ├── Site: frappe-one.localhost
+│   ├── Site: frappe-one.localhost (default)
 │   │   ├── App: frappe (v15.0.0, develop)
 │   │   └── App: erpnext (v15.0.0, version-15)
 │   └── Site: site2.localhost
@@ -283,6 +291,11 @@ frappe-one
     └── Site: site3.localhost
         └── App: frappe (v15.0.0, develop)
 ```
+
+**Benefits:**
+- Enables default site feature: `unlock` command can omit `--site` flag
+- Faster subsequent operations (uses cached data)
+- Stores configurations for programmatic access
 
 **Examples:**
 
@@ -460,13 +473,32 @@ cwcli unlock [OPTIONS] PROJECT_NAME
 
 | Option | Description |
 |--------|-------------|
-| `-s`, `--site TEXT` | Site name to unlock (removes the locks folder) - **required** |
+| `-s`, `--site TEXT` | Site name to unlock. If not provided, uses the default site from `common_site_config.json` |
 | `-p`, `--path TEXT` | Path to the bench directory inside the container (uses cached path from inspect if not specified) |
 | `-v`, `--verbose` | Enable verbose output and stream rm command output |
 
 **What It Does:**
 
 Removes the `{bench_path}/sites/{site_name}/locks` directory, which can help resolve issues when a site is stuck in a locked state due to incomplete migrations or background jobs.
+
+**Smart Defaults:**
+- If `--site` is not specified, automatically uses the default site from your bench's `common_site_config.json`
+- Shows "Using default site: {site}" when using the default
+- Run `cwcli inspect {project}` first to cache the configuration
+
+**Examples:**
+
+```bash
+# Unlock a specific site
+cwcli unlock my-project --site development.localhost
+
+# Use default site (no --site flag needed)
+cwcli unlock my-project
+# Output: Using default site: development.localhost
+
+# Verbose mode with default site
+cwcli unlock my-project -v
+```
 
 **When to Use:**
 
