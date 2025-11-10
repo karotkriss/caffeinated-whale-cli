@@ -1,6 +1,7 @@
 import datetime
 import json
 import os
+import sys
 from pathlib import Path
 
 from peewee import CharField, DateTimeField, ForeignKeyField, Model, SqliteDatabase, TextField
@@ -119,6 +120,40 @@ class SiteConfig(BaseModel):
         table_name = "site_config"
 
 
+def _validate_config_json(config_data: dict, config_type: str = "config") -> None:
+    """
+    Validate configuration JSON structure and size.
+
+    Args:
+        config_data: Dictionary containing configuration data
+        config_type: Type of config for error messages (e.g., "site_config", "common_site_config")
+
+    Raises:
+        ValueError: If config data is invalid or too large
+        TypeError: If config data is not a dictionary
+    """
+    if not isinstance(config_data, dict):
+        raise TypeError(f"{config_type} must be a dictionary, got {type(config_data).__name__}")
+
+    # Validate config is not empty
+    if not config_data:
+        raise ValueError(f"{config_type} cannot be empty")
+
+    # Check size of serialized JSON (prevent extremely large configs)
+    # Limit to 1MB of JSON data (reasonable for config files)
+    serialized = json.dumps(config_data)
+    if len(serialized) > 1_000_000:  # 1MB
+        raise ValueError(
+            f"{config_type} is too large ({len(serialized)} bytes). Maximum size is 1MB."
+        )
+
+    # Validate JSON can be re-parsed (ensure it's valid JSON)
+    try:
+        json.loads(serialized)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{config_type} contains invalid JSON: {e}") from e
+
+
 def _set_secure_db_permissions():
     """
     Set restrictive permissions on database file (0600 = owner read/write only).
@@ -179,9 +214,18 @@ def cache_project_data(project_name, bench_instances_data):
 
         # Store common site config if present
         if "common_site_config" in bench_data and bench_data["common_site_config"]:
-            CommonSiteConfig.create(
-                bench=bench, config_json=json.dumps(bench_data["common_site_config"])
-            )
+            try:
+                _validate_config_json(bench_data["common_site_config"], "common_site_config")
+                CommonSiteConfig.create(
+                    bench=bench, config_json=json.dumps(bench_data["common_site_config"])
+                )
+            except (ValueError, TypeError) as e:
+                # Log warning but continue - don't fail entire cache operation
+                # User will still get other cached data
+                print(
+                    f"Warning: Skipping invalid common_site_config for bench {bench_data['path']}: {e}",
+                    file=sys.stderr,
+                )
 
         for app_name in bench_data["available_apps"]:
             AvailableApp.create(bench=bench, name=app_name)
@@ -195,7 +239,17 @@ def cache_project_data(project_name, bench_instances_data):
 
             # Store site-specific config if present
             if "site_config" in site_data and site_data["site_config"]:
-                SiteConfig.create(site=site, config_json=json.dumps(site_data["site_config"]))
+                try:
+                    _validate_config_json(
+                        site_data["site_config"], f"site_config for {site_data['name']}"
+                    )
+                    SiteConfig.create(site=site, config_json=json.dumps(site_data["site_config"]))
+                except (ValueError, TypeError) as e:
+                    # Log warning but continue - don't fail entire cache operation
+                    print(
+                        f"Warning: Skipping invalid site_config for {site_data['name']}: {e}",
+                        file=sys.stderr,
+                    )
 
             # parse and store detailed installed app info
             for app_entry in site_data["installed_apps"]:
