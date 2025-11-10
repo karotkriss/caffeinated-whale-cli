@@ -1,13 +1,12 @@
 import sys
-import typer
-from typing import List
 
-from .utils import ensure_containers_running
-from ..utils.docker_utils import get_project_containers
-from ..utils.docker_utils import handle_docker_errors
+import typer
+
 from ..utils import db_utils
-from ..utils.console import console, stderr_console
 from ..utils.completion_utils import complete_project_names, complete_site_names
+from ..utils.console import console, stderr_console
+from ..utils.docker_utils import get_project_containers, handle_docker_errors
+from .utils import ensure_containers_running
 
 
 @handle_docker_errors
@@ -16,10 +15,10 @@ def unlock(
         ..., help="The Docker Compose project name.", autocompletion=complete_project_names
     ),
     site: str = typer.Option(
-        ...,
+        None,
         "--site",
         "-s",
-        help="Site name to unlock (removes the locks folder).",
+        help="Site name to unlock. If not provided, uses the default site from common_site_config.",
         autocompletion=complete_site_names,
     ),
     bench_path: str = typer.Option(
@@ -36,8 +35,11 @@ def unlock(
     This command removes the {bench_path}/sites/{site_name}/locks directory,
     which can help resolve issues when a site is stuck in a locked state.
 
-    Example:
+    If --site is not provided, the default site from common_site_config.json will be used.
+
+    Examples:
         cwcli unlock my-project --site example.com
+        cwcli unlock my-project  # Uses default site
     """
     # Ensure containers are running, prompt user if not
     ensure_containers_running(project_name, require_running=True, verbose=verbose)
@@ -70,6 +72,56 @@ def unlock(
             stderr_console.print(
                 f"[yellow]Warning:[/yellow] No cached bench path found. Using default: {bench_path}"
             )
+
+    # Get default site if not provided
+    if not site:
+        try:
+            default_site = db_utils.get_default_site(project_name, bench_path)
+        except typer.Exit:
+            # Re-raise typer.Exit without catching
+            raise
+        except Exception as e:
+            stderr_console.print(
+                f"[bold red]Error:[/bold red] Failed to retrieve default site: {e}"
+            )
+            stderr_console.print(
+                f"[dim]Tip: Specify --site explicitly or run 'cwcli inspect {project_name}' first.[/dim]"
+            )
+            raise typer.Exit(code=1) from e
+
+        if default_site:
+            site = default_site
+            console.print(f"[dim]Using default site: {site}[/dim]")
+        else:
+            stderr_console.print(
+                "[bold red]Error:[/bold red] No site specified and no default site found in config."
+            )
+            stderr_console.print(
+                f"[dim]Tip: Run 'cwcli inspect {project_name}' first, or specify --site explicitly.[/dim]"
+            )
+            raise typer.Exit(code=1)
+
+    # Validate site name to prevent command injection
+    if not site or not site.strip():
+        stderr_console.print("[bold red]Error:[/bold red] Site name cannot be empty.")
+        raise typer.Exit(code=1)
+
+    # Basic validation: site names should not contain shell metacharacters
+    invalid_chars = [";", "&", "|", "$", "`", "(", ")", "<", ">", "\n", "\r", "\\"]
+    if any(char in site for char in invalid_chars):
+        stderr_console.print(
+            f"[bold red]Error:[/bold red] Invalid site name '{site}'. "
+            "Site names cannot contain special shell characters."
+        )
+        raise typer.Exit(code=1)
+
+    # Validate bench_path to prevent command injection
+    if any(char in bench_path for char in invalid_chars):
+        stderr_console.print(
+            f"[bold red]Error:[/bold red] Invalid bench path '{bench_path}'. "
+            "Paths cannot contain special shell characters."
+        )
+        raise typer.Exit(code=1)
 
     # Verify bench path exists
     exit_code, _ = frappe_container.exec_run(f'sh -c "test -d {bench_path}/sites"')
@@ -121,7 +173,7 @@ def unlock(
     else:
         # Non-verbose mode: use spinner
         with console.status(f"[bold green]Unlocking site '{site}'...[/bold green]", spinner="dots"):
-            exit_code, output = frappe_container.exec_run(cmd, workdir=bench_path)
+            exit_code, _ = frappe_container.exec_run(cmd, workdir=bench_path)
 
     if exit_code == 0:
         console.print(f"[bold green]✓[/bold green] Successfully unlocked site '{site}'")
