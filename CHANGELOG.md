@@ -7,9 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- ## [Unreleased] -->
 
-## [0.13.1] - 2025-11-10
+## [0.14.0] - 2025-11-10
 
 ### Added
+- **Site configuration caching** - Inspect command now caches site and bench configurations
+  - `common_site_config.json` cached for each bench (includes Redis URLs, ports, worker settings)
+  - `site_config.json` cached for each site (includes database credentials, developer mode)
+  - New database tables: `common_site_config` and `site_config`
+  - Helper functions to retrieve cached configs: `get_common_site_config()`, `get_site_config()`, `get_all_site_configs()`
+  - Configs are automatically fetched and stored during `cwcli inspect`
+  - JSON output includes configs for programmatic access
+  - Default site labeled with `(default)` in inspect output
+
+### Security
+- **Filesystem permissions for sensitive cache data**
+  - Cache directory created with restrictive permissions (`0700` - owner-only access)
+  - Database file secured with `0600` permissions (owner read/write only)
+  - Prevents unauthorized access to cached credentials and API keys
+  - Security warnings added to model documentation
+  - Comprehensive test suite validates permission enforcement
+  - Note: Data is stored in plaintext; future enhancement will add field-level encryption
+
+## [0.13.1] - 2025-11-10
+
 - **Contextual tips during long-running operations** - Inspired by Claude Code's tip system
   - Rotating helpful tips displayed alongside spinners during operations like `inspect`, `update`, and `open`
   - Tips help users discover features and best practices while waiting
