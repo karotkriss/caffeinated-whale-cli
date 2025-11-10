@@ -246,6 +246,8 @@ cwcli logs frappe-one -n 200
 
 Inspects a project to find all bench instances, sites, and apps within it. Results are cached for faster subsequent operations.
 
+**Security Note:** The inspect command caches site configurations including database credentials and Redis URLs. The cache is stored with restricted filesystem permissions (directory: `0700`, database: `0600`) to prevent unauthorized access. Only the current user can read the cached data. Do not share the cache directory (`~/caffeinated-whale-cli/cache/`) with untrusted users.
+
 ```bash
 cwcli inspect [OPTIONS] PROJECT_NAME
 ```
