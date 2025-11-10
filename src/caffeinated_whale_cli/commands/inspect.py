@@ -195,14 +195,14 @@ def _gather_bench_data(
         site_config = _get_site_config(frappe_container, bench_dir, site, verbose)
 
         site_data = {"name": site, "installed_apps": installed_apps}
-        if site_config:
+        if site_config is not None:
             site_data["site_config"] = site_config
 
         sites_info.append(site_data)
 
     bench_data = {"path": bench_dir, "sites": sites_info, "available_apps": available_apps}
 
-    if common_site_config:
+    if common_site_config is not None:
         bench_data["common_site_config"] = common_site_config
 
     return bench_data
