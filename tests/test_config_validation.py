@@ -18,10 +18,10 @@ class TestConfigValidation:
         # Should not raise
         _validate_config_json(valid_config, "test_config")
 
-    def test_empty_dict_raises_valueerror(self):
-        """Test that empty config raises ValueError."""
-        with pytest.raises(ValueError, match="cannot be empty"):
-            _validate_config_json({}, "test_config")
+    def test_empty_dict_passes(self):
+        """Test that empty config is valid (represents config with no custom settings)."""
+        # Should not raise - empty dict is a valid config
+        _validate_config_json({}, "test_config")
 
     def test_non_dict_raises_typeerror(self):
         """Test that non-dictionary input raises TypeError."""
@@ -72,11 +72,11 @@ class TestConfigValidation:
 
     def test_config_type_included_in_error_message(self):
         """Test that config_type parameter is used in error messages."""
-        with pytest.raises(ValueError, match="my_custom_config cannot be empty"):
-            _validate_config_json({}, "my_custom_config")
-
         with pytest.raises(TypeError, match="site_config must be a dictionary"):
             _validate_config_json("invalid", "site_config")
+
+        with pytest.raises(TypeError, match="my_custom_config must be a dictionary"):
+            _validate_config_json(["not", "a", "dict"], "my_custom_config")
 
     def test_realistic_common_site_config(self):
         """Test validation with realistic common_site_config data."""

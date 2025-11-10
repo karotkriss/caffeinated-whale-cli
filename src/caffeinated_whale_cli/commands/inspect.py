@@ -113,14 +113,11 @@ def _get_common_site_config(
     config_path = f"{bench_dir}/sites/common_site_config.json"
     cmd = f"cat {config_path}"
 
-    if verbose:
-        console_err.print(f"[dim]VERBOSE: Reading common_site_config from {config_path}[/dim]")
-
-    exit_code, output = frappe_container.exec_run(cmd)
+    exit_code, output = _run_command(frappe_container, cmd, verbose)
 
     if exit_code == 0 and output:
         try:
-            config = json.loads(output.decode("utf-8"))
+            config = json.loads(output)
             if verbose:
                 console_err.print(
                     f"[dim]VERBOSE: Found common_site_config with {len(config)} keys[/dim]"
@@ -150,14 +147,11 @@ def _get_site_config(
     config_path = f"{bench_dir}/sites/{site_name}/site_config.json"
     cmd = f"cat {config_path}"
 
-    if verbose:
-        console_err.print(f"[dim]VERBOSE: Reading site_config for {site_name}[/dim]")
-
-    exit_code, output = frappe_container.exec_run(cmd)
+    exit_code, output = _run_command(frappe_container, cmd, verbose)
 
     if exit_code == 0 and output:
         try:
-            config = json.loads(output.decode("utf-8"))
+            config = json.loads(output)
             if verbose:
                 console_err.print(
                     f"[dim]VERBOSE: Found site_config for {site_name} with {len(config)} keys[/dim]"
