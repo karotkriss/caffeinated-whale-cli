@@ -14,10 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `common_site_config.json` cached for each bench (includes Redis URLs, ports, worker settings)
   - `site_config.json` cached for each site (includes database credentials, developer mode)
   - New database tables: `common_site_config` and `site_config`
-  - Helper functions to retrieve cached configs: `get_common_site_config()`, `get_site_config()`, `get_all_site_configs()`
+  - Helper functions to retrieve cached configs: `get_common_site_config()`, `get_site_config()`, `get_all_site_configs()`, `get_default_site()`
   - Configs are automatically fetched and stored during `cwcli inspect`
   - JSON output includes configs for programmatic access
   - Default site labeled with `(default)` in inspect output
+  - Empty configs `{}` now properly preserved (distinguishes from missing configs)
+- **Default site support** - `--site` flag now optional when default site is configured
+  - `unlock` command automatically uses default site from `common_site_config.json`
+  - Shows "Using default site: {site}" when using default
+  - Helpful error messages when no default site available
+  - Backward compatible: explicit `--site` flag still works
 
 ### Security
 - **Filesystem permissions for sensitive cache data**
@@ -27,6 +33,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Security warnings added to model documentation
   - Comprehensive test suite validates permission enforcement
   - Note: Data is stored in plaintext; future enhancement will add field-level encryption
+- **Command injection prevention in unlock command**
+  - Input validation for site names and bench paths
+  - Rejects shell metacharacters (`;`, `&`, `|`, `$`, etc.)
+  - Prevents path traversal and injection attacks
+  - Clear error messages for security violations
+
+### Changed
+- **Config validation improvements**
+  - Empty dicts `{}` now accepted as valid configurations
+  - Removed redundant JSON re-parsing in validation
+  - Simplified storage checks to use `is not None` instead of truthiness
+  - Better distinction between "no config" (None) and "empty config" ({})
+- **Enhanced error handling in unlock command**
+  - Try/except with proper exception chaining for default site retrieval
+  - Validates site names are not empty or whitespace-only
+  - Actionable error messages with tips for resolution
+
+### Fixed
+- **Config retrieval robustness**
+  - `get_common_site_config()` now iterates all benches instead of just first
+  - Returns config from first bench that has one (not just first bench)
+  - Preserves empty configs throughout entire data pipeline
+- **Code consistency**
+  - Refactored `_get_common_site_config()` and `_get_site_config()` to use `_run_command` helper
+  - Centralized verbose logging and command execution
+  - Fixed unused variable warning in unlock command
 
 ## [0.13.1] - 2025-11-10
 
