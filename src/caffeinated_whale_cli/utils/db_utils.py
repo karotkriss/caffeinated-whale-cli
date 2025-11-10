@@ -125,19 +125,18 @@ def _validate_config_json(config_data: dict, config_type: str = "config") -> Non
     Validate configuration JSON structure and size.
 
     Args:
-        config_data: Dictionary containing configuration data
+        config_data: Dictionary containing configuration data (empty dicts are allowed)
         config_type: Type of config for error messages (e.g., "site_config", "common_site_config")
 
     Raises:
-        ValueError: If config data is invalid or too large
+        ValueError: If config data is too large
         TypeError: If config data is not a dictionary
+
+    Note:
+        Empty dicts {} are considered valid - they represent config files with no custom settings.
     """
     if not isinstance(config_data, dict):
         raise TypeError(f"{config_type} must be a dictionary, got {type(config_data).__name__}")
-
-    # Validate config is not empty
-    if not config_data:
-        raise ValueError(f"{config_type} cannot be empty")
 
     # Check size of serialized JSON (prevent extremely large configs)
     # Limit to 1MB of JSON data (reasonable for config files)
@@ -146,12 +145,6 @@ def _validate_config_json(config_data: dict, config_type: str = "config") -> Non
         raise ValueError(
             f"{config_type} is too large ({len(serialized)} bytes). Maximum size is 1MB."
         )
-
-    # Validate JSON can be re-parsed (ensure it's valid JSON)
-    try:
-        json.loads(serialized)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"{config_type} contains invalid JSON: {e}") from e
 
 
 def _set_secure_db_permissions():
@@ -212,8 +205,8 @@ def cache_project_data(project_name, bench_instances_data):
             path=bench_data["path"],
         )
 
-        # Store common site config if present
-        if "common_site_config" in bench_data and bench_data["common_site_config"]:
+        # Store common site config if present (including empty configs)
+        if "common_site_config" in bench_data:
             try:
                 _validate_config_json(bench_data["common_site_config"], "common_site_config")
                 CommonSiteConfig.create(
@@ -237,8 +230,8 @@ def cache_project_data(project_name, bench_instances_data):
                 installed_apps=json.dumps(site_data["installed_apps"]),
             )
 
-            # Store site-specific config if present
-            if "site_config" in site_data and site_data["site_config"]:
+            # Store site-specific config if present (including empty configs)
+            if "site_config" in site_data:
                 try:
                     _validate_config_json(
                         site_data["site_config"], f"site_config for {site_data['name']}"
@@ -307,7 +300,7 @@ def get_cached_project_data(project_name):
                 "available_apps": available_apps,
             }
 
-            if common_config:
+            if common_config is not None:
                 bench_data["common_site_config"] = common_config
 
             bench_instances_data.append(bench_data)
@@ -350,14 +343,13 @@ def get_common_site_config(project_name: str, bench_path: str = None) -> dict | 
             except CommonSiteConfig.DoesNotExist:
                 return None
         else:
-            # Get config from first bench
-            bench = project.benches.first()
-            if bench:
+            # Get config from first bench that has one
+            for bench in project.benches:
                 try:
                     config_obj = CommonSiteConfig.get(CommonSiteConfig.bench == bench)
                     return json.loads(config_obj.config_json)
                 except CommonSiteConfig.DoesNotExist:
-                    return None
+                    continue
             return None
 
     except (Project.DoesNotExist, Bench.DoesNotExist):
