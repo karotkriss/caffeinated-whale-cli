@@ -1,5 +1,6 @@
 import json
 import re
+import shlex
 from datetime import datetime
 
 import questionary
@@ -90,7 +91,8 @@ def scan_backups_for_all_sites(frappe_container, bench_path: str, verbose: bool 
 
     # Get all sites in the bench
     sites_path = f"{bench_path}/sites"
-    cmd = f'find {sites_path} -maxdepth 1 -mindepth 1 -type d -not -name "assets" -not -name "common_site_config.json"'
+    quoted_sites_path = shlex.quote(sites_path)
+    cmd = f'find {quoted_sites_path} -maxdepth 1 -mindepth 1 -type d -not -name "assets" -not -name "common_site_config.json"'
 
     if verbose:
         stderr_console.print(f"[dim]$ {cmd}[/dim]")
@@ -110,16 +112,17 @@ def scan_backups_for_all_sites(frappe_container, bench_path: str, verbose: bool 
     # Scan backups for each site
     for site_path in sites:
         backup_dir = f"{site_path}/private/backups"
+        quoted_backup_dir = shlex.quote(backup_dir)
 
         # Check if backup directory exists
-        test_cmd = f'test -d "{backup_dir}"'
+        test_cmd = f'test -d {quoted_backup_dir}'
         exit_code, _ = frappe_container.exec_run(f"sh -c '{test_cmd}'")
 
         if exit_code != 0:
             continue  # No backups for this site
 
         # List all backup files (database, files, private-files, site_config_backup)
-        list_cmd = f'find "{backup_dir}" -maxdepth 1 -type f \\( -name "*-database.sql*" -o -name "*-files.tar*" -o -name "*-files.tgz" -o -name "*-private-files.tar*" -o -name "*-private-files.tgz" -o -name "*-site_config_backup.json" \\) | sort -r'
+        list_cmd = f'find {quoted_backup_dir} -maxdepth 1 -type f \\( -name "*-database.sql*" -o -name "*-files.tar*" -o -name "*-files.tgz" -o -name "*-private-files.tar*" -o -name "*-private-files.tgz" -o -name "*-site_config_backup.json" \\) | sort -r'
 
         if verbose:
             stderr_console.print(f"[dim]$ {list_cmd}[/dim]")
@@ -458,7 +461,8 @@ def restore(
         raise typer.Exit(code=1)
 
     # Verify bench path exists
-    exit_code, _ = frappe_container.exec_run(f'sh -c "test -d {bench_path}/sites"')
+    quoted_bench_path = shlex.quote(bench_path)
+    exit_code, _ = frappe_container.exec_run(f'sh -c "test -d {quoted_bench_path}/sites"')
     if exit_code != 0:
         stderr_console.print(
             f"[bold red]Error:[/bold red] Bench directory not found at {bench_path}"
@@ -467,7 +471,8 @@ def restore(
 
     # Check if site exists
     site_path = f"{bench_path}/sites/{site}"
-    exit_code, _ = frappe_container.exec_run(f'sh -c "test -d {site_path}"')
+    quoted_site_path = shlex.quote(site_path)
+    exit_code, _ = frappe_container.exec_run(f'sh -c "test -d {quoted_site_path}"')
     if exit_code != 0:
         stderr_console.print(f"[bold red]Error:[/bold red] Site '{site}' not found at {site_path}")
         raise typer.Exit(code=1)
