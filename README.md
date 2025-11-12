@@ -10,6 +10,7 @@ A command-line interface (CLI) for managing Frappe/ERPNext Docker instances duri
 - **Development Tools** - VS Code integration, log viewing, and command execution
 - **Cache System** - Fast project inspection with SQLite-based caching and configuration storage
 - **Default Site Support** - Optional `--site` flag when default site is configured
+- **Backup & Restore** - Interactive site restoration with automatic file archive detection
 - **Update Management** - App updates with automatic migrations and lock cleanup
 - **Auto-Inspection** - Background process to keep project cache fresh automatically
 - **System Integration** - Auto-start on system boot with platform-specific configurations
@@ -524,6 +525,106 @@ Removed locks folder: /workspace/frappe-bench/sites/development.localhost/locks
 ```
 
 **Note:** The `update` command automatically clears locks after completion, so manual unlocking is typically only needed for interrupted operations.
+
+---
+
+### `restore` - Restore Site from Backup
+
+Interactively restore a site from a backup with automatic detection of file archives and encryption keys.
+
+```bash
+cwcli restore [OPTIONS] PROJECT_NAME
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `PROJECT_NAME` | The Docker Compose project name (required) |
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `-s`, `--site TEXT` | Site name to restore. If not provided, uses the default site from `common_site_config.json` |
+| `-p`, `--path TEXT` | Path to the bench directory inside the container (uses cached path from inspect if not specified) |
+| `--mariadb-root-username TEXT` | MariaDB root username (default: root) |
+| `--mariadb-root-password TEXT` | MariaDB root password (will prompt if not provided) |
+| `--admin-password TEXT` | Set administrator password after restore |
+| `-v`, `--verbose` | Enable verbose output and show restore command details |
+
+**What It Does:**
+
+1. Scans all backup files across all sites in the bench
+2. Presents an interactive menu with backups grouped by target site
+3. Shows badges indicating backup contents: `[FILES]`, `[PRIVATE]`, `[DATABASE ONLY]`
+4. Automatically detects and restores public/private file archives
+5. Restores encryption key from backup's site_config if available
+6. Displays helpful error messages on failure with common causes
+
+**Interactive Features:**
+
+- **Smart Grouping**: Backups from the target site shown first, followed by backups from other sites
+- **Visual Badges**: Clear indicators of what each backup contains
+- **Secure Password Prompt**: Uses questionary for consistent, secure password input
+- **Confirmation Dialog**: Warns about data replacement before restore
+- **TipSpinner**: Shows helpful tips during restore operation
+
+**Examples:**
+
+```bash
+# Restore with interactive backup selection (uses default site)
+cwcli restore my-project
+
+# Restore specific site
+cwcli restore my-project --site production.localhost
+
+# Restore with verbose output for debugging
+cwcli restore my-project -v
+
+# Provide password via command line (not recommended for production)
+cwcli restore my-project --mariadb-root-password "secret123"
+```
+
+**Example Session:**
+
+```
+Using default site: development.localhost
+
+? Select a backup to restore: (Use arrow keys)
+
+=== Backups from site: development.localhost ===
+ > 2025-11-12 10:56:38  [FILES] [PRIVATE]
+   2025-11-12 09:30:01  [DATABASE ONLY]
+   2025-11-11 23:15:42  [FILES] [PRIVATE]
+
+⚠ Warning: This will replace all data in site 'development.localhost'
+Backup: 20251112_105638-development_localhost-database.sql.gz
+From: 2025-11-12 10:56:38
+Will restore: Database, Public files, Private files
+
+? Are you sure you want to restore? (y/N) y
+MariaDB root password: ********
+
+✓ Successfully restored site 'development.localhost'
+From backup: 20251112_105638-development_localhost-database.sql.gz
+Including file archives
+Updated encryption_key from backup site_config
+```
+
+**Security:**
+
+- Passwords validated to prevent shell injection
+- All inputs sanitized for command injection prevention
+- Backup file existence verified before restore
+- Passwords masked in verbose output
+
+**When to Use:**
+
+- Restore from scheduled backups after issues
+- Migrate data between environments
+- Recover from data corruption or accidental deletion
+- Test backup integrity
 
 ---
 
