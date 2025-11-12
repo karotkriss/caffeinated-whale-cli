@@ -461,8 +461,9 @@ def restore(
         raise typer.Exit(code=1)
 
     # Verify bench path exists
-    quoted_bench_path = shlex.quote(bench_path)
-    exit_code, _ = frappe_container.exec_run(f'sh -c "test -d {quoted_bench_path}/sites"')
+    bench_sites_path = f"{bench_path}/sites"
+    quoted_bench_sites_path = shlex.quote(bench_sites_path)
+    exit_code, _ = frappe_container.exec_run(f'sh -c "test -d {quoted_bench_sites_path}"')
     if exit_code != 0:
         stderr_console.print(
             f"[bold red]Error:[/bold red] Bench directory not found at {bench_path}"
