@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- ## [Unreleased] -->
 
+## [0.15.0] - 2025-11-12
+
+### Added
+- **`restore` command** - Interactive site restoration from backups
+  - Scans all backup files across all sites in the bench
+  - Interactive backup selection menu with styled UI
+  - Backups grouped by target site (shown first) and other sites
+  - Automatic detection of file archives (public and private files)
+  - Visual badges showing backup contents: `[FILES]`, `[PRIVATE]`, `[DATABASE ONLY]`
+  - Automatic encryption key restoration from backup site_config
+  - Secure password prompts using questionary library
+  - TipSpinner integration for enhanced developer experience
+  - Supports default site from common_site_config.json
+  - Comprehensive input validation and error handling
+  - Usage: `cwcli restore <project> [--site <site>]`
+
+### Security
+- **Command injection prevention in restore command**
+  - Validates passwords don't contain single quotes (shell breaking)
+  - Validates MariaDB username for shell metacharacters
+  - Validates backup file paths before restore
+  - Verifies backup files exist before attempting restore
+  - Site name and bench path validation (prevents traversal attacks)
+  - Password masking in verbose output
+
+### Changed
+- **Enhanced error messages for restore failures**
+  - Lists common failure causes (incorrect password, connection issues, etc.)
+  - Reminds users to use `-v` flag for detailed diagnostics
+  - Shows restore output on failure for better debugging
+  - JSON parsing errors handled gracefully with descriptive messages
+
 ## [0.14.0] - 2025-11-10
 
 ### Added
