@@ -1,6 +1,8 @@
 import functools
+import functools
 import os
 import shutil
+
 
 import docker
 import typer
@@ -40,7 +42,7 @@ def handle_docker_errors(func):
                     "[bold red]Error: Could not connect to Docker daemon.[/bold red]"
                 )
                 console.print(str(e))
-            raise typer.Exit(code=1)
+            raise typer.Exit(code=1) from None
 
         return func(*args, **kwargs)
 
@@ -49,6 +51,7 @@ def handle_docker_errors(func):
 
 def get_project_containers(
     project_name: str,
+) -> list[docker.models.containers.Container] | None:
 ) -> list[docker.models.containers.Container] | None:
     """
     Finds all containers belonging to a specific Docker Compose project.
