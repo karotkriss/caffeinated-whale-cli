@@ -22,3 +22,6 @@ frappe_docker/
 
 # documentation tools
 .obsidian
+
+# sendme
+blobs.db
