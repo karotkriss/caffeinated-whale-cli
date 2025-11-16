@@ -8,11 +8,11 @@ using platform-specific mechanisms:
 - Windows: Task Scheduler
 """
 
-import sys
 import platform
-import subprocess
-from pathlib import Path
 import shutil
+import subprocess
+import sys
+from pathlib import Path
 
 
 def get_platform() -> str:
@@ -87,7 +87,7 @@ def uninstall_startup() -> bool:
 
 def _get_macos_plist_path() -> Path:
     """Get the path to the LaunchAgent plist file."""
-    return Path.home() / "Library" / "LaunchAgents" / "com.caffeinated-whale-cli.auto-inspect.plist"
+    return Path.home() / "Library" / "LaunchAgents" / "com.cwcli.auto-inspect.plist"
 
 
 def _is_macos_startup_installed() -> bool:
@@ -107,7 +107,7 @@ def _install_macos_startup() -> bool:
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.caffeinated-whale-cli.auto-inspect</string>
+    <string>com.cwcli.auto-inspect</string>
     <key>ProgramArguments</key>
     <array>
         <string>{cwcli_path}</string>
@@ -120,9 +120,9 @@ def _install_macos_startup() -> bool:
     <key>KeepAlive</key>
     <false/>
     <key>StandardOutPath</key>
-    <string>/tmp/caffeinated-whale-cli-auto-inspect.log</string>
+    <string>/tmp/cwcli-auto-inspect.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/caffeinated-whale-cli-auto-inspect.err</string>
+    <string>/tmp/cwcli-auto-inspect.err</string>
 </dict>
 </plist>
 """
@@ -161,9 +161,7 @@ def _uninstall_macos_startup() -> bool:
 
 def _get_linux_service_path() -> Path:
     """Get the path to the systemd user service file."""
-    return (
-        Path.home() / ".config" / "systemd" / "user" / "caffeinated-whale-cli-auto-inspect.service"
-    )
+    return Path.home() / ".config" / "systemd" / "user" / "cwcli-auto-inspect.service"
 
 
 def _is_linux_startup_installed() -> bool:
@@ -206,7 +204,7 @@ WantedBy=default.target
         return False
 
     result = subprocess.run(
-        ["systemctl", "--user", "enable", "caffeinated-whale-cli-auto-inspect.service"],
+        ["systemctl", "--user", "enable", "cwcli-auto-inspect.service"],
         capture_output=True,
         text=True,
     )
@@ -216,7 +214,7 @@ WantedBy=default.target
         return False
 
     result = subprocess.run(
-        ["systemctl", "--user", "start", "caffeinated-whale-cli-auto-inspect.service"],
+        ["systemctl", "--user", "start", "cwcli-auto-inspect.service"],
         capture_output=True,
         text=True,
     )
@@ -235,11 +233,11 @@ def _uninstall_linux_startup() -> bool:
 
     # Stop and disable the service
     subprocess.run(
-        ["systemctl", "--user", "stop", "caffeinated-whale-cli-auto-inspect.service"],
+        ["systemctl", "--user", "stop", "cwcli-auto-inspect.service"],
         capture_output=True,
     )
     subprocess.run(
-        ["systemctl", "--user", "disable", "caffeinated-whale-cli-auto-inspect.service"],
+        ["systemctl", "--user", "disable", "cwcli-auto-inspect.service"],
         capture_output=True,
     )
 

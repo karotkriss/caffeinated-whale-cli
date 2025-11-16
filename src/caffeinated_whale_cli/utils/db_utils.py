@@ -6,7 +6,7 @@ from pathlib import Path
 
 from peewee import CharField, DateTimeField, ForeignKeyField, Model, SqliteDatabase, TextField
 
-APP_NAME = "caffeinated-whale-cli"
+APP_NAME = ".cwcli"
 CACHE_DIR = Path.home() / APP_NAME / "cache"
 DB_PATH = CACHE_DIR / "cwc-cache.db"
 

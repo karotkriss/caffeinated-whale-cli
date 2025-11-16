@@ -6,19 +6,20 @@ and cached data from the database. Includes performance optimizations with
 caching to reduce latency.
 """
 
-import docker
 import time
-from typing import List, Set, Optional, Dict, Tuple
+
+import docker
 import typer
+
 from . import db_utils
 
 # Cache configuration
 _CACHE_TTL = 2.0  # Cache results for 2 seconds (enough for tab completion session)
-_docker_client: Optional[docker.DockerClient] = None
-_cache: Dict[str, Tuple[float, List[str]]] = {}
+_docker_client: docker.DockerClient | None = None
+_cache: dict[str, tuple[float, list[str]]] = {}
 
 
-def _get_docker_client() -> Optional[docker.DockerClient]:
+def _get_docker_client() -> docker.DockerClient | None:
     """
     Get or create a cached Docker client.
 
@@ -34,7 +35,7 @@ def _get_docker_client() -> Optional[docker.DockerClient]:
     return _docker_client
 
 
-def _get_cached(key: str, ttl: float = _CACHE_TTL) -> Optional[List[str]]:
+def _get_cached(key: str, ttl: float = _CACHE_TTL) -> list[str] | None:
     """
     Get cached completion results if still valid.
 
@@ -52,7 +53,7 @@ def _get_cached(key: str, ttl: float = _CACHE_TTL) -> Optional[List[str]]:
     return None
 
 
-def _set_cached(key: str, value: List[str]) -> None:
+def _set_cached(key: str, value: list[str]) -> None:
     """
     Store completion results in cache.
 
@@ -64,8 +65,8 @@ def _set_cached(key: str, value: List[str]) -> None:
 
 
 def complete_project_names(
-    ctx: typer.Context = None, args: List[str] = None, incomplete: str = ""
-) -> List[str]:
+    ctx: typer.Context = None, args: list[str] = None, incomplete: str = ""
+) -> list[str]:
     """
     Complete Frappe project names from Docker containers.
 
@@ -99,7 +100,7 @@ def complete_project_names(
             filters={"label": "com.docker.compose.service=frappe"},
         )
 
-        projects: Set[str] = set()
+        projects: set[str] = set()
         for container in containers:
             project_name = container.labels.get("com.docker.compose.project")
             if project_name:
@@ -114,8 +115,8 @@ def complete_project_names(
 
 
 def complete_app_names(
-    ctx: typer.Context = None, args: List[str] = None, incomplete: str = ""
-) -> List[str]:
+    ctx: typer.Context = None, args: list[str] = None, incomplete: str = ""
+) -> list[str]:
     """
     Complete app names for a given project.
 
@@ -148,7 +149,7 @@ def complete_app_names(
         if not cached_data or not cached_data.get("bench_instances"):
             return []
 
-        apps: Set[str] = set()
+        apps: set[str] = set()
         for bench in cached_data["bench_instances"]:
             # Get available apps from each bench instance
             available_apps = bench.get("available_apps", [])
@@ -162,8 +163,8 @@ def complete_app_names(
 
 
 def complete_site_names(
-    ctx: typer.Context = None, args: List[str] = None, incomplete: str = ""
-) -> List[str]:
+    ctx: typer.Context = None, args: list[str] = None, incomplete: str = ""
+) -> list[str]:
     """
     Complete site names for a given project.
 
@@ -196,7 +197,7 @@ def complete_site_names(
         if not cached_data or not cached_data.get("bench_instances"):
             return []
 
-        sites: Set[str] = set()
+        sites: set[str] = set()
         for bench in cached_data["bench_instances"]:
             # Get sites from each bench instance
             for site in bench.get("sites", []):

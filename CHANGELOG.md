@@ -5,7 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-<!-- ## [Unreleased] -->
+## [0.20.0] - 2025-11-16
+
+### Changed
+- **Home directory location** - Moved from `~/caffeinated-whale-cli/` to `~/.cwcli/` (hidden directory)
+  - Config files now in `~/.cwcli/config/`
+  - Cache database now in `~/.cwcli/cache/`
+  - Auto-inspect PID/logs now in `~/.cwcli/run/`
+  - Service names updated: `com.cwcli.auto-inspect` (macOS), `cwcli-auto-inspect.service` (Linux)
+  - Log files updated: `/tmp/cwcli-auto-inspect.log` (macOS/Linux)
+  - Follows standard Unix convention for hidden config directories
+
+### Fixed
+- Type annotations in completion utilities (added `| None` to optional parameters)
 
 ## [0.19.0] - 2025-01-15
 
