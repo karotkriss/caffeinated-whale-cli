@@ -546,7 +546,9 @@ def init(
                 verbose=verbose,
             )
 
-    # Clear cached bench metadata
+    # Clear any stale cached data for this project
+    # Note: The 'inspect' command is responsible for populating detailed cache data.
+    # Init just clears stale cache since it creates a new project.
     db_utils.clear_cache_for_project(inputs.project_name)
 
     # Inform the user of success
