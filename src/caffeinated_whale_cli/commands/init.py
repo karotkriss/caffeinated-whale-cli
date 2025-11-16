@@ -1,39 +1,36 @@
 """
-Enhanced initialization script for cwcli.
+Simplified init command for cwcli.
 
-This version augments the original `init` command to support a more complete
-setup workflow inspired by the article "How to Install ERPNext on Windows 11
-Using Docker"【463985302350907†L129-L139】.  The enhancements include the ability to
-clone the `frappe_docker` repository, copy example development container
-configuration files, bring up Docker Compose services automatically and even
-install the ERPNext application after your site has been created.  You can
-trigger these steps via new command‑line flags.
+The init command creates a complete Frappe development environment in a single step:
+1. Creates a project directory in ~/.cwcli/projects/{project_name}/
+2. Downloads essential files from GitHub (docker-compose.yml, .env)
+3. Starts Docker Compose containers
+4. Initializes a Frappe bench inside the container
+5. Creates a new site with the specified configuration
+6. Optionally installs ERPNext
 
-Key additions:
+This approach is lightweight and organized - no need to clone the entire frappe_docker
+repository. All project files are stored in a dedicated projects directory.
 
-* `--setup`:  Clone the `frappe_docker` repository from a configurable URL
-  into a local directory, copy the example dev container and VS Code
-  configuration files, and run `docker compose up` to start the services.
-  These steps mirror the early setup phases described in the guide —
-  cloning the repository【463985302350907†L129-L139】, copying configs【463985302350907†L146-L156】 and launching
-  containers【463985302350907†L206-L220】.
-* `--clone-from-project`:  If you already have a Compose stack running, you can
-  pass the project name of the existing stack and this flag will launch a
-  second instance using the same Compose file but with a new project name.
-  This is a simple way to "clone" a containerised environment.
-* `--install-erpnext`:  After creating your bench and site the script can
-  automatically fetch and install the ERPNext application for you【463985302350907†L288-L299】.
+Key features:
+* Automatic project setup - no manual repository cloning needed
+* Downloads only essential files from GitHub (< 10KB vs entire repo)
+* All projects organized in ~/.cwcli/projects/
+* Optional ERPNext installation with `--install-erpnext`
+* Interactive prompts for project/bench/site names if not provided
 
-Because these features rely on host system tools (`git`, `docker`, etc.) the
-script uses Python's `subprocess.run` to execute them.  If a command fails it
-prints an error message and exits with code 1.
+Example:
+    cwcli init my-project
+    # Creates ~/.cwcli/projects/my-project/
+    # Downloads compose files
+    # Starts containers
+    # Initializes bench and site
 """
 
-import os
 import shlex
-import shutil
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 import questionary
 import typer
@@ -229,57 +226,69 @@ def _run_host_command(
         raise typer.Exit(code=1)
 
 
-def _clone_frappe_repo(repo_url: str, dest_dir: str) -> None:
-    """Clone the frappe_docker repository into dest_dir if it doesn't already exist."""
-    if os.path.isdir(dest_dir) and os.listdir(dest_dir):
-        # Directory exists and is non‑empty; assume repo already cloned
-        return
-    _run_host_command(
-        ["git", "clone", repo_url, dest_dir],
-        description=f"Cloning frappe_docker to {dest_dir}",
-        use_spinner=True,
-    )
+def _download_github_file(url: str, dest_path: Path, description: str | None = None) -> None:
+    """Download a file from GitHub raw URL."""
+    import urllib.request
+
+    if description:
+        stderr_console.print(f"[bold cyan]➤[/bold cyan] {description}")
+
+    try:
+        with urllib.request.urlopen(url) as response:
+            content = response.read()
+            dest_path.write_bytes(content)
+    except Exception as e:
+        stderr_console.print(f"[bold red]Error:[/bold red] Failed to download {url}: {e}")
+        raise typer.Exit(code=1) from None
 
 
-def _copy_devcontainer_configs(repo_path: str) -> None:
-    """Copy example dev container and VS Code config directories into place."""
-    # Copy devcontainer example to .devcontainer
-    src_devcontainer = os.path.join(repo_path, "devcontainer-example")
-    dest_devcontainer = os.path.join(repo_path, ".devcontainer")
-    if os.path.isdir(src_devcontainer) and not os.path.isdir(dest_devcontainer):
-        stderr_console.print("[bold cyan]➤[/bold cyan] Copying devcontainer example configuration")
-        shutil.copytree(src_devcontainer, dest_devcontainer)
-    # Copy VS Code example to development/.vscode
-    src_vscode = os.path.join(repo_path, "development", "vscode-example")
-    dest_vscode = os.path.join(repo_path, "development", ".vscode")
-    if os.path.isdir(src_vscode) and not os.path.isdir(dest_vscode):
-        stderr_console.print("[bold cyan]➤[/bold cyan] Copying VS Code example configuration")
-        shutil.copytree(src_vscode, dest_vscode)
-
-
-def _start_compose_project(project_name: str, repo_path: str, compose_file: str) -> None:
-    """Run docker compose up -d in the given repository to start services."""
-    cmd = ["docker", "compose", "-p", project_name]
-    if compose_file:
-        cmd += ["-f", compose_file]
-    cmd += ["up", "-d"]
+def _start_compose_project(project_name: str, project_dir: Path) -> None:
+    """Run docker compose up -d in the project directory to start services."""
+    cmd = ["docker", "compose", "-p", project_name, "-f", "docker-compose.yml", "up", "-d"]
     _run_host_command(
         cmd,
-        cwd=repo_path,
+        cwd=str(project_dir),
         description=f"Starting Docker Compose project '{project_name}'",
         use_spinner=True,
     )
 
 
-def _clone_compose_project(
-    _existing_project: str, new_project: str, repo_path: str, compose_file: str
-) -> None:
-    """Clone an existing Compose project by bringing up the same services under a new project name."""
-    # We simply call docker compose with the new project name.  Docker Compose
-    # will create a parallel set of containers, networks and volumes.  This
-    # provides a lightweight "clone" of the running environment.
-    # Note: _existing_project parameter is intentionally unused - it's for documentation only
-    _start_compose_project(new_project, repo_path, compose_file)
+def _setup_project_directory(project_name: str, verbose: bool = False) -> Path:
+    """
+    Create project directory and download essential files from GitHub.
+
+    Returns the path to the project directory.
+    """
+    from ..utils.config_utils import PROJECTS_DIR
+
+    # Create project directory
+    project_dir = PROJECTS_DIR / project_name
+    project_dir.mkdir(parents=True, exist_ok=True)
+
+    if verbose:
+        stderr_console.print(f"[dim]Project directory: {project_dir}[/dim]")
+
+    # GitHub raw URLs for frappe_docker development setup
+    compose_url = (
+        "https://raw.githubusercontent.com/frappe/frappe_docker/main/development/compose.yaml"
+    )
+    env_url = "https://raw.githubusercontent.com/frappe/frappe_docker/main/development/.env.example"
+
+    # Download compose file
+    compose_path = project_dir / "docker-compose.yml"
+    if not compose_path.exists():
+        _download_github_file(
+            compose_url, compose_path, description="Downloading docker-compose.yml from GitHub"
+        )
+
+    # Download and rename .env.example to .env
+    env_path = project_dir / ".env"
+    if not env_path.exists():
+        _download_github_file(
+            env_url, env_path, description="Downloading .env configuration from GitHub"
+        )
+
+    return project_dir
 
 
 @handle_docker_errors
@@ -332,32 +341,6 @@ def init(
         "-v",
         help="Show verbose docker exec output for quick commands.",
     ),
-    # New options below
-    setup: bool = typer.Option(
-        False,
-        "--setup",
-        help="Perform initial setup: clone frappe_docker, copy example configs and bring up containers.",
-    ),
-    clone_from_project: str | None = typer.Option(
-        None,
-        "--clone-from-project",
-        help="Name of an existing docker compose project to clone.  If provided, the compose stack is duplicated under the new project name before bench initialization.",
-    ),
-    repo_url: str = typer.Option(
-        "https://github.com/frappe/frappe_docker.git",
-        "--repo-url",
-        help="Git URL of the frappe_docker repository to clone when using --setup.",
-    ),
-    repo_path: str = typer.Option(
-        "./frappe_docker",
-        "--repo-path",
-        help="Local directory where the frappe_docker repository will be cloned when using --setup.",
-    ),
-    compose_file: str = typer.Option(
-        ".devcontainer/docker-compose.yml",
-        "--compose-file",
-        help="Docker compose file name relative to the repository path.  Defaults to 'compose.yaml'.",
-    ),
     install_erpnext: bool = typer.Option(
         False,
         "--install-erpnext",
@@ -370,10 +353,10 @@ def init(
     ),
 ) -> None:
     """
-    Initialize a new Frappe bench and site inside a running project's Frappe container.
+    Initialize a new Frappe project with bench and site.
 
-    Creates a new bench, configures services (MariaDB, Redis), and sets up a site.
-    Optionally clones frappe_docker repo, starts containers, and installs ERPNext.
+    Creates project directory, downloads compose files, starts containers,
+    initializes bench, and creates a site. Optionally installs ERPNext.
 
     If project_name, bench_name, or site_name are not provided, prompts interactively.
 
@@ -382,40 +365,16 @@ def init(
         cwcli init my-project
         cwcli init my-project --bench my-bench --site mysite.localhost
         cwcli init my-project --frappe-branch version-15 --install-erpnext
-        cwcli init my-project --setup --repo-path ./frappe_docker
-        cwcli init --clone-from-project existing-project new-project
+        cwcli init my-project --db-root-password mypass --admin-password admin123
     """
     # Prompt for inputs (project, bench and site names) first
     inputs = _prompt_for_inputs(project_name, bench_name, site_name)
 
-    # Perform optional setup: clone repo, copy configs, start containers
-    if setup:
-        # Ensure git and docker are available
-        try:
-            subprocess.run(["git", "--version"], check=True, stdout=subprocess.DEVNULL)
-            subprocess.run(["docker", "--version"], check=True, stdout=subprocess.DEVNULL)
-        except subprocess.CalledProcessError:
-            stderr_console.print(
-                "[bold red]Error:[/bold red] 'git' and 'docker' commands must be installed "
-                "and in your PATH for setup."
-            )
-            raise typer.Exit(code=1) from None
-        # Clone repo if needed
-        _clone_frappe_repo(repo_url, repo_path)
-        # Copy example configurations into place
-        _copy_devcontainer_configs(repo_path)
-        # Start compose project with provided project name and compose file
-        _start_compose_project(inputs.project_name, repo_path, compose_file)
+    # Setup project directory and download essential files
+    project_dir = _setup_project_directory(inputs.project_name, verbose=verbose)
 
-    # Clone an existing compose project if requested
-    if clone_from_project:
-        if not os.path.isdir(repo_path):
-            stderr_console.print(
-                "[bold red]Error:[/bold red] --clone-from-project requires a valid "
-                "--repo-path where compose files live."
-            )
-            raise typer.Exit(code=1)
-        _clone_compose_project(clone_from_project, inputs.project_name, repo_path, compose_file)
+    # Start Docker Compose project
+    _start_compose_project(inputs.project_name, project_dir)
 
     # Ensure containers are ready before interacting with them
     ensure_containers_running(inputs.project_name, require_running=True, auto_start=auto_start)
