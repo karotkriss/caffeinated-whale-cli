@@ -57,9 +57,9 @@ Actions > Release > Run workflow > Run workflow
 
 1. ✅ Add `PYPI_API_TOKEN` secret
 2. ✅ Create `pypi` environment (optional)
-3. ✅ Test on TestPyPI first (see [setup guide](../../docs/ci-cd/setup-guide.md))
+3. ✅ Test on TestPyPI first (see [CI/CD guide](../../docs/contributing/ci-cd.md))
 4. ✅ Ensure versions match in `__init__.py` and `pyproject.toml`
 
 ### Full Documentation
 
-See [docs/ci-cd/setup-guide.md](../../docs/ci-cd/setup-guide.md) for complete setup guide.
+See [docs/contributing/ci-cd.md](../../docs/contributing/ci-cd.md) for complete CI/CD guide.

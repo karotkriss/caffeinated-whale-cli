@@ -15,6 +15,9 @@ from .commands.run import run as _run_cmd
 from .commands.status import status as _status_cmd
 from .commands.unlock import unlock as _unlock_cmd
 from .commands.update import update as _update_cmd
+from .commands.unlock import unlock as _unlock_cmd
+from .commands.restore import restore as _restore_cmd
+from .commands.backup import backup as _backup_cmd
 
 __version__ = importlib.metadata.version("caffeinated-whale-cli")
 
@@ -63,6 +66,8 @@ app.command("status")(_status_cmd)
 app.command("open")(_open_cmd)
 app.command("logs")(_logs_cmd)
 app.command("unlock")(_unlock_cmd)
+app.command("restore")(_restore_cmd)
+app.command("backup")(_backup_cmd)
 
 
 def cli():

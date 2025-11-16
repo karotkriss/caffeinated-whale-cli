@@ -8,8 +8,13 @@ A command-line interface (CLI) for managing Frappe/ERPNext Docker instances duri
 - **Project Discovery** - Scan and list all Frappe Docker projects
 - **Container Lifecycle** - Start, stop, and restart projects with ease
 - **Development Tools** - VS Code integration, log viewing, and command execution
-- **Cache System** - Fast project inspection with SQLite-based caching
+- **Cache System** - Fast project inspection with SQLite-based caching and configuration storage
+- **Default Site Support** - Optional `--site` flag when default site is configured
+- **Backup & Restore** - Interactive site restoration with automatic file archive detection and P2P transfer support
 - **Update Management** - App updates with automatic migrations and lock cleanup
+- **Auto-Inspection** - Background process to keep project cache fresh automatically
+- **System Integration** - Auto-start on system boot with platform-specific configurations
+- **Contextual Tips** - Helpful tips displayed during long-running operations to help you discover features
 
 ## Installation
 
@@ -243,6 +248,8 @@ cwcli logs frappe-one -n 200
 
 Inspects a project to find all bench instances, sites, and apps within it. Results are cached for faster subsequent operations.
 
+**Security Note:** The inspect command caches site configurations including database credentials and Redis URLs. The cache is stored with restricted filesystem permissions (directory: `0700`, database: `0600`) to prevent unauthorized access. Only the current user can read the cached data. Do not share the cache directory (`~/caffeinated-whale-cli/cache/`) with untrusted users.
+
 ```bash
 cwcli inspect [OPTIONS] PROJECT_NAME
 ```
@@ -263,12 +270,19 @@ cwcli inspect [OPTIONS] PROJECT_NAME
 | `-a`, `--show-apps` | Show available apps in the output tree |
 | `-i`, `--interactive` | Prompt to name each bench instance interactively |
 
+**What It Caches:**
+- Bench instances and their paths
+- Sites and installed apps for each bench
+- Site configurations (database credentials, developer mode settings)
+- Common site configuration (Redis URLs, ports, default site, etc.)
+- Default site is labeled with `(default)` in output
+
 **Example Output:**
 
 ```
 frappe-one
 ├── Bench: bench
-│   ├── Site: frappe-one.localhost
+│   ├── Site: frappe-one.localhost (default)
 │   │   ├── App: frappe (v15.0.0, develop)
 │   │   └── App: erpnext (v15.0.0, version-15)
 │   └── Site: site2.localhost
@@ -278,6 +292,11 @@ frappe-one
     └── Site: site3.localhost
         └── App: frappe (v15.0.0, develop)
 ```
+
+**Benefits:**
+- Enables default site feature: `unlock` command can omit `--site` flag
+- Faster subsequent operations (uses cached data)
+- Stores configurations for programmatic access
 
 **Examples:**
 
@@ -320,30 +339,43 @@ cwcli open [OPTIONS] PROJECT_NAME
 |--------|-------------|
 | `-p`, `--path TEXT` | Path inside the container to open (uses cached bench path from inspect if not specified) |
 | `-a`, `--app TEXT` | App name to open (opens the app's directory within the bench) |
+| `--code` | Open with VS Code directly (skips interactive prompt) |
+| `--code-insiders` | Open with VS Code Insiders directly (skips interactive prompt) |
+| `--docker` | Open with Docker exec directly (skips interactive prompt) |
 | `-v`, `--verbose` | Enable verbose diagnostic output |
 
 **Features:**
 
 - Auto-detects VS Code and VS Code Insiders installations
-- Interactive editor selection menu
+- Interactive editor selection menu (when no editor flag specified)
+- Direct editor selection via `--code`, `--code-insiders`, or `--docker` flags
 - Automatically installs required VS Code extensions (Docker and Dev Containers)
 - Uses cached bench paths from `inspect` command
+- Docker exec opens in bench directory (respects working directory)
 - Falls back to Docker exec if VS Code is unavailable
 
 **Examples:**
 
 ```bash
-# Open project (uses cached bench path)
+# Open project with interactive prompt (uses cached bench path)
 cwcli open frappe-one
 
-# Open specific app directory
-cwcli open frappe-one --app erpnext
+# Open directly with VS Code (skip prompt)
+cwcli open frappe-one --code
+
+# Open directly with Docker exec (skip prompt)
+cwcli open frappe-one --docker
+
+# Open specific app directory with VS Code Insiders
+cwcli open frappe-one --app erpnext --code-insiders
 
 # Open custom path
 cwcli open frappe-one --path /workspace/custom-bench
 ```
 
 **Interactive Prompt:**
+
+When no editor flag is specified, you'll see:
 
 ```
 How would you like to open this instance?
@@ -442,13 +474,32 @@ cwcli unlock [OPTIONS] PROJECT_NAME
 
 | Option | Description |
 |--------|-------------|
-| `-s`, `--site TEXT` | Site name to unlock (removes the locks folder) - **required** |
+| `-s`, `--site TEXT` | Site name to unlock. If not provided, uses the default site from `common_site_config.json` |
 | `-p`, `--path TEXT` | Path to the bench directory inside the container (uses cached path from inspect if not specified) |
 | `-v`, `--verbose` | Enable verbose output and stream rm command output |
 
 **What It Does:**
 
 Removes the `{bench_path}/sites/{site_name}/locks` directory, which can help resolve issues when a site is stuck in a locked state due to incomplete migrations or background jobs.
+
+**Smart Defaults:**
+- If `--site` is not specified, automatically uses the default site from your bench's `common_site_config.json`
+- Shows "Using default site: {site}" when using the default
+- Run `cwcli inspect {project}` first to cache the configuration
+
+**Examples:**
+
+```bash
+# Unlock a specific site
+cwcli unlock my-project --site development.localhost
+
+# Use default site (no --site flag needed)
+cwcli unlock my-project
+# Output: Using default site: development.localhost
+
+# Verbose mode with default site
+cwcli unlock my-project -v
+```
 
 **When to Use:**
 
@@ -474,6 +525,157 @@ Removed locks folder: /workspace/frappe-bench/sites/development.localhost/locks
 ```
 
 **Note:** The `update` command automatically clears locks after completion, so manual unlocking is typically only needed for interrupted operations.
+
+---
+
+### `restore` - Restore Site from Backup
+
+Interactively restore a site from a backup with automatic detection of file archives and encryption keys. Supports both local restoration and peer-to-peer backup transfers via sendme.
+
+```bash
+cwcli restore [OPTIONS] PROJECT_NAME
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `PROJECT_NAME` | The Docker Compose project name (required) |
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `-s`, `--site TEXT` | Site name to restore. If not provided, uses the default site from `common_site_config.json` |
+| `-p`, `--path TEXT` | Path to the bench directory inside the container (uses cached path from inspect if not specified) |
+| `--mariadb-root-username TEXT` | MariaDB root username (default: root) |
+| `--mariadb-root-password TEXT` | MariaDB root password (will prompt if not provided) |
+| `--admin-password TEXT` | Set administrator password after restore |
+| `--send` | **P2P Mode:** Share backup with another machine via peer-to-peer transfer |
+| `--receive` | **P2P Mode:** Receive backup from another machine via peer-to-peer transfer |
+| `-v`, `--verbose` | Enable verbose output and show restore command details |
+
+**What It Does:**
+
+1. Scans all backup files across all sites in the bench
+2. Presents an interactive menu with backups grouped by target site
+3. Shows badges indicating backup contents: `[FILES]`, `[PRIVATE]`, `[DATABASE ONLY]`
+4. Automatically detects and restores public/private file archives
+5. Restores encryption key from backup's site_config if available
+6. Displays helpful error messages on failure with common causes
+
+**Interactive Features:**
+
+- **Smart Grouping**: Backups from the target site shown first, followed by backups from other sites
+- **Visual Badges**: Clear indicators of what each backup contains
+- **Secure Password Prompt**: Uses questionary for consistent, secure password input
+- **Confirmation Dialog**: Warns about data replacement before restore
+- **TipSpinner**: Shows helpful tips during restore operation
+
+**Examples:**
+
+```bash
+# Restore with interactive backup selection (uses default site)
+cwcli restore my-project
+
+# Restore specific site
+cwcli restore my-project --site production.localhost
+
+# Restore with verbose output for debugging
+cwcli restore my-project -v
+
+# Provide password via command line (not recommended for production)
+cwcli restore my-project --mariadb-root-password "secret123"
+```
+
+**Example Session:**
+
+```
+Using default site: development.localhost
+
+? Select a backup to restore: (Use arrow keys)
+
+=== Backups from site: development.localhost ===
+ > 2025-11-12 10:56:38  [FILES] [PRIVATE]
+   2025-11-12 09:30:01  [DATABASE ONLY]
+   2025-11-11 23:15:42  [FILES] [PRIVATE]
+
+⚠ Warning: This will replace all data in site 'development.localhost'
+Backup: 20251112_105638-development_localhost-database.sql.gz
+From: 2025-11-12 10:56:38
+Will restore: Database, Public files, Private files
+
+? Are you sure you want to restore? (y/N) y
+MariaDB root password: ********
+
+✓ Successfully restored site 'development.localhost'
+From backup: 20251112_105638-development_localhost-database.sql.gz
+Including file archives
+Updated encryption_key from backup site_config
+```
+
+**P2P Backup Transfer:**
+
+Share backups between machines using peer-to-peer connections (powered by sendme/Iroh):
+
+**Sending a Backup:**
+```bash
+# On the source machine
+cwcli restore my-project --send
+
+# Select backup from interactive menu
+# Ticket automatically copied to clipboard
+✓ Transfer ticket copied to clipboard!
+
+Instructions for the receiver:
+  1. Run: cwcli restore <project_name> --receive
+  2. Paste the ticket when prompted
+```
+
+**Receiving a Backup:**
+```bash
+# On the destination machine
+cwcli restore my-project --receive
+
+# Paste the ticket from sender
+? Enter the sendme ticket: blob...
+
+# Files download with hash verification
+✓ Files downloaded successfully
+# Automatic restore process begins
+```
+
+**P2P Transfer Features:**
+- **Hash-verified transfers** - BLAKE3 cryptographic verification ensures data integrity
+- **Resumable downloads** - Interrupted transfers can resume from where they stopped
+- **NAT traversal** - Works behind firewalls and corporate networks
+- **No cloud intermediary** - Direct peer-to-peer connections
+- **Cross-platform** - Works on macOS, Linux, and Windows
+- **Automatic setup** - sendme binary auto-installed on first use
+- **Multiple receivers** - Same ticket can be used by multiple machines
+
+**Use Cases:**
+- Share production backups with development team
+- Transfer large backups without cloud storage limits
+- Migrate data between data centers
+- Distribute backups to multiple environments simultaneously
+
+**Security:**
+
+- Passwords validated to prevent shell injection
+- All inputs sanitized for command injection prevention
+- Backup file existence verified before restore
+- Passwords masked in verbose output
+- P2P transfers are hash-verified (BLAKE3) to prevent tampering
+- Treat transfer tickets like passwords (they grant download access)
+
+**When to Use:**
+
+- Restore from scheduled backups after issues
+- Migrate data between environments
+- Recover from data corruption or accidental deletion
+- Test backup integrity
+- **Share backups between machines without cloud storage**
 
 ---
 
@@ -630,6 +832,112 @@ cwcli config cache [SUBCOMMAND]
 - **`list`** - List all projects currently in the cache
   - Example: `cwcli config cache list`
 
+##### `config auto-inspect` - Automatic Project Inspection
+
+Manages automatic background inspection of running Frappe projects to keep cached data fresh.
+
+```bash
+cwcli config auto-inspect [SUBCOMMAND]
+```
+
+**Auto-Inspect Subcommands:**
+
+- **`enable`** - Enable automatic project inspection
+  - Options:
+    - `--interval INTEGER` - Inspection interval in seconds (minimum 60, default 3600)
+    - `--startup` - Also enable automatic startup on system boot/login
+  - Example: `cwcli config auto-inspect enable --interval 1800 --startup`
+
+- **`disable`** - Disable automatic inspection and stop background process
+  - Example: `cwcli config auto-inspect disable`
+
+- **`start`** - Start the auto-inspect background process
+  - Options:
+    - `--startup` - Also enable automatic startup on system boot
+  - Example: `cwcli config auto-inspect start --startup`
+
+- **`stop`** - Stop the auto-inspect background process
+  - Example: `cwcli config auto-inspect stop`
+
+- **`restart`** - Restart the auto-inspect background process
+  - Example: `cwcli config auto-inspect restart`
+
+- **`status`** - Show detailed status (enabled, interval, process state, PID, startup)
+  - Example: `cwcli config auto-inspect status`
+
+- **`logs`** - View recent background process logs
+  - Options: `--lines INTEGER` - Number of log lines to show (default 20)
+  - Example: `cwcli config auto-inspect logs --lines 50`
+
+- **`set-interval`** - Change the inspection interval
+  - Example: `cwcli config auto-inspect set-interval 7200`
+
+- **`install-startup`** - Install platform-specific startup configuration
+  - Creates LaunchAgent (macOS), systemd service (Linux), or Task Scheduler task (Windows)
+  - Example: `cwcli config auto-inspect install-startup`
+
+- **`uninstall-startup`** - Remove startup configuration
+  - Example: `cwcli config auto-inspect uninstall-startup`
+
+**What it does:**
+
+The auto-inspect feature runs a background daemon process that periodically inspects all running Frappe projects. This keeps your project cache fresh for:
+- Tab completion (project names, apps, sites)
+
+##### `config tips` - Manage Contextual Tips
+
+Control the display of helpful tips during long-running operations.
+
+```bash
+cwcli config tips [enable|disable|status]
+```
+
+**Subcommands:**
+
+- **`enable`** - Enable contextual tips during long operations
+  - Example: `cwcli config tips enable`
+
+- **`disable`** - Disable contextual tips
+  - Example: `cwcli config tips disable`
+
+- **`status`** - Show whether contextual tips are enabled
+  - Example: `cwcli config tips status`
+
+**What it does:**
+
+When enabled (default), cwcli displays rotating helpful tips alongside spinners during long-running operations like `inspect`, `update`, and `open`. Tips help you discover features and best practices while waiting for operations to complete.
+
+**Examples of tips shown:**
+
+- 💡 Add VS Code to PATH via Command Palette: 'Shell Command: Install code command in PATH'
+- 💡 Install tab completion with 'cwcli --install-completion' for faster workflows
+- 💡 Use 'cwcli inspect <project>' to cache project structure for faster commands
+- 💡 cwcli automatically detects and resolves port conflicts when starting projects
+- Project status queries
+- Other commands that rely on cached data
+
+**Quick Setup:**
+
+```bash
+# Enable with 1-hour interval and auto-start on boot
+cwcli config auto-inspect enable --interval 3600 --startup
+
+# Start the background process
+cwcli config auto-inspect start
+
+# Check status
+cwcli config auto-inspect status
+
+# View logs
+cwcli config auto-inspect logs
+```
+
+**Notes:**
+- Background process survives terminal closure
+- Process stops on system restart unless startup is enabled
+- Logs stored in `~/caffeinated-whale-cli/run/auto-inspect.log`
+- PID file stored in `~/caffeinated-whale-cli/run/auto-inspect.pid`
+
 ---
 
 ## Tips and Tricks
@@ -669,11 +977,53 @@ cwcli update frappe-one --app erpnext -v
 
 ### Shell Completion
 
-Install shell completion for faster command entry:
+cwcli supports intelligent tab completion for project names, apps, and sites across all shells (Bash, Zsh, Fish, PowerShell).
+
+**One-time setup:**
 
 ```bash
+# Install completion for your current shell
 cwcli --install-completion
+
+# Restart your shell or source your shell config
+source ~/.bashrc  # For Bash
+source ~/.zshrc   # For Zsh
 ```
+
+**What gets completed:**
+
+- **Project names** - All commands that accept project names (start, stop, restart, inspect, logs, open, status, run, update, unlock)
+- **App names** - Commands with `--app` option (open, update)
+- **Site names** - Commands with `--site` option (unlock)
+
+**Examples:**
+
+```bash
+# Press TAB after typing partial project name
+cwcli start frap<TAB>
+# Completes to: cwcli start frappe-one
+
+# Press TAB to see available apps for a project
+cwcli update frappe-one --app <TAB>
+# Shows: erpnext  frappe  hrms  custom_app
+
+# Press TAB to see available sites
+cwcli unlock frappe-one --site <TAB>
+# Shows: site1.localhost  site2.localhost
+```
+
+**How it works:**
+
+- **Projects**: Queried from Docker containers in real-time
+- **Apps/Sites**: Loaded from cached project data (run `cwcli inspect` first)
+- **Fast & Context-aware**: Completions adapt based on the project specified
+
+**Troubleshooting:**
+
+If completion doesn't work:
+1. Ensure you've run `cwcli --install-completion`
+2. Restart your shell
+3. For apps/sites, run `cwcli inspect <project>` to populate the cache
 
 ## Architecture
 
@@ -693,4 +1043,31 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 ## Contributing
 
-Contributions are welcome! Please open an issue or submit a pull request on [GitHub](https://github.com/karotkriss/caffeinated-whale-cli).
+Contributions are welcome! Please see our [Contributing Guide](./CONTRIBUTING.md) for detailed information.
+
+**Quick Links:**
+- [Git Workflow](./docs/contributing/git-workflow.md) - Complete contribution workflow
+- [Commit Messages](./docs/contributing/commit-messages.md) - Conventional commit standards
+- [Code Quality](./docs/contributing/code-quality.md) - Formatting with Black, linting with Ruff
+- [Testing Guide](./docs/testing/guide.md) - How to write and run tests
+- [CI/CD](./docs/contributing/ci-cd.md) - GitHub Actions workflows
+
+**Getting Started:**
+
+```bash
+# Clone the repository
+git clone https://github.com/karotkriss/caffeinated-whale-cli.git
+cd caffeinated-whale-cli
+
+# Install dependencies
+uv sync --all-extras
+
+# Run tests
+uv run pytest --cov
+
+# Format and lint
+uv run black src/ tests/
+uv run ruff check src/ --fix
+```
+
+For questions or issues, please open an issue on [GitHub](https://github.com/karotkriss/caffeinated-whale-cli).

@@ -1,18 +1,17 @@
-import typer
-import docker
 import json
 import time
+
+import docker
 import questionary
-import sys
+import typer
 from rich.console import Console
 from rich.tree import Tree
-from typing import List, Optional, Tuple, Dict
+
+from ..utils import config_utils, db_utils
+from ..utils.completion_utils import complete_project_names
+from ..utils.docker_utils import get_project_containers, handle_docker_errors
+from ..utils.tips import TipSpinner
 from .utils import ensure_containers_running
-from ..utils.docker_utils import get_project_containers
-from ..utils import config_utils
-from ..utils import db_utils
-from ..utils.docker_utils import handle_docker_errors
-from .start import _start_project
 
 console_out = Console()
 console_err = Console(stderr=True)
@@ -22,8 +21,8 @@ def _run_command(
     container: docker.models.containers.Container,
     cmd: str,
     verbose: bool = False,
-    workdir: Optional[str] = None,
-) -> Tuple[int, str]:
+    workdir: str | None = None,
+) -> tuple[int, str]:
     if verbose:
         console_err.print(f"[dim]$ {cmd}[/dim]")
     exit_code, output = container.exec_run(cmd, workdir=workdir)
@@ -47,7 +46,7 @@ def _is_bench_directory(
 
 def _get_sites(
     container: docker.models.containers.Container, bench_dir: str, verbose: bool = False
-) -> List[str]:
+) -> list[str]:
     exit_code, output = _run_command(container, f"ls -1 {bench_dir}/sites", verbose)
     if exit_code != 0:
         return []
@@ -57,7 +56,7 @@ def _get_sites(
 
 def _get_installed_apps(
     container: docker.models.containers.Container, bench_dir: str, site: str, verbose: bool = False
-) -> List[str]:
+) -> list[str]:
     cmd = f"bench --site {site} list-apps"
     exit_code, output = _run_command(container, cmd, verbose, workdir=bench_dir)
     if exit_code != 0:
@@ -67,7 +66,7 @@ def _get_installed_apps(
 
 def _get_available_apps(
     container: docker.models.containers.Container, bench_dir: str, verbose: bool = False
-) -> List[str]:
+) -> list[str]:
     exit_code, output = _run_command(container, f"ls -1 {bench_dir}/apps", verbose)
     if exit_code != 0:
         return []
@@ -76,7 +75,7 @@ def _get_available_apps(
 
 def _find_bench_instances(
     container: docker.models.containers.Container, verbose: bool = False
-) -> List[str]:
+) -> list[str]:
     """Finds all potential bench directories using default and custom TOML config paths."""
     benches_found = []
 
@@ -107,27 +106,113 @@ def _find_bench_instances(
     return list(set(benches_found))
 
 
+def _get_common_site_config(
+    frappe_container: docker.models.containers.Container, bench_dir: str, verbose: bool
+) -> dict | None:
+    """Fetches common_site_config.json from the bench directory."""
+    config_path = f"{bench_dir}/sites/common_site_config.json"
+    cmd = f"cat {config_path}"
+
+    exit_code, output = _run_command(frappe_container, cmd, verbose)
+
+    if exit_code == 0 and output:
+        try:
+            config = json.loads(output)
+            if verbose:
+                console_err.print(
+                    f"[dim]VERBOSE: Found common_site_config with {len(config)} keys[/dim]"
+                )
+            return config
+        except json.JSONDecodeError:
+            if verbose:
+                console_err.print(
+                    "[dim yellow]VERBOSE: Failed to parse common_site_config.json[/dim yellow]"
+                )
+            return None
+    else:
+        if verbose:
+            console_err.print(
+                "[dim yellow]VERBOSE: common_site_config.json not found or not readable[/dim yellow]"
+            )
+        return None
+
+
+def _get_site_config(
+    frappe_container: docker.models.containers.Container,
+    bench_dir: str,
+    site_name: str,
+    verbose: bool,
+) -> dict | None:
+    """Fetches site_config.json for a specific site."""
+    config_path = f"{bench_dir}/sites/{site_name}/site_config.json"
+    cmd = f"cat {config_path}"
+
+    exit_code, output = _run_command(frappe_container, cmd, verbose)
+
+    if exit_code == 0 and output:
+        try:
+            config = json.loads(output)
+            if verbose:
+                console_err.print(
+                    f"[dim]VERBOSE: Found site_config for {site_name} with {len(config)} keys[/dim]"
+                )
+            return config
+        except json.JSONDecodeError:
+            if verbose:
+                console_err.print(
+                    f"[dim yellow]VERBOSE: Failed to parse site_config.json for {site_name}[/dim yellow]"
+                )
+            return None
+    else:
+        if verbose:
+            console_err.print(
+                f"[dim yellow]VERBOSE: site_config.json not found for {site_name}[/dim yellow]"
+            )
+        return None
+
+
 def _gather_bench_data(
     frappe_container: docker.models.containers.Container, bench_dir: str, verbose: bool
-) -> Dict:
-    """Gathers sites and apps for a single bench instance."""
+) -> dict:
+    """Gathers sites, apps, and configs for a single bench instance."""
     if verbose:
         console_err.print(f"VERBOSE: Inspecting Bench Instance: {bench_dir}")
+
     available_apps = _get_available_apps(frappe_container, bench_dir, verbose)
+
+    # Fetch common site config
+    common_site_config = _get_common_site_config(frappe_container, bench_dir, verbose)
+
     sites = _get_sites(frappe_container, bench_dir, verbose)
     sites_info = []
     for site in sites:
         if verbose:
             console_err.print(f"VERBOSE:   - Found Site: {site}")
-        installed_apps = _get_installed_apps(frappe_container, bench_dir, site, verbose)
-        sites_info.append({"name": site, "installed_apps": installed_apps})
 
-    return {"path": bench_dir, "sites": sites_info, "available_apps": available_apps}
+        installed_apps = _get_installed_apps(frappe_container, bench_dir, site, verbose)
+
+        # Fetch site-specific config
+        site_config = _get_site_config(frappe_container, bench_dir, site, verbose)
+
+        site_data = {"name": site, "installed_apps": installed_apps}
+        if site_config is not None:
+            site_data["site_config"] = site_config
+
+        sites_info.append(site_data)
+
+    bench_data = {"path": bench_dir, "sites": sites_info, "available_apps": available_apps}
+
+    if common_site_config is not None:
+        bench_data["common_site_config"] = common_site_config
+
+    return bench_data
 
 
 @handle_docker_errors
 def inspect(
-    project_name: str = typer.Argument(..., help="The Docker Compose project to inspect."),
+    project_name: str = typer.Argument(
+        ..., help="The Docker Compose project to inspect.", autocompletion=complete_project_names
+    ),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Enable verbose diagnostic output."
     ),
@@ -188,7 +273,9 @@ def inspect(
             raise typer.Exit(code=1)
 
         bench_instances_data = []
-        with console_err.status(f"Inspecting '{project_name}'...", spinner="dots"):
+        show_tips = config_utils.get_show_tips()
+
+        with TipSpinner(f"Inspecting '{project_name}'", console=console_err, enabled=show_tips):
             time.sleep(0.1)
             bench_paths = _find_bench_instances(frappe_container, verbose)
             if not bench_paths:
@@ -239,9 +326,21 @@ def inspect(
             for app in bench_instance["available_apps"]:
                 apps_branch.add(f"[dim]{app}[/dim]")
 
+            # Get default site from common config
+            default_site = None
+            if "common_site_config" in bench_instance:
+                default_site = bench_instance["common_site_config"].get("default_site")
+
             sites_branch = bench_node.add(f"Sites ({len(bench_instance['sites'])})")
             for site_data in bench_instance["sites"]:
-                site_node = sites_branch.add(f"[yellow]{site_data['name']}[/yellow]")
+                site_name = site_data["name"]
+                # Label default site
+                if default_site and site_name == default_site:
+                    site_label = f"[yellow]{site_name}[/yellow] [dim](default)[/dim]"
+                else:
+                    site_label = f"[yellow]{site_name}[/yellow]"
+
+                site_node = sites_branch.add(site_label)
                 installed_apps_node = site_node.add(
                     f"Installed Apps ({len(site_data['installed_apps'])})"
                 )

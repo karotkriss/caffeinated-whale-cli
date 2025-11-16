@@ -9,5 +9,19 @@ wheels/
 # Virtual environments
 .venv
 
+# Testing and coverage
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+coverage.xml
+*.cover
+
 # Frappe Docker repository (for reference/testing only)
 frappe_docker/
+
+# documentation tools
+.obsidian
+
+# sendme
+blobs.db

@@ -13,6 +13,7 @@ from ..utils.port_utils import (
     get_ports_in_use_with_processes,
     format_port_list,
 )
+from ..utils.completion_utils import complete_project_names
 
 app = typer.Typer(help="Start a Frappe project's containers.")
 
@@ -371,7 +372,9 @@ def start(
     ),
     # Accept zero, one, or more project names. Default is None.
     project_name: List[str] = typer.Argument(
-        None, help="The name(s) of the Frappe project(s) to start. Can be piped from stdin."
+        None,
+        help="The name(s) of the Frappe project(s) to start. Can be piped from stdin.",
+        autocompletion=complete_project_names,
     ),
 ):
     """

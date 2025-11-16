@@ -71,3 +71,35 @@ def get_project_containers(
 
     except DockerException:
         return None
+
+
+def exec_into_container(container_name: str, working_dir: Optional[str] = None) -> None:
+    """
+    Execute into a Docker container using bash.
+
+    IMPORTANT: This function uses os.execvp() which REPLACES the current process.
+    The function DOES NOT RETURN. After this call:
+    - The Python process is replaced by the docker exec process
+    - No code after this function call will execute
+    - No cleanup handlers in the calling code will run
+    - The process ID (PID) remains unchanged
+    - If execvp fails, OSError is raised (this is the only way the function "returns")
+
+    This is intentional behavior for interactive shell sessions - the user's
+    shell becomes the docker exec session, and when they exit, the entire
+    Python process terminates.
+
+    Args:
+        container_name: Docker container name
+        working_dir: Working directory to start in (optional)
+
+    Raises:
+        OSError: If os.execvp() fails to execute docker command
+    """
+    typer.echo(f"Opening shell in {container_name}...")
+
+    if working_dir:
+        # Use -w flag to set working directory
+        os.execvp("docker", ["docker", "exec", "-it", "-w", working_dir, container_name, "bash"])
+    else:
+        os.execvp("docker", ["docker", "exec", "-it", container_name, "bash"])
