@@ -1,5 +1,4 @@
 import functools
-import functools
 import os
 import shutil
 
@@ -51,7 +50,6 @@ def handle_docker_errors(func):
 
 def get_project_containers(
     project_name: str,
-) -> list[docker.models.containers.Container] | None:
 ) -> list[docker.models.containers.Container] | None:
     """
     Finds all containers belonging to a specific Docker Compose project.

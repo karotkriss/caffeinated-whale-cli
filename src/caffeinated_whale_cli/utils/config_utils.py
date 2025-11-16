@@ -5,6 +5,7 @@ import toml
 APP_NAME = ".cwcli"
 CONFIG_DIR: Path = Path.home() / APP_NAME / "config"
 CONFIG_FILE: Path = CONFIG_DIR / "config.toml"
+PROJECTS_DIR: Path = Path.home() / APP_NAME / "projects"
 
 DEFAULT_CONFIG_CONTENT = """
 # Caffeinated Whale CLI Configuration
