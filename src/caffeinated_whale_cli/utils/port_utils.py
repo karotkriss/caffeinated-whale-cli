@@ -8,15 +8,14 @@ This module provides functions for:
 - Formatting port lists for display
 """
 
+import platform
 import socket
 import subprocess
-import platform
-from typing import List, Optional, Dict, Tuple, Union
 
 from .console import stderr_console
 
 
-def format_port_list(ports: List[int]) -> str:
+def format_port_list(ports: list[int]) -> str:
     """
     Format a list of ports into a compact string with ranges.
 
@@ -63,7 +62,7 @@ def format_port_list(ports: List[int]) -> str:
     return ", ".join(ranges)
 
 
-def get_project_ports(project_name: str) -> List[int]:
+def get_project_ports(project_name: str) -> list[int]:
     """
     Get all host ports used by a project's containers.
 
@@ -108,8 +107,8 @@ def get_project_ports(project_name: str) -> List[int]:
 
 
 def find_project_using_ports(
-    ports: Union[int, List[int]], exclude_project: str = None
-) -> Dict[int, str]:
+    ports: int | list[int], exclude_project: str = None
+) -> dict[int, str]:
     """
     Find which Frappe projects are using specific ports.
 
@@ -121,6 +120,7 @@ def find_project_using_ports(
         Dictionary mapping port numbers to project names (only for ports used by Frappe projects).
     """
     import docker
+
     from .docker_utils import get_project_containers
 
     # Normalize input to list
@@ -184,13 +184,13 @@ def is_port_in_use(port: int, host: str = "0.0.0.0") -> bool:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind((host, port))
             return False
-    except (socket.error, OSError):
+    except OSError:
         return True
 
 
 def check_ports_in_use(
-    ports: Union[int, List[int]], host: str = "0.0.0.0", verbose: bool = False
-) -> Dict[int, bool]:
+    ports: int | list[int], host: str = "0.0.0.0", verbose: bool = False
+) -> dict[int, bool]:
     """
     Check which ports from a list are currently in use.
 
@@ -219,8 +219,8 @@ def check_ports_in_use(
 
 
 def get_ports_in_use_with_processes(
-    ports: Union[int, List[int]], verbose: bool = False
-) -> Dict[int, Optional[str]]:
+    ports: int | list[int], verbose: bool = False
+) -> dict[int, str | None]:
     """
     Check which ports are in use and try to identify the process using them.
 
@@ -319,8 +319,8 @@ def get_ports_in_use_with_processes(
 
 
 def report_port_conflicts(
-    ports: Union[int, List[int]], verbose: bool = False
-) -> Tuple[List[int], Dict[int, Optional[str]]]:
+    ports: int | list[int], verbose: bool = False
+) -> tuple[list[int], dict[int, str | None]]:
     """
     Check for port conflicts and report them in a user-friendly format.
 
@@ -336,7 +336,7 @@ def report_port_conflicts(
     ports_in_use = [port for port, process in ports_with_processes.items() if process is not None]
 
     if ports_in_use:
-        stderr_console.print(f"\n[yellow]Warning:[/yellow] The following ports are already in use:")
+        stderr_console.print("\n[yellow]Warning:[/yellow] The following ports are already in use:")
         for port in ports_in_use:
             process = ports_with_processes[port]
             stderr_console.print(f"  • Port {port}: {process}")

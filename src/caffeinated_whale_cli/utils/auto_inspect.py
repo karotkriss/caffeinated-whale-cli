@@ -6,17 +6,18 @@ Frappe projects at configurable intervals to keep cached data fresh for tab comp
 and other features.
 """
 
-import time
+import os
 import signal
 import sys
-import os
+import time
 from pathlib import Path
-from typing import Optional
+
 import docker
+
 from . import config_utils
 
 # PID file location
-PID_DIR = Path.home() / "caffeinated-whale-cli" / "run"
+PID_DIR = Path.home() / config_utils.APP_NAME / "run"
 PID_FILE = PID_DIR / "auto-inspect.pid"
 LOG_FILE = PID_DIR / "auto-inspect.log"
 
@@ -32,7 +33,7 @@ def is_running() -> bool:
         return False
 
     try:
-        with open(PID_FILE, "r") as f:
+        with open(PID_FILE) as f:
             pid = int(f.read().strip())
 
         # Check if process with this PID exists
@@ -47,13 +48,13 @@ def is_running() -> bool:
         return False
 
 
-def get_pid() -> Optional[int]:
+def get_pid() -> int | None:
     """Get the PID of the running auto-inspect service."""
     if not PID_FILE.exists():
         return None
 
     try:
-        with open(PID_FILE, "r") as f:
+        with open(PID_FILE) as f:
             return int(f.read().strip())
     except (ValueError, FileNotFoundError):
         return None
@@ -66,7 +67,7 @@ def _log(message: str):
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         with open(LOG_FILE, "a") as f:
             f.write(f"[{timestamp}] {message}\n")
-    except (OSError, IOError) as e:
+    except OSError as e:
         # Fallback to stderr if logging fails
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         print(f"[{timestamp}] {message}", file=sys.stderr)
@@ -159,7 +160,7 @@ def start_daemon():
         os.setsid()
 
         # Redirect standard file descriptors
-        sys.stdin = open(os.devnull, "r")
+        sys.stdin = open(os.devnull)
         sys.stdout = open(os.devnull, "a+")
         sys.stderr = open(os.devnull, "a+")
 
@@ -178,8 +179,8 @@ def start_daemon():
 
     except (AttributeError, OSError):
         # Windows or fork failed - spawn a detached subprocess
-        import subprocess
         import json
+        import subprocess
 
         # Get the path to the current Python interpreter and cwcli
         python_exe = sys.executable
@@ -192,8 +193,8 @@ def start_daemon():
         # Use CREATE_NEW_PROCESS_GROUP on Windows to fully detach
         if sys.platform == "win32":
             # Windows: Use DETACHED_PROCESS and CREATE_NEW_PROCESS_GROUP
-            DETACHED_PROCESS = 0x00000008
-            CREATE_NEW_PROCESS_GROUP = 0x00000200
+            DETACHED_PROCESS = 0x00000008  # noqa: N806
+            CREATE_NEW_PROCESS_GROUP = 0x00000200  # noqa: N806
 
             subprocess.Popen(
                 [
@@ -308,6 +309,6 @@ def get_log_tail(lines: int = 20) -> str:
     if not LOG_FILE.exists():
         return "No log file found"
 
-    with open(LOG_FILE, "r") as f:
+    with open(LOG_FILE) as f:
         all_lines = f.readlines()
         return "".join(all_lines[-lines:])
