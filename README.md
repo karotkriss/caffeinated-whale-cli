@@ -10,7 +10,7 @@ A command-line interface (CLI) for managing Frappe/ERPNext Docker instances duri
 - **Development Tools** - VS Code integration, log viewing, and command execution
 - **Cache System** - Fast project inspection with SQLite-based caching and configuration storage
 - **Default Site Support** - Optional `--site` flag when default site is configured
-- **Backup & Restore** - Interactive site restoration with automatic file archive detection
+- **Backup & Restore** - Interactive site restoration with automatic file archive detection and P2P transfer support
 - **Update Management** - App updates with automatic migrations and lock cleanup
 - **Auto-Inspection** - Background process to keep project cache fresh automatically
 - **System Integration** - Auto-start on system boot with platform-specific configurations
@@ -530,7 +530,7 @@ Removed locks folder: /workspace/frappe-bench/sites/development.localhost/locks
 
 ### `restore` - Restore Site from Backup
 
-Interactively restore a site from a backup with automatic detection of file archives and encryption keys.
+Interactively restore a site from a backup with automatic detection of file archives and encryption keys. Supports both local restoration and peer-to-peer backup transfers via sendme.
 
 ```bash
 cwcli restore [OPTIONS] PROJECT_NAME
@@ -551,6 +551,8 @@ cwcli restore [OPTIONS] PROJECT_NAME
 | `--mariadb-root-username TEXT` | MariaDB root username (default: root) |
 | `--mariadb-root-password TEXT` | MariaDB root password (will prompt if not provided) |
 | `--admin-password TEXT` | Set administrator password after restore |
+| `--send` | **P2P Mode:** Share backup with another machine via peer-to-peer transfer |
+| `--receive` | **P2P Mode:** Receive backup from another machine via peer-to-peer transfer |
 | `-v`, `--verbose` | Enable verbose output and show restore command details |
 
 **What It Does:**
@@ -612,12 +614,60 @@ Including file archives
 Updated encryption_key from backup site_config
 ```
 
+**P2P Backup Transfer:**
+
+Share backups between machines using peer-to-peer connections (powered by sendme/Iroh):
+
+**Sending a Backup:**
+```bash
+# On the source machine
+cwcli restore my-project --send
+
+# Select backup from interactive menu
+# Ticket automatically copied to clipboard
+✓ Transfer ticket copied to clipboard!
+
+Instructions for the receiver:
+  1. Run: cwcli restore <project_name> --receive
+  2. Paste the ticket when prompted
+```
+
+**Receiving a Backup:**
+```bash
+# On the destination machine
+cwcli restore my-project --receive
+
+# Paste the ticket from sender
+? Enter the sendme ticket: blob...
+
+# Files download with hash verification
+✓ Files downloaded successfully
+# Automatic restore process begins
+```
+
+**P2P Transfer Features:**
+- **Hash-verified transfers** - BLAKE3 cryptographic verification ensures data integrity
+- **Resumable downloads** - Interrupted transfers can resume from where they stopped
+- **NAT traversal** - Works behind firewalls and corporate networks
+- **No cloud intermediary** - Direct peer-to-peer connections
+- **Cross-platform** - Works on macOS, Linux, and Windows
+- **Automatic setup** - sendme binary auto-installed on first use
+- **Multiple receivers** - Same ticket can be used by multiple machines
+
+**Use Cases:**
+- Share production backups with development team
+- Transfer large backups without cloud storage limits
+- Migrate data between data centers
+- Distribute backups to multiple environments simultaneously
+
 **Security:**
 
 - Passwords validated to prevent shell injection
 - All inputs sanitized for command injection prevention
 - Backup file existence verified before restore
 - Passwords masked in verbose output
+- P2P transfers are hash-verified (BLAKE3) to prevent tampering
+- Treat transfer tickets like passwords (they grant download access)
 
 **When to Use:**
 
@@ -625,6 +675,7 @@ Updated encryption_key from backup site_config
 - Migrate data between environments
 - Recover from data corruption or accidental deletion
 - Test backup integrity
+- **Share backups between machines without cloud storage**
 
 ---
 
