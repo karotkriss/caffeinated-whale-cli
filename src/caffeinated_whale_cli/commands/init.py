@@ -96,33 +96,40 @@ def _validate_site_name(value: str) -> str:
 
 
 def _prompt_for_inputs(
-    project_name: str | None, bench_name: str | None, site_name: str | None
+    project_name: str | None, bench_name: str | None, site_name: str
 ) -> InitInputs:
-    """Prompt the user for project, bench and site names if missing."""
+    """Prompt the user for project, bench and site names if missing.
+
+    Note: site_name now has a default value ('development.localhost'), so it's never None.
+    Only project_name and bench_name will be prompted if not provided.
+    """
     try:
-        container_answer = questionary.text(
-            "Docker project / container prefix (e.g. frappe-app)",
-            default=project_name or "",
-            validate=lambda text: bool(text.strip()),
-        ).ask()
-        if container_answer is None:
-            raise typer.Exit(code=0)
+        # Only prompt for project name if not provided
+        if project_name is None:
+            container_answer = questionary.text(
+                "Docker project / container prefix (e.g. frappe-app)",
+                default="",
+                validate=lambda text: bool(text.strip()),
+            ).ask()
+            if container_answer is None:
+                raise typer.Exit(code=0)
+        else:
+            container_answer = project_name
 
-        bench_answer = questionary.text(
-            "App / Bench directory name (e.g. frappe-bench)",
-            default=bench_name or "",
-            validate=lambda text: bool(text.strip()),
-        ).ask()
-        if bench_answer is None:
-            raise typer.Exit(code=0)
+        # Only prompt for bench name if not provided
+        if bench_name is None:
+            bench_answer = questionary.text(
+                "App / Bench directory name (e.g. frappe-bench)",
+                default="",
+                validate=lambda text: bool(text.strip()),
+            ).ask()
+            if bench_answer is None:
+                raise typer.Exit(code=0)
+        else:
+            bench_answer = bench_name
 
-        site_answer = questionary.text(
-            "Primary site name (must end with .localhost)",
-            default=site_name or "development.localhost",
-            validate=lambda text: bool(text.strip()) and text.strip().endswith(".localhost"),
-        ).ask()
-        if site_answer is None:
-            raise typer.Exit(code=0)
+        # Site name now has a default, so use it directly (no prompt needed)
+        site_answer = site_name
     except KeyboardInterrupt:
         stderr_console.print("\n[yellow]Operation cancelled.[/yellow]")
         raise typer.Exit(code=0) from None
@@ -288,11 +295,11 @@ def init(
         "-b",
         help="Bench directory to create inside the container.",
     ),
-    site_name: str | None = typer.Option(
-        None,
+    site_name: str = typer.Option(
+        "development.localhost",
         "--site",
         "-s",
-        help="Primary site to create (must end with .localhost).",
+        help="Primary site to create (must end with .localhost). Defaults to 'development.localhost'.",
     ),
     bench_parent: str = typer.Option(
         "/workspace",
@@ -568,11 +575,11 @@ def init(
 
     # Inform the user of success
     console.print(
-        "[bold green]✓[/bold green] Bench initialization complete. "
-        f"Bench path: [cyan]{bench_full_path}[/cyan]"
+        f"[bold green]✓[/bold green] Successfully initialized bench '{inputs.bench_name}'"
     )
+    console.print(f"[dim]Bench path: {bench_full_path}[/dim]")
     console.print(
-        f"[dim]Next steps:[/dim] Run `cwcli open {inputs.project_name}` to start bench services."
+        f"[dim]Next steps: Run `cwcli open {inputs.project_name}` to start bench services.[/dim]"
     )
     if install_erpnext:
         console.print(
