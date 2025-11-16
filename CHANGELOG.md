@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- ## [Unreleased] -->
 
+## [0.19.0] - 2025-01-15
+
+### Added
+- **P2P Backup Transfer via sendme** - Share and receive backups between machines using peer-to-peer connections
+  - `cwcli restore <project> --send` - Share backup with remote machine via sendme
+    - Interactive backup selection menu
+    - Automatic sendme binary installation and management
+    - Ticket automatically copied to clipboard for easy sharing
+    - Multi-file transfer support (database, public files, private files, config)
+    - Cross-platform support (macOS, Linux, Windows)
+  - `cwcli restore <project> --receive` - Receive backup from remote machine
+    - Ticket input prompt for receiving transfers
+    - Automatic file download and verification (BLAKE3 hash-verified)
+    - Files automatically copied to container's backup directory
+    - Seamless integration with standard restore process
+  - New `sendme_utils.py` module for sendme binary management
+    - Platform detection (darwin-aarch64, darwin-x86_64, linux-x86_64, windows-x86_64)
+    - Automatic binary download with progress bars
+    - PATH configuration for Unix and Windows
+    - Clipboard integration (pbcopy, xclip, xsel, clip)
+  - Hash-verified transfers using BLAKE3 for data integrity
+  - NAT traversal with automatic relay fallback
+  - Resumable transfers (interrupted downloads can resume)
+  - Support for multiple simultaneous receivers from one ticket
+
+### Changed
+- **Enhanced restore command** - Added `--send` and `--receive` modes for P2P transfers
+- **Improved restore reliability** - Added `--force` flag to bypass Frappe version check prompts in non-interactive mode
+- **Fixed file path handling** - File archives now use absolute paths for reliable restore operations
+
+### Fixed
+- **Terminal formatting issues** - Resolved escape code conflicts from sendme output
+  - Added cursor position resets before interactive prompts
+  - Isolated sendme process with `start_new_session=True` to prevent terminal state corruption
+  - Simplified output to show only ticket copy confirmation instead of full ticket string
+- **File archive paths** - Fixed "Invalid path" error by using full paths for `--with-public-files` and `--with-private-files`
+- **Version mismatch prompts** - Added `--force` flag to restore command to handle version differences non-interactively
+
+### Documentation
+- Added comprehensive sendme CLI reference (`docs/technical/sendme-cli-reference.md`)
+- Added Iroh blobs protocol security explanation (`docs/technical/iroh-blobs-and-sendme.md`)
+- Updated Frappe backup/restore reference with real-world examples
+
 ## [0.15.0] - 2025-11-12
 
 ### Added
