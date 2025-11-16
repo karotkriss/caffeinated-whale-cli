@@ -248,7 +248,7 @@ cwcli logs frappe-one -n 200
 
 Inspects a project to find all bench instances, sites, and apps within it. Results are cached for faster subsequent operations.
 
-**Security Note:** The inspect command caches site configurations including database credentials and Redis URLs. The cache is stored with restricted filesystem permissions (directory: `0700`, database: `0600`) to prevent unauthorized access. Only the current user can read the cached data. Do not share the cache directory (`~/caffeinated-whale-cli/cache/`) with untrusted users.
+**Security Note:** The inspect command caches site configurations including database credentials and Redis URLs. The cache is stored with restricted filesystem permissions (directory: `0700`, database: `0600`) to prevent unauthorized access. Only the current user can read the cached data. Do not share the cache directory (`~/.cwcli/cache/`) with untrusted users.
 
 ```bash
 cwcli inspect [OPTIONS] PROJECT_NAME
@@ -935,8 +935,8 @@ cwcli config auto-inspect logs
 **Notes:**
 - Background process survives terminal closure
 - Process stops on system restart unless startup is enabled
-- Logs stored in `~/caffeinated-whale-cli/run/auto-inspect.log`
-- PID file stored in `~/caffeinated-whale-cli/run/auto-inspect.pid`
+- Logs stored in `~/.cwcli/run/auto-inspect.log`
+- PID file stored in `~/.cwcli/run/auto-inspect.pid`
 
 ---
 
@@ -1035,7 +1035,10 @@ The CLI uses:
 - **Questionary** - Interactive prompts
 - **Peewee ORM** - SQLite-based caching
 
-**Cache Location:** `~/caffeinated-whale-cli/cache/cwc-cache.db`
+**Data Directories:**
+- **Config**: `~/.cwcli/config/` - Configuration files
+- **Cache**: `~/.cwcli/cache/cwc-cache.db` - Project inspection cache
+- **Runtime**: `~/.cwcli/run/` - PID and log files for background services
 
 ## License
 

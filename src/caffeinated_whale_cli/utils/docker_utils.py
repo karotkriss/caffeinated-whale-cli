@@ -1,9 +1,9 @@
+import functools
 import os
 import shutil
+
 import docker
 import typer
-import functools
-from typing import List, Optional
 from docker.errors import DockerException
 from rich.console import Console
 
@@ -40,7 +40,7 @@ def handle_docker_errors(func):
                     "[bold red]Error: Could not connect to Docker daemon.[/bold red]"
                 )
                 console.print(str(e))
-            raise typer.Exit(code=1)
+            raise typer.Exit(code=1) from None
 
         return func(*args, **kwargs)
 
@@ -49,7 +49,7 @@ def handle_docker_errors(func):
 
 def get_project_containers(
     project_name: str,
-) -> Optional[List[docker.models.containers.Container]]:
+) -> list[docker.models.containers.Container] | None:
     """
     Finds all containers belonging to a specific Docker Compose project.
 
@@ -73,7 +73,7 @@ def get_project_containers(
         return None
 
 
-def exec_into_container(container_name: str, working_dir: Optional[str] = None) -> None:
+def exec_into_container(container_name: str, working_dir: str | None = None) -> None:
     """
     Execute into a Docker container using bash.
 
