@@ -2,7 +2,7 @@ from pathlib import Path
 
 import toml
 
-APP_NAME = "caffeinated-whale-cli"
+APP_NAME = ".cwcli"
 CONFIG_DIR: Path = Path.home() / APP_NAME / "config"
 CONFIG_FILE: Path = CONFIG_DIR / "config.toml"
 
