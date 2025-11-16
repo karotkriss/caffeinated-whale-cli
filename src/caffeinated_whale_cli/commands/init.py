@@ -350,11 +350,18 @@ def init(
     """
     Initialize a new Frappe bench and site inside a running project's Frappe container.
 
-    This enhanced version can optionally perform the initial setup steps of
-    cloning the frappe_docker repository, copying example configuration files and
-    starting the Docker Compose services【463985302350907†L129-L139】【463985302350907†L146-L156】.  It can also
-    duplicate an existing Compose stack (via --clone-from-project) and
-    install the ERPNext application on your new site【463985302350907†L288-L299】.
+    Creates a new bench, configures services (MariaDB, Redis), and sets up a site.
+    Optionally clones frappe_docker repo, starts containers, and installs ERPNext.
+
+    If project_name, bench_name, or site_name are not provided, prompts interactively.
+
+    Examples:
+        cwcli init
+        cwcli init my-project
+        cwcli init my-project --bench my-bench --site mysite.localhost
+        cwcli init my-project --frappe-branch version-15 --install-erpnext
+        cwcli init my-project --setup --repo-path ./frappe_docker
+        cwcli init --clone-from-project existing-project new-project
     """
     # Prompt for inputs (project, bench and site names) first
     inputs = _prompt_for_inputs(project_name, bench_name, site_name)
