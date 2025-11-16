@@ -5,7 +5,241 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+<!-- ## [Unreleased] -->
+
+## [0.19.0] - 2025-01-15
+
+### Added
+- **P2P Backup Transfer via sendme** - Share and receive backups between machines using peer-to-peer connections
+  - `cwcli restore <project> --send` - Share backup with remote machine via sendme
+    - Interactive backup selection menu
+    - Automatic sendme binary installation and management
+    - Ticket automatically copied to clipboard for easy sharing
+    - Multi-file transfer support (database, public files, private files, config)
+    - Cross-platform support (macOS, Linux, Windows)
+  - `cwcli restore <project> --receive` - Receive backup from remote machine
+    - Ticket input prompt for receiving transfers
+    - Automatic file download and verification (BLAKE3 hash-verified)
+    - Files automatically copied to container's backup directory
+    - Seamless integration with standard restore process
+  - New `sendme_utils.py` module for sendme binary management
+    - Platform detection (darwin-aarch64, darwin-x86_64, linux-x86_64, windows-x86_64)
+    - Automatic binary download with progress bars
+    - PATH configuration for Unix and Windows
+    - Clipboard integration (pbcopy, xclip, xsel, clip)
+  - Hash-verified transfers using BLAKE3 for data integrity
+  - NAT traversal with automatic relay fallback
+  - Resumable transfers (interrupted downloads can resume)
+  - Support for multiple simultaneous receivers from one ticket
+
+### Changed
+- **Enhanced restore command** - Added `--send` and `--receive` modes for P2P transfers
+- **Improved restore reliability** - Added `--force` flag to bypass Frappe version check prompts in non-interactive mode
+- **Fixed file path handling** - File archives now use absolute paths for reliable restore operations
+
+### Fixed
+- **Terminal formatting issues** - Resolved escape code conflicts from sendme output
+  - Added cursor position resets before interactive prompts
+  - Isolated sendme process with `start_new_session=True` to prevent terminal state corruption
+  - Simplified output to show only ticket copy confirmation instead of full ticket string
+- **File archive paths** - Fixed "Invalid path" error by using full paths for `--with-public-files` and `--with-private-files`
+- **Version mismatch prompts** - Added `--force` flag to restore command to handle version differences non-interactively
+
+### Documentation
+- Added comprehensive sendme CLI reference (`docs/technical/sendme-cli-reference.md`)
+- Added Iroh blobs protocol security explanation (`docs/technical/iroh-blobs-and-sendme.md`)
+- Updated Frappe backup/restore reference with real-world examples
+
+## [0.15.0] - 2025-11-12
+
+### Added
+- **`restore` command** - Interactive site restoration from backups
+  - Scans all backup files across all sites in the bench
+  - Interactive backup selection menu with styled UI
+  - Backups grouped by target site (shown first) and other sites
+  - Automatic detection of file archives (public and private files)
+  - Visual badges showing backup contents: `[FILES]`, `[PRIVATE]`, `[DATABASE ONLY]`
+  - Automatic encryption key restoration from backup site_config
+  - Secure password prompts using questionary library
+  - TipSpinner integration for enhanced developer experience
+  - Supports default site from common_site_config.json
+  - Comprehensive input validation and error handling
+  - Usage: `cwcli restore <project> [--site <site>]`
+
+### Security
+- **Command injection prevention in restore command**
+  - Validates passwords don't contain single quotes (shell breaking)
+  - Validates MariaDB username for shell metacharacters
+  - Validates backup file paths before restore
+  - Verifies backup files exist before attempting restore
+  - Site name and bench path validation (prevents traversal attacks)
+  - Password masking in verbose output
+
+### Changed
+- **Enhanced error messages for restore failures**
+  - Lists common failure causes (incorrect password, connection issues, etc.)
+  - Reminds users to use `-v` flag for detailed diagnostics
+  - Shows restore output on failure for better debugging
+  - JSON parsing errors handled gracefully with descriptive messages
+
+## [0.14.0] - 2025-11-10
+
+### Added
+- **Site configuration caching** - Inspect command now caches site and bench configurations
+  - `common_site_config.json` cached for each bench (includes Redis URLs, ports, worker settings)
+  - `site_config.json` cached for each site (includes database credentials, developer mode)
+  - New database tables: `common_site_config` and `site_config`
+  - Helper functions to retrieve cached configs: `get_common_site_config()`, `get_site_config()`, `get_all_site_configs()`, `get_default_site()`
+  - Configs are automatically fetched and stored during `cwcli inspect`
+  - JSON output includes configs for programmatic access
+  - Default site labeled with `(default)` in inspect output
+  - Empty configs `{}` now properly preserved (distinguishes from missing configs)
+- **Default site support** - `--site` flag now optional when default site is configured
+  - `unlock` command automatically uses default site from `common_site_config.json`
+  - Shows "Using default site: {site}" when using default
+  - Helpful error messages when no default site available
+  - Backward compatible: explicit `--site` flag still works
+
+### Security
+- **Filesystem permissions for sensitive cache data**
+  - Cache directory created with restrictive permissions (`0700` - owner-only access)
+  - Database file secured with `0600` permissions (owner read/write only)
+  - Prevents unauthorized access to cached credentials and API keys
+  - Security warnings added to model documentation
+  - Comprehensive test suite validates permission enforcement
+  - Note: Data is stored in plaintext; future enhancement will add field-level encryption
+- **Command injection prevention in unlock command**
+  - Input validation for site names and bench paths
+  - Rejects shell metacharacters (`;`, `&`, `|`, `$`, etc.)
+  - Prevents path traversal and injection attacks
+  - Clear error messages for security violations
+
+### Changed
+- **Config validation improvements**
+  - Empty dicts `{}` now accepted as valid configurations
+  - Removed redundant JSON re-parsing in validation
+  - Simplified storage checks to use `is not None` instead of truthiness
+  - Better distinction between "no config" (None) and "empty config" ({})
+- **Enhanced error handling in unlock command**
+  - Try/except with proper exception chaining for default site retrieval
+  - Validates site names are not empty or whitespace-only
+  - Actionable error messages with tips for resolution
+
+### Fixed
+- **Config retrieval robustness**
+  - `get_common_site_config()` now iterates all benches instead of just first
+  - Returns config from first bench that has one (not just first bench)
+  - Preserves empty configs throughout entire data pipeline
+- **Code consistency**
+  - Refactored `_get_common_site_config()` and `_get_site_config()` to use `_run_command` helper
+  - Centralized verbose logging and command execution
+  - Fixed unused variable warning in unlock command
+
+## [0.13.1] - 2025-11-10
+
+- **Contextual tips during long-running operations** - Inspired by Claude Code's tip system
+  - Rotating helpful tips displayed alongside spinners during operations like `inspect`, `update`, and `open`
+  - Tips help users discover features and best practices while waiting
+  - 40+ curated tips covering VS Code integration, tab completion, caching, port management, and more
+  - Tips rotate every 4 seconds during long operations to show variety
+  - New `cwcli config tips` command group to manage tip display
+    - `enable` - Enable contextual tips (default)
+    - `disable` - Disable tips for simpler status messages
+    - `status` - Check current tips display setting
+  - Configurable via `show_tips` setting in config.toml (default: true)
+  - Tips integrated into:
+    - `inspect` command during project inspection
+    - `open` command when preparing VS Code integration
+    - Extension installation and container verification steps
+  - TipSpinner context manager supports reuse across multiple operations
+
+## [0.12.1] - 2025-11-10
+
+### Added
+- **Editor selection flags for `open` command** - Skip interactive prompt with direct flags
+  - `--code` - Open directly with VS Code (validates installation)
+  - `--code-insiders` - Open directly with VS Code Insiders (validates installation)
+  - `--docker` - Open directly with Docker exec
+  - Mutual exclusivity validation ensures only one flag can be specified
+  - Backward compatible: interactive prompt still appears when no flag is specified
+
+### Fixed
+- **Docker exec now respects working directory** - `open` command with `--docker` or Docker selection
+  - Container shell now opens in bench directory instead of container default
+  - Respects `--app` flag to open in specific app directory
+  - Uses Docker's `-w` flag to set working directory on exec
+
+### Changed
+- Moved `exec_into_container` function from `vscode_utils.py` to `docker_utils.py` for better organization
+
+## [0.11.0] - 2025-11-09
+
+### Added
+- **Automatic project inspection** - Background service to keep project cache fresh
+  - New `cwcli config auto-inspect` command group with full management suite
+  - `enable` - Enable auto-inspection with configurable interval (default: 1 hour, minimum: 60 seconds)
+  - `disable` - Disable auto-inspection and stop background process
+  - `start` - Start the background daemon process
+  - `stop` - Stop the background daemon process
+  - `restart` - Restart the background process
+  - `status` - Show detailed status (enabled, interval, process state, PID, startup configuration)
+  - `logs` - View recent background process logs with `--lines` option
+  - `set-interval` - Change inspection interval (requires restart to apply)
+  - Cross-platform daemon support: fork (Unix/Linux/macOS) and threading (Windows)
+  - Automatic inspection of all running Frappe projects at configured intervals
+  - Background logging to `~/caffeinated-whale-cli/run/auto-inspect.log`
+  - PID tracking in `~/caffeinated-whale-cli/run/auto-inspect.pid`
+
+- **Automatic startup on system boot/login** - Platform-specific system integration
+  - `install-startup` - Install platform-specific startup configuration
+  - `uninstall-startup` - Remove startup configuration
+  - `--startup` flag for `enable` and `start` commands to enable startup in one step
+  - **macOS**: LaunchAgent plist file (`~/Library/LaunchAgents/com.caffeinated-whale-cli.auto-inspect.plist`)
+  - **Linux**: systemd user service (`~/.config/systemd/user/caffeinated-whale-cli-auto-inspect.service`)
+  - **Windows**: Task Scheduler task ("CaffeinatedWhaleCliAutoInspect")
+  - Startup status shown in `status` command
+
+- **Configuration options** in `config.toml`:
+  - `auto_inspect.enabled` - Enable/disable auto-inspection (default: false)
+  - `auto_inspect.interval` - Inspection interval in seconds (default: 3600)
+  - `auto_inspect.startup_enabled` - Track startup configuration state (default: false)
+
+## [0.10.2] - 2025-11-08
+
+### Fixed
+- **Critical:** Tab completion function signatures for Typer compatibility
+  - Added required parameters (ctx, args, incomplete) to all completion functions
+  - Fixed TypeError when Typer calls completion callbacks
+  - Removed `sparse=True` from Docker query that prevented label access
+  - Fixed DockerException: "Label data is not available for sparse objects"
+
+### Changed
+- Corrected `_cache` type annotation from `Dict[str, Dict[str, Any]]` to `Dict[str, Tuple[float, List[str]]]`
+
+## [0.10.0] - 2025-11-08
+
+### Added
+- **Tab completion support** for project names, apps, and sites across all shells (Bash, Zsh, Fish, PowerShell)
+  - Context-aware completions for all commands that accept project names
+  - App name completions for `--app` option (open, update commands)
+  - Site name completions for `--site` option (unlock command)
+  - Fast completion with 2-second TTL caching
+  - Install with `cwcli --install-completion`
+- **CI/CD workflows** with GitHub Actions
+  - Lint workflow: Runs Black, Ruff, and mypy on all branches and PRs
+  - Build workflow: Builds package and verifies version consistency on master branch
+  - Release workflow: Publishes to PyPI and creates GitHub releases on version tags
+  - All workflows use `ghcr.io/astral-sh/uv` Docker images for fast, reproducible builds
+- **Comprehensive documentation** in `docs/` directory
+  - Contributing guides: git workflow, commit messages, branch naming, code quality, chores, CI/CD
+  - Testing guide with examples and best practices
+  - Technical documentation for bench management
+  - Reorganized into logical categories: contributing, testing, technical
+
+### Changed
+- Bumped version to 0.10.0
+- Enhanced main README with expanded Contributing section and quick links
+- Consolidated CI/CD documentation into minimal `docs/contributing/ci-cd.md` guide
 
 ## [0.9.1] - 2025-11-05
 

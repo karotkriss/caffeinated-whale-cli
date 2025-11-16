@@ -1,16 +1,17 @@
-import sys
+import shlex
 
 import typer
 
-from ..utils import db_utils
+from ..utils import config_utils, db_utils
 from ..utils.completion_utils import complete_project_names, complete_site_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import get_project_containers, handle_docker_errors
+from ..utils.tips import TipSpinner
 from .utils import ensure_containers_running
 
 
 @handle_docker_errors
-def unlock(
+def backup(
     project_name: str = typer.Argument(
         ..., help="The Docker Compose project name.", autocompletion=complete_project_names
     ),
@@ -18,7 +19,7 @@ def unlock(
         None,
         "--site",
         "-s",
-        help="Site name to unlock. If not provided, uses the default site from common_site_config.",
+        help="Site name to backup. If not provided, uses the default site from common_site_config.",
         autocompletion=complete_site_names,
     ),
     bench_path: str = typer.Option(
@@ -27,21 +28,27 @@ def unlock(
         "-p",
         help="Path to the bench directory inside the container (uses cached path from inspect if not specified).",
     ),
+    with_files: bool = typer.Option(
+        False,
+        "--with-files",
+        help="Include public and private files in the backup.",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output."),
 ):
     """
-    Remove the locks folder for a specified site to unlock it.
+    Create a backup of a site's database and optionally files.
 
-    This command removes the {bench_path}/sites/{site_name}/locks directory,
-    which can help resolve issues when a site is stuck in a locked state.
+    This command runs 'bench backup' for the specified site. By default, it backs up
+    only the database. Use --with-files to include public and private files.
 
     If --site is not provided, the default site from common_site_config.json will be used.
 
     Examples:
-        cwcli unlock my-project --site example.com
-        cwcli unlock my-project  # Uses default site
+        cwcli backup my-project
+        cwcli backup my-project --site example.com
+        cwcli backup my-project --with-files
     """
-    # Ensure containers are running, prompt user if not
+    # Ensure containers are running
     ensure_containers_running(project_name, require_running=True, verbose=verbose)
 
     containers = get_project_containers(project_name)
@@ -78,7 +85,6 @@ def unlock(
         try:
             default_site = db_utils.get_default_site(project_name, bench_path)
         except typer.Exit:
-            # Re-raise typer.Exit without catching
             raise
         except Exception as e:
             stderr_console.print(
@@ -106,7 +112,6 @@ def unlock(
         stderr_console.print("[bold red]Error:[/bold red] Site name cannot be empty.")
         raise typer.Exit(code=1)
 
-    # Basic validation: site names should not contain shell metacharacters
     invalid_chars = [";", "&", "|", "$", "`", "(", ")", "<", ">", "\n", "\r", "\\"]
     if any(char in site for char in invalid_chars):
         stderr_console.print(
@@ -115,7 +120,7 @@ def unlock(
         )
         raise typer.Exit(code=1)
 
-    # Validate bench_path to prevent command injection
+    # Validate bench_path
     if any(char in bench_path for char in invalid_chars):
         stderr_console.print(
             f"[bold red]Error:[/bold red] Invalid bench path '{bench_path}'. "
@@ -124,11 +129,9 @@ def unlock(
         raise typer.Exit(code=1)
 
     # Verify bench path exists
-    exit_code, _ = frappe_container.exec_run(f'sh -c "test -d {bench_path}/sites"')
-    if verbose:
-        stderr_console.print(f'[dim]$ sh -c "test -d {bench_path}/sites"[/dim]')
-        stderr_console.print(f"[dim]Exit code: {exit_code}[/dim]")
-
+    bench_sites_path = f"{bench_path}/sites"
+    quoted_bench_sites_path = shlex.quote(bench_sites_path)
+    exit_code, _ = frappe_container.exec_run(f'sh -c "test -d {quoted_bench_sites_path}"')
     if exit_code != 0:
         stderr_console.print(
             f"[bold red]Error:[/bold red] Bench directory not found at {bench_path}"
@@ -137,47 +140,76 @@ def unlock(
 
     # Check if site exists
     site_path = f"{bench_path}/sites/{site}"
-    exit_code, _ = frappe_container.exec_run(f'sh -c "test -d {site_path}"')
-    if verbose:
-        stderr_console.print(f'[dim]$ sh -c "test -d {site_path}"[/dim]')
-        stderr_console.print(f"[dim]Exit code: {exit_code}[/dim]")
-
+    quoted_site_path = shlex.quote(site_path)
+    exit_code, _ = frappe_container.exec_run(f'sh -c "test -d {quoted_site_path}"')
     if exit_code != 0:
         stderr_console.print(f"[bold red]Error:[/bold red] Site '{site}' not found at {site_path}")
         raise typer.Exit(code=1)
 
-    # Remove locks folder
-    locks_path = f"{site_path}/locks"
-    cmd = f"rm -rfv {locks_path}"  # Use -v for verbose output
+    # Verify backup directory exists (create if it doesn't)
+    backup_dir = f"{site_path}/private/backups"
+    quoted_backup_dir = shlex.quote(backup_dir)
+    test_cmd = f"test -d {quoted_backup_dir}"
+    exit_code, _ = frappe_container.exec_run(f"sh -c '{test_cmd}'")
+    if exit_code != 0:
+        if verbose:
+            stderr_console.print(f"[dim]Creating backup directory at {backup_dir}[/dim]")
+        # Create backup directory
+        mkdir_cmd = f"mkdir -p {quoted_backup_dir}"
+        exit_code, output = frappe_container.exec_run(f"sh -c '{mkdir_cmd}'")
+        if exit_code != 0:
+            stderr_console.print(
+                f"[bold red]Error:[/bold red] Failed to create backup directory at {backup_dir}"
+            )
+            if verbose and output:
+                stderr_console.print(output.decode("utf-8", errors="replace"))
+            raise typer.Exit(code=1)
+
+    # Build backup command
+    cmd = f"bench --site {site} backup"
+
+    # Add --with-files flag if requested
+    if with_files:
+        cmd += " --with-files"
 
     if verbose:
         stderr_console.print(f"[dim]$ {cmd}[/dim]")
 
-        # Stream output in verbose mode
-        api = frappe_container.client.api
-        exec_id = api.exec_create(frappe_container.id, cmd, workdir=bench_path, tty=False)["Id"]
+    # Execute backup with spinner
+    show_tips = config_utils.get_show_tips()
+    console.print()
+    with TipSpinner(
+        f"Creating backup for site '{site}'", console=stderr_console, enabled=show_tips
+    ):
+        exit_code, output = frappe_container.exec_run(cmd, workdir=bench_path)
 
-        console.print(f"[bold green]Unlocking site '{site}'...[/bold green]")
+    # Show output if verbose or on failure
+    if verbose or exit_code != 0:
+        if output:
+            console.print()
+            console.print("[dim]Backup output:[/dim]")
+            try:
+                console.print(output.decode("utf-8"))
+            except UnicodeDecodeError:
+                # Fallback to replace errors if UTF-8 decoding fails
+                console.print(output.decode("utf-8", errors="replace"))
 
-        for chunk in api.exec_start(exec_id, stream=True):
-            if isinstance(chunk, (bytes, bytearray)):
-                # Write directly to stdout to preserve output
-                sys.stdout.write(chunk.decode("utf-8"))
-                sys.stdout.flush()
-            else:
-                sys.stdout.write(str(chunk))
-                sys.stdout.flush()
-
-        result = api.exec_inspect(exec_id)
-        exit_code = result.get("ExitCode", 1)
-    else:
-        # Non-verbose mode: use spinner
-        with console.status(f"[bold green]Unlocking site '{site}'...[/bold green]", spinner="dots"):
-            exit_code, _ = frappe_container.exec_run(cmd, workdir=bench_path)
-
+    console.print()
     if exit_code == 0:
-        console.print(f"[bold green]✓[/bold green] Successfully unlocked site '{site}'")
-        console.print(f"[dim]Removed locks folder: {locks_path}[/dim]")
+        console.print(f"[bold green]✓[/bold green] Successfully created backup for site '{site}'")
+        if with_files:
+            console.print("[dim]Backup includes database and files[/dim]")
+        else:
+            console.print("[dim]Backup includes database only[/dim]")
+        console.print(f"[dim]Backup location: {bench_path}/sites/{site}/private/backups/[/dim]")
     else:
-        stderr_console.print(f"[bold red]✗[/bold red] Failed to unlock site '{site}'")
+        stderr_console.print(f"[bold red]✗[/bold red] Failed to create backup for site '{site}'")
+        stderr_console.print()
+        stderr_console.print("[bold]Common causes:[/bold]")
+        stderr_console.print("  • Site not running or database connection issues")
+        stderr_console.print("  • Insufficient disk space")
+        stderr_console.print("  • Permission issues with backup directory")
+        stderr_console.print("  • MariaDB/database service not accessible")
+        stderr_console.print()
+        stderr_console.print("[dim]Tip: Run with -v flag for detailed error output[/dim]")
         raise typer.Exit(code=1)
