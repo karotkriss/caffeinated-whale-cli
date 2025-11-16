@@ -34,11 +34,9 @@ import shlex
 import shutil
 import subprocess
 from dataclasses import dataclass
-from typing import Optional
 
 import questionary
 import typer
-from rich.console import Console
 
 from caffeinated_whale_cli.commands.config import add_path
 
@@ -46,8 +44,6 @@ from ..utils import db_utils
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import get_project_containers, handle_docker_errors
 from .utils import ensure_containers_running
-
-_INFO_CONSOLE = Console()
 
 
 class InitCommandError(Exception):
@@ -93,7 +89,7 @@ def _validate_site_name(value: str) -> str:
 
 
 def _prompt_for_inputs(
-    project_name: Optional[str], bench_name: Optional[str], site_name: Optional[str]
+    project_name: str | None, bench_name: str | None, site_name: str | None
 ) -> InitInputs:
     """Prompt the user for project, bench and site names if missing."""
     try:
@@ -132,11 +128,11 @@ def _prompt_for_inputs(
 
 
 def _exec_in_container(
-    container, command: str, *, description: Optional[str] = None, stream_output: bool = False
+    container, command: str, *, description: str | None = None, stream_output: bool = False
 ) -> None:
     """Execute a command inside a Docker container using the Docker API."""
     if description:
-        _INFO_CONSOLE.print(f"[bold cyan]➤[/bold cyan] {description}")
+        stderr_console.print(f"[bold cyan]➤[/bold cyan] {description}")
 
     exec_id = container.client.api.exec_create(
         container.id,
@@ -145,9 +141,7 @@ def _exec_in_container(
 
     try:
         if stream_output:
-            for stdout, stderr in container.client.api.exec_start(
-                exec_id, stream=True, demux=True
-            ):
+            for stdout, stderr in container.client.api.exec_start(exec_id, stream=True, demux=True):
                 if stdout:
                     console.print(stdout.decode("utf-8", errors="replace"), end="")
                 if stderr:
@@ -184,10 +178,12 @@ def _build_cd_command(path: str, command: str) -> str:
     return f"cd {shlex.quote(path)} && {command}"
 
 
-def _run_host_command(cmd: list[str], cwd: Optional[str] = None, description: Optional[str] = None) -> None:
+def _run_host_command(
+    cmd: list[str], cwd: str | None = None, description: str | None = None
+) -> None:
     """Run a command on the host system and raise if it fails."""
     if description:
-        _INFO_CONSOLE.print(f"[bold cyan]➤[/bold cyan] {description}")
+        stderr_console.print(f"[bold cyan]➤[/bold cyan] {description}")
     result = subprocess.run(cmd, cwd=cwd)
     if result.returncode != 0:
         raise InitCommandError(f"Host command failed: {' '.join(cmd)}")
@@ -198,7 +194,9 @@ def _clone_frappe_repo(repo_url: str, dest_dir: str) -> None:
     if os.path.isdir(dest_dir) and os.listdir(dest_dir):
         # Directory exists and is non‑empty; assume repo already cloned
         return
-    _run_host_command(["git", "clone", repo_url, dest_dir], description=f"Cloning frappe_docker to {dest_dir}")
+    _run_host_command(
+        ["git", "clone", repo_url, dest_dir], description=f"Cloning frappe_docker to {dest_dir}"
+    )
 
 
 def _copy_devcontainer_configs(repo_path: str) -> None:
@@ -207,13 +205,13 @@ def _copy_devcontainer_configs(repo_path: str) -> None:
     src_devcontainer = os.path.join(repo_path, "devcontainer-example")
     dest_devcontainer = os.path.join(repo_path, ".devcontainer")
     if os.path.isdir(src_devcontainer) and not os.path.isdir(dest_devcontainer):
-        _INFO_CONSOLE.print("[bold cyan]➤[/bold cyan] Copying devcontainer example configuration")
+        stderr_console.print("[bold cyan]➤[/bold cyan] Copying devcontainer example configuration")
         shutil.copytree(src_devcontainer, dest_devcontainer)
     # Copy VS Code example to development/.vscode
     src_vscode = os.path.join(repo_path, "development", "vscode-example")
     dest_vscode = os.path.join(repo_path, "development", ".vscode")
     if os.path.isdir(src_vscode) and not os.path.isdir(dest_vscode):
-        _INFO_CONSOLE.print("[bold cyan]➤[/bold cyan] Copying VS Code example configuration")
+        stderr_console.print("[bold cyan]➤[/bold cyan] Copying VS Code example configuration")
         shutil.copytree(src_vscode, dest_vscode)
 
 
@@ -223,10 +221,14 @@ def _start_compose_project(project_name: str, repo_path: str, compose_file: str)
     if compose_file:
         cmd += ["-f", compose_file]
     cmd += ["up", "-d"]
-    _run_host_command(cmd, cwd=repo_path, description=f"Starting Docker Compose project '{project_name}'")
+    _run_host_command(
+        cmd, cwd=repo_path, description=f"Starting Docker Compose project '{project_name}'"
+    )
 
 
-def _clone_compose_project(existing_project: str, new_project: str, repo_path: str, compose_file: str) -> None:
+def _clone_compose_project(
+    existing_project: str, new_project: str, repo_path: str, compose_file: str
+) -> None:
     """Clone an existing Compose project by bringing up the same services under a new project name."""
     # We simply call docker compose with the new project name.  Docker Compose
     # will create a parallel set of containers, networks and volumes.  This
@@ -236,19 +238,19 @@ def _clone_compose_project(existing_project: str, new_project: str, repo_path: s
 
 @handle_docker_errors
 def init(
-    project_name: Optional[str] = typer.Option(
+    project_name: str | None = typer.Option(
         None,
         "--project",
         "-p",
         help="Docker compose project name (container prefix).",
     ),
-    bench_name: Optional[str] = typer.Option(
+    bench_name: str | None = typer.Option(
         None,
         "--bench",
         "-b",
         help="Bench directory to create inside the container.",
     ),
-    site_name: Optional[str] = typer.Option(
+    site_name: str | None = typer.Option(
         None,
         "--site",
         "-s",
@@ -291,7 +293,7 @@ def init(
         "--setup",
         help="Perform initial setup: clone frappe_docker, copy example configs and bring up containers.",
     ),
-    clone_from_project: Optional[str] = typer.Option(
+    clone_from_project: str | None = typer.Option(
         None,
         "--clone-from-project",
         help="Name of an existing docker compose project to clone.  If provided, the compose stack is duplicated under the new project name before bench initialization.",
@@ -341,7 +343,9 @@ def init(
             subprocess.run(["git", "--version"], check=True, stdout=subprocess.DEVNULL)
             subprocess.run(["docker", "--version"], check=True, stdout=subprocess.DEVNULL)
         except subprocess.CalledProcessError:
-            raise InitCommandError("'git' and 'docker' commands must be installed and in your PATH for setup.")
+            raise InitCommandError(
+                "'git' and 'docker' commands must be installed and in your PATH for setup."
+            )
         # Clone repo if needed
         _clone_frappe_repo(repo_url, repo_path)
         # Copy example configurations into place
@@ -352,7 +356,9 @@ def init(
     # Clone an existing compose project if requested
     if clone_from_project:
         if not os.path.isdir(repo_path):
-            raise InitCommandError("--clone-from-project requires a valid --repo-path where compose files live.")
+            raise InitCommandError(
+                "--clone-from-project requires a valid --repo-path where compose files live."
+            )
         _clone_compose_project(clone_from_project, inputs.project_name, repo_path, compose_file)
 
     # Ensure containers are ready before interacting with them
@@ -383,7 +389,7 @@ def init(
 
     # Add path to config for open to work
     added_path = add_path(bench_full_path)
-     
+
     try:
         # Create parent directory inside the container
         _ensure_directory(frappe_container, bench_parent_path)
