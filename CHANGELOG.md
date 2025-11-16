@@ -15,18 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Service names updated: `com.cwcli.auto-inspect` (macOS), `cwcli-auto-inspect.service` (Linux)
   - Log files updated: `/tmp/cwcli-auto-inspect.log` (macOS/Linux)
   - Follows standard Unix convention for hidden config directories
-- **Refactored init command** - Aligned with cwcli coding standards and patterns
-  - Replaced custom `InitCommandError` exception with standard `typer.Exit` pattern
-  - Added shared `get_frappe_container()` utility in `docker_utils.py`
-  - Changed `project_name` from Option to Argument with tab completion
-  - Added verbose command display with `--verbose` flag
-  - Added spinners for long-running operations (git clone, docker compose up)
-  - Improved conditional prompting - only prompts for missing values
-  - Added default value for `site_name` ("development.localhost")
-  - Updated docstring to concise format with usage examples
-  - Standardized success messages: `[bold green]✓[/bold green] Successfully initialized bench '{bench_name}'`
-  - Consolidated all console usage to shared `console` and `stderr_console` utilities
-  - Organized imports by category (standard library, third-party, local)
 
 ### Fixed
 - Type annotations in completion utilities (added `| None` to optional parameters)
