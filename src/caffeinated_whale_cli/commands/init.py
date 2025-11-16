@@ -43,7 +43,7 @@ from caffeinated_whale_cli.commands.config import add_path
 from ..utils import db_utils
 from ..utils.completion_utils import complete_project_names
 from ..utils.console import console, stderr_console
-from ..utils.docker_utils import get_project_containers, handle_docker_errors
+from ..utils.docker_utils import get_frappe_container, handle_docker_errors
 from .utils import ensure_containers_running
 
 
@@ -250,12 +250,13 @@ def _start_compose_project(project_name: str, repo_path: str, compose_file: str)
 
 
 def _clone_compose_project(
-    existing_project: str, new_project: str, repo_path: str, compose_file: str
+    _existing_project: str, new_project: str, repo_path: str, compose_file: str
 ) -> None:
     """Clone an existing Compose project by bringing up the same services under a new project name."""
     # We simply call docker compose with the new project name.  Docker Compose
     # will create a parallel set of containers, networks and volumes.  This
     # provides a lightweight "clone" of the running environment.
+    # Note: _existing_project parameter is intentionally unused - it's for documentation only
     _start_compose_project(new_project, repo_path, compose_file)
 
 
@@ -389,25 +390,9 @@ def init(
 
     # Ensure containers are ready before interacting with them
     ensure_containers_running(inputs.project_name, require_running=True, auto_start=auto_start)
-    containers = get_project_containers(inputs.project_name)
 
-    if not containers:
-        stderr_console.print(
-            f"[bold red]Error:[/bold red] No containers found for project '{inputs.project_name}'. "
-            "Make sure the stack is created (docker compose up -d) or use --auto-start/--setup."
-        )
-        raise typer.Exit(code=1)
-
-    # Locate the frappe service container
-    frappe_container = next(
-        (c for c in containers if c.labels.get("com.docker.compose.service") == "frappe"),
-        None,
-    )
-    if not frappe_container:
-        stderr_console.print(
-            f"[bold red]Error:[/bold red] No 'frappe' service found for project '{inputs.project_name}'."
-        )
-        raise typer.Exit(code=1)
+    # Get the frappe container
+    frappe_container = get_frappe_container(inputs.project_name)
 
     # Prepare bench paths inside the container
     bench_parent_path = bench_parent.rstrip("/") or "/workspace"

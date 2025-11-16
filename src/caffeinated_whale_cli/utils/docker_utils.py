@@ -1,9 +1,9 @@
+import functools
 import os
 import shutil
+
 import docker
 import typer
-import functools
-from typing import List, Optional
 from docker.errors import DockerException
 from rich.console import Console
 
@@ -49,7 +49,7 @@ def handle_docker_errors(func):
 
 def get_project_containers(
     project_name: str,
-) -> Optional[List[docker.models.containers.Container]]:
+) -> list[docker.models.containers.Container] | None:
     """
     Finds all containers belonging to a specific Docker Compose project.
 
@@ -73,7 +73,40 @@ def get_project_containers(
         return None
 
 
-def exec_into_container(container_name: str, working_dir: Optional[str] = None) -> None:
+def get_frappe_container(project_name: str):
+    """
+    Get the frappe container for a project.
+
+    Args:
+        project_name: The name of the docker-compose project.
+
+    Returns:
+        The frappe container object.
+
+    Raises:
+        typer.Exit: If project not found or no frappe service exists.
+    """
+    containers = get_project_containers(project_name)
+
+    if not containers:
+        stderr_console.print(f"[bold red]Error:[/bold red] Project '{project_name}' not found.")
+        raise typer.Exit(code=1)
+
+    frappe_container = next(
+        (c for c in containers if c.labels.get("com.docker.compose.service") == "frappe"),
+        None,
+    )
+
+    if not frappe_container:
+        stderr_console.print(
+            f"[bold red]Error:[/bold red] No 'frappe' service found for project '{project_name}'."
+        )
+        raise typer.Exit(code=1)
+
+    return frappe_container
+
+
+def exec_into_container(container_name: str, working_dir: str | None = None) -> None:
     """
     Execute into a Docker container using bash.
 
