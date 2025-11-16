@@ -271,7 +271,7 @@ def _setup_project_directory(project_name: str, verbose: bool = False) -> Path:
 
     # GitHub raw URLs for frappe_docker devcontainer setup
     compose_url = "https://raw.githubusercontent.com/frappe/frappe_docker/refs/heads/main/devcontainer-example/docker-compose.yml"
-    env_url = "https://raw.githubusercontent.com/frappe/frappe_docker/main/development/.env.example"
+    env_url = "https://raw.githubusercontent.com/frappe/frappe_docker/refs/heads/main/devcontainer-example/.env.example"
 
     # Download compose file
     compose_path = project_dir / "docker-compose.yml"
