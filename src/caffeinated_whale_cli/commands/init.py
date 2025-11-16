@@ -135,11 +135,19 @@ def _prompt_for_inputs(
 
 
 def _exec_in_container(
-    container, command: str, *, description: str | None = None, stream_output: bool = False
+    container,
+    command: str,
+    *,
+    description: str | None = None,
+    stream_output: bool = False,
+    verbose: bool = False,
 ) -> None:
     """Execute a command inside a Docker container using the Docker API."""
     if description:
         stderr_console.print(f"[bold cyan]➤[/bold cyan] {description}")
+
+    if verbose:
+        stderr_console.print(f"[dim]$ {command}[/dim]")
 
     exec_id = container.client.api.exec_create(
         container.id,
@@ -445,6 +453,7 @@ def init(
             bench_init_cmd,
             description=f"Initializing bench '{inputs.bench_name}' (this may take a while)...",
             stream_output=True,
+            verbose=verbose,
         )
 
     # Configure bench hosts inside the container (db and redis services)【463985302350907†L232-L239】
@@ -463,6 +472,7 @@ def init(
             _build_cd_command(bench_full_path, command),
             description=description,
             stream_output=verbose,
+            verbose=verbose,
         )
 
     # Create the site if it doesn't already exist【463985302350907†L257-L271】
@@ -494,6 +504,7 @@ def init(
             new_site_cmd,
             description=f"Creating site '{inputs.site_name}'...",
             stream_output=True,
+            verbose=verbose,
         )
 
     # Switch active site
@@ -502,6 +513,7 @@ def init(
         _build_cd_command(bench_full_path, f"bench use {shlex.quote(inputs.site_name)}"),
         description="Selecting active site",
         stream_output=verbose,
+        verbose=verbose,
     )
 
     # Final configuration: enable developer mode and server script support【463985302350907†L273-L283】
@@ -518,6 +530,7 @@ def init(
             _build_cd_command(bench_full_path, command),
             description=description,
             stream_output=verbose,
+            verbose=verbose,
         )
 
     # Optionally install ERPNext onto the site【463985302350907†L288-L299】
@@ -538,6 +551,7 @@ def init(
                 _build_cd_command(bench_full_path, command),
                 description=description,
                 stream_output=True,
+                verbose=verbose,
             )
 
     # Clear cached bench metadata
