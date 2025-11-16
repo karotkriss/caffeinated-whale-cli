@@ -26,7 +26,7 @@ Key additions:
 
 Because these features rely on host system tools (`git`, `docker`, etc.) the
 script uses Python's `subprocess.run` to execute them.  If a command fails it
-raises an `InitCommandError` with a helpful message.
+prints an error message and exits with code 1.
 """
 
 import os
@@ -46,10 +46,6 @@ from ..utils.docker_utils import get_project_containers, handle_docker_errors
 from .utils import ensure_containers_running
 
 
-class InitCommandError(Exception):
-    """Raised when an initialization step fails."""
-
-
 @dataclass
 class InitInputs:
     project_name: str
@@ -60,16 +56,22 @@ class InitInputs:
 def _validate_slug(value: str, field_label: str) -> str:
     cleaned = value.strip()
     if not cleaned:
-        raise InitCommandError(f"{field_label} is required.")
+        stderr_console.print(f"[bold red]Error:[/bold red] {field_label} is required.")
+        raise typer.Exit(code=1)
 
     allowed = "abcdefghijklmnopqrstuvwxyz0123456789-_"
     if not all(char in allowed for char in cleaned.lower()):
-        raise InitCommandError(
-            f"{field_label} must contain only lowercase letters, numbers, dashes, or underscores."
+        stderr_console.print(
+            f"[bold red]Error:[/bold red] {field_label} must contain only lowercase letters, "
+            "numbers, dashes, or underscores."
         )
+        raise typer.Exit(code=1)
 
     if cleaned[0] in "-_" or cleaned[-1] in "-_":
-        raise InitCommandError(f"{field_label} cannot start or end with '-' or '_'.")
+        stderr_console.print(
+            f"[bold red]Error:[/bold red] {field_label} cannot start or end with '-' or '_'."
+        )
+        raise typer.Exit(code=1)
 
     return cleaned.lower()
 
@@ -77,14 +79,18 @@ def _validate_slug(value: str, field_label: str) -> str:
 def _validate_site_name(value: str) -> str:
     cleaned = value.strip().lower()
     if not cleaned:
-        raise InitCommandError("Site name is required.")
+        stderr_console.print("[bold red]Error:[/bold red] Site name is required.")
+        raise typer.Exit(code=1)
     if not cleaned.endswith(".localhost"):
-        raise InitCommandError("Site name must end with '.localhost'.")
+        stderr_console.print("[bold red]Error:[/bold red] Site name must end with '.localhost'.")
+        raise typer.Exit(code=1)
     allowed = "abcdefghijklmnopqrstuvwxyz0123456789-."
     if not all(char in allowed for char in cleaned):
-        raise InitCommandError(
-            "Site name may only include lowercase letters, numbers, hyphens, and periods."
+        stderr_console.print(
+            "[bold red]Error:[/bold red] Site name may only include lowercase letters, "
+            "numbers, hyphens, and periods."
         )
+        raise typer.Exit(code=1)
     return cleaned
 
 
@@ -153,11 +159,15 @@ def _exec_in_container(
 
         result = container.client.api.exec_inspect(exec_id)
     except Exception as exc:  # defensive against docker api errors
-        raise InitCommandError(str(exc)) from exc
+        stderr_console.print(f"[bold red]Error:[/bold red] Docker API error: {exc}")
+        raise typer.Exit(code=1) from exc
 
     exit_code = result.get("ExitCode", 1)
     if exit_code != 0:
-        raise InitCommandError(f"Command failed with exit code {exit_code}: {command}")
+        stderr_console.print(
+            f"[bold red]Error:[/bold red] Command failed with exit code {exit_code}: {command}"
+        )
+        raise typer.Exit(code=1)
 
 
 def _directory_exists(container, path: str) -> bool:
@@ -171,7 +181,10 @@ def _ensure_directory(container, path: str) -> None:
     exit_code, output = container.exec_run(["bash", "-lc", f"mkdir -p {shlex.quote(path)}"])
     if exit_code != 0:
         message = output.decode("utf-8", errors="replace") if isinstance(output, bytes) else output
-        raise InitCommandError(f"Failed to create directory '{path}': {message}")
+        stderr_console.print(
+            f"[bold red]Error:[/bold red] Failed to create directory '{path}': {message}"
+        )
+        raise typer.Exit(code=1)
 
 
 def _build_cd_command(path: str, command: str) -> str:
@@ -186,7 +199,8 @@ def _run_host_command(
         stderr_console.print(f"[bold cyan]➤[/bold cyan] {description}")
     result = subprocess.run(cmd, cwd=cwd)
     if result.returncode != 0:
-        raise InitCommandError(f"Host command failed: {' '.join(cmd)}")
+        stderr_console.print(f"[bold red]Error:[/bold red] Host command failed: {' '.join(cmd)}")
+        raise typer.Exit(code=1)
 
 
 def _clone_frappe_repo(repo_url: str, dest_dir: str) -> None:
@@ -343,9 +357,11 @@ def init(
             subprocess.run(["git", "--version"], check=True, stdout=subprocess.DEVNULL)
             subprocess.run(["docker", "--version"], check=True, stdout=subprocess.DEVNULL)
         except subprocess.CalledProcessError:
-            raise InitCommandError(
-                "'git' and 'docker' commands must be installed and in your PATH for setup."
+            stderr_console.print(
+                "[bold red]Error:[/bold red] 'git' and 'docker' commands must be installed "
+                "and in your PATH for setup."
             )
+            raise typer.Exit(code=1) from None
         # Clone repo if needed
         _clone_frappe_repo(repo_url, repo_path)
         # Copy example configurations into place
@@ -356,9 +372,11 @@ def init(
     # Clone an existing compose project if requested
     if clone_from_project:
         if not os.path.isdir(repo_path):
-            raise InitCommandError(
-                "--clone-from-project requires a valid --repo-path where compose files live."
+            stderr_console.print(
+                "[bold red]Error:[/bold red] --clone-from-project requires a valid "
+                "--repo-path where compose files live."
             )
+            raise typer.Exit(code=1)
         _clone_compose_project(clone_from_project, inputs.project_name, repo_path, compose_file)
 
     # Ensure containers are ready before interacting with them
@@ -388,156 +406,152 @@ def init(
     bench_full_path = f"{bench_parent_path}/{inputs.bench_name}"
 
     # Add path to config for open to work
-    added_path = add_path(bench_full_path)
+    add_path(bench_full_path)
 
-    try:
-        # Create parent directory inside the container
-        _ensure_directory(frappe_container, bench_parent_path)
+    # Create parent directory inside the container
+    _ensure_directory(frappe_container, bench_parent_path)
 
-        # Bench initialization
-        bench_exists = _directory_exists(frappe_container, bench_full_path)
-        if bench_exists:
-            console.print(
-                f"[yellow]Bench '{inputs.bench_name}' already exists at {bench_full_path}.[/yellow]"
-            )
-            reuse = questionary.confirm(
-                "Reuse the existing bench and continue with site setup?",
-                default=True,
-                auto_enter=False,
-            ).ask()
-            if not reuse:
-                console.print("[yellow]No changes made.[/yellow]")
-                raise typer.Exit(code=0)
-        else:
-            bench_init_cmd = _build_cd_command(
-                bench_parent_path,
-                " ".join(
-                    [
-                        "bench",
-                        "init",
-                        "--skip-redis-config-generation",
-                        "--frappe-branch",
-                        shlex.quote(frappe_branch),
-                        shlex.quote(inputs.bench_name),
-                        "--verbose",
-                    ]
-                ),
-            )
-            _exec_in_container(
-                frappe_container,
-                bench_init_cmd,
-                description=f"Initializing bench '{inputs.bench_name}' (this may take a while)...",
-                stream_output=True,
-            )
-
-        # Configure bench hosts inside the container (db and redis services)【463985302350907†L232-L239】
-        configs = [
-            ("Setting MariaDB host", "bench set-config -g db_host mariadb"),
-            ("Setting Redis cache", "bench set-config -g redis_cache redis://redis-cache:6379"),
-            ("Setting Redis queue", "bench set-config -g redis_queue redis://redis-queue:6379"),
-            (
-                "Setting Redis socketio",
-                "bench set-config -g redis_socketio redis://redis-queue:6379",
+    # Bench initialization
+    bench_exists = _directory_exists(frappe_container, bench_full_path)
+    if bench_exists:
+        console.print(
+            f"[yellow]Bench '{inputs.bench_name}' already exists at {bench_full_path}.[/yellow]"
+        )
+        reuse = questionary.confirm(
+            "Reuse the existing bench and continue with site setup?",
+            default=True,
+            auto_enter=False,
+        ).ask()
+        if not reuse:
+            console.print("[yellow]No changes made.[/yellow]")
+            raise typer.Exit(code=0)
+    else:
+        bench_init_cmd = _build_cd_command(
+            bench_parent_path,
+            " ".join(
+                [
+                    "bench",
+                    "init",
+                    "--skip-redis-config-generation",
+                    "--frappe-branch",
+                    shlex.quote(frappe_branch),
+                    shlex.quote(inputs.bench_name),
+                    "--verbose",
+                ]
             ),
-        ]
-        for description, command in configs:
-            _exec_in_container(
-                frappe_container,
-                _build_cd_command(bench_full_path, command),
-                description=description,
-                stream_output=verbose,
-            )
-
-        # Create the site if it doesn't already exist【463985302350907†L257-L271】
-        site_path = f"{bench_full_path}/sites/{inputs.site_name}"
-        site_exists = _directory_exists(frappe_container, site_path)
-        if site_exists:
-            console.print(
-                f"[yellow]Site '{inputs.site_name}' already exists. Skipping new-site creation.[/yellow]"
-            )
-        else:
-            new_site_cmd = _build_cd_command(
-                bench_full_path,
-                " ".join(
-                    [
-                        "bench",
-                        "new-site",
-                        "--db-root-password",
-                        shlex.quote(db_root_password),
-                        "--admin-password",
-                        shlex.quote(admin_password),
-                        "--mariadb-user-host-login-scope=%",
-                        shlex.quote(inputs.site_name),
-                        "--verbose",
-                    ]
-                ),
-            )
-            _exec_in_container(
-                frappe_container,
-                new_site_cmd,
-                description=f"Creating site '{inputs.site_name}'...",
-                stream_output=True,
-            )
-
-        # Switch active site
+        )
         _exec_in_container(
             frappe_container,
-            _build_cd_command(bench_full_path, f"bench use {shlex.quote(inputs.site_name)}"),
-            description="Selecting active site",
+            bench_init_cmd,
+            description=f"Initializing bench '{inputs.bench_name}' (this may take a while)...",
+            stream_output=True,
+        )
+
+    # Configure bench hosts inside the container (db and redis services)【463985302350907†L232-L239】
+    configs = [
+        ("Setting MariaDB host", "bench set-config -g db_host mariadb"),
+        ("Setting Redis cache", "bench set-config -g redis_cache redis://redis-cache:6379"),
+        ("Setting Redis queue", "bench set-config -g redis_queue redis://redis-queue:6379"),
+        (
+            "Setting Redis socketio",
+            "bench set-config -g redis_socketio redis://redis-queue:6379",
+        ),
+    ]
+    for description, command in configs:
+        _exec_in_container(
+            frappe_container,
+            _build_cd_command(bench_full_path, command),
+            description=description,
             stream_output=verbose,
         )
 
-        # Final configuration: enable developer mode and server script support【463985302350907†L273-L283】
-        final_configs = [
-            ("Enabling developer mode", "bench set-config developer_mode 1"),
+    # Create the site if it doesn't already exist【463985302350907†L257-L271】
+    site_path = f"{bench_full_path}/sites/{inputs.site_name}"
+    site_exists = _directory_exists(frappe_container, site_path)
+    if site_exists:
+        console.print(
+            f"[yellow]Site '{inputs.site_name}' already exists. Skipping new-site creation.[/yellow]"
+        )
+    else:
+        new_site_cmd = _build_cd_command(
+            bench_full_path,
+            " ".join(
+                [
+                    "bench",
+                    "new-site",
+                    "--db-root-password",
+                    shlex.quote(db_root_password),
+                    "--admin-password",
+                    shlex.quote(admin_password),
+                    "--mariadb-user-host-login-scope=%",
+                    shlex.quote(inputs.site_name),
+                    "--verbose",
+                ]
+            ),
+        )
+        _exec_in_container(
+            frappe_container,
+            new_site_cmd,
+            description=f"Creating site '{inputs.site_name}'...",
+            stream_output=True,
+        )
+
+    # Switch active site
+    _exec_in_container(
+        frappe_container,
+        _build_cd_command(bench_full_path, f"bench use {shlex.quote(inputs.site_name)}"),
+        description="Selecting active site",
+        stream_output=verbose,
+    )
+
+    # Final configuration: enable developer mode and server script support【463985302350907†L273-L283】
+    final_configs = [
+        ("Enabling developer mode", "bench set-config developer_mode 1"),
+        (
+            "Enabling server script support",
+            "bench set-config -g server_script_enabled 1",
+        ),
+    ]
+    for description, command in final_configs:
+        _exec_in_container(
+            frappe_container,
+            _build_cd_command(bench_full_path, command),
+            description=description,
+            stream_output=verbose,
+        )
+
+    # Optionally install ERPNext onto the site【463985302350907†L288-L299】
+    if install_erpnext:
+        erpnext_commands = [
             (
-                "Enabling server script support",
-                "bench set-config -g server_script_enabled 1",
+                "Fetching ERPNext app",
+                f"bench get-app --branch {shlex.quote(erpnext_branch)} --resolve-deps erpnext",
+            ),
+            (
+                "Installing ERPNext app",
+                f"bench --site {shlex.quote(inputs.site_name)} install-app erpnext",
             ),
         ]
-        for description, command in final_configs:
+        for description, command in erpnext_commands:
             _exec_in_container(
                 frappe_container,
                 _build_cd_command(bench_full_path, command),
                 description=description,
-                stream_output=verbose,
+                stream_output=True,
             )
 
-        # Optionally install ERPNext onto the site【463985302350907†L288-L299】
-        if install_erpnext:
-            erpnext_commands = [
-                (
-                    "Fetching ERPNext app",
-                    f"bench get-app --branch {shlex.quote(erpnext_branch)} --resolve-deps erpnext",
-                ),
-                (
-                    "Installing ERPNext app",
-                    f"bench --site {shlex.quote(inputs.site_name)} install-app erpnext",
-                ),
-            ]
-            for description, command in erpnext_commands:
-                _exec_in_container(
-                    frappe_container,
-                    _build_cd_command(bench_full_path, command),
-                    description=description,
-                    stream_output=True,
-                )
+    # Clear cached bench metadata
+    db_utils.clear_cache_for_project(inputs.project_name)
 
-        # Clear cached bench metadata
-        db_utils.clear_cache_for_project(inputs.project_name)
-
-        # Inform the user of success
+    # Inform the user of success
+    console.print(
+        "[bold green]✓[/bold green] Bench initialization complete. "
+        f"Bench path: [cyan]{bench_full_path}[/cyan]"
+    )
+    console.print(
+        f"[dim]Next steps:[/dim] Run `cwcli open {inputs.project_name}` to start bench services."
+    )
+    if install_erpnext:
         console.print(
-            "[bold green]✓[/bold green] Bench initialization complete. "
-            f"Bench path: [cyan]{bench_full_path}[/cyan]"
+            f"[dim]ERPNext installed. Once services are running, open http://{inputs.site_name}:8000 in your browser.[/dim]"
         )
-        console.print(
-            f"[dim]Next steps:[/dim] Run `cwcli open {inputs.project_name}` to start bench services."
-        )
-        if install_erpnext:
-            console.print(
-                f"[dim]ERPNext installed. Once services are running, open http://{inputs.site_name}:8000 in your browser.[/dim]"
-            )
-    except InitCommandError as exc:
-        stderr_console.print(f"[bold red]Error:[/bold red] {exc}")
-        raise typer.Exit(code=1) from exc
