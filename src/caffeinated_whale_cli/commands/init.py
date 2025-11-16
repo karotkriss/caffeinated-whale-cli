@@ -41,6 +41,7 @@ from ..utils import db_utils
 from ..utils.completion_utils import complete_project_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import get_frappe_container, handle_docker_errors
+from ..utils.port_utils import check_ports_in_use, format_port_list
 from .utils import ensure_containers_running
 
 
@@ -268,10 +269,8 @@ def _setup_project_directory(project_name: str, verbose: bool = False) -> Path:
     if verbose:
         stderr_console.print(f"[dim]Project directory: {project_dir}[/dim]")
 
-    # GitHub raw URLs for frappe_docker development setup
-    compose_url = (
-        "https://raw.githubusercontent.com/frappe/frappe_docker/main/development/compose.yaml"
-    )
+    # GitHub raw URLs for frappe_docker devcontainer setup
+    compose_url = "https://raw.githubusercontent.com/frappe/frappe_docker/refs/heads/main/devcontainer-example/docker-compose.yml"
     env_url = "https://raw.githubusercontent.com/frappe/frappe_docker/main/development/.env.example"
 
     # Download compose file
@@ -291,12 +290,50 @@ def _setup_project_directory(project_name: str, verbose: bool = False) -> Path:
     return project_dir
 
 
+def _customize_compose_ports(compose_path: Path, port: int, verbose: bool = False) -> None:
+    """
+    Customize the port mappings in docker-compose.yml.
+
+    Args:
+        compose_path: Path to the docker-compose.yml file
+        port: Starting port number (e.g., 8000)
+        verbose: Print detailed information
+
+    The function replaces:
+    - Web server ports: 8000-8005 → {port}-{port+5}
+    - SocketIO ports: 9000-9005 → {port+1000}-{port+1005}
+    """
+    if verbose:
+        stderr_console.print(
+            f"[dim]Customizing ports: {port}-{port+5} (web), {port+1000}-{port+1005} (socketio)[/dim]"
+        )
+
+    content = compose_path.read_text()
+
+    # Replace web server port range
+    content = content.replace("8000-8005:8000-8005", f"{port}-{port+5}:8000-8005")
+
+    # Replace socketio port range
+    socketio_start = port + 1000
+    content = content.replace(
+        "9000-9005:9000-9005", f"{socketio_start}-{socketio_start+5}:9000-9005"
+    )
+
+    compose_path.write_text(content)
+
+
 @handle_docker_errors
 def init(
     project_name: str | None = typer.Argument(
         None,
         help="Docker Compose project name. If not provided, will prompt interactively.",
         autocompletion=complete_project_names,
+    ),
+    port: int = typer.Option(
+        8000,
+        "--port",
+        "-P",
+        help="Starting port for the project. Creates ports {port}-{port+5} for web servers and {port+1000}-{port+1005} for socketio.",
     ),
     bench_name: str | None = typer.Option(
         None,
@@ -370,8 +407,30 @@ def init(
     # Prompt for inputs (project, bench and site names) first
     inputs = _prompt_for_inputs(project_name, bench_name, site_name)
 
+    # Check for port conflicts before proceeding
+    web_ports = list(range(port, port + 6))  # e.g., 8000-8005
+    socketio_ports = list(range(port + 1000, port + 1006))  # e.g., 9000-9005
+    all_ports = web_ports + socketio_ports
+
+    port_status = check_ports_in_use(all_ports)
+    ports_in_use = [p for p, in_use in port_status.items() if in_use]
+
+    if ports_in_use:
+        stderr_console.print(
+            f"[bold red]Error:[/bold red] The following ports are already in use: {format_port_list(ports_in_use)}"
+        )
+        stderr_console.print(
+            "\n[yellow]Tip:[/yellow] Use the [cyan]--port[/cyan] flag to select a different starting port."
+        )
+        stderr_console.print(f"[dim]Example: cwcli init {inputs.project_name} --port 10000[/dim]")
+        raise typer.Exit(code=1)
+
     # Setup project directory and download essential files
     project_dir = _setup_project_directory(inputs.project_name, verbose=verbose)
+
+    # Customize port mappings in the docker-compose.yml
+    compose_path = project_dir / "docker-compose.yml"
+    _customize_compose_ports(compose_path, port, verbose=verbose)
 
     # Start Docker Compose project
     _start_compose_project(inputs.project_name, project_dir)
