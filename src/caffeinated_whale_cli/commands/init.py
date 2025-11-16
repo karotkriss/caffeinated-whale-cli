@@ -41,6 +41,7 @@ import typer
 from caffeinated_whale_cli.commands.config import add_path
 
 from ..utils import db_utils
+from ..utils.completion_utils import complete_project_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import get_project_containers, handle_docker_errors
 from .utils import ensure_containers_running
@@ -252,11 +253,10 @@ def _clone_compose_project(
 
 @handle_docker_errors
 def init(
-    project_name: str | None = typer.Option(
+    project_name: str | None = typer.Argument(
         None,
-        "--project",
-        "-p",
-        help="Docker compose project name (container prefix).",
+        help="Docker Compose project name. If not provided, will prompt interactively.",
+        autocompletion=complete_project_names,
     ),
     bench_name: str | None = typer.Option(
         None,
