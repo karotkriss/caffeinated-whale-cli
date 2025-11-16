@@ -201,14 +201,24 @@ def _build_cd_command(path: str, command: str) -> str:
 
 
 def _run_host_command(
-    cmd: list[str], cwd: str | None = None, description: str | None = None
+    cmd: list[str],
+    cwd: str | None = None,
+    description: str | None = None,
+    use_spinner: bool = False,
 ) -> None:
     """Run a command on the host system and raise if it fails."""
-    if description:
-        stderr_console.print(f"[bold cyan]➤[/bold cyan] {description}")
-    result = subprocess.run(cmd, cwd=cwd)
+    if use_spinner and description:
+        with stderr_console.status(f"[bold cyan]{description}...[/bold cyan]", spinner="dots"):
+            result = subprocess.run(cmd, cwd=cwd, capture_output=True)
+    else:
+        if description:
+            stderr_console.print(f"[bold cyan]➤[/bold cyan] {description}")
+        result = subprocess.run(cmd, cwd=cwd)
+
     if result.returncode != 0:
         stderr_console.print(f"[bold red]Error:[/bold red] Host command failed: {' '.join(cmd)}")
+        if use_spinner and result.stderr:
+            stderr_console.print(result.stderr.decode("utf-8", errors="replace"))
         raise typer.Exit(code=1)
 
 
@@ -218,7 +228,9 @@ def _clone_frappe_repo(repo_url: str, dest_dir: str) -> None:
         # Directory exists and is non‑empty; assume repo already cloned
         return
     _run_host_command(
-        ["git", "clone", repo_url, dest_dir], description=f"Cloning frappe_docker to {dest_dir}"
+        ["git", "clone", repo_url, dest_dir],
+        description=f"Cloning frappe_docker to {dest_dir}",
+        use_spinner=True,
     )
 
 
@@ -245,7 +257,10 @@ def _start_compose_project(project_name: str, repo_path: str, compose_file: str)
         cmd += ["-f", compose_file]
     cmd += ["up", "-d"]
     _run_host_command(
-        cmd, cwd=repo_path, description=f"Starting Docker Compose project '{project_name}'"
+        cmd,
+        cwd=repo_path,
+        description=f"Starting Docker Compose project '{project_name}'",
+        use_spinner=True,
     )
 
 
