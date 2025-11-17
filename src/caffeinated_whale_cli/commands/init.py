@@ -2,12 +2,20 @@
 Simplified init command for cwcli.
 
 The init command creates a complete Frappe development environment in a single step:
-1. Creates a project directory in ~/.cwcli/projects/{project_name}/
-2. Downloads essential files from GitHub (docker-compose.yml, .env)
+1. Creates a project directory structure in ~/.cwcli/projects/{project_name}/
+2. Downloads docker-compose.yml from GitHub to conf/ subdirectory
 3. Starts Docker Compose containers
 4. Initializes a Frappe bench inside the container
 5. Creates a new site with the specified configuration
 6. Optionally installs ERPNext
+
+Directory structure:
+    ~/.cwcli/projects/{project_name}/
+        conf/
+            docker-compose.yml
+
+All Docker volumes and persistence are scoped to the project directory, ensuring
+complete isolation between projects.
 
 This approach is lightweight and organized - no need to clone the entire frappe_docker
 repository. All project files are stored in a dedicated projects directory.
@@ -16,13 +24,13 @@ Key features:
 * Automatic project setup - no manual repository cloning needed
 * Downloads only essential files from GitHub (< 10KB vs entire repo)
 * All projects organized in ~/.cwcli/projects/
+* Custom port selection with --port flag
 * Optional ERPNext installation with `--install-erpnext`
 * Interactive prompts for project/bench/site names if not provided
 
 Example:
     cwcli init my-project
-    # Creates ~/.cwcli/projects/my-project/
-    # Downloads compose files
+    # Creates ~/.cwcli/projects/my-project/conf/docker-compose.yml
     # Starts containers
     # Initializes bench and site
 """
@@ -37,11 +45,12 @@ import typer
 
 from caffeinated_whale_cli.commands.config import add_path
 
-from ..utils import db_utils
+from ..utils import config_utils, db_utils
 from ..utils.completion_utils import complete_project_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import get_frappe_container, handle_docker_errors
 from ..utils.port_utils import check_ports_in_use, format_port_list
+from ..utils.tips import TipSpinner
 from .utils import ensure_containers_running
 
 
@@ -94,12 +103,12 @@ def _validate_site_name(value: str) -> str:
 
 
 def _prompt_for_inputs(
-    project_name: str | None, bench_name: str | None, site_name: str
+    project_name: str | None, bench_name: str, site_name: str
 ) -> InitInputs:
-    """Prompt the user for project, bench and site names if missing.
+    """Prompt the user for project name if missing.
 
-    Note: site_name now has a default value ('development.localhost'), so it's never None.
-    Only project_name and bench_name will be prompted if not provided.
+    Note: bench_name and site_name now have default values, so they're never None.
+    Only project_name will be prompted if not provided.
     """
     try:
         # Only prompt for project name if not provided
@@ -113,29 +122,14 @@ def _prompt_for_inputs(
                 raise typer.Exit(code=0)
         else:
             container_answer = project_name
-
-        # Only prompt for bench name if not provided
-        if bench_name is None:
-            bench_answer = questionary.text(
-                "App / Bench directory name (e.g. frappe-bench)",
-                default="",
-                validate=lambda text: bool(text.strip()),
-            ).ask()
-            if bench_answer is None:
-                raise typer.Exit(code=0)
-        else:
-            bench_answer = bench_name
-
-        # Site name now has a default, so use it directly (no prompt needed)
-        site_answer = site_name
     except KeyboardInterrupt:
         stderr_console.print("\n[yellow]Operation cancelled.[/yellow]")
         raise typer.Exit(code=0) from None
 
     return InitInputs(
         project_name=_validate_slug(container_answer, "Project name"),
-        bench_name=_validate_slug(bench_answer, "Bench name"),
-        site_name=_validate_site_name(site_answer),
+        bench_name=_validate_slug(bench_name, "Bench name"),
+        site_name=_validate_site_name(site_name),
     )
 
 
@@ -148,11 +142,12 @@ def _exec_in_container(
     verbose: bool = False,
 ) -> None:
     """Execute a command inside a Docker container using the Docker API."""
-    if description:
-        stderr_console.print(f"[bold cyan]➤[/bold cyan] {description}")
-
     if verbose:
         stderr_console.print(f"[dim]$ {command}[/dim]")
+
+    # Only show description when streaming output (verbose mode shows command instead)
+    if description and stream_output and not verbose:
+        stderr_console.print(f"{description}")
 
     exec_id = container.client.api.exec_create(
         container.id,
@@ -161,14 +156,20 @@ def _exec_in_container(
 
     try:
         if stream_output:
+            import sys
+
             for stdout, stderr in container.client.api.exec_start(exec_id, stream=True, demux=True):
                 if stdout:
-                    console.print(stdout.decode("utf-8", errors="replace"), end="")
+                    # Use raw sys.stdout.write to preserve carriage returns for progress bars
+                    sys.stdout.write(stdout.decode("utf-8", errors="replace"))
+                    sys.stdout.flush()
                 if stderr:
-                    stderr_console.print(stderr.decode("utf-8", errors="replace"), end="")
+                    sys.stderr.write(stderr.decode("utf-8", errors="replace"))
+                    sys.stderr.flush()
         else:
             output = container.client.api.exec_start(exec_id, stream=False)
-            if output:
+            # Only print output in verbose mode
+            if output and verbose:
                 console.print(output.decode("utf-8", errors="replace"))
 
         result = container.client.api.exec_inspect(exec_id)
@@ -210,87 +211,93 @@ def _run_host_command(
     cwd: str | None = None,
     description: str | None = None,
     use_spinner: bool = False,
+    capture_output: bool = True,
 ) -> None:
     """Run a command on the host system and raise if it fails."""
     if use_spinner and description:
         with stderr_console.status(f"[bold cyan]{description}...[/bold cyan]", spinner="dots"):
             result = subprocess.run(cmd, cwd=cwd, capture_output=True)
     else:
-        if description:
-            stderr_console.print(f"[bold cyan]➤[/bold cyan] {description}")
-        result = subprocess.run(cmd, cwd=cwd)
+        result = subprocess.run(cmd, cwd=cwd, capture_output=capture_output)
 
     if result.returncode != 0:
         stderr_console.print(f"[bold red]Error:[/bold red] Host command failed: {' '.join(cmd)}")
-        if use_spinner and result.stderr:
+        if capture_output and result.stderr:
             stderr_console.print(result.stderr.decode("utf-8", errors="replace"))
         raise typer.Exit(code=1)
 
 
-def _download_github_file(url: str, dest_path: Path, description: str | None = None) -> None:
+def _download_github_file(url: str, dest_path: Path) -> None:
     """Download a file from GitHub raw URL."""
     import urllib.request
 
-    if description:
-        stderr_console.print(f"[bold cyan]➤[/bold cyan] {description}")
-
     try:
-        with urllib.request.urlopen(url) as response:
-            content = response.read()
-            dest_path.write_bytes(content)
+        urllib.request.urlretrieve(url, dest_path)
     except Exception as e:
         stderr_console.print(f"[bold red]Error:[/bold red] Failed to download {url}: {e}")
         raise typer.Exit(code=1) from None
 
 
-def _start_compose_project(project_name: str, project_dir: Path) -> None:
+def _pull_compose_images(project_name: str, project_dir: Path) -> None:
+    """Pull Docker images for the compose project."""
+    cmd = ["docker", "compose", "-p", project_name, "-f", "docker-compose.yml", "pull", "--quiet"]
+    _run_host_command(
+        cmd,
+        cwd=str(project_dir),
+        description=None,  # Description shown by caller
+        use_spinner=False,
+        capture_output=True,  # Hide output - using --quiet flag
+    )
+
+
+def _start_compose_project(project_name: str, project_dir: Path, verbose: bool = False) -> None:
     """Run docker compose up -d in the project directory to start services."""
     cmd = ["docker", "compose", "-p", project_name, "-f", "docker-compose.yml", "up", "-d"]
     _run_host_command(
         cmd,
         cwd=str(project_dir),
-        description=f"Starting Docker Compose project '{project_name}'",
-        use_spinner=True,
+        description=None,  # Description shown by caller
+        use_spinner=False,
+        capture_output=not verbose,  # Show output only in verbose mode
     )
 
 
 def _setup_project_directory(project_name: str, verbose: bool = False) -> Path:
     """
-    Create project directory and download essential files from GitHub.
+    Create project directory structure and download essential files from GitHub.
 
-    Returns the path to the project directory.
+    Structure:
+        ~/.cwcli/projects/{project_name}/
+            conf/
+                docker-compose.yml
+
+    Returns the path to the conf directory (where docker-compose.yml is located).
     """
     from ..utils.config_utils import PROJECTS_DIR
 
-    # Create project directory
+    # Create project directory structure
     project_dir = PROJECTS_DIR / project_name
-    project_dir.mkdir(parents=True, exist_ok=True)
+    conf_dir = project_dir / "conf"
+    conf_dir.mkdir(parents=True, exist_ok=True)
 
     if verbose:
         stderr_console.print(f"[dim]Project directory: {project_dir}[/dim]")
+        stderr_console.print(f"[dim]Config directory: {conf_dir}[/dim]")
 
     # GitHub raw URLs for frappe_docker devcontainer setup
     compose_url = "https://raw.githubusercontent.com/frappe/frappe_docker/refs/heads/main/devcontainer-example/docker-compose.yml"
-    env_url = "https://raw.githubusercontent.com/frappe/frappe_docker/refs/heads/main/devcontainer-example/.env.example"
 
-    # Download compose file
-    compose_path = project_dir / "docker-compose.yml"
+    # Download compose file to conf directory (progress bar will be shown by _download_github_file)
+    compose_path = conf_dir / "docker-compose.yml"
     if not compose_path.exists():
-        _download_github_file(
-            compose_url, compose_path, description="Downloading docker-compose.yml from GitHub"
-        )
+        _download_github_file(compose_url, compose_path)
 
-    # Download and rename .env.example to .env
-    env_path = project_dir / ".env"
-    if not env_path.exists():
-        _download_github_file(
-            env_url, env_path, description="Downloading .env configuration from GitHub"
-        )
-
-    return project_dir
+    return conf_dir
 
 
-def _customize_compose_ports(compose_path: Path, port: int, verbose: bool = False) -> None:
+def _customize_compose_ports(
+    compose_path: Path, port: int, verbose: bool = False, spinner=None
+) -> None:
     """
     Customize the port mappings in docker-compose.yml.
 
@@ -298,12 +305,17 @@ def _customize_compose_ports(compose_path: Path, port: int, verbose: bool = Fals
         compose_path: Path to the docker-compose.yml file
         port: Starting port number (e.g., 8000)
         verbose: Print detailed information
+        spinner: Optional spinner to update status
 
     The function replaces:
     - Web server ports: 8000-8005 → {port}-{port+5}
     - SocketIO ports: 9000-9005 → {port+1000}-{port+1005}
     """
-    if verbose:
+    if spinner:
+        spinner.update(
+            f"Customizing ports: {port}-{port+5} (web), {port+1000}-{port+1005} (socketio)"
+        )
+    elif verbose:
         stderr_console.print(
             f"[dim]Customizing ports: {port}-{port+5} (web), {port+1000}-{port+1005} (socketio)[/dim]"
         )
@@ -335,11 +347,11 @@ def init(
         "-P",
         help="Starting port for the project. Creates ports {port}-{port+5} for web servers and {port+1000}-{port+1005} for socketio.",
     ),
-    bench_name: str | None = typer.Option(
-        None,
+    bench_name: str = typer.Option(
+        "frappe-bench",
         "--bench",
         "-b",
-        help="Bench directory to create inside the container.",
+        help="Bench directory to create inside the container. Defaults to 'frappe-bench'.",
     ),
     site_name: str = typer.Option(
         "development.localhost",
@@ -395,7 +407,7 @@ def init(
     Creates project directory, downloads compose files, starts containers,
     initializes bench, and creates a site. Optionally installs ERPNext.
 
-    If project_name, bench_name, or site_name are not provided, prompts interactively.
+    If project_name is not provided, prompts interactively.
 
     Examples:
         cwcli init
@@ -404,7 +416,11 @@ def init(
         cwcli init my-project --frappe-branch version-15 --install-erpnext
         cwcli init my-project --db-root-password mypass --admin-password admin123
     """
-    # Prompt for inputs (project, bench and site names) first
+    import time
+
+    start_time = time.time()
+
+    # Prompt for project name if not provided
     inputs = _prompt_for_inputs(project_name, bench_name, site_name)
 
     # Check for port conflicts before proceeding
@@ -425,21 +441,56 @@ def init(
         stderr_console.print(f"[dim]Example: cwcli init {inputs.project_name} --port 10000[/dim]")
         raise typer.Exit(code=1)
 
-    # Setup project directory and download essential files
-    project_dir = _setup_project_directory(inputs.project_name, verbose=verbose)
+    # Get tips configuration
+    show_tips = config_utils.get_show_tips()
 
-    # Customize port mappings in the docker-compose.yml
-    compose_path = project_dir / "docker-compose.yml"
-    _customize_compose_ports(compose_path, port, verbose=verbose)
+    # Setup project directory and download files (progress bar shown during download)
+    console.print()
+    conf_dir = _setup_project_directory(inputs.project_name, verbose=verbose)
 
-    # Start Docker Compose project
-    _start_compose_project(inputs.project_name, project_dir)
+    # Customize port mappings and start containers
+    compose_path = conf_dir / "docker-compose.yml"
 
-    # Ensure containers are ready before interacting with them
-    ensure_containers_running(inputs.project_name, require_running=True, auto_start=auto_start)
+    if verbose:
+        # Verbose mode: no spinner, show all output
+        _customize_compose_ports(compose_path, port, verbose=verbose, spinner=None)
+        _pull_compose_images(inputs.project_name, conf_dir)
+        _start_compose_project(inputs.project_name, conf_dir, verbose=verbose)
+        ensure_containers_running(inputs.project_name, require_running=True, auto_start=auto_start)
+        frappe_container = get_frappe_container(inputs.project_name)
+    else:
+        # Non-verbose mode: use spinner for quick operations
+        with TipSpinner(
+            f"Setting up project '{inputs.project_name}'",
+            console=stderr_console,
+            enabled=show_tips,
+        ) as spinner:
+            # Customize port mappings in the docker-compose.yml
+            _customize_compose_ports(compose_path, port, verbose=verbose, spinner=spinner)
 
-    # Get the frappe container
-    frappe_container = get_frappe_container(inputs.project_name)
+        # Pull Docker images (run silently with --quiet flag)
+        _pull_compose_images(inputs.project_name, conf_dir)
+
+        # Continue with starting containers in spinner
+        console.print()
+        with TipSpinner(
+            "Starting containers",
+            console=stderr_console,
+            enabled=show_tips,
+        ) as spinner:
+            # Start Docker Compose project
+            spinner.update("Starting Docker Compose containers")
+            _start_compose_project(inputs.project_name, conf_dir, verbose=verbose)
+
+            # Ensure containers are ready before interacting with them
+            spinner.update("Waiting for containers to be ready")
+            ensure_containers_running(
+                inputs.project_name, require_running=True, auto_start=auto_start
+            )
+
+            # Get the frappe container
+            spinner.update("Getting frappe container")
+            frappe_container = get_frappe_container(inputs.project_name)
 
     # Prepare bench paths inside the container
     bench_parent_path = bench_parent.rstrip("/") or "/workspace"
@@ -453,6 +504,8 @@ def init(
 
     # Bench initialization
     bench_exists = _directory_exists(frappe_container, bench_full_path)
+
+    # Exit spinner before interactive prompt
     if bench_exists:
         console.print(
             f"[yellow]Bench '{inputs.bench_name}' already exists at {bench_full_path}.[/yellow]"
@@ -465,7 +518,9 @@ def init(
         if not reuse:
             console.print("[yellow]No changes made.[/yellow]")
             raise typer.Exit(code=0)
-    else:
+
+    # Initialize bench if it doesn't exist
+    if not bench_exists:
         bench_init_cmd = _build_cd_command(
             bench_parent_path,
             " ".join(
@@ -480,41 +535,61 @@ def init(
                 ]
             ),
         )
-        _exec_in_container(
-            frappe_container,
-            bench_init_cmd,
-            description=f"Initializing bench '{inputs.bench_name}' (this may take a while)...",
-            stream_output=True,
-            verbose=verbose,
-        )
 
-    # Configure bench hosts inside the container (db and redis services)【463985302350907†L232-L239】
-    configs = [
-        ("Setting MariaDB host", "bench set-config -g db_host mariadb"),
-        ("Setting Redis cache", "bench set-config -g redis_cache redis://redis-cache:6379"),
-        ("Setting Redis queue", "bench set-config -g redis_queue redis://redis-queue:6379"),
-        (
-            "Setting Redis socketio",
-            "bench set-config -g redis_socketio redis://redis-queue:6379",
-        ),
-    ]
-    for description, command in configs:
-        _exec_in_container(
-            frappe_container,
-            _build_cd_command(bench_full_path, command),
-            description=description,
-            stream_output=verbose,
-            verbose=verbose,
-        )
+        if verbose:
+            # Verbose mode: stream output without spinner
+            console.print()
+            _exec_in_container(
+                frappe_container,
+                bench_init_cmd,
+                description=f"Initializing bench '{inputs.bench_name}' (this may take a while)",
+                stream_output=True,
+                verbose=verbose,
+            )
+        else:
+            # Non-verbose mode: use spinner
+            console.print()
+            with TipSpinner(
+                f"Initializing bench '{inputs.bench_name}'",
+                console=stderr_console,
+                enabled=show_tips,
+            ):
+                _exec_in_container(
+                    frappe_container,
+                    bench_init_cmd,
+                    stream_output=False,
+                    verbose=False,
+                )
 
-    # Create the site if it doesn't already exist【463985302350907†L257-L271】
-    site_path = f"{bench_full_path}/sites/{inputs.site_name}"
-    site_exists = _directory_exists(frappe_container, site_path)
-    if site_exists:
-        console.print(
-            f"[yellow]Site '{inputs.site_name}' already exists. Skipping new-site creation.[/yellow]"
-        )
-    else:
+    # Continue with bench/site configuration in a spinner
+    console.print()
+    with TipSpinner(
+        f"Configuring bench '{inputs.bench_name}'",
+        console=stderr_console,
+        enabled=show_tips,
+    ) as spinner:
+        # Configure bench hosts inside the container (db and redis services)
+        spinner.update("Configuring bench database and Redis connections")
+        configs = [
+            ("bench set-config -g db_host mariadb"),
+            ("bench set-config -g redis_cache redis://redis-cache:6379"),
+            ("bench set-config -g redis_queue redis://redis-queue:6379"),
+            ("bench set-config -g redis_socketio redis://redis-queue:6379"),
+        ]
+        for command in configs:
+            _exec_in_container(
+                frappe_container,
+                _build_cd_command(bench_full_path, command),
+                stream_output=False,
+                verbose=False,
+            )
+
+        # Check if site exists
+        site_path = f"{bench_full_path}/sites/{inputs.site_name}"
+        site_exists = _directory_exists(frappe_container, site_path)
+
+    # Create site if it doesn't exist
+    if not site_exists:
         new_site_cmd = _build_cd_command(
             bench_full_path,
             " ".join(
@@ -531,69 +606,134 @@ def init(
                 ]
             ),
         )
-        _exec_in_container(
-            frappe_container,
-            new_site_cmd,
-            description=f"Creating site '{inputs.site_name}'...",
-            stream_output=True,
-            verbose=verbose,
-        )
 
-    # Switch active site
-    _exec_in_container(
-        frappe_container,
-        _build_cd_command(bench_full_path, f"bench use {shlex.quote(inputs.site_name)}"),
-        description="Selecting active site",
-        stream_output=verbose,
-        verbose=verbose,
-    )
-
-    # Final configuration: enable developer mode and server script support【463985302350907†L273-L283】
-    final_configs = [
-        ("Enabling developer mode", "bench set-config developer_mode 1"),
-        (
-            "Enabling server script support",
-            "bench set-config -g server_script_enabled 1",
-        ),
-    ]
-    for description, command in final_configs:
-        _exec_in_container(
-            frappe_container,
-            _build_cd_command(bench_full_path, command),
-            description=description,
-            stream_output=verbose,
-            verbose=verbose,
-        )
-
-    # Optionally install ERPNext onto the site【463985302350907†L288-L299】
-    if install_erpnext:
-        erpnext_commands = [
-            (
-                "Fetching ERPNext app",
-                f"bench get-app --branch {shlex.quote(erpnext_branch)} --resolve-deps erpnext",
-            ),
-            (
-                "Installing ERPNext app",
-                f"bench --site {shlex.quote(inputs.site_name)} install-app erpnext",
-            ),
-        ]
-        for description, command in erpnext_commands:
+        if verbose:
+            # Verbose mode: stream output without spinner
+            console.print()
             _exec_in_container(
                 frappe_container,
-                _build_cd_command(bench_full_path, command),
-                description=description,
+                new_site_cmd,
+                description=f"Creating site '{inputs.site_name}'",
                 stream_output=True,
                 verbose=verbose,
             )
+        else:
+            # Non-verbose mode: use spinner
+            console.print()
+            with TipSpinner(
+                f"Creating site '{inputs.site_name}'",
+                console=stderr_console,
+                enabled=show_tips,
+            ):
+                _exec_in_container(
+                    frappe_container,
+                    new_site_cmd,
+                    stream_output=False,
+                    verbose=False,
+                )
+
+    # Final configuration in a spinner
+    console.print()
+    with TipSpinner(
+        f"Finalizing setup for '{inputs.site_name}'",
+        console=stderr_console,
+        enabled=show_tips,
+    ) as spinner:
+        # Switch active site
+        spinner.update(f"Setting '{inputs.site_name}' as active site")
+        _exec_in_container(
+            frappe_container,
+            _build_cd_command(bench_full_path, f"bench use {shlex.quote(inputs.site_name)}"),
+            stream_output=False,
+            verbose=False,
+        )
+
+        # Final configuration: enable developer mode and server script support
+        spinner.update("Enabling developer mode and server scripts")
+        final_configs = [
+            ("bench set-config developer_mode 1"),
+            ("bench set-config -g server_script_enabled 1"),
+        ]
+        for command in final_configs:
+            _exec_in_container(
+                frappe_container,
+                _build_cd_command(bench_full_path, command),
+                stream_output=False,
+                verbose=False,
+            )
+
+    # Optionally install ERPNext onto the site
+    if install_erpnext:
+        if verbose:
+            # Verbose mode: stream output without spinner
+            console.print()
+            _exec_in_container(
+                frappe_container,
+                _build_cd_command(
+                    bench_full_path,
+                    f"bench get-app --branch {shlex.quote(erpnext_branch)} --resolve-deps erpnext",
+                ),
+                description=f"Fetching ERPNext app (branch: {erpnext_branch})",
+                stream_output=True,
+                verbose=verbose,
+            )
+
+            console.print()
+            _exec_in_container(
+                frappe_container,
+                _build_cd_command(
+                    bench_full_path,
+                    f"bench --site {shlex.quote(inputs.site_name)} install-app erpnext",
+                ),
+                description=f"Installing ERPNext on site '{inputs.site_name}'",
+                stream_output=True,
+                verbose=verbose,
+            )
+        else:
+            # Non-verbose mode: use spinner
+            console.print()
+            with TipSpinner(
+                "Installing ERPNext",
+                console=stderr_console,
+                enabled=show_tips,
+            ) as spinner:
+                spinner.update(f"Fetching ERPNext app (branch: {erpnext_branch})")
+                _exec_in_container(
+                    frappe_container,
+                    _build_cd_command(
+                        bench_full_path,
+                        f"bench get-app --branch {shlex.quote(erpnext_branch)} --resolve-deps erpnext",
+                    ),
+                    stream_output=False,
+                    verbose=False,
+                )
+
+                spinner.update(f"Installing ERPNext on site '{inputs.site_name}'")
+                _exec_in_container(
+                    frappe_container,
+                    _build_cd_command(
+                        bench_full_path,
+                        f"bench --site {shlex.quote(inputs.site_name)} install-app erpnext",
+                    ),
+                    stream_output=False,
+                    verbose=False,
+                )
 
     # Clear any stale cached data for this project
     # Note: The 'inspect' command is responsible for populating detailed cache data.
     # Init just clears stale cache since it creates a new project.
     db_utils.clear_cache_for_project(inputs.project_name)
 
+    # Calculate elapsed time
+    elapsed_time = time.time() - start_time
+    minutes = int(elapsed_time // 60)
+    seconds = int(elapsed_time % 60)
+    time_str = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
+
     # Inform the user of success
+    console.print()
     console.print(
-        f"[bold green]✓[/bold green] Successfully initialized bench '{inputs.bench_name}'"
+        f"[bold green]✓[/bold green] Successfully initialized bench '{inputs.bench_name}' in {time_str}"
     )
     console.print(f"[dim]Bench path: {bench_full_path}[/dim]")
     console.print(
