@@ -238,15 +238,17 @@ def _download_github_file(url: str, dest_path: Path) -> None:
         raise typer.Exit(code=1) from None
 
 
-def _pull_compose_images(project_name: str, project_dir: Path) -> None:
+def _pull_compose_images(project_name: str, project_dir: Path, verbose: bool = False) -> None:
     """Pull Docker images for the compose project."""
-    cmd = ["docker", "compose", "-p", project_name, "-f", "docker-compose.yml", "pull", "--quiet"]
+    cmd = ["docker", "compose", "-p", project_name, "-f", "docker-compose.yml", "pull"]
+    if not verbose:
+        cmd.append("--quiet")
     _run_host_command(
         cmd,
         cwd=str(project_dir),
         description=None,  # Description shown by caller
         use_spinner=False,
-        capture_output=True,  # Hide output - using --quiet flag
+        capture_output=not verbose,  # Show output in verbose mode
     )
 
 
@@ -444,45 +446,49 @@ def init(
     # Get tips configuration
     show_tips = config_utils.get_show_tips()
 
-    # Setup project directory and download files (progress bar shown during download)
-    console.print()
-    conf_dir = _setup_project_directory(inputs.project_name, verbose=verbose)
-
-    # Customize port mappings and start containers
-    compose_path = conf_dir / "docker-compose.yml"
-
     if verbose:
         # Verbose mode: no spinner, show all output
+        console.print()
+        conf_dir = _setup_project_directory(inputs.project_name, verbose=verbose)
+        compose_path = conf_dir / "docker-compose.yml"
         _customize_compose_ports(compose_path, port, verbose=verbose, spinner=None)
-        _pull_compose_images(inputs.project_name, conf_dir)
+        stderr_console.print("[dim]Pulling Docker images...[/dim]")
+        _pull_compose_images(inputs.project_name, conf_dir, verbose=verbose)
         _start_compose_project(inputs.project_name, conf_dir, verbose=verbose)
         ensure_containers_running(inputs.project_name, require_running=True, auto_start=auto_start)
         frappe_container = get_frappe_container(inputs.project_name)
     else:
-        # Non-verbose mode: use spinner for quick operations
+        # Non-verbose mode: use spinners for user feedback
+        console.print()
         with TipSpinner(
             f"Setting up project '{inputs.project_name}'",
             console=stderr_console,
             enabled=show_tips,
         ) as spinner:
-            # Customize port mappings in the docker-compose.yml
+            spinner.update("Creating project directory")
+            conf_dir = _setup_project_directory(inputs.project_name, verbose=verbose)
+            compose_path = conf_dir / "docker-compose.yml"
             _customize_compose_ports(compose_path, port, verbose=verbose, spinner=spinner)
 
-        # Pull Docker images (run silently with --quiet flag)
-        _pull_compose_images(inputs.project_name, conf_dir)
+        # Pull Docker images (can take a while)
+        console.print()
+        with TipSpinner(
+            "Pulling Docker images",
+            console=stderr_console,
+            enabled=show_tips,
+        ):
+            _pull_compose_images(inputs.project_name, conf_dir)
 
-        # Continue with starting containers in spinner
+        # Start containers
         console.print()
         with TipSpinner(
             "Starting containers",
             console=stderr_console,
             enabled=show_tips,
         ) as spinner:
-            # Start Docker Compose project
             spinner.update("Starting Docker Compose containers")
             _start_compose_project(inputs.project_name, conf_dir, verbose=verbose)
 
-            # Ensure containers are ready before interacting with them
             spinner.update("Waiting for containers to be ready")
             ensure_containers_running(
                 inputs.project_name, require_running=True, auto_start=auto_start
@@ -737,7 +743,7 @@ def init(
     )
     console.print(f"[dim]Bench path: {bench_full_path}[/dim]")
     console.print(
-        f"[dim]Next steps: Run `cwcli open {inputs.project_name}` to start bench services.[/dim]"
+        f"[dim]Next steps: Run `cwcli open {inputs.project_name}` to open the project in vscode or exec with docker.[/dim]"
     )
     if install_erpnext:
         console.print(
