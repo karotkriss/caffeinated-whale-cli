@@ -4,6 +4,7 @@ A command-line interface (CLI) for managing Frappe/ERPNext Docker instances duri
 
 ## Features
 
+- **One-Command Setup** - Initialize complete Frappe/ERPNext environments with `cwcli init`
 - **Smart Port Management** - Automatic port conflict detection and resolution
 - **Project Discovery** - Scan and list all Frappe Docker projects
 - **Container Lifecycle** - Start, stop, and restart projects with ease
@@ -37,6 +38,12 @@ To fix this:
 ## Quick Start
 
 ```bash
+# Initialize a new Frappe project (downloads compose, starts containers, creates bench & site)
+cwcli init my-project
+
+# Initialize with ERPNext and custom port
+cwcli init my-project --port 10000 --install-erpnext
+
 # List all Frappe projects
 cwcli ls
 
@@ -54,6 +61,107 @@ cwcli update my-project --app erpnext --build
 ```
 
 ## Command Reference
+
+### `init` - Initialize New Project
+
+Creates a complete Frappe development environment in a single step. Downloads compose files, starts containers, initializes bench, and creates a site.
+
+```bash
+cwcli init [OPTIONS] [PROJECT_NAME]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `PROJECT_NAME` | Docker Compose project name. If not provided, will prompt interactively |
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `-P`, `--port INTEGER` | Starting port for the project (default: 8000). Creates ports {port}-{port+5} for web servers and {port+1000}-{port+1005} for socketio |
+| `-b`, `--bench TEXT` | Bench directory name inside the container (default: frappe-bench) |
+| `-s`, `--site TEXT` | Primary site name, must end with .localhost (default: development.localhost) |
+| `--bench-parent TEXT` | Directory inside container where bench is created (default: /workspace) |
+| `--frappe-branch TEXT` | Frappe branch for bench init (default: version-15) |
+| `--db-root-password TEXT` | MariaDB root password (default: 123) |
+| `--admin-password TEXT` | Administrator password for the site (default: admin) |
+| `--install-erpnext` | Install ERPNext application after initialization |
+| `--erpnext-branch TEXT` | ERPNext branch to use (default: version-15) |
+| `--auto-start` | Automatically start containers if not running |
+| `-v`, `--verbose` | Show verbose output with streaming command execution |
+
+**What It Does:**
+
+1. Creates project directory at `~/.cwcli/projects/{project_name}/conf/`
+2. Downloads `docker-compose.yml` from frappe_docker GitHub repository
+3. Customizes port mappings based on `--port` flag
+4. Pulls Docker images and starts containers
+5. Initializes Frappe bench with specified branch
+6. Configures database and Redis connections
+7. Creates site with admin credentials
+8. Enables developer mode and server scripts
+9. Optionally installs ERPNext
+
+**Examples:**
+
+```bash
+# Initialize with interactive prompts
+cwcli init
+
+# Initialize with project name
+cwcli init my-project
+
+# Initialize with custom port (avoids conflicts with other projects)
+cwcli init my-project --port 10000
+
+# Initialize with ERPNext
+cwcli init my-project --install-erpnext
+
+# Full customization
+cwcli init my-project \
+  --port 12000 \
+  --bench custom-bench \
+  --site myapp.localhost \
+  --frappe-branch version-15 \
+  --install-erpnext \
+  --erpnext-branch version-15 \
+  --admin-password secretpass
+
+# Verbose mode for debugging
+cwcli init my-project -v
+```
+
+**Example Output:**
+
+```
+✓ Successfully initialized bench 'frappe-bench' in 8m 32s
+Bench path: /workspace/frappe-bench
+Next steps: Run `cwcli open my-project` to open the project in vscode or exec with docker.
+```
+
+**Port Conflict Handling:**
+
+If the requested ports are in use, you'll see:
+
+```
+Error: The following ports are already in use: 8000-8005
+
+Tip: Use the --port flag to select a different starting port.
+Example: cwcli init my-project --port 10000
+```
+
+**Reusing Existing Bench:**
+
+If a bench already exists at the specified path:
+
+```
+Bench 'frappe-bench' already exists at /workspace/frappe-bench.
+? Reuse the existing bench and continue with site setup? (Y/n)
+```
+
+---
 
 ### `ls` - List Projects
 
@@ -1036,6 +1144,7 @@ The CLI uses:
 - **Peewee ORM** - SQLite-based caching
 
 **Data Directories:**
+- **Projects**: `~/.cwcli/projects/` - Project directories created by `cwcli init`
 - **Config**: `~/.cwcli/config/` - Configuration files
 - **Cache**: `~/.cwcli/cache/cwc-cache.db` - Project inspection cache
 - **Runtime**: `~/.cwcli/run/` - PID and log files for background services

@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.0] - 2025-11-23
+
+### Added
+- **`init` command** - Initialize a complete Frappe development environment in a single step
+  - Creates project directory structure in `~/.cwcli/projects/{project_name}/`
+  - Downloads docker-compose.yml from frappe_docker GitHub repository
+  - Pulls Docker images and starts containers automatically
+  - Initializes Frappe bench inside the container
+  - Creates a new site with configurable credentials
+  - Optionally installs ERPNext with `--install-erpnext` flag
+  - Custom port selection with `--port/-P` flag (creates ports {port}-{port+5} for web, {port+1000}-{port+1005} for socketio)
+  - Port conflict detection before starting containers
+  - Interactive prompts if project name not provided
+  - Configurable Frappe/ERPNext branches with `--frappe-branch` and `--erpnext-branch`
+  - Progress feedback with TipSpinner during long-running operations
+  - Automatic bench path registration for `cwcli open` compatibility
+  - Reuse existing bench with confirmation prompt
+  - Elapsed time display on completion
+  - Usage: `cwcli init <project_name> [--port 8000] [--install-erpnext]`
+
 ## [0.20.0] - 2025-11-16
 
 ### Changed
