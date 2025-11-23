@@ -459,7 +459,6 @@ def init(
         frappe_container = get_frappe_container(inputs.project_name)
     else:
         # Non-verbose mode: use spinners for user feedback
-        console.print()
         with TipSpinner(
             f"Setting up project '{inputs.project_name}'",
             console=stderr_console,
@@ -470,22 +469,11 @@ def init(
             compose_path = conf_dir / "docker-compose.yml"
             _customize_compose_ports(compose_path, port, verbose=verbose, spinner=spinner)
 
-        # Pull Docker images (can take a while)
-        console.print()
-        with TipSpinner(
-            "Pulling Docker images",
-            console=stderr_console,
-            enabled=show_tips,
-        ):
+            # Pull Docker images (can take a while)
+            spinner.update("Pulling Docker images")
             _pull_compose_images(inputs.project_name, conf_dir)
 
-        # Start containers
-        console.print()
-        with TipSpinner(
-            "Starting containers",
-            console=stderr_console,
-            enabled=show_tips,
-        ) as spinner:
+            # Start containers
             spinner.update("Starting Docker Compose containers")
             _start_compose_project(inputs.project_name, conf_dir, verbose=verbose)
 
@@ -554,7 +542,6 @@ def init(
             )
         else:
             # Non-verbose mode: use spinner
-            console.print()
             with TipSpinner(
                 f"Initializing bench '{inputs.bench_name}'",
                 console=stderr_console,
@@ -568,7 +555,6 @@ def init(
                 )
 
     # Continue with bench/site configuration in a spinner
-    console.print()
     with TipSpinner(
         f"Configuring bench '{inputs.bench_name}'",
         console=stderr_console,
@@ -625,7 +611,6 @@ def init(
             )
         else:
             # Non-verbose mode: use spinner
-            console.print()
             with TipSpinner(
                 f"Creating site '{inputs.site_name}'",
                 console=stderr_console,
@@ -639,7 +624,6 @@ def init(
                 )
 
     # Final configuration in a spinner
-    console.print()
     with TipSpinner(
         f"Finalizing setup for '{inputs.site_name}'",
         console=stderr_console,
@@ -697,7 +681,6 @@ def init(
             )
         else:
             # Non-verbose mode: use spinner
-            console.print()
             with TipSpinner(
                 "Installing ERPNext",
                 console=stderr_console,
