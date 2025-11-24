@@ -1,12 +1,11 @@
 import shlex
-import typer
 
+import typer
+from docker.errors import APIError, NotFound
 from rich.console import Console
 
-from ..utils.docker_utils import get_project_containers
-from ..utils.docker_utils import handle_docker_errors
-from docker.errors import APIError, NotFound
 from ..utils.completion_utils import complete_project_names
+from ..utils.docker_utils import get_project_containers, handle_docker_errors
 
 stderr_console = Console(stderr=True)
 

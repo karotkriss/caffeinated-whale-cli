@@ -7,17 +7,16 @@ from .commands import list as list_cmd
 from .commands import restart as restart_cmd
 from .commands import start as start_cmd
 from .commands import stop as stop_cmd
+from .commands.backup import backup as _backup_cmd
 from .commands.init import init as _init_cmd
 from .commands.inspect import inspect as inspect_cmd_func
 from .commands.logs import logs as _logs_cmd
 from .commands.open import open_bench as _open_cmd
+from .commands.restore import restore as _restore_cmd
 from .commands.run import run as _run_cmd
 from .commands.status import status as _status_cmd
 from .commands.unlock import unlock as _unlock_cmd
 from .commands.update import update as _update_cmd
-from .commands.unlock import unlock as _unlock_cmd
-from .commands.restore import restore as _restore_cmd
-from .commands.backup import backup as _backup_cmd
 
 __version__ = importlib.metadata.version("caffeinated-whale-cli")
 

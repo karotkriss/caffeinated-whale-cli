@@ -511,7 +511,7 @@ def restore_send_mode(
                 console.print(f"\n[bold green]sendme ticket:[/bold green] {ticket}")
                 console.print(clipboard_msg)
                 console.print("\n[bold cyan]Instructions for the other machine:[/bold cyan]")
-                console.print(f"1. Run: [bold]cwcli restore <project_name> --receive[/bold]")
+                console.print("1. Run: [bold]cwcli restore <project_name> --receive[/bold]")
                 console.print("2. Paste the ticket when prompted.")
                 console.print("\n[dim]Waiting for transfer... Press Ctrl+C when done.[/dim]\n")
 
@@ -533,7 +533,7 @@ def restore_send_mode(
                 process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 process.kill()
-            raise typer.Exit(code=0)
+            raise typer.Exit(code=0) from None
         except FileNotFoundError as e:
             stderr_console.print(
                 "[bold red]Error:[/bold red] sendme command not found. "
