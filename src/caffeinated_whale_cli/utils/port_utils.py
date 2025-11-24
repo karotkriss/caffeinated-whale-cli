@@ -106,9 +106,7 @@ def get_project_ports(project_name: str) -> list[int]:
     return sorted(list(ports))
 
 
-def find_project_using_ports(
-    ports: int | list[int], exclude_project: str = None
-) -> dict[int, str]:
+def find_project_using_ports(ports: int | list[int], exclude_project: str = None) -> dict[int, str]:
     """
     Find which Frappe projects are using specific ports.
 

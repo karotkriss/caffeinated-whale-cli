@@ -1,11 +1,10 @@
 import typer
 from rich.console import Console
 
-from ..utils import vscode_utils, db_utils
+from ..utils import db_utils, vscode_utils
+from ..utils.completion_utils import complete_app_names, complete_project_names
+from ..utils.docker_utils import exec_into_container, get_project_containers, handle_docker_errors
 from .utils import ensure_containers_running
-from ..utils.docker_utils import get_project_containers, exec_into_container
-from ..utils.docker_utils import handle_docker_errors
-from ..utils.completion_utils import complete_project_names, complete_app_names
 
 stderr_console = Console(stderr=True)
 
@@ -120,7 +119,7 @@ def open_bench(
 
     # Handle inspect outside spinner context if needed
     if not bench_path:
-        stderr_console.print(f"[yellow]No cached bench path found. Running inspect...[/yellow]")
+        stderr_console.print("[yellow]No cached bench path found. Running inspect...[/yellow]")
 
         try:
             # Run inspect to populate cache (it has its own spinner)

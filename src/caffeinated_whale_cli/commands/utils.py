@@ -85,7 +85,7 @@ def ensure_containers_running(
                 raise typer.Exit(code=0)
         except KeyboardInterrupt:
             stderr_console.print("\n[yellow]Operation cancelled.[/yellow]")
-            raise typer.Exit(code=0)
+            raise typer.Exit(code=0) from None
 
     # Start the containers (skipping port checks)
     if user_wants_to_start:
@@ -141,4 +141,4 @@ def _start_containers_for_command(project_name: str, verbose: bool = False):
             console.print(f"[dim]View logs with: cwcli logs {project_name}[/dim]")
     except Exception as e:
         stderr_console.print(f"[bold red]Error:[/bold red] Failed to start containers: {e}")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
