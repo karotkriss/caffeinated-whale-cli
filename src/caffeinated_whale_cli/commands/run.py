@@ -1,13 +1,11 @@
 import shlex
-import typer
-from typing import List
 
+import typer
 from rich.console import Console
 
-from .utils import ensure_containers_running
-from ..utils.docker_utils import get_project_containers
-from ..utils.docker_utils import handle_docker_errors
 from ..utils.completion_utils import complete_project_names
+from ..utils.docker_utils import get_project_containers, handle_docker_errors
+from .utils import ensure_containers_running
 
 stderr_console = Console(stderr=True)
 
@@ -17,7 +15,7 @@ def run(
     project_name: str = typer.Argument(
         ..., help="The Docker Compose project name.", autocompletion=complete_project_names
     ),
-    bench_args: List[str] = typer.Argument(..., help="Bench command and arguments to run."),
+    bench_args: list[str] = typer.Argument(..., help="Bench command and arguments to run."),
     bench_path: str = typer.Option(
         "/workspace/frappe-bench",
         "--path",

@@ -102,9 +102,7 @@ def _validate_site_name(value: str) -> str:
     return cleaned
 
 
-def _prompt_for_inputs(
-    project_name: str | None, bench_name: str, site_name: str
-) -> InitInputs:
+def _prompt_for_inputs(project_name: str | None, bench_name: str, site_name: str) -> InitInputs:
     """Prompt the user for project name if missing.
 
     Note: bench_name and site_name now have default values, so they're never None.

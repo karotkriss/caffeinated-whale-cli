@@ -1,10 +1,11 @@
-import typer
 import subprocess
-from .utils import ensure_containers_running
-from ..utils.docker_utils import get_project_containers
-from ..utils.docker_utils import handle_docker_errors
-from ..utils.console import console, stderr_console
+
+import typer
+
 from ..utils.completion_utils import complete_project_names
+from ..utils.console import console, stderr_console
+from ..utils.docker_utils import get_project_containers, handle_docker_errors
+from .utils import ensure_containers_running
 
 
 @handle_docker_errors
@@ -82,7 +83,7 @@ def logs(
 
     # Tail the log file
     console.print(f"[bold green]Viewing bench logs for '{project_name}'...[/bold green]")
-    console.print(f"[dim]Press Ctrl+c to exit[/dim]\n")
+    console.print("[dim]Press Ctrl+c to exit[/dim]\n")
 
     if follow:
         tail_cmd = [
@@ -106,7 +107,7 @@ def logs(
         subprocess.run(tail_cmd)
     except subprocess.CalledProcessError as e:
         stderr_console.print(f"[bold red]Error:[/bold red] Failed to tail log file: {e}")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     except KeyboardInterrupt:
         # User pressed Ctrl+C, which is normal
         console.print("\n[yellow]Stopped viewing logs.[/yellow]")
