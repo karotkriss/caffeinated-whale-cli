@@ -1,19 +1,16 @@
 import sys
-import io
 import time
-import typer
-import docker
-from typing import List
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
-from rich.live import Live
-from rich.console import Group
-from rich.text import Text
 
-from ..utils.docker_utils import get_project_containers
-from ..utils.docker_utils import handle_docker_errors
+import docker
+import typer
+from rich.console import Group
+from rich.live import Live
+from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn
+
 from ..utils import db_utils
+from ..utils.completion_utils import complete_app_names, complete_project_names
 from ..utils.console import console, stderr_console
-from ..utils.completion_utils import complete_project_names, complete_app_names
+from ..utils.docker_utils import get_project_containers, handle_docker_errors
 
 
 def _stream_command(
@@ -84,7 +81,7 @@ def _get_sites_with_app(
     bench_path: str,
     app_name: str,
     verbose: bool = False,
-) -> List[str]:
+) -> list[str]:
     """Get list of sites that have the specified app installed."""
     # Get all sites from inspect cache or live query
     cmd = f"ls -1 {bench_path}/sites"
@@ -121,7 +118,7 @@ def _get_sites_with_app(
 
 def _update_project(
     project_name: str,
-    apps: List[str],
+    apps: list[str],
     bench_path: str = None,
     verbose: bool = False,
     clear_cache: bool = False,
@@ -159,7 +156,7 @@ def _update_project(
                 stderr_console.print(f"[dim]Using cached bench path: {bench_path}[/dim]")
         else:
             # No cache found, run inspect automatically
-            stderr_console.print(f"[yellow]No cached bench path found. Running inspect...[/yellow]")
+            stderr_console.print("[yellow]No cached bench path found. Running inspect...[/yellow]")
 
             try:
                 # Import and run inspect to populate cache
@@ -305,9 +302,9 @@ def _update_project(
                 else:
                     console.print(f"[bold green]✓[/bold green] Migration completed for '{site}'")
 
-            console.print(f"[bold green]✓[/bold green] Migration complete for all affected sites\n")
+            console.print("[bold green]✓[/bold green] Migration complete for all affected sites\n")
         else:
-            console.print(f"[dim]No sites require migration[/dim]\n")
+            console.print("[dim]No sites require migration[/dim]\n")
 
         # Build assets if requested (before clearing cache)
         if build:
@@ -408,7 +405,6 @@ def _update_project(
     else:
         # NON-VERBOSE MODE - Use stacked progress bars with spinner at bottom
         from rich.spinner import Spinner
-        from rich.table import Table
 
         progress = Progress(
             TextColumn("[progress.description]{task.description}"),
@@ -629,7 +625,7 @@ def _update_project(
 
     # Detailed error reporting
     if has_errors:
-        console.print(f"\n[bold red]Update completed with errors:[/bold red]")
+        console.print("\n[bold red]Update completed with errors:[/bold red]")
 
         if failed_apps:
             console.print(f"[bold red]✗ Failed to update {len(failed_apps)} app(s):[/bold red]")
@@ -673,7 +669,7 @@ def update(
     project_name: str = typer.Argument(
         ..., help="The name of the project to update.", autocompletion=complete_project_names
     ),
-    apps: List[str] = typer.Option(
+    apps: list[str] = typer.Option(
         None,
         "--app",
         "-a",

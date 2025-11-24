@@ -1,10 +1,10 @@
-import typer
-import docker
 import json
-from docker.errors import DockerException
-from typing import List, Dict, Set
+
+import docker
+import typer
 from rich.console import Console
 from rich.table import Table
+
 from ..utils.docker_utils import handle_docker_errors
 
 app = typer.Typer(
@@ -17,7 +17,7 @@ app = typer.Typer(
 console = Console()
 
 
-def _format_ports_as_ranges(ports: List[str]) -> str:
+def _format_ports_as_ranges(ports: list[str]) -> str:
     """
     Condenses a sorted list of ports into ranges.
     Example: ['8000', '8001', '8002', '9000'] -> "8000-8002, 9000"
@@ -51,7 +51,7 @@ def _format_ports_as_ranges(ports: List[str]) -> str:
     return ", ".join(ranges)
 
 
-def _get_container_ports(container) -> Set[str]:
+def _get_container_ports(container) -> set[str]:
     ports = set()
     if container.ports:
         for _container_port, host_ports in container.ports.items():
@@ -71,7 +71,7 @@ def _get_container_ports(container) -> Set[str]:
 
 
 @handle_docker_errors
-def _list_instances(service_name: str = "frappe") -> List[Dict]:
+def _list_instances(service_name: str = "frappe") -> list[dict]:
     client = docker.from_env()
     containers = client.containers.list(
         all=True, filters={"label": f"com.docker.compose.service={service_name}"}

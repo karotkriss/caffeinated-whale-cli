@@ -1,12 +1,12 @@
-import typer
 import sys
-from typing import List
-from ..utils.docker_utils import get_project_containers
-from ..utils.docker_utils import handle_docker_errors
-from .stop import _stop_project
-from .start import _start_project
-from ..utils.console import console, stderr_console
+
+import typer
+
 from ..utils.completion_utils import complete_project_names
+from ..utils.console import console, stderr_console
+from ..utils.docker_utils import get_project_containers, handle_docker_errors
+from .start import _start_project
+from .stop import _stop_project
 
 app = typer.Typer(help="Restart a Frappe project's containers.")
 
@@ -50,7 +50,7 @@ def restart(
         "-v",
         help="Enable verbose diagnostic output.",
     ),
-    project_name: List[str] = typer.Argument(
+    project_name: list[str] = typer.Argument(
         None,
         help="The name(s) of the Frappe project(s) to restart. Can be piped from stdin.",
         autocompletion=complete_project_names,
