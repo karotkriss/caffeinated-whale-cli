@@ -5,10 +5,11 @@ This module provides general utilities for ensuring containers are running
 before executing commands.
 """
 
-import typer
 import questionary
+import typer
+
 from ..utils.console import console, stderr_console
-from ..utils.docker_utils import get_project_containers
+from ..utils.docker_utils import get_frappe_container
 
 
 def ensure_containers_running(
@@ -41,30 +42,15 @@ def ensure_containers_running(
     if not require_running:
         return True
 
-    containers = get_project_containers(project_name)
-
-    if not containers:
-        stderr_console.print(f"[bold red]Error:[/bold red] Project '{project_name}' not found.")
-        raise typer.Exit(code=1)
-
-    # Check if frappe container exists and is running
-    frappe_container = next(
-        (c for c in containers if c.labels.get("com.docker.compose.service") == "frappe"),
-        None,
-    )
-
-    if not frappe_container:
-        stderr_console.print(
-            f"[bold red]Error:[/bold red] No 'frappe' service found for project '{project_name}'."
-        )
-        raise typer.Exit(code=1)
+    # Get the frappe container
+    frappe_container = get_frappe_container(project_name)
 
     # Reload container to get current status
     frappe_container.reload()
 
     if frappe_container.status == "running":
         if verbose:
-            stderr_console.print(f"[dim]VERBOSE: Frappe container is running[/dim]")
+            stderr_console.print("[dim]VERBOSE: Frappe container is running[/dim]")
         return True
 
     # Container is not running - decide whether to start
@@ -127,7 +113,7 @@ def _start_containers_for_command(project_name: str, verbose: bool = False):
     Raises:
         typer.Exit: If starting containers fails or port conflicts cannot be resolved.
     """
-    from .start import _start_project, _check_port_conflicts
+    from .start import _check_port_conflicts, _start_project
 
     # Check for port conflicts BEFORE attempting to start
     try:

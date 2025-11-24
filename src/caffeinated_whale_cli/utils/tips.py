@@ -30,6 +30,7 @@ TIPS = [
     # Port Management
     "💡 cwcli automatically detects and resolves port conflicts when starting projects",
     "💡 Use 'cwcli start' with multiple projects to batch-start them efficiently",
+    "💡 Customize init ports with '--port 10000' to avoid conflicts (creates 10000-10005, 11000-11005)",
     # Update & Migrations
     "💡 Use '--build' flag with update to rebuild assets after pulling changes",
     "💡 Clear cache after migrations with '--clear-cache' for a clean state",
