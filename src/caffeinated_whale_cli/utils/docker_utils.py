@@ -2,6 +2,7 @@ import functools
 import os
 import shutil
 
+
 import docker
 import typer
 from docker.errors import DockerException
@@ -71,6 +72,39 @@ def get_project_containers(
 
     except DockerException:
         return None
+
+
+def get_frappe_container(project_name: str):
+    """
+    Get the frappe container for a project.
+
+    Args:
+        project_name: The name of the docker-compose project.
+
+    Returns:
+        The frappe container object.
+
+    Raises:
+        typer.Exit: If project not found or no frappe service exists.
+    """
+    containers = get_project_containers(project_name)
+
+    if not containers:
+        stderr_console.print(f"[bold red]Error:[/bold red] Project '{project_name}' not found.")
+        raise typer.Exit(code=1)
+
+    frappe_container = next(
+        (c for c in containers if c.labels.get("com.docker.compose.service") == "frappe"),
+        None,
+    )
+
+    if not frappe_container:
+        stderr_console.print(
+            f"[bold red]Error:[/bold red] No 'frappe' service found for project '{project_name}'."
+        )
+        raise typer.Exit(code=1)
+
+    return frappe_container
 
 
 def exec_into_container(container_name: str, working_dir: str | None = None) -> None:
