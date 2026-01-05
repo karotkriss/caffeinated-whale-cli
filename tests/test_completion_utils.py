@@ -6,7 +6,8 @@ including caching, TTL expiration, error handling, and context-awareness.
 """
 
 import time
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
+
 import pytest
 import typer
 from docker.errors import DockerException

@@ -299,7 +299,7 @@ def _customize_compose_ports(
     compose_path: Path, port: int, verbose: bool = False, spinner=None
 ) -> None:
     """
-    Customize the port mappings in docker-compose.yml.
+    Customize the port mappings and frappe image tag in docker-compose.yml.
 
     Args:
         compose_path: Path to the docker-compose.yml file
@@ -310,6 +310,7 @@ def _customize_compose_ports(
     The function replaces:
     - Web server ports: 8000-8005 → {port}-{port+5}
     - SocketIO ports: 9000-9005 → {port+1000}-{port+1005}
+    - Frappe image tag: latest → v5.26.0
     """
     if spinner:
         spinner.update(
@@ -330,6 +331,9 @@ def _customize_compose_ports(
     content = content.replace(
         "9000-9005:9000-9005", f"{socketio_start}-{socketio_start+5}:9000-9005"
     )
+
+    # Replace frappe image tag
+    content = content.replace("docker.io/frappe/bench:latest", "docker.io/frappe/bench:v5.26.0")
 
     compose_path.write_text(content)
 
