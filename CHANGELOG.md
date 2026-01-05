@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0] - 2026-01-05
+
+### Changed
+- **`init` command** - Updated Frappe bench image tag from `latest` to `v5.26.0` for more predictable and stable deployments
+  - Ensures consistent container behavior across different initialization times
+  - Prevents unexpected changes from automatic image updates
+
 ## [0.21.1] - 2024-12-04
 
 ### Fixed
