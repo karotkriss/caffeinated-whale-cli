@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.0] - 2026-01-05
+
+### Added
+- **`update` command** - Automatic maintenance mode management (opt-out)
+  - Sites automatically enter maintenance mode before migrations to prevent user access during updates
+  - Maintenance mode only enabled for affected sites (not entire bench)
+  - Guaranteed cleanup via try-finally error handling - sites never stuck in maintenance mode even on failures
+  - `--skip-maintenance` flag to disable maintenance mode if needed for operational hours
+  - Per-site status messages in verbose mode matching other command output styles
+
+### Changed
+- **`update` command** - Performance optimization with database cache integration
+  - Now uses `db_utils.get_cached_project_data()` for site-app lookups instead of repeated `bench list-apps` calls
+  - O(n) performance with cache vs O(n×m) without cache
+  - Graceful fallback to live queries if cache unavailable
+  - Cache hit/miss logging in verbose mode
+  - Recommendation: Run `cwcli inspect <project>` before `cwcli update` for best performance
+
+### Fixed
+- **`update` command** - Robust error handling prevents sites from being stuck in maintenance mode
+  - Try-finally block ensures maintenance mode cleanup even on migration failures
+  - Build failures, cache clearing failures, or exceptions no longer leave sites in maintenance mode
+  - User interrupts (Ctrl+C) properly trigger maintenance mode cleanup
+  - Inner try-except in finally block prevents cleanup errors from masking original errors
+
 ## [0.22.0] - 2026-01-05
 
 ### Changed

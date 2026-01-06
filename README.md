@@ -517,21 +517,24 @@ cwcli update [OPTIONS] PROJECT_NAME
 | `-c`, `--clear-cache` | Clear cache for all affected sites after migration |
 | `-w`, `--clear-website-cache` | Clear website cache for all affected sites after migration |
 | `-b`, `--build` | Build assets after updating apps |
+| `--skip-maintenance` | Skip enabling maintenance mode for affected sites during update |
 
 **What It Does:**
 
 1. Runs `git pull` in each specified app directory
 2. Identifies all sites where the updated apps are installed
-3. Runs `bench --site <site> migrate` for each affected site
-4. (Optional) Runs `bench build --app <app>` for successfully updated apps
-5. (Optional) Runs `bench --site <site> clear-cache` for affected sites
-6. (Optional) Runs `bench --site <site> clear-website-cache` for affected sites
-7. Automatically clears locks folder for all affected sites to prevent stale locks
+3. Enables maintenance mode for affected sites (to prevent user access during updates)
+4. Runs `bench --site <site> migrate` for each affected site
+5. (Optional) Runs `bench build --app <app>` for successfully updated apps
+6. (Optional) Runs `bench --site <site> clear-cache` for affected sites
+7. (Optional) Runs `bench --site <site> clear-website-cache` for affected sites
+8. Automatically clears locks folder for all affected sites to prevent stale locks
+9. Disables maintenance mode for affected sites after completion
 
 **Examples:**
 
 ```bash
-# Update a single app
+# Update a single app (with maintenance mode enabled by default)
 cwcli update frappe-one --app erpnext
 
 # Update multiple apps
@@ -540,9 +543,17 @@ cwcli update frappe-one --app frappe --app erpnext
 # Update with build and cache clearing
 cwcli update frappe-one --app erpnext --build --clear-cache --clear-website-cache
 
+# Update without maintenance mode
+cwcli update frappe-one --app erpnext --skip-maintenance
+
+# Update with maintenance mode and all options
+cwcli update frappe-one --app erpnext --build --clear-cache --clear-website-cache
+
 # Update with verbose output
 cwcli update frappe-one --app custom_app -v
 ```
+
+**Note:** Maintenance mode is **enabled by default** for all affected sites during updates to prevent user access and potential data corruption. Use `--skip-maintenance` only if you need to update during operational hours when user access is critical.
 
 **Example Output:**
 
