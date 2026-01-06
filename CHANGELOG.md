@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.23.1] - 2026-01-06
 
 ### Fixed
-  - **`restore --receive` command** - Resilient ticket input handling
+- **`restore --receive` command** - Resilient ticket input handling
   - Automatically strips all whitespace (newlines, tabs, spaces) from pasted sendme tickets
   - Handles janky copy-paste from terminal output with carriage returns and formatting
   - Users can now copy the entire output without carefully selecting just the ticket text
