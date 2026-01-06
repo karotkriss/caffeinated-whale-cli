@@ -642,7 +642,13 @@ def restore_receive_mode(
         console.print("[yellow]Receive cancelled.[/yellow]")
         return
 
-    ticket = ticket.strip()
+    # Clean up ticket - remove all whitespace including newlines, tabs, and spaces
+    # This handles janky copy-paste from sendme's output with carriage returns
+    ticket = "".join(ticket.split())
+
+    if not ticket:
+        stderr_console.print("[bold red]Error:[/bold red] Ticket cannot be empty after cleanup")
+        raise typer.Exit(code=1)
 
     # Create temporary directory for download
     with tempfile.TemporaryDirectory() as temp_dir:
