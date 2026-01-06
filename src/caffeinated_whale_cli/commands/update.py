@@ -382,6 +382,9 @@ def _update_project(
                 else:
                     console.print(f"[bold green]✓[/bold green] Migration completed for '{site}'")
 
+                # Small delay to ensure migration fully completes and releases locks
+                time.sleep(0.5)
+
             console.print("[bold green]✓[/bold green] Migration complete for all affected sites\n")
         else:
             console.print("[dim]No sites require migration[/dim]\n")
