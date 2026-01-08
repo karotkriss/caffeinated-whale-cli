@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.1] - 2026-01-06
+
+### Fixed
+- **`restore --receive` command** - Resilient ticket input handling
+  - Automatically strips all whitespace (newlines, tabs, spaces) from pasted sendme tickets
+  - Handles janky copy-paste from terminal output with carriage returns and formatting
+  - Users can now copy the entire output without carefully selecting just the ticket text
+
 ## [0.23.0] - 2026-01-05
 
 ### Added
@@ -29,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Build failures, cache clearing failures, or exceptions no longer leave sites in maintenance mode
   - User interrupts (Ctrl+C) properly trigger maintenance mode cleanup
   - Inner try-except in finally block prevents cleanup errors from masking original errors
+  - Consistent post-migration lock release delay (0.5s) in both verbose and non-verbose modes
 
 ## [0.22.0] - 2026-01-05
 
