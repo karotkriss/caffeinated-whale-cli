@@ -37,6 +37,11 @@ def open_bench(
         "--code-insiders",
         help="Open with VS Code Insiders (skips interactive prompt)",
     ),
+    cursor: bool = typer.Option(
+        False,
+        "--cursor",
+        help="Open with Cursor (skips interactive prompt)",
+    ),
     docker: bool = typer.Option(
         False,
         "--docker",
@@ -50,13 +55,13 @@ def open_bench(
     ),
 ):
     """
-    Open a project's frappe container in VS Code (with Dev Containers) or exec into it.
+    Open a project's frappe container in VS Code/Cursor (with Dev Containers) or exec into it.
     """
     # Validate that only one editor flag is specified
-    editor_flags = [code, code_insiders, docker]
+    editor_flags = [code, code_insiders, cursor, docker]
     if sum(editor_flags) > 1:
         stderr_console.print(
-            "[bold red]Error:[/bold red] Only one of --code, --code-insiders, or --docker can be specified."
+            "[bold red]Error:[/bold red] Only one of --code, --code-insiders, --cursor, or --docker can be specified."
         )
         raise typer.Exit(code=1)
 
@@ -112,9 +117,10 @@ def open_bench(
         status.update("[bold green]Detecting VS Code installations...[/bold green]")
         vscode_stable = vscode_utils.is_vscode_installed()
         vscode_insiders = vscode_utils.is_vscode_insiders_installed()
+        cursor_installed = vscode_utils.is_cursor_installed()
         if verbose:
             stderr_console.print(
-                f"[dim]VERBOSE: VS Code stable: {vscode_stable}, Insiders: {vscode_insiders}[/dim]"
+                f"[dim]VERBOSE: VS Code stable: {vscode_stable}, Insiders: {vscode_insiders}, Cursor: {cursor_installed}[/dim]"
             )
 
     # Handle inspect outside spinner context if needed
@@ -161,9 +167,10 @@ def open_bench(
         # Re-detect VS Code after inspect (if we ran it)
         vscode_stable = vscode_utils.is_vscode_installed()
         vscode_insiders = vscode_utils.is_vscode_insiders_installed()
+        cursor_installed = vscode_utils.is_cursor_installed()
         if verbose:
             stderr_console.print(
-                f"[dim]VERBOSE: VS Code stable: {vscode_stable}, Insiders: {vscode_insiders}[/dim]"
+                f"[dim]VERBOSE: VS Code stable: {vscode_stable}, Insiders: {vscode_insiders}, Cursor: {cursor_installed}[/dim]"
             )
 
     # Handle app option - verify app exists and update path
@@ -217,6 +224,13 @@ def open_bench(
             )
             raise typer.Exit(code=1)
         editor = "code-insiders"
+    elif cursor:
+        if not cursor_installed:
+            stderr_console.print(
+                "[bold red]Error:[/bold red] Cursor is not installed. Install it from https://cursor.sh/"
+            )
+            raise typer.Exit(code=1)
+        editor = "cursor"
     elif docker:
         editor = "docker"
 
@@ -235,6 +249,11 @@ def open_bench(
             choice_text = "VS Code Insiders - Open in development container"
             choices.append(choice_text)
             choice_map[choice_text] = "code-insiders"
+
+        if cursor_installed:
+            choice_text = "Cursor - Open in development container"
+            choices.append(choice_text)
+            choice_map[choice_text] = "cursor"
 
         docker_choice = "Docker - Execute interactive shell in container"
         choices.append(docker_choice)
@@ -282,5 +301,5 @@ def open_bench(
         stderr_console.print(f"[bold green]Opening shell in {container_name}...[/bold green]")
         exec_into_container(container_name, working_dir=bench_path)
     else:
-        # Open in VS Code with Dev Containers
+        # Open in VS Code/Cursor with Dev Containers
         vscode_utils.open_in_vscode(editor, container_name, bench_path, verbose=verbose)
