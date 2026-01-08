@@ -296,7 +296,7 @@ def _setup_project_directory(project_name: str, verbose: bool = False) -> Path:
 
 
 def _customize_compose_ports(
-    compose_path: Path, port: int, verbose: bool = False, spinner=None
+    compose_path: Path, port: int, frappe_branch: str, verbose: bool = False, spinner=None
 ) -> None:
     """
     Customize the port mappings and frappe image tag in docker-compose.yml.
@@ -304,13 +304,14 @@ def _customize_compose_ports(
     Args:
         compose_path: Path to the docker-compose.yml file
         port: Starting port number (e.g., 8000)
+        frappe_branch: Frappe branch being used (determines image tag)
         verbose: Print detailed information
         spinner: Optional spinner to update status
 
     The function replaces:
     - Web server ports: 8000-8005 → {port}-{port+5}
     - SocketIO ports: 9000-9005 → {port+1000}-{port+1005}
-    - Frappe image tag: latest → v5.26.0
+    - Frappe image tag: latest → v5.26.0 (only for version-15 branch)
     """
     if spinner:
         spinner.update(
@@ -332,8 +333,9 @@ def _customize_compose_ports(
         "9000-9005:9000-9005", f"{socketio_start}-{socketio_start+5}:9000-9005"
     )
 
-    # Replace frappe image tag
-    content = content.replace("docker.io/frappe/bench:latest", "docker.io/frappe/bench:v5.26.0")
+    # Replace frappe image tag (only for version-15 to ensure stability)
+    if frappe_branch == "version-15":
+        content = content.replace("docker.io/frappe/bench:latest", "docker.io/frappe/bench:v5.26.0")
 
     compose_path.write_text(content)
 
@@ -453,7 +455,7 @@ def init(
         console.print()
         conf_dir = _setup_project_directory(inputs.project_name, verbose=verbose)
         compose_path = conf_dir / "docker-compose.yml"
-        _customize_compose_ports(compose_path, port, verbose=verbose, spinner=None)
+        _customize_compose_ports(compose_path, port, frappe_branch, verbose=verbose, spinner=None)
         stderr_console.print("[dim]Pulling Docker images...[/dim]")
         _pull_compose_images(inputs.project_name, conf_dir, verbose=verbose)
         _start_compose_project(inputs.project_name, conf_dir, verbose=verbose)
@@ -469,7 +471,9 @@ def init(
             spinner.update("Creating project directory")
             conf_dir = _setup_project_directory(inputs.project_name, verbose=verbose)
             compose_path = conf_dir / "docker-compose.yml"
-            _customize_compose_ports(compose_path, port, verbose=verbose, spinner=spinner)
+            _customize_compose_ports(
+                compose_path, port, frappe_branch, verbose=verbose, spinner=spinner
+            )
 
             # Pull Docker images (can take a while)
             spinner.update("Pulling Docker images")
