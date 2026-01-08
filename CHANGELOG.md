@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.0] - 2026-01-08
+
+### Added
+- **`open` command** - Cursor editor support
+  - New `--cursor` flag to open directly in Cursor (skips interactive prompt)
+  - Cursor automatically detected and shown in interactive editor selection menu
+  - Uses same Dev Containers integration as VS Code
+  - Installation validation with helpful error messages pointing to https://cursor.sh/
+  - Dynamic editor name display in status messages
+
 ## [0.24.0] - 2026-01-08
 
 ### Fixed

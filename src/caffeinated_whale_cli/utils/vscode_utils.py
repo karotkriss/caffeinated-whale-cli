@@ -26,16 +26,22 @@ def is_vscode_insiders_installed() -> bool:
     return shutil.which("code-insiders") is not None
 
 
-def select_vscode_editor() -> Literal["code", "code-insiders", "docker"]:
+def is_cursor_installed() -> bool:
+    """Check if Cursor is installed."""
+    return shutil.which("cursor") is not None
+
+
+def select_vscode_editor() -> Literal["code", "code-insiders", "cursor", "docker"]:
     """
     Detect available VS Code installations and prompt user to choose.
     Always includes Docker exec as an option.
 
     Returns:
-        str: The selected command ('code', 'code-insiders', or 'docker')
+        str: The selected command ('code', 'code-insiders', 'cursor', or 'docker')
     """
     vscode_stable = is_vscode_installed()
     vscode_insiders = is_vscode_insiders_installed()
+    cursor = is_cursor_installed()
 
     # Build choices based on what's available
     choices = []
@@ -43,6 +49,8 @@ def select_vscode_editor() -> Literal["code", "code-insiders", "docker"]:
         choices.append("VS Code")
     if vscode_insiders:
         choices.append("VS Code Insiders")
+    if cursor:
+        choices.append("Cursor")
 
     # Always include Docker as an option
     choices.append("Docker (exec into container)")
@@ -58,6 +66,8 @@ def select_vscode_editor() -> Literal["code", "code-insiders", "docker"]:
         return "code"
     elif choice == "VS Code Insiders":
         return "code-insiders"
+    elif choice == "Cursor":
+        return "cursor"
     else:
         return "docker"
 
@@ -154,18 +164,21 @@ def open_in_vscode(
     vscode_command: str, container_name: str, bench_path: str, verbose: bool = False
 ) -> None:
     """
-    Open a dev container in VS Code.
+    Open a dev container in VS Code or Cursor.
 
     Args:
-        vscode_command: VS Code command ('code' or 'code-insiders')
+        vscode_command: Editor command ('code', 'code-insiders', or 'cursor')
         container_name: Docker container name
         bench_path: Path inside the container to open
         verbose: Enable verbose output
     """
     show_tips = config_utils.get_show_tips()
+    editor_name = "Cursor" if vscode_command == "cursor" else "VS Code"
 
     with TipSpinner(
-        f"Preparing to open '{container_name}' in VS Code", console=console_err, enabled=show_tips
+        f"Preparing to open '{container_name}' in {editor_name}",
+        console=console_err,
+        enabled=show_tips,
     ) as status:
         # Verify container exists
         status.update("Verifying container exists")
@@ -226,15 +239,15 @@ def open_in_vscode(
         if verbose:
             console_err.print(f"[dim]VERBOSE: Opening URI: {uri}[/dim]")
 
-        # Open VS Code
-        status.update("Opening VS Code")
+        # Open editor
+        status.update(f"Opening {editor_name}")
         try:
             cmd = [vscode_command, "--folder-uri", uri]
             if verbose:
                 console_err.print(f"[dim]$ {' '.join(cmd)}[/dim]")
             subprocess.run(cmd, check=True, shell=IS_WINDOWS)
         except subprocess.CalledProcessError as e:
-            console_err.print(f"[bold red]✗ Failed to open VS Code: {e}[/bold red]")
+            console_err.print(f"[bold red]✗ Failed to open {editor_name}: {e}[/bold red]")
             raise typer.Exit(code=1) from e
 
-    console_err.print(f"[bold green]✓ Opened {container_name} in VS Code[/bold green]")
+    console_err.print(f"[bold green]✓ Opened {container_name} in {editor_name}[/bold green]")
