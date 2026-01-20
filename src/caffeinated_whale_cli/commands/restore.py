@@ -892,10 +892,14 @@ def restore_receive_mode(
                                 current_config = json.loads(output.decode("utf-8"))
                                 current_config["encryption_key"] = encryption_key
 
-                                # Write updated config back
+                                # Write updated config back using heredoc
                                 updated_json = json.dumps(current_config, indent=1)
-                                write_cmd = f"sh -c 'echo {shlex.quote(updated_json)} > {quoted_current_config}'"
-                                exit_code, _ = frappe_container.exec_run(write_cmd)
+                                write_cmd = (
+                                    f"cat > {quoted_current_config} << 'EOF'\n{updated_json}\nEOF"
+                                )
+                                exit_code, _ = frappe_container.exec_run(
+                                    f"sh -c '{write_cmd}'", workdir=bench_path
+                                )
 
                                 if exit_code == 0:
                                     console.print(
