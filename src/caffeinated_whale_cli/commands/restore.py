@@ -7,7 +7,7 @@ import questionary
 import typer
 from questionary import Style
 
-from ..utils import config_utils, db_utils
+from ..utils import cache, config_utils, db_utils
 from ..utils.completion_utils import complete_project_names, complete_site_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import get_project_containers, handle_docker_errors
@@ -238,6 +238,97 @@ def group_and_sort_backups(backups: list, target_site: str) -> tuple:
     other_backups.sort(key=lambda x: x["timestamp"], reverse=True)
 
     return target_backups, other_backups
+
+
+def check_missing_apps(
+    frappe_container,
+    project_name: str,
+    bench_path: str,
+    site: str,
+    verbose: bool = False,
+    no_recache: bool = False,
+) -> list[str]:
+    """
+    Check for apps that are installed on the site but missing from the bench.
+
+    Reads the site's apps.json file and compares against available apps on the bench.
+    Re-caches the project to ensure accurate app availability data unless no_recache is True.
+
+    Args:
+        frappe_container: Docker container object
+        project_name: Name of the project
+        bench_path: Path to bench directory
+        site: Site name to check
+        verbose: Enable verbose output
+        no_recache: Skip re-caching (use existing cache)
+
+    Returns:
+        List of missing app names
+    """
+    # Re-cache the project to get fresh app data (unless skipped)
+    if not no_recache:
+        if verbose:
+            stderr_console.print("[dim]Re-caching project to verify app availability...[/dim]")
+
+        if not cache.recache_project(project_name, verbose=verbose):
+            if verbose:
+                stderr_console.print(
+                    "[yellow]Warning:[/yellow] Failed to recache project. App check may be inaccurate."
+                )
+    elif verbose:
+        stderr_console.print("[dim]Using existing cache (--no-recache flag set)...[/dim]")
+
+    # Get available apps from cache
+    cached_data = db_utils.get_cached_project_data(project_name)
+    if not cached_data or not cached_data.get("bench_instances"):
+        if verbose:
+            stderr_console.print(
+                "[yellow]Warning:[/yellow] No cached bench data. Cannot verify apps."
+            )
+        return []
+
+    # Find the bench instance that matches our bench_path
+    bench_instance = None
+    for bench in cached_data["bench_instances"]:
+        if bench["path"] == bench_path:
+            bench_instance = bench
+            break
+
+    if not bench_instance:
+        if verbose:
+            stderr_console.print(
+                f"[yellow]Warning:[/yellow] Bench at {bench_path} not found in cache."
+            )
+        return []
+
+    available_apps = set(bench_instance.get("available_apps", []))
+
+    # Read site's apps.json
+    apps_json_path = f"{bench_path}/sites/{site}/apps.json"
+    quoted_path = shlex.quote(apps_json_path)
+    exit_code, output = frappe_container.exec_run(f"sh -c 'cat {quoted_path}'")
+
+    if exit_code != 0:
+        if verbose:
+            stderr_console.print(
+                f"[yellow]Warning:[/yellow] Could not read apps.json for site {site}"
+            )
+        return []
+
+    try:
+        apps_data = json.loads(output.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        if verbose:
+            stderr_console.print(f"[yellow]Warning:[/yellow] Failed to parse apps.json: {e}")
+        return []
+
+    # Get list of apps from the site
+    site_apps = set(apps_data.keys())
+
+    # Find missing apps
+    missing_apps = site_apps - available_apps
+
+    return sorted(missing_apps)
 
 
 def display_backup_selection_menu(
@@ -587,6 +678,7 @@ def restore_receive_mode(
     mariadb_root_username: str | None,
     mariadb_root_password: str | None,
     admin_password: str | None,
+    no_recache: bool,
     verbose: bool,
 ):
     """
@@ -882,6 +974,47 @@ def restore_receive_mode(
             )
             raise typer.Exit(code=1)
 
+        # Check for missing apps before proceeding with restore
+        console.print()
+        show_tips = config_utils.get_show_tips()
+        with TipSpinner("Checking for missing apps", console=stderr_console, enabled=show_tips):
+            missing_apps = check_missing_apps(
+                frappe_container,
+                project_name,
+                bench_path,
+                site,
+                verbose=verbose,
+                no_recache=no_recache,
+            )
+
+        if missing_apps:
+            console.print()
+            console.print(
+                "[bold yellow]⚠ Warning:[/bold yellow] The following apps are installed on the backup site but not available on this bench:"
+            )
+            for app in missing_apps:
+                console.print(f"  • {app}")
+            console.print()
+            console.print(
+                "[dim]You may need to install these apps before restoring to avoid errors.[/dim]"
+            )
+            console.print(
+                f"[dim]Install apps with: bench get-app <app-name> && bench --site {site} install-app <app-name>[/dim]"
+            )
+            console.print()
+
+            try:
+                proceed = questionary.confirm(
+                    "Do you want to continue with the restore anyway?", default=False
+                ).ask()
+            except (KeyboardInterrupt, EOFError):
+                console.print("\n[yellow]Restore cancelled.[/yellow]")
+                raise typer.Exit(code=0) from None
+
+            if not proceed:
+                console.print("[yellow]Restore cancelled.[/yellow]")
+                raise typer.Exit(code=0)
+
         # Build restore command
         cmd = f"bench --site {site} restore"
         cmd += f" {shlex.quote(database_file.name)}"
@@ -1042,6 +1175,11 @@ def restore(
         "--receive",
         help="Receive and restore a backup from a remote location via sendme (P2P transfer).",
     ),
+    no_recache: bool = typer.Option(
+        False,
+        "--no-recache",
+        help="Skip re-caching project before checking for missing apps (uses existing cache).",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output."),
 ):
     """
@@ -1086,6 +1224,7 @@ def restore(
                 mariadb_root_username,
                 mariadb_root_password,
                 admin_password,
+                no_recache,
                 verbose,
             )
 
@@ -1256,8 +1395,44 @@ def restore(
             mariadb_root_username,
             mariadb_root_password,
             admin_password,
+            no_recache,
             verbose,
         )
+
+    # Check for missing apps before proceeding with restore
+    console.print()
+    with TipSpinner("Checking for missing apps", console=stderr_console, enabled=show_tips):
+        missing_apps = check_missing_apps(
+            frappe_container, project_name, bench_path, site, verbose=verbose, no_recache=no_recache
+        )
+
+    if missing_apps:
+        console.print()
+        console.print(
+            "[bold yellow]⚠ Warning:[/bold yellow] The following apps are installed on the backup site but not available on this bench:"
+        )
+        for app in missing_apps:
+            console.print(f"  • {app}")
+        console.print()
+        console.print(
+            "[dim]You may need to install these apps before restoring to avoid errors.[/dim]"
+        )
+        console.print(
+            f"[dim]Install apps with: bench get-app <app-name> && bench --site {site} install-app <app-name>[/dim]"
+        )
+        console.print()
+
+        try:
+            proceed = questionary.confirm(
+                "Do you want to continue with the restore anyway?", default=False
+            ).ask()
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n[yellow]Restore cancelled.[/yellow]")
+            raise typer.Exit(code=0) from None
+
+        if not proceed:
+            console.print("[yellow]Restore cancelled.[/yellow]")
+            raise typer.Exit(code=0)
 
     # Confirm restore
     console.print()

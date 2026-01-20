@@ -7,7 +7,7 @@ from rich.console import Group
 from rich.live import Live
 from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn
 
-from ..utils import db_utils
+from ..utils import cache, db_utils
 from ..utils.completion_utils import complete_app_names, complete_project_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import get_project_containers, handle_docker_errors
@@ -187,6 +187,7 @@ def _update_project(
     clear_website_cache: bool = False,
     build: bool = False,
     skip_maintenance: bool = False,
+    no_recache: bool = False,
 ):
     """Core logic for updating a single project."""
     from .utils import ensure_containers_running
@@ -292,7 +293,7 @@ def _update_project(
                 f"[bold cyan]Updating {len(apps)} app(s) for project '{project_name}'[/bold cyan]\n"
             )
 
-            # Update each app
+        # Update each app (git pull)
         for app in apps:
             app_path = f"{bench_path}/apps/{app}"
 
@@ -323,8 +324,28 @@ def _update_project(
 
             console.print(f"[bold green]✓[/bold green] Successfully updated '{app}'")
 
+        # Re-cache the project to ensure accurate site/app data after app updates
+        # This ensures _get_sites_with_app has fresh cache data
+        if not no_recache and apps and len(failed_apps) < len(apps):
+            console.print("\n[dim]Re-caching project to ensure accurate site data...[/dim]")
+            if verbose:
+                stderr_console.print("[dim]Running inspect to refresh cache...[/dim]")
+
+            if not cache.recache_project(project_name, verbose=verbose):
+                if verbose:
+                    stderr_console.print(
+                        "[yellow]Warning:[/yellow] Failed to recache project. Site detection may be inaccurate."
+                    )
+        elif no_recache and verbose:
+            console.print("\n[dim]Skipping recache (--no-recache flag set)...[/dim]")
+
+        # Find sites with updated apps installed
+        for app in apps:
+            if app in failed_apps:
+                continue  # Skip failed apps
+
             # Find sites with this app installed
-            console.print(f"[dim]Finding sites with '{app}' installed...[/dim]")
+            console.print(f"\n[dim]Finding sites with '{app}' installed...[/dim]")
             sites = _get_sites_with_app(project_name, bench_path, app, frappe_container, verbose)
             if sites:
                 console.print(f"  [dim]Found {len(sites)} site(s) with '{app}' installed[/dim]")
@@ -851,6 +872,11 @@ def update(
         "--skip-maintenance",
         help="Skip enabling maintenance mode for affected sites during update.",
     ),
+    no_recache: bool = typer.Option(
+        False,
+        "--no-recache",
+        help="Skip re-caching project after app updates (uses existing cache for site detection).",
+    ),
 ):
     """
     Update specified apps and migrate all sites where they are installed.
@@ -883,4 +909,5 @@ def update(
         clear_website_cache,
         build,
         skip_maintenance,
+        no_recache,
     )
