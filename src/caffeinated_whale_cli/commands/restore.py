@@ -254,10 +254,6 @@ def display_backup_selection_menu(
     Returns:
         Selected backup set dict or None if cancelled
     """
-    if not target_backups and not other_backups:
-        stderr_console.print("[bold red]Error:[/bold red] No database backups found.")
-        return None
-
     # Build choices with badges
     choices = []
     backup_map = {}
@@ -306,7 +302,11 @@ def display_backup_selection_menu(
             choices.append(choice_text)
             backup_map[choice_text] = backup_set
 
-    # Add option to restore from remote source
+    # Always add option to restore from remote source
+    if not target_backups and not other_backups:
+        # No local backups - show message
+        choices.append(questionary.Separator("\n=== No local backups found ==="))
+
     choices.append(questionary.Separator("\n=== Remote Source ==="))
     remote_choice = "Restore from remote source (via sendme)"
     choices.append(remote_choice)
@@ -372,10 +372,45 @@ def restore_send_mode(
             if verbose:
                 stderr_console.print(f"[dim]Using cached bench path: {bench_path}[/dim]")
         else:
-            bench_path = "/workspace/frappe-bench"
-            stderr_console.print(
-                f"[yellow]Warning:[/yellow] No cached bench path found. Using default: {bench_path}"
-            )
+            # No cache found, run inspect to populate it
+            stderr_console.print("[yellow]No cached bench path found. Running inspect...[/yellow]")
+
+            try:
+                # Run inspect to populate cache (it has its own spinner)
+                from .inspect import inspect as inspect_cmd_func
+
+                # Call inspect directly with just the parameters it needs
+                inspect_cmd_func(
+                    project_name=project_name,
+                    verbose=verbose,
+                    json_output=False,
+                    update=False,
+                    show_apps=False,
+                    interactive=False,
+                )
+
+                # Try to get cached data again
+                cached_data = db_utils.get_cached_project_data(project_name)
+                if cached_data and cached_data.get("bench_instances"):
+                    bench_path = cached_data["bench_instances"][0]["path"]
+                    if verbose:
+                        stderr_console.print(
+                            f"[dim]Using cached bench path from inspect: {bench_path}[/dim]"
+                        )
+                else:
+                    # Still no cache, use default
+                    bench_path = "/workspace/frappe-bench"
+                    stderr_console.print(
+                        f"[yellow]Warning: Could not detect bench path. Using default: {bench_path}[/yellow]"
+                    )
+            except Exception as e:
+                # Inspect failed, use default
+                bench_path = "/workspace/frappe-bench"
+                stderr_console.print(
+                    f"[yellow]Warning: Inspect failed. Using default bench path: {bench_path}[/yellow]"
+                )
+                if verbose:
+                    stderr_console.print(f"[dim]Inspect error: {e}[/dim]")
 
     # Scan available backups
     console.print("[bold cyan]Scanning for backups...[/bold cyan]")
@@ -596,10 +631,45 @@ def restore_receive_mode(
             if verbose:
                 stderr_console.print(f"[dim]Using cached bench path: {bench_path}[/dim]")
         else:
-            bench_path = "/workspace/frappe-bench"
-            stderr_console.print(
-                f"[yellow]Warning:[/yellow] No cached bench path found. Using default: {bench_path}"
-            )
+            # No cache found, run inspect to populate it
+            stderr_console.print("[yellow]No cached bench path found. Running inspect...[/yellow]")
+
+            try:
+                # Run inspect to populate cache (it has its own spinner)
+                from .inspect import inspect as inspect_cmd_func
+
+                # Call inspect directly with just the parameters it needs
+                inspect_cmd_func(
+                    project_name=project_name,
+                    verbose=verbose,
+                    json_output=False,
+                    update=False,
+                    show_apps=False,
+                    interactive=False,
+                )
+
+                # Try to get cached data again
+                cached_data = db_utils.get_cached_project_data(project_name)
+                if cached_data and cached_data.get("bench_instances"):
+                    bench_path = cached_data["bench_instances"][0]["path"]
+                    if verbose:
+                        stderr_console.print(
+                            f"[dim]Using cached bench path from inspect: {bench_path}[/dim]"
+                        )
+                else:
+                    # Still no cache, use default
+                    bench_path = "/workspace/frappe-bench"
+                    stderr_console.print(
+                        f"[yellow]Warning: Could not detect bench path. Using default: {bench_path}[/yellow]"
+                    )
+            except Exception as e:
+                # Inspect failed, use default
+                bench_path = "/workspace/frappe-bench"
+                stderr_console.print(
+                    f"[yellow]Warning: Inspect failed. Using default bench path: {bench_path}[/yellow]"
+                )
+                if verbose:
+                    stderr_console.print(f"[dim]Inspect error: {e}[/dim]")
 
     # Get site if not provided
     if not site:
@@ -1049,11 +1119,45 @@ def restore(
             if verbose:
                 stderr_console.print(f"[dim]Using cached bench path: {bench_path}[/dim]")
         else:
-            # No cache found, use default
-            bench_path = "/workspace/frappe-bench"
-            stderr_console.print(
-                f"[yellow]Warning:[/yellow] No cached bench path found. Using default: {bench_path}"
-            )
+            # No cache found, run inspect to populate it
+            stderr_console.print("[yellow]No cached bench path found. Running inspect...[/yellow]")
+
+            try:
+                # Run inspect to populate cache (it has its own spinner)
+                from .inspect import inspect as inspect_cmd_func
+
+                # Call inspect directly with just the parameters it needs
+                inspect_cmd_func(
+                    project_name=project_name,
+                    verbose=verbose,
+                    json_output=False,
+                    update=False,
+                    show_apps=False,
+                    interactive=False,
+                )
+
+                # Try to get cached data again
+                cached_data = db_utils.get_cached_project_data(project_name)
+                if cached_data and cached_data.get("bench_instances"):
+                    bench_path = cached_data["bench_instances"][0]["path"]
+                    if verbose:
+                        stderr_console.print(
+                            f"[dim]Using cached bench path from inspect: {bench_path}[/dim]"
+                        )
+                else:
+                    # Still no cache, use default
+                    bench_path = "/workspace/frappe-bench"
+                    stderr_console.print(
+                        f"[yellow]Warning: Could not detect bench path. Using default: {bench_path}[/yellow]"
+                    )
+            except Exception as e:
+                # Inspect failed, use default
+                bench_path = "/workspace/frappe-bench"
+                stderr_console.print(
+                    f"[yellow]Warning: Inspect failed. Using default bench path: {bench_path}[/yellow]"
+                )
+                if verbose:
+                    stderr_console.print(f"[dim]Inspect error: {e}[/dim]")
 
     # Get default site if not provided
     if not site:
@@ -1126,14 +1230,10 @@ def restore(
     with TipSpinner("Scanning backups for all sites", console=stderr_console, enabled=show_tips):
         backups = scan_backups_for_all_sites(frappe_container, bench_path, verbose)
 
-    if not backups:
-        stderr_console.print("[bold red]Error:[/bold red] No database backups found in any site.")
-        raise typer.Exit(code=1)
-
-    # Group and sort backups
+    # Group and sort backups (even if empty, we can still restore from remote)
     target_backups, other_backups = group_and_sort_backups(backups, site)
 
-    # Display selection menu
+    # Display selection menu (includes remote restore option)
     selected_backup = display_backup_selection_menu(target_backups, other_backups, site)
 
     if not selected_backup:

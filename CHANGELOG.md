@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.2] - 2026-01-20
+
+### Fixed
+- **`restore` command** - Auto-inspect when no cache found
+  - Automatically runs inspect if no cached bench path or default site is found
+  - Matches behavior of other commands (open, update, unlock)
+  - Eliminates manual `cwcli inspect` step before restore
+- **`restore` command** - Remote restore always available
+  - "Restore from remote source (via sendme)" option now shown even when no local backups exist
+  - Displays helpful "No local backups found" separator when applicable
+  - Allows restoring from P2P transfers without requiring local backups first
+
 ## [0.25.1] - 2026-01-20
 
 ### Fixed
