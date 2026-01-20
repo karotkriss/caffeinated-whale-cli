@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.26.0] - 2026-01-20
+
+### Added
+- **`restore` command** - Missing app detection before restore
+  - Checks if apps from backup site are available on the target bench
+  - Re-caches project before check to ensure accuracy
+  - Displays warning with list of missing apps
+  - Prompts for confirmation before proceeding with potentially incomplete restore
+  - Provides helpful install instructions for missing apps
+  - Applies to both local and remote (--receive) restore modes
+  - New `--no-recache` flag to skip re-caching and use existing cache
+- **`update` command** - Re-cache after app updates
+  - Automatically re-caches project after apps are updated via git pull
+  - Ensures site detection uses fresh cache data before migrations
+  - Improves accuracy when finding which sites have updated apps installed
+  - Verbose mode shows re-cache progress
+  - New `--no-recache` flag to skip re-caching and use existing cache
+- **`utils.cache.recache_project()`** - New utility function
+  - Clears cache and re-runs inspect for a project
+  - Ensures fresh, trustworthy cache data
+  - Reusable for any future operations requiring up-to-date cache
+  - Located in utils/cache.py for cache management operations
+
 ## [0.25.2] - 2026-01-20
 
 ### Fixed
