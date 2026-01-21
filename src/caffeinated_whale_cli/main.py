@@ -5,6 +5,7 @@ import typer
 from .commands import config as config_cmd
 from .commands import list as list_cmd
 from .commands import restart as restart_cmd
+from .commands import rm as rm_cmd
 from .commands import start as start_cmd
 from .commands import stop as stop_cmd
 from .commands.backup import backup as _backup_cmd
@@ -57,6 +58,7 @@ app.add_typer(list_cmd.app, name="ls")
 app.add_typer(start_cmd.app, name="start")
 app.add_typer(stop_cmd.app, name="stop")
 app.add_typer(restart_cmd.app, name="restart")
+app.add_typer(rm_cmd.app, name="rm")
 app.add_typer(config_cmd.app, name="config")
 
 app.command("run")(_run_cmd)
