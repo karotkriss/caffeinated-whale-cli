@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.27.0] - 2026-01-21
+
+### Added
+- **`rm` command** - Remove (delete) Frappe projects with automatic backups
+  - **Re-caches project before removal** to get accurate site information
+  - **Creates database backups for all sites** before removal
+  - **Archives project configuration** to `~/.cwcli/archive/{project_name}_{timestamp}/`
+    - Backs up all site databases (with files)
+    - Archives docker-compose.yml
+    - Archives site_config.json for all sites
+    - Includes archive metadata (project name, timestamp, bench path)
+  - Stops and removes all containers for a project
+  - **Removes Docker volumes by default** (complete removal)
+  - Requires user confirmation before proceeding (destructive action)
+  - `--no-volumes` flag to preserve volumes and keep data
+  - `--no-backup` flag to skip backups and recaching (not recommended)
+  - `--yes/-y` flag to skip confirmation prompt
+  - Supports multiple projects via arguments or piped input
+  - Clears project cache after removal
+  - Verbose mode shows detailed removal, backup, and archive progress
+  - Clear warning messages for data-destructive operations
+  - Examples: `cwcli rm my-project`, `cwcli rm my-project --no-volumes`
+
 ## [0.26.0] - 2026-01-20
 
 ### Added
