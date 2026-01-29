@@ -18,6 +18,7 @@ from .commands.run import run as _run_cmd
 from .commands.status import status as _status_cmd
 from .commands.unlock import unlock as _unlock_cmd
 from .commands.update import update as _update_cmd
+from .commands.where import where as _where_cmd
 
 __version__ = importlib.metadata.version("caffeinated-whale-cli")
 
@@ -60,6 +61,8 @@ app.add_typer(stop_cmd.app, name="stop")
 app.add_typer(restart_cmd.app, name="restart")
 app.add_typer(rm_cmd.app, name="rm")
 app.add_typer(config_cmd.app, name="config")
+
+app.command("where")(_where_cmd)
 
 app.command("run")(_run_cmd)
 app.command("update")(_update_cmd)

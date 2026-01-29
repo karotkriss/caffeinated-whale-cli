@@ -7,6 +7,7 @@ A command-line interface (CLI) for managing Frappe/ERPNext Docker instances duri
 - **One-Command Setup** - Initialize complete Frappe/ERPNext environments with `cwcli init`
 - **Smart Port Management** - Automatic port conflict detection and resolution
 - **Project Discovery** - Scan and list all Frappe Docker projects
+- **Cross-Project Search** - Find apps and sites across all instances with `cwcli where`
 - **Container Lifecycle** - Start, stop, and restart projects with ease
 - **Development Tools** - VS Code integration, log viewing, and command execution
 - **Cache System** - Fast project inspection with SQLite-based caching and configuration storage
@@ -189,6 +190,66 @@ cwcli ls [OPTIONS]
 │ frappe-two   │ exited  │                  │
 └──────────────┴─────────┴──────────────────┘
 ```
+
+---
+
+### `where` - Search Apps and Sites
+
+Searches all cached instances for apps or sites matching a string. Useful for finding which projects have a specific app installed or contain a particular site.
+
+```bash
+cwcli where [OPTIONS] SEARCH
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `SEARCH` | Search string to match against app or site names (case-insensitive) |
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `-a`, `--apps` | Search only for apps |
+| `-s`, `--sites` | Search only for sites |
+| `-i`, `--installed` | Show only installed apps (not just available). Only applies to app search |
+| `--json` | Output results as JSON |
+
+**Examples:**
+
+```bash
+# Find all instances with 'erpnext'
+cwcli where erpnext
+
+# Find apps matching 'payments'
+cwcli where payments --apps
+
+# Find sites matching 'local'
+cwcli where local --sites
+
+# JSON output for scripting
+cwcli where frappe --json
+```
+
+**Example Output:**
+
+```
+                Apps matching 'frappe'
+┏━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Project    ┃ App     ┃ Version  ┃ Branch     ┃ Site                  ┃
+┡━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━┩
+│ my-project │ frappe  │ 15.93.0  │ version-15 │ development.localhost │
+│ test       │ frappe  │ 15.88.2  │ version-15 │ development.localhost │
+└────────────┴─────────┴──────────┴────────────┴───────────────────────┘
+
+Found 2 matches.
+```
+
+**Notes:**
+- Searches use cached project data. Run `cwcli inspect <project>` to populate/refresh the cache.
+- When an app exists both as "available" and "installed" in the same project, only the installed version is shown (with version/branch info).
+- Use `--installed` to exclude apps that are available but not yet installed on any site.
 
 ---
 
