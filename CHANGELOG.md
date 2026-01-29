@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.28.0] - 2026-01-29
+
+### Added
+- **`where` command** - Search all cached instances for apps or sites by name
+  - Case-insensitive partial string matching across all projects
+  - `--apps/-a` flag to search only for apps
+  - `--sites/-s` flag to search only for sites
+  - `--installed/-i` flag to show only installed apps (excludes available-but-not-installed)
+  - `--json` flag for JSON output (useful for scripting)
+  - Displays results in formatted tables with project, app/site name, version, and branch
+  - Deduplicates results (prefers installed apps over available apps when both exist)
+  - Examples: `cwcli where erpnext`, `cwcli where payments --apps`, `cwcli where .local --sites`
+
 ## [0.27.0] - 2026-01-21
 
 ### Added
