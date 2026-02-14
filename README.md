@@ -98,12 +98,26 @@ cwcli init [OPTIONS] [PROJECT_NAME]
 1. Creates project directory at `~/.cwcli/projects/{project_name}/conf/`
 2. Downloads `docker-compose.yml` from frappe_docker GitHub repository
 3. Customizes port mappings based on `--port` flag
-4. Pulls Docker images and starts containers
-5. Initializes Frappe bench with specified branch
-6. Configures database and Redis connections
-7. Creates site with admin credentials
-8. Enables developer mode and server scripts
-9. Optionally installs ERPNext
+4. Resolves the latest stable `frappe/bench` image tag from Docker Hub (never uses `:latest`)
+5. Pulls Docker images and starts containers
+6. Pins the correct Python version via `PYENV_VERSION` for the branch (installs via pyenv if missing)
+7. Pins the correct Node.js version via nvm for older branches (installs via nvm if missing)
+8. Initializes Frappe bench with specified branch
+9. Configures database and Redis connections
+10. Creates site with admin credentials
+11. Enables developer mode and server scripts
+12. Optionally installs ERPNext
+
+**Branch-Specific Runtime Setup:**
+
+| Branch | Python | Node.js | Bench Image |
+|--------|--------|---------|-------------|
+| `version-15` | 3.12.x (via pyenv) | Default | Latest stable from Docker Hub |
+| `version-14` | 3.10.x (via pyenv) | 16 (via nvm) | Latest stable from Docker Hub |
+| `version-13` | 3.9.x (via pyenv) | 14 (via nvm) | Latest stable from Docker Hub |
+| Other | Default | Default | Latest stable from Docker Hub |
+
+Missing Python or Node.js versions are automatically installed inside the container.
 
 **Examples:**
 

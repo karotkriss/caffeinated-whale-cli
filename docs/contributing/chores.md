@@ -59,15 +59,18 @@ chore: bump version to 0.9.2
 
 **Files Changed:**
 - `pyproject.toml` - Update `version = "0.9.2"`
-- `src/caffeinated_whale_cli/__init__.py` - Update `__version__` (if exists)
+- `src/caffeinated_whale_cli/__init__.py` - Update `__version__ = "0.9.2"`
 
 **Process:**
 ```bash
 # 1. Update version in pyproject.toml
 # version = "0.9.2"
 
-# 2. Commit
-git add pyproject.toml
+# 2. Update version in __init__.py
+# __version__ = "0.9.2"
+
+# 3. Commit
+git add pyproject.toml src/caffeinated_whale_cli/__init__.py
 git commit -m "chore: bump version to 0.9.2"
 ```
 
@@ -288,6 +291,7 @@ Most chores happen during the release process. Here's the standard workflow:
 ```bash
 # 1. Bump version
 # Edit pyproject.toml: version = "0.9.2"
+# Edit src/caffeinated_whale_cli/__init__.py: __version__ = "0.9.2"
 git commit -m "chore: bump version to 0.9.2"
 
 # 2. Update CHANGELOG
@@ -314,6 +318,7 @@ git push origin develop --tags
 ```bash
 # 1. Update all release files
 # - version in pyproject.toml
+# - __version__ in src/caffeinated_whale_cli/__init__.py
 # - CHANGELOG.md
 # - README.md (if needed)
 

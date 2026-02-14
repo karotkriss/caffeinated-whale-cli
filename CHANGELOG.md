@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.0] - 2026-02-14
+
+### Changed
+- **`init` command** - Bench image resolved from Docker Hub at runtime
+  - Queries Docker Hub API for the latest stable semver tag of `frappe/bench` (e.g. `v5.29.1`)
+  - Never uses the `:latest` tag — always pins to a specific version for reproducible builds
+  - Falls back to a known-good version (`v5.29.1`) if the API is unreachable
+  - Applies to all branches, not just `version-15`
+  - Verbose mode logs the resolved tag and Docker Hub lookup progress
+
+- **`init` command** - Automatic Python version pinning per Frappe branch
+  - `version-15`: Uses `PYENV_VERSION=3.12.x`
+  - `version-14`: Uses `PYENV_VERSION=3.10.x`
+  - `version-13`: Uses `PYENV_VERSION=3.9.x`
+  - Checks `~/.pyenv/versions` inside the container for installed versions
+  - Automatically installs the correct Python version via `pyenv install` if not found
+  - Verbose mode logs each step (discovery, installation, version used)
+
+- **`init` command** - Automatic Node.js version pinning per Frappe branch
+  - `version-14`: Uses Node.js 16 via `nvm use`
+  - `version-13`: Uses Node.js 14 via `nvm use`
+  - Checks `~/.nvm/versions/node/` inside the container for installed versions
+  - Automatically installs the correct Node.js version via `nvm install` if not found
+  - Verbose mode logs each step (discovery, installation, version used)
+
 ## [0.28.0] - 2026-01-29
 
 ### Added
