@@ -200,6 +200,116 @@ def _ensure_directory(container, path: str) -> None:
         raise typer.Exit(code=1)
 
 
+def _get_pyenv_python_version(container, prefix: str, verbose: bool = False) -> str | None:
+    """Find a pyenv Python version matching the given prefix (e.g. '3.12') inside the container."""
+    exit_code, output = container.exec_run(["bash", "-lc", "ls ~/.pyenv/versions"])
+    if exit_code != 0:
+        if verbose:
+            stderr_console.print("[dim]Could not list pyenv versions[/dim]")
+        return None
+
+    versions = output.decode("utf-8", errors="replace").split()
+    for version in versions:
+        if version.startswith(prefix + "."):
+            if verbose:
+                stderr_console.print(f"[dim]Found pyenv version: {version}[/dim]")
+            return version
+
+    if verbose:
+        stderr_console.print(f"[dim]No pyenv version matching {prefix}.x found[/dim]")
+    return None
+
+
+def _install_pyenv_python(container, prefix: str, verbose: bool = False) -> str | None:
+    """Install the latest Python version matching prefix (e.g. '3.12') via pyenv inside the container.
+
+    Queries ``pyenv install --list`` for available versions, picks the latest
+    matching ``<prefix>.<patch>`` release, installs it, and returns the version string.
+    """
+    import re
+
+    # Find the latest available version matching the prefix
+    exit_code, output = container.exec_run(["bash", "-lc", "pyenv install --list"])
+    if exit_code != 0:
+        if verbose:
+            stderr_console.print("[dim]Could not list available pyenv versions[/dim]")
+        return None
+
+    pattern = re.compile(rf"^\s*({re.escape(prefix)}\.\d+)\s*$", re.MULTILINE)
+    matches = pattern.findall(output.decode("utf-8", errors="replace"))
+    if not matches:
+        if verbose:
+            stderr_console.print(f"[dim]No available pyenv version matching {prefix}.x[/dim]")
+        return None
+
+    # Last match is the latest patch version
+    target = matches[-1]
+    if verbose:
+        stderr_console.print(f"[dim]Installing Python {target} via pyenv...[/dim]")
+
+    exit_code, install_output = container.exec_run(
+        ["bash", "-lc", f"pyenv install {target}"],
+        environment={"PYTHON_CONFIGURE_OPTS": "--enable-shared"},
+    )
+    if exit_code != 0:
+        message = install_output.decode("utf-8", errors="replace") if install_output else ""
+        stderr_console.print(
+            f"[bold red]Error:[/bold red] Failed to install Python {target} via pyenv"
+        )
+        if verbose and message:
+            stderr_console.print(f"[dim]{message}[/dim]")
+        return None
+
+    if verbose:
+        stderr_console.print(f"[dim]Successfully installed Python {target}[/dim]")
+    return target
+
+
+def _get_nvm_node_version(container, major: str, verbose: bool = False) -> str | None:
+    """Find an installed nvm Node.js version matching the given major (e.g. '16') inside the container."""
+    exit_code, output = container.exec_run(["bash", "-lc", "ls ~/.nvm/versions/node/"])
+    if exit_code != 0:
+        if verbose:
+            stderr_console.print("[dim]Could not list nvm Node.js versions[/dim]")
+        return None
+
+    versions = output.decode("utf-8", errors="replace").split()
+    for version in versions:
+        # Entries look like v16.20.2, v22.22.0
+        if version.startswith(f"v{major}."):
+            if verbose:
+                stderr_console.print(f"[dim]Found Node.js version: {version}[/dim]")
+            return version
+
+    if verbose:
+        stderr_console.print(f"[dim]No Node.js version matching v{major}.x found[/dim]")
+    return None
+
+
+def _install_nvm_node(container, major: str, verbose: bool = False) -> str | None:
+    """Install Node.js for the given major version via nvm inside the container."""
+    if verbose:
+        stderr_console.print(f"[dim]Installing Node.js {major} via nvm...[/dim]")
+
+    exit_code, output = container.exec_run(
+        ["bash", "-lc", f"source ~/.nvm/nvm.sh && nvm install {major}"]
+    )
+    if exit_code != 0:
+        message = output.decode("utf-8", errors="replace") if output else ""
+        stderr_console.print(
+            f"[bold red]Error:[/bold red] Failed to install Node.js {major} via nvm"
+        )
+        if verbose and message:
+            stderr_console.print(f"[dim]{message}[/dim]")
+        return None
+
+    # Retrieve the installed version
+    installed = _get_nvm_node_version(container, major, verbose=False)
+    if verbose and installed:
+        stderr_console.print(f"[dim]Successfully installed Node.js {installed}[/dim]")
+    return installed
+
+
 def _build_cd_command(path: str, command: str) -> str:
     return f"cd {shlex.quote(path)} && {command}"
 
@@ -223,6 +333,40 @@ def _run_host_command(
         if capture_output and result.stderr:
             stderr_console.print(result.stderr.decode("utf-8", errors="replace"))
         raise typer.Exit(code=1)
+
+
+def _get_latest_bench_tag(verbose: bool = False) -> str:
+    """Query Docker Hub for the latest semver tag of frappe/bench.
+
+    Returns the most recently updated tag matching ``v<major>.<minor>.<patch>``.
+    Falls back to a known-good version if the API call fails.
+    """
+    import json
+    import re
+    import urllib.request
+
+    fallback = "v5.29.1"
+    api_url = "https://hub.docker.com/v2/repositories/frappe/bench/tags/?page_size=25&ordering=last_updated"
+
+    try:
+        req = urllib.request.Request(api_url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+
+        semver_re = re.compile(r"^v\d+\.\d+\.\d+$")
+        for result in data.get("results", []):
+            tag = result.get("name", "")
+            if semver_re.match(tag):
+                if verbose:
+                    stderr_console.print(f"[dim]Resolved latest bench image tag: {tag}[/dim]")
+                return tag
+    except Exception:
+        if verbose:
+            stderr_console.print(
+                f"[dim]Could not fetch latest bench tag, using fallback: {fallback}[/dim]"
+            )
+
+    return fallback
 
 
 def _download_github_file(url: str, dest_path: Path) -> None:
@@ -296,7 +440,7 @@ def _setup_project_directory(project_name: str, verbose: bool = False) -> Path:
 
 
 def _customize_compose_ports(
-    compose_path: Path, port: int, frappe_branch: str, verbose: bool = False, spinner=None
+    compose_path: Path, port: int, verbose: bool = False, spinner=None
 ) -> None:
     """
     Customize the port mappings and frappe image tag in docker-compose.yml.
@@ -304,14 +448,13 @@ def _customize_compose_ports(
     Args:
         compose_path: Path to the docker-compose.yml file
         port: Starting port number (e.g., 8000)
-        frappe_branch: Frappe branch being used (determines image tag)
         verbose: Print detailed information
         spinner: Optional spinner to update status
 
     The function replaces:
     - Web server ports: 8000-8005 → {port}-{port+5}
     - SocketIO ports: 9000-9005 → {port+1000}-{port+1005}
-    - Frappe image tag: latest → v5.26.0 (only for version-15 branch)
+    - Frappe bench image tag: latest → latest stable semver from Docker Hub
     """
     if spinner:
         spinner.update(
@@ -333,9 +476,17 @@ def _customize_compose_ports(
         "9000-9005:9000-9005", f"{socketio_start}-{socketio_start+5}:9000-9005"
     )
 
-    # Replace frappe image tag (only for version-15 to ensure stability)
-    if frappe_branch == "version-15":
-        content = content.replace("docker.io/frappe/bench:latest", "docker.io/frappe/bench:v5.26.0")
+    # Always pin the bench image to the latest stable semver tag (never use :latest)
+    if spinner:
+        spinner.update("Resolving latest bench image tag from Docker Hub")
+    elif verbose:
+        stderr_console.print("[dim]Resolving latest bench image tag from Docker Hub...[/dim]")
+    bench_tag = _get_latest_bench_tag(verbose=verbose)
+    if verbose:
+        stderr_console.print(f"[dim]Pinning bench image: docker.io/frappe/bench:{bench_tag}[/dim]")
+    content = content.replace(
+        "docker.io/frappe/bench:latest", f"docker.io/frappe/bench:{bench_tag}"
+    )
 
     compose_path.write_text(content)
 
@@ -455,7 +606,7 @@ def init(
         console.print()
         conf_dir = _setup_project_directory(inputs.project_name, verbose=verbose)
         compose_path = conf_dir / "docker-compose.yml"
-        _customize_compose_ports(compose_path, port, frappe_branch, verbose=verbose, spinner=None)
+        _customize_compose_ports(compose_path, port, verbose=verbose, spinner=None)
         stderr_console.print("[dim]Pulling Docker images...[/dim]")
         _pull_compose_images(inputs.project_name, conf_dir, verbose=verbose)
         _start_compose_project(inputs.project_name, conf_dir, verbose=verbose)
@@ -471,9 +622,7 @@ def init(
             spinner.update("Creating project directory")
             conf_dir = _setup_project_directory(inputs.project_name, verbose=verbose)
             compose_path = conf_dir / "docker-compose.yml"
-            _customize_compose_ports(
-                compose_path, port, frappe_branch, verbose=verbose, spinner=spinner
-            )
+            _customize_compose_ports(compose_path, port, verbose=verbose, spinner=spinner)
 
             # Pull Docker images (can take a while)
             spinner.update("Pulling Docker images")
@@ -521,9 +670,49 @@ def init(
 
     # Initialize bench if it doesn't exist
     if not bench_exists:
+        # Determine Python and Node.js requirements per branch
+        env_prefix = ""
+        nvm_prefix = ""
+        branch_python = {"version-15": "3.12", "version-14": "3.10", "version-13": "3.9"}
+        branch_node = {"version-14": "16", "version-13": "14"}
+
+        python_prefix = branch_python.get(frappe_branch)
+        if python_prefix:
+            py_version = _get_pyenv_python_version(frappe_container, python_prefix, verbose=verbose)
+            if not py_version:
+                if not verbose:
+                    stderr_console.print(
+                        f"[yellow]Python {python_prefix} not found, installing via pyenv...[/yellow]"
+                    )
+                py_version = _install_pyenv_python(frappe_container, python_prefix, verbose=verbose)
+            if py_version:
+                env_prefix = f"PYENV_VERSION={py_version} "
+                if verbose:
+                    stderr_console.print(
+                        f"[dim]Using PYENV_VERSION={py_version} for {frappe_branch}[/dim]"
+                    )
+
+        node_major = branch_node.get(frappe_branch)
+        if node_major:
+            node_version = _get_nvm_node_version(frappe_container, node_major, verbose=verbose)
+            if not node_version:
+                if not verbose:
+                    stderr_console.print(
+                        f"[yellow]Node.js {node_major} not found, installing via nvm...[/yellow]"
+                    )
+                node_version = _install_nvm_node(frappe_container, node_major, verbose=verbose)
+            if node_version:
+                nvm_prefix = f"source ~/.nvm/nvm.sh && nvm use {node_version} && "
+                if verbose:
+                    stderr_console.print(
+                        f"[dim]Using Node.js {node_version} for {frappe_branch}[/dim]"
+                    )
+
         bench_init_cmd = _build_cd_command(
             bench_parent_path,
-            " ".join(
+            nvm_prefix
+            + env_prefix
+            + " ".join(
                 [
                     "bench",
                     "init",
