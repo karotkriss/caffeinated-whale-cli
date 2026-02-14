@@ -38,7 +38,7 @@ wheels = [
 
 [[package]]
 name = "caffeinated-whale-cli"
-version = "0.27.0"
+version = "0.29.0"
 source = { editable = "." }
 dependencies = [
     { name = "black" },
