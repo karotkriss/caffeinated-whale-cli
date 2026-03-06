@@ -177,9 +177,18 @@ def _exec_in_container(
 
     exit_code = result.get("ExitCode", 1)
     if exit_code != 0:
-        stderr_console.print(
-            f"[bold red]Error:[/bold red] Command failed with exit code {exit_code}: {command}"
-        )
+        # Check output for ENOSPC to give a more actionable error message
+        raw_output = output if not stream_output else b""
+        decoded = raw_output.decode("utf-8", errors="replace") if raw_output else ""
+        if "ENOSPC" in decoded or "no space left on device" in decoded.lower():
+            stderr_console.print(
+                "[bold red]Error:[/bold red] No space left on device inside the container. "
+                "Free up disk space and try again."
+            )
+        else:
+            stderr_console.print(
+                f"[bold red]Error:[/bold red] Command failed with exit code {exit_code}: {command}"
+            )
         raise typer.Exit(code=1)
 
 
@@ -707,6 +716,15 @@ def init(
                     stderr_console.print(
                         f"[dim]Using Node.js {node_version} for {frappe_branch}[/dim]"
                     )
+                if verbose:
+                    stderr_console.print(f"[dim]Installing yarn globally for Node.js {node_version}...[/dim]")
+                yarn_exit_code, _ = frappe_container.exec_run(
+                    ["bash", "-lc", f"source ~/.nvm/nvm.sh && nvm use {node_version} && npm install -g yarn"]
+                )
+                if yarn_exit_code != 0:
+                    stderr_console.print("[yellow]Warning: Failed to install yarn globally.[/yellow]")
+                elif verbose:
+                    stderr_console.print("[dim]yarn installed successfully.[/dim]")
 
         bench_init_cmd = _build_cd_command(
             bench_parent_path,
@@ -749,6 +767,22 @@ def init(
                     verbose=False,
                 )
 
+    # Pin setuptools<82 for version-13 to retain pkg_resources
+    if frappe_branch == "version-13":
+        pin_cmd = _build_cd_command(
+            bench_full_path, "./env/bin/pip install 'setuptools<82'"
+        )
+        if verbose:
+            stderr_console.print("[dim]Pinning setuptools<82 for version-13...[/dim]")
+        pin_exit_code, pin_output = frappe_container.exec_run(["bash", "-lc", pin_cmd])
+        if pin_exit_code != 0:
+            msg = pin_output.decode("utf-8", errors="replace") if pin_output else ""
+            stderr_console.print("[yellow]Warning: Failed to pin setuptools<82.[/yellow]")
+            if verbose and msg:
+                stderr_console.print(f"[dim]{msg}[/dim]")
+        elif verbose:
+            stderr_console.print("[dim]setuptools pinned successfully.[/dim]")
+
     # Continue with bench/site configuration in a spinner
     with TipSpinner(
         f"Configuring bench '{inputs.bench_name}'",
@@ -777,6 +811,9 @@ def init(
 
     # Create site if it doesn't exist
     if not site_exists:
+        mariadb_flag = (
+            "--no-mariadb-socket" if frappe_branch == "version-13" else "--mariadb-user-host-login-scope=%"
+        )
         new_site_cmd = _build_cd_command(
             bench_full_path,
             " ".join(
@@ -787,7 +824,7 @@ def init(
                     shlex.quote(db_root_password),
                     "--admin-password",
                     shlex.quote(admin_password),
-                    "--mariadb-user-host-login-scope=%",
+                    mariadb_flag,
                     shlex.quote(inputs.site_name),
                     "--verbose",
                 ]

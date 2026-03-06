@@ -102,22 +102,25 @@ cwcli init [OPTIONS] [PROJECT_NAME]
 5. Pulls Docker images and starts containers
 6. Pins the correct Python version via `PYENV_VERSION` for the branch (installs via pyenv if missing)
 7. Pins the correct Node.js version via nvm for older branches (installs via nvm if missing)
-8. Initializes Frappe bench with specified branch
-9. Configures database and Redis connections
-10. Creates site with admin credentials
-11. Enables developer mode and server scripts
-12. Optionally installs ERPNext
+8. Installs `yarn` globally for the activated Node.js version (older branches only)
+9. Initializes Frappe bench with specified branch
+10. Pins `setuptools<82` inside the bench virtualenv for `version-13` (retains `pkg_resources`)
+11. Configures database and Redis connections
+12. Creates site with admin credentials
+13. Enables developer mode and server scripts
+14. Optionally installs ERPNext
 
 **Branch-Specific Runtime Setup:**
 
 | Branch | Python | Node.js | Bench Image |
 |--------|--------|---------|-------------|
 | `version-15` | 3.12.x (via pyenv) | Default | Latest stable from Docker Hub |
-| `version-14` | 3.10.x (via pyenv) | 16 (via nvm) | Latest stable from Docker Hub |
-| `version-13` | 3.9.x (via pyenv) | 14 (via nvm) | Latest stable from Docker Hub |
+| `version-14` | 3.10.x (via pyenv) | 16 (via nvm) + yarn | Latest stable from Docker Hub |
+| `version-13` | 3.9.x (via pyenv) | 14 (via nvm) + yarn | Latest stable from Docker Hub |
 | Other | Default | Default | Latest stable from Docker Hub |
 
 Missing Python or Node.js versions are automatically installed inside the container.
+`version-13` also pins `setuptools<82` in the bench virtualenv after init.
 
 **Examples:**
 
