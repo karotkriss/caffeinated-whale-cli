@@ -5,7 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.29.0] - 2026-02-14
+## [0.30.0] - 2026-03-06
+
+### Fixed
+- **`init` command** - `version-13` compatibility fixes
+  - Uses `--no-mariadb-socket` for `bench new-site` (replaces `--mariadb-user-host-login-scope=%` which is not supported in older bench versions)
+  - Pins `setuptools<82` immediately after `bench init` to retain `pkg_resources` compatibility
+  - Installs `yarn` globally (`npm install -g yarn`) after the correct Node.js version is activated via nvm
+
+### Improved
+- **`init` command** - Clearer error message when the container runs out of disk space (`ENOSPC`), prompting the user to free up space rather than showing a generic exit-code error
+
+
 
 ### Changed
 - **`init` command** - Bench image resolved from Docker Hub at runtime
