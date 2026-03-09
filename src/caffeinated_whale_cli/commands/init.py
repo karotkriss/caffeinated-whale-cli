@@ -861,20 +861,11 @@ def init(
         console=stderr_console,
         enabled=show_tips,
     ) as spinner:
-        # Switch active site
-        spinner.update(f"Setting '{inputs.site_name}' as active site")
-        _exec_in_container(
-            frappe_container,
-            _build_cd_command(bench_full_path, f"bench use {shlex.quote(inputs.site_name)}"),
-            stream_output=False,
-            verbose=False,
-        )
-
         # Final configuration: enable developer mode and server script support
         spinner.update("Enabling developer mode and server scripts")
         final_configs = [
-            ("bench set-config developer_mode 1"),
-            ("bench set-config -g server_script_enabled 1"),
+            f"bench --site {shlex.quote(inputs.site_name)} set-config developer_mode 1",
+            "bench set-config -g server_script_enabled 1",
         ]
         for command in final_configs:
             _exec_in_container(

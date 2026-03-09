@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.0] - 2026-03-08
+
+### Changed
+- **`init` command** - Removed automatic default site setting after init
+  - `bench use <site>` is no longer called after site creation
+  - `bench set-config developer_mode 1` now explicitly targets the site with `--site <site_name>` instead of relying on a default
+  - `bench set-config -g server_script_enabled 1` is unaffected (global config)
+
 ## [0.30.0] - 2026-03-06
 
 ### Fixed
