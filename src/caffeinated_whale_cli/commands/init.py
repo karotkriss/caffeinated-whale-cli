@@ -323,6 +323,17 @@ def _build_cd_command(path: str, command: str) -> str:
     return f"cd {shlex.quote(path)} && {command}"
 
 
+def _select_mariadb_flag(frappe_branch: str) -> str:
+    """Select the ``bench new-site`` MariaDB flag for the given Frappe branch.
+
+    ``--mariadb-user-host-login-scope`` only exists in bench/Frappe 15+, so
+    versions 13 and 14 must fall back to ``--no-mariadb-socket``.
+    """
+    if frappe_branch in ("version-13", "version-14"):
+        return "--no-mariadb-socket"
+    return "--mariadb-user-host-login-scope=%"
+
+
 def _run_host_command(
     cmd: list[str],
     cwd: str | None = None,
@@ -717,12 +728,20 @@ def init(
                         f"[dim]Using Node.js {node_version} for {frappe_branch}[/dim]"
                     )
                 if verbose:
-                    stderr_console.print(f"[dim]Installing yarn globally for Node.js {node_version}...[/dim]")
+                    stderr_console.print(
+                        f"[dim]Installing yarn globally for Node.js {node_version}...[/dim]"
+                    )
                 yarn_exit_code, _ = frappe_container.exec_run(
-                    ["bash", "-lc", f"source ~/.nvm/nvm.sh && nvm use {node_version} && npm install -g yarn"]
+                    [
+                        "bash",
+                        "-lc",
+                        f"source ~/.nvm/nvm.sh && nvm use {node_version} && npm install -g yarn",
+                    ]
                 )
                 if yarn_exit_code != 0:
-                    stderr_console.print("[yellow]Warning: Failed to install yarn globally.[/yellow]")
+                    stderr_console.print(
+                        "[yellow]Warning: Failed to install yarn globally.[/yellow]"
+                    )
                 elif verbose:
                     stderr_console.print("[dim]yarn installed successfully.[/dim]")
 
@@ -769,9 +788,7 @@ def init(
 
     # Pin setuptools<82 for version-13 to retain pkg_resources
     if frappe_branch == "version-13":
-        pin_cmd = _build_cd_command(
-            bench_full_path, "./env/bin/pip install 'setuptools<82'"
-        )
+        pin_cmd = _build_cd_command(bench_full_path, "./env/bin/pip install 'setuptools<82'")
         if verbose:
             stderr_console.print("[dim]Pinning setuptools<82 for version-13...[/dim]")
         pin_exit_code, pin_output = frappe_container.exec_run(["bash", "-lc", pin_cmd])
@@ -811,9 +828,7 @@ def init(
 
     # Create site if it doesn't exist
     if not site_exists:
-        mariadb_flag = (
-            "--no-mariadb-socket" if frappe_branch == "version-13" else "--mariadb-user-host-login-scope=%"
-        )
+        mariadb_flag = _select_mariadb_flag(frappe_branch)
         new_site_cmd = _build_cd_command(
             bench_full_path,
             " ".join(
