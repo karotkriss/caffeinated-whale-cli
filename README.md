@@ -122,6 +122,9 @@ cwcli init [OPTIONS] [PROJECT_NAME]
 Missing Python or Node.js versions are automatically installed inside the container.
 `version-13` also pins `setuptools<82` in the bench virtualenv after init.
 
+Site creation picks the MariaDB flag per branch: `version-13` and `version-14` use `--no-mariadb-socket`,
+while `version-15` and newer use `--mariadb-user-host-login-scope=%` (a flag that only exists in bench/Frappe 15+).
+
 **Examples:**
 
 ```bash
