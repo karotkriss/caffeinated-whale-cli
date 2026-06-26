@@ -73,6 +73,34 @@ def get_project_containers(
         return None
 
 
+def get_project_volumes(project_name: str):
+    """
+    Finds all named volumes belonging to a specific Docker Compose project.
+
+    These are the volumes Docker Compose creates and labels (e.g. ``sites``,
+    ``db-data``). They are distinct from anonymous container volumes, which
+    ``Container.remove(v=True)`` already handles.
+
+    Args:
+        project_name: The name of the docker-compose project.
+
+    Returns:
+        A list of volume objects, an empty list if none are found,
+        or None if there was a Docker connection error.
+    """
+    try:
+        client = docker.from_env()
+        client.ping()
+
+        volumes = client.volumes.list(
+            filters={"label": f"com.docker.compose.project={project_name}"}
+        )
+        return volumes
+
+    except DockerException:
+        return None
+
+
 def get_frappe_container(project_name: str):
     """
     Get the frappe container for a project.
