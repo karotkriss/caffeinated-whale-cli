@@ -1,0 +1,46 @@
+name: Test
+
+on:
+  push:
+    branches: ["**"]  # Run on all branches
+  pull_request:
+    branches: ["**"]  # Run on PRs to all branches (includes the default branch, develop)
+
+jobs:
+  test:
+    name: Pytest
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/astral-sh/uv:python3.12-bookworm
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: uv sync --frozen --all-extras
+
+      - name: Run tests with coverage
+        run: uv run pytest --cov=caffeinated_whale_cli --cov-report=term-missing
+
+  typecheck:
+    name: Mypy (informational)
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/astral-sh/uv:python3.12-bookworm
+
+    # NOTE: mypy currently reports ~50 errors across ~14 files. This job is
+    # informational (continue-on-error) so it surfaces type problems without
+    # blocking PRs. Burn the existing errors down to zero, then drop
+    # continue-on-error and promote this to a required check.
+    continue-on-error: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: uv sync --frozen --all-extras
+
+      - name: Type-check with Mypy
+        run: uv run mypy src/
