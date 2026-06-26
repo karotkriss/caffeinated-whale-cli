@@ -9,6 +9,7 @@ removes associated volumes. Before removal:
 """
 
 import json
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -18,8 +19,13 @@ import typer
 
 from ..utils import cache, db_utils
 from ..utils.completion_utils import complete_project_names
+from ..utils.config_utils import PROJECTS_DIR
 from ..utils.console import console, stderr_console
-from ..utils.docker_utils import get_project_containers, handle_docker_errors
+from ..utils.docker_utils import (
+    get_project_containers,
+    get_project_volumes,
+    handle_docker_errors,
+)
 
 app = typer.Typer(help="Remove a Frappe project and its containers.")
 
@@ -255,6 +261,108 @@ def _archive_project_config(
         return False
 
 
+def _remove_named_volumes(project_name: str, verbose: bool = False, status=None) -> int:
+    """
+    Remove the named Docker Compose volumes for a project.
+
+    ``Container.remove(v=True)`` only removes a container's *anonymous* volumes.
+    The named volumes that frappe-docker creates (e.g. ``sites``, ``db-data``)
+    are labeled with the compose project and must be removed explicitly, or the
+    databases and sites survive removal despite what the user was told.
+
+    Args:
+        project_name: Name of the project whose volumes should be removed
+        verbose: Enable verbose output
+        status: Status context for spinner
+
+    Returns:
+        Number of named volumes removed.
+    """
+    volumes = get_project_volumes(project_name)
+
+    if not volumes:
+        if verbose:
+            stderr_console.print(f"[dim]VERBOSE: No named volumes found for '{project_name}'[/dim]")
+        return 0
+
+    removed = 0
+    for volume in volumes:
+        try:
+            if status:
+                status.update(f"[bold red]Removing volume '{volume.name}'...[/bold red]")
+            if verbose:
+                stderr_console.print(f"[dim]VERBOSE: Removing volume '{volume.name}'[/dim]")
+            volume.remove(force=True)
+            removed += 1
+        except Exception as e:
+            stderr_console.print(
+                f"[yellow]Warning:[/yellow] Could not remove volume '{volume.name}': {e}"
+            )
+            if verbose:
+                stderr_console.print(f"[dim]VERBOSE: Exception: {e}[/dim]")
+
+    if removed > 0:
+        console.print(f"  [dim]Removed {removed} named volume(s) for '{project_name}'[/dim]")
+
+    return removed
+
+
+def _remove_project_directory(
+    project_name: str,
+    archive_dir: Path | None = None,
+    verbose: bool = False,
+) -> bool:
+    """
+    Archive (when possible) and delete the project's local directory at
+    ``~/.cwcli/projects/{project_name}/``.
+
+    This directory is the cwcli instance of the project (its config and the
+    downloaded docker-compose.yml). Without this step ``cwcli rm`` leaves the
+    project lingering on disk - the bug reported in issue #19.
+
+    Args:
+        project_name: Name of the project to remove the directory for
+        archive_dir: If provided, a copy of the directory is saved here first
+        verbose: Enable verbose output
+
+    Returns:
+        True if the directory was removed (or did not exist), False otherwise.
+    """
+    project_dir = PROJECTS_DIR / project_name
+
+    if not project_dir.exists():
+        if verbose:
+            stderr_console.print(
+                f"[dim]VERBOSE: No project directory to remove at {project_dir}[/dim]"
+            )
+        return True
+
+    # Safety: keep a copy of the local config alongside the other archives.
+    if archive_dir is not None:
+        try:
+            dest = archive_dir / "project_files"
+            shutil.copytree(project_dir, dest, dirs_exist_ok=True)
+            if verbose:
+                stderr_console.print(f"[dim]VERBOSE: Archived project directory to {dest}[/dim]")
+        except Exception as e:
+            if verbose:
+                stderr_console.print(
+                    f"[dim]VERBOSE: Could not archive project directory: {e}[/dim]"
+                )
+
+    try:
+        shutil.rmtree(project_dir)
+        console.print(f"  [dim]Removed project directory {project_dir}[/dim]")
+        return True
+    except Exception as e:
+        stderr_console.print(
+            f"[yellow]Warning:[/yellow] Could not remove project directory '{project_dir}': {e}"
+        )
+        if verbose:
+            stderr_console.print(f"[dim]VERBOSE: Exception: {e}[/dim]")
+        return False
+
+
 @handle_docker_errors
 def _remove_project(
     project_name: str,
@@ -287,6 +395,14 @@ def _remove_project(
             f"[dim]VERBOSE: Found {len(containers)} container(s) for '{project_name}'[/dim]"
         )
 
+    # Create a single archive directory for this removal. Database backups,
+    # config archives, and a copy of the local project directory all land here
+    # so nothing is deleted without a safety copy first.
+    archive_base = Path.home() / ".cwcli" / "archive"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    archive_dir = archive_base / f"{project_name}_{timestamp}"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+
     # Find frappe container for archiving and backup
     frappe_container = None
     for container in containers:
@@ -304,12 +420,6 @@ def _remove_project(
                 bench_path = cached_data["bench_instances"][0]["path"]
         except Exception:
             pass
-
-        # Create archive directory
-        archive_base = Path.home() / ".cwcli" / "archive"
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        archive_dir = archive_base / f"{project_name}_{timestamp}"
-        archive_dir.mkdir(parents=True, exist_ok=True)
 
         # Backup databases (unless --no-backup)
         if not no_backup:
@@ -360,6 +470,21 @@ def _remove_project(
             )
             if verbose:
                 stderr_console.print(f"[dim]VERBOSE: Exception: {e}[/dim]")
+
+    # Remove named compose volumes. Anonymous volumes were already handled by
+    # container.remove(v=remove_volumes) above, but the named volumes that hold
+    # the databases and sites must be removed explicitly or the data survives.
+    if remove_volumes:
+        if status:
+            status.update(f"[bold red]Removing volumes for '{project_name}'...[/bold red]")
+        _remove_named_volumes(project_name, verbose=verbose, status=status)
+
+    # Remove the local project directory (the cwcli instance of the project).
+    # This is deleted regardless of --no-volumes: it is config, not data, and
+    # leaving it behind is the lingering-project bug from issue #19.
+    if status:
+        status.update(f"[bold red]Removing project directory for '{project_name}'...[/bold red]")
+    _remove_project_directory(project_name, archive_dir=archive_dir, verbose=verbose)
 
     # Clear cache for removed project
     if removed_count > 0:
@@ -412,12 +537,13 @@ def rm(
     - Archives docker-compose.yml and site_config.json files
     - Stops all containers for the project
     - Removes all containers for the project
-    - Removes all associated Docker volumes (deletes all data!)
+    - Removes all named Docker volumes for the project (deletes all data!)
+    - Deletes the local project directory (~/.cwcli/projects/{name}/)
     - Clears the project from the cache
 
     Use --no-volumes to keep volumes:
-    - Keeps Docker volumes (preserves data)
-    - Only removes containers
+    - Keeps the named Docker volumes (preserves databases, sites, and files)
+    - Still removes the containers, project directory, and cache entry
 
     Use --no-backup to skip backups (not recommended):
     - Skips database backups
@@ -486,14 +612,17 @@ def rm(
                 "[bold red]VOLUMES WILL BE DELETED:[/bold red] [bold yellow]ALL DATA WILL BE PERMANENTLY LOST![/bold yellow]"
             )
             console.print(
-                "[dim]This includes databases, sites, files, and all other data in Docker volumes.[/dim]"
+                "[dim]This removes the containers, the named Docker volumes (databases, "
+                "sites, and files), and the local project directory.[/dim]"
             )
         else:
             console.print(
-                "[bold yellow]Note:[/bold yellow] Volumes will be preserved (--no-volumes flag set)."
+                "[bold yellow]Note:[/bold yellow] Named volumes will be preserved (--no-volumes flag set)."
             )
             console.print(
-                "[dim]You can remove volumes later if needed or recreate containers from existing data.[/dim]"
+                "[dim]The containers and the local project directory are still removed, but the "
+                "named Docker volumes (databases, sites, and files) are kept so you can recreate "
+                "the project from existing data.[/dim]"
             )
         console.print()
 
