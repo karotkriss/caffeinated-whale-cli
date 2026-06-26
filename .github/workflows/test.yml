@@ -29,12 +29,6 @@ jobs:
     container:
       image: ghcr.io/astral-sh/uv:python3.12-bookworm
 
-    # NOTE: mypy currently reports ~50 errors across ~14 files. This job is
-    # informational (continue-on-error) so it surfaces type problems without
-    # blocking PRs. Burn the existing errors down to zero, then drop
-    # continue-on-error and promote this to a required check.
-    continue-on-error: true
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -42,5 +36,12 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --all-extras
 
+      # NOTE: mypy currently reports ~50 errors across ~14 files. This step is
+      # informational (continue-on-error) so it surfaces type problems without
+      # failing the job's status check on PRs. Burn the existing errors down to
+      # zero, then drop continue-on-error and promote this to a required check.
+      # (continue-on-error MUST be on the step, not the job: a job-level setting
+      # still reports the job's conclusion as "failure" on the PR check.)
       - name: Type-check with Mypy
+        continue-on-error: true
         run: uv run mypy src/
