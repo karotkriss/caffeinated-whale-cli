@@ -320,16 +320,26 @@ def _archive_project_directory(
     verbose: bool = False,
 ) -> bool:
     """
-    Archive a copy of the project's local directory into ``archive_dir`` before
-    it is deleted.
+    Archive the project's cwcli-managed configuration into ``archive_dir`` before
+    the local project directory is deleted.
 
-    The directory at ``~/.cwcli/projects/{project_name}/`` is the cwcli instance
-    of the project (its config and the downloaded docker-compose.yml). It is
-    always copied into the timestamped archive first so nothing is deleted
-    without a safety copy.
+    Only the small, reliable ``conf/`` subdirectory of
+    ``~/.cwcli/projects/{project_name}/`` is archived - it holds the generated
+    ``docker-compose.yml``, which is the cwcli instance config and the one thing
+    not recoverable from elsewhere. The rest of that directory is the
+    frappe-docker devcontainer bind mount: a multi-hundred-MB ``frappe-bench``
+    whose virtualenv and node_modules contain dangling symlinks that do not
+    resolve on the host. Copying the whole tree both wastes space (its databases
+    and files are already captured by the live ``bench backup`` into this same
+    archive directory) and makes ``copytree`` raise on those dangling symlinks,
+    which previously aborted removal and left the named volume and project
+    directory behind - reintroducing issue #19 in real conditions.
+
+    The database/files safety net is therefore the ``bench backup`` output (under
+    ``archive_dir/backups/``); ``conf/`` is the config safety net archived here.
 
     Args:
-        project_name: Name of the project whose directory should be archived
+        project_name: Name of the project whose configuration should be archived
         archive_dir: Destination archive directory for the copy
         verbose: Enable verbose output
 
@@ -347,15 +357,33 @@ def _archive_project_directory(
             )
         return True
 
-    try:
-        dest = archive_dir / "project_files"
-        shutil.copytree(project_dir, dest, dirs_exist_ok=True)
+    conf_dir = project_dir / "conf"
+    if not conf_dir.is_dir():
+        # No cwcli-managed config to preserve (older or partial layout). There is
+        # nothing small and reliable to archive, so report success and let the
+        # caller proceed; the database/files safety net is the bench backup.
         if verbose:
-            stderr_console.print(f"[dim]VERBOSE: Archived project directory to {dest}[/dim]")
+            stderr_console.print(f"[dim]VERBOSE: No conf/ directory to archive at {conf_dir}[/dim]")
+        return True
+
+    try:
+        dest = archive_dir / "project_files" / "conf"
+        # symlinks=True + ignore_dangling_symlinks keeps the copy robust even if a
+        # config dir ever contains a (possibly dangling) symlink: links are copied
+        # as links rather than followed, so copytree never raises on them.
+        shutil.copytree(
+            conf_dir,
+            dest,
+            dirs_exist_ok=True,
+            symlinks=True,
+            ignore_dangling_symlinks=True,
+        )
+        if verbose:
+            stderr_console.print(f"[dim]VERBOSE: Archived project config to {dest}[/dim]")
         return True
     except Exception as e:
         stderr_console.print(
-            f"[yellow]Warning:[/yellow] Could not archive project directory for "
+            f"[yellow]Warning:[/yellow] Could not archive project configuration for "
             f"'{project_name}': {e}"
         )
         if verbose:
@@ -591,6 +619,41 @@ def _remove_project(
     return result
 
 
+def _recover_trailing_flags(
+    names: list[str] | None,
+    verbose: bool,
+    yes: bool,
+    no_backup: bool,
+    volumes: bool,
+) -> tuple[list[str], bool, bool, bool, bool]:
+    """
+    Split project names from option flags that trailed the variadic argument.
+
+    A variadic ``typer.Argument`` greedily consumes options that follow it, so
+    ``cwcli rm myproj --yes`` would otherwise treat ``--yes`` as a second project
+    name (and then prompt and try to remove a project literally named "--yes").
+    Recover the common flags from the name list so flag order is forgiving.
+
+    Returns the project names with flags removed, followed by the (possibly
+    updated) ``verbose``, ``yes``, ``no_backup`` and ``volumes`` values.
+    """
+    projects: list[str] = []
+    for name in names or []:
+        if name in ("-v", "--verbose"):
+            verbose = True
+        elif name in ("-y", "--yes"):
+            yes = True
+        elif name == "--no-backup":
+            no_backup = True
+        elif name == "--volumes":
+            volumes = True
+        elif name == "--no-volumes":
+            volumes = False
+        else:
+            projects.append(name)
+    return projects, verbose, yes, no_backup, volumes
+
+
 @app.callback(invoke_without_command=True)
 def rm(
     ctx: typer.Context,
@@ -654,17 +717,13 @@ def rm(
     """
     project_names_to_process = []
 
-    # Handle -v or --verbose in remaining args
-    actual_verbose = verbose
-    filtered_project_names = []
-
-    if project_name:
-        for name in project_name:
-            if name in ("-v", "--verbose"):
-                actual_verbose = True
-            else:
-                filtered_project_names.append(name)
-        project_names_to_process.extend(filtered_project_names)
+    # Recover flags that trailed the project name(s). A variadic argument greedily
+    # eats options that follow it, so `cwcli rm myproj --yes` would otherwise treat
+    # `--yes` as a second project name. Make flag order forgiving instead.
+    filtered_project_names, actual_verbose, yes, no_backup, volumes = _recover_trailing_flags(
+        project_name, verbose, yes, no_backup, volumes
+    )
+    project_names_to_process.extend(filtered_project_names)
 
     # Handle piped input
     if not sys.stdin.isatty():

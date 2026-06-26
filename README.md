@@ -399,7 +399,7 @@ View logs with: cwcli logs frappe-one
 Removes a Frappe project: its containers, its named Docker volumes, and its local project directory.
 
 **WARNING:** This action is destructive and cannot be undone.
-Before deleting anything, the command re-caches the project, backs up the databases for all sites, and archives the `docker-compose.yml`, `site_config.json`, and a copy of the local project directory into a timestamped folder under `~/.cwcli/archive/`.
+Before deleting anything, the command re-caches the project, backs up the databases and files for all sites (a live `bench backup --with-files`), and archives the `docker-compose.yml`, `site_config.json`, and the project's `conf/` directory into a timestamped folder under `~/.cwcli/archive/`. The backup and the config archive are written first, and the named volumes and project directory are only deleted once that archive has succeeded.
 
 ```bash
 cwcli rm [OPTIONS] [PROJECT_NAME]...

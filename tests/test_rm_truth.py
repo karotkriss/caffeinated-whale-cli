@@ -102,6 +102,47 @@ class TestRemoveProjectDirectory:
         assert rm._archive_project_directory("ghost") is True
         assert rm._delete_project_directory("ghost") is False
 
+    def test_archives_only_conf_not_whole_bench(self, cwcli_home, tmp_path):
+        # The real project dir is the frappe-docker devcontainer bind mount: a
+        # large frappe-bench whose virtualenv/node_modules contain dangling
+        # symlinks that do not resolve on the host. The previous implementation
+        # copytree'd the whole tree and raised on those dangling symlinks, which
+        # aborted removal and left the volume + dir behind (issue #19 again).
+        # Archiving only conf/ must succeed regardless, and must not drag the
+        # heavy bench into the archive.
+        projects_dir = rm.PROJECTS_DIR
+        project_dir = _make_project_dir(projects_dir, "proj")
+        bench = project_dir / "frappe-bench" / "env" / "bin"
+        bench.mkdir(parents=True)
+        # A dangling symlink that resolves to nothing on the host - exactly what
+        # broke copytree(symlinks=False) in the live E2E.
+        (bench / "python").symlink_to("/nonexistent/container/python")
+
+        archive_dir = tmp_path / "archive"
+        archive_dir.mkdir()
+
+        assert rm._archive_project_directory("proj", archive_dir=archive_dir) is True
+        # Only the cwcli config landed in the archive...
+        assert (archive_dir / "project_files" / "conf" / "docker-compose.yml").exists()
+        # ...and the heavy bench (with its dangling symlink) was NOT archived.
+        assert not (archive_dir / "project_files" / "frappe-bench").exists()
+
+        # And the whole directory, dangling symlink included, deletes cleanly
+        # (rmtree does not follow symlinks).
+        assert rm._delete_project_directory("proj") is True
+        assert not project_dir.exists()
+
+    def test_archive_succeeds_when_no_conf_dir(self, cwcli_home, tmp_path):
+        # An older/partial layout with no conf/ has no cwcli config to preserve;
+        # archiving reports success so the caller may still delete the directory.
+        project_dir = rm.PROJECTS_DIR / "proj"
+        project_dir.mkdir(parents=True)
+        archive_dir = tmp_path / "archive"
+        archive_dir.mkdir()
+
+        assert rm._archive_project_directory("proj", archive_dir=archive_dir) is True
+        assert not (archive_dir / "project_files").exists()
+
     def test_failed_archive_reports_false(self, cwcli_home, tmp_path, monkeypatch):
         # If the copy raises, the archive step must report failure so the caller
         # refuses to delete anything that was not safely archived.
@@ -260,3 +301,42 @@ class TestRemoveProjectEndToEnd:
         for volume in volumes:
             volume.remove.assert_not_called()
         assert project_dir.exists()
+
+
+class TestArgOrderForgiveness:
+    """Flags that trail the project name must still be honored (papercut)."""
+
+    def test_yes_after_project_name_is_recovered(self):
+        # `cwcli rm proj --yes` previously parsed `--yes` as a second project
+        # name (a variadic argument greedily eats trailing options), so it still
+        # prompted and tried to remove a project literally named "--yes".
+        names, verbose, yes, no_backup, volumes = rm._recover_trailing_flags(
+            ["proj", "--yes"], False, False, False, True
+        )
+        assert names == ["proj"]
+        assert yes is True
+        # Untouched flags keep their incoming values.
+        assert verbose is False
+        assert no_backup is False
+        assert volumes is True
+
+    def test_recovers_every_trailing_flag(self):
+        names, verbose, yes, no_backup, volumes = rm._recover_trailing_flags(
+            ["proj", "-y", "-v", "--no-backup", "--no-volumes"], False, False, False, True
+        )
+        assert names == ["proj"]
+        assert verbose is True
+        assert yes is True
+        assert no_backup is True
+        assert volumes is False
+
+    def test_volumes_flag_after_name_re_enables(self):
+        # Defaults flip the right way: --volumes after the name re-enables.
+        _, _, _, _, volumes = rm._recover_trailing_flags(
+            ["proj", "--volumes"], False, False, False, False
+        )
+        assert volumes is True
+
+    def test_plain_names_pass_through(self):
+        names, *_ = rm._recover_trailing_flags(["a", "b"], False, False, False, True)
+        assert names == ["a", "b"]
