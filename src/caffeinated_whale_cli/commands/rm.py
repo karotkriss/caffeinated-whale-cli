@@ -280,6 +280,13 @@ def _remove_named_volumes(project_name: str, verbose: bool = False, status=None)
     """
     volumes = get_project_volumes(project_name)
 
+    if volumes is None:
+        stderr_console.print(
+            f"[yellow]Warning:[/yellow] Could not enumerate volumes for '{project_name}'; "
+            "some named volumes may remain."
+        )
+        return 0
+
     if not volumes:
         if verbose:
             stderr_console.print(f"[dim]VERBOSE: No named volumes found for '{project_name}'[/dim]")
@@ -307,26 +314,70 @@ def _remove_named_volumes(project_name: str, verbose: bool = False, status=None)
     return removed
 
 
-def _remove_project_directory(
+def _archive_project_directory(
     project_name: str,
     archive_dir: Path | None = None,
     verbose: bool = False,
 ) -> bool:
     """
-    Archive (when possible) and delete the project's local directory at
-    ``~/.cwcli/projects/{project_name}/``.
+    Archive a copy of the project's local directory into ``archive_dir`` before
+    it is deleted.
 
-    This directory is the cwcli instance of the project (its config and the
-    downloaded docker-compose.yml). Without this step ``cwcli rm`` leaves the
-    project lingering on disk - the bug reported in issue #19.
+    The directory at ``~/.cwcli/projects/{project_name}/`` is the cwcli instance
+    of the project (its config and the downloaded docker-compose.yml). It is
+    always copied into the timestamped archive first so nothing is deleted
+    without a safety copy.
 
     Args:
-        project_name: Name of the project to remove the directory for
-        archive_dir: If provided, a copy of the directory is saved here first
+        project_name: Name of the project whose directory should be archived
+        archive_dir: Destination archive directory for the copy
         verbose: Enable verbose output
 
     Returns:
-        True if the directory was removed (or did not exist), False otherwise.
+        True if the copy succeeded or there was nothing to archive, False only
+        if the copy itself failed (so the caller can refuse to delete data that
+        was not safely archived).
+    """
+    project_dir = PROJECTS_DIR / project_name
+
+    if not project_dir.exists() or archive_dir is None:
+        if verbose and not project_dir.exists():
+            stderr_console.print(
+                f"[dim]VERBOSE: No project directory to archive at {project_dir}[/dim]"
+            )
+        return True
+
+    try:
+        dest = archive_dir / "project_files"
+        shutil.copytree(project_dir, dest, dirs_exist_ok=True)
+        if verbose:
+            stderr_console.print(f"[dim]VERBOSE: Archived project directory to {dest}[/dim]")
+        return True
+    except Exception as e:
+        stderr_console.print(
+            f"[yellow]Warning:[/yellow] Could not archive project directory for "
+            f"'{project_name}': {e}"
+        )
+        if verbose:
+            stderr_console.print(f"[dim]VERBOSE: Exception: {e}[/dim]")
+        return False
+
+
+def _delete_project_directory(project_name: str, verbose: bool = False) -> bool:
+    """
+    Delete the project's local directory at ``~/.cwcli/projects/{project_name}/``.
+
+    Must only be called after :func:`_archive_project_directory` has succeeded.
+    Without this step ``cwcli rm`` leaves the project lingering on disk - the
+    bug reported in issue #19.
+
+    Args:
+        project_name: Name of the project to remove the directory for
+        verbose: Enable verbose output
+
+    Returns:
+        True if a directory was removed, False if there was nothing to remove
+        or removal failed.
     """
     project_dir = PROJECTS_DIR / project_name
 
@@ -335,20 +386,7 @@ def _remove_project_directory(
             stderr_console.print(
                 f"[dim]VERBOSE: No project directory to remove at {project_dir}[/dim]"
             )
-        return True
-
-    # Safety: keep a copy of the local config alongside the other archives.
-    if archive_dir is not None:
-        try:
-            dest = archive_dir / "project_files"
-            shutil.copytree(project_dir, dest, dirs_exist_ok=True)
-            if verbose:
-                stderr_console.print(f"[dim]VERBOSE: Archived project directory to {dest}[/dim]")
-        except Exception as e:
-            if verbose:
-                stderr_console.print(
-                    f"[dim]VERBOSE: Could not archive project directory: {e}[/dim]"
-                )
+        return False
 
     try:
         shutil.rmtree(project_dir)
@@ -382,13 +420,45 @@ def _remove_project(
         status: Status context for spinner
 
     Returns:
-        Number of containers removed, or 0 if project not found
+        A result dict with keys ``found`` (bool), ``orphan`` (bool, no
+        containers but volumes/dir remained), ``containers`` (int removed),
+        ``volumes`` (int removed), and ``dir_removed`` (bool).
     """
+    result = {
+        "found": False,
+        "orphan": False,
+        "containers": 0,
+        "volumes": 0,
+        "dir_removed": False,
+    }
+
     containers = get_project_containers(project_name)
 
-    if not containers:
-        stderr_console.print(f"[bold red]Error:[/bold red] Project '{project_name}' not found.")
-        return 0
+    # None means a Docker connection error (distinct from an empty list). Do not
+    # attempt destructive cleanup when we cannot even see the project.
+    if containers is None:
+        stderr_console.print(
+            f"[bold red]Error:[/bold red] Could not connect to Docker to inspect "
+            f"'{project_name}'."
+        )
+        return result
+
+    project_dir = PROJECTS_DIR / project_name
+    dir_existed = project_dir.exists()
+
+    is_orphan = not containers
+    if is_orphan:
+        # No containers left. The project may still have orphaned named volumes
+        # and/or a lingering local directory (a prior partial rm, an older
+        # cwcli, or a manual `docker rm`). Clean those up rather than refusing.
+        # If there is genuinely nothing left, treat it as a typo / not found.
+        orphan_volumes = get_project_volumes(project_name)
+        if not dir_existed and not orphan_volumes:
+            stderr_console.print(f"[bold red]Error:[/bold red] Project '{project_name}' not found.")
+            return result
+        result["orphan"] = True
+
+    result["found"] = True
 
     if verbose:
         stderr_console.print(
@@ -433,6 +503,13 @@ def _remove_project(
         if status:
             status.update(f"[bold cyan]Archiving configuration for '{project_name}'...[/bold cyan]")
         _archive_project_config(project_name, frappe_container, bench_path, verbose=verbose)
+    elif is_orphan:
+        # No container is running, so a live `bench backup` database dump is
+        # impossible. Only the archived config can be preserved.
+        stderr_console.print(
+            f"[yellow]Warning:[/yellow] No container was running for '{project_name}', "
+            "so a fresh database backup could not be taken before cleanup."
+        )
 
     # Stop and remove each container
     removed_count = 0
@@ -471,28 +548,47 @@ def _remove_project(
             if verbose:
                 stderr_console.print(f"[dim]VERBOSE: Exception: {e}[/dim]")
 
-    # Remove named compose volumes. Anonymous volumes were already handled by
-    # container.remove(v=remove_volumes) above, but the named volumes that hold
-    # the databases and sites must be removed explicitly or the data survives.
-    if remove_volumes:
-        if status:
-            status.update(f"[bold red]Removing volumes for '{project_name}'...[/bold red]")
-        _remove_named_volumes(project_name, verbose=verbose, status=status)
+    result["containers"] = removed_count
 
-    # Remove the local project directory (the cwcli instance of the project).
-    # This is deleted regardless of --no-volumes: it is config, not data, and
-    # leaving it behind is the lingering-project bug from issue #19.
+    # Archive the local project directory BEFORE deleting anything. If the copy
+    # fails we refuse to delete the named volumes or the directory, so nothing
+    # that was not safely archived is destroyed.
     if status:
-        status.update(f"[bold red]Removing project directory for '{project_name}'...[/bold red]")
-    _remove_project_directory(project_name, archive_dir=archive_dir, verbose=verbose)
+        status.update(f"[bold cyan]Archiving project directory for '{project_name}'...[/bold cyan]")
+    archived_ok = _archive_project_directory(project_name, archive_dir=archive_dir, verbose=verbose)
 
-    # Clear cache for removed project
-    if removed_count > 0:
+    if dir_existed and not archived_ok:
+        stderr_console.print(
+            f"[yellow]Warning:[/yellow] Skipping volume and directory removal for "
+            f"'{project_name}' because its configuration could not be archived."
+        )
+    else:
+        # Remove named compose volumes. Anonymous volumes were already handled by
+        # container.remove(v=remove_volumes) above, but the named volumes that
+        # hold the databases and sites must be removed explicitly or the data
+        # survives.
+        if remove_volumes:
+            if status:
+                status.update(f"[bold red]Removing volumes for '{project_name}'...[/bold red]")
+            result["volumes"] = _remove_named_volumes(project_name, verbose=verbose, status=status)
+
+        # Remove the local project directory (the cwcli instance of the
+        # project). This is deleted regardless of --no-volumes: it is config,
+        # not data, and leaving it behind is the lingering-project bug from
+        # issue #19.
+        if status:
+            status.update(
+                f"[bold red]Removing project directory for '{project_name}'...[/bold red]"
+            )
+        result["dir_removed"] = _delete_project_directory(project_name, verbose=verbose)
+
+    # Clear cache for the removed project (including orphan cleanup).
+    if removed_count > 0 or result["volumes"] > 0 or result["dir_removed"]:
         if verbose:
             stderr_console.print(f"[dim]VERBOSE: Clearing cache for '{project_name}'[/dim]")
         db_utils.clear_cache_for_project(project_name)
 
-    return removed_count
+    return result
 
 
 @app.callback(invoke_without_command=True)
@@ -649,6 +745,7 @@ def rm(
         console.print("[bold red]Deleting all volumes and data![/bold red]")
 
     total_removed = 0
+    total_found = 0
     for name in project_names_to_process:
         with stderr_console.status(
             f"[bold red]Removing '{name}'...[/bold red]", spinner="dots"
@@ -662,19 +759,39 @@ def rm(
             )
 
         # Print results outside spinner context
-        if result > 0:
-            console.print(
-                f"[bold green]✓[/bold green] Project '{name}' removed ({result} container(s))"
-            )
-            if not volumes:
-                console.print(f"  [dim]Volumes preserved for '{name}'[/dim]")
-            total_removed += result
-        # If result is 0, error message was already printed
+        if result["found"]:
+            total_found += 1
+            containers_removed = result["containers"]
+            total_removed += containers_removed
+
+            if result["orphan"]:
+                cleaned = []
+                if result["volumes"]:
+                    cleaned.append(f"{result['volumes']} orphaned volume(s)")
+                if result["dir_removed"]:
+                    cleaned.append("project directory")
+                detail = ", ".join(cleaned) if cleaned else "no leftover data"
+                console.print(
+                    f"[bold green]✓[/bold green] Project '{name}' cleaned up "
+                    f"(0 containers; removed {detail})"
+                )
+            else:
+                console.print(
+                    f"[bold green]✓[/bold green] Project '{name}' removed "
+                    f"({containers_removed} container(s))"
+                )
+                if not volumes:
+                    console.print(f"  [dim]Volumes preserved for '{name}'[/dim]")
+        # If the project was not found, the error message was already printed.
 
     console.print()
     if total_removed > 0:
         console.print(
             f"[bold green]✓[/bold green] Successfully removed {total_removed} container(s)"
         )
+    elif total_found > 0:
+        console.print(
+            "[bold green]✓[/bold green] Cleaned up orphaned project(s); no containers were running."
+        )
     else:
-        console.print("[bold yellow]No containers were removed.[/bold yellow]")
+        console.print("[bold yellow]No projects were removed.[/bold yellow]")

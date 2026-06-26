@@ -73,14 +73,14 @@ class TestRemoveNamedVolumes:
 
 
 class TestRemoveProjectDirectory:
-    """``_remove_project_directory`` deletes the dir and archives a copy first."""
+    """Archive-then-delete: the dir is copied to the archive before deletion."""
 
     def test_deletes_directory(self, cwcli_home):
         projects_dir = rm.PROJECTS_DIR
         project_dir = _make_project_dir(projects_dir, "proj")
         assert project_dir.exists()
 
-        assert rm._remove_project_directory("proj") is True
+        assert rm._delete_project_directory("proj") is True
         assert not project_dir.exists()
 
     def test_archives_before_deleting(self, cwcli_home, tmp_path):
@@ -89,15 +89,34 @@ class TestRemoveProjectDirectory:
         archive_dir = tmp_path / "archive"
         archive_dir.mkdir()
 
-        rm._remove_project_directory("proj", archive_dir=archive_dir)
+        assert rm._archive_project_directory("proj", archive_dir=archive_dir) is True
+        assert rm._delete_project_directory("proj") is True
 
         archived = archive_dir / "project_files" / "conf" / "docker-compose.yml"
         assert archived.exists()
         assert not (projects_dir / "proj").exists()
 
     def test_missing_directory_is_noop(self, cwcli_home):
-        # No directory created; should report success without raising.
-        assert rm._remove_project_directory("ghost") is True
+        # No directory created; archiving has nothing to do but reports success,
+        # and deletion reports that nothing was removed.
+        assert rm._archive_project_directory("ghost") is True
+        assert rm._delete_project_directory("ghost") is False
+
+    def test_failed_archive_reports_false(self, cwcli_home, tmp_path, monkeypatch):
+        # If the copy raises, the archive step must report failure so the caller
+        # refuses to delete anything that was not safely archived.
+        _make_project_dir(rm.PROJECTS_DIR, "proj")
+        archive_dir = tmp_path / "archive"
+        archive_dir.mkdir()
+
+        def boom(*_args, **_kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(rm.shutil, "copytree", boom)
+
+        assert rm._archive_project_directory("proj", archive_dir=archive_dir) is False
+        # The directory is left intact for the caller to preserve.
+        assert (rm.PROJECTS_DIR / "proj").exists()
 
 
 class TestRemoveProjectEndToEnd:
@@ -123,7 +142,11 @@ class TestRemoveProjectEndToEnd:
 
         result = rm._remove_project("proj", remove_volumes=True, no_backup=True)
 
-        assert result == 1
+        assert result["found"] is True
+        assert result["orphan"] is False
+        assert result["containers"] == 1
+        assert result["volumes"] == 2
+        assert result["dir_removed"] is True
         container.remove.assert_called_once_with(v=True, force=True)
         for volume in volumes:
             volume.remove.assert_called_once_with(force=True)
@@ -144,7 +167,9 @@ class TestRemoveProjectEndToEnd:
 
         result = rm._remove_project("proj", remove_volumes=False, no_backup=True)
 
-        assert result == 1
+        assert result["found"] is True
+        assert result["containers"] == 1
+        assert result["dir_removed"] is True
         container.remove.assert_called_once_with(v=False, force=True)
         # Named volumes must be left completely untouched.
         get_volumes.assert_not_called()
@@ -152,3 +177,86 @@ class TestRemoveProjectEndToEnd:
             volume.remove.assert_not_called()
         # The project directory is still removed regardless of --no-volumes.
         assert not project_dir.exists()
+
+    def test_missing_project_is_not_found(self, cwcli_home, monkeypatch):
+        self._patch_docker(monkeypatch)
+        # No containers, no volumes, no project directory -> genuine "not found".
+        monkeypatch.setattr(rm, "get_project_containers", lambda name: [])
+        monkeypatch.setattr(rm, "get_project_volumes", lambda name: [])
+        monkeypatch.setattr(rm.db_utils, "clear_cache_for_project", lambda name: None)
+
+        result = rm._remove_project("ghost", remove_volumes=True, no_backup=True)
+
+        assert result["found"] is False
+        assert result["orphan"] is False
+
+    def test_docker_error_does_not_clean_blindly(self, cwcli_home, monkeypatch):
+        self._patch_docker(monkeypatch)
+        project_dir = _make_project_dir(rm.PROJECTS_DIR, "proj")
+        # A Docker connection error surfaces as None from get_project_containers.
+        monkeypatch.setattr(rm, "get_project_containers", lambda name: None)
+        cleared = MagicMock()
+        monkeypatch.setattr(rm.db_utils, "clear_cache_for_project", cleared)
+
+        result = rm._remove_project("proj", remove_volumes=True, no_backup=True)
+
+        assert result["found"] is False
+        # Nothing destructive must happen on a blind Docker error.
+        assert project_dir.exists()
+        cleared.assert_not_called()
+
+    def test_orphan_cleans_volumes_and_directory(self, cwcli_home, monkeypatch, capsys):
+        self._patch_docker(monkeypatch)
+        project_dir = _make_project_dir(rm.PROJECTS_DIR, "proj")
+        volumes = [_make_volume("proj_sites"), _make_volume("proj_db-data")]
+
+        # Containers already gone (empty list, NOT a Docker error), volumes and
+        # the project directory linger - the orphaned-project scenario.
+        monkeypatch.setattr(rm, "get_project_containers", lambda name: [])
+        monkeypatch.setattr(rm, "get_project_volumes", lambda name: list(volumes))
+        monkeypatch.setattr(rm.db_utils, "clear_cache_for_project", lambda name: None)
+
+        result = rm._remove_project("proj", remove_volumes=True, no_backup=True)
+
+        assert result["found"] is True
+        assert result["orphan"] is True
+        assert result["containers"] == 0
+        assert result["volumes"] == 2
+        assert result["dir_removed"] is True
+
+        # (a) the config dir is archived under a timestamped archive directory.
+        archive_root = cwcli_home / ".cwcli" / "archive"
+        archived = list(archive_root.glob("proj_*/project_files/conf/docker-compose.yml"))
+        assert archived, "expected the project config to be archived before deletion"
+        # (b) the named volumes were removed, and (c) the project dir is gone.
+        for volume in volumes:
+            volume.remove.assert_called_once_with(force=True)
+        assert not project_dir.exists()
+        # (d) the user is warned that a live DB backup could not be taken.
+        err = capsys.readouterr().err
+        assert "no container was running" in err.lower()
+
+    def test_failed_archive_preserves_volumes_and_directory(self, cwcli_home, monkeypatch):
+        self._patch_docker(monkeypatch)
+        project_dir = _make_project_dir(rm.PROJECTS_DIR, "proj")
+        container = _make_container()
+        volumes = [_make_volume("proj_sites")]
+
+        monkeypatch.setattr(rm, "get_project_containers", lambda name: [container])
+        monkeypatch.setattr(rm, "get_project_volumes", lambda name: list(volumes))
+        monkeypatch.setattr(rm.db_utils, "clear_cache_for_project", lambda name: None)
+
+        def boom(*_args, **_kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(rm.shutil, "copytree", boom)
+
+        result = rm._remove_project("proj", remove_volumes=True, no_backup=True)
+
+        # Containers are still removed, but nothing that was not archived is.
+        assert result["containers"] == 1
+        assert result["volumes"] == 0
+        assert result["dir_removed"] is False
+        for volume in volumes:
+            volume.remove.assert_not_called()
+        assert project_dir.exists()
