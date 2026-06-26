@@ -141,15 +141,14 @@ omit = ["*/tests/*", "*/__init__.py"]
 
 ## CI/CD
 
-Tests should be run in CI/CD pipeline before merging:
+Tests run in CI on every push and PR via `.github/workflows/test.yml`:
 
 ```yaml
 - name: Run tests with coverage
-  run: uv run pytest --cov --cov-report=xml
-
-- name: Upload coverage
-  uses: codecov/codecov-action@v3
+  run: uv run pytest --cov=caffeinated_whale_cli --cov-report=term-missing
 ```
+
+The `Pytest` job is the intended required gate. See the [CI/CD Workflows guide](../docs/contributing/ci-cd.md) for the full setup.
 
 ## Common Issues
 
