@@ -288,16 +288,15 @@ def test_handles_exception_gracefully(self, mock_source):
 
 ## Continuous Integration
 
-Tests should run in CI/CD pipeline:
+Tests run in CI on every push and PR via `.github/workflows/test.yml`:
 
 ```yaml
 # .github/workflows/test.yml
-- name: Run tests
-  run: uv run pytest --cov=caffeinated_whale_cli --cov-report=xml
-
-- name: Upload coverage
-  uses: codecov/codecov-action@v3
+- name: Run tests with coverage
+  run: uv run pytest --cov=caffeinated_whale_cli --cov-report=term-missing
 ```
+
+The `Pytest` job is the intended required gate; a second `Mypy` job runs `uv run mypy src/` informationally (`continue-on-error: true`). See the [CI/CD Workflows guide](../contributing/ci-cd.md) for details.
 
 ## Debugging Tests
 

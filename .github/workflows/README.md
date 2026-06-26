@@ -7,6 +7,7 @@
 | Workflow | File | Triggers | Branch |
 |----------|------|----------|--------|
 | **Lint** | `lint.yml` | Push, PR | All branches |
+| **Test** | `test.yml` | Push, PR | All branches |
 | **Build** | `build.yml` | Push, Manual | `master` only |
 | **Release** | `release.yml` | Push, Tags, Release, Manual | `master` only |
 
