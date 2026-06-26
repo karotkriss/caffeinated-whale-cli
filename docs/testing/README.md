@@ -269,17 +269,14 @@ uv run pytest --tb=long
 
 ## CI/CD Integration
 
-### GitHub Actions Example
+Tests run in CI on every push and PR via `.github/workflows/test.yml`:
 
 ```yaml
 - name: Run tests with coverage
-  run: uv run pytest --cov --cov-report=xml
-
-- name: Upload coverage
-  uses: codecov/codecov-action@v3
-  with:
-    files: ./coverage.xml
+  run: uv run pytest --cov=caffeinated_whale_cli --cov-report=term-missing
 ```
+
+The `Pytest` job is the intended required gate. See the [CI/CD Workflows guide](../contributing/ci-cd.md) for the full setup.
 
 ## Future Test Priorities
 
