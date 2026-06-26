@@ -211,8 +211,8 @@ feat: add tab completion support
 ### After Creating PR
 
 1. **CI checks run automatically:**
-   - Lint workflow (Black, Ruff, mypy)
-   - Test suite (if configured)
+   - Lint workflow (Black, Ruff)
+   - Test workflow (pytest, plus an informational mypy job)
 
 2. **Address CI failures:**
    ```bash

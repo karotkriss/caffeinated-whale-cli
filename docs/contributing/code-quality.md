@@ -9,7 +9,7 @@ We use automated tools to ensure consistent code quality:
 - **Black** - Code formatting
 - **Ruff** - Fast Python linter
 - **pytest** - Testing framework
-- **mypy** - Type checking (optional)
+- **mypy** - Type checking (runs informationally in CI, not yet a required gate)
 
 ## Quick Reference
 
@@ -383,7 +383,7 @@ ignore = [
 
 mypy is a static type checker for Python that verifies type hints.
 
-**Status:** Optional for this project (not enforced in CI)
+**Status:** Runs informationally in CI via the `Mypy` job in `.github/workflows/test.yml` (`continue-on-error: true`), so it surfaces type problems without blocking PRs. It is not yet a required gate - mypy currently emits ~50 errors across ~14 files that need burning down to zero first.
 
 ### Basic Usage
 
@@ -543,9 +543,6 @@ jobs:
 
       - name: Lint with Ruff
         run: uv run ruff check src/
-
-      - name: Run tests
-        run: uv run pytest --cov
 ```
 
 **Triggers:**
@@ -555,7 +552,8 @@ jobs:
 **What it checks:**
 - ✅ Black formatting
 - ✅ Ruff linting
-- ✅ Test suite
+
+The test suite and type checking run in a separate `.github/workflows/test.yml` workflow (`Pytest` as the intended required gate, plus an informational `Mypy` job). See the [CI/CD Workflows guide](./ci-cd.md) for details.
 
 ## Common Issues & Solutions
 
@@ -820,7 +818,7 @@ except:  # Too broad
 - [ ] Black formatting check
 - [ ] Ruff linting check
 - [ ] pytest test suite
-- [ ] (Future) mypy type checking
+- [ ] mypy type checking (informational, not yet required)
 
 ## Resources
 
