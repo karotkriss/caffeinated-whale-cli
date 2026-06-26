@@ -394,6 +394,60 @@ View logs with: cwcli logs frappe-one
 
 ---
 
+### `rm` - Remove Project
+
+Removes a Frappe project: its containers, its named Docker volumes, and its local project directory.
+
+**WARNING:** This action is destructive and cannot be undone.
+Before deleting anything, the command re-caches the project, backs up the databases and files for all sites (a live `bench backup --with-files`), and archives the `docker-compose.yml`, `site_config.json`, and the project's `conf/` directory into a timestamped folder under `~/.cwcli/archive/`. The backup and the config archive are written first, and the named volumes and project directory are only deleted once that archive has succeeded.
+
+```bash
+cwcli rm [OPTIONS] [PROJECT_NAME]...
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `PROJECT_NAME` | The name(s) of the Frappe project(s) to remove (can be piped from stdin) |
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--volumes` / `--no-volumes` | Remove the named Docker volumes (databases, sites, files). Default: `--volumes`. Use `--no-volumes` to keep them |
+| `--no-backup` | Skip database backups before removal (also skips recaching; faster but risky) |
+| `-y`, `--yes` | Skip the confirmation prompt and proceed with removal |
+| `-v`, `--verbose` | Enable verbose diagnostic output |
+
+By default `cwcli rm` removes the containers, removes the project's named Docker volumes (where the databases, sites, and files live), deletes the local project directory at `~/.cwcli/projects/{project_name}/`, and clears the project from the cache.
+
+`--no-volumes` preserves the named Docker volumes so the project can be recreated from existing data, but still removes the containers, the local project directory, and the cache entry.
+The project directory is always removed because it is cwcli configuration, not data.
+
+If a project has no running containers but still has orphaned named volumes or a lingering local directory (for example after a partial removal), `cwcli rm` cleans up that leftover state instead of reporting the project as not found.
+
+**Examples:**
+
+```bash
+# Remove everything (with confirmation)
+cwcli rm my-project
+
+# Keep the named volumes, remove containers and project directory only
+cwcli rm my-project --no-volumes
+
+# Skip backups (not recommended)
+cwcli rm my-project --no-backup
+
+# Skip the confirmation prompt
+cwcli rm my-project --yes
+
+# Remove multiple projects via pipe
+cwcli ls | cwcli rm
+```
+
+---
+
 ### `logs` - View Bench Logs
 
 View bench logs in real-time from the log file inside the container.
