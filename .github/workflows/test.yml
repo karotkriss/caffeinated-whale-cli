@@ -31,7 +31,7 @@ jobs:
         run: uv run pytest --cov=caffeinated_whale_cli --cov-report=term-missing
 
   typecheck:
-    name: Mypy (informational)
+    name: Mypy
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/astral-sh/uv:python3.12-bookworm
@@ -45,12 +45,14 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --all-extras
 
-      # NOTE: mypy currently reports ~50 errors across ~14 files. This step is
-      # informational (continue-on-error) so it surfaces type problems without
-      # failing the job's status check on PRs. Burn the existing errors down to
-      # zero, then drop continue-on-error and promote this to a required check.
-      # (continue-on-error MUST be on the step, not the job: a job-level setting
+      # NOTE: mypy is now a zero-error gate. The historical ~50 errors have been
+      # burned down to zero, so this step fails the job's status check whenever a
+      # new type error is introduced. Keep it that way: do not re-add
+      # continue-on-error. (If you ever need to make a step non-blocking again,
+      # continue-on-error MUST go on the step, not the job: a job-level setting
       # still reports the job's conclusion as "failure" on the PR check.)
+      # To make this *required to merge*, a repo admin must also tick "Mypy" as a
+      # required status check in the develop branch-protection settings (same as
+      # the Pytest gate).
       - name: Type-check with Mypy
-        continue-on-error: true
         run: uv run mypy src/
