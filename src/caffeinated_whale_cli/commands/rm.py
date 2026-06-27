@@ -646,7 +646,7 @@ def _frappe_container_running(project_name: str) -> bool:
         return False
     for container in containers:
         if container.labels.get("com.docker.compose.service") == "frappe":
-            return container.status == "running"
+            return bool(container.status == "running")
     return False
 
 
