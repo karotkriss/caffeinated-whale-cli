@@ -64,7 +64,7 @@ def get_project_containers(
         client = docker.from_env()
         client.ping()
 
-        containers = client.containers.list(
+        containers: list = client.containers.list(
             all=True, filters={"label": f"com.docker.compose.project={project_name}"}
         )
         return containers

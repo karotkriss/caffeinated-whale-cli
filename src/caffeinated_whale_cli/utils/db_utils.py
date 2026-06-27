@@ -319,7 +319,7 @@ def get_all_cached_projects():
     return list(Project.select())
 
 
-def get_common_site_config(project_name: str, bench_path: str = None) -> dict | None:
+def get_common_site_config(project_name: str, bench_path: str | None = None) -> dict | None:
     """
     Get common_site_config for a project/bench.
 
@@ -339,7 +339,8 @@ def get_common_site_config(project_name: str, bench_path: str = None) -> dict | 
             bench = Bench.get((Bench.project == project) & (Bench.path == bench_path))
             try:
                 config_obj = CommonSiteConfig.get(CommonSiteConfig.bench == bench)
-                return json.loads(config_obj.config_json)
+                config: dict = json.loads(config_obj.config_json)
+                return config
             except CommonSiteConfig.DoesNotExist:
                 return None
         else:
@@ -347,7 +348,8 @@ def get_common_site_config(project_name: str, bench_path: str = None) -> dict | 
             for bench in project.benches:
                 try:
                     config_obj = CommonSiteConfig.get(CommonSiteConfig.bench == bench)
-                    return json.loads(config_obj.config_json)
+                    config = json.loads(config_obj.config_json)
+                    return config
                 except CommonSiteConfig.DoesNotExist:
                     continue
             return None
@@ -356,7 +358,9 @@ def get_common_site_config(project_name: str, bench_path: str = None) -> dict | 
         return None
 
 
-def get_site_config(project_name: str, site_name: str, bench_path: str = None) -> dict | None:
+def get_site_config(
+    project_name: str, site_name: str, bench_path: str | None = None
+) -> dict | None:
     """
     Get site_config for a specific site.
 
@@ -392,7 +396,8 @@ def get_site_config(project_name: str, site_name: str, bench_path: str = None) -
         # Get the site config
         try:
             config_obj = SiteConfig.get(SiteConfig.site == site)
-            return json.loads(config_obj.config_json)
+            config: dict = json.loads(config_obj.config_json)
+            return config
         except SiteConfig.DoesNotExist:
             return None
 
@@ -400,7 +405,7 @@ def get_site_config(project_name: str, site_name: str, bench_path: str = None) -
         return None
 
 
-def get_all_site_configs(project_name: str, bench_path: str = None) -> dict[str, dict]:
+def get_all_site_configs(project_name: str, bench_path: str | None = None) -> dict[str, dict]:
     """
     Get all site configs for a project or specific bench.
 
@@ -437,7 +442,7 @@ def get_all_site_configs(project_name: str, bench_path: str = None) -> dict[str,
         return {}
 
 
-def get_default_site(project_name: str, bench_path: str = None) -> str | None:
+def get_default_site(project_name: str, bench_path: str | None = None) -> str | None:
     """
     Get the default site for a project from the common_site_config.
 

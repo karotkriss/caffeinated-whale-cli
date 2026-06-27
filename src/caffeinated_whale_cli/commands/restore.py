@@ -32,7 +32,7 @@ def parse_backup_filename(filename: str) -> dict | None:
     """
     # Remove extensions
     name_without_ext = filename
-    extensions = []
+    extensions: list[str] = []
     while "." in name_without_ext:
         name_without_ext, ext = name_without_ext.rsplit(".", 1)
         extensions.insert(0, ext)
@@ -92,7 +92,7 @@ def scan_backups_for_all_sites(frappe_container, bench_path: str, verbose: bool 
     Returns:
         List of parsed backup file dictionaries (grouped by backup set)
     """
-    backups = []
+    backups: list[dict] = []
 
     # Get all sites in the bench
     sites_path = f"{bench_path}/sites"
@@ -346,7 +346,7 @@ def display_backup_selection_menu(
         Selected backup set dict or None if cancelled
     """
     # Build choices with badges
-    choices = []
+    choices: list[str | questionary.Separator] = []
     backup_map = {}
 
     # Simple text badges
@@ -823,12 +823,14 @@ def restore_receive_mode(
 
         try:
             # Run sendme to download files
-            cmd = [sendme_cmd, "receive", ticket]
+            receive_cmd = [sendme_cmd, "receive", ticket]
 
             if verbose:
-                stderr_console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
+                stderr_console.print(f"[dim]$ {' '.join(receive_cmd)}[/dim]")
 
-            result = subprocess.run(cmd, cwd=temp_dir, capture_output=not verbose, text=True)
+            result = subprocess.run(
+                receive_cmd, cwd=temp_dir, capture_output=not verbose, text=True
+            )
 
             if result.returncode != 0:
                 stderr_console.print(

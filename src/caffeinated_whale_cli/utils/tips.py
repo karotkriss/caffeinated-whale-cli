@@ -98,6 +98,7 @@ class TipRotator:
         """
         if self._shuffled_tips is None:
             self.shuffle_tips()
+        assert self._shuffled_tips is not None  # shuffle_tips() always populates it
 
         tip = self._shuffled_tips[self.current_index]
         self.current_index = (self.current_index + 1) % len(self._shuffled_tips)

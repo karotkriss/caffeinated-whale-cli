@@ -85,7 +85,7 @@ def _check_port_conflicts(project_name: str, verbose: bool = False) -> bool:
         conflicting_projects = set(frappe_projects_on_ports.values())
 
         # Group ports by project for better display
-        project_to_ports = {}
+        project_to_ports: dict[str, list] = {}
         for port, proj in frappe_projects_on_ports.items():
             if proj not in project_to_ports:
                 project_to_ports[proj] = []
@@ -154,7 +154,7 @@ def _check_port_conflicts(project_name: str, verbose: bool = False) -> bool:
             )
 
             # Group ports by process
-            process_to_ports = {}
+            process_to_ports: dict[str | None, list] = {}
             for port in remaining_ports_in_use:
                 process = ports_with_processes.get(port, "unknown")
                 if process not in process_to_ports:

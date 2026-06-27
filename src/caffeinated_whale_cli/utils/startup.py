@@ -30,9 +30,9 @@ def get_cwcli_path() -> str:
     # Fallback: use the Python executable path to construct cwcli path
     # This works when running from a virtual environment
     python_dir = Path(sys.executable).parent
-    cwcli_path = python_dir / "cwcli"
-    if cwcli_path.exists():
-        return str(cwcli_path)
+    cwcli_candidate = python_dir / "cwcli"
+    if cwcli_candidate.exists():
+        return str(cwcli_candidate)
 
     # Last resort: just return "cwcli" and hope it's in PATH
     return "cwcli"

@@ -39,6 +39,8 @@ dev = [
     "mypy>=1.13.0",
     "pytest>=8.0.0",
     "pytest-cov>=6.0.0",
+    "types-requests>=2.33.0.20260518",
+    "types-toml>=0.10.8.20260518",
 ]
 
 [tool.black]
