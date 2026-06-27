@@ -37,3 +37,18 @@ In `src/caffeinated_whale_cli/commands/rm.py`:
 
 - `_recover_trailing_flags` makes flag order forgiving: a variadic `typer.Argument` greedily eats options that trail it, so `cwcli rm myproj --yes` would otherwise treat `--yes` as a second project name. It pulls `-v/--verbose`, `-y/--yes`, `--no-backup`, `--volumes/--no-volumes` back out of the name list.
 - Orphan path: when `get_project_containers` returns an empty list (containers already gone, distinct from a `None` Docker error) but a named volume or the project dir still exists, `rm` still archives `conf/`, removes the volume + dir, and warns that no live DB backup could be taken. This resolves already-orphaned projects (the literal #19 report).
+
+### Recache must never prompt under the spinner (stopped-project deadlock)
+
+The pre-removal recache runs inside a Rich `console.status("Re-caching project '{project}'...")` spinner.
+The recache chain is `rm()` -> `cache.recache_project()` -> `commands/inspect.py:inspect()` -> `commands/utils.py:ensure_containers_running(require_running=True)`.
+When the frappe container is NOT running, `ensure_containers_running` used to call `questionary.confirm("Would you like to start the containers...?")`.
+Issuing an interactive prompt while a `console.status` spinner owns the terminal paints the prompt over and starves it of input -> `cwcli rm <stopped-project>` hangs forever on the spinner.
+A stopped project is a normal rm case (a live `bench backup` is impossible, so rm warns and still archives `conf/`, removes named volumes, and deletes the dir), so this must degrade, not block.
+
+The fix has two layers; keep both:
+
+- `ensure_containers_running(..., prompt: bool = True)` (`commands/utils.py`): with `prompt=False` it NEVER prompts - when the containers are not running (and `auto_start` is False) it returns `False` instead of asking. `inspect` forwards this via a hidden `--prompt-start/--no-prompt-start` option (`prompt_to_start`, default True) and, when `ensure_containers_running` returns False, prints a clear error and `raise typer.Exit(1)` (a stopped bench can't be inspected: every probe is an `exec_run`). `cache.recache_project` calls `inspect(..., prompt_to_start=False)`, so the recache is ALWAYS non-interactive and degrades to a `False` return. Standalone `cwcli inspect` keeps `prompt_to_start=True`, so it still prompts interactively as before (this is independent of `--interactive`, which only governs bench-alias naming).
+- `_frappe_container_running(project)` (`commands/rm.py`): `rm()` checks this BEFORE entering the recache spinner and SKIPS the recache for a stopped project (printing "Containers for '{project}' are not running; skipping recache"). The recache only refreshes site info for a live backup, which is moot when nothing runs - and rm must NOT auto-start containers it is about to delete. This keeps the spinner off the stopped path entirely; the `ensure_containers_running` layer is defense-in-depth for any other non-interactive caller.
+
+Regression coverage is in `tests/test_rm_stopped.py` (asserts no `questionary.confirm` is reachable from the recache path and that `rm` skips recache for a stopped project).

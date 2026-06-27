@@ -17,6 +17,7 @@ def ensure_containers_running(
     require_running: bool = False,
     verbose: bool = False,
     auto_start: bool = False,
+    prompt: bool = True,
 ) -> bool:
     """
     Check if containers for a project are running and optionally prompt to start them.
@@ -31,13 +32,20 @@ def ensure_containers_running(
         require_running: If True, containers must be running for the operation to proceed.
         verbose: Enable verbose output.
         auto_start: If True, automatically start containers without prompting.
+        prompt: If True (default), interactively ask the user to start stopped
+            containers. If False, never prompt: when the containers are not running
+            (and ``auto_start`` is False) the function returns False instead of
+            asking a question. This non-interactive mode is required for callers that
+            run inside a Rich ``console.status`` spinner (e.g. the ``rm`` recache
+            path), where an interactive prompt would be painted over and could never
+            receive input, deadlocking the command.
 
     Returns:
         True if containers are running (or were started), False otherwise.
 
     Raises:
-        typer.Exit: If containers are not running and user chooses not to start them,
-                   or if starting containers fails.
+        typer.Exit: If containers are not running and the user is prompted but chooses
+                   not to start them, or if starting containers fails.
     """
     if not require_running:
         return True
@@ -62,6 +70,16 @@ def ensure_containers_running(
                 f"[dim]VERBOSE: Auto-starting containers for '{project_name}'[/dim]"
             )
         user_wants_to_start = True
+    elif not prompt:
+        # Non-interactive caller (e.g. running under a spinner). Do NOT prompt;
+        # report that the containers are not running and let the caller decide
+        # how to degrade gracefully.
+        if verbose:
+            stderr_console.print(
+                f"[dim]VERBOSE: Containers for '{project_name}' are not running "
+                "(non-interactive mode; not prompting to start)[/dim]"
+            )
+        return False
     else:
         # Prompt user to start containers
         stderr_console.print(

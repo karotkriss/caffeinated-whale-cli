@@ -228,6 +228,15 @@ def inspect(
     interactive: bool = typer.Option(
         False, "--interactive", "-i", help="Prompt to name each bench instance interactively."
     ),
+    prompt_to_start: bool = typer.Option(
+        True,
+        "--prompt-start/--no-prompt-start",
+        hidden=True,
+        help=(
+            "Whether to interactively offer to start stopped containers. Disabled by "
+            "non-interactive callers (e.g. the rm recache path) that run under a spinner."
+        ),
+    ),
 ):
     """
     Inspects a Project to find all Bench Instances, Sites, and Apps within it.
@@ -254,8 +263,19 @@ def inspect(
         bench_instances_data = None
 
     if bench_instances_data is None:
-        # Ensure containers are running, prompt user if not (only in interactive mode)
-        ensure_containers_running(project_name, require_running=True, verbose=verbose)
+        # Ensure containers are running. With prompt_to_start (the default) the user
+        # is offered to start stopped containers; with --no-prompt-start (used by the
+        # rm recache path, which runs under a spinner) we never prompt and instead
+        # bail cleanly when nothing is running - inspecting a stopped bench is
+        # impossible because every probe runs `exec_run` inside the container.
+        if not ensure_containers_running(
+            project_name, require_running=True, verbose=verbose, prompt=prompt_to_start
+        ):
+            console_err.print(
+                f"Error: Containers for project '{project_name}' are not running; "
+                "cannot inspect a stopped project."
+            )
+            raise typer.Exit(code=1)
 
         all_containers = get_project_containers(project_name)
         if not all_containers:
