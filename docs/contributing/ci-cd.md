@@ -9,7 +9,7 @@ We use four GitHub Actions workflows:
 | Workflow | Triggers | Purpose |
 |----------|----------|---------|
 | **Lint** | All branches, all PRs | Code quality checks (Black, Ruff) |
-| **Test** | All branches, all PRs | Run pytest (required gate) + mypy (informational) |
+| **Test** | All branches, all PRs | Run pytest (required gate) + mypy (zero-error gate) |
 | **Build** | Push to `master` | Build package, verify version consistency |
 | **Release** | Tags `v*.*.*` | Publish to PyPI, create GitHub release |
 
@@ -42,7 +42,7 @@ See [Code Quality Guide](./code-quality.md) for details.
 Runs on every push and PR. Has two jobs:
 
 - **Pytest** - runs the test suite with coverage (`uv run pytest --cov=caffeinated_whale_cli --cov-report=term-missing`). This is the intended required gate. Because `develop` has no branch protection, an admin must tick `Pytest` as a required status check in the `develop` branch-protection settings for it to actually block merges.
-- **Mypy (informational)** - runs `uv run mypy src/` with `continue-on-error: true`. mypy currently emits ~50 errors across ~14 files, so this job surfaces type problems without blocking PRs. Burn those errors down to zero, then drop `continue-on-error` and promote it to a required check.
+- **Mypy** - runs `uv run mypy src/` as a zero-error gate. The historical ~50 errors across ~14 files were burned down to zero and `continue-on-error` was dropped from the step, so any new type error fails the job's status check. To make it *required to merge*, an admin must also tick `Mypy` as a required status check in the `develop` branch-protection settings (same outstanding step as `Pytest`).
 
 **Run locally:**
 ```bash

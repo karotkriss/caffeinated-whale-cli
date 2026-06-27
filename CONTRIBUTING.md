@@ -245,7 +245,7 @@ uv run black src/ tests/
 # Lint code
 uv run ruff check src/ --fix
 
-# Type check (runs informationally in CI, not yet a required gate)
+# Type check (zero-error gate in CI; keep this clean)
 uv run mypy src/
 ```
 

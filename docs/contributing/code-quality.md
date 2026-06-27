@@ -9,7 +9,7 @@ We use automated tools to ensure consistent code quality:
 - **Black** - Code formatting
 - **Ruff** - Fast Python linter
 - **pytest** - Testing framework
-- **mypy** - Type checking (runs informationally in CI, not yet a required gate)
+- **mypy** - Type checking (zero-error gate in CI)
 
 ## Quick Reference
 
@@ -377,13 +377,13 @@ ignore = [
 ]
 ```
 
-## Type Checking with mypy (Optional)
+## Type Checking with mypy
 
 ### What is mypy?
 
 mypy is a static type checker for Python that verifies type hints.
 
-**Status:** Runs informationally in CI via the `Mypy` job in `.github/workflows/test.yml` (`continue-on-error: true`), so it surfaces type problems without blocking PRs. It is not yet a required gate - mypy currently emits ~50 errors across ~14 files that need burning down to zero first.
+**Status:** Runs as a zero-error gate in CI via the `Mypy` job in `.github/workflows/test.yml`. The historical ~50 errors across ~14 files were burned down to zero and `continue-on-error` was dropped from the step, so any new type error fails the job. Keep `uv run mypy src/` at zero errors: prefer accurate annotations over `# type: ignore` (there are none in `src/`), add the matching `types-*` stub package for an untyped third-party import rather than ignoring it, and do not loosen `[tool.mypy]` to make errors disappear. To make the check *required to merge*, a repo admin must also tick `Mypy` as a required status check in the `develop` branch-protection settings (same outstanding step as `Pytest`).
 
 ### Basic Usage
 
@@ -553,7 +553,7 @@ jobs:
 - ✅ Black formatting
 - ✅ Ruff linting
 
-The test suite and type checking run in a separate `.github/workflows/test.yml` workflow (`Pytest` as the intended required gate, plus an informational `Mypy` job). See the [CI/CD Workflows guide](./ci-cd.md) for details.
+The test suite and type checking run in a separate `.github/workflows/test.yml` workflow (`Pytest` as the intended required gate, plus a zero-error `Mypy` gate). See the [CI/CD Workflows guide](./ci-cd.md) for details.
 
 ## Common Issues & Solutions
 
@@ -775,7 +775,7 @@ except:  # Too broad
 |------|-------|----------|
 | **Ruff** | ⚡⚡⚡ Very Fast | Linting (10-100x faster than Flake8) |
 | **Black** | ⚡⚡ Fast | Formatting |
-| **mypy** | ⚡ Moderate | Type checking (optional) |
+| **mypy** | ⚡ Moderate | Type checking (zero-error gate) |
 | **pytest** | ⚡ Varies | Testing (depends on test count) |
 
 ### Optimization Tips
@@ -818,7 +818,7 @@ except:  # Too broad
 - [ ] Black formatting check
 - [ ] Ruff linting check
 - [ ] pytest test suite
-- [ ] mypy type checking (informational, not yet required)
+- [ ] mypy type checking (zero-error gate: `uv run mypy src/`)
 
 ## Resources
 
