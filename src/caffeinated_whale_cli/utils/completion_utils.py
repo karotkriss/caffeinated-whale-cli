@@ -65,7 +65,7 @@ def _set_cached(key: str, value: list[str]) -> None:
 
 
 def complete_project_names(
-    ctx: typer.Context = None, args: list[str] = None, incomplete: str = ""
+    ctx: typer.Context | None = None, args: list[str] | None = None, incomplete: str = ""
 ) -> list[str]:
     """
     Complete Frappe project names from Docker containers.
@@ -115,7 +115,7 @@ def complete_project_names(
 
 
 def complete_app_names(
-    ctx: typer.Context = None, args: list[str] = None, incomplete: str = ""
+    ctx: typer.Context | None = None, args: list[str] | None = None, incomplete: str = ""
 ) -> list[str]:
     """
     Complete app names for a given project.
@@ -163,7 +163,7 @@ def complete_app_names(
 
 
 def complete_site_names(
-    ctx: typer.Context = None, args: list[str] = None, incomplete: str = ""
+    ctx: typer.Context | None = None, args: list[str] | None = None, incomplete: str = ""
 ) -> list[str]:
     """
     Complete site names for a given project.
