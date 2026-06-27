@@ -120,11 +120,28 @@ class TestRmStoppedProjectSkipsRecache:
         recache_called = MagicMock()
         monkeypatch.setattr(rm.cache, "recache_project", recache_called)
 
-        # Stop after the recache phase by having the user decline the confirmation,
-        # so we exercise only the recache-skip path. questionary.confirm is patched
-        # to decline; crucially it must NOT be reached from inside a recache spinner.
+        # Stub out the actual teardown: this test only pins the recache-skip
+        # contract, which happens before removal. Stubbing keeps it independent of
+        # whether Docker is installed (``_remove_project`` is Docker-gated, so on a
+        # host without Docker it would raise ``typer.Exit`` - which is NOT a
+        # ``SystemExit`` subclass - and crash the test in CI).
+        monkeypatch.setattr(
+            rm,
+            "_remove_project",
+            MagicMock(
+                return_value={
+                    "found": True,
+                    "containers": 0,
+                    "volumes": 0,
+                    "dir_removed": False,
+                    "orphan": False,
+                }
+            ),
+        )
+
+        # questionary.confirm must NOT be reached from inside a recache spinner.
         fake_confirm = MagicMock()
-        fake_confirm.ask.return_value = False
+        fake_confirm.ask.return_value = True
         monkeypatch.setattr(rm.questionary, "confirm", MagicMock(return_value=fake_confirm))
 
         # stdin is a tty so no piped names are read; pass the name as an argument.
@@ -133,7 +150,7 @@ class TestRmStoppedProjectSkipsRecache:
         try:
             rm.rm(ctx=MagicMock(), project_name=["proj"])
         except SystemExit:
-            pass  # typer.Exit on declined confirmation
+            pass  # typer.Exit is possible on some flow exits
 
         # Recache must have been skipped entirely for the stopped project.
         recache_called.assert_not_called()
