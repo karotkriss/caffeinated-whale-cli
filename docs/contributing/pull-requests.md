@@ -144,7 +144,7 @@ Closes #42
 - [ ] All tests pass: `uv run pytest --cov`
 - [ ] Code formatted: `uv run black src/ tests/`
 - [ ] Linting passes: `uv run ruff check src/ --fix`
-- [ ] No type errors: `uv run mypy src/` (optional)
+- [ ] No type errors: `uv run mypy src/`
 
 **Documentation:**
 - [ ] CHANGELOG.md updated under `[Unreleased]`
@@ -212,7 +212,7 @@ feat: add tab completion support
 
 1. **CI checks run automatically:**
    - Lint workflow (Black, Ruff)
-   - Test workflow (pytest, plus an informational mypy job)
+   - Test workflow (pytest, plus a zero-error mypy gate)
 
 2. **Address CI failures:**
    ```bash

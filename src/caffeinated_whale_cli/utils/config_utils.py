@@ -117,9 +117,10 @@ def remove_custom_path(path: str) -> bool:
 def get_auto_inspect_config() -> dict:
     """Get auto-inspect configuration."""
     config = load_config()
-    return config.get(
+    auto_inspect: dict = config.get(
         "auto_inspect", {"enabled": False, "interval": 3600, "startup_enabled": False}
     )
+    return auto_inspect
 
 
 def set_auto_inspect_enabled(enabled: bool):
@@ -162,7 +163,8 @@ def get_show_tips() -> bool:
         True if tips should be shown, False otherwise (default: True)
     """
     config = load_config()
-    return config.get("ui", {}).get("show_tips", True)
+    show_tips: bool = config.get("ui", {}).get("show_tips", True)
+    return show_tips
 
 
 def set_show_tips(enabled: bool):

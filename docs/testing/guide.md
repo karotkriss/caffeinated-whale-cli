@@ -296,7 +296,7 @@ Tests run in CI on every push and PR via `.github/workflows/test.yml`:
   run: uv run pytest --cov=caffeinated_whale_cli --cov-report=term-missing
 ```
 
-The `Pytest` job is the intended required gate; a second `Mypy` job runs `uv run mypy src/` informationally (`continue-on-error: true`). See the [CI/CD Workflows guide](../contributing/ci-cd.md) for details.
+The `Pytest` job is the intended required gate; a second `Mypy` job runs `uv run mypy src/` as a zero-error gate (it fails on any type error). See the [CI/CD Workflows guide](../contributing/ci-cd.md) for details.
 
 ## Debugging Tests
 

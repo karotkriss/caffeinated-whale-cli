@@ -121,7 +121,7 @@ def _deduplicate_app_results(results: list[dict]) -> list[dict]:
     keep only the installed entries (which have more info like version/branch).
     """
     # First pass: collect all installed apps per project
-    installed_by_project = {}
+    installed_by_project: dict[tuple, list] = {}
     for result in results:
         if result["installed"]:
             key = (result["project"], result["name"])

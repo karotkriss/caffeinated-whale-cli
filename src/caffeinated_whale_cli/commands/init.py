@@ -195,7 +195,7 @@ def _exec_in_container(
 def _directory_exists(container, path: str) -> bool:
     """Return True if a directory exists inside the container."""
     exit_code, _ = container.exec_run(["bash", "-lc", f"test -d {shlex.quote(path)}"])
-    return exit_code == 0
+    return bool(exit_code == 0)
 
 
 def _ensure_directory(container, path: str) -> None:
@@ -217,7 +217,7 @@ def _get_pyenv_python_version(container, prefix: str, verbose: bool = False) -> 
             stderr_console.print("[dim]Could not list pyenv versions[/dim]")
         return None
 
-    versions = output.decode("utf-8", errors="replace").split()
+    versions: list[str] = output.decode("utf-8", errors="replace").split()
     for version in versions:
         if version.startswith(prefix + "."):
             if verbose:
@@ -245,7 +245,7 @@ def _install_pyenv_python(container, prefix: str, verbose: bool = False) -> str 
         return None
 
     pattern = re.compile(rf"^\s*({re.escape(prefix)}\.\d+)\s*$", re.MULTILINE)
-    matches = pattern.findall(output.decode("utf-8", errors="replace"))
+    matches: list[str] = pattern.findall(output.decode("utf-8", errors="replace"))
     if not matches:
         if verbose:
             stderr_console.print(f"[dim]No available pyenv version matching {prefix}.x[/dim]")
@@ -282,7 +282,7 @@ def _get_nvm_node_version(container, major: str, verbose: bool = False) -> str |
             stderr_console.print("[dim]Could not list nvm Node.js versions[/dim]")
         return None
 
-    versions = output.decode("utf-8", errors="replace").split()
+    versions: list[str] = output.decode("utf-8", errors="replace").split()
     for version in versions:
         # Entries look like v16.20.2, v22.22.0
         if version.startswith(f"v{major}."):
@@ -375,7 +375,7 @@ def _get_latest_bench_tag(verbose: bool = False) -> str:
 
         semver_re = re.compile(r"^v\d+\.\d+\.\d+$")
         for result in data.get("results", []):
-            tag = result.get("name", "")
+            tag: str = result.get("name", "")
             if semver_re.match(tag):
                 if verbose:
                     stderr_console.print(f"[dim]Resolved latest bench image tag: {tag}[/dim]")

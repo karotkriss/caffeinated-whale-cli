@@ -18,7 +18,8 @@ Other per-branch settings nearby in `init.py`: Python version (`branch_python`: 
 - `.github/workflows/lint.yml` runs `black --check` + `ruff check`.
 - `.github/workflows/test.yml` runs `pytest` (with `pytest-cov`) and `mypy src/`. It triggers on pushes to all branches and PRs to all branches (the default branch is `develop`, not `master`).
 - The `Pytest` job is the intended required gate. develop has no branch protection, so the admin must tick `Pytest` as a required status check in the develop branch-protection settings for it to actually block merges.
-- The `Mypy (informational)` job is `continue-on-error: true` because mypy currently emits ~50 errors across ~14 files. Burn those errors down to zero, then drop `continue-on-error` and promote it to a required check.
+- The `Mypy` job is now a zero-error blocking gate. The historical ~50 errors were burned down to zero and `continue-on-error` was dropped from the step, so any new type error fails the job's status check. To make it *required to merge*, the repo admin still has to tick `Mypy` as a required status check in the develop branch-protection settings (same outstanding admin step as `Pytest`).
+- Keep `uv run mypy src/` at zero errors. Two `types-*` stub packages are dev deps for this (`types-requests`, `types-toml`); add the matching `types-*` stub rather than ignoring an untyped third-party import. There are currently no `# type: ignore` comments in `src/` - prefer accurate annotations (e.g. assign a dynamic `json.loads(...)`/`exec_run(...)` result to a typed local, use `str | None` for implicit-Optional defaults) over silencing. Do not loosen `[tool.mypy]` in `pyproject.toml` to make errors disappear.
 - `build.yml` / `release.yml` trigger on `master` (the historical default); they build and publish to PyPI and do not run tests.
 
 ## `rm` command: what removal actually deletes
