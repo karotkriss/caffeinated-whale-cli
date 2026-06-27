@@ -508,8 +508,16 @@ def _remove_project(
             frappe_container = container
             break
 
+    # A live `bench backup` and the container-side config archive both shell into
+    # the frappe container via exec_run, which only works while it is running. A
+    # stopped frappe container is a normal rm case (the user simply never started
+    # it, or stopped it): do NOT attempt those exec-based steps against it - they
+    # would only emit confusing "could not backup/archive" warnings. The conf/
+    # safety net is copied host-side by _archive_project_directory below.
+    frappe_running = frappe_container is not None and frappe_container.status == "running"
+
     # Backup and archive before removal
-    if frappe_container:
+    if frappe_running:
         # Try to get bench path from cache first
         bench_path = "/workspace/frappe-bench"  # default
         try:
@@ -531,9 +539,10 @@ def _remove_project(
         if status:
             status.update(f"[bold cyan]Archiving configuration for '{project_name}'...[/bold cyan]")
         _archive_project_config(project_name, frappe_container, bench_path, verbose=verbose)
-    elif is_orphan:
-        # No container is running, so a live `bench backup` database dump is
-        # impossible. Only the archived config can be preserved.
+    else:
+        # No running container, so a live `bench backup` database dump is
+        # impossible (whether the containers are stopped or already gone). Only
+        # the host-side conf/ archive can be preserved.
         stderr_console.print(
             f"[yellow]Warning:[/yellow] No container was running for '{project_name}', "
             "so a fresh database backup could not be taken before cleanup."
@@ -617,6 +626,28 @@ def _remove_project(
         db_utils.clear_cache_for_project(project_name)
 
     return result
+
+
+def _frappe_container_running(project_name: str) -> bool:
+    """
+    Report whether the project's ``frappe`` service container is currently running.
+
+    Used to decide whether a pre-removal recache is worthwhile: the recache exists
+    only to refresh site info for a live ``bench backup``, which is impossible when
+    nothing is running. A return of False also keeps ``rm`` from entering the
+    recache spinner on a stopped project, which is where an interactive
+    "start the containers?" prompt would otherwise be trapped under the spinner.
+
+    Returns True only if a ``frappe`` service container exists and reports status
+    ``running``; False otherwise (no containers, a Docker error, or stopped).
+    """
+    containers = get_project_containers(project_name)
+    if not containers:
+        return False
+    for container in containers:
+        if container.labels.get("com.docker.compose.service") == "frappe":
+            return container.status == "running"
+    return False
 
 
 def _recover_trailing_flags(
@@ -736,11 +767,24 @@ def rm(
         )
         raise typer.Exit(code=1)
 
-    # Re-cache projects if not skipping backups
+    # Re-cache projects if not skipping backups. The recache only refreshes site
+    # info so a live `bench backup` is accurate, which is moot when nothing is
+    # running. A stopped project is a normal rm case: skip the recache instead of
+    # auto-starting containers we are about to delete (wasteful and surprising),
+    # and avoid entering the spinner where a "start the containers?" prompt would
+    # otherwise be trapped. rm still proceeds to archive conf/ and remove the
+    # volumes and project directory.
     if not no_backup:
         console.print()
         console.print("[bold cyan]Preparing for removal...[/bold cyan]")
         for project in project_names_to_process:
+            if not _frappe_container_running(project):
+                stderr_console.print(
+                    f"[dim]Containers for '{project}' are not running; skipping recache "
+                    "(a live backup can only be taken from a running project).[/dim]"
+                )
+                continue
+
             with stderr_console.status(
                 f"Re-caching project '{project}'...", spinner="dots"
             ) as status:
