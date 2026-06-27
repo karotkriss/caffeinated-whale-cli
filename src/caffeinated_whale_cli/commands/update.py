@@ -18,7 +18,7 @@ def _stream_command(
     cmd: str,
     workdir: str,
     verbose: bool = False,
-    status_msg: str = None,
+    status_msg: str | None = None,
 ) -> int:
     """Execute command and optionally stream output in real-time."""
     if verbose:
@@ -60,7 +60,8 @@ def _stream_command(
         # Non-verbose mode: just run the command without streaming
         # demux=False ensures we wait for the command to fully complete
         exit_code, _ = container.exec_run(cmd, workdir=workdir, demux=False)
-        return exit_code
+        return_code: int = exit_code
+        return return_code
 
 
 def _run_command_quiet(
@@ -181,7 +182,7 @@ def _get_sites_with_app(
 def _update_project(
     project_name: str,
     apps: list[str],
-    bench_path: str = None,
+    bench_path: str | None = None,
     verbose: bool = False,
     clear_cache: bool = False,
     clear_website_cache: bool = False,

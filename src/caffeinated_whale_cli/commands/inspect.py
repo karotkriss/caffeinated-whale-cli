@@ -117,7 +117,7 @@ def _get_common_site_config(
 
     if exit_code == 0 and output:
         try:
-            config = json.loads(output)
+            config: dict = json.loads(output)
             if verbose:
                 console_err.print(
                     f"[dim]VERBOSE: Found common_site_config with {len(config)} keys[/dim]"
@@ -151,7 +151,7 @@ def _get_site_config(
 
     if exit_code == 0 and output:
         try:
-            config = json.loads(output)
+            config: dict = json.loads(output)
             if verbose:
                 console_err.print(
                     f"[dim]VERBOSE: Found site_config for {site_name} with {len(config)} keys[/dim]"
@@ -194,13 +194,13 @@ def _gather_bench_data(
         # Fetch site-specific config
         site_config = _get_site_config(frappe_container, bench_dir, site, verbose)
 
-        site_data = {"name": site, "installed_apps": installed_apps}
+        site_data: dict = {"name": site, "installed_apps": installed_apps}
         if site_config is not None:
             site_data["site_config"] = site_config
 
         sites_info.append(site_data)
 
-    bench_data = {"path": bench_dir, "sites": sites_info, "available_apps": available_apps}
+    bench_data: dict = {"path": bench_dir, "sites": sites_info, "available_apps": available_apps}
 
     if common_site_config is not None:
         bench_data["common_site_config"] = common_site_config
