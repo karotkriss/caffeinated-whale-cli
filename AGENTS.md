@@ -13,6 +13,17 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 Other per-branch settings nearby in `init.py`: Python version (`branch_python`: 15->3.12, 14->3.10, 13->3.9), Node major (`branch_node`: 14->16, 13->14), and `setuptools<82` is pinned only for `version-13`.
 
+### `init` existing-bench flow: decline must continue, not dead-end
+
+The devcontainer image ships a `/workspace/frappe-bench`, so a fresh `cwcli init` usually finds an already-existing bench at the default `bench_parent/bench_name`.
+`_resolve_bench_target(frappe_container, bench_parent_path, bench_name)` in `init.py` owns this branch and returns `(bench_name, bench_full_path, bench_exists)`.
+When the bench exists it asks "Reuse the existing bench ...?": Yes reuses it (returns `bench_exists=True` so `bench init` is skipped); No now prompts for a different bench name and loops, so site setup continues on a fresh bench (returns `bench_exists=False`).
+A blank replacement name or a cancelled prompt (`.ask()` returns `None`) exits cleanly with code 0 and "No changes made.".
+This replaced the old behavior where declining reuse just `raise typer.Exit(0)` and aborted the whole command (issue #20).
+The resolver runs after the setup spinner has exited, so its prompts own the terminal; keep it out of any `console.status`/`TipSpinner` block.
+`inputs.bench_name` is reassigned from the resolver's return (so `bench init` and the site paths use the chosen name), which is valid because `InitInputs` is a plain mutable `@dataclass`.
+Regression coverage is in `tests/test_init_reuse_bench.py`.
+
 ## CI quality gates
 
 - `.github/workflows/lint.yml` runs `black --check` + `ruff check`.
