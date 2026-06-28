@@ -175,11 +175,24 @@ Example: cwcli init my-project --port 10000
 
 **Reusing Existing Bench:**
 
-If a bench already exists at the specified path:
+If a bench already exists at the specified path (the devcontainer image ships a default `/workspace/frappe-bench`, so a fresh `init` usually hits this):
 
 ```
 Bench 'frappe-bench' already exists at /workspace/frappe-bench.
-? Reuse the existing bench and continue with site setup? (Y/n)
+? Reuse the existing bench 'frappe-bench' and continue with site setup? (Y/n)
+```
+
+Answer `Y` to reuse it as-is (bench initialization is skipped and site setup continues on the existing bench).
+Answer `n` to set up a fresh bench instead; you're prompted for a different bench name and site setup continues there:
+
+```
+? Enter a different bench name to create (leave blank to cancel): my-bench
+```
+
+Leaving the name blank (or cancelling either prompt) makes no changes and exits cleanly:
+
+```
+No changes made.
 ```
 
 ---
