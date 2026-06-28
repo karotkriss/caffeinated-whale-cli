@@ -209,6 +209,27 @@ def _ensure_directory(container, path: str) -> None:
         raise typer.Exit(code=1)
 
 
+def _bench_name_validation(value: str) -> bool | str:
+    """Validate a replacement bench name typed at the reuse-decline prompt.
+
+    Returns ``True`` when valid, or an error string so questionary re-prompts in
+    place. A blank value is treated as valid so the caller's cancel path can
+    handle it (leaving the prompt blank cancels). The non-blank rules match
+    :func:`_validate_slug`.
+    """
+    cleaned = value.strip()
+    if not cleaned:
+        return True
+
+    lowered = cleaned.lower()
+    allowed = "abcdefghijklmnopqrstuvwxyz0123456789-_"
+    if not all(char in allowed for char in lowered):
+        return "Bench name must contain only lowercase letters, numbers, dashes, or underscores."
+    if lowered[0] in "-_" or lowered[-1] in "-_":
+        return "Bench name cannot start or end with '-' or '_'."
+    return True
+
+
 def _resolve_bench_target(
     frappe_container,
     bench_parent_path: str,
@@ -226,7 +247,6 @@ def _resolve_bench_target(
     ``bench init`` is skipped) and False when a fresh bench must be initialized.
     """
     bench_full_path = f"{bench_parent_path}/{bench_name}"
-    add_path(bench_full_path)
     bench_exists = _directory_exists(frappe_container, bench_full_path)
 
     while bench_exists:
@@ -248,16 +268,17 @@ def _resolve_bench_target(
         new_name = questionary.text(
             "Enter a different bench name to create (leave blank to cancel):",
             default="",
+            validate=_bench_name_validation,
         ).ask()
         if not new_name or not new_name.strip():
             console.print("[yellow]No changes made.[/yellow]")
             raise typer.Exit(code=0)
 
-        bench_name = _validate_slug(new_name, "Bench name")
+        bench_name = new_name.strip().lower()
         bench_full_path = f"{bench_parent_path}/{bench_name}"
-        add_path(bench_full_path)
         bench_exists = _directory_exists(frappe_container, bench_full_path)
 
+    add_path(bench_full_path)
     return bench_name, bench_full_path, bench_exists
 
 

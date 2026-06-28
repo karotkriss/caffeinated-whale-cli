@@ -11,7 +11,7 @@ import pytest
 import typer
 
 from caffeinated_whale_cli.commands import init as init_mod
-from caffeinated_whale_cli.commands.init import _resolve_bench_target
+from caffeinated_whale_cli.commands.init import _bench_name_validation, _resolve_bench_target
 
 
 @pytest.fixture
@@ -43,6 +43,7 @@ class TestResolveBenchTarget:
         assert (name, path, exists) == ("frappe-bench", "/workspace/frappe-bench", False)
         questionary_mock.confirm.assert_not_called()
         questionary_mock.text.assert_not_called()
+        init_mod.add_path.assert_called_once_with("/workspace/frappe-bench")
 
     def test_existing_bench_reused_when_confirmed(self, patched):
         questionary_mock, directory_exists_mock = patched
@@ -53,6 +54,7 @@ class TestResolveBenchTarget:
 
         assert (name, path, exists) == ("frappe-bench", "/workspace/frappe-bench", True)
         questionary_mock.text.assert_not_called()
+        init_mod.add_path.assert_called_once_with("/workspace/frappe-bench")
 
     def test_declining_reuse_continues_with_new_bench_name(self, patched):
         # Regression for issue #20: declining must NOT abort. The user supplies a
@@ -66,6 +68,8 @@ class TestResolveBenchTarget:
         name, path, exists = _resolve_bench_target(_container(), "/workspace", "frappe-bench")
 
         assert (name, path, exists) == ("primis-bench", "/workspace/primis-bench", False)
+        # Only the finally-resolved bench is persisted, not the declined one.
+        init_mod.add_path.assert_called_once_with("/workspace/primis-bench")
 
     def test_declining_then_naming_another_existing_bench_can_reuse_it(self, patched):
         questionary_mock, directory_exists_mock = patched
@@ -88,6 +92,8 @@ class TestResolveBenchTarget:
         with pytest.raises(typer.Exit) as excinfo:
             _resolve_bench_target(_container(), "/workspace", "frappe-bench")
         assert excinfo.value.exit_code == 0
+        # Cancelling must not persist any path to the custom search paths.
+        init_mod.add_path.assert_not_called()
 
     def test_cancelled_confirm_prompt_exits_cleanly(self, patched):
         questionary_mock, directory_exists_mock = patched
@@ -98,3 +104,39 @@ class TestResolveBenchTarget:
         with pytest.raises(typer.Exit) as excinfo:
             _resolve_bench_target(_container(), "/workspace", "frappe-bench")
         assert excinfo.value.exit_code == 0
+        init_mod.add_path.assert_not_called()
+
+    def test_replacement_name_is_normalized_to_lowercase(self, patched):
+        # A valid mixed-case/whitespace replacement is accepted and normalized
+        # without hard-aborting via _validate_slug.
+        questionary_mock, directory_exists_mock = patched
+        directory_exists_mock.side_effect = [True, False]
+        questionary_mock.confirm.return_value.ask.return_value = False
+        questionary_mock.text.return_value.ask.return_value = "  Primis-Bench  "
+
+        name, path, exists = _resolve_bench_target(_container(), "/workspace", "frappe-bench")
+
+        assert (name, path, exists) == ("primis-bench", "/workspace/primis-bench", False)
+        init_mod.add_path.assert_called_once_with("/workspace/primis-bench")
+
+
+class TestBenchNameValidation:
+    """The reuse-decline prompt validates in place instead of aborting init."""
+
+    @pytest.mark.parametrize("value", ["", "   "])
+    def test_blank_is_allowed_so_cancel_path_can_handle_it(self, value):
+        assert _bench_name_validation(value) is True
+
+    @pytest.mark.parametrize("value", ["frappe-bench", "my_bench2", "Primis-Bench", "  abc  "])
+    def test_valid_names_pass(self, value):
+        assert _bench_name_validation(value) is True
+
+    @pytest.mark.parametrize("value", ["my bench", "bad/name", "name!", "a.b"])
+    def test_disallowed_characters_return_error_string(self, value):
+        result = _bench_name_validation(value)
+        assert isinstance(result, str)
+
+    @pytest.mark.parametrize("value", ["-bench", "bench-", "_bench", "bench_"])
+    def test_leading_or_trailing_separator_returns_error_string(self, value):
+        result = _bench_name_validation(value)
+        assert isinstance(result, str)
