@@ -209,6 +209,79 @@ def _ensure_directory(container, path: str) -> None:
         raise typer.Exit(code=1)
 
 
+def _bench_name_validation(value: str) -> bool | str:
+    """Validate a replacement bench name typed at the reuse-decline prompt.
+
+    Returns ``True`` when valid, or an error string so questionary re-prompts in
+    place. A blank value is treated as valid so the caller's cancel path can
+    handle it (leaving the prompt blank cancels). The non-blank rules match
+    :func:`_validate_slug`.
+    """
+    cleaned = value.strip()
+    if not cleaned:
+        return True
+
+    lowered = cleaned.lower()
+    allowed = "abcdefghijklmnopqrstuvwxyz0123456789-_"
+    if not all(char in allowed for char in lowered):
+        return "Bench name must contain only lowercase letters, numbers, dashes, or underscores."
+    if lowered[0] in "-_" or lowered[-1] in "-_":
+        return "Bench name cannot start or end with '-' or '_'."
+    return True
+
+
+def _resolve_bench_target(
+    frappe_container,
+    bench_parent_path: str,
+    bench_name: str,
+) -> tuple[str, str, bool]:
+    """Resolve which bench to set up inside the container.
+
+    Returns ``(bench_name, bench_full_path, bench_exists)``.
+
+    When the chosen bench already exists, the user is asked whether to reuse it.
+    Declining no longer aborts the command: the user is prompted for a different
+    bench name so site setup can continue on a fresh bench (issue #20). A blank
+    name or a cancelled prompt exits cleanly without making changes.
+    ``bench_exists`` is True when an existing bench will be reused (so
+    ``bench init`` is skipped) and False when a fresh bench must be initialized.
+    """
+    bench_full_path = f"{bench_parent_path}/{bench_name}"
+    bench_exists = _directory_exists(frappe_container, bench_full_path)
+
+    while bench_exists:
+        console.print(f"[yellow]Bench '{bench_name}' already exists at {bench_full_path}.[/yellow]")
+        reuse = questionary.confirm(
+            f"Reuse the existing bench '{bench_name}' and continue with site setup?",
+            default=True,
+            auto_enter=False,
+        ).ask()
+        if reuse is None:
+            # Prompt cancelled (e.g. Ctrl-C).
+            console.print("[yellow]No changes made.[/yellow]")
+            raise typer.Exit(code=0)
+        if reuse:
+            break
+
+        # The user declined to reuse the existing bench. Let them name a
+        # different bench and continue setup instead of dead-ending.
+        new_name = questionary.text(
+            "Enter a different bench name to create (leave blank to cancel):",
+            default="",
+            validate=_bench_name_validation,
+        ).ask()
+        if not new_name or not new_name.strip():
+            console.print("[yellow]No changes made.[/yellow]")
+            raise typer.Exit(code=0)
+
+        bench_name = new_name.strip().lower()
+        bench_full_path = f"{bench_parent_path}/{bench_name}"
+        bench_exists = _directory_exists(frappe_container, bench_full_path)
+
+    add_path(bench_full_path)
+    return bench_name, bench_full_path, bench_exists
+
+
 def _get_pyenv_python_version(container, prefix: str, verbose: bool = False) -> str | None:
     """Find a pyenv Python version matching the given prefix (e.g. '3.12') inside the container."""
     exit_code, output = container.exec_run(["bash", "-lc", "ls ~/.pyenv/versions"])
@@ -663,30 +736,17 @@ def init(
 
     # Prepare bench paths inside the container
     bench_parent_path = bench_parent.rstrip("/") or "/workspace"
-    bench_full_path = f"{bench_parent_path}/{inputs.bench_name}"
-
-    # Add path to config for open to work
-    add_path(bench_full_path)
 
     # Create parent directory inside the container
     _ensure_directory(frappe_container, bench_parent_path)
 
-    # Bench initialization
-    bench_exists = _directory_exists(frappe_container, bench_full_path)
-
-    # Exit spinner before interactive prompt
-    if bench_exists:
-        console.print(
-            f"[yellow]Bench '{inputs.bench_name}' already exists at {bench_full_path}.[/yellow]"
-        )
-        reuse = questionary.confirm(
-            "Reuse the existing bench and continue with site setup?",
-            default=True,
-            auto_enter=False,
-        ).ask()
-        if not reuse:
-            console.print("[yellow]No changes made.[/yellow]")
-            raise typer.Exit(code=0)
+    # Resolve which bench to set up (the spinner has already exited, so the
+    # prompts below own the terminal). If the bench already exists, the user is
+    # asked whether to reuse it; declining lets them pick a different bench name
+    # and continue site setup instead of aborting (issue #20).
+    inputs.bench_name, bench_full_path, bench_exists = _resolve_bench_target(
+        frappe_container, bench_parent_path, inputs.bench_name
+    )
 
     # Initialize bench if it doesn't exist
     if not bench_exists:
