@@ -37,6 +37,14 @@ from caffeinated_whale_cli.commands import inspect as inspect_mod
 BENCH = "/home/frappe/frappe-bench"
 
 
+class _StubDockerClient:
+    """Stand-in for ``docker.from_env()`` so the ``@handle_docker_errors``
+    daemon ``ping()`` succeeds without a real Docker daemon."""
+
+    def ping(self):
+        return True
+
+
 class FakeFrappeContainer:
     """A stand-in frappe container that answers the exact ``exec_run`` probes
     inspect issues, and records every command so tests can assert which tier ran.
@@ -118,6 +126,12 @@ def patched_inspect(monkeypatch):
     monkeypatch.setattr(inspect_mod, "ensure_containers_running", lambda *a, **k: True)
     monkeypatch.setattr(inspect_mod.config_utils, "get_show_tips", lambda: False)
     monkeypatch.setattr(inspect_mod.config_utils, "load_config", lambda: {})
+    # `inspect` is wrapped by ``@handle_docker_errors``, which probes the real
+    # environment (``shutil.which("docker")`` + ``docker.from_env().ping()``)
+    # before the body runs. Neutralize that probe so these unit tests don't
+    # depend on Docker being installed/running (it is absent on CI runners).
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr("docker.from_env", lambda: _StubDockerClient())
 
     holder: dict = {}
 
