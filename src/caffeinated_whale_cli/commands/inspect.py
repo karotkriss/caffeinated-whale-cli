@@ -208,6 +208,90 @@ def _gather_bench_data(
     return bench_data
 
 
+def partial_inspect_known_benches(
+    frappe_container: docker.models.containers.Container,
+    cached_bench_instances: list[dict],
+    verbose: bool = False,
+) -> tuple[list[dict], bool]:
+    """Read-only freshness pass (the "T2 partial inspect") over KNOWN bench paths.
+
+    This is a pure drift detector: for each bench path already in the cache it
+    cheaply re-reads only the inexpensive, filesystem-level facts via
+    ``test``/``ls`` (the bench check, the available-apps list, and the site list).
+    It deliberately does NOT:
+
+    - re-discover bench instances (no ``find`` over the search roots); a brand-new
+      bench is only picked up by the full inspect,
+    - run the deep per-site ``bench list-apps`` (which boots Frappe); the cached
+      per-site ``installed_apps`` are carried forward instead, and
+    - re-read any config files (``common_site_config.json`` /
+      ``site_config.json``); the cached configs are carried forward, so a
+      transient unreadable or half-written config can never silently drop the
+      cached ``common_site_config`` / ``default_site`` label.
+
+    It never writes the cache. A freshly installed app shows up in ``apps/``
+    immediately, so the cheap ``ls apps`` here catches it - which is exactly what
+    fixes ``open --app`` and inspect's "Available Apps" without a manual
+    ``inspect -u``.
+
+    Returns ``(refreshed_bench_instances, drift)`` where ``drift`` is True when the
+    on-disk available-apps or site set diverged from the cache (or a known bench
+    vanished). The caller escalates to a full inspect on drift so the per-site
+    installed lists (and any brand-new bench) are also brought up to date; on no
+    drift the caller serves the cache unchanged without persisting.
+    """
+    refreshed: list[dict] = []
+    drift = False
+
+    for cached_bench in cached_bench_instances:
+        bench_dir = cached_bench["path"]
+
+        # Known bench vanished -> stale cache, force a full re-inspect.
+        if not _is_bench_directory(frappe_container, bench_dir, verbose):
+            if verbose:
+                console_err.print(
+                    f"VERBOSE: Cached bench '{bench_dir}' no longer present; marking drift."
+                )
+            drift = True
+            continue
+
+        fresh_available = _get_available_apps(frappe_container, bench_dir, verbose)
+        fresh_sites = _get_sites(frappe_container, bench_dir, verbose)
+
+        cached_site_names = {s["name"] for s in cached_bench.get("sites", [])}
+        if (
+            set(fresh_available) != set(cached_bench.get("available_apps", []))
+            or set(fresh_sites) != cached_site_names
+        ):
+            drift = True
+
+        cached_sites_by_name = {s["name"]: s for s in cached_bench.get("sites", [])}
+        sites_info: list[dict] = []
+        for site in fresh_sites:
+            previous = cached_sites_by_name.get(site)
+            # Carry the cached per-site installed apps and config forward; a
+            # brand-new site has no cached entry, so it stays empty until a full
+            # inspect (triggered by the drift this new site causes) populates it.
+            site_data: dict = {
+                "name": site,
+                "installed_apps": list(previous["installed_apps"]) if previous else [],
+            }
+            if previous is not None and "site_config" in previous:
+                site_data["site_config"] = previous["site_config"]
+            sites_info.append(site_data)
+
+        bench_data: dict = {
+            "path": bench_dir,
+            "sites": sites_info,
+            "available_apps": fresh_available,
+        }
+        if "common_site_config" in cached_bench:
+            bench_data["common_site_config"] = cached_bench["common_site_config"]
+        refreshed.append(bench_data)
+
+    return refreshed, drift
+
+
 @handle_docker_errors
 def inspect(
     project_name: str = typer.Argument(
@@ -221,6 +305,14 @@ def inspect(
     ),
     update: bool = typer.Option(
         False, "--update", "-u", help="Update the cache by re-inspecting the project."
+    ),
+    no_refresh: bool = typer.Option(
+        False,
+        "--no-refresh",
+        help=(
+            "Return cached data as-is, skipping the lightweight freshness pass. "
+            "Fastest, but the result may be stale (e.g. miss a just-installed app)."
+        ),
     ),
     show_apps: bool = typer.Option(
         False, "--show-apps", "-a", help="Show available apps in the output tree."
@@ -245,14 +337,82 @@ def inspect(
     if verbose:
         console_err.print(f"VERBOSE: --- Inspecting Project: {project_name} ---")
 
+    # Set only when a T2 drift-escalation forces a full inspect while a valid cache
+    # exists; if that full inspect then can't discover any bench (e.g. a custom
+    # search path was removed), we degrade to this cached data instead of failing.
+    drift_fallback_benches = None
+
     if not update:
         cached_data = db_utils.get_cached_project_data(project_name)
         if cached_data:
+            cached_benches = cached_data["bench_instances"]
             if verbose:
                 console_err.print(
                     f"VERBOSE: Found cached data for this project from {cached_data['last_updated']}."
                 )
-            bench_instances_data = cached_data["bench_instances"]
+            if no_refresh:
+                # Tier 1: serve the cache verbatim, no container calls (fastest path).
+                if verbose:
+                    console_err.print("VERBOSE: --no-refresh set; serving cached data as-is.")
+                bench_instances_data = cached_benches
+            else:
+                # Tier 2: a lightweight, read-only freshness pass over the known
+                # benches. This only runs when the containers are already up; the
+                # running check never prompts or starts anything (prompt=False), so a
+                # cache hit can never block on a "start the containers?" question or
+                # disturb a stopped project. The pass never writes the cache: on no
+                # drift we serve the cached data unchanged; on drift we fall through to
+                # the full inspect (Tier 3), which persists fully-fresh data. If
+                # anything goes wrong we degrade to the cached data rather than failing
+                # a previously-working read.
+                bench_instances_data = cached_benches
+                try:
+                    if ensure_containers_running(
+                        project_name, require_running=True, verbose=verbose, prompt=False
+                    ):
+                        all_containers = get_project_containers(project_name)
+                        frappe_container = next(
+                            (
+                                c
+                                for c in (all_containers or [])
+                                if c.labels.get("com.docker.compose.service") == "frappe"
+                            ),
+                            None,
+                        )
+                        if frappe_container is not None:
+                            _refreshed, drift = partial_inspect_known_benches(
+                                frappe_container, cached_benches, verbose
+                            )
+                            if drift:
+                                # Escalate-on-drift: a full inspect (Tier 3) also refreshes
+                                # the deep per-site installed-app lists and any new bench.
+                                # Remember the cached benches so the full inspect can
+                                # degrade to them rather than hard-failing if the bench is
+                                # no longer discoverable (e.g. its search path was removed).
+                                if verbose:
+                                    console_err.print(
+                                        "VERBOSE: Partial inspect detected drift; "
+                                        "escalating to a full inspect."
+                                    )
+                                bench_instances_data = None
+                                drift_fallback_benches = cached_benches
+                            elif verbose:
+                                console_err.print(
+                                    "VERBOSE: Partial inspect found no drift; "
+                                    "serving cached data unchanged."
+                                )
+                    elif verbose:
+                        console_err.print(
+                            "VERBOSE: Containers not running; serving cached data as-is."
+                        )
+                except typer.Exit:
+                    raise
+                except Exception as e:
+                    if verbose:
+                        console_err.print(
+                            f"VERBOSE: Partial inspect failed ({e}); serving cached data."
+                        )
+                    bench_instances_data = cached_benches
         else:
             if verbose:
                 console_err.print("VERBOSE: No cached data found, proceeding with inspect.")
@@ -294,19 +454,35 @@ def inspect(
 
         bench_instances_data = []
         show_tips = config_utils.get_show_tips()
+        no_benches = False
 
         with TipSpinner(f"Inspecting '{project_name}'", console=console_err, enabled=show_tips):
             time.sleep(0.1)
             bench_paths = _find_bench_instances(frappe_container, verbose)
             if not bench_paths:
+                no_benches = True
+            else:
+                for bench_path in bench_paths:
+                    bench_data = _gather_bench_data(frappe_container, bench_path, verbose)
+                    bench_instances_data.append(bench_data)
+
+        if no_benches:
+            # A drift-escalation that can't rediscover the bench has a valid cache to
+            # fall back on; degrade to it (without persisting) instead of failing a
+            # previously-working read. A --update / cache-miss run has no such fallback,
+            # so it keeps the original hard error.
+            if drift_fallback_benches is not None:
+                if verbose:
+                    console_err.print(
+                        "VERBOSE: Drift escalation found no discoverable benches; "
+                        "serving cached data."
+                    )
+                bench_instances_data = drift_fallback_benches
+            else:
                 console_err.print(f"Error: No Bench Instances found for project '{project_name}'.")
                 raise typer.Exit(code=1)
-
-            for bench_path in bench_paths:
-                bench_data = _gather_bench_data(frappe_container, bench_path, verbose)
-                bench_instances_data.append(bench_data)
-
-        db_utils.cache_project_data(project_name, bench_instances_data)
+        else:
+            db_utils.cache_project_data(project_name, bench_instances_data)
 
     # Interactive naming: ask for bench aliases before output
     if interactive:

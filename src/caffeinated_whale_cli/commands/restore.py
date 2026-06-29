@@ -476,6 +476,7 @@ def restore_send_mode(
                     verbose=verbose,
                     json_output=False,
                     update=False,
+                    no_refresh=False,
                     show_apps=False,
                     interactive=False,
                 )
@@ -736,6 +737,7 @@ def restore_receive_mode(
                     verbose=verbose,
                     json_output=False,
                     update=False,
+                    no_refresh=False,
                     show_apps=False,
                     interactive=False,
                 )
@@ -1273,6 +1275,7 @@ def restore(
                     verbose=verbose,
                     json_output=False,
                     update=False,
+                    no_refresh=False,
                     show_apps=False,
                     interactive=False,
                 )

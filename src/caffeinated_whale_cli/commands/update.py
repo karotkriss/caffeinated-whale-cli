@@ -232,6 +232,7 @@ def _update_project(
                     verbose=verbose,
                     json_output=False,
                     update=False,
+                    no_refresh=False,
                     show_apps=False,
                     interactive=False,
                 )
