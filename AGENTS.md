@@ -24,6 +24,25 @@ The resolver runs after the setup spinner has exited, so its prompts own the ter
 `inputs.bench_name` is reassigned from the resolver's return (so `bench init` and the site paths use the chosen name), which is valid because `InitInputs` is a plain mutable `@dataclass`.
 Regression coverage is in `tests/test_init_reuse_bench.py`.
 
+## `inspect` command: 3-tier freshness model (cache / partial / full)
+
+`inspect` is cache-backed and used to be cache-first with no staleness check, so an app installed after the cache was written (it lands in the bench `apps/` dir immediately, but the cache still held the old list) stayed invisible until `inspect --update` rebuilt the cache.
+`open --app <name>` read the same stale cache and errored "App not found".
+This was issue #27 ("need to inspect -uv on new projects to see installed apps"; `-uv` = `--update --verbose`, only `--update` matters).
+
+The fix (`commands/inspect.py`) is a 3-tier model, chosen so `inspect` stays fast while serving fresh data:
+
+- **T1 - cache return (unchanged, instant):** no container calls. Used with the new `--no-refresh` flag, or automatically when the containers are not running (the running check is `ensure_containers_running(..., prompt=False)`, which never prompts or starts - non-disruptive).
+- **T2 - partial inspect (`_partial_inspect_known_benches`):** the default for a cached-and-running project. For each KNOWN bench path already in the cache it cheaply re-reads only `ls apps` (available_apps), `ls sites`, and the `cat` configs, plus a `test -d` bench check. It deliberately SKIPS `_find_bench_instances` (the `find`-based instance discovery) and the deep per-site `bench list-apps` (which boots Frappe); cached per-site `installed_apps` are carried forward. A freshly installed app shows up in `apps/`, so the cheap `ls` catches it.
+- **T3 - full inspect (unchanged):** the existing `--update` / cache-miss path: `find` discovery + per-site `bench list-apps` + re-cache.
+
+Escalate-on-drift: when T2 sees the on-disk available-apps/site set diverge from the cache (or a known bench vanished) it returns `drift=True` and `inspect` sets `bench_instances_data = None` to fall through to a full T3 inspect, so the deep per-site lists and any brand-new bench are refreshed too. No drift -> T2 persists the cheap refresh and serves it. T2 is wrapped so any failure degrades to serving the cached data (never worse than the old behavior).
+`open --app` reuses this via `refresh_known_benches_cache(frappe_container, project_name)` (also in `inspect.py`): it runs the T2 pass and persists, so a just-installed app is in `available_apps` before open's membership check, with no manual inspect.
+
+A sharp edge: T2 cannot cheaply refresh per-site `installed_apps` (that needs the deep `bench list-apps`); it relies on escalate-on-drift to bring those up to date when `apps/` or the site set changes. A pure `install-app` of an app already present in `apps/` (no new dir) would not trip drift, but in practice a newly installed app appears in `apps/` first, which is exactly the reported case.
+
+Calling `inspect` directly in tests is a trap: it is a Typer command, so any omitted parameter keeps its `typer.Option(...)` default OBJECT (truthy) - e.g. an unspecified `update` silently forces a full inspect. Real callers (`recache_project`, `auto_inspect`, `open`) pass ALL params explicitly; tests must too. Regression coverage is in `tests/test_inspect_partial_refresh.py` (uses a `FakeFrappeContainer` that records every `exec_run` to assert which tier ran).
+
 ## CI quality gates
 
 - `.github/workflows/lint.yml` runs `black --check` + `ruff check`.
