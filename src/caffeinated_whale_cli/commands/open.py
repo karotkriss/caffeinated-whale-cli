@@ -137,6 +137,7 @@ def open_bench(
                 verbose=verbose,
                 json_output=False,
                 update=False,
+                no_refresh=False,
                 show_apps=False,
                 interactive=False,
             )
@@ -183,9 +184,47 @@ def open_bench(
             )
             raise typer.Exit(code=1)
 
-        # Get the list of apps from the first bench instance
-        bench_instance = cached_data["bench_instances"][0]
+        # Select the cached bench the user is actually opening. bench_path may have
+        # come from --path (a non-default bench), so anchoring to bench_instances[0]
+        # would validate `--app` against the wrong bench and then open another one.
+        # Match the cached bench by bench_path instead.
+        bench_instance = next(
+            (b for b in cached_data["bench_instances"] if b.get("path") == bench_path),
+            None,
+        )
+        if bench_instance is None:
+            stderr_console.print(
+                f"[bold red]Error:[/bold red] Bench '{bench_path}' not found in cached data "
+                f"for '{project_name}'. Run 'cwcli inspect {project_name}' first."
+            )
+            raise typer.Exit(code=1)
         available_apps = bench_instance.get("available_apps", [])
+
+        # Run inspect's read-only T2 partial pass IN-MEMORY over the known benches so a
+        # just-installed app is visible here without a manual `cwcli inspect -u`. The
+        # containers were already ensured running above, so this is a cheap `ls` refresh
+        # of available_apps. We deliberately do NOT persist it: leaving the cache untouched
+        # lets the next plain `cwcli inspect` self-heal via escalate-on-drift (refreshing
+        # the deep per-site installed lists too). Degrade to the cached list on any error
+        # so a transient failure never blocks opening the app.
+        from .inspect import partial_inspect_known_benches
+
+        try:
+            refreshed, _drift = partial_inspect_known_benches(
+                frappe_container, cached_data["bench_instances"], verbose=verbose
+            )
+            # partial_inspect_known_benches drops any vanished bench, so `refreshed`
+            # may be index-shifted relative to the cached list; match by path to the
+            # SAME bench the membership check is about rather than indexing [0].
+            match = next(
+                (b for b in refreshed if b.get("path") == bench_instance["path"]),
+                None,
+            )
+            if match and match.get("available_apps"):
+                available_apps = match["available_apps"]
+        except Exception as e:
+            if verbose:
+                stderr_console.print(f"[dim]VERBOSE: App-list refresh skipped: {e}[/dim]")
 
         if not available_apps:
             stderr_console.print(

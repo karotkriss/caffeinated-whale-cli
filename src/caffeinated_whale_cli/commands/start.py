@@ -282,6 +282,7 @@ def _start_project(project_name: str, verbose: bool = False, status=None):
                 verbose=verbose,
                 json_output=False,
                 update=False,
+                no_refresh=False,
                 show_apps=False,
                 interactive=False,
             )

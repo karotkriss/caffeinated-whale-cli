@@ -73,6 +73,7 @@ Project structure discovery and caching:
 - Finds bench instances
 - Discovers sites and apps
 - SQLite-based caching
+- Read-only freshness pass on cached reads, escalating to a full re-inspect on drift
 - Cache invalidation
 
 See [Bench Management](./bench.md) for detailed documentation.
@@ -359,7 +360,7 @@ python -c "import docker; docker.from_env().ping()"
 | `ls` | <1s | Fast label queries |
 | `start` | 2-5s | Container startup time |
 | `inspect` (first) | 3-8s | Docker exec queries |
-| `inspect` (cached) | <1s | SQLite lookup |
+| `inspect` (cached) | <1s | SQLite lookup + read-only freshness pass (`--no-refresh` for a pure lookup) |
 | Tab completion | <200ms | 2s TTL cache |
 
 ### Optimization Opportunities

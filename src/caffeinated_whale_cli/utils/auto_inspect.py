@@ -106,6 +106,7 @@ def _inspect_project(project_name: str) -> bool:
             verbose=False,
             json_output=False,
             update=True,
+            no_refresh=False,
             show_apps=False,
             interactive=False,
         )
