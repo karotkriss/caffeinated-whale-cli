@@ -337,6 +337,11 @@ def inspect(
     if verbose:
         console_err.print(f"VERBOSE: --- Inspecting Project: {project_name} ---")
 
+    # Set only when a T2 drift-escalation forces a full inspect while a valid cache
+    # exists; if that full inspect then can't discover any bench (e.g. a custom
+    # search path was removed), we degrade to this cached data instead of failing.
+    drift_fallback_benches = None
+
     if not update:
         cached_data = db_utils.get_cached_project_data(project_name)
         if cached_data:
@@ -381,12 +386,16 @@ def inspect(
                             if drift:
                                 # Escalate-on-drift: a full inspect (Tier 3) also refreshes
                                 # the deep per-site installed-app lists and any new bench.
+                                # Remember the cached benches so the full inspect can
+                                # degrade to them rather than hard-failing if the bench is
+                                # no longer discoverable (e.g. its search path was removed).
                                 if verbose:
                                     console_err.print(
                                         "VERBOSE: Partial inspect detected drift; "
                                         "escalating to a full inspect."
                                     )
                                 bench_instances_data = None
+                                drift_fallback_benches = cached_benches
                             elif verbose:
                                 console_err.print(
                                     "VERBOSE: Partial inspect found no drift; "
@@ -445,19 +454,35 @@ def inspect(
 
         bench_instances_data = []
         show_tips = config_utils.get_show_tips()
+        no_benches = False
 
         with TipSpinner(f"Inspecting '{project_name}'", console=console_err, enabled=show_tips):
             time.sleep(0.1)
             bench_paths = _find_bench_instances(frappe_container, verbose)
             if not bench_paths:
+                no_benches = True
+            else:
+                for bench_path in bench_paths:
+                    bench_data = _gather_bench_data(frappe_container, bench_path, verbose)
+                    bench_instances_data.append(bench_data)
+
+        if no_benches:
+            # A drift-escalation that can't rediscover the bench has a valid cache to
+            # fall back on; degrade to it (without persisting) instead of failing a
+            # previously-working read. A --update / cache-miss run has no such fallback,
+            # so it keeps the original hard error.
+            if drift_fallback_benches is not None:
+                if verbose:
+                    console_err.print(
+                        "VERBOSE: Drift escalation found no discoverable benches; "
+                        "serving cached data."
+                    )
+                bench_instances_data = drift_fallback_benches
+            else:
                 console_err.print(f"Error: No Bench Instances found for project '{project_name}'.")
                 raise typer.Exit(code=1)
-
-            for bench_path in bench_paths:
-                bench_data = _gather_bench_data(frappe_container, bench_path, verbose)
-                bench_instances_data.append(bench_data)
-
-        db_utils.cache_project_data(project_name, bench_instances_data)
+        else:
+            db_utils.cache_project_data(project_name, bench_instances_data)
 
     # Interactive naming: ask for bench aliases before output
     if interactive:
