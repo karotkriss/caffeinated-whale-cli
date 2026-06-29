@@ -201,7 +201,15 @@ def open_bench(
             refreshed, _drift = partial_inspect_known_benches(
                 frappe_container, cached_data["bench_instances"], verbose=verbose
             )
-            available_apps = refreshed[0].get("available_apps", available_apps)
+            # partial_inspect_known_benches drops any vanished bench, so `refreshed`
+            # may be index-shifted relative to the cached list; match by path to the
+            # SAME bench the membership check is about rather than indexing [0].
+            match = next(
+                (b for b in refreshed if b.get("path") == bench_instance["path"]),
+                None,
+            )
+            if match and match.get("available_apps"):
+                available_apps = match["available_apps"]
         except Exception as e:
             if verbose:
                 stderr_console.print(f"[dim]VERBOSE: App-list refresh skipped: {e}[/dim]")

@@ -342,3 +342,111 @@ class TestOpenAppInMemoryRefresh:
         assert not container.ran_list_apps()
         # Pure read: the helper never persisted to the cache.
         assert writes == []
+
+
+class TwoBenchContainer:
+    """Models two cached benches where the FIRST has vanished from disk and the
+    second is still present (with a freshly installed app). Used to pin that the
+    partial pass drops the vanished bench and that callers must match by path."""
+
+    def __init__(self, present_path, present_apps, present_sites):
+        self.present_path = present_path
+        self.present_apps = list(present_apps)
+        self.present_sites = dict(present_sites)
+        self.calls: list[str] = []
+        self.labels = {"com.docker.compose.service": "frappe"}
+        self.status = "running"
+
+    def exec_run(self, cmd, workdir=None):
+        self.calls.append(cmd)
+        p = self.present_path
+        if "test -d" in cmd:  # only the present bench passes the directory check
+            return (0, b"") if f"test -d {p}/sites" in cmd else (1, b"")
+        if cmd == f"ls -1 {p}/apps":
+            return (0, "\n".join(self.present_apps).encode())
+        if cmd == f"ls -1 {p}/sites":
+            listing = ["apps.txt", "common_site_config.json", *self.present_sites.keys()]
+            return (0, "\n".join(listing).encode())
+        return (1, b"")
+
+
+class TestPartialPassDropsVanishedBench:
+    """A cached bench whose directory has vanished is dropped from the refreshed
+    list, so the result is index-shifted - callers must select by path, not [0]."""
+
+    def test_vanished_bench_dropped_and_path_match_finds_correct_apps(self):
+        present = "/home/frappe/bench-two"
+        cached_benches = [
+            {
+                "path": "/home/frappe/bench-one",  # vanished on disk
+                "available_apps": ["frappe"],
+                "sites": [{"name": "one.local", "installed_apps": ["frappe 15.0.0 version-15"]}],
+            },
+            {
+                "path": present,
+                "available_apps": ["frappe"],
+                "sites": [{"name": "two.local", "installed_apps": ["frappe 15.0.0 version-15"]}],
+            },
+        ]
+        container = TwoBenchContainer(
+            present_path=present,
+            present_apps=["frappe", "newapp"],
+            present_sites={"two.local": ["frappe 15.0.0 version-15"]},
+        )
+
+        refreshed, drift = inspect_mod.partial_inspect_known_benches(container, cached_benches)
+
+        # The vanished bench trips drift and is dropped -> refreshed is index-shifted.
+        assert drift is True
+        assert len(refreshed) == 1
+        assert refreshed[0]["path"] == present
+        # Indexing refreshed[0] to answer about bench-one would pick the WRONG bench;
+        # matching by path yields the surviving bench's fresh apps (guards open --app).
+        match = next((b for b in refreshed if b["path"] == present), None)
+        assert match is not None
+        assert match["available_apps"] == ["frappe", "newapp"]
+        # There is no refreshed entry at all for the vanished bench.
+        assert all(b["path"] != "/home/frappe/bench-one" for b in refreshed)
+
+
+class TestDriftEscalationDegradesWhenBenchNotDiscoverable:
+    """On drift the full inspect runs, but if the bench can no longer be discovered
+    (e.g. its custom search path was removed), a plain ``inspect`` degrades to the
+    cached data instead of hard-failing with ``typer.Exit(1)``."""
+
+    def test_undiscoverable_bench_serves_cache_without_writing(self, patched_inspect, capsys):
+        store, install_container, writes = patched_inspect
+        # The bench lives outside the default search roots, so `find` discovers nothing.
+        custom_bench = "/opt/benches/custom-bench"
+        store["proj"] = {
+            "project_name": "proj",
+            "bench_instances": [
+                {
+                    "path": custom_bench,
+                    "available_apps": ["frappe"],
+                    "sites": [
+                        {"name": "dev.local", "installed_apps": ["frappe 15.0.0 version-15"]}
+                    ],
+                    "common_site_config": {"default_site": "dev.local"},
+                }
+            ],
+            "last_updated": "earlier",
+        }
+        # On disk: a new app is present (trips drift), the known bench still exists.
+        container = FakeFrappeContainer(
+            apps=["frappe", "newapp"],
+            sites={"dev.local": ["frappe 15.0.0 version-15", "newapp 1.0.0 develop"]},
+            bench_path=custom_bench,
+        )
+        install_container(container)
+
+        # Must NOT raise typer.Exit - degrade to cached data instead.
+        _run_inspect()
+
+        out = capsys.readouterr().out
+        # Drift escalated to a full inspect: the `find` discovery actually ran...
+        assert container.ran_find(), "drift should escalate to the full inspect (find discovery)"
+        # ...found nothing, and degraded to the cached bench (still shown, exit code 0).
+        assert custom_bench in out
+        # The degrade path is a pure read: the cache is left intact for the next inspect.
+        assert writes == []
