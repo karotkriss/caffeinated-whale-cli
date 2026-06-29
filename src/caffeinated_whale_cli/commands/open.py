@@ -184,8 +184,20 @@ def open_bench(
             )
             raise typer.Exit(code=1)
 
-        # Get the list of apps from the first bench instance
-        bench_instance = cached_data["bench_instances"][0]
+        # Select the cached bench the user is actually opening. bench_path may have
+        # come from --path (a non-default bench), so anchoring to bench_instances[0]
+        # would validate `--app` against the wrong bench and then open another one.
+        # Match the cached bench by bench_path instead.
+        bench_instance = next(
+            (b for b in cached_data["bench_instances"] if b.get("path") == bench_path),
+            None,
+        )
+        if bench_instance is None:
+            stderr_console.print(
+                f"[bold red]Error:[/bold red] Bench '{bench_path}' not found in cached data "
+                f"for '{project_name}'. Run 'cwcli inspect {project_name}' first."
+            )
+            raise typer.Exit(code=1)
         available_apps = bench_instance.get("available_apps", [])
 
         # Run inspect's read-only T2 partial pass IN-MEMORY over the known benches so a
