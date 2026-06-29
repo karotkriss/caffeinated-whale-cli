@@ -13,18 +13,19 @@ The fix (3-tier inspect)
 ------------------------
 - **T1** - cache return, unchanged, instant (used with ``--no-refresh`` or when
   the containers are down).
-- **T2** - a lightweight "partial inspect": on a cache hit with running
-  containers, cheaply re-read ``ls apps`` / ``ls sites`` / configs for the KNOWN
-  benches only. It deliberately does NOT run the ``find`` instance-discovery or
-  the deep per-site ``bench list-apps``; cached per-site installed lists are
-  carried forward. A freshly installed app shows up in ``apps/`` so this cheap
-  ``ls`` catches it.
+- **T2** - a lightweight, read-only "partial inspect": on a cache hit with running
+  containers, cheaply re-read only ``ls apps`` / ``ls sites`` for the KNOWN
+  benches. It deliberately does NOT run the ``find`` instance-discovery, the deep
+  per-site ``bench list-apps``, or any config re-read; cached per-site installed
+  lists and configs are carried forward. It NEVER writes the cache: on no drift
+  the cache is served unchanged, on drift it escalates. A freshly installed app
+  shows up in ``apps/`` so this cheap ``ls`` catches it.
 - **T3** - the full inspect, unchanged. T2 escalates to it on drift so the deep
-  per-site lists (and any brand-new bench) are refreshed too.
+  per-site lists (and any brand-new bench) are refreshed and persisted too.
 
-These tests pin: the stale-cache bug is fixed by default, T2 stays cheap when
-nothing changed, ``--no-refresh`` preserves the old instant cached return, and
-the helper ``open --app`` reuses refreshes the available-apps list.
+These tests pin: the stale-cache bug is fixed by default, T2 stays cheap and
+read-only when nothing changed, ``--no-refresh`` preserves the old instant cached
+return, and ``open --app`` reuses the T2 pass in-memory without writing the cache.
 """
 
 import json
@@ -92,15 +93,19 @@ class FakeFrappeContainer:
 def patched_inspect(monkeypatch):
     """Wire inspect's collaborators to an in-memory cache + a fake container.
 
-    Returns ``(store, install_container)`` where ``store`` is the fake cache dict
-    and ``install_container(container)`` makes inspect use that container.
+    Returns ``(store, install_container, writes)`` where ``store`` is the fake
+    cache dict, ``install_container(container)`` makes inspect use that container,
+    and ``writes`` records each ``cache_project_data`` call so a test can assert
+    whether a tier persisted (T2 no-drift must NOT write; T3 must).
     """
     store: dict[str, dict] = {}
+    writes: list[str] = []
 
     def fake_get(name):
         return store.get(name)
 
     def fake_cache(name, benches):
+        writes.append(name)
         store[name] = {
             "project_name": name,
             "bench_instances": benches,
@@ -120,7 +125,7 @@ def patched_inspect(monkeypatch):
         holder["c"] = container
         monkeypatch.setattr(inspect_mod, "get_project_containers", lambda name: [container])
 
-    return store, install_container
+    return store, install_container, writes
 
 
 def _run_inspect(**overrides):
@@ -166,7 +171,7 @@ class TestStaleCacheBugIsFixed:
     """The original report: install an app, then plain ``inspect`` can't see it."""
 
     def test_just_installed_app_is_found_without_update(self, patched_inspect, capsys):
-        store, install_container = patched_inspect
+        store, install_container, writes = patched_inspect
         # Cache was written when only 'frappe' existed.
         _seed_cache(store, available_apps=["frappe"], installed_apps=["frappe 15.0.0 version-15"])
         # On disk now: an app was installed - present in apps/ and on the site.
@@ -184,6 +189,8 @@ class TestStaleCacheBugIsFixed:
         # Drift was detected by the cheap pass, which escalated to a full inspect:
         assert container.ran_find(), "drift should escalate to the full inspect (find discovery)"
         assert container.ran_list_apps(), "escalation should refresh deep per-site installed apps"
+        # Only the full inspect (T3) persisted; the read-only T2 pass never writes.
+        assert writes == ["proj"]
         # And the cache is now fresh in both places.
         cached = store["proj"]["bench_instances"][0]
         assert "newapp" in cached["available_apps"]
@@ -194,7 +201,7 @@ class TestPartialPassStaysCheapWhenNothingChanged:
     """No drift -> serve the cheap refresh; never pay for find / list-apps."""
 
     def test_no_drift_skips_find_and_deep_list_apps(self, patched_inspect, capsys):
-        store, install_container = patched_inspect
+        store, install_container, writes = patched_inspect
         _seed_cache(store, available_apps=["frappe"], installed_apps=["frappe 15.0.0 version-15"])
         # Disk matches the cache exactly.
         container = FakeFrappeContainer(
@@ -212,6 +219,10 @@ class TestPartialPassStaysCheapWhenNothingChanged:
         # ...but the expensive instance-discovery and per-site boot did NOT.
         assert not container.ran_find(), "partial pass must skip `find` discovery"
         assert not container.ran_list_apps(), "partial pass must skip deep `bench list-apps`"
+        # No config files were re-read on this read-only pass.
+        assert not any(c.startswith("cat ") for c in container.calls)
+        # And no-drift is a pure read: the cache was served unchanged, never written.
+        assert writes == []
 
 
 class TestNoRefreshOptOut:
@@ -220,7 +231,7 @@ class TestNoRefreshOptOut:
     def test_no_refresh_returns_cache_verbatim_and_touches_no_container(
         self, patched_inspect, capsys
     ):
-        store, install_container = patched_inspect
+        store, install_container, writes = patched_inspect
         _seed_cache(store, available_apps=["frappe"], installed_apps=["frappe 15.0.0 version-15"])
         container = FakeFrappeContainer(
             apps=["frappe", "newapp"],
@@ -235,6 +246,8 @@ class TestNoRefreshOptOut:
         assert "newapp" not in out
         # And no container work happened at all on this fast path.
         assert container.calls == []
+        # The fast path is read-only too: nothing persisted.
+        assert writes == []
 
 
 class TestPartialInspectHelper:
@@ -253,7 +266,7 @@ class TestPartialInspectHelper:
             }
         ]
 
-        refreshed, drift = inspect_mod._partial_inspect_known_benches(container, cached_benches)
+        refreshed, drift = inspect_mod.partial_inspect_known_benches(container, cached_benches)
 
         assert drift is True
         assert refreshed[0]["available_apps"] == ["frappe", "newapp"]
@@ -275,55 +288,57 @@ class TestPartialInspectHelper:
             }
         ]
 
-        _refreshed, drift = inspect_mod._partial_inspect_known_benches(container, cached_benches)
+        _refreshed, drift = inspect_mod.partial_inspect_known_benches(container, cached_benches)
 
         assert drift is False
 
 
-class TestOpenAppRefreshHelper:
-    """``open --app`` reuses ``refresh_known_benches_cache`` so a just-installed
-    app becomes available without a manual inspect."""
+class TestOpenAppInMemoryRefresh:
+    """``open --app`` reuses ``partial_inspect_known_benches`` IN-MEMORY: it
+    surfaces a just-installed app for the membership check WITHOUT writing the
+    cache, so the next plain ``inspect`` can still self-heal via escalate-on-drift
+    (refreshing the deep per-site installed lists too)."""
 
-    def test_refresh_makes_new_app_available(self, monkeypatch):
-        store: dict[str, dict] = {}
-        store["proj"] = {
-            "project_name": "proj",
-            "bench_instances": [
-                {
-                    "path": BENCH,
-                    "available_apps": ["frappe"],
-                    "sites": [
-                        {"name": "dev.local", "installed_apps": ["frappe 15.0.0 version-15"]}
-                    ],
-                }
-            ],
-            "last_updated": "earlier",
-        }
-        monkeypatch.setattr(
-            inspect_mod.db_utils, "get_cached_project_data", lambda name: store.get(name)
-        )
+    def test_returns_fresh_apps_carries_config_and_never_writes_cache(self, monkeypatch):
+        writes: list = []
         monkeypatch.setattr(
             inspect_mod.db_utils,
             "cache_project_data",
-            lambda name, benches: store.__setitem__(
-                name, {"project_name": name, "bench_instances": benches, "last_updated": "now"}
-            ),
+            lambda *a, **k: writes.append(a),
         )
 
+        cached_benches = [
+            {
+                "path": BENCH,
+                "available_apps": ["frappe"],
+                "common_site_config": {"default_site": "dev.local"},
+                "sites": [
+                    {
+                        "name": "dev.local",
+                        "installed_apps": ["frappe 15.0.0 version-15"],
+                        "site_config": {"db_name": "olddb"},
+                    }
+                ],
+            }
+        ]
+        # A new app is on disk (in apps/), but the site has not been booted/listed.
         container = FakeFrappeContainer(
             apps=["frappe", "newapp"], sites={"dev.local": ["frappe 15.0.0 version-15"]}
         )
 
-        drift = inspect_mod.refresh_known_benches_cache(container, "proj")
+        refreshed, drift = inspect_mod.partial_inspect_known_benches(container, cached_benches)
 
         assert drift is True
-        # The membership check `open --app` performs now sees the new app.
-        assert "newapp" in store["proj"]["bench_instances"][0]["available_apps"]
+        # The membership check `open --app` performs now sees the new app, in-memory.
+        assert refreshed[0]["available_apps"] == ["frappe", "newapp"]
+        # Per-site installed apps and BOTH configs are carried forward from the cache,
+        # never re-read (so a transient unreadable config can't drop them).
+        assert refreshed[0]["sites"][0]["installed_apps"] == ["frappe 15.0.0 version-15"]
+        assert refreshed[0]["sites"][0]["site_config"] == {"db_name": "olddb"}
+        assert refreshed[0]["common_site_config"] == {"default_site": "dev.local"}
+        assert not any(c.startswith("cat ") for c in container.calls), "no config re-reads"
         # Still cheap: no find discovery, no deep per-site listing.
         assert not container.ran_find()
         assert not container.ran_list_apps()
-
-    def test_returns_none_without_cache(self, monkeypatch):
-        monkeypatch.setattr(inspect_mod.db_utils, "get_cached_project_data", lambda name: None)
-        container = FakeFrappeContainer(apps=["frappe"], sites={})
-        assert inspect_mod.refresh_known_benches_cache(container, "proj") is None
+        # Pure read: the helper never persisted to the cache.
+        assert writes == []
