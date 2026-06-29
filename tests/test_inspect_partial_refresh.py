@@ -29,10 +29,13 @@ return, and ``open --app`` reuses the T2 pass in-memory without writing the cach
 """
 
 import json
+from unittest.mock import MagicMock
 
 import pytest
+import typer
 
 from caffeinated_whale_cli.commands import inspect as inspect_mod
+from caffeinated_whale_cli.commands import open as open_mod
 
 BENCH = "/home/frappe/frappe-bench"
 
@@ -464,3 +467,77 @@ class TestDriftEscalationDegradesWhenBenchNotDiscoverable:
         assert custom_bench in out
         # The degrade path is a pure read: the cache is left intact for the next inspect.
         assert writes == []
+
+
+class TestOpenAppMatchesSelectedBench:
+    """``cwcli open --path <bench> --app <name>`` must validate the app against the
+    bench the user actually selected (matched by ``--path``), not the first cached
+    bench. Anchoring to ``bench_instances[0]`` would validate against bench A and
+    then open bench B (CodeRabbit finding on open.py)."""
+
+    BENCH_A = "/home/frappe/bench-a"
+    BENCH_B = "/home/frappe/bench-b"
+
+    def _patch_common(self, monkeypatch):
+        # Neutralize the @handle_docker_errors preflight (no real Docker needed).
+        monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/docker")
+        monkeypatch.setattr("docker.from_env", lambda: _StubDockerClient())
+        # Containers are running; a frappe container is present.
+        frappe = MagicMock()
+        frappe.labels = {"com.docker.compose.service": "frappe"}
+        frappe.name = "proj-frappe-1"
+        monkeypatch.setattr(open_mod, "ensure_containers_running", lambda *a, **k: True)
+        monkeypatch.setattr(open_mod, "get_project_containers", lambda name: [frappe])
+        # No editors installed -> the only thing that matters is the --app check.
+        monkeypatch.setattr(open_mod.vscode_utils, "is_vscode_installed", lambda: False)
+        monkeypatch.setattr(open_mod.vscode_utils, "is_vscode_insiders_installed", lambda: False)
+        monkeypatch.setattr(open_mod.vscode_utils, "is_cursor_installed", lambda: False)
+        # Two benches: appA only in bench-a, appB only in bench-b.
+        cached = {
+            "project_name": "proj",
+            "bench_instances": [
+                {"path": self.BENCH_A, "available_apps": ["frappe", "appA"], "sites": []},
+                {"path": self.BENCH_B, "available_apps": ["frappe", "appB"], "sites": []},
+            ],
+            "last_updated": "now",
+        }
+        monkeypatch.setattr(open_mod.db_utils, "get_cached_project_data", lambda name: cached)
+        # Isolate the bench-SELECTION logic: the in-memory refresh returns the cache
+        # unchanged (no drift), so available_apps come from the path-matched bench.
+        monkeypatch.setattr(
+            inspect_mod,
+            "partial_inspect_known_benches",
+            lambda c, benches, verbose=False: (benches, False),
+        )
+        exec_mock = MagicMock()
+        monkeypatch.setattr(open_mod, "exec_into_container", exec_mock)
+        return exec_mock
+
+    def _run_open(self, **overrides):
+        kwargs = dict(
+            project_name="proj",
+            bench_path=None,
+            app=None,
+            code=False,
+            code_insiders=False,
+            cursor=False,
+            docker=True,
+            verbose=False,
+        )
+        kwargs.update(overrides)
+        open_mod.open_bench(**kwargs)
+
+    def test_app_in_selected_bench_opens_that_bench(self, monkeypatch):
+        exec_mock = self._patch_common(monkeypatch)
+        # Open bench-b and its own app: must succeed and open bench-b's app dir.
+        self._run_open(bench_path=self.BENCH_B, app="appB")
+        exec_mock.assert_called_once()
+        assert exec_mock.call_args.kwargs["working_dir"] == f"{self.BENCH_B}/apps/appB"
+
+    def test_app_from_other_bench_is_rejected(self, monkeypatch):
+        exec_mock = self._patch_common(monkeypatch)
+        # appA exists only in bench-a; selecting bench-b must reject it (pre-fix this
+        # validated against bench_instances[0]=bench-a and wrongly opened bench-b/apps/appA).
+        with pytest.raises(typer.Exit):
+            self._run_open(bench_path=self.BENCH_B, app="appA")
+        exec_mock.assert_not_called()
