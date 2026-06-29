@@ -175,6 +175,19 @@ def open_bench(
 
     # Handle app option - verify app exists and update path
     if app:
+        # Run the lightweight freshness pass (inspect's T2 partial inspect) over the
+        # known benches so a just-installed app is visible here without a manual
+        # `cwcli inspect -u`. The containers were already ensured running above, so
+        # this is a cheap `ls`/`cat` refresh of available_apps; degrade silently if
+        # it fails so a transient error never blocks opening the app.
+        from .inspect import refresh_known_benches_cache
+
+        try:
+            refresh_known_benches_cache(frappe_container, project_name, verbose=verbose)
+        except Exception as e:
+            if verbose:
+                stderr_console.print(f"[dim]VERBOSE: App-list refresh skipped: {e}[/dim]")
+
         # Get cached data to check available apps
         cached_data = db_utils.get_cached_project_data(project_name)
         if not cached_data or not cached_data.get("bench_instances"):
