@@ -506,9 +506,9 @@ cwcli logs frappe-one -n 200
 
 Inspects a project to find all bench instances, sites, and apps within it. Results are cached for faster subsequent operations.
 
-**Freshness:** When a project is already cached and its containers are running, `inspect` runs a lightweight freshness pass over the known benches (a quick `ls` of `apps/`/`sites/` and the configs) before showing results.
+**Freshness:** When a project is already cached and its containers are running, `inspect` runs a lightweight, read-only freshness pass over the known benches (a quick `ls` of `apps/`/`sites/`) before showing results.
 This means an app you just installed is picked up automatically, without a manual `cwcli inspect --update`.
-If that pass detects a change, it transparently falls back to a full re-inspect so the per-site installed-app lists are refreshed too.
+If nothing changed, the cached data is served unchanged; if that pass detects a change, it transparently falls back to a full re-inspect so the per-site installed-app lists are refreshed too.
 Use `--no-refresh` to skip the pass and return the cached data as-is (fastest, but possibly stale), or `--update` to force a full re-inspect.
 
 **Security Note:** The inspect command caches site configurations including database credentials and Redis URLs. The cache is stored with restricted filesystem permissions (directory: `0700`, database: `0600`) to prevent unauthorized access. Only the current user can read the cached data. Do not share the cache directory (`~/.cwcli/cache/`) with untrusted users.

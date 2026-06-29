@@ -137,6 +137,7 @@ def open_bench(
                 verbose=verbose,
                 json_output=False,
                 update=False,
+                no_refresh=False,
                 show_apps=False,
                 interactive=False,
             )
@@ -175,19 +176,6 @@ def open_bench(
 
     # Handle app option - verify app exists and update path
     if app:
-        # Run the lightweight freshness pass (inspect's T2 partial inspect) over the
-        # known benches so a just-installed app is visible here without a manual
-        # `cwcli inspect -u`. The containers were already ensured running above, so
-        # this is a cheap `ls`/`cat` refresh of available_apps; degrade silently if
-        # it fails so a transient error never blocks opening the app.
-        from .inspect import refresh_known_benches_cache
-
-        try:
-            refresh_known_benches_cache(frappe_container, project_name, verbose=verbose)
-        except Exception as e:
-            if verbose:
-                stderr_console.print(f"[dim]VERBOSE: App-list refresh skipped: {e}[/dim]")
-
         # Get cached data to check available apps
         cached_data = db_utils.get_cached_project_data(project_name)
         if not cached_data or not cached_data.get("bench_instances"):
@@ -199,6 +187,24 @@ def open_bench(
         # Get the list of apps from the first bench instance
         bench_instance = cached_data["bench_instances"][0]
         available_apps = bench_instance.get("available_apps", [])
+
+        # Run inspect's read-only T2 partial pass IN-MEMORY over the known benches so a
+        # just-installed app is visible here without a manual `cwcli inspect -u`. The
+        # containers were already ensured running above, so this is a cheap `ls` refresh
+        # of available_apps. We deliberately do NOT persist it: leaving the cache untouched
+        # lets the next plain `cwcli inspect` self-heal via escalate-on-drift (refreshing
+        # the deep per-site installed lists too). Degrade to the cached list on any error
+        # so a transient failure never blocks opening the app.
+        from .inspect import partial_inspect_known_benches
+
+        try:
+            refreshed, _drift = partial_inspect_known_benches(
+                frappe_container, cached_data["bench_instances"], verbose=verbose
+            )
+            available_apps = refreshed[0].get("available_apps", available_apps)
+        except Exception as e:
+            if verbose:
+                stderr_console.print(f"[dim]VERBOSE: App-list refresh skipped: {e}[/dim]")
 
         if not available_apps:
             stderr_console.print(
