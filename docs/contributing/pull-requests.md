@@ -147,7 +147,7 @@ Closes #42
 - [ ] No type errors: `uv run mypy src/`
 
 **Documentation:**
-- [ ] CHANGELOG.md updated under `[Unreleased]`
+- [ ] User-facing changes described in the PR (CHANGELOG.md itself is written at release time, in the version-bump commit)
 - [ ] README.md updated (if user-facing changes)
 - [ ] Docstrings added/updated
 - [ ] Code comments added where needed

@@ -206,7 +206,7 @@ uv run pytest --cov
 
 **Preparing release:**
 ```bash
-# Update version, CHANGELOG, README
+# Update version (pyproject.toml, __init__.py, uv.lock via `uv lock`), CHANGELOG, README
 git commit -m "chore: release v0.9.2
 
 - Bump version to 0.9.2

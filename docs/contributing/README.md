@@ -155,7 +155,7 @@ See [Chores Guide](./chores.md) for details on release workflow.
 
 **Quick summary:**
 ```bash
-# 1. Update version, CHANGELOG, README
+# 1. Update version (pyproject.toml, __init__.py, uv.lock via `uv lock`), CHANGELOG, README
 git commit -m "chore: release v0.9.2
 
 - Bump version to 0.9.2
