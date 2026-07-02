@@ -155,7 +155,8 @@ git push origin --delete feat-my-feature
 # 1. Bump version
 # Edit pyproject.toml: version = "0.9.2"
 # Edit src/caffeinated_whale_cli/__init__.py: __version__ = "0.9.2"
-git add pyproject.toml src/caffeinated_whale_cli/__init__.py
+uv lock  # regenerate uv.lock so its version matches
+git add pyproject.toml src/caffeinated_whale_cli/__init__.py uv.lock
 git commit -m "chore: bump version to 0.9.2"
 
 # 2. Update CHANGELOG
@@ -183,11 +184,12 @@ git push origin develop --tags
 # 1. Update all release files
 # - pyproject.toml (version)
 # - src/caffeinated_whale_cli/__init__.py (__version__)
+# - uv.lock (regenerate with `uv lock`)
 # - CHANGELOG.md (release notes)
 # - README.md (if needed)
 
 # 2. Single atomic commit
-git add pyproject.toml src/caffeinated_whale_cli/__init__.py CHANGELOG.md README.md
+git add pyproject.toml src/caffeinated_whale_cli/__init__.py uv.lock CHANGELOG.md README.md
 git commit -m "chore: release v0.9.2
 
 - Bump version to 0.9.2
@@ -409,7 +411,7 @@ git commit -m "test: update Docker client tests"
 **Option A: Traditional (Multiple Commits)**
 ```bash
 # On develop branch
-# Update pyproject.toml and src/caffeinated_whale_cli/__init__.py
+# Update pyproject.toml and src/caffeinated_whale_cli/__init__.py, then run `uv lock`
 git commit -m "chore: bump version to 0.9.2"
 git commit -m "chore: update CHANGELOG for v0.9.2"
 git commit -m "chore: update README with new features"
@@ -420,7 +422,7 @@ git push origin develop --tags
 **Option B: Atomic (Single Commit)**
 ```bash
 # On develop branch
-# Update pyproject.toml, __init__.py, CHANGELOG.md, README.md
+# Update pyproject.toml, __init__.py, uv.lock (via `uv lock`), CHANGELOG.md, README.md
 git commit -m "chore: release v0.9.2
 
 - Bump version to 0.9.2 (pyproject.toml + __init__.py)
