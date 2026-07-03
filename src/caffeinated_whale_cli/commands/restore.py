@@ -1250,8 +1250,11 @@ def restore(
         False,
         "--yes",
         "-y",
-        help="Skip the destructive-restore confirmation. Required to restore in "
-        "receive mode under a non-interactive terminal.",
+        help="Applies to --receive mode only: skip the destructive-restore "
+        "confirmation and the missing-apps prompt so a peer-backup restore runs "
+        "non-interactively (a non-TTY without --yes refuses with a non-zero "
+        "exit). Has no effect on the normal restore path, which still prompts "
+        "interactively.",
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output."),
 ):
