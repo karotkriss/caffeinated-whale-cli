@@ -211,15 +211,22 @@ def _backup_sites(
 
             backup_files = [f.strip() for f in ls_output.decode("utf-8").split("\n") if f.strip()]
 
+            # Select only THIS run's artifacts. `ls -1t` is newest-first and
+            # Frappe names every artifact of one run with a shared leading
+            # timestamp token (`<YYYYMMDD_HHMMSS>-<site>-<part>`), so the newest
+            # file's token identifies the current run. Verifying a fixed top-N
+            # window instead would bleed into prior runs, letting a stale, broken
+            # artifact falsely fail an otherwise complete fresh backup.
+            run_ts = backup_files[0].split("-", 1)[0] if backup_files else ""
+            current_files = [f for f in backup_files if f.split("-", 1)[0] == run_ts]
+
             # Copy the most recent backups
             site_archive_backups = backups_dir / site
             site_archive_backups.mkdir(exist_ok=True)
 
             db_dump_saved = False
             copy_failed = False
-            # Get the top 5 (newest-first) files to capture the whole newest set
-            # (database, site config, files, private-files).
-            for backup_file in backup_files[:5]:
+            for backup_file in current_files:
                 source_path = f"{site_backup_dir}/{backup_file}"
 
                 # Use docker exec `cat` to copy the file out.

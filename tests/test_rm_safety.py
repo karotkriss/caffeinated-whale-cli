@@ -463,6 +463,44 @@ class TestBackupGate:
         volumes[0].remove.assert_not_called()
         assert project_dir.exists()
 
+    def test_stale_prior_run_artifact_does_not_block_deletion(self, cwcli_home, monkeypatch):
+        # Regression for the fixed backup-verify window: a site backed up more than
+        # once has a stale artifact from an OLDER run (a different leading timestamp
+        # token) whose copy-out `cat` fails. The verify set is scoped to the CURRENT
+        # run, so that stale file is never reached and cannot falsely fail an
+        # otherwise complete fresh backup - removal proceeds under --volumes.
+        _patch_docker(monkeypatch)
+        project_dir = _make_project_dir(rm.PROJECTS_DIR, "proj")
+        site = "site1.localhost"
+        # Current-run files first (so `ls -1t`/backup_files[0] is a current file),
+        # the stale older-run file last.
+        artifacts = {
+            site: {
+                f"20260703_120000-{site}-database.sql.gz": b"DBDUMPBYTES",
+                f"20260703_120000-{site}-site_config_backup.json": b"{}",
+                f"20260703_120000-{site}-files.tar": b"TARBYTES",
+                f"20250101_000000-{site}-database.sql.gz": None,  # stale, cat fails
+            }
+        }
+        container = FakeFrappeContainer([site], artifacts=artifacts)
+        volumes = [_make_volume("proj_sites"), _make_volume("proj_db-data")]
+        _wire(monkeypatch, container, volumes)
+
+        result = rm._remove_project("proj", remove_volumes=True, no_backup=False)
+
+        assert result["backup_ok"] is True
+        assert not result["failures"]
+        assert result["volumes"] == 2
+        assert result["dir_removed"] is True
+        for volume in volumes:
+            volume.remove.assert_called_once_with(force=True)
+        assert not project_dir.exists()
+        # The stale prior-run file was never copied out.
+        assert not any(
+            f"20250101_000000-{site}-database.sql.gz" in c and c.startswith("cat ")
+            for c in container.calls
+        )
+
 
 class TestBackupSitesReturn:
     """``_backup_sites`` must report success only when every site is captured."""
@@ -518,6 +556,27 @@ class TestBackupSitesReturn:
         }
         container = FakeFrappeContainer([site], artifacts=artifacts)
         assert rm._backup_sites("proj", container, BENCH, self._archive(tmp_path)) is False
+
+    def test_stale_prior_run_artifact_excluded_from_verification(self, tmp_path):
+        # The current run's artifacts share a leading timestamp token; a stale
+        # file from an older run carries a DIFFERENT token. Only the current run
+        # is copied/verified, so the stale file's failing `cat` is never reached
+        # and the fresh, complete backup reports success.
+        site = "a.localhost"
+        artifacts = {
+            site: {
+                f"20260703_120000-{site}-database.sql.gz": b"DBDUMPBYTES",
+                f"20260703_120000-{site}-site_config_backup.json": b"{}",
+                f"20260703_120000-{site}-files.tar": b"TARBYTES",
+                f"20250101_000000-{site}-database.sql.gz": None,  # stale, cat fails
+            }
+        }
+        container = FakeFrappeContainer([site], artifacts=artifacts)
+        assert rm._backup_sites("proj", container, BENCH, self._archive(tmp_path)) is True
+        assert not any(
+            f"20250101_000000-{site}-database.sql.gz" in c and c.startswith("cat ")
+            for c in container.calls
+        )
 
 
 # --------------------------------------------------------------------------- #
