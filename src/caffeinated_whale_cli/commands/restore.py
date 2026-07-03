@@ -980,12 +980,6 @@ def restore_receive_mode(
                 raise typer.Exit(code=1)
 
         # Validate credentials
-        if "'" in mariadb_root_password:
-            stderr_console.print(
-                "[bold red]Error:[/bold red] MariaDB password cannot contain single quotes"
-            )
-            raise typer.Exit(code=1)
-
         if "'" in mariadb_root_username:
             stderr_console.print(
                 "[bold red]Error:[/bold red] MariaDB username cannot contain single quotes"
@@ -1097,11 +1091,6 @@ def restore_receive_mode(
         cmd += " --force"  # Bypass version check prompts for non-interactive restore
 
         if admin_password:
-            if "'" in admin_password:
-                stderr_console.print(
-                    "[bold red]Error:[/bold red] Admin password cannot contain single quotes"
-                )
-                raise typer.Exit(code=1)
             restore_env["CWCLI_ADMIN_PASSWORD"] = admin_password
             cmd += ' --admin-password "$CWCLI_ADMIN_PASSWORD"'
 
@@ -1551,21 +1540,6 @@ def restore(
             stderr_console.print("[bold red]Error:[/bold red] Password cannot be empty.")
             raise typer.Exit(code=1)
 
-    # Validate passwords for shell injection (single quotes would break the command)
-    if "'" in mariadb_root_password:
-        stderr_console.print(
-            "[bold red]Error:[/bold red] MariaDB password cannot contain single quotes. "
-            "Please use a different password or pass it via environment variable."
-        )
-        raise typer.Exit(code=1)
-
-    if admin_password and "'" in admin_password:
-        stderr_console.print(
-            "[bold red]Error:[/bold red] Admin password cannot contain single quotes. "
-            "Please use a different password or pass it via environment variable."
-        )
-        raise typer.Exit(code=1)
-
     # Validate mariadb_root_username if provided
     if mariadb_root_username:
         if not mariadb_root_username.strip():
@@ -1596,11 +1570,11 @@ def restore(
     # Secrets are passed via the environment (never on the argv) so they do not
     # appear in the container process list (`ps`/`docker top`/exec-inspect) - M5.
     restore_env: dict[str, str] = {}
-    cmd = f'bench --site {site} restore "{backup_file}"'
+    cmd = f"bench --site {shlex.quote(site)} restore {shlex.quote(backup_file)}"
 
     # Add database credentials
     if mariadb_root_username:
-        cmd += f" --mariadb-root-username {mariadb_root_username}"
+        cmd += f" --mariadb-root-username {shlex.quote(mariadb_root_username)}"
     else:
         # Default to root if not specified
         cmd += " --mariadb-root-username root"
@@ -1616,11 +1590,11 @@ def restore(
     # Add file restore flags if available
     if selected_backup["files"]:
         files_path = selected_backup["files"]["full_path"]
-        cmd += f' --with-public-files "{files_path}"'
+        cmd += f" --with-public-files {shlex.quote(files_path)}"
 
     if selected_backup["private_files"]:
         private_files_path = selected_backup["private_files"]["full_path"]
-        cmd += f' --with-private-files "{private_files_path}"'
+        cmd += f" --with-private-files {shlex.quote(private_files_path)}"
 
     if verbose:
         # Secrets live in the environment, so the command itself is safe to print.
