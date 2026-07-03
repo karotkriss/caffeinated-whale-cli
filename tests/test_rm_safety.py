@@ -41,18 +41,21 @@ class FakeFrappeContainer:
     """A running frappe container that answers the exact ``exec_run`` probes
     ``_backup_sites``/``_archive_project_config`` issue, and records every call.
 
-    ``sites`` is the list of site directories. ``backup_ok`` is the ``bench
-    backup`` exit result (bool, or per-site dict). ``artifacts`` maps each site
-    to ``{filename: bytes}`` - the files ``ls -1t`` reports and ``cat`` returns.
-    A value of ``b""`` models a file that copies out empty; a value of ``None``
-    models a ``cat`` that fails. ``list_ok=False`` makes the post-backup
-    ``ls -1t`` fail.
+    ``sites`` is the list of site directories. ``extra_entries`` are stray
+    non-site entries that ``ls -1 sites`` also reports (e.g. ``currentsite.txt``)
+    but which have NO ``site_config.json`` and so must never be treated as sites.
+    ``backup_ok`` is the ``bench backup`` exit result (bool, or per-site dict).
+    ``artifacts`` maps each site to ``{filename: bytes}`` - the files ``ls -1t``
+    reports and ``cat`` returns. A value of ``b""`` models a file that copies out
+    empty; a value of ``None`` models a ``cat`` that fails. ``list_ok=False``
+    makes the post-backup ``ls -1t`` fail.
     """
 
     def __init__(
         self,
         sites,
         *,
+        extra_entries=None,
         backup_ok=True,
         artifacts=None,
         list_ok=True,
@@ -67,6 +70,7 @@ class FakeFrappeContainer:
         self.stopped = False
         self.removed = False
         self.sites = list(sites)
+        self.extra_entries = list(extra_entries or [])
         self._backup_ok = backup_ok
         self._list_ok = list_ok
         if artifacts is None:
@@ -84,8 +88,16 @@ class FakeFrappeContainer:
         b = self.bench_path
 
         if cmd == f"ls -1 {b}/sites":
-            listing = ["apps.txt", "common_site_config.json", *self.sites]
+            listing = ["apps.txt", "common_site_config.json", *self.extra_entries, *self.sites]
             return (0, "\n".join(listing).encode())
+
+        # Site detection probes site_config.json: real sites have it, stray
+        # entries (apps.txt, currentsite.txt, ...) do not.
+        if cmd.startswith("test -f ") and cmd.endswith("/site_config.json"):
+            for site in self.sites:
+                if cmd == f"test -f {b}/sites/{site}/site_config.json":
+                    return (0, b"")
+            return (1, b"")
 
         if cmd.startswith("sh -c 'cd ") and "bench --site " in cmd and "backup" in cmd:
             site = cmd.split("bench --site ")[1].split(" ")[0]
@@ -286,6 +298,70 @@ class TestBackupGate:
         assert not result["failures"]
         assert not project_dir.exists()
 
+    def test_stray_non_site_entry_does_not_block_deletion(self, cwcli_home, monkeypatch):
+        # A real bench sites/ dir also holds non-site entries like currentsite.txt.
+        # Such an entry has no site_config.json, so it must NOT be treated as a
+        # site - otherwise `bench --site currentsite.txt backup` fails and wrongly
+        # blocks the default removal. The one real site backs up fine, so removal
+        # proceeds and the volumes are deleted.
+        _patch_docker(monkeypatch)
+        project_dir = _make_project_dir(rm.PROJECTS_DIR, "proj")
+        site = "site1.localhost"
+        container = FakeFrappeContainer([site], extra_entries=["currentsite.txt"])
+        volumes = [_make_volume("proj_sites"), _make_volume("proj_db-data")]
+        _wire(monkeypatch, container, volumes)
+
+        result = rm._remove_project("proj", remove_volumes=True, no_backup=False)
+
+        # The stray entry was never handed to `bench backup`.
+        assert not any("currentsite.txt" in c and "backup" in c for c in container.calls)
+        assert result["backup_ok"] is True
+        assert not result["failures"]
+        assert result["volumes"] == 2
+        assert result["dir_removed"] is True
+        assert not project_dir.exists()
+
+    def test_gate_blocked_removal_preserves_cache(self, cwcli_home, monkeypatch):
+        # When the backup gate blocks removal under --volumes, the containers are
+        # gone but the named volumes + project directory survive. The cache entry
+        # must therefore be KEPT so the half-removed project stays visible in
+        # `ls`/`inspect` and can be retried, not cleared into invisibility.
+        _patch_docker(monkeypatch)
+        project_dir = _make_project_dir(rm.PROJECTS_DIR, "proj")
+        container = FakeFrappeContainer(["site1.localhost"], backup_ok=False)
+        volumes = [_make_volume("proj_sites")]
+        monkeypatch.setattr(rm, "get_project_containers", lambda name: [container])
+        monkeypatch.setattr(rm, "get_project_volumes", lambda name: list(volumes))
+        monkeypatch.setattr(rm.db_utils, "get_cached_project_data", lambda name: None)
+        clear_cache = MagicMock()
+        monkeypatch.setattr(rm.db_utils, "clear_cache_for_project", clear_cache)
+
+        result = rm._remove_project("proj", remove_volumes=True, no_backup=False)
+
+        assert result["backup_ok"] is False
+        assert result["failures"]
+        assert result["volumes"] == 0
+        assert result["dir_removed"] is False
+        assert project_dir.exists()
+        clear_cache.assert_not_called()
+
+    def test_completed_removal_clears_cache(self, cwcli_home, monkeypatch):
+        # Positive control: a fully completed removal still clears the cache.
+        _patch_docker(monkeypatch)
+        _make_project_dir(rm.PROJECTS_DIR, "proj")
+        container = FakeFrappeContainer(["site1.localhost"])
+        volumes = [_make_volume("proj_sites")]
+        monkeypatch.setattr(rm, "get_project_containers", lambda name: [container])
+        monkeypatch.setattr(rm, "get_project_volumes", lambda name: list(volumes))
+        monkeypatch.setattr(rm.db_utils, "get_cached_project_data", lambda name: None)
+        clear_cache = MagicMock()
+        monkeypatch.setattr(rm.db_utils, "clear_cache_for_project", clear_cache)
+
+        result = rm._remove_project("proj", remove_volumes=True, no_backup=False)
+
+        assert not result["failures"]
+        clear_cache.assert_called_once_with("proj")
+
 
 class TestBackupSitesReturn:
     """``_backup_sites`` must report success only when every site is captured."""
@@ -310,6 +386,13 @@ class TestBackupSitesReturn:
     def test_no_sites_returns_true(self, tmp_path):
         container = FakeFrappeContainer([])
         assert rm._backup_sites("proj", container, BENCH, self._archive(tmp_path)) is True
+
+    def test_stray_non_site_entry_not_treated_as_site(self, tmp_path):
+        # currentsite.txt has no site_config.json, so it is not a site: it must
+        # never be backed up nor counted as a failed site.
+        container = FakeFrappeContainer(["a.localhost"], extra_entries=["currentsite.txt"])
+        assert rm._backup_sites("proj", container, BENCH, self._archive(tmp_path)) is True
+        assert not any("currentsite.txt" in c and "backup" in c for c in container.calls)
 
     def test_empty_dump_returns_false(self, tmp_path):
         site = "a.localhost"
