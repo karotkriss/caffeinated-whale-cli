@@ -260,6 +260,32 @@ class TestBackupGate:
         assert result["volumes"] == 1
         volumes[0].remove.assert_called_once_with(force=True)
 
+    def test_no_volumes_failed_backup_still_removes_directory(self, cwcli_home, monkeypatch):
+        # Under --no-volumes the databases (named volumes) are kept, so no data is
+        # destroyed. A failed live backup must therefore NOT block removal of the
+        # recreatable project directory nor be recorded as a failure - the backup
+        # gate applies only when the volumes will actually be deleted.
+        _patch_docker(monkeypatch)
+        project_dir = _make_project_dir(rm.PROJECTS_DIR, "proj")
+        container = FakeFrappeContainer(["site1.localhost"], backup_ok=False)
+        volumes = [_make_volume("proj_sites"), _make_volume("proj_db-data")]
+        _wire(monkeypatch, container, volumes)
+
+        result = rm._remove_project("proj", remove_volumes=False, no_backup=False)
+
+        # The backup was attempted and failed, but no volume data is being destroyed.
+        assert container.ran_backup() is True
+        assert result["backup_ok"] is False
+        # The volumes are left untouched (the user chose --no-volumes).
+        assert result["volumes"] == 0
+        for volume in volumes:
+            volume.remove.assert_not_called()
+        # The recreatable directory is still removed, and no backup-gate failure
+        # is recorded, so the command exits cleanly.
+        assert result["dir_removed"] is True
+        assert not result["failures"]
+        assert not project_dir.exists()
+
 
 class TestBackupSitesReturn:
     """``_backup_sites`` must report success only when every site is captured."""

@@ -764,10 +764,12 @@ def _remove_project(
     #   1. every container was removed cleanly (a caught container-removal error
     #      must not fall through to volume/dir destruction),
     #   2. the conf/ config archive succeeded, and
-    #   3. a verified live database backup was produced (result["backup_ok"]);
-    #      --no-backup opts out of this net explicitly.
+    #   3. a verified live database backup was produced (result["backup_ok"]),
+    #      but only when the named volumes will actually be deleted - under
+    #      --no-volumes the databases are kept, so a failed backup must not block
+    #      removal of the recreatable directory; --no-backup opts out explicitly.
     archive_failed = dir_existed and not archived_ok
-    backup_failed = not no_backup and not result["backup_ok"]
+    backup_failed = remove_volumes and not no_backup and not result["backup_ok"]
 
     if container_removal_failed or archive_failed or backup_failed:
         reasons = []
