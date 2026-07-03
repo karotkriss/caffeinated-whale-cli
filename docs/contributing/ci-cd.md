@@ -10,8 +10,8 @@ We use four GitHub Actions workflows:
 |----------|----------|---------|
 | **Lint** | All branches, all PRs | Code quality checks (Black, Ruff) |
 | **Test** | All branches, all PRs | Run pytest (required gate) + mypy (zero-error gate) |
-| **Build** | Push to `master` | Build package, verify version consistency |
-| **Release** | Tags `v*.*.*` | Publish to PyPI, create GitHub release |
+| **Build** | Push to `master`, manual dispatch | Build package, verify version consistency |
+| **Release** | Tags `v*.*.*`, push to `master`, published releases, manual dispatch | Publish to PyPI, create GitHub release |
 
 All workflows use the `ghcr.io/astral-sh/uv:python3.12-bookworm` Docker image.
 
@@ -54,7 +54,7 @@ uv run mypy src/
 
 ### Build (`.github/workflows/build.yml`)
 
-Runs on push to `master` branch to verify the package builds correctly.
+Runs on push to the `master` branch (and on manual dispatch) to verify the package builds correctly.
 
 **Steps:**
 1. Verify version consistency (`__init__.py` ↔ `pyproject.toml`)
@@ -72,6 +72,7 @@ ls -lh dist/
 ### Release (`.github/workflows/release.yml`)
 
 Publishes package to PyPI when a version tag is pushed.
+It also triggers on pushes to `master`, on published GitHub releases, and on manual dispatch.
 
 **Steps:**
 1. Extract and verify version from `__init__.py`, `pyproject.toml`, and git tag
@@ -81,15 +82,20 @@ Publishes package to PyPI when a version tag is pushed.
 
 **Trigger a release:**
 ```bash
-# 1. Update versions
-vim src/caffeinated_whale_cli/__init__.py  # __version__ = "0.10.0"
+# 1. Bump the version (four files move together)
 vim pyproject.toml                          # version = "0.10.0"
+vim src/caffeinated_whale_cli/__init__.py   # __version__ = "0.10.0"
+uv lock                                     # refresh the project's own entry in uv.lock
+vim CHANGELOG.md                            # add the "## [0.10.0] - YYYY-MM-DD" section
 
-# 2. Commit and tag
-git add .
+# 2. Land the bump as a normal PR to develop
+git add pyproject.toml src/caffeinated_whale_cli/__init__.py uv.lock CHANGELOG.md
 git commit -m "chore: bump version to 0.10.0"
+# push the branch, open a PR, merge into develop
+
+# 3. Tag the merge commit (the tag trigger fires regardless of branch)
 git tag v0.10.0
-git push origin master --tags
+git push origin v0.10.0
 ```
 
 See [Chores Guide](./chores.md) for the full release process.

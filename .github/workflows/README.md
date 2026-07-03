@@ -9,7 +9,7 @@
 | **Lint** | `lint.yml` | Push, PR | All branches |
 | **Test** | `test.yml` | Push, PR | All branches |
 | **Build** | `build.yml` | Push, Manual | `master` only |
-| **Release** | `release.yml` | Push, Tags, Release, Manual | `master` only |
+| **Release** | `release.yml` | Push, Tags, Release, Manual | `master` (push); tags fire from any branch |
 
 ### Required Setup
 
@@ -38,8 +38,11 @@ Create environment named `pypi` with:
 
 ### Triggering Releases
 
+First land the version bump as a PR to `develop`: bump `pyproject.toml` and `src/caffeinated_whale_cli/__init__.py` together (the workflows hard-fail if they disagree), regenerate `uv.lock` with `uv lock`, and add a `CHANGELOG.md` section. Then trigger the publish:
+
 **Method 1: Version Tag**
 ```bash
+# tag the bump's merge commit on develop; the tag trigger fires regardless of branch
 git tag v0.9.2
 git push origin v0.9.2
 ```
