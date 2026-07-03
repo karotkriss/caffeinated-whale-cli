@@ -109,14 +109,16 @@ def _run_receive(
     isatty,
     confirm_answer=True,
     admin_password=None,
+    missing_apps=None,
 ):
     """Drive ``restore_receive_mode`` end-to-end against ``container``.
 
     Everything external is stubbed: ``sendme`` is faked to "download" a single
     database backup named ``db_filename`` into its working directory, container
-    discovery returns ``container``, the missing-apps check returns none, and the
-    TTY / confirmation answers are controlled by ``isatty`` / ``confirm_answer``.
-    Credentials are supplied directly so no interactive credential prompt fires.
+    discovery returns ``container``, the missing-apps check returns
+    ``missing_apps`` (none by default), and the TTY / confirmation answers are
+    controlled by ``isatty`` / ``confirm_answer``. Credentials are supplied
+    directly so no interactive credential prompt fires.
     """
 
     def fake_sendme_run(cmd, cwd=None, capture_output=True, text=True):
@@ -127,7 +129,7 @@ def _run_receive(
     monkeypatch.setattr(restore_mod, "ensure_containers_running", lambda *a, **k: True)
     monkeypatch.setattr(restore_mod, "get_project_containers", lambda name: [container])
     monkeypatch.setattr(restore_mod, "get_sendme_command", lambda: "sendme")
-    monkeypatch.setattr(restore_mod, "check_missing_apps", lambda *a, **k: [])
+    monkeypatch.setattr(restore_mod, "check_missing_apps", lambda *a, **k: missing_apps or [])
     monkeypatch.setattr(restore_mod, "TipSpinner", _NullSpinner)
     monkeypatch.setattr(restore_mod.config_utils, "get_show_tips", lambda: False)
     monkeypatch.setattr(
@@ -272,3 +274,52 @@ class TestReceivePasswordNotOnArgv:
         assert "CWCLI_MARIADB_ROOT_PASSWORD" in cmd_str
         assert call["environment"] is not None
         assert call["environment"].get("CWCLI_MARIADB_ROOT_PASSWORD") == SECRET_PW
+
+
+class TestReceiveMissingAppsGate:
+    """C2: the missing-apps 'continue anyway?' gate must honor --yes / non-TTY too,
+    so ``restore --receive --yes`` is genuinely non-interactive and a non-TTY
+    without --yes refuses (non-zero) instead of silently exiting 0."""
+
+    def test_yes_proceeds_despite_missing_apps(self, monkeypatch):
+        container = FakeReceiveContainer()
+        # --yes must not stall on the missing-apps prompt even under a non-TTY.
+        monkeypatch.setattr(
+            restore_mod.questionary,
+            "confirm",
+            lambda *a, **k: pytest.fail("confirm must not be reached with --yes"),
+        )
+        _run_receive(
+            monkeypatch,
+            container,
+            site="development.localhost",
+            db_filename="20251109_225726-development_localhost-database.sql.gz",
+            yes=True,
+            isatty=False,
+            missing_apps=["erpnext"],
+        )
+
+        assert len(container.restore_calls()) == 1
+        assert any("not available on this bench" in line for line in container.printed)
+
+    def test_non_tty_without_yes_refuses_and_exits_nonzero(self, monkeypatch):
+        container = FakeReceiveContainer()
+        # A non-TTY with missing apps and no --yes must refuse, not silently exit 0.
+        monkeypatch.setattr(
+            restore_mod.questionary,
+            "confirm",
+            lambda *a, **k: pytest.fail("confirm must not be reached under a non-TTY"),
+        )
+        with pytest.raises(typer.Exit) as excinfo:
+            _run_receive(
+                monkeypatch,
+                container,
+                site="development.localhost",
+                db_filename="20251109_225726-development_localhost-database.sql.gz",
+                yes=False,
+                isatty=False,
+                missing_apps=["erpnext"],
+            )
+
+        assert excinfo.value.exit_code != 0
+        assert container.restore_calls() == []
