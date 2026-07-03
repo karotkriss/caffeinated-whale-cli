@@ -1015,17 +1015,26 @@ def restore_receive_mode(
             )
             console.print()
 
-            try:
-                proceed = questionary.confirm(
-                    "Do you want to continue with the restore anyway?", default=False
-                ).ask()
-            except (KeyboardInterrupt, EOFError):
-                console.print("\n[yellow]Restore cancelled.[/yellow]")
-                raise typer.Exit(code=0) from None
+            if yes:
+                console.print("[dim]Proceeding despite missing apps (--yes).[/dim]")
+            elif not sys.stdin.isatty():
+                stderr_console.print(
+                    "[bold red]Error:[/bold red] Refusing to restore with missing apps "
+                    "without confirmation. Re-run with --yes to proceed non-interactively."
+                )
+                raise typer.Exit(code=1)
+            else:
+                try:
+                    proceed = questionary.confirm(
+                        "Do you want to continue with the restore anyway?", default=False
+                    ).ask()
+                except (KeyboardInterrupt, EOFError):
+                    console.print("\n[yellow]Restore cancelled.[/yellow]")
+                    raise typer.Exit(code=1) from None
 
-            if not proceed:
-                console.print("[yellow]Restore cancelled.[/yellow]")
-                raise typer.Exit(code=0)
+                if not proceed:
+                    console.print("[yellow]Restore cancelled.[/yellow]")
+                    raise typer.Exit(code=1)
 
         # Confirm the destructive restore. Receiving a peer's backup and running
         # `bench restore --force` drops and recreates the live site's database, so
