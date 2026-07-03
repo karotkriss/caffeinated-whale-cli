@@ -88,6 +88,15 @@ def _list_sites(container, bench_path: str) -> list[str] | None:
     complete, and any unlisted entry (e.g. ``currentsite.txt``) would be mistaken
     for a site, fail its ``bench backup``, and wrongly block removal.
 
+    Detection is deliberately FAIL-SAFE: an entry is excluded only when we can
+    positively confirm it is not a site - a non-directory, or a readable directory
+    with no ``site_config.json``. Anything ambiguous (the probe erroring, an
+    unreadable directory, or unexpected output) is treated as a real site that
+    must be backed up, so a transiently unreadable/erroring ``site_config.json``
+    can never let a site's volume be deleted with no backup. This keeps C1's
+    guarantee fail-closed under ambiguity: worst case it blocks a delete (which
+    ``--no-backup`` can override), never loses data.
+
     Returns the list of site names (possibly empty), or ``None`` if the sites
     directory itself could not be listed.
     """
@@ -100,8 +109,21 @@ def _list_sites(container, bench_path: str) -> list[str] | None:
         entry = entry.strip()
         if not entry:
             continue
-        probe_code, _ = container.exec_run(f"test -f {bench_path}/sites/{entry}/site_config.json")
-        if probe_code == 0:
+        entry_dir = f"{bench_path}/sites/{entry}"
+        # One shell probe with three positive verdicts: SITE (has
+        # site_config.json), NOTASITE (not a dir, or a readable dir with no
+        # config), AMBIGUOUS (dir exists but is unreadable so we cannot confirm).
+        probe = (
+            f'sh -c \'if [ ! -d "{entry_dir}" ]; then echo NOTASITE; '
+            f'elif [ -f "{entry_dir}/site_config.json" ]; then echo SITE; '
+            f'elif [ -r "{entry_dir}" ]; then echo NOTASITE; '
+            f"else echo AMBIGUOUS; fi'"
+        )
+        probe_code, probe_out = container.exec_run(probe)
+        verdict = probe_out.decode("utf-8").strip() if probe_code == 0 else ""
+        # Exclude ONLY on a positive NOTASITE. SITE, AMBIGUOUS, an unexpected
+        # token, empty output, or a non-zero probe exit all fail closed -> site.
+        if verdict != "NOTASITE":
             sites.append(entry)
     return sites
 
@@ -831,12 +853,18 @@ def _remove_project(
             project_name, verbose=verbose, failures=result["failures"]
         )
 
-    # Clear the cache only when removal actually completed (including orphan
-    # cleanup). If the destructive gate blocked, the containers may be gone but
-    # the named volumes and project directory survive - keep the cache entry so
-    # the half-removed project stays visible in `ls`/`inspect` and can be retried
-    # rather than vanishing while its data still occupies disk.
-    if not gate_blocked and (removed_count > 0 or result["volumes"] > 0 or result["dir_removed"]):
+    # Clear the cache only when NO step failed (`result["failures"]` empty). This
+    # covers both the gate-blocked case AND a post-gate failure inside the else
+    # branch - a named-volume removal that raised, a volume enumeration that
+    # errored, or a directory removal that failed all append to `failures`. In any
+    # of those the data-bearing volume or directory may survive, so keep the cache
+    # entry: the half-removed project stays visible in `ls`/`inspect` and can be
+    # retried, rather than vanishing while its data still occupies disk. On a clean
+    # full removal, orphan cleanup, or --no-volumes removal, `failures` is empty
+    # and the cache is cleared as before.
+    if not result["failures"] and (
+        removed_count > 0 or result["volumes"] > 0 or result["dir_removed"]
+    ):
         if verbose:
             stderr_console.print(f"[dim]VERBOSE: Clearing cache for '{project_name}'[/dim]")
         db_utils.clear_cache_for_project(project_name)
@@ -951,10 +979,13 @@ def rm(
     - Keeps the named Docker volumes (preserves databases, sites, and files)
     - Still removes the containers, project directory, and cache entry
 
-    If a backup cannot be fully created and verified (e.g. a wedged site, the DB
-    is down, or the disk is full), the named volumes and project directory are
-    NOT deleted and the command exits non-zero, so data is never destroyed
-    without a confirmed backup.
+    When volumes are being deleted (the default --volumes), a backup that cannot
+    be fully created and verified (e.g. a wedged site, the DB is down, or the disk
+    is full) blocks removal: the named volumes and project directory are NOT
+    deleted and the command exits non-zero, so data is never destroyed without a
+    confirmed backup. Under --no-volumes no volume data is destroyed, so a failed
+    backup does NOT block the container/directory/cache cleanup and does not force
+    a non-zero exit.
 
     Use --no-backup to skip backups (not recommended):
     - Skips database backups (and the backup safety gate)

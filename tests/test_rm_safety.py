@@ -44,11 +44,14 @@ class FakeFrappeContainer:
     ``sites`` is the list of site directories. ``extra_entries`` are stray
     non-site entries that ``ls -1 sites`` also reports (e.g. ``currentsite.txt``)
     but which have NO ``site_config.json`` and so must never be treated as sites.
-    ``backup_ok`` is the ``bench backup`` exit result (bool, or per-site dict).
-    ``artifacts`` maps each site to ``{filename: bytes}`` - the files ``ls -1t``
-    reports and ``cat`` returns. A value of ``b""`` models a file that copies out
-    empty; a value of ``None`` models a ``cat`` that fails. ``list_ok=False``
-    makes the post-backup ``ls -1t`` fail.
+    ``ambiguous_entries`` are entries whose classification probe cannot confirm
+    non-site status (an unreadable directory / probe error): the fail-safe
+    detector must treat them as real sites. ``backup_ok`` is the ``bench backup``
+    exit result (bool, or per-site dict). ``artifacts`` maps each site to
+    ``{filename: bytes}`` - the files ``ls -1t`` reports and ``cat`` returns. A
+    value of ``b""`` models a file that copies out empty; a value of ``None``
+    models a ``cat`` that fails. ``list_ok=False`` makes the post-backup
+    ``ls -1t`` fail.
     """
 
     def __init__(
@@ -56,6 +59,7 @@ class FakeFrappeContainer:
         sites,
         *,
         extra_entries=None,
+        ambiguous_entries=None,
         backup_ok=True,
         artifacts=None,
         list_ok=True,
@@ -71,6 +75,7 @@ class FakeFrappeContainer:
         self.removed = False
         self.sites = list(sites)
         self.extra_entries = list(extra_entries or [])
+        self.ambiguous_entries = list(ambiguous_entries or [])
         self._backup_ok = backup_ok
         self._list_ok = list_ok
         if artifacts is None:
@@ -88,16 +93,26 @@ class FakeFrappeContainer:
         b = self.bench_path
 
         if cmd == f"ls -1 {b}/sites":
-            listing = ["apps.txt", "common_site_config.json", *self.extra_entries, *self.sites]
+            listing = [
+                "apps.txt",
+                "common_site_config.json",
+                *self.extra_entries,
+                *self.ambiguous_entries,
+                *self.sites,
+            ]
             return (0, "\n".join(listing).encode())
 
-        # Site detection probes site_config.json: real sites have it, stray
-        # entries (apps.txt, currentsite.txt, ...) do not.
-        if cmd.startswith("test -f ") and cmd.endswith("/site_config.json"):
+        # Fail-safe site-classification probe: a real site echoes SITE, a
+        # readable stray entry echoes NOTASITE, and an unreadable/ambiguous entry
+        # echoes AMBIGUOUS. The entry is identified by its unique config path.
+        if cmd.startswith("sh -c '") and "echo SITE" in cmd and "site_config.json" in cmd:
             for site in self.sites:
-                if cmd == f"test -f {b}/sites/{site}/site_config.json":
-                    return (0, b"")
-            return (1, b"")
+                if f"/sites/{site}/site_config.json" in cmd:
+                    return (0, b"SITE\n")
+            for entry in self.ambiguous_entries:
+                if f"/sites/{entry}/site_config.json" in cmd:
+                    return (0, b"AMBIGUOUS\n")
+            return (0, b"NOTASITE\n")
 
         if cmd.startswith("sh -c 'cd ") and "bench --site " in cmd and "backup" in cmd:
             site = cmd.split("bench --site ")[1].split(" ")[0]
@@ -361,6 +376,57 @@ class TestBackupGate:
 
         assert not result["failures"]
         clear_cache.assert_called_once_with("proj")
+
+    def test_postgate_volume_failure_preserves_cache(self, cwcli_home, monkeypatch):
+        # The gate does NOT block here (backup ok, archive ok, containers removed),
+        # but a named-volume removal fails AFTER the gate. The data-bearing volume
+        # survives, so the cache must still be KEPT (keyed on no failures, not just
+        # gate-not-blocked) - otherwise the project vanishes from `ls`/`inspect`
+        # while its DB volume remains on disk.
+        _patch_docker(monkeypatch)
+        _make_project_dir(rm.PROJECTS_DIR, "proj")
+        container = FakeFrappeContainer(["site1.localhost"])  # backup succeeds
+        bad_volume = _make_volume("proj_db-data")
+        bad_volume.remove.side_effect = RuntimeError("volume in use")
+        monkeypatch.setattr(rm, "get_project_containers", lambda name: [container])
+        monkeypatch.setattr(rm, "get_project_volumes", lambda name: [bad_volume])
+        monkeypatch.setattr(rm.db_utils, "get_cached_project_data", lambda name: None)
+        clear_cache = MagicMock()
+        monkeypatch.setattr(rm.db_utils, "clear_cache_for_project", clear_cache)
+
+        result = rm._remove_project("proj", remove_volumes=True, no_backup=False)
+
+        # Gate did not block (backup verified), but the volume removal failed.
+        assert result["backup_ok"] is True
+        assert result["volumes"] == 0
+        assert any("volume" in f for f in result["failures"])
+        clear_cache.assert_not_called()
+
+    def test_ambiguous_entry_is_treated_as_a_site(self, cwcli_home, monkeypatch):
+        # Fail-safe detection: an entry whose site_config.json cannot be confirmed
+        # (unreadable dir / probe error -> AMBIGUOUS) must be treated as a real
+        # site that MUST be backed up. Here its backup fails, so removal is blocked
+        # and the volumes are preserved - C1 stays fail-closed under ambiguity.
+        _patch_docker(monkeypatch)
+        project_dir = _make_project_dir(rm.PROJECTS_DIR, "proj")
+        container = FakeFrappeContainer(
+            ["site1.localhost"],
+            ambiguous_entries=["mystery"],
+            backup_ok={"site1.localhost": True, "mystery": False},
+        )
+        volumes = [_make_volume("proj_sites")]
+        _wire(monkeypatch, container, volumes)
+
+        result = rm._remove_project("proj", remove_volumes=True, no_backup=False)
+
+        # The ambiguous entry WAS handed to `bench backup` (treated as a site)...
+        assert any("mystery" in c and "backup" in c for c in container.calls)
+        # ...and because its backup failed, the whole removal is blocked.
+        assert result["backup_ok"] is False
+        assert result["volumes"] == 0
+        assert result["dir_removed"] is False
+        volumes[0].remove.assert_not_called()
+        assert project_dir.exists()
 
 
 class TestBackupSitesReturn:
