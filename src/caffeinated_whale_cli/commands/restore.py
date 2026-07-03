@@ -979,13 +979,6 @@ def restore_receive_mode(
                 stderr_console.print("[bold red]Error:[/bold red] MariaDB password is required")
                 raise typer.Exit(code=1)
 
-        # Validate credentials
-        if "'" in mariadb_root_username:
-            stderr_console.print(
-                "[bold red]Error:[/bold red] MariaDB username cannot contain single quotes"
-            )
-            raise typer.Exit(code=1)
-
         # Check for missing apps before proceeding with restore
         console.print()
         show_tips = config_utils.get_show_tips()
@@ -1250,11 +1243,11 @@ def restore(
         False,
         "--yes",
         "-y",
-        help="Applies to --receive mode only: skip the destructive-restore "
-        "confirmation and the missing-apps prompt so a peer-backup restore runs "
-        "non-interactively (a non-TTY without --yes refuses with a non-zero "
-        "exit). Has no effect on the normal restore path, which still prompts "
-        "interactively.",
+        help="Applies to --receive mode only: skip the restore confirmation "
+        "prompts (the destructive-restore confirmation and the missing-apps "
+        "prompt); a non-TTY without --yes refuses these with a non-zero exit. "
+        "Does not remove the sendme-ticket or MariaDB-credential prompts, and "
+        "has no effect on the normal restore path.",
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output."),
 ):
