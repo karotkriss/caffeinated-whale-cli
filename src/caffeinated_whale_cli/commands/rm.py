@@ -740,6 +740,29 @@ def _remove_project(
             "so a fresh database backup could not be taken before cleanup."
         )
 
+    # A verified live backup is the gate on destroying the named volumes. Evaluate
+    # it BEFORE removing any container so a failed backup aborts while the frappe
+    # container is still alive and a retry can still produce a backup. Removing
+    # containers first and only THEN blocking on the backup would leave an orphan:
+    # on the naive retry (`cwcli rm proj` again) there is no running container, so
+    # no backup is attempted, backup_ok defaults True, the gate passes, and the
+    # database volumes are deleted with NO backup - defeating C1. The gate is
+    # scoped to volume deletion: under --no-volumes no volume data is destroyed, so
+    # a failed backup does not abort; --no-backup opts out of the gate entirely.
+    backup_failed = remove_volumes and not no_backup and not result["backup_ok"]
+    if backup_failed:
+        stderr_console.print(
+            f"[yellow]Warning:[/yellow] Refusing to remove '{project_name}': a verified "
+            "database backup could not be created."
+        )
+        stderr_console.print(
+            "[dim]Resolve the backup failure and retry, or use --no-backup to remove "
+            "without a backup (the databases will be lost).[/dim]"
+        )
+        message = f"a verified database backup could not be created for '{project_name}'"
+        result["failures"].append(message)
+        return result
+
     # Stop and remove each container
     removed_count = 0
     container_removal_failed = False
@@ -795,19 +818,18 @@ def _remove_project(
         status.update(f"[bold cyan]Archiving project directory for '{project_name}'...[/bold cyan]")
     archived_ok = _archive_project_directory(project_name, archive_dir=archive_dir, verbose=verbose)
 
-    # Destroying data (the named volumes and the local directory) is gated on
-    # three independent safety conditions. If any expected one did not hold, skip
-    # the destructive steps so nothing unrecoverable is lost:
+    # Destroying data (the named volumes and the local directory) is gated on two
+    # remaining safety conditions here. If either did not hold, skip the
+    # destructive steps so nothing unrecoverable is lost:
     #   1. every container was removed cleanly (a caught container-removal error
-    #      must not fall through to volume/dir destruction),
-    #   2. the conf/ config archive succeeded, and
-    #   3. a verified live database backup was produced (result["backup_ok"]),
-    #      but only when the named volumes will actually be deleted - under
-    #      --no-volumes the databases are kept, so a failed backup must not block
-    #      removal of the recreatable directory; --no-backup opts out explicitly.
+    #      must not fall through to volume/dir destruction), and
+    #   2. the conf/ config archive succeeded.
+    # The third condition - a verified live database backup - is enforced EARLIER,
+    # as an abort before any container is removed (see above), so a failed backup
+    # never reaches this late gate and never tears down the containers a retry
+    # would need.
     archive_failed = dir_existed and not archived_ok
-    backup_failed = remove_volumes and not no_backup and not result["backup_ok"]
-    gate_blocked = container_removal_failed or archive_failed or backup_failed
+    gate_blocked = container_removal_failed or archive_failed
 
     if gate_blocked:
         reasons = []
@@ -815,8 +837,6 @@ def _remove_project(
             reasons.append("one or more containers could not be removed")
         if archive_failed:
             reasons.append("its configuration could not be archived")
-        if backup_failed:
-            reasons.append("a verified database backup could not be created")
         message = (
             f"Skipping volume and directory removal for '{project_name}' because "
             + " and ".join(reasons)
@@ -824,11 +844,6 @@ def _remove_project(
         )
         stderr_console.print(f"[yellow]Warning:[/yellow] {message}")
         result["failures"].append(message)
-        if backup_failed:
-            stderr_console.print(
-                "[dim]Re-run with --no-backup to remove it without a backup, or resolve the "
-                "backup failure first.[/dim]"
-            )
     else:
         # Remove named compose volumes. Anonymous volumes were already handled by
         # container.remove(v=remove_volumes) above, but the named volumes that
@@ -981,11 +996,14 @@ def rm(
 
     When volumes are being deleted (the default --volumes), a backup that cannot
     be fully created and verified (e.g. a wedged site, the DB is down, or the disk
-    is full) blocks removal: the named volumes and project directory are NOT
-    deleted and the command exits non-zero, so data is never destroyed without a
-    confirmed backup. Under --no-volumes no volume data is destroyed, so a failed
-    backup does NOT block the container/directory/cache cleanup and does not force
-    a non-zero exit.
+    is full) blocks removal: the command aborts BEFORE any container is removed and
+    exits non-zero, so data is never destroyed without a confirmed backup. Aborting
+    before container removal keeps the whole project intact (containers, volumes,
+    directory, and cache), so a retry can still take a live backup from the running
+    container - if the containers were torn down first, the retry would be an
+    orphan with no live database to back up. Under --no-volumes no volume data is
+    destroyed, so a failed backup does NOT block the container/directory/cache
+    cleanup and does not force a non-zero exit.
 
     Use --no-backup to skip backups (not recommended):
     - Skips database backups (and the backup safety gate)

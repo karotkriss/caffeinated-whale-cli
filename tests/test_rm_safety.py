@@ -208,6 +208,41 @@ class TestBackupGate:
             volume.remove.assert_not_called()
         assert project_dir.exists()
 
+    def test_failed_backup_aborts_before_removing_containers(self, cwcli_home, monkeypatch):
+        # Retry-safety (early abort): under --volumes a failed live backup must
+        # abort BEFORE any container is stopped/removed, so the still-running
+        # frappe container survives and a retry can still take a live backup. If
+        # containers were torn down first, the naive retry would be an orphan (no
+        # live DB) and would delete the volumes with NO backup - defeating C1.
+        _patch_docker(monkeypatch)
+        project_dir = _make_project_dir(rm.PROJECTS_DIR, "proj")
+        container = FakeFrappeContainer(["site1.localhost"], backup_ok=False)
+        volumes = [_make_volume("proj_sites"), _make_volume("proj_db-data")]
+        monkeypatch.setattr(rm, "get_project_containers", lambda name: [container])
+        monkeypatch.setattr(rm, "get_project_volumes", lambda name: list(volumes))
+        monkeypatch.setattr(rm.db_utils, "get_cached_project_data", lambda name: None)
+        clear_cache = MagicMock()
+        monkeypatch.setattr(rm.db_utils, "clear_cache_for_project", clear_cache)
+
+        result = rm._remove_project("proj", remove_volumes=True, no_backup=False)
+
+        # The backup was attempted and failed...
+        assert container.ran_backup() is True
+        assert result["backup_ok"] is False
+        # ...and the early abort fired: NO container was stopped or removed.
+        assert result["containers"] == 0
+        assert container.stopped is False
+        assert container.removed is False
+        # Nothing destructive ran: volumes untouched, directory intact, cache kept.
+        assert result["volumes"] == 0
+        assert result["dir_removed"] is False
+        for volume in volumes:
+            volume.remove.assert_not_called()
+        assert project_dir.exists()
+        clear_cache.assert_not_called()
+        # A failure is recorded so the command exits non-zero and a retry is invited.
+        assert result["failures"]
+
     def test_empty_host_artifact_blocks_volume_deletion(self, cwcli_home, monkeypatch):
         # bench backup exits 0, but the database dump copies out EMPTY (0 bytes),
         # i.e. the "backup" exists only inside the volume we are about to delete.
