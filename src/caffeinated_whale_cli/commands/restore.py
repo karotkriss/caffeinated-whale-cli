@@ -1,6 +1,7 @@
 import json
 import re
 import shlex
+import sys
 from datetime import datetime
 
 import questionary
@@ -681,6 +682,7 @@ def restore_receive_mode(
     admin_password: str | None,
     no_recache: bool,
     verbose: bool,
+    yes: bool = False,
 ):
     """
     Receive mode: Download backup from sendme and restore it.
@@ -692,7 +694,9 @@ def restore_receive_mode(
         mariadb_root_username: Optional MariaDB username
         mariadb_root_password: Optional MariaDB password
         admin_password: Optional admin password
+        no_recache: Skip re-caching before the missing-apps check
         verbose: Enable verbose output
+        yes: Skip the destructive-restore confirmation (non-interactive)
     """
     import subprocess
     import tempfile
@@ -937,9 +941,19 @@ def restore_receive_mode(
             with tarfile.open(tar_path, "w") as tar:
                 tar.add(local_file, arcname=local_file.name)
 
-            # Copy to container
+            # Stream the tar into the container instead of reading the whole
+            # (possibly multi-GB) archive into host RAM, and fail loudly if the
+            # copy did not succeed rather than letting it surface later as a
+            # confusing "backup not found".
             with open(tar_path, "rb") as tar_file:
-                frappe_container.put_archive(backup_dir, tar_file.read())
+                copied = frappe_container.put_archive(backup_dir, tar_file)
+
+            if not copied:
+                stderr_console.print(
+                    f"[bold red]Error:[/bold red] Failed to copy '{local_file.name}' "
+                    "into the container."
+                )
+                raise typer.Exit(code=1)
 
             tar_path.unlink()
 
@@ -1019,8 +1033,53 @@ def restore_receive_mode(
                 console.print("[yellow]Restore cancelled.[/yellow]")
                 raise typer.Exit(code=0)
 
-        # Build restore command
-        cmd = f"bench --site {site} restore"
+        # Confirm the destructive restore. Receiving a peer's backup and running
+        # `bench restore --force` drops and recreates the live site's database, so
+        # it must carry the same warning + confirmation the normal restore path has
+        # (this is not covered by the conditional missing-apps prompt above, which
+        # only fires when apps are missing). Honor --yes for non-interactive use;
+        # under a non-TTY without --yes, refuse and exit non-zero.
+        console.print()
+        console.print(
+            f"[bold yellow]⚠ Warning:[/bold yellow] This will replace all data in site '{site}'"
+        )
+        console.print(f"[dim]Backup: {database_file.name}[/dim]")
+
+        # Compare the backup's origin site against the target and warn on mismatch.
+        origin_parsed = parse_backup_filename(database_file.name)
+        origin_site = origin_parsed["site_name"] if origin_parsed else None
+        if origin_site and origin_site != transform_site_name_to_backup_format(site):
+            console.print(
+                f"[bold yellow]⚠ Origin mismatch:[/bold yellow] this backup is from site "
+                f"'{origin_site}', but you are restoring into '{site}'."
+            )
+        console.print()
+
+        if yes:
+            console.print("[dim]Proceeding without confirmation (--yes).[/dim]")
+        elif not sys.stdin.isatty():
+            stderr_console.print(
+                "[bold red]Error:[/bold red] Refusing to restore without confirmation. "
+                "Re-run with --yes to restore non-interactively."
+            )
+            raise typer.Exit(code=1)
+        else:
+            try:
+                confirm = questionary.confirm(
+                    "Are you sure you want to restore?", default=False
+                ).ask()
+            except (KeyboardInterrupt, EOFError):
+                console.print("\n[yellow]Restore cancelled.[/yellow]")
+                raise typer.Exit(code=1) from None
+
+            if not confirm:
+                console.print("[yellow]Restore cancelled.[/yellow]")
+                raise typer.Exit(code=1)
+
+        # Build restore command. Secrets are passed via the environment (never on
+        # the argv) so they do not appear in the container process list (M5).
+        restore_env: dict[str, str] = {}
+        cmd = f"bench --site {shlex.quote(site)} restore"
         cmd += f" {shlex.quote(database_file.name)}"
 
         if files_archive:
@@ -1033,7 +1092,8 @@ def restore_receive_mode(
             cmd += f" --with-private-files {shlex.quote(private_files_path)}"
 
         cmd += f" --mariadb-root-username {shlex.quote(mariadb_root_username)}"
-        cmd += f" --mariadb-root-password '{mariadb_root_password}'"
+        restore_env["CWCLI_MARIADB_ROOT_PASSWORD"] = mariadb_root_password
+        cmd += ' --mariadb-root-password "$CWCLI_MARIADB_ROOT_PASSWORD"'
         cmd += " --force"  # Bypass version check prompts for non-interactive restore
 
         if admin_password:
@@ -1042,17 +1102,21 @@ def restore_receive_mode(
                     "[bold red]Error:[/bold red] Admin password cannot contain single quotes"
                 )
                 raise typer.Exit(code=1)
-            cmd += f" --admin-password '{admin_password}'"
+            restore_env["CWCLI_ADMIN_PASSWORD"] = admin_password
+            cmd += ' --admin-password "$CWCLI_ADMIN_PASSWORD"'
 
         if verbose:
-            stderr_console.print(f"[dim]$ {cmd.replace(mariadb_root_password, '***')}[/dim]")
+            # Secrets live in the environment, so the command itself is safe to print.
+            stderr_console.print(f"[dim]$ {cmd}[/dim]")
 
         # Execute restore
         show_tips = config_utils.get_show_tips()
         with TipSpinner(
             f"Restoring backup to site '{site}'", console=stderr_console, enabled=show_tips
         ):
-            exit_code, output = frappe_container.exec_run(cmd, workdir=backup_dir)
+            exit_code, output = frappe_container.exec_run(
+                ["sh", "-c", cmd], workdir=backup_dir, environment=restore_env
+            )
 
         # Show output if verbose or on failure
         if verbose or exit_code != 0:
@@ -1184,6 +1248,13 @@ def restore(
         "--no-recache",
         help="Skip re-caching project before checking for missing apps (uses existing cache).",
     ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Skip the destructive-restore confirmation. Required to restore in "
+        "receive mode under a non-interactive terminal.",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output."),
 ):
     """
@@ -1230,6 +1301,7 @@ def restore(
                 admin_password,
                 no_recache,
                 verbose,
+                yes,
             )
 
     # Ensure containers are running (needed for both normal restore and send mode)
@@ -1402,6 +1474,7 @@ def restore(
             admin_password,
             no_recache,
             verbose,
+            yes,
         )
 
     # Check for missing apps before proceeding with restore
@@ -1520,6 +1593,9 @@ def restore(
         stderr_console.print(f"[bold red]Error:[/bold red] Backup file not found: {backup_file}")
         raise typer.Exit(code=1)
 
+    # Secrets are passed via the environment (never on the argv) so they do not
+    # appear in the container process list (`ps`/`docker top`/exec-inspect) - M5.
+    restore_env: dict[str, str] = {}
     cmd = f'bench --site {site} restore "{backup_file}"'
 
     # Add database credentials
@@ -1529,11 +1605,13 @@ def restore(
         # Default to root if not specified
         cmd += " --mariadb-root-username root"
 
-    cmd += f" --mariadb-root-password '{mariadb_root_password}'"
+    restore_env["CWCLI_MARIADB_ROOT_PASSWORD"] = mariadb_root_password
+    cmd += ' --mariadb-root-password "$CWCLI_MARIADB_ROOT_PASSWORD"'
     cmd += " --force"  # Bypass version check prompts for non-interactive restore
 
     if admin_password:
-        cmd += f" --admin-password '{admin_password}'"
+        restore_env["CWCLI_ADMIN_PASSWORD"] = admin_password
+        cmd += ' --admin-password "$CWCLI_ADMIN_PASSWORD"'
 
     # Add file restore flags if available
     if selected_backup["files"]:
@@ -1545,18 +1623,15 @@ def restore(
         cmd += f' --with-private-files "{private_files_path}"'
 
     if verbose:
-        # Hide password in verbose output
-        display_cmd = cmd
-        if mariadb_root_password:
-            display_cmd = display_cmd.replace(mariadb_root_password, "***")
-        if admin_password:
-            display_cmd = display_cmd.replace(admin_password, "***")
-        stderr_console.print(f"[dim]$ {display_cmd}[/dim]")
+        # Secrets live in the environment, so the command itself is safe to print.
+        stderr_console.print(f"[dim]$ {cmd}[/dim]")
 
     # Execute restore with spinner for clean output
     console.print()
     with TipSpinner(f"Restoring site '{site}'", console=stderr_console, enabled=show_tips):
-        exit_code, output = frappe_container.exec_run(cmd, workdir=bench_path)
+        exit_code, output = frappe_container.exec_run(
+            ["sh", "-c", cmd], workdir=bench_path, environment=restore_env
+        )
 
     # Show output if verbose or on failure
     if verbose or exit_code != 0:
