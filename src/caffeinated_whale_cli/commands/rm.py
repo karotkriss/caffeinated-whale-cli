@@ -76,6 +76,36 @@ def _is_valid_project_name(name: str) -> bool:
     return _is_safe_project_dir(PROJECTS_DIR / name)
 
 
+def _list_sites(container, bench_path: str) -> list[str] | None:
+    """
+    Return the real Frappe sites under ``{bench_path}/sites``.
+
+    A bench ``sites/`` directory holds more than sites: ``apps.txt``,
+    ``apps.json``, ``assets``, ``common_site_config.json``, ``currentsite.txt``
+    (written by ``bench use``), lock files, and so on. A real site is a directory
+    that contains a ``site_config.json``, so detect sites by probing for that file
+    rather than denylisting known non-site names - a denylist can never be
+    complete, and any unlisted entry (e.g. ``currentsite.txt``) would be mistaken
+    for a site, fail its ``bench backup``, and wrongly block removal.
+
+    Returns the list of site names (possibly empty), or ``None`` if the sites
+    directory itself could not be listed.
+    """
+    exit_code, output = container.exec_run(f"ls -1 {bench_path}/sites")
+    if exit_code != 0:
+        return None
+
+    sites: list[str] = []
+    for entry in output.decode("utf-8").split("\n"):
+        entry = entry.strip()
+        if not entry:
+            continue
+        probe_code, _ = container.exec_run(f"test -f {bench_path}/sites/{entry}/site_config.json")
+        if probe_code == 0:
+            sites.append(entry)
+    return sites
+
+
 def _backup_sites(
     project_name: str,
     container,
@@ -101,23 +131,15 @@ def _backup_sites(
         backup is missing.
     """
     try:
-        # Get list of sites
-        sites_dir = f"{bench_path}/sites"
-        exit_code, output = container.exec_run(f"ls -1 {sites_dir}")
+        # Get the list of real sites (directories with a site_config.json).
+        sites = _list_sites(container, bench_path)
 
-        if exit_code != 0:
+        if sites is None:
             if verbose:
                 stderr_console.print(
-                    f"[dim]VERBOSE: Could not list sites directory: {sites_dir}[/dim]"
+                    f"[dim]VERBOSE: Could not list sites directory: {bench_path}/sites[/dim]"
                 )
             return False
-
-        sites = [
-            s.strip()
-            for s in output.decode("utf-8").split("\n")
-            if s.strip()
-            and s.strip() not in ["apps.txt", "assets", "common_site_config.json", "apps.json"]
-        ]
 
         if not sites:
             if verbose:
@@ -290,18 +312,11 @@ def _archive_project_config(
         if not compose_archived and verbose:
             stderr_console.print("[dim]VERBOSE: Could not find docker-compose.yml to archive[/dim]")
 
-        # Archive site_config.json files from all sites
+        # Archive site_config.json files from all real sites.
         sites_dir = f"{bench_path}/sites"
-        exit_code, output = container.exec_run(f"ls -1 {sites_dir}")
+        sites = _list_sites(container, bench_path)
 
-        if exit_code == 0:
-            sites = [
-                s.strip()
-                for s in output.decode("utf-8").split("\n")
-                if s.strip()
-                and s.strip() not in ["apps.txt", "assets", "common_site_config.json", "apps.json"]
-            ]
-
+        if sites:
             configs_archived = 0
             for site in sites:
                 site_config_path = f"{sites_dir}/{site}/site_config.json"
@@ -770,8 +785,9 @@ def _remove_project(
     #      removal of the recreatable directory; --no-backup opts out explicitly.
     archive_failed = dir_existed and not archived_ok
     backup_failed = remove_volumes and not no_backup and not result["backup_ok"]
+    gate_blocked = container_removal_failed or archive_failed or backup_failed
 
-    if container_removal_failed or archive_failed or backup_failed:
+    if gate_blocked:
         reasons = []
         if container_removal_failed:
             reasons.append("one or more containers could not be removed")
@@ -815,8 +831,12 @@ def _remove_project(
             project_name, verbose=verbose, failures=result["failures"]
         )
 
-    # Clear cache for the removed project (including orphan cleanup).
-    if removed_count > 0 or result["volumes"] > 0 or result["dir_removed"]:
+    # Clear the cache only when removal actually completed (including orphan
+    # cleanup). If the destructive gate blocked, the containers may be gone but
+    # the named volumes and project directory survive - keep the cache entry so
+    # the half-removed project stays visible in `ls`/`inspect` and can be retried
+    # rather than vanishing while its data still occupies disk.
+    if not gate_blocked and (removed_count > 0 or result["volumes"] > 0 or result["dir_removed"]):
         if verbose:
             stderr_console.print(f"[dim]VERBOSE: Clearing cache for '{project_name}'[/dim]")
         db_utils.clear_cache_for_project(project_name)
