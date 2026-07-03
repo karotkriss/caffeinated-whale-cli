@@ -51,7 +51,21 @@ Calling `inspect` directly in tests is a trap: it is a Typer command, so any omi
 - The `Pytest` job is the intended required gate. develop has no branch protection, so the admin must tick `Pytest` as a required status check in the develop branch-protection settings for it to actually block merges.
 - The `Mypy` job is now a zero-error blocking gate. The historical ~50 errors were burned down to zero and `continue-on-error` was dropped from the step, so any new type error fails the job's status check. To make it *required to merge*, the repo admin still has to tick `Mypy` as a required status check in the develop branch-protection settings (same outstanding admin step as `Pytest`).
 - Keep `uv run mypy src/` at zero errors. Two `types-*` stub packages are dev deps for this (`types-requests`, `types-toml`); add the matching `types-*` stub rather than ignoring an untyped third-party import. There are currently no `# type: ignore` comments in `src/` - prefer accurate annotations (e.g. assign a dynamic `json.loads(...)`/`exec_run(...)` result to a typed local, use `str | None` for implicit-Optional defaults) over silencing. Do not loosen `[tool.mypy]` in `pyproject.toml` to make errors disappear.
-- `build.yml` / `release.yml` trigger on `master` (the historical default); they build and publish to PyPI and do not run tests.
+- `build.yml` triggers on pushes to `master` (the historical default) and on `workflow_dispatch`; it builds and uploads artifacts, no tests.
+- `release.yml` triggers on pushes to `master`, on `v*.*.*` tag pushes, on published releases, and on `workflow_dispatch`; it builds and publishes to PyPI and does not run tests (see "Cutting a release" below).
+
+## Cutting a release
+
+The release convention, as practiced for 0.31.1 (PR #22) and 0.32.0:
+
+- A version bump touches exactly four files: `version` in `pyproject.toml`, `__version__` in `src/caffeinated_whale_cli/__init__.py`, the project's own entry in `uv.lock` (regenerate via `uv lock`, do not hand-edit), and a new `CHANGELOG.md` section.
+- Both `build.yml` and `release.yml` hard-fail when `pyproject.toml` and `__init__.py` disagree, so the two version strings must always be bumped together.
+- `CHANGELOG.md` is manually maintained in Keep a Changelog format: a `## [x.y.z] - YYYY-MM-DD` section with `### Added`/`### Changed`/`### Fixed` subsections, entries shaped like ``- **`cmd` command** - description`` with indented sub-bullets, user-facing changes only (no CI/typing internals), no issue numbers.
+- Version choice follows semver as this repo practices it: minor for new flags or behavior changes (0.30.0, 0.31.0, 0.32.0), patch for a narrow compatibility fix (0.31.1).
+- The bump lands as a normal PR to `develop` with a `chore: bump version to x.y.z` commit.
+- Publishing to PyPI is done by `release.yml`, not from a dev machine.
+  Since the default branch is `develop` but the workflow's branch trigger is `master`, the working path is: merge the bump PR into `develop`, then push a `vX.Y.Z` tag pointing at the merge commit (the tag trigger fires regardless of branch).
+  The workflow verifies the tag matches the package version, publishes to PyPI, and creates a GitHub release with the built artifacts.
 
 ## `rm` command: what removal actually deletes
 

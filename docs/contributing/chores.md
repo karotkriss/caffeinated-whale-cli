@@ -60,6 +60,7 @@ chore: bump version to 0.9.2
 **Files Changed:**
 - `pyproject.toml` - Update `version = "0.9.2"`
 - `src/caffeinated_whale_cli/__init__.py` - Update `__version__ = "0.9.2"`
+- `uv.lock` - Regenerate with `uv lock` (CI's `uv sync --frozen` fails if it lags `pyproject.toml`)
 
 **Process:**
 ```bash
@@ -69,8 +70,11 @@ chore: bump version to 0.9.2
 # 2. Update version in __init__.py
 # __version__ = "0.9.2"
 
-# 3. Commit
-git add pyproject.toml src/caffeinated_whale_cli/__init__.py
+# 3. Regenerate the lock file so its version matches
+uv lock
+
+# 4. Commit
+git add pyproject.toml src/caffeinated_whale_cli/__init__.py uv.lock
 git commit -m "chore: bump version to 0.9.2"
 ```
 
@@ -292,6 +296,7 @@ Most chores happen during the release process. Here's the standard workflow:
 # 1. Bump version
 # Edit pyproject.toml: version = "0.9.2"
 # Edit src/caffeinated_whale_cli/__init__.py: __version__ = "0.9.2"
+# Regenerate uv.lock: uv lock
 git commit -m "chore: bump version to 0.9.2"
 
 # 2. Update CHANGELOG
@@ -319,6 +324,7 @@ git push origin develop --tags
 # 1. Update all release files
 # - version in pyproject.toml
 # - __version__ in src/caffeinated_whale_cli/__init__.py
+# - uv.lock (regenerate with `uv lock`)
 # - CHANGELOG.md
 # - README.md (if needed)
 

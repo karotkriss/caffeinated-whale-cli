@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.0] - 2026-07-02
+
+### Added
+- **`inspect` command** - `--no-refresh` flag to return cached data as-is, skipping the freshness pass entirely
+
+### Changed
+- **`inspect` command** - 3-tier freshness model (cache / partial / full) so cached reads stay fast but no longer go stale
+  - By default, a cheap read-only pass re-checks the apps and sites of known benches and escalates to a full re-inspect only when they drift from the cache, so a freshly installed app now shows up without `--update`
+  - Serves cached data directly when the project's containers are not running, without prompting to start them
+  - No longer rewrites the cache on every read; the cache is only written when a full inspect runs
+
+### Fixed
+- **`open` command** - `--app` now sees freshly installed apps instead of failing with "App not found" on a stale cache, and matches apps against the selected bench rather than the first one
+- **`rm` command** - Removal now actually deletes the project's named Docker volumes (e.g. databases) and the local project directory instead of silently leaving them behind
+  - Archives only `conf/` (the generated compose config) before deletion, so dangling bench symlinks can no longer abort the archive and block removal
+  - Cleans up orphaned projects whose containers are already gone, still archiving config and removing leftover volumes and the project directory
+  - No longer hangs on a stopped project: the pre-removal recache is skipped with a warning instead of deadlocking on a hidden prompt
+  - Accepts trailing flags after the project name (e.g. `cwcli rm myproject --yes`)
+- **`init` command** - Declining to reuse an existing bench now prompts for a different bench name and continues setup, instead of aborting the whole command
+
 ## [0.31.1] - 2026-06-24
 
 ### Fixed
