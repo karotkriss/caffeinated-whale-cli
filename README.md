@@ -831,6 +831,8 @@ cwcli restore [OPTIONS] PROJECT_NAME
 | `--admin-password TEXT` | Set administrator password after restore |
 | `--send` | **P2P Mode:** Share backup with another machine via peer-to-peer transfer |
 | `--receive` | **P2P Mode:** Receive backup from another machine via peer-to-peer transfer |
+| `--no-recache` | Skip re-caching the project before checking for missing apps (uses the existing cache) |
+| `-y`, `--yes` | **`--receive` mode only:** Skip the restore confirmation prompts (the destructive-restore confirmation and the missing-apps prompt). A non-TTY without `--yes` refuses these and exits non-zero. Has no effect on the normal restore path |
 | `-v`, `--verbose` | Enable verbose output and show restore command details |
 
 **What It Does:**
@@ -920,8 +922,15 @@ cwcli restore my-project --receive
 
 # Files download with hash verification
 ✓ Files downloaded successfully
-# Automatic restore process begins
+
+# Before overwriting the site, cwcli confirms the destructive restore
+⚠ Warning: This will replace all data in site 'development.localhost'
+Backup: 20251112_105638-development_localhost-database.sql.gz
+? Are you sure you want to restore? (y/N) y
+# Restore process begins
 ```
+
+For scripted (non-interactive) receives, pass `-y`/`--yes` to skip the confirmation and the missing-apps prompt. Without a TTY and without `--yes`, cwcli refuses and exits non-zero rather than silently overwriting the site's data.
 
 **P2P Transfer Features:**
 - **Hash-verified transfers** - BLAKE3 cryptographic verification ensures data integrity
@@ -940,10 +949,9 @@ cwcli restore my-project --receive
 
 **Security:**
 
-- Passwords validated to prevent shell injection
-- All inputs sanitized for command injection prevention
+- All command inputs (site name, paths, MariaDB username) are shell-quoted to prevent command injection
+- MariaDB and admin passwords are passed to the container via the environment, never interpolated into the command, so they never appear in the container process list (`ps`/`docker top`) or in verbose output
 - Backup file existence verified before restore
-- Passwords masked in verbose output
 - P2P transfers are hash-verified (BLAKE3) to prevent tampering
 - Treat transfer tickets like passwords (they grant download access)
 

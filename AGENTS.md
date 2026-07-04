@@ -98,3 +98,26 @@ The fix has two layers; keep both:
 - `_frappe_container_running(project)` (`commands/rm.py`): `rm()` checks this BEFORE entering the recache spinner and SKIPS the recache for a stopped project (printing "Containers for '{project}' are not running; skipping recache"). The recache only refreshes site info for a live backup, which is moot when nothing runs - and rm must NOT auto-start containers it is about to delete. This keeps the spinner off the stopped path entirely; the `ensure_containers_running` layer is defense-in-depth for any other non-interactive caller.
 
 Regression coverage is in `tests/test_rm_stopped.py` (asserts no `questionary.confirm` is reachable from the recache path and that `rm` skips recache for a stopped project).
+
+## `restore` command: receive-mode data-safety semantics
+
+`restore --receive` (`restore_receive_mode` in `commands/restore.py`) downloads a peer's backup over sendme and then runs `bench restore --force`, which drops and recreates the live default site's database.
+That is the most destructive path in the codebase, and it used to run the instant the download finished with no "are you sure" gate (the only interactive prompt was the *conditional* missing-apps confirm, which fires only when apps are missing).
+
+The receive path now carries the same destructive-restore gate the normal path has, placed right before the `bench ... restore ... --force` command is built:
+
+- It prints the `⚠ This will replace all data in site '{site}'` warning + the backup filename, then compares the backup's origin site (parsed from the database filename via `parse_backup_filename(...)["site_name"]`, which is already dots-to-underscores) against `transform_site_name_to_backup_format(site)` and prints an `⚠ Origin mismatch` line when they differ.
+  A failed parse yields `origin_parsed is None`, so the mismatch check is skipped (fail-safe, no false alarm); this is the same parser that must already have matched to set `database_file`, so a hyphen-bearing site that the parser can't represent would have errored earlier.
+- The confirmation honors the new `--yes/-y` flag on `restore`: `--yes` proceeds without prompting, an interactive TTY asks `questionary.confirm("Are you sure you want to restore?")`, and a **non-TTY without `--yes` refuses and exits non-zero** rather than silently proceeding or exiting 0.
+  This new confirm exits **non-zero on any refusal** (declined confirm, non-TTY-no-yes, or Ctrl-C), unlike the normal path's pre-existing exit-0-on-cancel (a separate known AXI finding, deliberately left untouched here).
+- `--yes` is threaded through both `restore_receive_mode(...)` call sites in `restore()` and only gates the receive-mode confirm; it does NOT bypass the normal path's `questionary.confirm` (adding non-interactive selectors to the normal restore path is the separate AXI task).
+
+Two supporting fixes travel with it, and BOTH the receive path and the normal restore path share the same shapes:
+
+- **Secrets off the argv (M5):** the MariaDB root password (and admin password) are no longer interpolated into the command string. They are put in a `restore_env` dict and referenced as `"$CWCLI_MARIADB_ROOT_PASSWORD"` / `"$CWCLI_ADMIN_PASSWORD"`, and the command is executed as `frappe_container.exec_run(["sh", "-c", cmd], workdir=..., environment=restore_env)`.
+  Passing the list form `["sh", "-c", cmd]` (rather than a bare string, which docker-py would `shlex.split` and exec directly) is REQUIRED so the shell actually expands the `$VAR`; the secret then never appears in the command the container process list shows.
+  cwcli's own verbose masking (`cmd.replace(password, "***")`) only hid it from cwcli output, not from `ps`/`docker top`/exec-inspect - that masking is now gone because the secret is not in `cmd` at all.
+- **Streamed tar copy (M4):** the file-copy loop passes the open tar file handle straight to `frappe_container.put_archive(backup_dir, tar_file)` (docker-py streams it) instead of `tar_file.read()` (which slurped a multi-GB `--with-files` backup into host RAM), and it now checks `put_archive`'s bool return and `raise typer.Exit(1)` on failure instead of ignoring it and surfacing a confusing "backup not found" later.
+
+Regression coverage is in `tests/test_restore_safety.py`: it drives `restore_receive_mode` with a `FakeReceiveContainer` that records every `exec_run` (command, workdir, environment) and asserts a declined/non-TTY confirm does NOT run `bench restore --force` and exits non-zero, `--yes` proceeds, an origin mismatch is surfaced, and the DB password rides in `environment=` (never in the recorded argv).
+Testing note: `restore_receive_mode` is a plain function (not the Typer command), so tests call it directly with all args explicit; stub `TipSpinner` to a no-op (it starts a Rich spinner even with `enabled=False`) and fake `subprocess.run` to write the "downloaded" backup into its `cwd`.
