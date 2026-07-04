@@ -544,7 +544,7 @@ def inspect(
             try:
                 answer = questionary.text(
                     f"Bench [{index}] at {bench['path']} on '{project_name}'.{existing_hint}\n"
-                    "Label (blank to keep/clear, letters/digits/.-_ only): "
+                    "Label (blank to keep, letters/digits/.-_ only): "
                 ).ask()
                 if answer is None:  # User pressed Ctrl+C
                     console_err.print("\n[yellow]Interactive naming cancelled.[/yellow]")
