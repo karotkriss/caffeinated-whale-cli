@@ -460,9 +460,15 @@ def restore_send_mode(
     if not bench_path:
         cached_data = db_utils.get_cached_project_data(project_name)
         if cached_data and cached_data.get("bench_instances"):
-            bench_path = cached_data["bench_instances"][0]["path"]
-            if verbose:
-                stderr_console.print(f"[dim]Using cached bench path: {bench_path}[/dim]")
+            bench_path = resolve_bench_path(project_name, None, None, verbose=verbose)
+            if bench_path:
+                if verbose:
+                    stderr_console.print(f"[dim]Using cached bench path: {bench_path}[/dim]")
+            else:
+                bench_path = "/workspace/frappe-bench"
+                stderr_console.print(
+                    f"[yellow]Warning: Could not detect bench path. Using default: {bench_path}[/yellow]"
+                )
         else:
             # No cache found, run inspect to populate it
             stderr_console.print("[yellow]No cached bench path found. Running inspect...[/yellow]")
@@ -727,9 +733,15 @@ def restore_receive_mode(
     if not bench_path:
         cached_data = db_utils.get_cached_project_data(project_name)
         if cached_data and cached_data.get("bench_instances"):
-            bench_path = cached_data["bench_instances"][0]["path"]
-            if verbose:
-                stderr_console.print(f"[dim]Using cached bench path: {bench_path}[/dim]")
+            bench_path = resolve_bench_path(project_name, None, None, verbose=verbose)
+            if bench_path:
+                if verbose:
+                    stderr_console.print(f"[dim]Using cached bench path: {bench_path}[/dim]")
+            else:
+                bench_path = "/workspace/frappe-bench"
+                stderr_console.print(
+                    f"[yellow]Warning: Could not detect bench path. Using default: {bench_path}[/yellow]"
+                )
         else:
             # No cache found, run inspect to populate it
             stderr_console.print("[yellow]No cached bench path found. Running inspect...[/yellow]")
@@ -1340,9 +1352,15 @@ def restore(
     if not bench_path:
         cached_data = db_utils.get_cached_project_data(project_name)
         if cached_data and cached_data.get("bench_instances"):
-            bench_path = cached_data["bench_instances"][0]["path"]
-            if verbose:
-                stderr_console.print(f"[dim]Using cached bench path: {bench_path}[/dim]")
+            bench_path = resolve_bench_path(project_name, None, None, verbose=verbose)
+            if bench_path:
+                if verbose:
+                    stderr_console.print(f"[dim]Using cached bench path: {bench_path}[/dim]")
+            else:
+                bench_path = "/workspace/frappe-bench"
+                stderr_console.print(
+                    f"[yellow]Warning: Could not detect bench path. Using default: {bench_path}[/yellow]"
+                )
         else:
             # No cache found, run inspect to populate it
             stderr_console.print("[yellow]No cached bench path found. Running inspect...[/yellow]")

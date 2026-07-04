@@ -109,6 +109,8 @@ def _inspect_project(project_name: str) -> bool:
             no_refresh=False,
             show_apps=False,
             interactive=False,
+            yes=False,
+            prompt_to_start=False,
         )
         return True
     except Exception as e:
