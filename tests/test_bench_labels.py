@@ -28,6 +28,16 @@ class TestValidateUserLabel:
             err = bench_labels.validate_user_label(numeric)
             assert err is not None and "numeric" in err.lower()
 
+    def test_unicode_digit_labels_are_not_numeric(self):
+        # str.isdigit() matches Unicode digit-like chars (superscripts, Arabic-Indic,
+        # circled, Roman numerals) that int() cannot parse. is_numeric_label must be
+        # ASCII-only so these are NOT treated as a numeric index (which would crash
+        # resolve_bench on int(selector)). They pass the numeric gate but are then
+        # rejected by the charset rule, so they never become a valid user label either.
+        for uni in ["²", "٣", "१२", "①", "Ⅻ"]:
+            assert bench_labels.is_numeric_label(uni) is False
+            assert bench_labels.validate_user_label(uni) is not None
+
     def test_rejects_bad_charset(self):
         for bad in ["has space", "semi;colon", "slash/es", "quote'd", "star*"]:
             assert bench_labels.validate_user_label(bad) is not None
@@ -66,6 +76,13 @@ class TestResolveBench:
 
     def test_empty_selector_is_none(self):
         assert bench_labels.resolve_bench(self._benches(), None) is None
+
+    def test_unicode_digit_selector_is_none_not_crash(self):
+        # A Unicode digit-like selector must fall through to the no-match path,
+        # never reach int() and raise ValueError. This is the CLI crash CodeRabbit
+        # flagged: `--bench ²` previously passed the isdigit() gate then blew up.
+        for uni in ["²", "٣", "①", "Ⅻ"]:
+            assert bench_labels.resolve_bench(self._benches(), uni) is None
 
 
 class TestFormatBenchList:

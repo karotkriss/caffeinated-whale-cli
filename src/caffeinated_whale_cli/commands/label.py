@@ -112,13 +112,17 @@ def label(
     bench_path = chosen["path"]
 
     if clear:
+        # Clear the marker FIRST and only touch the DB on success. The marker is
+        # the source of truth for label recovery, so clearing the DB while the
+        # marker survives would let a later full inspect resurrect the old label.
         marker_ok = bench_labels.clear_label_marker(frappe_container, bench_path, verbose)
-        db_ok = db_utils.set_bench_label(project_name, bench_path, None)
         if not marker_ok:
             stderr_console.print(
-                "[yellow]Warning:[/yellow] could not remove the marker file inside the container."
+                "[bold red]Error:[/bold red] could not remove the marker file inside the "
+                "container; label left unchanged to avoid the marker resurrecting it later."
             )
-        if not (marker_ok and db_ok):
+            raise typer.Exit(code=1)
+        if not db_utils.set_bench_label(project_name, bench_path, None):
             raise typer.Exit(code=1)
         console.print(f"[bold green]✓[/bold green] Cleared label for bench at {bench_path}.")
     else:

@@ -55,8 +55,15 @@ _MAX_LABEL_LEN = 64
 
 
 def is_numeric_label(value: str) -> bool:
-    """True if ``value`` is a non-empty run of ASCII digits (a numeric index)."""
-    return value.isdigit()
+    """True if ``value`` is a non-empty run of ASCII digits (a numeric index).
+
+    ASCII-only on purpose: ``str.isdigit()`` also matches Unicode digit-like
+    characters (``²``, ``٣``, ``①``, ...) that ``int()`` cannot parse, so a bare
+    ``isdigit()`` would classify them as numeric and then crash ``resolve_bench``
+    on ``int(selector)``. Gating on ``isascii()`` keeps such selectors out of the
+    numeric-index path (they fall through to the no-match result instead).
+    """
+    return value.isascii() and value.isdigit()
 
 
 def validate_user_label(label: str) -> str | None:

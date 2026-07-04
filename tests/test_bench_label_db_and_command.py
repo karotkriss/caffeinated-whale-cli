@@ -168,6 +168,23 @@ class TestLabelCommand:
         assert "label" not in data["bench_instances"][1]
         assert MARKER_B not in container.fs
 
+    def test_clear_marker_failure_leaves_db_label_intact(self, temp_db, monkeypatch):
+        # If the marker removal fails, the DB label must NOT be cleared: the marker
+        # is the source of truth, so a cleared DB + surviving marker would let a
+        # later full inspect resurrect the "cleared" label. Command must exit non-zero.
+        _seed_two_benches(labels=(None, "staging"))
+        container = MarkerFakeContainer(
+            bench_path=BENCH_B, fs={MARKER_B: b'{"schema":1,"label":"staging"}'}
+        )
+        monkeypatch.setattr(label_mod.bench_labels, "clear_label_marker", lambda *a, **k: False)
+        with pytest.raises(typer.Exit) as exc:
+            _run_label(monkeypatch, container, bench_selector="staging", clear=True)
+        assert exc.value.exit_code == 1
+        # DB label preserved (not cleared) and the marker still present.
+        data = db_utils.get_cached_project_data("proj")
+        assert data["bench_instances"][1]["label"] == "staging"
+        assert MARKER_B in container.fs
+
     def test_reject_numeric_label(self, temp_db, monkeypatch):
         _seed_two_benches()
         container = MarkerFakeContainer(bench_path=BENCH_B)

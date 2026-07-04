@@ -388,13 +388,15 @@ def inspect(
             else:
                 # Tier 2: a lightweight, read-only freshness pass over the known
                 # benches. This only runs when the containers are already up; the
-                # running check never prompts or starts anything (prompt=False), so a
-                # cache hit can never block on a "start the containers?" question or
-                # disturb a stopped project. The pass never writes the cache: on no
-                # drift we serve the cached data unchanged; on drift we fall through to
-                # the full inspect (Tier 3), which persists fully-fresh data. If
-                # anything goes wrong we degrade to the cached data rather than failing
-                # a previously-working read.
+                # running check never prompts (prompt=False) AND never starts
+                # anything (auto_start=False, even under --yes), so a cache hit can
+                # never block on a "start the containers?" question or disturb a
+                # stopped project. Auto-start belongs only to the Tier 3 full inspect
+                # below, which persists fully-fresh data. The pass never writes the
+                # cache: on no drift we serve the cached data unchanged; on drift we
+                # fall through to the full inspect (Tier 3). If anything goes wrong we
+                # degrade to the cached data rather than failing a previously-working
+                # read.
                 bench_instances_data = cached_benches
                 try:
                     if ensure_containers_running(
@@ -402,7 +404,7 @@ def inspect(
                         require_running=True,
                         verbose=verbose,
                         prompt=False,
-                        auto_start=yes,
+                        auto_start=False,
                     ):
                         all_containers = get_project_containers(project_name)
                         frappe_container = next(
