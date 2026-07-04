@@ -412,7 +412,7 @@ View logs with: cwcli logs frappe-one
 Removes a Frappe project: its containers, its named Docker volumes, and its local project directory.
 
 **WARNING:** This action is destructive and cannot be undone.
-Before deleting anything, the command re-caches the project, backs up the databases and files for all sites (a live `bench backup --with-files`), and archives the `docker-compose.yml`, `site_config.json`, and the project's `conf/` directory into a timestamped folder under `~/.cwcli/archive/`. The backup and the config archive are written first, and the named volumes and project directory are only deleted once that archive has succeeded.
+Before deleting anything, the command re-caches the project, backs up the databases and files for all sites (a live `bench backup --with-files`), and archives the `docker-compose.yml`, `site_config.json`, and the project's `conf/` directory into a timestamped folder under `~/.cwcli/archive/`. The backup and the config archive are written first, and the named volumes and project directory are only deleted once both have succeeded. When volumes are being deleted (the default `--volumes`), a backup that cannot be fully created and verified blocks removal: each backup artifact is copied out of the container to the host archive and the database dump must be present and non-empty, and if it is not, the command aborts before any container is removed and exits non-zero, so data is never destroyed without a confirmed backup. Aborting before removal keeps the whole project intact (containers, volumes, directory, and cache), so a retry can still take a live backup from the running container. Under `--no-volumes` no volume data is destroyed, so a failed backup does not block the container, directory, and cache cleanup.
 
 The recache and the live `bench backup` only run when the project's containers are actually running, since both shell into the frappe container. If the project is stopped (or its containers are already gone), `cwcli rm` does not start it just to back it up; it warns that no fresh database backup could be taken, skips the recache, still archives `conf/`, and then proceeds to remove the named volumes and project directory.
 
@@ -431,7 +431,7 @@ cwcli rm [OPTIONS] [PROJECT_NAME]...
 | Option | Description |
 |--------|-------------|
 | `--volumes` / `--no-volumes` | Remove the named Docker volumes (databases, sites, files). Default: `--volumes`. Use `--no-volumes` to keep them |
-| `--no-backup` | Skip database backups before removal (also skips recaching; faster but risky) |
+| `--no-backup` | Skip database backups before removal, including the backup safety gate (also skips recaching; faster but risky) |
 | `-y`, `--yes` | Skip the confirmation prompt and proceed with removal |
 | `-v`, `--verbose` | Enable verbose diagnostic output |
 
@@ -441,6 +441,8 @@ By default `cwcli rm` removes the containers, removes the project's named Docker
 The project directory is always removed because it is cwcli configuration, not data.
 
 If a project has no running containers but still has orphaned named volumes or a lingering local directory (for example after a partial removal), `cwcli rm` cleans up that leftover state instead of reporting the project as not found.
+
+An invalid project name (empty, `.`, `..`, an absolute path, or one containing a path separator) is rejected before anything is removed, since such a name could otherwise escape the projects directory. `cwcli rm` exits non-zero whenever any removal step fails - a blocked backup, a rejected name, or a volume, directory, or container that could not be removed - and does not print the success summary for a project that was not fully removed; the project stays in the cache (and `cwcli ls`) so the leftover state remains visible and can be retried.
 
 **Examples:**
 
