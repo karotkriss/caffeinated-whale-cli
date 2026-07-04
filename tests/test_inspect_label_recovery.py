@@ -21,6 +21,14 @@ MARKER_A = f"{BENCH_A}/.cwcli/.bench-label"
 MARKER_B = f"{BENCH_B}/.cwcli/.bench-label"
 
 
+class _StubDockerClient:
+    """Stand-in for ``docker.from_env()`` so the ``@handle_docker_errors``
+    daemon ``ping()`` succeeds without a real Docker daemon."""
+
+    def ping(self):
+        return True
+
+
 class TwoBenchContainer:
     """Answers full-inspect probes for two benches, plus marker ``cat`` reads.
 
@@ -82,6 +90,12 @@ def wired(monkeypatch):
     monkeypatch.setattr(inspect_mod.db_utils, "cache_project_data", fake_cache)
     monkeypatch.setattr(inspect_mod, "ensure_containers_running", lambda *a, **k: True)
     monkeypatch.setattr(inspect_mod.config_utils, "get_show_tips", lambda: False)
+    # `inspect` is wrapped by ``@handle_docker_errors``, which probes the real
+    # environment (``shutil.which("docker")`` + ``docker.from_env().ping()``)
+    # before the body runs. Neutralize that probe so these unit tests don't
+    # depend on Docker being installed/running (it is absent on CI runners).
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr("docker.from_env", lambda: _StubDockerClient())
 
     def install(container):
         monkeypatch.setattr(inspect_mod, "get_project_containers", lambda name: [container])
