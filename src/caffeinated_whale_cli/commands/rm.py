@@ -8,9 +8,12 @@ removes associated volumes. Before removal:
 3. Archives project configuration to ~/.cwcli/archive
 """
 
+import io
 import json
 import shutil
 import sys
+import tarfile
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 
@@ -128,6 +131,83 @@ def _list_sites(container, bench_path: str) -> list[str] | None:
     return sites
 
 
+class _ChunkStreamReader(io.RawIOBase):
+    """Adapt docker-py's ``get_archive`` byte-chunk iterator to a readable
+    binary stream.
+
+    ``get_archive`` yields the artifact's tar wrapper in chunks; wrapping those
+    chunks in this reader lets :mod:`tarfile` consume the tar incrementally
+    (streaming mode) so a multi-GB backup artifact is never buffered whole in
+    host RAM.
+    """
+
+    def __init__(self, chunks: Iterator[bytes]) -> None:
+        super().__init__()
+        self._chunks = iter(chunks)
+        self._buf = b""
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b) -> int:
+        if not self._buf:
+            try:
+                self._buf = next(self._chunks)
+            except StopIteration:
+                return 0
+        n = min(len(b), len(self._buf))
+        b[:n] = self._buf[:n]
+        self._buf = self._buf[n:]
+        return n
+
+
+def _stream_container_file(
+    container,
+    source_path: str,
+    dest_file: Path,
+    chunk_size: int = 1024 * 1024,
+) -> bool:
+    """Copy a single file out of ``container`` at ``source_path`` to the host
+    ``dest_file``, streaming in fixed-size chunks.
+
+    Uses ``get_archive`` (a tar stream) and extracts the single member
+    incrementally, so a multi-GB ``bench backup --with-files`` artifact is
+    never materialised in host RAM as one blob (the reason the earlier
+    whole-file ``cat`` copy was replaced).
+
+    Returns True only on a fully-written copy. Any failure - a missing/
+    unreadable file (``get_archive`` raises), a tar/read error, or a truncated
+    stream (bytes written do not match the member size) - returns False, so the
+    caller can keep the "a backup missing any part is not trusted" fail-closed
+    semantics.
+    """
+    try:
+        stream, _stat = container.get_archive(source_path)
+        reader = io.BufferedReader(_ChunkStreamReader(stream))
+        with tarfile.open(fileobj=reader, mode="r|") as tar:
+            for member in tar:
+                if not member.isfile():
+                    continue
+                extracted = tar.extractfile(member)
+                if extracted is None:
+                    return False
+                written = 0
+                with open(dest_file, "wb") as out:
+                    while True:
+                        chunk = extracted.read(chunk_size)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                        written += len(chunk)
+                # A truncated stream yields fewer bytes than the header
+                # promised: fail closed rather than trust a short copy.
+                return written == member.size
+    except Exception:
+        return False
+    # No regular-file member in the archive - nothing was copied.
+    return False
+
+
 def _backup_sites(
     project_name: str,
     container,
@@ -228,22 +308,20 @@ def _backup_sites(
             copy_failed = False
             for backup_file in current_files:
                 source_path = f"{site_backup_dir}/{backup_file}"
+                dest_file = site_archive_backups / backup_file
 
-                # Use docker exec `cat` to copy the file out.
-                exit_code, file_data = container.exec_run(f"cat {source_path}")
-
-                if exit_code != 0:
-                    # An artifact we could not copy out. Fail closed: a backup
-                    # missing any of its parts is not a trustworthy backup.
+                # Stream the artifact out in fixed-size chunks so a multi-GB
+                # `--with-files` backup is never held in host RAM as one blob.
+                if not _stream_container_file(container, source_path, dest_file):
+                    # An artifact we could not copy out (missing, read error, or
+                    # a truncated stream). Fail closed: a backup missing any of
+                    # its parts is not a trustworthy backup.
                     copy_failed = True
                     if verbose:
                         stderr_console.print(
                             f"[dim]VERBOSE: Could not copy {backup_file} to archive[/dim]"
                         )
                     continue
-
-                dest_file = site_archive_backups / backup_file
-                dest_file.write_bytes(file_data or b"")
 
                 # Confirm the artifact actually landed on the host. The database
                 # dump additionally must be non-empty - an empty dump is no backup
