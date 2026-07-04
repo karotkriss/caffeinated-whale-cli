@@ -1,11 +1,11 @@
 import time
 
-import questionary
 import typer
 from rich.console import Console
 from rich.table import Table
 
 from ..utils import auto_inspect, config_utils, db_utils, startup
+from .utils import confirm_or_exit
 
 app = typer.Typer(help="Manage CLI configuration and cache.")
 cache_app = typer.Typer(help="Manage the cache.")
@@ -58,17 +58,29 @@ def clear_cache(
         None, help="The name of the project to clear from the cache."
     ),
     all: bool = typer.Option(False, "--all", "-a", help="Clear the entire cache."),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Skip the confirmation prompt (required to clear --all non-interactively).",
+    ),
 ):
     """
     Clear the cache for a specific project or the entire cache.
     """
     if all:
-        confirmed = questionary.confirm("Are you sure you want to clear the entire cache?").ask()
-        if confirmed:
-            db_utils.clear_all_cache()
-            console.print("[green]Entire cache has been cleared.[/green]")
-        else:
-            console.print("Operation cancelled.")
+        # Destructive: honor --yes; a non-TTY without --yes refuses rather than
+        # silently wiping the whole cache.
+        confirm_or_exit(
+            "Are you sure you want to clear the entire cache?",
+            assume_yes=yes,
+            refuse_message=(
+                "Refusing to clear the entire cache without confirmation. "
+                "Re-run with --yes to clear it non-interactively."
+            ),
+        )
+        db_utils.clear_all_cache()
+        console.print("[green]Entire cache has been cleared.[/green]")
     elif project_name:
         if db_utils.clear_cache_for_project(project_name):
             console.print(f"Cache for project '[bold cyan]{project_name}[/bold cyan]' cleared.")

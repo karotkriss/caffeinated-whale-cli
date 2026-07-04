@@ -43,6 +43,12 @@ class Project(BaseModel):
 class Bench(BaseModel):
     project = ForeignKeyField(Project, backref="benches")
     path = CharField()
+    # Optional user-assigned label. NULL/empty means the bench has no user label
+    # and is addressed only by its numeric index (its position in stable, sorted
+    # discovery order). See utils/bench_labels.py for the label model. This column
+    # was added after the initial schema, so initialize_database() migrates old
+    # caches in place (see _migrate_bench_label_column).
+    label = CharField(null=True)
 
 
 class Site(BaseModel):
@@ -164,6 +170,25 @@ def _set_secure_db_permissions():
             pass
 
 
+def _migrate_bench_label_column():
+    """Add the ``bench.label`` column to pre-existing caches that lack it.
+
+    ``create_tables(safe=True)`` only creates missing tables; it never adds a
+    column to an existing table. Caches written before the label feature have a
+    ``bench`` table with no ``label`` column, so we add it in place. Existing rows
+    get NULL (no user label -> numeric index only), which keeps old caches fully
+    working. This is idempotent: it is a no-op once the column exists.
+    """
+    try:
+        columns = {row[1] for row in db.execute_sql("PRAGMA table_info(bench)").fetchall()}
+        if "bench" not in db.get_tables():
+            return
+        if "label" not in columns:
+            db.execute_sql("ALTER TABLE bench ADD COLUMN label VARCHAR")
+    except Exception as e:  # pragma: no cover - defensive; never block on migration
+        print(f"Warning: could not migrate bench.label column: {e}", file=sys.stderr)
+
+
 def initialize_database():
     if db.is_closed():
         db.connect()
@@ -172,6 +197,10 @@ def initialize_database():
         [Project, Bench, Site, AvailableApp, InstalledAppDetail, CommonSiteConfig, SiteConfig],
         safe=True,
     )
+    # Backward-compatible schema migration for caches created before the label
+    # feature. Must run after create_tables (so the table exists) and before any
+    # read/write that references bench.label.
+    _migrate_bench_label_column()
     # Secure the database file with restrictive permissions
     _set_secure_db_permissions()
 
@@ -200,9 +229,13 @@ def cache_project_data(project_name, bench_instances_data):
     project = Project.create(name=project_name, last_updated=datetime.datetime.now())
 
     for bench_data in bench_instances_data:
+        # Persist the user label when present. An empty string is normalized to
+        # NULL so "no label" has a single representation in the DB.
+        label_value = bench_data.get("label") or None
         bench = Bench.create(
             project=project,
             path=bench_data["path"],
+            label=label_value,
         )
 
         # Store common site config if present (including empty configs)
@@ -267,7 +300,10 @@ def get_cached_project_data(project_name):
         project = Project.get(Project.name == project_name)
 
         bench_instances_data = []
-        for bench in project.benches:
+        # Order by primary key so benches come back in the same (sorted discovery)
+        # order they were cached in. This makes each bench's position - its numeric
+        # label / index - stable across reads (see utils/bench_labels.py).
+        for bench in project.benches.order_by(Bench.id):
             available_apps = [app.name for app in bench.available_apps]
 
             # Get common site config for this bench
@@ -300,6 +336,11 @@ def get_cached_project_data(project_name):
                 "available_apps": available_apps,
             }
 
+            # Only surface a user label when one is set, mirroring how the optional
+            # common_site_config is included. Absent key == no user label.
+            if bench.label:
+                bench_data["label"] = bench.label
+
             if common_config is not None:
                 bench_data["common_site_config"] = common_config
 
@@ -312,6 +353,28 @@ def get_cached_project_data(project_name):
         }
     except Project.DoesNotExist:
         return None
+
+
+def set_bench_label(project_name: str, bench_path: str, label: str | None) -> bool:
+    """Set (or clear) the user label of a single cached bench, by path.
+
+    Used by the ``label`` command to update one bench without rewriting the whole
+    project cache. An empty/None ``label`` clears it (stored as NULL). Returns True
+    if a matching bench row was updated, False if the project or bench is not cached.
+    """
+    initialize_database()
+    try:
+        project = Project.get(Project.name == project_name)
+    except Project.DoesNotExist:
+        return False
+
+    normalized = label or None
+    updated = (
+        Bench.update(label=normalized)
+        .where((Bench.project == project) & (Bench.path == bench_path))
+        .execute()
+    )
+    return bool(updated)
 
 
 def get_all_cached_projects():

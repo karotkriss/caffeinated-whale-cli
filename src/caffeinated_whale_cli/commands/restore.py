@@ -18,7 +18,7 @@ from ..utils.sendme_utils import (
     get_sendme_command,
 )
 from ..utils.tips import TipSpinner
-from .utils import ensure_containers_running
+from .utils import ensure_containers_running, resolve_bench_path
 
 
 def parse_backup_filename(filename: str) -> dict | None:
@@ -480,6 +480,7 @@ def restore_send_mode(
                     no_refresh=False,
                     show_apps=False,
                     interactive=False,
+                    yes=False,
                 )
 
                 # Try to get cached data again
@@ -744,6 +745,7 @@ def restore_receive_mode(
                     no_refresh=False,
                     show_apps=False,
                     interactive=False,
+                    yes=False,
                 )
 
                 # Try to get cached data again
@@ -1203,11 +1205,16 @@ def restore(
         help="Site name to restore. If not provided, uses the default site from common_site_config.",
         autocompletion=complete_site_names,
     ),
-    bench_path: str = typer.Option(
+    bench: str = typer.Option(
+        None,
+        "--bench",
+        help="Which bench to target: its numeric index or label (from 'cwcli inspect').",
+    ),
+    bench_path: str | None = typer.Option(
         None,
         "--path",
         "-p",
-        help="Path to the bench directory inside the container (uses cached path from inspect if not specified).",
+        help="Explicit bench directory inside the container (lower-level alternative to --bench).",
     ),
     mariadb_root_username: str = typer.Option(
         None,
@@ -1274,6 +1281,11 @@ def restore(
             "[bold red]Error:[/bold red] Cannot use --send and --receive together."
         )
         raise typer.Exit(code=1)
+
+    # Resolve which bench to restore into (--bench/--path, else the single bench,
+    # else error on multi-bench ambiguity). Applies to all three modes below; a
+    # None result (no cache yet) lets each mode's own inspect/default fallback run.
+    bench_path = resolve_bench_path(project_name, bench, bench_path, verbose=verbose)
 
     # Handle sendme modes
     if send or receive:
@@ -1344,6 +1356,7 @@ def restore(
                     no_refresh=False,
                     show_apps=False,
                     interactive=False,
+                    yes=False,
                 )
 
                 # Try to get cached data again
