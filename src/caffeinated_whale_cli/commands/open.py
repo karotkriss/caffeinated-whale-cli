@@ -159,6 +159,8 @@ def open_bench(
                 stderr_console.print(
                     f"[yellow]Warning: Could not detect bench path. Using default: {bench_path}[/yellow]"
                 )
+        except typer.Exit:
+            raise
         except Exception as e:
             # Inspect failed, use default
             bench_path = "/workspace/frappe-bench"
