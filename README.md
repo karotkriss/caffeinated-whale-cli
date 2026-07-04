@@ -11,6 +11,7 @@ A command-line interface (CLI) for managing Frappe/ERPNext Docker instances duri
 - **Container Lifecycle** - Start, stop, and restart projects with ease
 - **Development Tools** - VS Code integration, log viewing, and command execution
 - **Cache System** - Fast project inspection with SQLite-based caching and configuration storage
+- **Multi-Bench Support** - Address individual benches in a multi-bench instance by numeric index or a durable label with `--bench`
 - **Default Site Support** - Optional `--site` flag when default site is configured
 - **Backup & Restore** - Interactive site restoration with automatic file archive detection and P2P transfer support
 - **Update Management** - App updates with automatic migrations and lock cleanup
@@ -304,14 +305,17 @@ cwcli start [OPTIONS] [PROJECT_NAME]...
 
 | Option | Description |
 |--------|-------------|
+| `--bench TEXT` | Which bench runs `bench start`: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)). Defaults to the first bench in a multi-bench project (a note lists the rest) |
+| `-y`, `--yes` | Auto-confirm stopping conflicting Frappe projects to free their ports (non-interactive) |
 | `-v`, `--verbose` | Enable verbose diagnostic output |
 
 **Features:**
 
 - **Port Conflict Detection:** Automatically checks if required ports are available
-- **Interactive Resolution:** Offers to stop conflicting Frappe projects
+- **Interactive Resolution:** Offers to stop conflicting Frappe projects (use `--yes` to auto-confirm)
 - **Process Identification:** Shows which processes are using ports (cross-platform)
 - **Smart Error Messages:** Provides actionable guidance for resolution
+- **Multi-Bench Aware:** On a multi-bench project, `bench start` runs in the first bench by default (a note lists the others); pick another with `--bench <index|label>`
 
 **Example:**
 
@@ -534,7 +538,8 @@ cwcli inspect [OPTIONS] PROJECT_NAME
 | `-u`, `--update` | Update the cache by re-inspecting the project |
 | `--no-refresh` | Return cached data as-is, skipping the lightweight freshness pass (fastest; may be stale) |
 | `-a`, `--show-apps` | Show available apps in the output tree |
-| `-i`, `--interactive` | Prompt to name each bench instance interactively |
+| `-i`, `--interactive` | Prompt for a durable [label](#working-with-multiple-benches) for each bench (persisted to the cache and a marker file inside the bench). Requires a running container to write the marker |
+| `-y`, `--yes` | Auto-start stopped containers without prompting (non-interactive) |
 
 **What It Caches:**
 - Bench instances and their paths
@@ -545,16 +550,18 @@ cwcli inspect [OPTIONS] PROJECT_NAME
 
 **Example Output:**
 
+Each bench is shown with its numeric index (its default `--bench` selector) and any user label:
+
 ```
-frappe-one
-├── Bench: bench
+Project frappe-one
+├── Bench [0] 'primary' at /workspace/frappe-bench
 │   ├── Site: frappe-one.localhost (default)
 │   │   ├── App: frappe (v15.0.0, develop)
 │   │   └── App: erpnext (v15.0.0, version-15)
 │   └── Site: site2.localhost
 │       ├── App: frappe (v15.0.0, develop)
 │       └── App: erpnext (v15.0.0, version-15)
-└── Bench: bench2
+└── Bench [1] at /workspace/frappe-bench-2
     └── Site: site3.localhost
         └── App: frappe (v15.0.0, develop)
 ```
@@ -563,6 +570,7 @@ frappe-one
 - Enables default site feature: `unlock` command can omit `--site` flag
 - Faster subsequent operations (uses cached data)
 - Stores configurations for programmatic access
+- Assigns numeric indices to benches so `--bench` can target one in a multi-bench project (see [Working with Multiple Benches](#working-with-multiple-benches))
 
 **Examples:**
 
@@ -582,8 +590,61 @@ cwcli inspect frappe-one --show-apps
 # Get JSON output
 cwcli inspect frappe-one --json
 
-# Interactive bench naming
+# Interactively label each bench (durable handle for --bench)
 cwcli inspect frappe-one --interactive
+```
+
+---
+
+### `label` - Manage Bench Labels
+
+Assigns, clears, or lists per-bench user labels for a project. A user label is a durable, human-friendly handle for a bench in a [multi-bench](#working-with-multiple-benches) project (numeric indices are positional and can shift), and is the value you pass to `--bench` on the bench-operating commands.
+
+```bash
+cwcli label [OPTIONS] PROJECT_NAME [SELECTOR] [NEW_LABEL]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `PROJECT_NAME` | The Docker Compose project name (required) |
+| `SELECTOR` | Which bench to label: its numeric index or an existing label. Omit to list the benches |
+| `NEW_LABEL` | The new label to assign. Omit and pass `--clear` to remove the label |
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--clear` | Remove the selected bench's user label (revert to its numeric index) |
+| `-v`, `--verbose` | Enable verbose output |
+
+**Label rules:**
+
+- May contain only letters, digits, dot (`.`), dash (`-`), and underscore (`_`), up to 64 characters
+- May **not** be purely numeric (numeric selectors are reserved for bench indices)
+- Must be unique within the project
+
+**Behavior:**
+
+- Run `cwcli inspect <project>` first so the benches are cached; without a cache the command errors.
+- Listing benches (bare `cwcli label <project>`) is read-only and needs no running container.
+- Setting or clearing a label writes it to **both** the SQLite cache and a marker file (`<bench-root>/.cwcli/.bench-label`) inside the bench, so labels survive a cache wipe and can be rebuilt by a full `cwcli inspect --update`. Because the marker lives inside the bench, setting or clearing a label requires a running frappe container; it will **not** auto-start a stopped project.
+
+**Examples:**
+
+```bash
+# List benches with their indices and labels
+cwcli label my-project
+
+# Label bench index 1 as 'staging'
+cwcli label my-project 1 staging
+
+# Rename label 'staging' to 'prod'
+cwcli label my-project staging prod
+
+# Remove bench 1's label
+cwcli label my-project 1 --clear
 ```
 
 ---
@@ -606,11 +667,13 @@ cwcli open [OPTIONS] PROJECT_NAME
 
 | Option | Description |
 |--------|-------------|
-| `-p`, `--path TEXT` | Path inside the container to open (uses cached bench path from inspect if not specified) |
+| `--bench TEXT` | Which bench to open: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)) |
+| `-p`, `--path TEXT` | Explicit bench directory inside the container (lower-level alternative to `--bench`; cannot be combined with it) |
 | `-a`, `--app TEXT` | App name to open (opens the app's directory within the bench) |
 | `--code` | Open with VS Code directly (skips interactive prompt) |
 | `--code-insiders` | Open with VS Code Insiders directly (skips interactive prompt) |
 | `--docker` | Open with Docker exec directly (skips interactive prompt) |
+| `-y`, `--yes` | Auto-start stopped containers without prompting |
 | `-v`, `--verbose` | Enable verbose diagnostic output |
 
 **Features:**
@@ -673,12 +736,14 @@ cwcli update [OPTIONS] PROJECT_NAME
 | Option | Description |
 |--------|-------------|
 | `-a`, `--app TEXT` | App name(s) to update (specify multiple apps after `--app` or use `--app` multiple times) |
-| `-p`, `--path TEXT` | Path to the bench directory inside the container (uses cached path from inspect if not specified) |
+| `--bench TEXT` | Which bench to target: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)) |
+| `-p`, `--path TEXT` | Explicit bench directory inside the container (lower-level alternative to `--bench`; cannot be combined with it) |
 | `-v`, `--verbose` | Enable verbose output with streaming command execution |
 | `-c`, `--clear-cache` | Clear cache for all affected sites after migration |
 | `-w`, `--clear-website-cache` | Clear website cache for all affected sites after migration |
 | `-b`, `--build` | Build assets after updating apps |
 | `--skip-maintenance` | Skip enabling maintenance mode for affected sites during update |
+| `-y`, `--yes` | Auto-start stopped containers without prompting |
 
 **What It Does:**
 
@@ -755,7 +820,9 @@ cwcli unlock [OPTIONS] PROJECT_NAME
 | Option | Description |
 |--------|-------------|
 | `-s`, `--site TEXT` | Site name to unlock. If not provided, uses the default site from `common_site_config.json` |
-| `-p`, `--path TEXT` | Path to the bench directory inside the container (uses cached path from inspect if not specified) |
+| `--bench TEXT` | Which bench to target: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)) |
+| `-p`, `--path TEXT` | Explicit bench directory inside the container (lower-level alternative to `--bench`; cannot be combined with it) |
+| `-y`, `--yes` | Auto-start stopped containers without prompting |
 | `-v`, `--verbose` | Enable verbose output and stream rm command output |
 
 **What It Does:**
@@ -808,6 +875,49 @@ Removed locks folder: /workspace/frappe-bench/sites/development.localhost/locks
 
 ---
 
+### `backup` - Back Up a Site
+
+Runs `bench backup` for a site inside the project's frappe container, optionally including public and private files.
+
+```bash
+cwcli backup [OPTIONS] PROJECT_NAME
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `PROJECT_NAME` | The Docker Compose project name (required) |
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `-s`, `--site TEXT` | Site name to back up. If not provided, uses the default site from `common_site_config.json` |
+| `--bench TEXT` | Which bench to target: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)) |
+| `-p`, `--path TEXT` | Explicit bench directory inside the container (lower-level alternative to `--bench`; cannot be combined with it) |
+| `--with-files` | Include public and private files in the backup |
+| `-y`, `--yes` | Auto-start stopped containers without prompting |
+| `-v`, `--verbose` | Enable verbose output |
+
+**Examples:**
+
+```bash
+# Back up the default site (database only)
+cwcli backup my-project
+
+# Back up a specific site
+cwcli backup my-project --site example.com
+
+# Include public and private files
+cwcli backup my-project --with-files
+
+# Back up a specific bench in a multi-bench project
+cwcli backup my-project --bench staging --with-files
+```
+
+---
+
 ### `restore` - Restore Site from Backup
 
 Interactively restore a site from a backup with automatic detection of file archives and encryption keys. Supports both local restoration and peer-to-peer backup transfers via sendme.
@@ -827,7 +937,8 @@ cwcli restore [OPTIONS] PROJECT_NAME
 | Option | Description |
 |--------|-------------|
 | `-s`, `--site TEXT` | Site name to restore. If not provided, uses the default site from `common_site_config.json` |
-| `-p`, `--path TEXT` | Path to the bench directory inside the container (uses cached path from inspect if not specified) |
+| `--bench TEXT` | Which bench to target: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)) |
+| `-p`, `--path TEXT` | Explicit bench directory inside the container (lower-level alternative to `--bench`; cannot be combined with it) |
 | `--mariadb-root-username TEXT` | MariaDB root username (default: root) |
 | `--mariadb-root-password TEXT` | MariaDB root password (will prompt if not provided) |
 | `--admin-password TEXT` | Set administrator password after restore |
@@ -986,7 +1097,9 @@ cwcli run [OPTIONS] PROJECT_NAME BENCH_ARGS...
 
 | Option | Description |
 |--------|-------------|
-| `-p`, `--path TEXT` | Path to the bench directory inside the container (default: `/workspace/frappe-bench`) |
+| `--bench TEXT` | Which bench to target: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)) |
+| `-p`, `--path TEXT` | Explicit bench directory inside the container (lower-level alternative to `--bench`; cannot be combined with it). Falls back to the single cached bench, or `/workspace/frappe-bench` when nothing is cached |
+| `-y`, `--yes` | Auto-start stopped containers without prompting |
 | `-v`, `--verbose` | Enable verbose output |
 
 **Examples:**
@@ -1000,6 +1113,9 @@ cwcli run frappe-one --site development.localhost migrate
 
 # Execute a custom bench command
 cwcli run frappe-one console
+
+# Target a specific bench in a multi-bench project
+cwcli run frappe-one migrate --bench staging
 
 # Use custom bench path
 cwcli run frappe-one migrate --path /workspace/custom-bench
@@ -1110,9 +1226,12 @@ cwcli config cache [SUBCOMMAND]
 **Cache Subcommands:**
 
 - **`clear [PROJECT_NAME]`** - Clear cache for a specific project or the entire cache
-  - Options: `-a`, `--all` - Clear the entire cache
+  - Options:
+    - `-a`, `--all` - Clear the entire cache
+    - `-y`, `--yes` - Skip the confirmation prompt (required to clear `--all` non-interactively; a non-TTY without `--yes` refuses rather than wiping the cache silently)
   - Example: `cwcli config cache clear frappe-one`
   - Example: `cwcli config cache clear --all`
+  - Example: `cwcli config cache clear --all --yes`
 
 - **`path`** - Display the path to the cache file
   - Example: `cwcli config cache path`
@@ -1228,6 +1347,46 @@ cwcli config auto-inspect logs
 
 ---
 
+## Working with Multiple Benches
+
+A single cwcli project (one Docker Compose instance) can hold more than one bench directory inside its frappe container. This is a **multi-bench** instance, and cwcli lets you address an individual bench without spelling out its full container path.
+
+**How benches are addressed:**
+
+- **Numeric index** - Every bench discovered by `cwcli inspect` gets an index (`0`, `1`, `2`, ...) from a stable, sorted-by-path order. `cwcli inspect` shows it next to each bench (for example `Bench [1] at /workspace/frappe-bench-2`). An index is positional, so it can shift when a bench is added or removed.
+- **User label** - A durable, human-friendly handle you assign with the [`label`](#label---manage-bench-labels) command or `cwcli inspect -i`. Because it does not move when benches are renumbered, a label is the reliable way to target a bench in scripts. Labels may not be purely numeric (that would collide with an index) and must be unique within a project.
+
+**The `--bench` selector:**
+
+Pass `--bench <index|label>` to target one bench. The selector resolves a matching user label first, then a numeric index:
+
+```bash
+cwcli run my-project migrate --bench 1          # by index
+cwcli update my-project --app erpnext --bench staging   # by label
+```
+
+`--bench` is available on `run`, `backup`, `update`, `open`, `unlock`, `restore`, and `start`. Setting labels lives in the [`label`](#label---manage-bench-labels) command.
+
+**No silent guessing on data commands:**
+
+If a project has more than one bench and you do not pass `--bench` (or `--path`), the data commands (`run`, `backup`, `update`, `open`, `unlock`, `restore`) stop and list the benches instead of guessing:
+
+```
+Error: project 'my-project' has multiple benches; specify one with --bench <index|label>:
+  [0] 'primary' /workspace/frappe-bench
+  [1] 'staging' /workspace/frappe-bench-2
+```
+
+Single-bench projects are unaffected: with only one bench, that bench is used automatically and `--bench` is optional.
+
+**`start` is the exception:** `cwcli start` keeps working on a multi-bench project by running `bench start` in the first bench (index `0`) and printing a note listing the others; use `--bench` to start a different one.
+
+**`--path` escape hatch:** `-p`/`--path` still accepts an explicit bench directory for cases outside the cached set. It takes precedence over `--bench`, but the two cannot be combined (that is an error).
+
+**Label persistence and recovery:** A user label is stored in both the SQLite cache and a marker file (`<bench-root>/.cwcli/.bench-label`) inside the bench. Because the marker lives in the bench itself, a full `cwcli inspect --update` rebuilds labels from the markers even after the cache is cleared.
+
+---
+
 ## Tips and Tricks
 
 ### Piping Commands
@@ -1250,8 +1409,8 @@ Use JSON output for programmatic access:
 # Get project data as JSON
 cwcli ls --json | jq '.[] | select(.status=="running")'
 
-# Parse inspect output
-cwcli inspect frappe-one --json | jq '.benches[0].sites'
+# Parse inspect output (each bench carries its numeric "index" for --bench)
+cwcli inspect frappe-one --json | jq '.bench_instances[0].sites'
 ```
 
 ### Verbose Mode for Debugging
@@ -1280,7 +1439,7 @@ source ~/.zshrc   # For Zsh
 
 **What gets completed:**
 
-- **Project names** - All commands that accept project names (start, stop, restart, inspect, logs, open, status, run, update, unlock)
+- **Project names** - All commands that accept project names (start, stop, restart, inspect, label, logs, open, status, run, update, unlock)
 - **App names** - Commands with `--app` option (open, update)
 - **Site names** - Commands with `--site` option (unlock)
 
