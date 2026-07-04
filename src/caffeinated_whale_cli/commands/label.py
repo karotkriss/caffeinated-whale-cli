@@ -123,6 +123,10 @@ def label(
             )
             raise typer.Exit(code=1)
         if not db_utils.set_bench_label(project_name, bench_path, None):
+            stderr_console.print(
+                "[bold red]Error:[/bold red] Removed the marker file but could not clear the "
+                "label in the cache database. Run 'cwcli inspect --update' to reconcile."
+            )
             raise typer.Exit(code=1)
         console.print(f"[bold green]✓[/bold green] Cleared label for bench at {bench_path}.")
     else:

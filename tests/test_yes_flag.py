@@ -236,3 +236,61 @@ class TestStartInspectExitPropagates:
             start_mod._start_project("proj", verbose=False, status=None, bench_selector=None)
             is None
         )
+
+
+# ------------------------------------------------ start multi-project loop
+
+
+class TestStartMultiProjectLoop:
+    """A ``typer.Exit`` from ``_start_project`` must not abort sibling projects in
+    a ``cwcli start a b c`` run: a non-zero exit (e.g. a multi-bench ambiguity or
+    a no-bench inspect failure) skips just that project, while an exit code 0
+    (user cancel / Ctrl-C) aborts the whole run."""
+
+    def _wire(self, monkeypatch):
+        # Non-interactive stdin so the loop does not try to read piped names.
+        class _Stdin:
+            def isatty(self):
+                return True
+
+        monkeypatch.setattr(start_mod.sys, "stdin", _Stdin())
+        # No port conflicts for any project.
+        monkeypatch.setattr(start_mod, "_check_port_conflicts", lambda *a, **k: True)
+
+    def test_failing_project_is_skipped_others_continue(self, monkeypatch, capsys):
+        self._wire(monkeypatch)
+        processed = []
+
+        def fake_start(name, verbose=False, status=None, bench_selector=None):
+            processed.append(name)
+            if name == "b":
+                raise typer.Exit(code=1)
+            return None
+
+        monkeypatch.setattr(start_mod, "_start_project", fake_start)
+        # Must NOT raise: 'b' is skipped, but 'a' and 'c' are still processed.
+        start_mod.start(verbose=False, bench=None, yes=False, project_name=["a", "b", "c"])
+        assert processed == ["a", "b", "c"]
+        out = capsys.readouterr().out
+        assert "Instance 'a' started." in out
+        assert "Instance 'c' started." in out
+        # The skipped project does NOT get the "started" line.
+        assert "Instance 'b' started." not in out
+        assert "Skipping project 'b'" in out
+
+    def test_exit_zero_aborts_whole_run(self, monkeypatch):
+        self._wire(monkeypatch)
+        processed = []
+
+        def fake_start(name, verbose=False, status=None, bench_selector=None):
+            processed.append(name)
+            if name == "b":
+                raise typer.Exit(code=0)
+            return None
+
+        monkeypatch.setattr(start_mod, "_start_project", fake_start)
+        with pytest.raises(typer.Exit) as exc:
+            start_mod.start(verbose=False, bench=None, yes=False, project_name=["a", "b", "c"])
+        assert exc.value.exit_code == 0
+        # Aborted at 'b'; 'c' is never reached.
+        assert processed == ["a", "b"]

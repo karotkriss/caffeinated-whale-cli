@@ -469,12 +469,21 @@ def start(
                 console.print(f"[yellow]Skipping project '{name}' due to port conflicts.[/yellow]")
                 continue
 
-        with stderr_console.status(
-            f"[bold green]Starting '{name}'...[/bold green]", spinner="dots"
-        ) as status:
-            log_file = _start_project(
-                name, verbose=actual_verbose, status=status, bench_selector=actual_bench
-            )
+        try:
+            with stderr_console.status(
+                f"[bold green]Starting '{name}'...[/bold green]", spinner="dots"
+            ) as status:
+                log_file = _start_project(
+                    name, verbose=actual_verbose, status=status, bench_selector=actual_bench
+                )
+        except typer.Exit as e:
+            # Exit code 0 = user cancelled (Ctrl+C), should exit entire operation
+            # Any other exit code = this project's bench could not be started, skip it
+            if e.exit_code == 0:
+                raise
+            else:
+                console.print(f"[yellow]Skipping project '{name}': could not start bench.[/yellow]")
+                continue
 
         # Print outside spinner context
         console.print(f"Instance '{name}' started.")
