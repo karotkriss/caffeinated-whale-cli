@@ -14,8 +14,10 @@ import pytest
 import typer
 
 from caffeinated_whale_cli.commands import config as config_mod
+from caffeinated_whale_cli.commands import inspect as inspect_mod
 from caffeinated_whale_cli.commands import start as start_mod
 from caffeinated_whale_cli.commands import utils as cmd_utils
+from caffeinated_whale_cli.utils import docker_utils
 
 
 class _Answer:
@@ -180,3 +182,57 @@ class TestEnsureContainersAutoStart:
         result = cmd_utils.ensure_containers_running("proj", require_running=True, auto_start=True)
         assert result is True
         assert started == ["proj"]
+
+
+# ------------------------------------------------ start's inspect-fallback exit
+
+
+class _RunningFrappe:
+    status = "running"
+    labels = {"com.docker.compose.service": "frappe"}
+    name = "proj-frappe-1"
+
+    def start(self):  # pragma: no cover - already running
+        pass
+
+
+class TestStartInspectExitPropagates:
+    """`_start_project`'s inspect fallback must re-raise ``typer.Exit`` (e.g. a
+    multi-bench ambiguity) instead of swallowing it in the broad ``except`` -
+    mirroring the guard already in ``open``/``update``."""
+
+    def _wire(self, monkeypatch):
+        # Neutralize the @handle_docker_errors preflight so the body runs.
+        monkeypatch.setattr(docker_utils.shutil, "which", lambda _n: "/usr/bin/docker")
+        monkeypatch.setattr(
+            docker_utils.docker, "from_env", lambda: type("C", (), {"ping": lambda s: True})()
+        )
+        monkeypatch.setattr(start_mod, "get_project_containers", lambda name: [_RunningFrappe()])
+        # No cached bench -> the inspect fallback branch runs.
+        monkeypatch.setattr(cmd_utils, "resolve_bench_path", lambda *a, **k: None)
+
+    def test_inspect_exit_propagates(self, monkeypatch):
+        self._wire(monkeypatch)
+
+        def _boom(**kwargs):
+            raise typer.Exit(code=1)
+
+        monkeypatch.setattr(inspect_mod, "inspect", _boom)
+        with pytest.raises(typer.Exit) as exc:
+            start_mod._start_project("proj", verbose=False, status=None, bench_selector=None)
+        assert exc.value.exit_code == 1
+
+    def test_generic_inspect_error_is_still_swallowed(self, monkeypatch):
+        # Control: a NON-Exit failure from inspect stays swallowed (degrade to the
+        # "could not detect bench path" warning + return), so the guard is scoped.
+        self._wire(monkeypatch)
+
+        def _oops(**kwargs):
+            raise ValueError("inspect blew up")
+
+        monkeypatch.setattr(inspect_mod, "inspect", _oops)
+        # Must not raise; returns None after warning that bench start was skipped.
+        assert (
+            start_mod._start_project("proj", verbose=False, status=None, bench_selector=None)
+            is None
+        )

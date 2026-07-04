@@ -307,6 +307,10 @@ def _start_project(project_name: str, verbose: bool = False, status=None, bench_
                 stderr_console.print(
                     f"[dim]VERBOSE: Using cached bench path from inspect: {bench_path}[/dim]"
                 )
+        except typer.Exit:
+            # A multi-bench ambiguity (or any deliberate exit) from inspect must
+            # propagate, not be swallowed as a fall-back-to-default (mirrors open/update).
+            raise
         except Exception as e:
             if verbose:
                 stderr_console.print(f"[dim]VERBOSE: Inspect error: {e}[/dim]")

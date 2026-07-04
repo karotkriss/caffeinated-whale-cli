@@ -243,6 +243,45 @@ class TestPartialPassStaysCheapWhenNothingChanged:
         assert writes == []
 
 
+class TestTier2StaysPassiveUnderYes:
+    """CodeRabbit finding: the T2 cache-hit freshness pass must stay READ-ONLY.
+
+    ``prompt=False`` only skips the "start the containers?" question; it does NOT
+    stop ``auto_start=yes`` from starting a stopped project. So T2 must pass
+    ``auto_start=False`` even under ``--yes``; auto-start belongs only to the T3
+    full-inspect path that persists fresh data.
+    """
+
+    def test_tier2_ensure_running_gets_auto_start_false_even_with_yes(
+        self, patched_inspect, monkeypatch
+    ):
+        store, install_container, writes = patched_inspect
+        _seed_cache(store, available_apps=["frappe"], installed_apps=["frappe 15.0.0 version-15"])
+        # Disk matches the cache exactly -> no drift -> only the T2 ensure call fires
+        # (no escalation to the T3 call, which is the one allowed to auto-start).
+        container = FakeFrappeContainer(
+            apps=["frappe"],
+            sites={"dev.local": ["frappe 15.0.0 version-15"]},
+        )
+        install_container(container)
+
+        calls: list[dict] = []
+
+        def rec_ensure(*args, **kwargs):
+            calls.append(kwargs)
+            return True
+
+        monkeypatch.setattr(inspect_mod, "ensure_containers_running", rec_ensure)
+
+        _run_inspect(yes=True)  # --yes must NOT enable auto-start on the T2 path.
+
+        assert not container.ran_find(), "no drift -> no escalation to the T3 auto-start path"
+        assert len(calls) == 1, "a no-drift cache hit issues exactly one ensure call (T2)"
+        assert calls[0].get("auto_start") is False, "T2 must never auto-start, even under --yes"
+        assert calls[0].get("prompt") is False, "T2 stays non-interactive"
+        assert writes == [], "T2 no-drift must never write the cache"
+
+
 class TestNoRefreshOptOut:
     """``--no-refresh`` restores the old instant cached return (may be stale)."""
 
