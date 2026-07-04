@@ -18,6 +18,8 @@ The fake-container harness mirrors ``tests/test_inspect_partial_refresh.py``'s
 code issues) and ``tests/test_rm_truth.py``'s tmp-filesystem approach.
 """
 
+import io
+import tarfile
 from unittest.mock import MagicMock
 
 import pytest
@@ -37,6 +39,17 @@ def _cfg_name(site):
     return f"backup-{site}-site_config_backup.json"
 
 
+def _tar_bytes(name, data):
+    """Wrap ``data`` in an uncompressed tar with a single member ``name`` -
+    exactly the shape docker-py's ``get_archive`` streams back for one file."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        info = tarfile.TarInfo(name=name)
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
 class FakeFrappeContainer:
     """A running frappe container that answers the exact ``exec_run`` probes
     ``_backup_sites``/``_archive_project_config`` issue, and records every call.
@@ -48,10 +61,11 @@ class FakeFrappeContainer:
     non-site status (an unreadable directory / probe error): the fail-safe
     detector must treat them as real sites. ``backup_ok`` is the ``bench backup``
     exit result (bool, or per-site dict). ``artifacts`` maps each site to
-    ``{filename: bytes}`` - the files ``ls -1t`` reports and ``cat`` returns. A
-    value of ``b""`` models a file that copies out empty; a value of ``None``
-    models a ``cat`` that fails. ``list_ok=False`` makes the post-backup
-    ``ls -1t`` fail.
+    ``{filename: bytes}`` - the files ``ls -1t`` reports and ``get_archive``
+    streams out (as a single-member tar, the real copy primitive). A value of
+    ``b""`` models a file that copies out empty; a value of ``None`` models a
+    file whose ``get_archive`` fails (missing/unreadable). ``list_ok=False``
+    makes the post-backup ``ls -1t`` fail.
     """
 
     def __init__(
@@ -71,6 +85,7 @@ class FakeFrappeContainer:
         self.status = "running"
         self.labels = {"com.docker.compose.service": "frappe"}
         self.calls: list[str] = []
+        self.get_archive_calls: list[str] = []
         self.stopped = False
         self.removed = False
         self.sites = list(sites)
@@ -124,17 +139,39 @@ class FakeFrappeContainer:
                 if not self._list_ok:
                     return (1, b"")
                 return (0, "\n".join(self.artifacts.get(site, {}).keys()).encode())
-            prefix = f"cat {sbdir}/"
-            if cmd.startswith(prefix):
-                fname = cmd[len(prefix) :]
-                data = self.artifacts.get(site, {}).get(fname)
-                if data is None:
-                    return (1, b"")
-                return (0, data)
 
         # _archive_project_config probes (compose paths, site_config.json) fail
-        # benignly - it archives nothing and still returns True.
+        # benignly - it archives nothing and still returns True. A backup
+        # artifact is copied out via get_archive (below), never `cat`, so any
+        # `cat` of a backup file also falls through here and fails the copy -
+        # which would make the positive backup tests fail if the code regressed
+        # back to the whole-file buffering copy.
         return (1, b"")
+
+    def get_archive(self, path):
+        """Stream a single backup artifact out as an uncompressed tar in small
+        chunks - the streaming copy primitive ``_backup_sites`` now uses. An
+        artifact recorded as ``None`` models a missing/unreadable file, so
+        get_archive raises exactly as docker-py does (fail-closed copy)."""
+        self.calls.append(f"get_archive {path}")
+        self.get_archive_calls.append(path)
+        for site in self.sites:
+            prefix = f"{self.bench_path}/sites/{site}/private/backups/"
+            if path.startswith(prefix):
+                fname = path[len(prefix) :]
+                data = self.artifacts.get(site, {}).get(fname)
+                if data is None:
+                    raise FileNotFoundError(path)
+                raw = _tar_bytes(fname, data)
+
+                def _chunks(blob=raw):
+                    # Small chunks so the consumer is exercised as a stream,
+                    # never handed the whole artifact as one blob.
+                    for i in range(0, len(blob), 4):
+                        yield blob[i : i + 4]
+
+                return _chunks(), {"name": fname, "size": len(data)}
+        raise FileNotFoundError(path)
 
     def stop(self):
         self.stopped = True
@@ -497,8 +534,7 @@ class TestBackupGate:
         assert not project_dir.exists()
         # The stale prior-run file was never copied out.
         assert not any(
-            f"20250101_000000-{site}-database.sql.gz" in c and c.startswith("cat ")
-            for c in container.calls
+            f"20250101_000000-{site}-database.sql.gz" in p for p in container.get_archive_calls
         )
 
 
@@ -574,9 +610,99 @@ class TestBackupSitesReturn:
         container = FakeFrappeContainer([site], artifacts=artifacts)
         assert rm._backup_sites("proj", container, BENCH, self._archive(tmp_path)) is True
         assert not any(
-            f"20250101_000000-{site}-database.sql.gz" in c and c.startswith("cat ")
-            for c in container.calls
+            f"20250101_000000-{site}-database.sql.gz" in p for p in container.get_archive_calls
         )
+
+    def test_copy_is_streamed_via_get_archive_not_cat(self, tmp_path):
+        # The copy must go through the chunked get_archive stream (so a multi-GB
+        # artifact is never buffered whole in host RAM), never a whole-file `cat`.
+        site = "a.localhost"
+        payload = b"DBDUMPBYTES" * 4096  # large enough to span many stream chunks
+        artifacts = {site: {_db_name(site): payload, _cfg_name(site): b"{}"}}
+        container = FakeFrappeContainer([site], artifacts=artifacts)
+        archive = self._archive(tmp_path)
+
+        assert rm._backup_sites("proj", container, BENCH, archive) is True
+
+        # get_archive was used to copy the artifacts out...
+        assert container.get_archive_calls
+        assert any(_db_name(site) in p for p in container.get_archive_calls)
+        # ...and no whole-file `cat` of a backup artifact was issued.
+        sbdir = f"{BENCH}/sites/{site}/private/backups"
+        assert not any(c.startswith(f"cat {sbdir}/") for c in container.calls)
+        # The streamed bytes reassembled exactly on the host.
+        dumped = archive / "backups" / site / _db_name(site)
+        assert dumped.read_bytes() == payload
+
+
+class _StreamOnlyContainer:
+    """A container exposing ONLY ``get_archive`` (no ``exec_run``), used to
+    drive ``_stream_container_file`` directly. It yields the tar wrapper in
+    tiny chunks and counts how many are pulled, so a test can prove the copy is
+    consumed incrementally rather than read as one blob. ``truncate`` drops the
+    tail of the tar to model a mid-stream failure."""
+
+    def __init__(self, name, data, *, chunk_size=8, truncate=False, raises=False):
+        self._name = name
+        self._data = data
+        self._chunk_size = chunk_size
+        self._truncate = truncate
+        self._raises = raises
+        self.pulls = 0
+
+    def get_archive(self, path):
+        if self._raises:
+            raise FileNotFoundError(path)
+        raw = _tar_bytes(self._name, self._data)
+        if self._truncate:
+            raw = raw[: len(raw) // 2]  # cut the data section -> short read
+
+        def _gen():
+            for i in range(0, len(raw), self._chunk_size):
+                self.pulls += 1
+                yield raw[i : i + self._chunk_size]
+
+        return _gen(), {"name": self._name, "size": len(self._data)}
+
+
+class TestStreamedCopy:
+    """``_stream_container_file`` streams the artifact in chunks and fails
+    closed on any copy error, never buffering the whole file in RAM."""
+
+    def test_streams_in_chunks_and_reassembles_exactly(self, tmp_path):
+        data = b"HELLO-WORLD" * 2000  # ~22 KB, many 8-byte stream chunks
+        container = _StreamOnlyContainer("db.sql.gz", data, chunk_size=8)
+        dest = tmp_path / "out.gz"
+
+        assert rm._stream_container_file(container, "/src/db.sql.gz", dest) is True
+        assert dest.read_bytes() == data
+        # The stream was pulled in many small chunks, not one giant read.
+        assert container.pulls > 1
+
+    def test_truncated_stream_fails_closed(self, tmp_path):
+        # A stream that ends before the member's declared size must NOT be
+        # trusted as a completed copy.
+        data = b"HELLO-WORLD" * 2000
+        container = _StreamOnlyContainer("db.sql.gz", data, chunk_size=8, truncate=True)
+        dest = tmp_path / "out.gz"
+
+        assert rm._stream_container_file(container, "/src/db.sql.gz", dest) is False
+
+    def test_missing_file_fails_closed(self, tmp_path):
+        # get_archive raising (missing/unreadable path) must fail closed.
+        container = _StreamOnlyContainer("db.sql.gz", b"x", raises=True)
+        dest = tmp_path / "out.gz"
+
+        assert rm._stream_container_file(container, "/src/db.sql.gz", dest) is False
+
+    def test_empty_artifact_copies_but_lands_zero_bytes(self, tmp_path):
+        # A 0-byte artifact copies successfully (the size gate in _backup_sites,
+        # not this helper, is what rejects an empty DB dump).
+        container = _StreamOnlyContainer("db.sql.gz", b"", chunk_size=8)
+        dest = tmp_path / "out.gz"
+
+        assert rm._stream_container_file(container, "/src/db.sql.gz", dest) is True
+        assert dest.read_bytes() == b""
 
 
 # --------------------------------------------------------------------------- #
