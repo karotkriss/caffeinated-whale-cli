@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.33.0] - 2026-07-04
+
+### Added
+- **`restore` command** - `--yes`/`-y` flag to skip the confirmation prompt in receive mode, for non-interactive use
+
+### Changed
+- **`restore` command** - Receive mode (`--receive`) now warns and asks for confirmation before the destructive `bench restore --force` that replaces all data in the target site
+  - Refuses to proceed in a non-interactive session unless `--yes` is passed, instead of restoring silently
+  - Warns when the backup's origin site does not match the site being restored into
+  - Streams the backup into the container instead of buffering it in host memory, so large `--with-files` backups no longer spike memory
+- **`rm` command** - Refuses to delete a project's named volumes and databases unless a verified, non-empty backup has landed on the host; pass `--no-backup` to remove without one
+  - Streams each backup artifact out of the container instead of buffering it in host memory, so large `--with-files` backups no longer spike memory
+
+### Fixed
+- **`restore` command** - Database and admin passwords are no longer exposed on the container process list during a restore
+  - A failed copy of the backup into the container now fails clearly instead of surfacing a confusing "backup not found" later
+- **`rm` command** - Validates the project name before any deletion, rejecting empty, `.`, `..`, absolute, or path-separator names that could escape the projects directory
+  - Returns a non-zero exit code when a removal only partially succeeds, instead of reporting success
+
 ## [0.32.0] - 2026-07-02
 
 ### Added
