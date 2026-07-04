@@ -162,6 +162,7 @@ def _run_inspect(**overrides):
         no_refresh=False,
         show_apps=False,
         interactive=False,
+        yes=False,
         prompt_to_start=True,
     )
     kwargs.update(overrides)
@@ -516,12 +517,14 @@ class TestOpenAppMatchesSelectedBench:
     def _run_open(self, **overrides):
         kwargs = dict(
             project_name="proj",
+            bench=None,
             bench_path=None,
             app=None,
             code=False,
             code_insiders=False,
             cursor=False,
             docker=True,
+            yes=False,
             verbose=False,
         )
         kwargs.update(overrides)

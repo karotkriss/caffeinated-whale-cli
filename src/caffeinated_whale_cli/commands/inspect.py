@@ -7,9 +7,13 @@ import typer
 from rich.console import Console
 from rich.tree import Tree
 
-from ..utils import config_utils, db_utils
+from ..utils import bench_labels, config_utils, db_utils
 from ..utils.completion_utils import complete_project_names
-from ..utils.docker_utils import get_project_containers, handle_docker_errors
+from ..utils.docker_utils import (
+    get_frappe_container,
+    get_project_containers,
+    handle_docker_errors,
+)
 from ..utils.tips import TipSpinner
 from .utils import ensure_containers_running
 
@@ -103,7 +107,11 @@ def _find_bench_instances(
                     if _is_bench_directory(container, bench_dir, verbose):
                         benches_found.append(bench_dir)
 
-    return list(set(benches_found))
+    # Sort for a STABLE discovery order. Each bench's position in this list is its
+    # numeric label / index (0, 1, 2, ...), so the ordering must be deterministic
+    # across runs - a bare ``set`` iteration order is not. Sorting by path is stable
+    # for a fixed set of benches (see utils/bench_labels.py for the label model).
+    return sorted(set(benches_found))
 
 
 def _get_common_site_config(
@@ -202,6 +210,16 @@ def _gather_bench_data(
 
     bench_data: dict = {"path": bench_dir, "sites": sites_info, "available_apps": available_apps}
 
+    # Recover the user label from the per-bench marker file. This is what lets a
+    # full inspect rebuild labels after the SQLite cache is lost: the marker lives
+    # inside the bench, so it survives a cache wipe. The marker is the source of
+    # truth for labels; the rest of the bench config is re-derived live as above.
+    marker_label = bench_labels.read_label_marker(frappe_container, bench_dir, verbose)
+    if marker_label:
+        bench_data["label"] = marker_label
+        if verbose:
+            console_err.print(f"[dim]VERBOSE: Recovered label '{marker_label}' from marker[/dim]")
+
     if common_site_config is not None:
         bench_data["common_site_config"] = common_site_config
 
@@ -285,6 +303,12 @@ def partial_inspect_known_benches(
             "sites": sites_info,
             "available_apps": fresh_available,
         }
+        # Carry the cached user label forward. T2 is a cheap freshness pass and does
+        # not re-read the marker; the label is preserved so a partial refresh never
+        # drops it (a real label change goes through `label`/`inspect -i`, which
+        # updates the cache directly).
+        if cached_bench.get("label"):
+            bench_data["label"] = cached_bench["label"]
         if "common_site_config" in cached_bench:
             bench_data["common_site_config"] = cached_bench["common_site_config"]
         refreshed.append(bench_data)
@@ -319,6 +343,12 @@ def inspect(
     ),
     interactive: bool = typer.Option(
         False, "--interactive", "-i", help="Prompt to name each bench instance interactively."
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Auto-start stopped containers without prompting (non-interactive).",
     ),
     prompt_to_start: bool = typer.Option(
         True,
@@ -368,7 +398,11 @@ def inspect(
                 bench_instances_data = cached_benches
                 try:
                     if ensure_containers_running(
-                        project_name, require_running=True, verbose=verbose, prompt=False
+                        project_name,
+                        require_running=True,
+                        verbose=verbose,
+                        prompt=False,
+                        auto_start=yes,
                     ):
                         all_containers = get_project_containers(project_name)
                         frappe_container = next(
@@ -429,7 +463,11 @@ def inspect(
         # bail cleanly when nothing is running - inspecting a stopped bench is
         # impossible because every probe runs `exec_run` inside the container.
         if not ensure_containers_running(
-            project_name, require_running=True, verbose=verbose, prompt=prompt_to_start
+            project_name,
+            require_running=True,
+            verbose=verbose,
+            prompt=prompt_to_start,
+            auto_start=yes,
         ):
             console_err.print(
                 f"Error: Containers for project '{project_name}' are not running; "
@@ -484,37 +522,90 @@ def inspect(
         else:
             db_utils.cache_project_data(project_name, bench_instances_data)
 
-    # Interactive naming: ask for bench aliases before output
+    # Interactive naming: ask for a user label per bench before output. Labels are
+    # validated (no purely-numeric labels, no duplicates within the project, safe
+    # charset) and persisted to BOTH the SQLite cache and the per-bench marker file
+    # so they survive a cache wipe (see utils/bench_labels.py). Writing the marker
+    # needs the running frappe container, so we fetch it here (a cache-served
+    # inspect may not have one in scope yet).
     if interactive:
-        for bench in bench_instances_data:
+        interactive_container = None
+        try:
+            interactive_container = get_frappe_container(project_name)
+        except typer.Exit:
+            console_err.print(
+                "[yellow]Warning:[/yellow] containers are not available; labels will be saved "
+                "to the cache only (marker files not written)."
+            )
+
+        for index, bench in enumerate(bench_instances_data):
+            existing = bench.get("label")
+            existing_hint = f" [current: '{existing}']" if existing else ""
             try:
-                alias = questionary.text(
-                    f"Bench found {bench['path']} on '{project_name}'.\n"
-                    "What would you like to name this bench? "
+                answer = questionary.text(
+                    f"Bench [{index}] at {bench['path']} on '{project_name}'.{existing_hint}\n"
+                    "Label (blank to keep/clear, letters/digits/.-_ only): "
                 ).ask()
-                if alias is None:  # User pressed Ctrl+C
+                if answer is None:  # User pressed Ctrl+C
                     console_err.print("\n[yellow]Interactive naming cancelled.[/yellow]")
                     break
-                bench["alias"] = alias.strip() if alias else ""
             except KeyboardInterrupt:
                 console_err.print("\n[yellow]Interactive naming cancelled.[/yellow]")
                 break
             except Exception as e:
                 console_err.print(f"\n[red]Error during interactive input: {e}[/red]")
-                bench["alias"] = ""
+                continue
+
+            new_label = answer.strip()
+            if not new_label:
+                # Blank keeps the existing label (numeric-index-only if none).
+                continue
+
+            error = bench_labels.validate_user_label(new_label)
+            if error is None:
+                # Duplicate check against the labels already chosen for other benches.
+                duplicate = any(
+                    other is not bench and other.get("label") == new_label
+                    for other in bench_instances_data
+                )
+                if duplicate:
+                    error = f"Label '{new_label}' is already used by another bench in this project."
+            if error:
+                console_err.print(f"[red]{error}[/red] Keeping the previous label.")
+                continue
+
+            bench["label"] = new_label
+            if interactive_container is not None:
+                if not bench_labels.write_label_marker(
+                    interactive_container, bench["path"], new_label, verbose
+                ):
+                    console_err.print(
+                        f"[yellow]Warning:[/yellow] could not write marker file for "
+                        f"{bench['path']}; label saved to cache only."
+                    )
 
         db_utils.cache_project_data(project_name, bench_instances_data)
 
     if json_output:
-        result = {"project_name": project_name, "bench_instances": bench_instances_data}
+        # Surface the positional numeric index alongside any user label so scripts
+        # can address a bench with --bench <index|label>.
+        benches_out = [
+            {"index": index, **bench_instance}
+            for index, bench_instance in enumerate(bench_instances_data)
+        ]
+        result = {"project_name": project_name, "bench_instances": benches_out}
         print(json.dumps(result, indent=2))
     else:
         tree = Tree(f"Project [bold cyan]{project_name}[/bold cyan]", guide_style="bright_blue")
-        for bench_instance in bench_instances_data:
-            # Display alias if provided, otherwise show path
-            alias = bench_instance.get("alias")
-            label = f"{alias} ({bench_instance['path']})" if alias else bench_instance["path"]
-            bench_node = tree.add(f"Bench Instance at [green]{label}[/green]")
+        for index, bench_instance in enumerate(bench_instances_data):
+            # Show the numeric index (its default label) and any user label, so the
+            # user knows exactly what to pass to --bench.
+            path = bench_instance["path"]
+            user_label = bench_instance.get("label")
+            label_part = f" [magenta]'{user_label}'[/magenta]" if user_label else ""
+            bench_node = tree.add(
+                f"Bench [cyan]\\[{index}][/cyan]{label_part} at [green]{path}[/green]"
+            )
 
             apps_branch = bench_node.add(
                 f"Available Apps ({len(bench_instance['available_apps'])})"

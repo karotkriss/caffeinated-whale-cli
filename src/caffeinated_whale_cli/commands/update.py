@@ -189,12 +189,14 @@ def _update_project(
     build: bool = False,
     skip_maintenance: bool = False,
     no_recache: bool = False,
+    bench_selector: str | None = None,
+    yes: bool = False,
 ):
     """Core logic for updating a single project."""
-    from .utils import ensure_containers_running
+    from .utils import ensure_containers_running, resolve_bench_path
 
-    # Ensure containers are running, prompt user if not
-    ensure_containers_running(project_name, require_running=True, verbose=verbose)
+    # Ensure containers are running, prompt user if not (auto-start with --yes)
+    ensure_containers_running(project_name, require_running=True, verbose=verbose, auto_start=yes)
 
     # Get containers
     containers = get_project_containers(project_name)
@@ -212,53 +214,55 @@ def _update_project(
         )
         raise typer.Exit(code=1)
 
-    # Get bench path from cache or use provided path
-    if not bench_path:
-        cached_data = db_utils.get_cached_project_data(project_name)
-        if cached_data and cached_data.get("bench_instances"):
-            bench_path = cached_data["bench_instances"][0]["path"]
-            if verbose:
-                stderr_console.print(f"[dim]Using cached bench path: {bench_path}[/dim]")
-        else:
-            # No cache found, run inspect automatically
-            stderr_console.print("[yellow]No cached bench path found. Running inspect...[/yellow]")
+    # Resolve which bench to update (--bench/--path, else the single bench, else
+    # error on multi-bench ambiguity). Returns None only when nothing is cached.
+    resolved = resolve_bench_path(project_name, bench_selector, bench_path, verbose=verbose)
+    if resolved:
+        bench_path = resolved
+        if verbose:
+            stderr_console.print(f"[dim]Using bench path: {bench_path}[/dim]")
+    else:
+        # No cache found: run inspect automatically to populate it, then re-resolve.
+        stderr_console.print("[yellow]No cached bench path found. Running inspect...[/yellow]")
+        try:
+            # Import and run inspect to populate cache
+            from .inspect import inspect as inspect_cmd_func
 
-            try:
-                # Import and run inspect to populate cache
-                from .inspect import inspect as inspect_cmd_func
+            inspect_cmd_func(
+                project_name=project_name,
+                verbose=verbose,
+                json_output=False,
+                update=False,
+                no_refresh=False,
+                show_apps=False,
+                interactive=False,
+                yes=False,
+            )
 
-                inspect_cmd_func(
-                    project_name=project_name,
-                    verbose=verbose,
-                    json_output=False,
-                    update=False,
-                    no_refresh=False,
-                    show_apps=False,
-                    interactive=False,
-                )
-
-                # Try to get cached data again
-                cached_data = db_utils.get_cached_project_data(project_name)
-                if cached_data and cached_data.get("bench_instances"):
-                    bench_path = cached_data["bench_instances"][0]["path"]
-                    if verbose:
-                        stderr_console.print(
-                            f"[dim]Using cached bench path from inspect: {bench_path}[/dim]"
-                        )
-                else:
-                    # Still no cache, use default
-                    bench_path = "/workspace/frappe-bench"
+            # Re-resolve now that the cache is populated (same --bench/single/multi
+            # rules, so a multi-bench project still errors instead of guessing).
+            bench_path = resolve_bench_path(project_name, bench_selector, None, verbose=verbose)
+            if bench_path:
+                if verbose:
                     stderr_console.print(
-                        f"[yellow]Warning:[/yellow] Could not detect bench path. Using default: {bench_path}"
+                        f"[dim]Using cached bench path from inspect: {bench_path}[/dim]"
                     )
-            except Exception as e:
-                # Inspect failed, use default
+            else:
+                # Still no cache, use default
                 bench_path = "/workspace/frappe-bench"
                 stderr_console.print(
-                    f"[yellow]Warning:[/yellow] Inspect failed. Using default bench path: {bench_path}"
+                    f"[yellow]Warning:[/yellow] Could not detect bench path. Using default: {bench_path}"
                 )
-                if verbose:
-                    stderr_console.print(f"[dim]Inspect error: {e}[/dim]")
+        except typer.Exit:
+            raise
+        except Exception as e:
+            # Inspect failed, use default
+            bench_path = "/workspace/frappe-bench"
+            stderr_console.print(
+                f"[yellow]Warning:[/yellow] Inspect failed. Using default bench path: {bench_path}"
+            )
+            if verbose:
+                stderr_console.print(f"[dim]Inspect error: {e}[/dim]")
 
     # Verify bench path exists
     exit_code, output = frappe_container.exec_run(
@@ -850,11 +854,16 @@ def update(
         help="App name(s) to update. Specify multiple app names after --app or use --app multiple times.",
         autocompletion=complete_app_names,
     ),
+    bench: str = typer.Option(
+        None,
+        "--bench",
+        help="Which bench to target: its numeric index or label (from 'cwcli inspect').",
+    ),
     bench_path: str = typer.Option(
         None,
         "--path",
         "-p",
-        help="Path to the bench directory inside the container (uses cached path from inspect if not specified).",
+        help="Explicit bench directory inside the container (lower-level alternative to --bench).",
     ),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Enable verbose output with streaming command output."
@@ -878,6 +887,9 @@ def update(
         False,
         "--no-recache",
         help="Skip re-caching project after app updates (uses existing cache for site detection).",
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Auto-start stopped containers without prompting."
     ),
 ):
     """
@@ -912,4 +924,6 @@ def update(
         build,
         skip_maintenance,
         no_recache,
+        bench_selector=bench,
+        yes=yes,
     )

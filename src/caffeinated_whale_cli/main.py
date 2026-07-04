@@ -11,6 +11,7 @@ from .commands import stop as stop_cmd
 from .commands.backup import backup as _backup_cmd
 from .commands.init import init as _init_cmd
 from .commands.inspect import inspect as inspect_cmd_func
+from .commands.label import label as _label_cmd
 from .commands.logs import logs as _logs_cmd
 from .commands.open import open_bench as _open_cmd
 from .commands.restore import restore as _restore_cmd
@@ -54,6 +55,7 @@ def main(
 
 app.command("init")(_init_cmd)
 app.command("inspect")(inspect_cmd_func)
+app.command("label")(_label_cmd)
 
 app.add_typer(list_cmd.app, name="ls")
 app.add_typer(start_cmd.app, name="start")
