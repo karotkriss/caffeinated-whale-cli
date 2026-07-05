@@ -196,8 +196,14 @@ On Frappe `version-15` bench has a "trying alternative directories" fallback tha
 
 Shared by the normal and receive paths.
 Interactive (a TTY): prompt for the username (default `root`, blank keeps `root`) AND the password (blank is an error).
-The normal path previously had NO username prompt and, because the confirm's Enter leaked into the immediately-following password prompt, the password came back empty (`Error: Password cannot be empty.`); adding the username prompt absorbs that stray Enter and the password is collected.
 Non-interactive (flags / non-TTY): the username defaults to `root`; the password is a required secret, so a non-TTY WITHOUT `--mariadb-root-password` refuses with a non-zero exit rather than hanging or proceeding empty.
+
+The interactive "empty password" bug and its ROOT fix (sharp edge, worth remembering for ANY questionary confirm followed by another prompt):
+`questionary.confirm(...)` with the default `auto_enter=True` submits on the `y`/`n` keypress and leaves the user's habitual trailing Enter in prompt_toolkit's INTERNAL input buffer.
+That stray Enter is then read by the immediately-following prompt as an empty submit, so the password prompt returned empty (`Error: Password cannot be empty.`).
+A `termios.tcflush` stdin drain was tried and proven INEFFECTIVE: `FIONREAD` shows the OS tty queue is empty (the Enter is inside prompt_toolkit, not the OS queue), so a tcflush reaches nothing - it was removed.
+The fix is `auto_enter=False` on EVERY restore confirm (both the destructive `Are you sure you want to restore?` and the missing-apps `continue anyway?`, on both paths): with `auto_enter=False` the confirm REQUIRES Enter to submit and thus CONSUMES its own trailing Enter, so nothing leaks into the next prompt - robust regardless of which credential flags are set.
+(An earlier partial mechanism - the username prompt absorbing the stray Enter - only worked in the default flow where the username prompt runs; it silently failed for `--mariadb-root-username <flag>` + habitual `y`+Enter, which is why a realistic pty E2E must press `y` THEN Enter.)
 
 ### Missing-apps warning reads the BACKUP's apps (`check_missing_apps` + `_read_backup_installed_apps`)
 
