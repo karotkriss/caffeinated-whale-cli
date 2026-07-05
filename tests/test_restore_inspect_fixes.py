@@ -18,6 +18,7 @@ Each class pins one of the bugs the captain hit on a live 0.33.0 session:
 6. After a successful restore, cwcli runs ``bench migrate`` then restarts.
 """
 
+import shlex
 from types import SimpleNamespace
 
 import pytest
@@ -92,16 +93,15 @@ class RecordingContainer:
         if cmd_str == f"ls -1 {BENCH_PATH}/sites":
             listing = list(self.sites.keys()) + self.stray
             return (0, "\n".join(listing).encode())
-        # Fail-safe site classification probe.
+        # Fail-safe site classification probe: the entry dir is the positional arg
+        # (the last shlex token), never interpolated into the script.
         if (
             cmd_str.startswith("sh -c '")
             and "echo SITE" in cmd_str
             and "site_config.json" in cmd_str
         ):
-            for site in self.sites:
-                if f"/sites/{site}/site_config.json" in cmd_str:
-                    return (0, b"SITE\n")
-            return (0, b"NOTASITE\n")
+            entry = shlex.split(cmd_str)[-1].rsplit("/", 1)[-1]
+            return (0, b"SITE\n") if entry in self.sites else (0, b"NOTASITE\n")
         # currentsite.txt read.
         if cmd_str == f"cat {BENCH_PATH}/sites/currentsite.txt":
             if self.currentsite is None:
@@ -536,5 +536,24 @@ class TestPostRestoreMigrateAndRestart:
         )
         # A failed migrate does not abort the restart, but is reported as False so
         # the caller can exit non-zero.
+        assert ok is False
+        assert calls["start"] == ["proj"]
+
+    def test_migrate_exec_exception_still_restarts_and_returns_false(self, monkeypatch):
+        # A Docker/API EXCEPTION from exec_run (not just a non-zero exit) must be
+        # treated as a failed-but-reported migrate and MUST still restart.
+        calls = self._patch(monkeypatch)
+
+        class RaisingMigrate(RecordingContainer):
+            def exec_run(self, cmd, workdir=None, environment=None):
+                s = " ".join(cmd) if isinstance(cmd, (list, tuple)) else str(cmd)
+                if "migrate" in s:
+                    raise RuntimeError("docker exec boom")
+                return super().exec_run(cmd, workdir=workdir, environment=environment)
+
+        container = RaisingMigrate(sites={SITE: ["frappe"]})
+        ok = restore_mod._post_restore_migrate_and_restart(
+            container, "proj", BENCH_PATH, SITE, verbose=False
+        )
         assert ok is False
         assert calls["start"] == ["proj"]

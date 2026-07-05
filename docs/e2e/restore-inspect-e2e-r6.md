@@ -44,7 +44,7 @@ paths were driven with flags. prompt_toolkit's raw-mode readiness marker
 
 ## #1 - `--receive` full DB path, on Frappe v14 (the captain's version)
 
-```
+```bash
 # BUGGY (bare filename, cwd = private/backups) - the captain's exact error:
 $ cd .../private/backups && bench --site development.localhost restore 20260705_092753-...-database.sql.gz --force ...
 Invalid path 20260705_092753-development_localhost-database.sql.gz
@@ -57,7 +57,7 @@ Site development.localhost has been restored
 Real receive-mode restore through the receive code path on v14 (default site
 resolved from `currentsite.txt`, then restore + migrate + restart):
 
-```
+```bash
 [info] driving real receive-mode restore on cwe2e6v14 (Frappe v14)
 Using default site: development.localhost
 ✓ Files copied to container
@@ -75,7 +75,7 @@ harness above stubs only the P2P transfer, which is orthogonal to the path bug.
 
 Interactive `cwcli restore cwe2e6` (no `--site`, no creds):
 
-```
+```bash
 Using default site: development.localhost
 ? Select a backup to restore: 2026-07-05 09:16:49  [DATABASE ONLY]
 ? Are you sure you want to restore? Yes
@@ -92,7 +92,7 @@ credential prompt fires; the restore runs straight through after the confirm
 
 ## #3 / #4 - inspect: currentsite.txt not a site; default from currentsite.txt
 
-```
+```bash
 ############ BUGGY (original code) ############
     └── Sites (2)
         ├── currentsite.txt
@@ -113,7 +113,7 @@ the cache too: `get_default_site('cwe2e6', ...) -> development.localhost`.
 Backup taken with `widgets` installed; `widgets` then removed from the bench's
 `apps/`. `cwcli restore cwe2e6 --site development.localhost`:
 
-```
+```bash
 backup apps in dump: {'widgets', 'frappe'}     # read from the backup's own dump
 MISSING APPS DETECTED: ['widgets']
 
@@ -128,9 +128,39 @@ Restore cancelled.
 
 Tail of the successful interactive restore:
 
-```
+```bash
 ✓ Successfully restored site 'development.localhost'
 ✓ Migrated site 'development.localhost'
 Restarting instance...
 ✓ Instance restarted (logs: /tmp/bench-cwe2e6.log)
+```
+
+## Re-validation on the final code (after the no-mistakes run and CodeRabbit fixes)
+
+Per the "re-run the real-instance E2E after no-mistakes and after any CodeRabbit
+fixes" standard, the whole E2E was re-run against the final shipped code (the
+no-mistakes review fixes - restart the restored bench, drop the unused recache,
+flush stdin before the password prompt - plus the four CodeRabbit fixes). All
+green on real Frappe v15 (`cwe2e6`) and v14 (`cwe2e6v14`):
+
+```bash
+# #3/#4 inspect (injection-safe positional-arg site probe):
+    └── Sites (1)
+        └── development.localhost (default)     # currentsite.txt excluded; default from it
+
+# #2/#6 interactive normal restore (pty): username prompt shown, password collected,
+#        restore + bench migrate + instance restart all succeed.
+
+# stdin-flush fix - interactive restore with --mariadb-root-username as a FLAG and NO
+#   password flag (username prompt skipped): the password prompt STILL collects input
+#   (the drained stray Enter cannot empty it) and the restore succeeds.
+
+# non-interactive: --mariadb-root-username/--mariadb-root-password run with no prompt.
+
+# #5 missing-apps (recache dropped): backup needing widgets, bench without widgets ->
+MISSING (final code, no recache): ['widgets']
+
+# #1 receive on v14: full-path bench restore succeeds, then migrate + restart.
+✓ Successfully restored backup to site 'development.localhost'
+✓ Migrated site 'development.localhost'
 ```

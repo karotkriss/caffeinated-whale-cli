@@ -221,8 +221,17 @@ def _post_restore_migrate_and_restart(
         stderr_console.print(f"[dim]$ {migrate_cmd}[/dim]")
 
     console.print()
-    with TipSpinner(f"Migrating site '{site}'", console=stderr_console, enabled=show_tips):
-        exit_code, output = frappe_container.exec_run(["sh", "-c", migrate_cmd], workdir=bench_path)
+    # A Docker/API exception from exec_run must NOT skip the restart: treat it as a
+    # failed-but-reported migrate (exit_code=1) so the restart below still runs. A
+    # failed migrate is surfaced but never prevents the instance from coming back up.
+    try:
+        with TipSpinner(f"Migrating site '{site}'", console=stderr_console, enabled=show_tips):
+            exit_code, output = frappe_container.exec_run(
+                ["sh", "-c", migrate_cmd], workdir=bench_path
+            )
+    except Exception as exc:
+        exit_code = 1
+        output = f"Failed to run migrate: {exc}".encode("utf-8", errors="replace")
 
     if verbose or exit_code != 0:
         if output:
