@@ -8,7 +8,7 @@ import questionary
 import typer
 from questionary import Style
 
-from ..utils import cache, config_utils, db_utils
+from ..utils import bench_sites, config_utils, db_utils
 from ..utils.completion_utils import complete_project_names, complete_site_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import get_project_containers, handle_docker_errors
@@ -79,6 +79,172 @@ def transform_site_name_to_backup_format(site_name: str) -> str:
         Transformed name (e.g., 'development_localhost')
     """
     return site_name.replace(".", "_")
+
+
+def _prompt_mariadb_credentials(
+    mariadb_root_username: str | None,
+    mariadb_root_password: str | None,
+) -> tuple[str, str]:
+    """Resolve the MariaDB root credentials for a restore, in BOTH modes.
+
+    Shared by the normal and receive restore paths so credential handling is
+    identical everywhere:
+
+    - **Interactive (a TTY):** prompt for the username (defaulting to ``root``)
+      and the password, actually collecting the input. A blank username keeps the
+      ``root`` default; a blank password is an error (a restore needs the real
+      root password). This fixes the normal path silently skipping the username
+      prompt and never collecting the password. The preceding restore confirmation
+      disables questionary's auto-enter, so it consumes its own trailing Enter and
+      can never leave a stray keystroke for the password prompt to swallow as empty
+      input - the password prompt always waits for real input regardless of which
+      credential flags were passed.
+    - **Non-interactive (flags / non-TTY):** use the ``--mariadb-root-*`` flags.
+      The username has a safe default (``root``) so it may be omitted, but the
+      password is a secret with no default: a non-TTY WITHOUT
+      ``--mariadb-root-password`` refuses with a non-zero exit rather than
+      hanging on a prompt or proceeding with an empty password.
+
+    Returns ``(username, password)`` with both guaranteed non-empty.
+    """
+    is_tty = sys.stdin.isatty()
+
+    # Username: defaults to root; only prompted interactively.
+    if not mariadb_root_username:
+        if is_tty:
+            try:
+                answer = questionary.text("MariaDB root username:", default="root").ask()
+            except (KeyboardInterrupt, EOFError):
+                console.print("\n[yellow]Restore cancelled.[/yellow]")
+                raise typer.Exit(code=1) from None
+            if answer is None:  # Ctrl-C / no input
+                console.print("\n[yellow]Restore cancelled.[/yellow]")
+                raise typer.Exit(code=1)
+            mariadb_root_username = answer.strip() or "root"
+        else:
+            mariadb_root_username = "root"
+
+    # Password: a required secret with no default.
+    if not mariadb_root_password:
+        if is_tty:
+            try:
+                mariadb_root_password = questionary.password("MariaDB root password:").ask()
+            except (KeyboardInterrupt, EOFError):
+                console.print("\n[yellow]Restore cancelled.[/yellow]")
+                raise typer.Exit(code=1) from None
+            if not mariadb_root_password:
+                stderr_console.print("[bold red]Error:[/bold red] Password cannot be empty.")
+                raise typer.Exit(code=1)
+        else:
+            stderr_console.print(
+                "[bold red]Error:[/bold red] No MariaDB root password provided and not running "
+                "interactively.\n[dim]Pass --mariadb-root-password (and, if not 'root', "
+                "--mariadb-root-username) to restore non-interactively.[/dim]"
+            )
+            raise typer.Exit(code=1)
+
+    return mariadb_root_username, mariadb_root_password
+
+
+def _resolve_default_site(
+    project_name: str,
+    bench_path: str | None,
+    frappe_container,
+    verbose: bool = False,
+) -> str | None:
+    """Resolve a bench's default site from EITHER of the two places it is recorded.
+
+    Frappe records the default site in ``common_site_config.json``'s
+    ``default_site`` OR ``sites/currentsite.txt`` (the pointer ``bench use``
+    writes). The cache-backed :func:`db_utils.get_default_site` already checks
+    both (``default_site`` then the cached ``current_site``); this adds a LIVE
+    read of ``currentsite.txt`` as a final fallback so a cold or stale cache still
+    resolves the default for this (destructive) restore. Returns None if neither
+    source names a site.
+    """
+    site = db_utils.get_default_site(project_name, bench_path)
+    if site:
+        return site
+    if frappe_container is not None and bench_path:
+        site = bench_sites.read_current_site(frappe_container, bench_path, verbose)
+        if site and verbose:
+            stderr_console.print(f"[dim]Default site from currentsite.txt: {site}[/dim]")
+    return site
+
+
+def _post_restore_migrate_and_restart(
+    frappe_container,
+    project_name: str,
+    bench_path: str,
+    site: str,
+    verbose: bool = False,
+) -> bool:
+    """Run ``bench migrate`` then restart the instance after a successful restore.
+
+    A restored database is at the backup's schema, which may lag the bench's app
+    code, so ``bench --site <site> migrate`` brings it up to date; the instance is
+    then restarted so its running processes reconnect and pick up the migrated DB
+    (``_start_project`` kills the old ``bench start`` and relaunches it - the same
+    thing ``cwcli restart`` does for the app).
+
+    A failed migrate does NOT undo the (successful) restore; it is surfaced clearly
+    and the instance is still restarted, but the function returns False so the
+    caller can exit non-zero to flag that the site needs attention.
+    """
+    migrate_ok = True
+
+    show_tips = config_utils.get_show_tips()
+    migrate_cmd = f"bench --site {shlex.quote(site)} migrate"
+    if verbose:
+        stderr_console.print(f"[dim]$ {migrate_cmd}[/dim]")
+
+    console.print()
+    # A Docker/API exception from exec_run must NOT skip the restart: treat it as a
+    # failed-but-reported migrate (exit_code=1) so the restart below still runs. A
+    # failed migrate is surfaced but never prevents the instance from coming back up.
+    try:
+        with TipSpinner(f"Migrating site '{site}'", console=stderr_console, enabled=show_tips):
+            exit_code, output = frappe_container.exec_run(
+                ["sh", "-c", migrate_cmd], workdir=bench_path
+            )
+    except Exception as exc:
+        exit_code = 1
+        output = f"Failed to run migrate: {exc}".encode("utf-8", errors="replace")
+
+    if verbose or exit_code != 0:
+        if output:
+            console.print()
+            console.print("[dim]Migrate output:[/dim]")
+            console.print(output.decode("utf-8", errors="replace"))
+
+    if exit_code == 0:
+        console.print(f"[bold green]✓[/bold green] Migrated site '{site}'")
+    else:
+        migrate_ok = False
+        stderr_console.print(
+            f"[bold yellow]⚠ Warning:[/bold yellow] 'bench migrate' failed for site '{site}'. "
+            "The database was restored, but the schema may be out of date."
+        )
+        stderr_console.print(
+            f"[dim]Run it manually: cwcli run {project_name} -- bench --site {site} migrate[/dim]"
+        )
+
+    # Restart the instance so the app reconnects to the restored/migrated DB.
+    # Imported lazily to avoid any import cycle at module load.
+    from .start import _start_project
+
+    console.print()
+    console.print("[bold cyan]Restarting instance...[/bold cyan]")
+    # Restart the SAME bench that was just migrated/restored (bench_path), never the
+    # first sorted bench: pass it as an explicit override so a multi-bench restore
+    # into a non-first bench does not kill/restart the wrong dev server.
+    log_file = _start_project(project_name, verbose=verbose, bench_path_override=bench_path)
+    if log_file:
+        console.print(f"[bold green]✓[/bold green] Instance restarted (logs: {log_file})")
+    else:
+        console.print("[bold green]✓[/bold green] Instance restart requested")
+
+    return migrate_ok
 
 
 def scan_backups_for_all_sites(frappe_container, bench_path: str, verbose: bool = False) -> list:
@@ -241,94 +407,118 @@ def group_and_sort_backups(backups: list, target_site: str) -> tuple:
     return target_backups, other_backups
 
 
+def _read_backup_installed_apps(
+    frappe_container,
+    backup_db_path: str,
+    verbose: bool = False,
+) -> set[str] | None:
+    """Read the list of apps a backup's site had installed, from the DB dump.
+
+    Frappe records a site's installed apps as a JSON list under the ``__global`` /
+    ``installed_apps`` default (this is exactly what ``frappe.get_installed_apps()``
+    reads), so the dump contains a row like::
+
+        ...,'["frappe", "widgets"]','installed_apps',...
+
+    We ``zcat -f`` the dump (``-f`` streams a plain ``.sql`` too) and grep out that
+    one array, then extract the app-name tokens from it. This tells us which apps
+    the BACKUP needs - the right question for "will this restore + migrate break
+    because an app's code is missing", which the current (about-to-be-overwritten)
+    site cannot answer.
+
+    Returns the set of app names, or ``None`` when the list could not be read
+    (unreadable dump, or the marker not present) so the caller can fail safe and
+    NOT warn on a false negative.
+    """
+    quoted = shlex.quote(backup_db_path)
+    # Grab the installed_apps global's JSON array. ``zcat -f`` handles gzip AND an
+    # already-plain .sql; grep is byte-oriented (-a) since the dump is binary-ish.
+    extract = (
+        f"zcat -f {quoted} 2>/dev/null | " "grep -aoE \"\\[[^]]*\\]','installed_apps'\" | head -1"
+    )
+    if verbose:
+        stderr_console.print(f"[dim]$ {extract}[/dim]")
+    exit_code, output = frappe_container.exec_run(["sh", "-c", extract])
+    if exit_code != 0:
+        return None
+    try:
+        text = output.decode("utf-8", errors="replace").strip()
+    except Exception:
+        return None
+    if not text:
+        return None
+    # ``text`` looks like: [\"frappe\", \"widgets\"]','installed_apps'
+    # Take everything up to the first ``]`` (the JSON array body) and pull out the
+    # app-name tokens, tolerant of mysqldump's escaping of the inner quotes.
+    array_body = text.split("]", 1)[0]
+    apps = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", array_body))
+    return apps or None
+
+
 def check_missing_apps(
     frappe_container,
     project_name: str,
     bench_path: str,
-    site: str,
+    backup_db_path: str,
     verbose: bool = False,
     no_recache: bool = False,
 ) -> list[str]:
     """
-    Check for apps that are installed on the site but missing from the bench.
+    Return the apps the BACKUP needs that the bench does not physically have.
 
-    Reads the site's apps.json file and compares against available apps on the bench.
-    Re-caches the project to ensure accurate app availability data unless no_recache is True.
+    Warns the user, before a destructive restore, that the backup was taken on a
+    site with apps whose code is not in this bench's ``apps/`` - those apps will
+    fail ``bench migrate`` after the restore. This is the captain's exact concern
+    ("the backup uses apps the bench does NOT have installed").
+
+    The backup's app list is read from its own DB dump
+    (:func:`_read_backup_installed_apps`), NOT from the current site: the site is
+    about to be overwritten, and reading its apps via ``bench list-apps`` cannot
+    even name an app whose code is already missing (that import crashes). Available
+    apps are read live from ``apps/`` so the check never depends on cache freshness.
+
+    Because both sides of the comparison are read live, this check no longer
+    touches cwcli's cache. ``no_recache`` is therefore a DEPRECATED no-op, kept
+    only so existing callers (and the ``--no-recache`` CLI flag) keep working.
 
     Args:
         frappe_container: Docker container object
-        project_name: Name of the project
+        project_name: Name of the project (unused; kept for signature stability)
         bench_path: Path to bench directory
-        site: Site name to check
+        backup_db_path: Full container path to the backup's database dump
         verbose: Enable verbose output
-        no_recache: Skip re-caching (use existing cache)
+        no_recache: Deprecated no-op (the check reads everything live; retained for
+            backward compatibility with the ``--no-recache`` flag and callers)
 
     Returns:
-        List of missing app names
+        Sorted list of missing app names (empty when none, or when the backup's app
+        list could not be determined - fail safe, never a false warning).
     """
-    # Re-cache the project to get fresh app data (unless skipped)
-    if not no_recache:
-        if verbose:
-            stderr_console.print("[dim]Re-caching project to verify app availability...[/dim]")
-
-        if not cache.recache_project(project_name, verbose=verbose):
-            if verbose:
-                stderr_console.print(
-                    "[yellow]Warning:[/yellow] Failed to recache project. App check may be inaccurate."
-                )
-    elif verbose:
-        stderr_console.print("[dim]Using existing cache (--no-recache flag set)...[/dim]")
-
-    # Get available apps from cache
-    cached_data = db_utils.get_cached_project_data(project_name)
-    if not cached_data or not cached_data.get("bench_instances"):
-        if verbose:
-            stderr_console.print(
-                "[yellow]Warning:[/yellow] No cached bench data. Cannot verify apps."
-            )
-        return []
-
-    # Find the bench instance that matches our bench_path
-    bench_instance = None
-    for bench in cached_data["bench_instances"]:
-        if bench["path"] == bench_path:
-            bench_instance = bench
-            break
-
-    if not bench_instance:
-        if verbose:
-            stderr_console.print(
-                f"[yellow]Warning:[/yellow] Bench at {bench_path} not found in cache."
-            )
-        return []
-
-    available_apps = set(bench_instance.get("available_apps", []))
-
-    # Read site's apps.json
-    apps_json_path = f"{bench_path}/sites/{site}/apps.json"
-    quoted_path = shlex.quote(apps_json_path)
-    exit_code, output = frappe_container.exec_run(f"sh -c 'cat {quoted_path}'")
-
+    # Apps physically present in the bench (its apps/ directory), read live.
+    quoted_apps_dir = shlex.quote(f"{bench_path}/apps")
+    exit_code, output = frappe_container.exec_run(["sh", "-c", f"ls -1 {quoted_apps_dir}"])
     if exit_code != 0:
         if verbose:
             stderr_console.print(
-                f"[yellow]Warning:[/yellow] Could not read apps.json for site {site}"
+                f"[yellow]Warning:[/yellow] Could not list apps in {bench_path}/apps."
+            )
+        return []
+    available_apps = {
+        a.strip() for a in output.decode("utf-8", errors="replace").split("\n") if a.strip()
+    }
+
+    # Apps the backup needs (from its own dump).
+    backup_apps = _read_backup_installed_apps(frappe_container, backup_db_path, verbose)
+    if backup_apps is None:
+        # Could not read the backup's app list -> fail safe, do not warn.
+        if verbose:
+            stderr_console.print(
+                "[yellow]Warning:[/yellow] Could not read the backup's installed apps; "
+                "skipping the missing-apps check."
             )
         return []
 
-    try:
-        apps_data = json.loads(output.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as e:
-        if verbose:
-            stderr_console.print(f"[yellow]Warning:[/yellow] Failed to parse apps.json: {e}")
-        return []
-
-    # Get list of apps from the site
-    site_apps = set(apps_data.keys())
-
-    # Find missing apps
-    missing_apps = site_apps - available_apps
-
+    missing_apps = backup_apps - available_apps
     return sorted(missing_apps)
 
 
@@ -692,6 +882,7 @@ def restore_receive_mode(
     no_recache: bool,
     verbose: bool,
     yes: bool = False,
+    no_migrate: bool = False,
 ):
     """
     Receive mode: Download backup from sendme and restore it.
@@ -703,9 +894,12 @@ def restore_receive_mode(
         mariadb_root_username: Optional MariaDB username
         mariadb_root_password: Optional MariaDB password
         admin_password: Optional admin password
-        no_recache: Skip re-caching before the missing-apps check
+        no_recache: Deprecated no-op (the missing-apps check reads everything
+            live from the bench and the backup dump; retained for backward
+            compatibility with the ``--no-recache`` flag)
         verbose: Enable verbose output
         yes: Skip the destructive-restore confirmation (non-interactive)
+        no_migrate: Skip the post-restore ``bench migrate`` + instance restart
     """
     import subprocess
     import tempfile
@@ -787,10 +981,14 @@ def restore_receive_mode(
                 if verbose:
                     stderr_console.print(f"[dim]Inspect error: {e}[/dim]")
 
-    # Get site if not provided
+    # Get site if not provided. Resolve the default from EITHER
+    # common_site_config.json's default_site OR sites/currentsite.txt (a plain
+    # `bench use`d dev bench only has the latter).
     if not site:
         try:
-            default_site = db_utils.get_default_site(project_name, bench_path)
+            default_site = _resolve_default_site(
+                project_name, bench_path, frappe_container, verbose=verbose
+            )
         except typer.Exit:
             raise
         except Exception as e:
@@ -982,30 +1180,23 @@ def restore_receive_mode(
         console.print("[bold cyan]Starting restore process...[/bold cyan]")
         console.print()
 
-        # Get MariaDB credentials if not provided
-        if not mariadb_root_username:
-            mariadb_root_username = questionary.text("MariaDB root username:", default="root").ask()
-
-            if not mariadb_root_username:
-                stderr_console.print("[bold red]Error:[/bold red] MariaDB username is required")
-                raise typer.Exit(code=1)
-
-        if not mariadb_root_password:
-            mariadb_root_password = questionary.password("MariaDB root password:").ask()
-
-            if not mariadb_root_password:
-                stderr_console.print("[bold red]Error:[/bold red] MariaDB password is required")
-                raise typer.Exit(code=1)
+        # Resolve MariaDB credentials (interactive prompts or flags; a non-TTY
+        # without --mariadb-root-password refuses rather than proceeding empty).
+        mariadb_root_username, mariadb_root_password = _prompt_mariadb_credentials(
+            mariadb_root_username, mariadb_root_password
+        )
 
         # Check for missing apps before proceeding with restore
         console.print()
         show_tips = config_utils.get_show_tips()
         with TipSpinner("Checking for missing apps", console=stderr_console, enabled=show_tips):
+            # The downloaded backup is already copied into the container's backup
+            # dir; check the apps IT needs against this bench.
             missing_apps = check_missing_apps(
                 frappe_container,
                 project_name,
                 bench_path,
-                site,
+                f"{backup_dir}/{database_file.name}",
                 verbose=verbose,
                 no_recache=no_recache,
             )
@@ -1037,7 +1228,9 @@ def restore_receive_mode(
             else:
                 try:
                     proceed = questionary.confirm(
-                        "Do you want to continue with the restore anyway?", default=False
+                        "Do you want to continue with the restore anyway?",
+                        default=False,
+                        auto_enter=False,
                     ).ask()
                 except (KeyboardInterrupt, EOFError):
                     console.print("\n[yellow]Restore cancelled.[/yellow]")
@@ -1080,7 +1273,7 @@ def restore_receive_mode(
         else:
             try:
                 confirm = questionary.confirm(
-                    "Are you sure you want to restore?", default=False
+                    "Are you sure you want to restore?", default=False, auto_enter=False
                 ).ask()
             except (KeyboardInterrupt, EOFError):
                 console.print("\n[yellow]Restore cancelled.[/yellow]")
@@ -1092,18 +1285,15 @@ def restore_receive_mode(
 
         # Build restore command. Secrets are passed via the environment (never on
         # the argv) so they do not appear in the container process list (M5).
+        #
+        # The database backup MUST be the FULL container path
+        # (``<backup_dir>/<file>``), not the bare filename: `bench restore` rejects
+        # a bare filename with "Invalid path <file>". The arg ORDER also mirrors the
+        # normal restore path exactly (db path, credentials, --force, then the file
+        # archives) so the two paths behave identically.
         restore_env: dict[str, str] = {}
-        cmd = f"bench --site {shlex.quote(site)} restore"
-        cmd += f" {shlex.quote(database_file.name)}"
-
-        if files_archive:
-            # Use full path to file in backup directory
-            files_path = f"{backup_dir}/{files_archive.name}"
-            cmd += f" --with-public-files {shlex.quote(files_path)}"
-        if private_files_archive:
-            # Use full path to file in backup directory
-            private_files_path = f"{backup_dir}/{private_files_archive.name}"
-            cmd += f" --with-private-files {shlex.quote(private_files_path)}"
+        database_path = f"{backup_dir}/{database_file.name}"
+        cmd = f"bench --site {shlex.quote(site)} restore {shlex.quote(database_path)}"
 
         cmd += f" --mariadb-root-username {shlex.quote(mariadb_root_username)}"
         restore_env["CWCLI_MARIADB_ROOT_PASSWORD"] = mariadb_root_password
@@ -1113,6 +1303,15 @@ def restore_receive_mode(
         if admin_password:
             restore_env["CWCLI_ADMIN_PASSWORD"] = admin_password
             cmd += ' --admin-password "$CWCLI_ADMIN_PASSWORD"'
+
+        if files_archive:
+            # Use full path to file in backup directory
+            files_path = f"{backup_dir}/{files_archive.name}"
+            cmd += f" --with-public-files {shlex.quote(files_path)}"
+        if private_files_archive:
+            # Use full path to file in backup directory
+            private_files_path = f"{backup_dir}/{private_files_archive.name}"
+            cmd += f" --with-private-files {shlex.quote(private_files_path)}"
 
         if verbose:
             # Secrets live in the environment, so the command itself is safe to print.
@@ -1194,6 +1393,15 @@ def restore_receive_mode(
                         stderr_console.print(
                             f"[yellow]Warning:[/yellow] Could not update encryption key: {e}"
                         )
+
+            # Migrate the restored DB to the code's schema, then restart the
+            # instance so it comes back up cleanly (skippable with --no-migrate).
+            if not no_migrate:
+                migrate_ok = _post_restore_migrate_and_restart(
+                    frappe_container, project_name, bench_path, site, verbose=verbose
+                )
+                if not migrate_ok:
+                    raise typer.Exit(code=1)
         else:
             stderr_console.print(
                 f"[bold red]✗[/bold red] Failed to restore backup to site '{site}'"
@@ -1218,7 +1426,8 @@ def restore(
         None,
         "--site",
         "-s",
-        help="Site name to restore. If not provided, uses the default site from common_site_config.",
+        help="Site name to restore. If not provided, uses the default site "
+        "(from common_site_config.json's default_site or sites/currentsite.txt).",
         autocompletion=complete_site_names,
     ),
     bench: str = typer.Option(
@@ -1260,7 +1469,8 @@ def restore(
     no_recache: bool = typer.Option(
         False,
         "--no-recache",
-        help="Skip re-caching project before checking for missing apps (uses existing cache).",
+        help="Deprecated no-op: the missing-apps check now reads app availability "
+        "live from the bench, so it never re-caches. Kept for backward compatibility.",
     ),
     yes: bool = typer.Option(
         False,
@@ -1272,6 +1482,13 @@ def restore(
         "Does not remove the sendme-ticket or MariaDB-credential prompts, and "
         "has no effect on the normal restore path.",
     ),
+    no_migrate: bool = typer.Option(
+        False,
+        "--no-migrate",
+        help="Skip the post-restore 'bench migrate' and instance restart. By "
+        "default a successful restore is followed by 'bench migrate' (to bring "
+        "the restored DB to the code's schema) and an instance restart.",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output."),
 ):
     """
@@ -1281,7 +1498,11 @@ def restore(
     presents them in an interactive menu grouped by the target site, and
     executes the restore using 'bench restore'.
 
-    If --site is not provided, the default site from common_site_config.json will be used.
+    If --site is not provided, the default site is used, resolved from either
+    common_site_config.json's `default_site` or sites/currentsite.txt.
+
+    After a successful restore, `bench migrate` is run and the instance is
+    restarted (skip with --no-migrate).
 
     Use --send to share a backup via P2P transfer, or --receive to restore from a remote backup.
 
@@ -1324,6 +1545,7 @@ def restore(
                 no_recache,
                 verbose,
                 yes,
+                no_migrate,
             )
 
     # Ensure containers are running (needed for both normal restore and send mode)
@@ -1406,10 +1628,14 @@ def restore(
                 if verbose:
                     stderr_console.print(f"[dim]Inspect error: {e}[/dim]")
 
-    # Get default site if not provided
+    # Get default site if not provided. Resolve from EITHER
+    # common_site_config.json's default_site OR sites/currentsite.txt (a plain
+    # `bench use`d dev bench only has the latter).
     if not site:
         try:
-            default_site = db_utils.get_default_site(project_name, bench_path)
+            default_site = _resolve_default_site(
+                project_name, bench_path, frappe_container, verbose=verbose
+            )
         except typer.Exit:
             raise
         except Exception as e:
@@ -1506,13 +1732,20 @@ def restore(
             no_recache,
             verbose,
             yes,
+            no_migrate,
         )
 
-    # Check for missing apps before proceeding with restore
+    # Check for missing apps before proceeding with restore: does the SELECTED
+    # backup need apps this bench does not physically have?
     console.print()
     with TipSpinner("Checking for missing apps", console=stderr_console, enabled=show_tips):
         missing_apps = check_missing_apps(
-            frappe_container, project_name, bench_path, site, verbose=verbose, no_recache=no_recache
+            frappe_container,
+            project_name,
+            bench_path,
+            selected_backup["database"]["full_path"],
+            verbose=verbose,
+            no_recache=no_recache,
         )
 
     if missing_apps:
@@ -1533,7 +1766,9 @@ def restore(
 
         try:
             proceed = questionary.confirm(
-                "Do you want to continue with the restore anyway?", default=False
+                "Do you want to continue with the restore anyway?",
+                default=False,
+                auto_enter=False,
             ).ask()
         except (KeyboardInterrupt, EOFError):
             console.print("\n[yellow]Restore cancelled.[/yellow]")
@@ -1561,7 +1796,9 @@ def restore(
     console.print()
 
     try:
-        confirm = questionary.confirm("Are you sure you want to restore?", default=False).ask()
+        confirm = questionary.confirm(
+            "Are you sure you want to restore?", default=False, auto_enter=False
+        ).ask()
     except (KeyboardInterrupt, EOFError):
         console.print("\n[yellow]Restore cancelled.[/yellow]")
         raise typer.Exit(code=0) from None
@@ -1570,29 +1807,23 @@ def restore(
         console.print("[yellow]Restore cancelled.[/yellow]")
         raise typer.Exit(code=0)
 
-    # Prompt for MariaDB password if not provided
-    if not mariadb_root_password:
-        try:
-            mariadb_root_password = questionary.password("MariaDB root password:").ask()
-        except (KeyboardInterrupt, EOFError):
-            console.print("\n[yellow]Restore cancelled.[/yellow]")
-            raise typer.Exit(code=0) from None
+    # Resolve MariaDB credentials AFTER the confirm. Interactive: prompt for the
+    # username (default root) and password, actually collecting input; the username
+    # prompt was previously missing entirely and the password was never collected.
+    # Non-interactive: use the --mariadb-root-* flags; a non-TTY without a password
+    # refuses rather than proceeding empty.
+    mariadb_root_username, mariadb_root_password = _prompt_mariadb_credentials(
+        mariadb_root_username, mariadb_root_password
+    )
 
-        if not mariadb_root_password:
-            stderr_console.print("[bold red]Error:[/bold red] Password cannot be empty.")
-            raise typer.Exit(code=1)
-
-    # Validate mariadb_root_username if provided
-    if mariadb_root_username:
-        if not mariadb_root_username.strip():
-            stderr_console.print("[bold red]Error:[/bold red] MariaDB username cannot be empty.")
-            raise typer.Exit(code=1)
-        if any(char in mariadb_root_username for char in invalid_chars):
-            stderr_console.print(
-                "[bold red]Error:[/bold red] Invalid MariaDB username. "
-                "Username cannot contain special shell characters."
-            )
-            raise typer.Exit(code=1)
+    # Defense-in-depth: reject a username with shell-special characters (it is also
+    # shlex-quoted below, so this can never inject - it just fails fast on a typo).
+    if any(char in mariadb_root_username for char in invalid_chars):
+        stderr_console.print(
+            "[bold red]Error:[/bold red] Invalid MariaDB username. "
+            "Username cannot contain special shell characters."
+        )
+        raise typer.Exit(code=1)
 
     # Build restore command
     backup_file = selected_backup["database"]["full_path"]
@@ -1614,12 +1845,8 @@ def restore(
     restore_env: dict[str, str] = {}
     cmd = f"bench --site {shlex.quote(site)} restore {shlex.quote(backup_file)}"
 
-    # Add database credentials
-    if mariadb_root_username:
-        cmd += f" --mariadb-root-username {shlex.quote(mariadb_root_username)}"
-    else:
-        # Default to root if not specified
-        cmd += " --mariadb-root-username root"
+    # Add database credentials (username is always resolved - defaults to root).
+    cmd += f" --mariadb-root-username {shlex.quote(mariadb_root_username)}"
 
     restore_env["CWCLI_MARIADB_ROOT_PASSWORD"] = mariadb_root_password
     cmd += ' --mariadb-root-password "$CWCLI_MARIADB_ROOT_PASSWORD"'
@@ -1727,6 +1954,15 @@ def restore(
                     stderr_console.print(
                         f"[yellow]Warning:[/yellow] Failed to update encryption_key: {e}"
                     )
+
+        # Migrate the restored DB to the code's schema, then restart the instance
+        # so it comes back up cleanly (skippable with --no-migrate).
+        if not no_migrate:
+            migrate_ok = _post_restore_migrate_and_restart(
+                frappe_container, project_name, bench_path, site, verbose=verbose
+            )
+            if not migrate_ok:
+                raise typer.Exit(code=1)
     else:
         stderr_console.print(f"[bold red]✗[/bold red] Failed to restore site '{site}'")
         stderr_console.print()

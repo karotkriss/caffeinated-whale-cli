@@ -29,6 +29,7 @@ return, and ``open --app`` reuses the T2 pass in-memory without writing the cach
 """
 
 import json
+import shlex
 from unittest.mock import MagicMock
 
 import pytest
@@ -68,6 +69,14 @@ class FakeFrappeContainer:
         self.calls.append(cmd)
         b = self.bench_path
 
+        # Fail-safe site-classification probe (bench_sites.list_sites). The entry
+        # dir is passed as the positional arg (the last shlex token), never
+        # interpolated; a real site echoes SITE, a stray non-site (apps.txt,
+        # common_site_config.json, currentsite.txt) echoes NOTASITE.
+        if cmd.startswith("sh -c '") and "echo SITE" in cmd and "site_config.json" in cmd:
+            entry = shlex.split(cmd)[-1].rsplit("/", 1)[-1]
+            return (0, b"SITE\n") if entry in self.sites else (0, b"NOTASITE\n")
+
         if "test -d" in cmd:  # _is_bench_directory
             return (0, b"")
         if cmd.startswith("find "):  # _find_bench_instances (full inspect only)
@@ -77,8 +86,15 @@ class FakeFrappeContainer:
             return (0, b"")
         if cmd == f"ls -1 {b}/apps":  # _get_available_apps (cheap)
             return (0, "\n".join(self.apps).encode())
-        if cmd == f"ls -1 {b}/sites":  # _get_sites (cheap)
-            listing = ["apps.txt", "common_site_config.json", *self.sites.keys()]
+        if cmd == f"ls -1 {b}/sites":  # _get_sites (cheap) lists real + stray entries
+            # Keep the stray currentsite.txt in the listing so the partial-refresh
+            # regression (a stray file must NOT be treated as a site) stays covered.
+            listing = [
+                "apps.txt",
+                "common_site_config.json",
+                "currentsite.txt",
+                *self.sites.keys(),
+            ]
             return (0, "\n".join(listing).encode())
         if cmd == f"cat {b}/sites/common_site_config.json":
             return (0, json.dumps({"default_site": next(iter(self.sites), "")}).encode())

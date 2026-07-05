@@ -18,7 +18,8 @@ def unlock(
         None,
         "--site",
         "-s",
-        help="Site name to unlock. If not provided, uses the default site from common_site_config.",
+        help="Site name to unlock. If not provided, uses the default site "
+        "(from common_site_config.json's default_site or sites/currentsite.txt).",
         autocompletion=complete_site_names,
     ),
     bench: str = typer.Option(
@@ -43,7 +44,8 @@ def unlock(
     This command removes the {bench_path}/sites/{site_name}/locks directory,
     which can help resolve issues when a site is stuck in a locked state.
 
-    If --site is not provided, the default site from common_site_config.json will be used.
+    If --site is not provided, the default site is used, resolved from either
+    common_site_config.json's `default_site` or sites/currentsite.txt.
 
     Examples:
         cwcli unlock my-project --site example.com
