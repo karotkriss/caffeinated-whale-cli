@@ -223,7 +223,13 @@ def _check_port_conflicts(
 
 
 @handle_docker_errors
-def _start_project(project_name: str, verbose: bool = False, status=None, bench_selector=None):
+def _start_project(
+    project_name: str,
+    verbose: bool = False,
+    status=None,
+    bench_selector=None,
+    bench_path_override: str | None = None,
+):
     """
     The core logic for starting a single project's containers.
 
@@ -234,6 +240,13 @@ def _start_project(project_name: str, verbose: bool = False, status=None, bench_
         project_name: The name of the docker-compose project.
         verbose: Enable verbose output.
         status: Optional rich status object for progress updates.
+        bench_selector: Optional ``--bench`` selector to pick which bench runs
+            ``bench start`` (resolved against the cache, ``on_ambiguous="first"``).
+        bench_path_override: Optional explicit bench path used VERBATIM, skipping
+            the ``resolve_bench_path`` guessing entirely. Callers that already know
+            the exact bench (e.g. the post-restore restart, which must restart the
+            SAME bench it just migrated) pass it so a multi-bench project never
+            falls back to the first sorted bench.
     """
     containers = get_project_containers(project_name)
 
@@ -263,14 +276,21 @@ def _start_project(project_name: str, verbose: bool = False, status=None, bench_
         )
         return
 
-    # Resolve which bench to run `bench start` in. Unlike the data commands, `start`
-    # KEEPS WORKING on a multi-bench project when no --bench is given: it starts the
-    # first sorted bench and prints a note listing the others (on_ambiguous="first").
+    # Resolve which bench to run `bench start` in. An explicit bench_path_override
+    # is used VERBATIM (the caller already knows the exact bench - e.g. the
+    # post-restore restart must restart the SAME bench it just migrated, never the
+    # first sorted one). Otherwise, unlike the data commands, `start` KEEPS WORKING
+    # on a multi-bench project when no --bench is given: it starts the first sorted
+    # bench and prints a note listing the others (on_ambiguous="first").
     from .utils import resolve_bench_path
 
-    bench_path = resolve_bench_path(
-        project_name, bench_selector, None, verbose=verbose, on_ambiguous="first"
-    )
+    bench_path: str | None
+    if bench_path_override:
+        bench_path = bench_path_override
+    else:
+        bench_path = resolve_bench_path(
+            project_name, bench_selector, None, verbose=verbose, on_ambiguous="first"
+        )
 
     if not bench_path:
         # No cache found, run inspect

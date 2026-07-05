@@ -157,6 +157,9 @@ def _run_receive(
         no_recache=True,
         verbose=False,
         yes=yes,
+        # These tests pin the restore command/confirm behavior only; skip the
+        # post-restore migrate + instance restart (covered by its own tests).
+        no_migrate=True,
     )
 
 
