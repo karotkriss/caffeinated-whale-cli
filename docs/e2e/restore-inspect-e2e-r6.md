@@ -139,21 +139,23 @@ Restarting instance...
 
 Per the "re-run the real-instance E2E after no-mistakes and after any CodeRabbit
 fixes" standard, the whole E2E was re-run against the final shipped code (the
-no-mistakes review fixes - restart the restored bench, drop the unused recache,
-flush stdin before the password prompt - plus the four CodeRabbit fixes). All
-green on real Frappe v15 (`cwe2e6`) and v14 (`cwe2e6v14`):
+no-mistakes review fixes - restart the restored bench, drop the unused recache -
+the CodeRabbit fixes, and the `auto_enter=False` credential root fix). Crucially,
+the confirm is driven the way a human types it: `y` THEN Enter. All green on real
+Frappe v15 (`cwe2e6`) and v14 (`cwe2e6v14`):
 
 ```bash
 # #3/#4 inspect (injection-safe positional-arg site probe):
     └── Sites (1)
         └── development.localhost (default)     # currentsite.txt excluded; default from it
 
-# #2/#6 interactive normal restore (pty): username prompt shown, password collected,
-#        restore + bench migrate + instance restart all succeed.
+# #2/#6 interactive normal restore (pty, y+Enter at the confirm): username prompt shown,
+#        password collected, restore + bench migrate + instance restart all succeed.
 
-# stdin-flush fix - interactive restore with --mariadb-root-username as a FLAG and NO
-#   password flag (username prompt skipped): the password prompt STILL collects input
-#   (the drained stray Enter cannot empty it) and the restore succeeds.
+# credential root fix (auto_enter=False) - interactive restore with --mariadb-root-username
+#   as a FLAG and NO password flag (username prompt skipped) + habitual y+Enter: the
+#   confirm consumes its own Enter, so the password prompt STILL collects input (this
+#   case failed before the fix, when a tcflush drain could not reach the buffered Enter).
 
 # non-interactive: --mariadb-root-username/--mariadb-root-password run with no prompt.
 
