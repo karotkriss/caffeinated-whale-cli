@@ -20,7 +20,7 @@ from pathlib import Path
 import questionary
 import typer
 
-from ..utils import cache, db_utils
+from ..utils import bench_sites, cache, db_utils
 from ..utils.completion_utils import complete_project_names
 from ..utils.config_utils import PROJECTS_DIR
 from ..utils.console import console, stderr_console
@@ -81,54 +81,19 @@ def _is_valid_project_name(name: str) -> bool:
 
 def _list_sites(container, bench_path: str) -> list[str] | None:
     """
-    Return the real Frappe sites under ``{bench_path}/sites``.
+    Return the real Frappe sites under ``{bench_path}/sites`` (fail-safe).
 
-    A bench ``sites/`` directory holds more than sites: ``apps.txt``,
-    ``apps.json``, ``assets``, ``common_site_config.json``, ``currentsite.txt``
-    (written by ``bench use``), lock files, and so on. A real site is a directory
-    that contains a ``site_config.json``, so detect sites by probing for that file
-    rather than denylisting known non-site names - a denylist can never be
-    complete, and any unlisted entry (e.g. ``currentsite.txt``) would be mistaken
-    for a site, fail its ``bench backup``, and wrongly block removal.
-
-    Detection is deliberately FAIL-SAFE: an entry is excluded only when we can
-    positively confirm it is not a site - a non-directory, or a readable directory
-    with no ``site_config.json``. Anything ambiguous (the probe erroring, an
-    unreadable directory, or unexpected output) is treated as a real site that
-    must be backed up, so a transiently unreadable/erroring ``site_config.json``
-    can never let a site's volume be deleted with no backup. This keeps C1's
-    guarantee fail-closed under ambiguity: worst case it blocks a delete (which
-    ``--no-backup`` can override), never loses data.
+    Thin wrapper over the canonical :func:`bench_sites.list_sites` so ``rm`` and
+    ``inspect`` share one site-detection implementation. A real site is a
+    directory containing a ``site_config.json``; a stray entry like
+    ``currentsite.txt`` is never a site. Detection is fail-safe (anything
+    ambiguous is treated as a real site) so ``rm`` never deletes a site's volume
+    without first backing it up. See :mod:`..utils.bench_sites`.
 
     Returns the list of site names (possibly empty), or ``None`` if the sites
     directory itself could not be listed.
     """
-    exit_code, output = container.exec_run(f"ls -1 {bench_path}/sites")
-    if exit_code != 0:
-        return None
-
-    sites: list[str] = []
-    for entry in output.decode("utf-8").split("\n"):
-        entry = entry.strip()
-        if not entry:
-            continue
-        entry_dir = f"{bench_path}/sites/{entry}"
-        # One shell probe with three positive verdicts: SITE (has
-        # site_config.json), NOTASITE (not a dir, or a readable dir with no
-        # config), AMBIGUOUS (dir exists but is unreadable so we cannot confirm).
-        probe = (
-            f'sh -c \'if [ ! -d "{entry_dir}" ]; then echo NOTASITE; '
-            f'elif [ -f "{entry_dir}/site_config.json" ]; then echo SITE; '
-            f'elif [ -r "{entry_dir}" ]; then echo NOTASITE; '
-            f"else echo AMBIGUOUS; fi'"
-        )
-        probe_code, probe_out = container.exec_run(probe)
-        verdict = probe_out.decode("utf-8").strip() if probe_code == 0 else ""
-        # Exclude ONLY on a positive NOTASITE. SITE, AMBIGUOUS, an unexpected
-        # token, empty output, or a non-zero probe exit all fail closed -> site.
-        if verdict != "NOTASITE":
-            sites.append(entry)
-    return sites
+    return bench_sites.list_sites(container, bench_path)
 
 
 class _ChunkStreamReader(io.RawIOBase):

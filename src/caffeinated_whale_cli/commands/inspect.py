@@ -7,7 +7,7 @@ import typer
 from rich.console import Console
 from rich.tree import Tree
 
-from ..utils import bench_labels, config_utils, db_utils
+from ..utils import bench_labels, bench_sites, config_utils, db_utils
 from ..utils.completion_utils import complete_project_names
 from ..utils.docker_utils import (
     get_frappe_container,
@@ -51,11 +51,15 @@ def _is_bench_directory(
 def _get_sites(
     container: docker.models.containers.Container, bench_dir: str, verbose: bool = False
 ) -> list[str]:
-    exit_code, output = _run_command(container, f"ls -1 {bench_dir}/sites", verbose)
-    if exit_code != 0:
-        return []
-    excluded = {"apps.txt", "assets", "common_site_config.json", "example.com", "apps.json"}
-    return [item for item in output.split("\n") if item and item not in excluded]
+    # A real Frappe site is a DIRECTORY containing site_config.json. Detect sites
+    # by that shape via the canonical shared helper, never by denylisting known
+    # non-site names - a denylist can never be complete, so a stray entry like
+    # currentsite.txt (a plain file written by `bench use`) was being reported as
+    # a site and then failed `bench list-apps`. See utils/bench_sites.py.
+    if verbose:
+        console_err.print(f"[dim]$ ls -1 {bench_dir}/sites (site detection)[/dim]")
+    sites = bench_sites.list_sites(container, bench_dir, verbose)
+    return sites if sites is not None else []
 
 
 def _get_installed_apps(
@@ -210,6 +214,20 @@ def _gather_bench_data(
 
     bench_data: dict = {"path": bench_dir, "sites": sites_info, "available_apps": available_apps}
 
+    # Record the default site pointer from currentsite.txt (written by `bench use`).
+    # A bench records its default site in TWO places: common_site_config.json's
+    # `default_site` OR sites/currentsite.txt. Persisting currentsite.txt lets the
+    # cache-served default-site resolution (restore/backup/unlock and the inspect
+    # "(default)" marker) work even when common_site_config has no default_site
+    # key - the exact shape a plain `bench use`d dev bench has.
+    current_site = bench_sites.read_current_site(frappe_container, bench_dir, verbose)
+    if current_site:
+        bench_data["current_site"] = current_site
+        if verbose:
+            console_err.print(
+                f"[dim]VERBOSE: Default site from currentsite.txt: {current_site}[/dim]"
+            )
+
     # Recover the user label from the per-bench marker file. This is what lets a
     # full inspect rebuild labels after the SQLite cache is lost: the marker lives
     # inside the bench, so it survives a cache wipe. The marker is the source of
@@ -309,6 +327,11 @@ def partial_inspect_known_benches(
         # updates the cache directly).
         if cached_bench.get("label"):
             bench_data["label"] = cached_bench["label"]
+        # Carry the cached default-site pointer forward too. T2 is a cheap
+        # freshness pass and does not re-read currentsite.txt; a change to the
+        # default site is picked up by the full inspect (Tier 3).
+        if cached_bench.get("current_site"):
+            bench_data["current_site"] = cached_bench["current_site"]
         if "common_site_config" in cached_bench:
             bench_data["common_site_config"] = cached_bench["common_site_config"]
         refreshed.append(bench_data)
@@ -615,10 +638,14 @@ def inspect(
             for app in bench_instance["available_apps"]:
                 apps_branch.add(f"[dim]{app}[/dim]")
 
-            # Get default site from common config
+            # Resolve the default site from EITHER common_site_config.json's
+            # `default_site` OR the currentsite.txt pointer (recorded as
+            # `current_site`). A plain `bench use`d dev bench only has the latter.
             default_site = None
             if "common_site_config" in bench_instance:
                 default_site = bench_instance["common_site_config"].get("default_site")
+            if not default_site:
+                default_site = bench_instance.get("current_site")
 
             sites_branch = bench_node.add(f"Sites ({len(bench_instance['sites'])})")
             for site_data in bench_instance["sites"]:

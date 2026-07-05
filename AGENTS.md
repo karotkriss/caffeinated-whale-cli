@@ -163,3 +163,76 @@ Two supporting fixes travel with it, and BOTH the receive path and the normal re
 
 Regression coverage is in `tests/test_restore_safety.py`: it drives `restore_receive_mode` with a `FakeReceiveContainer` that records every `exec_run` (command, workdir, environment) and asserts a declined/non-TTY confirm does NOT run `bench restore --force` and exits non-zero, `--yes` proceeds, an origin mismatch is surfaced, and the DB password rides in `environment=` (never in the recorded argv).
 Testing note: `restore_receive_mode` is a plain function (not the Typer command), so tests call it directly with all args explicit; stub `TipSpinner` to a no-op (it starts a Rich spinner even with `enabled=False`) and fake `subprocess.run` to write the "downloaded" backup into its `cwd`.
+
+## `restore` + `inspect`: currentsite, default site, receive path, credential prompts, missing-apps, migrate+restart
+
+Six bugs the captain hit on a live 0.33.0 session (Frappe `version-14`, site `development.localhost`) were fixed together.
+The authoritative repros and the real-instance E2E evidence are in `docs/e2e/restore-inspect-e2e-r6.md`.
+
+### Site detection is shared (`utils/bench_sites.py`)
+
+`bench_sites.list_sites(container, bench_path)` is the single canonical "what are the real sites" implementation, used by BOTH `commands/rm.py:_list_sites` (which now just delegates) and `commands/inspect.py:_get_sites`.
+A real Frappe site is a DIRECTORY containing `site_config.json`; detection probes for that per entry rather than denylisting known non-site names.
+It is fail-safe: an entry is excluded only on a positive NOTASITE (a non-directory, or a readable dir with no `site_config.json`); anything ambiguous (probe error, unreadable dir) is treated as a site.
+This replaced `inspect._get_sites`' old denylist `{"apps.txt", "assets", "common_site_config.json", "example.com", "apps.json"}`, which did NOT list `currentsite.txt` (a plain file written by `bench use`), so inspect reported it as a site and then errored `bench --site currentsite.txt list-apps -> "Site currentsite.txt does not exist!"`.
+`bench_sites.read_current_site(container, bench_path)` reads `sites/currentsite.txt` (the default-site pointer), failing safe to `None`.
+The probe string in `list_sites` is byte-identical to the one rm's tests already assert, so rm's fakes stay green; `tests/test_inspect_partial_refresh.py`'s fake gained the same SITE/NOTASITE probe handling.
+
+### Default site resolves from EITHER source (`currentsite.txt` OR `common_site_config.json`)
+
+A bench records its default site in `common_site_config.json`'s `default_site` OR `sites/currentsite.txt`; a plain `bench use`d dev bench only has the latter (the captain's `ners` had no `default_site` key at all).
+`Bench.current_site` is a new nullable column (idempotent `_migrate_bench_current_site_column`, mirroring the `label` migration) populated by a full inspect from `currentsite.txt`, carried forward by the T2 partial pass, and surfaced by `get_cached_project_data`.
+`db_utils.get_default_site` now returns `common_site_config.default_site` if set, else the cached `current_site` (via `get_current_site`) - so `restore`/`backup`/`unlock` all resolve the default even with no `default_site` key.
+`inspect`'s tree marks `(default)` from either source too.
+`restore.py:_resolve_default_site` adds a LIVE `currentsite.txt` read as a final fallback for the destructive restore path (a cold/stale cache still resolves correctly); it is used by both the normal and receive paths in place of the bare `get_default_site`.
+
+### `--receive` restore: full container path, not the bare filename
+
+Receive-mode built `bench restore <bare-filename>` with `workdir=backup_dir`; on Frappe `version-14` bench rejects that with `Invalid path <db filename>` (data restore broken).
+The fix passes the FULL container path `{backup_dir}/{database_file.name}` and reorders the args to exactly match the normal path (db path, credentials, `--force`, then `--with-public-files`/`--with-private-files`).
+On Frappe `version-15` bench has a "trying alternative directories" fallback that masks the bare-filename bug, so this only reproduces on v14 - which is why the E2E built a v14 bench (`docs/e2e/`).
+
+### Credential prompting works in BOTH modes (`_prompt_mariadb_credentials`)
+
+Shared by the normal and receive paths.
+Interactive (a TTY): prompt for the username (default `root`, blank keeps `root`) AND the password (blank is an error).
+The normal path previously had NO username prompt and, because the confirm's Enter leaked into the immediately-following password prompt, the password came back empty (`Error: Password cannot be empty.`); adding the username prompt absorbs that stray Enter and the password is collected.
+Non-interactive (flags / non-TTY): the username defaults to `root`; the password is a required secret, so a non-TTY WITHOUT `--mariadb-root-password` refuses with a non-zero exit rather than hanging or proceeding empty.
+
+### Missing-apps warning reads the BACKUP's apps (`check_missing_apps` + `_read_backup_installed_apps`)
+
+The warning regressed to silence because `check_missing_apps` read `sites/{site}/apps.json`, which Frappe does NOT write per site (it lives at the bench level, `sites/apps.json`), so the `cat` always failed and it returned `[]`.
+The correct question is "does the BACKUP need apps this bench lacks" (the captain's words), not "what does the about-to-be-overwritten site have" - and a site whose app code is already missing cannot even be listed by `bench list-apps` (the import crashes).
+`_read_backup_installed_apps` `zcat -f`s the backup's DB dump and greps the `installed_apps` global (`...,'["frappe","widgets"]','installed_apps',...` - exactly what `frappe.get_installed_apps()` reads), extracting the app-name tokens.
+`check_missing_apps(frappe_container, project_name, bench_path, backup_db_path, ...)` (the `site` arg became `backup_db_path`) compares those against the bench's apps read LIVE from `ls {bench_path}/apps`, and returns `backup_apps - available_apps`.
+It fails safe: an unreadable dump / absent marker yields `None` -> no warning (never a false positive).
+Both call sites pass the backup's container path (`selected_backup["database"]["full_path"]` on the normal path; `{backup_dir}/{database_file.name}` on the receive path).
+
+### Post-restore: migrate then restart (`_post_restore_migrate_and_restart`)
+
+After a successful `bench restore`, both paths run `bench --site <site> migrate` then restart the instance (via `_start_project`, which kills the old `bench start` and relaunches it - the same app restart `cwcli restart` does).
+A failed migrate does NOT undo the restore; it is surfaced and the restart still runs, but the function returns False so the caller exits non-zero.
+`--no-migrate` skips the whole post-restore step.
+
+Regression coverage: `tests/test_restore_inspect_fixes.py` (all six) and `tests/test_bench_labels`-style DB tests; `tests/test_inspect_partial_refresh.py` and `tests/test_restore_safety.py` fakes were updated for the shared site probe and the `no_migrate` param.
+
+## Interactive AND non-interactive modes: support and test BOTH (captain standard, 2026-07-04)
+
+Every cwcli command that prompts the user (destructive confirmations, credential entry, selection menus) MUST work in two modes and be E2E-verified in BOTH on a real instance, not just unit tests:
+
+- **Interactive** (a human at a TTY): every prompt is shown AND its input is actually collected.
+  A prompt that is skipped, or that returns empty without waiting for input, is a bug (e.g. the restore flow's MariaDB username/password prompts skipping after the "are you sure?" confirm).
+- **Non-interactive** (an agent/automation, or any non-TTY): every prompt has a corresponding flag so the command runs to completion with NO prompt - `--yes`/`-y` for confirmations, `--mariadb-root-username`/`--mariadb-root-password` for credentials, `--site` and backup selectors, etc.
+  Under a non-TTY WITHOUT the needed flag, a destructive or blocking prompt must refuse with a non-zero exit rather than silently proceeding, defaulting, or hanging.
+
+This is an AXI requirement (agents drive cwcli non-interactively) and a UX requirement (humans get working prompts).
+When adding or changing any prompting command: add/verify the non-interactive flags, make the interactive prompts genuinely collect input, and exercise BOTH paths in a real-instance E2E (drive the TTY prompts via a pty/expect, waiting for prompt_toolkit's raw-mode readiness marker `ESC[?2004h` before each keystroke).
+
+## Re-run the real-instance E2E AFTER the no-mistakes run and AFTER any CodeRabbit fixes (captain standard, 2026-07-05)
+
+Unit tests + a green no-mistakes pipeline are NOT sufficient proof for a behavior change.
+The no-mistakes review/document steps and CodeRabbit's post-pipeline suggestions frequently produce behavior-altering fixes (e.g. `start` skip-and-continue vs abort, `label --clear` DB/marker consistency, `inspect` Tier-2 read-only, restore path/prompt changes).
+Those fixes land AFTER the original E2E was run, so they ship re-validated only by unit tests.
+
+Standard: after the no-mistakes run completes AND after applying any CodeRabbit fixes, run the real-instance E2E AGAIN (on an isolated throwaway instance) to confirm the final shipped code still behaves correctly end-to-end - not just that the unit suite is green.
+Treat "CodeRabbit fixes applied" as a trigger to re-E2E, the same way you would after any late behavior change.

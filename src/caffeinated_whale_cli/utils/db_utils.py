@@ -49,6 +49,13 @@ class Bench(BaseModel):
     # was added after the initial schema, so initialize_database() migrates old
     # caches in place (see _migrate_bench_label_column).
     label = CharField(null=True)
+    # Default site recorded in this bench's sites/currentsite.txt (written by
+    # `bench use`). A bench records its default site in EITHER
+    # common_site_config.json's `default_site` OR currentsite.txt; persisting the
+    # latter lets get_default_site() resolve the default even when common config
+    # has no `default_site` key. NULL when currentsite.txt is absent/unreadable.
+    # Added after the initial schema (see _migrate_bench_current_site_column).
+    current_site = CharField(null=True)
 
 
 class Site(BaseModel):
@@ -189,6 +196,25 @@ def _migrate_bench_label_column():
         print(f"Warning: could not migrate bench.label column: {e}", file=sys.stderr)
 
 
+def _migrate_bench_current_site_column():
+    """Add the ``bench.current_site`` column to pre-existing caches that lack it.
+
+    Same idempotent, in-place ``ALTER TABLE`` pattern as
+    :func:`_migrate_bench_label_column` (``create_tables(safe=True)`` never adds a
+    column to an existing table). Old caches get NULL, so they keep working and
+    ``get_default_site`` falls back to ``common_site_config``'s ``default_site``
+    until the next full inspect repopulates ``current_site`` from currentsite.txt.
+    """
+    try:
+        columns = {row[1] for row in db.execute_sql("PRAGMA table_info(bench)").fetchall()}
+        if "bench" not in db.get_tables():
+            return
+        if "current_site" not in columns:
+            db.execute_sql("ALTER TABLE bench ADD COLUMN current_site VARCHAR")
+    except Exception as e:  # pragma: no cover - defensive; never block on migration
+        print(f"Warning: could not migrate bench.current_site column: {e}", file=sys.stderr)
+
+
 def initialize_database():
     if db.is_closed():
         db.connect()
@@ -201,6 +227,9 @@ def initialize_database():
     # feature. Must run after create_tables (so the table exists) and before any
     # read/write that references bench.label.
     _migrate_bench_label_column()
+    # Same for the current_site column (added with the currentsite.txt default-site
+    # resolution). Idempotent; NULL on old caches.
+    _migrate_bench_current_site_column()
     # Secure the database file with restrictive permissions
     _set_secure_db_permissions()
 
@@ -232,10 +261,14 @@ def cache_project_data(project_name, bench_instances_data):
         # Persist the user label when present. An empty string is normalized to
         # NULL so "no label" has a single representation in the DB.
         label_value = bench_data.get("label") or None
+        # Normalize empty/missing currentsite pointer to NULL for a single
+        # "no default recorded" representation.
+        current_site_value = bench_data.get("current_site") or None
         bench = Bench.create(
             project=project,
             path=bench_data["path"],
             label=label_value,
+            current_site=current_site_value,
         )
 
         # Store common site config if present (including empty configs)
@@ -340,6 +373,11 @@ def get_cached_project_data(project_name):
             # common_site_config is included. Absent key == no user label.
             if bench.label:
                 bench_data["label"] = bench.label
+
+            # Surface the default-site pointer (from currentsite.txt) when present,
+            # so cache-served default-site resolution and the "(default)" marker work.
+            if bench.current_site:
+                bench_data["current_site"] = bench.current_site
 
             if common_config is not None:
                 bench_data["common_site_config"] = common_config
@@ -505,9 +543,40 @@ def get_all_site_configs(project_name: str, bench_path: str | None = None) -> di
         return {}
 
 
+def get_current_site(project_name: str, bench_path: str | None = None) -> str | None:
+    """
+    Get the default-site pointer (from currentsite.txt) cached for a project/bench.
+
+    This is the fallback source for the default site when
+    ``common_site_config.json`` has no ``default_site`` key. Returns the first
+    non-empty ``current_site`` found (scoped to ``bench_path`` when given).
+    """
+    initialize_database()
+    try:
+        project = Project.get(Project.name == project_name)
+
+        if bench_path:
+            bench = Bench.get((Bench.project == project) & (Bench.path == bench_path))
+            current: str | None = bench.current_site
+            return current or None
+
+        for bench in project.benches:
+            current = bench.current_site
+            if current:
+                return current
+        return None
+    except (Project.DoesNotExist, Bench.DoesNotExist):
+        return None
+
+
 def get_default_site(project_name: str, bench_path: str | None = None) -> str | None:
     """
-    Get the default site for a project from the common_site_config.
+    Get the default site for a project/bench.
+
+    A bench records its default site in EITHER ``common_site_config.json``'s
+    ``default_site`` OR ``sites/currentsite.txt`` (the pointer ``bench use``
+    writes). Resolve from the former first, then fall back to the latter (cached
+    as ``current_site``) - a plain ``bench use``d dev bench only has the pointer.
 
     Args:
         project_name: Name of the project
@@ -517,6 +586,6 @@ def get_default_site(project_name: str, bench_path: str | None = None) -> str | 
         Default site name or None if not found
     """
     common_config = get_common_site_config(project_name, bench_path)
-    if common_config:
+    if common_config and common_config.get("default_site"):
         return common_config.get("default_site")
-    return None
+    return get_current_site(project_name, bench_path)
