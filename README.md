@@ -546,7 +546,8 @@ cwcli inspect [OPTIONS] PROJECT_NAME
 - Sites and installed apps for each bench
 - Site configurations (database credentials, developer mode settings)
 - Common site configuration (Redis URLs, ports, default site, etc.)
-- Default site is labeled with `(default)` in output
+- Default-site pointer from `sites/currentsite.txt` (written by `bench use`), so the `(default)` marker and default-site resolution work even when `common_site_config.json` has no `default_site` key
+- Default site is labeled with `(default)` in output (resolved from either source)
 
 **Example Output:**
 
@@ -819,7 +820,7 @@ cwcli unlock [OPTIONS] PROJECT_NAME
 
 | Option | Description |
 |--------|-------------|
-| `-s`, `--site TEXT` | Site name to unlock. If not provided, uses the default site from `common_site_config.json` |
+| `-s`, `--site TEXT` | Site name to unlock. If not provided, uses the default site (from `common_site_config.json`'s `default_site` or `sites/currentsite.txt`) |
 | `--bench TEXT` | Which bench to target: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)) |
 | `-p`, `--path TEXT` | Explicit bench directory inside the container (lower-level alternative to `--bench`; cannot be combined with it) |
 | `-y`, `--yes` | Auto-start stopped containers without prompting |
@@ -830,7 +831,7 @@ cwcli unlock [OPTIONS] PROJECT_NAME
 Removes the `{bench_path}/sites/{site_name}/locks` directory, which can help resolve issues when a site is stuck in a locked state due to incomplete migrations or background jobs.
 
 **Smart Defaults:**
-- If `--site` is not specified, automatically uses the default site from your bench's `common_site_config.json`
+- If `--site` is not specified, automatically uses your bench's default site (from `common_site_config.json`'s `default_site`, or `sites/currentsite.txt` when that key is absent)
 - Shows "Using default site: {site}" when using the default
 - Run `cwcli inspect {project}` first to cache the configuration
 
@@ -893,7 +894,7 @@ cwcli backup [OPTIONS] PROJECT_NAME
 
 | Option | Description |
 |--------|-------------|
-| `-s`, `--site TEXT` | Site name to back up. If not provided, uses the default site from `common_site_config.json` |
+| `-s`, `--site TEXT` | Site name to back up. If not provided, uses the default site (from `common_site_config.json`'s `default_site` or `sites/currentsite.txt`) |
 | `--bench TEXT` | Which bench to target: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)) |
 | `-p`, `--path TEXT` | Explicit bench directory inside the container (lower-level alternative to `--bench`; cannot be combined with it) |
 | `--with-files` | Include public and private files in the backup |
@@ -936,15 +937,16 @@ cwcli restore [OPTIONS] PROJECT_NAME
 
 | Option | Description |
 |--------|-------------|
-| `-s`, `--site TEXT` | Site name to restore. If not provided, uses the default site from `common_site_config.json` |
+| `-s`, `--site TEXT` | Site name to restore. If not provided, uses the default site (from `common_site_config.json`'s `default_site` or `sites/currentsite.txt`) |
 | `--bench TEXT` | Which bench to target: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)) |
 | `-p`, `--path TEXT` | Explicit bench directory inside the container (lower-level alternative to `--bench`; cannot be combined with it) |
-| `--mariadb-root-username TEXT` | MariaDB root username (default: root) |
-| `--mariadb-root-password TEXT` | MariaDB root password (will prompt if not provided) |
+| `--mariadb-root-username TEXT` | MariaDB root username (defaults to `root`; prompted interactively when omitted) |
+| `--mariadb-root-password TEXT` | MariaDB root password. Prompted interactively when omitted; a non-TTY without this flag refuses rather than proceeding with an empty password |
 | `--admin-password TEXT` | Set administrator password after restore |
 | `--send` | **P2P Mode:** Share backup with another machine via peer-to-peer transfer |
 | `--receive` | **P2P Mode:** Receive backup from another machine via peer-to-peer transfer |
-| `--no-recache` | Skip re-caching the project before checking for missing apps (uses the existing cache) |
+| `--no-recache` | **Deprecated no-op:** the missing-apps check now reads app availability live from the bench, so it never re-caches. Kept for backward compatibility |
+| `--no-migrate` | Skip the post-restore `bench migrate` and instance restart. By default a successful restore runs `bench migrate` (bringing the restored DB to the code's schema) then restarts the instance |
 | `-y`, `--yes` | **`--receive` mode only:** Skip the restore confirmation prompts (the destructive-restore confirmation and the missing-apps prompt). A non-TTY without `--yes` refuses these and exits non-zero. Has no effect on the normal restore path |
 | `-v`, `--verbose` | Enable verbose output and show restore command details |
 
@@ -953,9 +955,11 @@ cwcli restore [OPTIONS] PROJECT_NAME
 1. Scans all backup files across all sites in the bench
 2. Presents an interactive menu with backups grouped by target site
 3. Shows badges indicating backup contents: `[FILES]`, `[PRIVATE]`, `[DATABASE ONLY]`
-4. Automatically detects and restores public/private file archives
-5. Restores encryption key from backup's site_config if available
-6. Displays helpful error messages on failure with common causes
+4. Warns if the selected backup needs apps this bench does not have (read from the backup's own database dump, so a missing app is caught before the restore)
+5. Automatically detects and restores public/private file archives
+6. Restores encryption key from backup's site_config if available
+7. Runs `bench migrate` and restarts the instance after a successful restore, so the restored database is brought to the code's schema and the app comes back up cleanly (skip with `--no-migrate`; a failed migrate is surfaced and exits non-zero but does not undo the restore)
+8. Displays helpful error messages on failure with common causes
 
 **Interactive Features:**
 
@@ -999,12 +1003,18 @@ From: 2025-11-12 10:56:38
 Will restore: Database, Public files, Private files
 
 ? Are you sure you want to restore? (y/N) y
+? MariaDB root username: root
 MariaDB root password: ********
 
 ✓ Successfully restored site 'development.localhost'
 From backup: 20251112_105638-development_localhost-database.sql.gz
 Including file archives
 Updated encryption_key from backup site_config
+
+✓ Migrated site 'development.localhost'
+
+Restarting instance...
+✓ Instance restarted (logs: /workspace/frappe-bench/logs/web.dev.log)
 ```
 
 **P2P Backup Transfer:**
