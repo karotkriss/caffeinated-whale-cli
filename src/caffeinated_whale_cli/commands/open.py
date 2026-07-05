@@ -4,7 +4,7 @@ from rich.console import Console
 from ..utils import db_utils, vscode_utils
 from ..utils.completion_utils import complete_app_names, complete_project_names
 from ..utils.docker_utils import exec_into_container, get_project_containers, handle_docker_errors
-from .utils import ensure_containers_running
+from .utils import ensure_containers_running, resolve_bench_path
 
 stderr_console = Console(stderr=True)
 
@@ -14,11 +14,16 @@ def open_bench(
     project_name: str = typer.Argument(
         ..., help="The Docker Compose project name to open.", autocompletion=complete_project_names
     ),
-    bench_path: str = typer.Option(
+    bench: str = typer.Option(
+        None,
+        "--bench",
+        help="Which bench to open: its numeric index or label (from 'cwcli inspect').",
+    ),
+    bench_path: str | None = typer.Option(
         None,
         "--path",
         "-p",
-        help="Path inside the container to open (uses cached bench path from inspect if not specified)",
+        help="Explicit bench directory inside the container (lower-level alternative to --bench).",
     ),
     app: str = typer.Option(
         None,
@@ -47,6 +52,9 @@ def open_bench(
         "--docker",
         help="Open with Docker exec (skips interactive prompt)",
     ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Auto-start stopped containers without prompting."
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -65,8 +73,14 @@ def open_bench(
         )
         raise typer.Exit(code=1)
 
-    # Ensure containers are running, prompt user if not
-    ensure_containers_running(project_name, require_running=True, verbose=verbose)
+    # Ensure containers are running, prompt user if not (auto-start with --yes)
+    ensure_containers_running(project_name, require_running=True, verbose=verbose, auto_start=yes)
+
+    # Resolve which bench to open BEFORE the spinner so any selector error prints
+    # cleanly. Returns None only when nothing is cached, in which case the
+    # inspect-then-default fallback below runs; a multi-bench project with no
+    # --bench/--path errors here with the bench list.
+    bench_path = resolve_bench_path(project_name, bench, bench_path, verbose=verbose)
 
     # Single spinner that stays at the bottom and updates its message
     with stderr_console.status(
@@ -97,21 +111,8 @@ def open_bench(
 
         container_name = frappe_container.name
 
-        # Get bench path from cache if not provided
-        if not bench_path:
-            status.update("[bold green]Looking up bench path...[/bold green]")
-            cached_data = db_utils.get_cached_project_data(project_name)
-            if cached_data and cached_data.get("bench_instances"):
-                # Use the first bench instance path
-                bench_path = cached_data["bench_instances"][0]["path"]
-                if verbose:
-                    stderr_console.print(
-                        f"[dim]VERBOSE: Using cached bench path: {bench_path}[/dim]"
-                    )
-            else:
-                # No cache found, need to run inspect
-                # Exit the spinner context before running inspect (it has its own spinner)
-                pass  # Will handle this outside the spinner context
+        # bench_path was resolved above (--bench/--path/single bench). If it is still
+        # None here, nothing was cached, so the inspect fallback below populates it.
 
         # Detect VS Code installations
         status.update("[bold green]Detecting VS Code installations...[/bold green]")
@@ -140,12 +141,14 @@ def open_bench(
                 no_refresh=False,
                 show_apps=False,
                 interactive=False,
+                yes=False,
             )
 
-            # Try to get cached data again
-            cached_data = db_utils.get_cached_project_data(project_name)
-            if cached_data and cached_data.get("bench_instances"):
-                bench_path = cached_data["bench_instances"][0]["path"]
+            # Re-resolve now that inspect has populated the cache. This applies the
+            # same --bench/single/multi rules (so a freshly-inspected multi-bench
+            # project still errors rather than silently picking the first bench).
+            bench_path = resolve_bench_path(project_name, bench, None, verbose=verbose)
+            if bench_path:
                 if verbose:
                     stderr_console.print(
                         f"[dim]VERBOSE: Using cached bench path from inspect: {bench_path}[/dim]"
@@ -156,6 +159,8 @@ def open_bench(
                 stderr_console.print(
                     f"[yellow]Warning: Could not detect bench path. Using default: {bench_path}[/yellow]"
                 )
+        except typer.Exit:
+            raise
         except Exception as e:
             # Inspect failed, use default
             bench_path = "/workspace/frappe-bench"

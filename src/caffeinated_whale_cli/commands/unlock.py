@@ -6,7 +6,7 @@ from ..utils import db_utils
 from ..utils.completion_utils import complete_project_names, complete_site_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import get_project_containers, handle_docker_errors
-from .utils import ensure_containers_running
+from .utils import ensure_containers_running, resolve_bench_path
 
 
 @handle_docker_errors
@@ -21,11 +21,19 @@ def unlock(
         help="Site name to unlock. If not provided, uses the default site from common_site_config.",
         autocompletion=complete_site_names,
     ),
+    bench: str = typer.Option(
+        None,
+        "--bench",
+        help="Which bench to target: its numeric index or label (from 'cwcli inspect').",
+    ),
     bench_path: str = typer.Option(
         None,
         "--path",
         "-p",
-        help="Path to the bench directory inside the container (uses cached path from inspect if not specified).",
+        help="Explicit bench directory inside the container (lower-level alternative to --bench).",
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Auto-start stopped containers without prompting."
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output."),
 ):
@@ -41,8 +49,8 @@ def unlock(
         cwcli unlock my-project --site example.com
         cwcli unlock my-project  # Uses default site
     """
-    # Ensure containers are running, prompt user if not
-    ensure_containers_running(project_name, require_running=True, verbose=verbose)
+    # Ensure containers are running, prompt user if not (auto-start with --yes)
+    ensure_containers_running(project_name, require_running=True, verbose=verbose, auto_start=yes)
 
     containers = get_project_containers(project_name)
     if not containers:
@@ -59,19 +67,18 @@ def unlock(
         )
         raise typer.Exit(code=1)
 
-    # Get bench path from cache or use provided path
-    if not bench_path:
-        cached_data = db_utils.get_cached_project_data(project_name)
-        if cached_data and cached_data.get("bench_instances"):
-            bench_path = cached_data["bench_instances"][0]["path"]
-            if verbose:
-                stderr_console.print(f"[dim]Using cached bench path: {bench_path}[/dim]")
-        else:
-            # No cache found, use default
-            bench_path = "/workspace/frappe-bench"
-            stderr_console.print(
-                f"[yellow]Warning:[/yellow] No cached bench path found. Using default: {bench_path}"
-            )
+    # Resolve which bench to unlock (--bench/--path, else the single bench, else
+    # error on ambiguity). Falls back to the default path only when nothing is cached.
+    resolved = resolve_bench_path(project_name, bench, bench_path, verbose=verbose)
+    if resolved:
+        bench_path = resolved
+        if verbose:
+            stderr_console.print(f"[dim]Using bench path: {bench_path}[/dim]")
+    else:
+        bench_path = "/workspace/frappe-bench"
+        stderr_console.print(
+            f"[yellow]Warning:[/yellow] No cached bench path found. Using default: {bench_path}"
+        )
 
     # Get default site if not provided
     if not site:
