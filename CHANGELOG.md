@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.34.0] - 2026-07-05
+
+### Added
+- **Multi-bench support** - A single project can hold more than one bench directory; you can now address an individual bench by numeric index or a durable label
+  - `--bench <index|label>` selector on `run`, `backup`, `update`, `open`, `unlock`, `restore`, and `start`
+  - `inspect` shows each bench with its numeric index (e.g. `Bench [1] at /workspace/frappe-bench-2`) and any label; the index is positional while a label is a stable handle
+- **`label` command** - Assign, clear, or list per-bench labels for a project
+  - `cwcli label <project>` lists the benches with their indices and labels (read-only)
+  - `cwcli label <project> <selector> <new-label>` sets a label; `--clear` removes it
+  - Labels are stored in both the cache and a marker file inside the bench, so `cwcli inspect --update` rebuilds them even after the cache is cleared
+- **`inspect` command** - `-i`/`--interactive` now prompts for a durable label per bench and persists it (cache + marker), and `-y`/`--yes` auto-starts stopped containers without prompting
+- **`restore` command** - `--no-migrate` flag to skip the post-restore `bench migrate` and instance restart
+- **`--yes`/`-y` flag** - Added to `run`, `backup`, `update`, `open`, and `unlock` to auto-start stopped containers without prompting, to `config cache clear --all` to skip its confirmation, and to `start` to auto-confirm stopping conflicting projects
+
+### Changed
+- **Multi-bench data commands** - When a project has more than one bench and no `--bench`/`--path` is given, `run`, `backup`, `update`, `open`, `unlock`, and `restore` now stop and list the benches instead of silently operating on the first one
+  - `start` keeps working by running `bench start` in the first bench and printing a note listing the others; pass `--bench` to start a different one
+  - `-p`/`--path` remains an escape hatch for an explicit bench directory and cannot be combined with `--bench`
+- **Default site resolution** - `backup`, `restore`, and `unlock` now resolve the default site from `sites/currentsite.txt` (written by `bench use`) when `common_site_config.json` has no `default_site` key, and `inspect` marks `(default)` from either source
+- **`restore` command** - After a successful restore, runs `bench migrate` and restarts the instance so the restored database is brought up to the code's schema and the app comes back up cleanly (skip with `--no-migrate`; a failed migrate is surfaced and exits non-zero but does not undo the restore)
+  - `--no-recache` is now a deprecated no-op: the missing-apps check reads app availability live from the bench instead of the cache
+
+### Fixed
+- **`restore` command** - `--receive` mode now passes the full backup path to `bench restore`, fixing the "Invalid path" failure when restoring on Frappe `version-14`
+  - Interactive MariaDB credential prompts (username and password) are now collected correctly instead of being skipped or read as empty after the confirmation prompt
+  - Restored the warning when the selected backup needs apps this bench does not have, now read from the backup's own database dump so a missing app is caught before the restore
+- **`inspect` command** - No longer mistakes `sites/currentsite.txt` for a site (which caused a "Site currentsite.txt does not exist!" error); sites are detected by looking for a real site directory rather than filtering known non-site names
+
 ## [0.33.0] - 2026-07-04
 
 ### Added
