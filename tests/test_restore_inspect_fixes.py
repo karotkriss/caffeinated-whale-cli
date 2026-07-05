@@ -287,6 +287,31 @@ class TestMariadbCredentialModes:
         user, pw = restore_mod._prompt_mariadb_credentials(None, "flagpw")
         assert user == "root" and pw == "flagpw"
 
+    def test_stdin_is_flushed_before_password_prompt(self, monkeypatch):
+        # Root-cause guard: the stray Enter left by a preceding confirm is drained
+        # right before the password prompt so it cannot be read as an empty
+        # password. This must hold even when --mariadb-root-username is passed (the
+        # username prompt is skipped), which was the reintroduced-bug scenario.
+        self._tty(monkeypatch, True)
+        events = []
+        monkeypatch.setattr(restore_mod, "_flush_stdin_buffer", lambda: events.append("flush"))
+
+        def fake_password(msg):
+            events.append("password")
+            return SimpleNamespace(ask=lambda: "s3cret")
+
+        monkeypatch.setattr(restore_mod.questionary, "password", fake_password)
+        # Username supplied by flag -> username prompt skipped; the flush must still
+        # run and it must run BEFORE the password prompt.
+        user, pw = restore_mod._prompt_mariadb_credentials("root", None)
+        assert (user, pw) == ("root", "s3cret")
+        assert events == ["flush", "password"]
+
+    def test_flush_stdin_buffer_is_noop_off_tty(self, monkeypatch):
+        # A non-TTY (or missing termios) must be a safe no-op, never raising.
+        monkeypatch.setattr(restore_mod.sys.stdin, "isatty", lambda: False)
+        restore_mod._flush_stdin_buffer()  # does not raise
+
 
 # ===================================================== #3 site detection (inspect)
 
@@ -429,23 +454,17 @@ class TestMissingAppsCheck:
     """#5: compare the apps the BACKUP needs (from its dump) against the bench's
     available apps - the captain's "the backup uses apps the bench does NOT have"."""
 
-    def _no_recache(self, monkeypatch):
-        monkeypatch.setattr(restore_mod.cache, "recache_project", lambda *a, **k: True)
-
-    def test_warns_when_backup_app_absent_from_bench(self, monkeypatch):
-        self._no_recache(monkeypatch)
+    def test_warns_when_backup_app_absent_from_bench(self):
         # Backup was taken on a site with [frappe, widgets]; bench only has frappe.
         c = _AppsContainer(available=["frappe"], dump_apps=["frappe", "widgets"])
         missing = restore_mod.check_missing_apps(c, "proj", BENCH_PATH, DB_PATH, no_recache=True)
         assert missing == ["widgets"]
 
-    def test_no_warning_when_all_present(self, monkeypatch):
-        self._no_recache(monkeypatch)
+    def test_no_warning_when_all_present(self):
         c = _AppsContainer(available=["frappe", "widgets"], dump_apps=["frappe", "widgets"])
         assert restore_mod.check_missing_apps(c, "proj", BENCH_PATH, DB_PATH, no_recache=True) == []
 
-    def test_fail_safe_when_backup_apps_unreadable(self, monkeypatch):
-        self._no_recache(monkeypatch)
+    def test_fail_safe_when_backup_apps_unreadable(self):
         # Dump marker not found -> cannot tell -> no false warning.
         c = _AppsContainer(available=["frappe"], dump_apps=None)
         assert restore_mod.check_missing_apps(c, "proj", BENCH_PATH, DB_PATH, no_recache=True) == []
@@ -462,7 +481,7 @@ class TestPostRestoreMigrateAndRestart:
     """#6: a successful restore is followed by bench migrate then an instance restart."""
 
     def _patch(self, monkeypatch):
-        calls = {"start": []}
+        calls = {"start": [], "start_kwargs": []}
         monkeypatch.setattr(restore_mod, "TipSpinner", _NullSpinner)
         monkeypatch.setattr(restore_mod.config_utils, "get_show_tips", lambda: False)
         monkeypatch.setattr(restore_mod.console, "print", lambda *a, **k: None)
@@ -471,6 +490,7 @@ class TestPostRestoreMigrateAndRestart:
 
         def fake_start(project_name, verbose=False, **k):
             calls["start"].append(project_name)
+            calls["start_kwargs"].append(k)
             return "/tmp/bench-proj.log"
 
         monkeypatch.setattr(start_mod, "_start_project", fake_start)
@@ -494,6 +514,19 @@ class TestPostRestoreMigrateAndRestart:
         assert migrates[0]["workdir"] == BENCH_PATH
         # ...then the instance was restarted.
         assert calls["start"] == ["proj"]
+
+    def test_restart_targets_the_restored_bench_not_the_first(self, monkeypatch):
+        # A multi-bench restore into a NON-first bench must restart THAT bench: the
+        # restored bench_path is threaded through as an explicit override so
+        # _start_project never falls back to resolve_bench_path's first-bench guess.
+        calls = self._patch(monkeypatch)
+        other_bench = "/workspace/second-bench"
+        container = RecordingContainer(sites={SITE: ["frappe"]}, migrate_exit=0)
+        restore_mod._post_restore_migrate_and_restart(
+            container, "proj", other_bench, SITE, verbose=False
+        )
+        assert calls["start"] == ["proj"]
+        assert calls["start_kwargs"][0].get("bench_path_override") == other_bench
 
     def test_migrate_failure_still_restarts_and_returns_false(self, monkeypatch):
         calls = self._patch(monkeypatch)

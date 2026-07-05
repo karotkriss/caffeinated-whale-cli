@@ -238,6 +238,44 @@ class TestStartInspectExitPropagates:
         )
 
 
+class TestStartProjectBenchPathOverride:
+    """An explicit ``bench_path_override`` is used VERBATIM: ``_start_project`` must
+    NOT consult ``resolve_bench_path`` (which would guess the first bench on a
+    multi-bench project) - so the post-restore restart hits the SAME bench that was
+    just restored/migrated."""
+
+    def test_override_is_used_and_resolve_is_skipped(self, monkeypatch):
+        monkeypatch.setattr(docker_utils.shutil, "which", lambda _n: "/usr/bin/docker")
+        monkeypatch.setattr(
+            docker_utils.docker, "from_env", lambda: type("C", (), {"ping": lambda s: True})()
+        )
+        monkeypatch.setattr(start_mod, "get_project_containers", lambda name: [_RunningFrappe()])
+
+        def _fail_resolve(*a, **k):
+            raise AssertionError("resolve_bench_path must not be called when an override is given")
+
+        monkeypatch.setattr(cmd_utils, "resolve_bench_path", _fail_resolve)
+
+        captured = {"cmds": []}
+
+        def fake_run(cmd, **k):
+            captured["cmds"].append(cmd)
+            return type("R", (), {"returncode": 0})()
+
+        monkeypatch.setattr(start_mod.subprocess, "run", fake_run)
+
+        override = "/workspace/second-bench"
+        log_file = start_mod._start_project(
+            "proj", verbose=False, status=None, bench_path_override=override
+        )
+        assert log_file == "/tmp/bench-proj.log"
+        # The `bench start` command cd's into the override path, verbatim (match the
+        # nohup launch, not the `pkill -f 'bench start'` cleanup that precedes it).
+        bench_cmds = [c for c in captured["cmds"] if any("nohup bench start" in str(t) for t in c)]
+        assert bench_cmds
+        assert any(f"cd {override} &&" in str(t) for t in bench_cmds[0])
+
+
 # ------------------------------------------------ start multi-project loop
 
 

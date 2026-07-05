@@ -8,7 +8,7 @@ import questionary
 import typer
 from questionary import Style
 
-from ..utils import bench_sites, cache, config_utils, db_utils
+from ..utils import bench_sites, config_utils, db_utils
 from ..utils.completion_utils import complete_project_names, complete_site_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import get_project_containers, handle_docker_errors
@@ -81,6 +81,25 @@ def transform_site_name_to_backup_format(site_name: str) -> str:
     return site_name.replace(".", "_")
 
 
+def _flush_stdin_buffer() -> None:
+    """Discard any input already buffered on stdin (best-effort, TTY-only).
+
+    Called right before an interactive secret prompt so a stray keystroke left in
+    the terminal input buffer by a PRECEDING prompt - e.g. the Enter that answered
+    the "Are you sure you want to restore?" confirmation - cannot be swallowed as an
+    empty password. Guarded by ``isatty`` and wrapped in a broad ``except`` so a
+    non-TTY, or a platform without ``termios`` (Windows), is a safe no-op.
+    """
+    try:
+        if not sys.stdin.isatty():
+            return
+        import termios
+
+        termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+    except Exception:
+        pass
+
+
 def _prompt_mariadb_credentials(
     mariadb_root_username: str | None,
     mariadb_root_password: str | None,
@@ -94,7 +113,11 @@ def _prompt_mariadb_credentials(
       and the password, actually collecting the input. A blank username keeps the
       ``root`` default; a blank password is an error (a restore needs the real
       root password). This fixes the normal path silently skipping the username
-      prompt and never collecting the password.
+      prompt and never collecting the password. The stray Enter that a preceding
+      confirmation leaves in the input buffer is drained (see
+      :func:`_flush_stdin_buffer`) right before the password prompt, so the
+      password prompt always waits for real input regardless of which credential
+      flags were passed - the username prompt is no longer load-bearing for this.
     - **Non-interactive (flags / non-TTY):** use the ``--mariadb-root-*`` flags.
       The username has a safe default (``root``) so it may be omitted, but the
       password is a secret with no default: a non-TTY WITHOUT
@@ -123,6 +146,9 @@ def _prompt_mariadb_credentials(
     # Password: a required secret with no default.
     if not mariadb_root_password:
         if is_tty:
+            # Drain any buffered input (e.g. the Enter that answered the preceding
+            # restore confirmation) so it cannot be consumed as an empty password.
+            _flush_stdin_buffer()
             try:
                 mariadb_root_password = questionary.password("MariaDB root password:").ask()
             except (KeyboardInterrupt, EOFError):
@@ -222,7 +248,10 @@ def _post_restore_migrate_and_restart(
 
     console.print()
     console.print("[bold cyan]Restarting instance...[/bold cyan]")
-    log_file = _start_project(project_name, verbose=verbose)
+    # Restart the SAME bench that was just migrated/restored (bench_path), never the
+    # first sorted bench: pass it as an explicit override so a multi-bench restore
+    # into a non-first bench does not kill/restart the wrong dev server.
+    log_file = _start_project(project_name, verbose=verbose, bench_path_override=bench_path)
     if log_file:
         console.print(f"[bold green]✓[/bold green] Instance restarted (logs: {log_file})")
     else:
@@ -461,30 +490,23 @@ def check_missing_apps(
     even name an app whose code is already missing (that import crashes). Available
     apps are read live from ``apps/`` so the check never depends on cache freshness.
 
+    Because both sides of the comparison are read live, this check no longer
+    touches cwcli's cache. ``no_recache`` is therefore a DEPRECATED no-op, kept
+    only so existing callers (and the ``--no-recache`` CLI flag) keep working.
+
     Args:
         frappe_container: Docker container object
-        project_name: Name of the project (used only for the optional recache)
+        project_name: Name of the project (unused; kept for signature stability)
         bench_path: Path to bench directory
         backup_db_path: Full container path to the backup's database dump
         verbose: Enable verbose output
-        no_recache: Skip re-caching cwcli's view of the project before checking
+        no_recache: Deprecated no-op (the check reads everything live; retained for
+            backward compatibility with the ``--no-recache`` flag and callers)
 
     Returns:
         Sorted list of missing app names (empty when none, or when the backup's app
         list could not be determined - fail safe, never a false warning).
     """
-    # Refresh cwcli's cached view of the project (side effect only) unless skipped.
-    if not no_recache:
-        if verbose:
-            stderr_console.print("[dim]Re-caching project to verify app availability...[/dim]")
-        if not cache.recache_project(project_name, verbose=verbose):
-            if verbose:
-                stderr_console.print(
-                    "[yellow]Warning:[/yellow] Failed to recache project. App check may be inaccurate."
-                )
-    elif verbose:
-        stderr_console.print("[dim]Using existing cache (--no-recache flag set)...[/dim]")
-
     # Apps physically present in the bench (its apps/ directory), read live.
     quoted_apps_dir = shlex.quote(f"{bench_path}/apps")
     exit_code, output = frappe_container.exec_run(["sh", "-c", f"ls -1 {quoted_apps_dir}"])
@@ -1455,7 +1477,8 @@ def restore(
     no_recache: bool = typer.Option(
         False,
         "--no-recache",
-        help="Skip re-caching project before checking for missing apps (uses existing cache).",
+        help="Deprecated no-op: the missing-apps check now reads app availability "
+        "live from the bench, so it never re-caches. Kept for backward compatibility.",
     ),
     yes: bool = typer.Option(
         False,
