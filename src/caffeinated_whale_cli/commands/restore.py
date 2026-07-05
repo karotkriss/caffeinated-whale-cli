@@ -894,7 +894,9 @@ def restore_receive_mode(
         mariadb_root_username: Optional MariaDB username
         mariadb_root_password: Optional MariaDB password
         admin_password: Optional admin password
-        no_recache: Skip re-caching before the missing-apps check
+        no_recache: Deprecated no-op (the missing-apps check reads everything
+            live from the bench and the backup dump; retained for backward
+            compatibility with the ``--no-recache`` flag)
         verbose: Enable verbose output
         yes: Skip the destructive-restore confirmation (non-interactive)
         no_migrate: Skip the post-restore ``bench migrate`` + instance restart
@@ -1424,7 +1426,8 @@ def restore(
         None,
         "--site",
         "-s",
-        help="Site name to restore. If not provided, uses the default site from common_site_config.",
+        help="Site name to restore. If not provided, uses the default site "
+        "(from common_site_config.json's default_site or sites/currentsite.txt).",
         autocompletion=complete_site_names,
     ),
     bench: str = typer.Option(
@@ -1495,7 +1498,11 @@ def restore(
     presents them in an interactive menu grouped by the target site, and
     executes the restore using 'bench restore'.
 
-    If --site is not provided, the default site from common_site_config.json will be used.
+    If --site is not provided, the default site is used, resolved from either
+    common_site_config.json's `default_site` or sites/currentsite.txt.
+
+    After a successful restore, `bench migrate` is run and the instance is
+    restarted (skip with --no-migrate).
 
     Use --send to share a backup via P2P transfer, or --receive to restore from a remote backup.
 

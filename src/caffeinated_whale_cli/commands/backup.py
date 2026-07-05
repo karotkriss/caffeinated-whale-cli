@@ -19,7 +19,8 @@ def backup(
         None,
         "--site",
         "-s",
-        help="Site name to backup. If not provided, uses the default site from common_site_config.",
+        help="Site name to backup. If not provided, uses the default site "
+        "(from common_site_config.json's default_site or sites/currentsite.txt).",
         autocompletion=complete_site_names,
     ),
     bench: str = typer.Option(
@@ -49,7 +50,8 @@ def backup(
     This command runs 'bench backup' for the specified site. By default, it backs up
     only the database. Use --with-files to include public and private files.
 
-    If --site is not provided, the default site from common_site_config.json will be used.
+    If --site is not provided, the default site is used, resolved from either
+    common_site_config.json's `default_site` or sites/currentsite.txt.
 
     Examples:
         cwcli backup my-project
