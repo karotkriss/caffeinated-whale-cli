@@ -19,6 +19,7 @@ code issues) and ``tests/test_rm_truth.py``'s tmp-filesystem approach.
 """
 
 import io
+import shlex
 import tarfile
 from unittest.mock import MagicMock
 
@@ -117,16 +118,16 @@ class FakeFrappeContainer:
             ]
             return (0, "\n".join(listing).encode())
 
-        # Fail-safe site-classification probe: a real site echoes SITE, a
-        # readable stray entry echoes NOTASITE, and an unreadable/ambiguous entry
-        # echoes AMBIGUOUS. The entry is identified by its unique config path.
+        # Fail-safe site-classification probe: the entry dir is passed as the
+        # positional arg (the last shlex token), never interpolated, so classify
+        # by that entry's basename. A real site echoes SITE, a readable stray
+        # entry NOTASITE, an unreadable/ambiguous entry AMBIGUOUS.
         if cmd.startswith("sh -c '") and "echo SITE" in cmd and "site_config.json" in cmd:
-            for site in self.sites:
-                if f"/sites/{site}/site_config.json" in cmd:
-                    return (0, b"SITE\n")
-            for entry in self.ambiguous_entries:
-                if f"/sites/{entry}/site_config.json" in cmd:
-                    return (0, b"AMBIGUOUS\n")
+            entry = shlex.split(cmd)[-1].rsplit("/", 1)[-1]
+            if entry in self.sites:
+                return (0, b"SITE\n")
+            if entry in self.ambiguous_entries:
+                return (0, b"AMBIGUOUS\n")
             return (0, b"NOTASITE\n")
 
         if cmd.startswith("sh -c 'cd ") and "bench --site " in cmd and "backup" in cmd:

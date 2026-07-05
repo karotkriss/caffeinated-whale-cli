@@ -28,6 +28,8 @@ default.
 
 from __future__ import annotations
 
+import shlex
+
 
 def list_sites(container, bench_path: str, verbose: bool = False) -> list[str] | None:
     """Return the real Frappe sites under ``{bench_path}/sites``.
@@ -42,24 +44,41 @@ def list_sites(container, bench_path: str, verbose: bool = False) -> list[str] |
     exit_code, output = container.exec_run(f"ls -1 {bench_path}/sites")
     if exit_code != 0:
         return None
+    try:
+        listing = output.decode("utf-8")
+    except (UnicodeDecodeError, AttributeError):
+        # A non-UTF-8 listing must fail safe (like read_current_site), never raise.
+        return None
+
+    # One shell probe with three positive verdicts: SITE (has site_config.json),
+    # NOTASITE (not a dir, or a readable dir with no config), AMBIGUOUS (dir exists
+    # but is unreadable so we cannot confirm). The entry path is passed as the
+    # positional argument ``$1`` (referenced only via ``$1`` in the script, never
+    # interpolated into it) and shlex-quoted, so a directory name containing quotes
+    # or shell metacharacters can neither break the quoting (defeating the fail-safe
+    # promise by raising) nor inject. docker-py shlex-splits the string command, so
+    # ``sh -c <script> sh <entry_dir>`` runs the script with ``$1 = entry_dir``.
+    probe_script = (
+        'if [ ! -d "$1" ]; then echo NOTASITE; '
+        'elif [ -f "$1/site_config.json" ]; then echo SITE; '
+        'elif [ -r "$1" ]; then echo NOTASITE; '
+        "else echo AMBIGUOUS; fi"
+    )
+    quoted_script = shlex.quote(probe_script)
 
     sites: list[str] = []
-    for entry in output.decode("utf-8").split("\n"):
+    for entry in listing.split("\n"):
         entry = entry.strip()
         if not entry:
             continue
         entry_dir = f"{bench_path}/sites/{entry}"
-        # One shell probe with three positive verdicts: SITE (has
-        # site_config.json), NOTASITE (not a dir, or a readable dir with no
-        # config), AMBIGUOUS (dir exists but is unreadable so we cannot confirm).
-        probe = (
-            f'sh -c \'if [ ! -d "{entry_dir}" ]; then echo NOTASITE; '
-            f'elif [ -f "{entry_dir}/site_config.json" ]; then echo SITE; '
-            f'elif [ -r "{entry_dir}" ]; then echo NOTASITE; '
-            f"else echo AMBIGUOUS; fi'"
-        )
+        probe = f"sh -c {quoted_script} sh {shlex.quote(entry_dir)}"
         probe_code, probe_out = container.exec_run(probe)
-        verdict = probe_out.decode("utf-8").strip() if probe_code == 0 else ""
+        try:
+            verdict = probe_out.decode("utf-8").strip() if probe_code == 0 else ""
+        except (UnicodeDecodeError, AttributeError):
+            # Can't read the verdict -> not a positive NOTASITE -> fail safe (site).
+            verdict = ""
         # Exclude ONLY on a positive NOTASITE. SITE, AMBIGUOUS, an unexpected
         # token, empty output, or a non-zero probe exit all fail closed -> site.
         if verdict != "NOTASITE":
