@@ -4,7 +4,6 @@ import sys
 import questionary
 import typer
 
-from ..utils import db_utils
 from ..utils.completion_utils import complete_project_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import get_project_containers, handle_docker_errors
@@ -19,7 +18,9 @@ from ..utils.port_utils import (
 app = typer.Typer(help="Start a Frappe project's containers.")
 
 
-def _check_port_conflicts(project_name: str, verbose: bool = False) -> bool:
+def _check_port_conflicts(
+    project_name: str, verbose: bool = False, assume_yes: bool = False
+) -> bool:
     """
     Check for port conflicts before starting a project.
 
@@ -99,14 +100,21 @@ def _check_port_conflicts(project_name: str, verbose: bool = False) -> bool:
             formatted_ports = format_port_list(ports)
             stderr_console.print(f"  • Project '{proj}': {formatted_ports}")
 
-        # Ask user if they want to stop conflicting projects
+        # Ask user if they want to stop conflicting projects (auto-yes skips the prompt)
         try:
             for conflicting_project in conflicting_projects:
-                answer = questionary.confirm(
-                    f"Stop project '{conflicting_project}' to free up its ports?",
-                    default=True,
-                    auto_enter=False,
-                ).ask()
+                if assume_yes:
+                    console.print(
+                        f"[dim]Stopping conflicting project '{conflicting_project}' "
+                        "(--yes).[/dim]"
+                    )
+                    answer = True
+                else:
+                    answer = questionary.confirm(
+                        f"Stop project '{conflicting_project}' to free up its ports?",
+                        default=True,
+                        auto_enter=False,
+                    ).ask()
 
                 if answer:
                     # Stop the conflicting project
@@ -215,7 +223,7 @@ def _check_port_conflicts(project_name: str, verbose: bool = False) -> bool:
 
 
 @handle_docker_errors
-def _start_project(project_name: str, verbose: bool = False, status=None):
+def _start_project(project_name: str, verbose: bool = False, status=None, bench_selector=None):
     """
     The core logic for starting a single project's containers.
 
@@ -255,13 +263,16 @@ def _start_project(project_name: str, verbose: bool = False, status=None):
         )
         return
 
-    # Get bench path from cache
-    cached_data = db_utils.get_cached_project_data(project_name)
-    bench_path = None
+    # Resolve which bench to run `bench start` in. Unlike the data commands, `start`
+    # KEEPS WORKING on a multi-bench project when no --bench is given: it starts the
+    # first sorted bench and prints a note listing the others (on_ambiguous="first").
+    from .utils import resolve_bench_path
 
-    if cached_data and cached_data.get("bench_instances"):
-        bench_path = cached_data["bench_instances"][0]["path"]
-    else:
+    bench_path = resolve_bench_path(
+        project_name, bench_selector, None, verbose=verbose, on_ambiguous="first"
+    )
+
+    if not bench_path:
         # No cache found, run inspect
         if verbose:
             stderr_console.print(
@@ -285,16 +296,21 @@ def _start_project(project_name: str, verbose: bool = False, status=None):
                 no_refresh=False,
                 show_apps=False,
                 interactive=False,
+                yes=False,
             )
 
-            # Try to get cached data again
-            cached_data = db_utils.get_cached_project_data(project_name)
-            if cached_data and cached_data.get("bench_instances"):
-                bench_path = cached_data["bench_instances"][0]["path"]
-                if verbose:
-                    stderr_console.print(
-                        f"[dim]VERBOSE: Using cached bench path from inspect: {bench_path}[/dim]"
-                    )
+            # Re-resolve now that inspect has populated the cache.
+            bench_path = resolve_bench_path(
+                project_name, bench_selector, None, verbose=verbose, on_ambiguous="first"
+            )
+            if bench_path and verbose:
+                stderr_console.print(
+                    f"[dim]VERBOSE: Using cached bench path from inspect: {bench_path}[/dim]"
+                )
+        except typer.Exit:
+            # A multi-bench ambiguity (or any deliberate exit) from inspect must
+            # propagate, not be swallowed as a fall-back-to-default (mirrors open/update).
+            raise
         except Exception as e:
             if verbose:
                 stderr_console.print(f"[dim]VERBOSE: Inspect error: {e}[/dim]")
@@ -372,6 +388,18 @@ def start(
         "-v",
         help="Enable verbose diagnostic output.",
     ),
+    bench: str = typer.Option(
+        None,
+        "--bench",
+        help="Which bench runs 'bench start': its numeric index or label. "
+        "Defaults to the first bench (a note lists the rest) in a multi-bench project.",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Auto-confirm stopping conflicting projects to free their ports.",
+    ),
     # Accept zero, one, or more project names. Default is None.
     project_name: list[str] = typer.Argument(
         None,
@@ -384,16 +412,32 @@ def start(
     """
     project_names_to_process = []
 
-    # Handle -v or --verbose in remaining args
+    # A variadic Argument greedily eats options placed AFTER the project name, so
+    # recover -v/--verbose, -y/--yes, and --bench <value> from the name list (the
+    # same forgiveness rm applies to its trailing flags).
     actual_verbose = verbose
+    actual_yes = yes
+    actual_bench = bench
     filtered_project_names = []
 
     if project_name:
-        for name in project_name:
-            if name in ("-v", "--verbose"):
+        tokens = list(project_name)
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            if token in ("-v", "--verbose"):
                 actual_verbose = True
+            elif token in ("-y", "--yes"):
+                actual_yes = True
+            elif token == "--bench":
+                if i + 1 < len(tokens):
+                    actual_bench = tokens[i + 1]
+                    i += 1
+            elif token.startswith("--bench="):
+                actual_bench = token.split("=", 1)[1]
             else:
-                filtered_project_names.append(name)
+                filtered_project_names.append(token)
+            i += 1
         project_names_to_process.extend(filtered_project_names)
 
     if not sys.stdin.isatty():
@@ -413,7 +457,7 @@ def start(
     for name in project_names_to_process:
         # Check for port conflicts BEFORE starting containers
         try:
-            _check_port_conflicts(name, verbose=actual_verbose)
+            _check_port_conflicts(name, verbose=actual_verbose, assume_yes=actual_yes)
         except typer.Exit as e:
             # Exit code 0 = user cancelled (Ctrl+C), should exit entire operation
             # Exit code 1 = port conflict couldn't be resolved, skip this project
@@ -425,10 +469,21 @@ def start(
                 console.print(f"[yellow]Skipping project '{name}' due to port conflicts.[/yellow]")
                 continue
 
-        with stderr_console.status(
-            f"[bold green]Starting '{name}'...[/bold green]", spinner="dots"
-        ) as status:
-            log_file = _start_project(name, verbose=actual_verbose, status=status)
+        try:
+            with stderr_console.status(
+                f"[bold green]Starting '{name}'...[/bold green]", spinner="dots"
+            ) as status:
+                log_file = _start_project(
+                    name, verbose=actual_verbose, status=status, bench_selector=actual_bench
+                )
+        except typer.Exit as e:
+            # Exit code 0 = user cancelled (Ctrl+C), should exit entire operation
+            # Any other exit code = this project's bench could not be started, skip it
+            if e.exit_code == 0:
+                raise
+            else:
+                console.print(f"[yellow]Skipping project '{name}': could not start bench.[/yellow]")
+                continue
 
         # Print outside spinner context
         console.print(f"Instance '{name}' started.")

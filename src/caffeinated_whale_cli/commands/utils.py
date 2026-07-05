@@ -2,12 +2,16 @@
 Shared utility functions for command implementations.
 
 This module provides general utilities for ensuring containers are running
-before executing commands.
+before executing commands, resolving a ``--bench`` selector to a bench path, and
+handling ``--yes`` confirmations consistently.
 """
+
+import sys
 
 import questionary
 import typer
 
+from ..utils import bench_labels, db_utils
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import get_frappe_container
 
@@ -111,6 +115,136 @@ def ensure_containers_running(
         return True
 
     return False
+
+
+def resolve_bench_path(
+    project_name: str,
+    bench_selector: str | None,
+    path_override: str | None,
+    *,
+    verbose: bool = False,
+    on_ambiguous: str = "error",
+) -> str | None:
+    """Resolve which bench a command should operate on, honoring ``--bench``/``--path``.
+
+    This is the single, shared replacement for the ad-hoc "use ``--path`` if given,
+    else cached ``bench_instances[0]``, else a hardcoded default" logic that used to
+    be copy-pasted across the bench-operating commands (and which silently picked
+    an arbitrary bench in a multi-bench project).
+
+    Precedence:
+      1. ``path_override`` (``--path``) - the explicit low-level escape hatch. Using
+         it together with ``--bench`` is an error (they specify the same thing two
+         ways).
+      2. ``bench_selector`` (``--bench <number|label>``) - resolved against the
+         cached benches via :func:`bench_labels.resolve_bench`. No match -> a clear
+         error listing every bench.
+      3. Neither given -> the *default* bench:
+         - single-bench project: that bench's path,
+         - multi-bench project: with ``on_ambiguous="error"`` (the data-op default)
+           this errors and lists the benches so the user picks one with ``--bench``;
+           with ``on_ambiguous="first"`` (used by ``start``) it returns the first
+           bench and prints a note, so ``cwcli start`` keeps working,
+         - no cached benches at all: returns ``None`` so the caller can fall back to
+           its own behavior (run inspect / use a hardcoded default).
+
+    Returns the resolved bench path, or ``None`` only in the no-cache case. Raises
+    ``typer.Exit(1)`` on a conflict, an unresolved selector, or an ambiguous
+    multi-bench default under ``on_ambiguous="error"``.
+    """
+    if path_override and bench_selector:
+        stderr_console.print("[bold red]Error:[/bold red] Use either --bench or --path, not both.")
+        raise typer.Exit(code=1)
+
+    if path_override:
+        return path_override
+
+    cached_data = db_utils.get_cached_project_data(project_name)
+    benches = (cached_data or {}).get("bench_instances") or []
+
+    if bench_selector is not None:
+        chosen = bench_labels.resolve_bench(benches, bench_selector)
+        if chosen is None:
+            stderr_console.print(
+                f"[bold red]Error:[/bold red] No bench '{bench_selector}' in project "
+                f"'{project_name}'."
+            )
+            if benches:
+                stderr_console.print("Available benches (address with --bench <index|label>):")
+                stderr_console.print(bench_labels.format_bench_list(benches))
+            else:
+                stderr_console.print(
+                    f"[dim]No benches are cached. Run 'cwcli inspect {project_name}' first.[/dim]"
+                )
+            raise typer.Exit(code=1)
+        chosen_path: str = chosen["path"]
+        return chosen_path
+
+    # No explicit selector: derive the default bench.
+    if len(benches) == 1:
+        path: str = benches[0]["path"]
+        if verbose:
+            stderr_console.print(f"[dim]Using the only bench: {path}[/dim]")
+        return path
+
+    if len(benches) == 0:
+        # No cache to resolve against; let the caller fall back (inspect/default).
+        return None
+
+    # Multiple benches, no selector.
+    if on_ambiguous == "first":
+        first_path: str = benches[0]["path"]
+        stderr_console.print(
+            f"[yellow]Note:[/yellow] project '{project_name}' has multiple benches; "
+            f"using [green]{first_path}[/green]. Select another with --bench <index|label>:"
+        )
+        stderr_console.print(bench_labels.format_bench_list(benches))
+        return first_path
+
+    stderr_console.print(
+        f"[bold red]Error:[/bold red] project '{project_name}' has multiple benches; "
+        "specify one with --bench <index|label>:"
+    )
+    stderr_console.print(bench_labels.format_bench_list(benches))
+    raise typer.Exit(code=1)
+
+
+def confirm_or_exit(
+    prompt: str,
+    *,
+    assume_yes: bool,
+    refuse_message: str,
+    default: bool = False,
+    cancel_message: str = "Operation cancelled.",
+) -> None:
+    """Gate a destructive action behind a confirmation, honoring ``--yes``.
+
+    Mirrors the established ``restore``/``rm`` contract so every ``--yes`` behaves
+    the same way:
+      - ``assume_yes`` -> proceed without prompting;
+      - no TTY and not ``assume_yes`` -> refuse and ``exit(1)`` (never silently
+        proceed on a destructive op driven non-interactively);
+      - interactive TTY -> ask; a declined confirm or Ctrl-C/EOF exits non-zero.
+
+    Returns normally only when the action is approved.
+    """
+    if assume_yes:
+        console.print("[dim]Proceeding without confirmation (--yes).[/dim]")
+        return
+
+    if not sys.stdin.isatty():
+        stderr_console.print(f"[bold red]Error:[/bold red] {refuse_message}")
+        raise typer.Exit(code=1)
+
+    try:
+        answer = questionary.confirm(prompt, default=default).ask()
+    except (KeyboardInterrupt, EOFError):
+        stderr_console.print(f"\n[yellow]{cancel_message}[/yellow]")
+        raise typer.Exit(code=1) from None
+
+    if not answer:
+        stderr_console.print(f"[yellow]{cancel_message}[/yellow]")
+        raise typer.Exit(code=1)
 
 
 def _start_containers_for_command(project_name: str, verbose: bool = False):

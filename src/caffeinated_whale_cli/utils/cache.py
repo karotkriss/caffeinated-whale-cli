@@ -45,6 +45,7 @@ def recache_project(project_name: str, verbose: bool = False) -> bool:
             no_refresh=False,
             show_apps=False,
             interactive=False,
+            yes=False,
             prompt_to_start=False,
         )
         return True
