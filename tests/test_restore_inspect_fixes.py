@@ -287,30 +287,34 @@ class TestMariadbCredentialModes:
         user, pw = restore_mod._prompt_mariadb_credentials(None, "flagpw")
         assert user == "root" and pw == "flagpw"
 
-    def test_stdin_is_flushed_before_password_prompt(self, monkeypatch):
-        # Root-cause guard: the stray Enter left by a preceding confirm is drained
-        # right before the password prompt so it cannot be read as an empty
-        # password. This must hold even when --mariadb-root-username is passed (the
-        # username prompt is skipped), which was the reintroduced-bug scenario.
+    def test_password_prompt_collects_input_with_username_flag(self, monkeypatch):
+        # Root-cause guard for the reintroduced-bug scenario: with
+        # --mariadb-root-username supplied by flag the username prompt is skipped,
+        # yet the password prompt must still fire and collect the real password.
+        # (The stray-Enter-from-the-confirm problem is fixed at its root by
+        # auto_enter=False on the restore confirms - see the confirm guard below -
+        # so no stdin-flush helper is involved here.)
         self._tty(monkeypatch, True)
         events = []
-        monkeypatch.setattr(restore_mod, "_flush_stdin_buffer", lambda: events.append("flush"))
 
         def fake_password(msg):
             events.append("password")
             return SimpleNamespace(ask=lambda: "s3cret")
 
         monkeypatch.setattr(restore_mod.questionary, "password", fake_password)
-        # Username supplied by flag -> username prompt skipped; the flush must still
-        # run and it must run BEFORE the password prompt.
         user, pw = restore_mod._prompt_mariadb_credentials("root", None)
         assert (user, pw) == ("root", "s3cret")
-        assert events == ["flush", "password"]
+        assert events == ["password"]
 
-    def test_flush_stdin_buffer_is_noop_off_tty(self, monkeypatch):
-        # A non-TTY (or missing termios) must be a safe no-op, never raising.
-        monkeypatch.setattr(restore_mod.sys.stdin, "isatty", lambda: False)
-        restore_mod._flush_stdin_buffer()  # does not raise
+    def test_restore_confirms_disable_auto_enter(self):
+        # Root fix: every questionary.confirm in the restore flow must pass
+        # auto_enter=False so it consumes its own trailing Enter and cannot leave a
+        # stray keystroke for the following password prompt to swallow as empty.
+        import inspect
+
+        src = inspect.getsource(restore_mod)
+        assert src.count("questionary.confirm(") == 4
+        assert src.count("auto_enter=False") == 4
 
 
 # ===================================================== #3 site detection (inspect)
