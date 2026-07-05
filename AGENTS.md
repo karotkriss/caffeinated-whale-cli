@@ -207,11 +207,14 @@ The correct question is "does the BACKUP need apps this bench lacks" (the captai
 `check_missing_apps(frappe_container, project_name, bench_path, backup_db_path, ...)` (the `site` arg became `backup_db_path`) compares those against the bench's apps read LIVE from `ls {bench_path}/apps`, and returns `backup_apps - available_apps`.
 It fails safe: an unreadable dump / absent marker yields `None` -> no warning (never a false positive).
 Both call sites pass the backup's container path (`selected_backup["database"]["full_path"]` on the normal path; `{backup_dir}/{database_file.name}` on the receive path).
+Because both sides are now read LIVE (the backup's dump and `ls apps`), the check no longer touches cwcli's cache, so `check_missing_apps` dropped its `cache.recache_project` call and `--no-recache` became a DEPRECATED no-op - the flag (and its `no_recache` param) is kept only for backward compatibility with existing callers.
 
 ### Post-restore: migrate then restart (`_post_restore_migrate_and_restart`)
 
 After a successful `bench restore`, both paths run `bench --site <site> migrate` then restart the instance (via `_start_project`, which kills the old `bench start` and relaunches it - the same app restart `cwcli restart` does).
+The restart targets the SAME bench that was just restored via `_start_project`'s new `bench_path_override` (used verbatim, bypassing the `resolve_bench_path` guessing), so a multi-bench restore into a non-first bench restarts the right dev server, never bench 0.
 A failed migrate does NOT undo the restore; it is surfaced and the restart still runs, but the function returns False so the caller exits non-zero.
+A Docker/API exception raised by the migrate `exec_run` is treated as a failed-but-reported migrate (`exit_code=1`) that STILL continues to the restart, so an exec error can never skip bringing the instance back up.
 `--no-migrate` skips the whole post-restore step.
 
 Regression coverage: `tests/test_restore_inspect_fixes.py` (all six) and `tests/test_bench_labels`-style DB tests; `tests/test_inspect_partial_refresh.py` and `tests/test_restore_safety.py` fakes were updated for the shared site probe and the `no_migrate` param.
