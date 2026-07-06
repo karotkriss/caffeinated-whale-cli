@@ -77,7 +77,7 @@ It also triggers on pushes to `master`, on published GitHub releases, and on man
 **Steps:**
 1. Extract and verify version from `__init__.py`, `pyproject.toml`, and git tag
 2. Build package (`uv build`)
-3. Publish to PyPI
+3. Publish to PyPI (`uv publish --trusted-publishing automatic --check-url https://pypi.org/simple/`, authenticated over GitHub OIDC - no token secret)
 4. Create GitHub release (if tag-triggered)
 
 **Trigger a release:**
@@ -104,16 +104,20 @@ See [Chores Guide](./chores.md) for the full release process.
 
 ## Setup (First Time)
 
-### Required: PyPI API Token
+### Required: PyPI Trusted Publisher
 
-1. Create token at https://pypi.org/manage/account/token/
-2. Add to GitHub: **Settings > Secrets and variables > Actions > Secrets**
-3. Name: `PYPI_API_TOKEN`
-4. Value: `pypi-AgEI...` (your token)
+The release workflow publishes with `uv publish --trusted-publishing automatic`, authenticating over GitHub OIDC - there is **no** `PYPI_API_TOKEN` secret to manage. Register a [trusted publisher](https://docs.pypi.org/trusted-publishers/) for the project on PyPI (**Manage project > Publishing**):
 
-### Optional: GitHub Environment
+- Owner: `karotkriss`
+- Repository: `caffeinated-whale-cli`
+- Workflow: `release.yml`
+- Environment: `pypi`
 
-Create a `pypi` environment for additional protection:
+Until this publisher is registered, `uv publish` fails with an auth error; CI cannot create it (captain-only, one-time step).
+
+### Required: GitHub Environment
+
+Trusted publishing binds the OIDC token to a deployment environment, so the workflow runs in a `pypi` environment whose name must match the publisher's `Environment` above:
 
 **Settings > Environments > New environment: `pypi`**
 
@@ -192,10 +196,12 @@ git push origin master
 
 ### Test Release (Use TestPyPI First)
 
-1. Create TestPyPI account at https://test.pypi.org
-2. Create token and add as `TEST_PYPI_API_TOKEN` secret
-3. Create `testpypi` environment in GitHub
-4. Manually trigger release workflow with testpypi environment
+The release workflow hardcodes the PyPI publish/check URLs, so a real TestPyPI dry run means temporarily pointing `uv publish` at TestPyPI on a branch:
+
+1. Create a TestPyPI account at https://test.pypi.org
+2. Register a TestPyPI trusted publisher for the project (owner `karotkriss`, repo `caffeinated-whale-cli`, workflow `release.yml`, environment `testpypi`) - trusted publishing, no token secret
+3. On a branch, point the publish step at TestPyPI (`uv publish --trusted-publishing automatic --publish-url https://test.pypi.org/legacy/ --check-url https://test.pypi.org/simple/`) and create a matching `testpypi` environment
+4. Manually dispatch the release workflow
 5. Verify: `pip install --index-url https://test.pypi.org/simple/ caffeinated-whale-cli`
 
 ---
