@@ -95,8 +95,13 @@ jobs:
         # uv publish runs natively in the job's uv container (no Docker-action
         # nesting), and authenticates via GitHub OIDC trusted publishing using
         # the id-token permission declared above - no PyPI token secret needed.
-        # --check-url skips files already on PyPI instead of failing (the old
-        # skip-existing: true behavior), so re-running an existing version is a no-op.
+        # --check-url skips ONLY a byte-identical re-upload (content-hash dedup,
+        # for retry/parallel-upload safety within the SAME build); it does NOT
+        # skip a same-name but different-content upload - that errors with
+        # "Local file and index file do not match" (exit 2). Python builds are
+        # non-reproducible, so re-tagging an already-published version rebuilds a
+        # byte-different artifact and FAILS rather than skipping. This is NOT
+        # twine's skip-existing: each release must be a genuinely new version.
         run: uv publish --trusted-publishing automatic --check-url https://pypi.org/simple/
 
       - name: Create GitHub Release (if tag triggered)
