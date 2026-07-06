@@ -13,28 +13,31 @@
 
 ### Required Setup
 
-#### 1. Secrets (Settings > Secrets and variables > Actions > Secrets)
+#### 1. PyPI Trusted Publisher (one-time, on pypi.org)
+
+Publishing uses [PyPI trusted publishing](https://docs.pypi.org/trusted-publishers/) over GitHub OIDC - there is **no** `PYPI_API_TOKEN` secret. Register a trusted publisher for the project on PyPI (**Manage project > Publishing**):
 
 ```
-PYPI_API_TOKEN = pypi-AgEIcHlwaS5vcm...
+Owner:       karotkriss
+Repository:  caffeinated-whale-cli
+Workflow:    release.yml
+Environment: pypi
 ```
 
-Get token from: https://pypi.org/manage/account/token/
+Until this publisher exists, `uv publish` fails with an auth error; CI cannot create it.
 
 #### 2. Variables (Optional - Settings > Secrets and variables > Actions > Variables)
 
 ```
 PYTHON_VERSION = 3.12
 PYPI_REPOSITORY = pypi
-PYPI_REPOSITORY_URL = https://upload.pypi.org/legacy/
 ```
 
-#### 3. Environment (Recommended - Settings > Environments)
+#### 3. Environment (Required - Settings > Environments)
 
-Create environment named `pypi` with:
+Create environment named `pypi` (its name must match the trusted publisher's `Environment` above):
 - Protection rules: Require reviewers (optional)
 - Branch restriction: `master` only
-- Secret: `PYPI_API_TOKEN`
 
 ### Triggering Releases
 
@@ -59,8 +62,8 @@ Actions > Release > Run workflow > Run workflow
 
 ### Before First Release
 
-1. ✅ Add `PYPI_API_TOKEN` secret
-2. ✅ Create `pypi` environment (optional)
+1. ✅ Register the PyPI trusted publisher (owner `karotkriss`, repo `caffeinated-whale-cli`, workflow `release.yml`, environment `pypi`)
+2. ✅ Create the `pypi` environment (required - its name must match the trusted publisher)
 3. ✅ Test on TestPyPI first (see [CI/CD guide](../../docs/contributing/ci-cd.md))
 4. ✅ Ensure versions match in `__init__.py` and `pyproject.toml`
 
