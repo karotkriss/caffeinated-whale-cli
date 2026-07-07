@@ -517,7 +517,7 @@ This means an app you just installed is picked up automatically, without a manua
 If nothing changed, the cached data is served unchanged; if that pass detects a change, it transparently falls back to a full re-inspect so the per-site installed-app lists are refreshed too.
 Use `--no-refresh` to skip the pass and return the cached data as-is (fastest, but possibly stale), or `--update` to force a full re-inspect.
 
-**Security Note:** The inspect command caches site configurations including database credentials and Redis URLs. The cache is stored with restricted filesystem permissions (directory: `0700`, database: `0600`) to prevent unauthorized access. Only the current user can read the cached data. Do not share the cache directory (`~/.cwcli/cache/`) with untrusted users.
+**Security Note:** The cache never stores Frappe secrets. Site and common configurations are whitelist-filtered before they are written, so database passwords, per-site encryption keys, admin/root passwords, and Redis URLs are stripped and never persisted (nothing reads them back from the cache - every credential consumer reads live from the container or from CLI flags/prompts). Any cache written before this behavior shipped is cleaned in place on the next run. As defense-in-depth, the cache is also stored with restricted filesystem permissions (directory: `0700`, database: `0600`) so only the current user can read it; still, do not share the cache directory (`~/.cwcli/cache/`) with untrusted users.
 
 ```bash
 cwcli inspect [OPTIONS] PROJECT_NAME
@@ -544,8 +544,8 @@ cwcli inspect [OPTIONS] PROJECT_NAME
 **What It Caches:**
 - Bench instances and their paths
 - Sites and installed apps for each bench
-- Site configurations (database credentials, developer mode settings)
-- Common site configuration (Redis URLs, ports, default site, etc.)
+- Site configurations (non-secret keys only, e.g. database name, developer mode settings; passwords and encryption keys are stripped)
+- Common site configuration (non-secret keys only, e.g. ports, default site, developer mode; Redis URLs and other secrets are stripped)
 - Default-site pointer from `sites/currentsite.txt` (written by `bench use`), so the `(default)` marker and default-site resolution work even when `common_site_config.json` has no `default_site` key
 - Default site is labeled with `(default)` in output (resolved from either source)
 
