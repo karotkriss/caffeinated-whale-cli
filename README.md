@@ -489,6 +489,7 @@ cwcli logs [OPTIONS] PROJECT_NAME
 |--------|-------------|
 | `-f`, `--follow` / `--no-follow` | Follow log output in real-time (default: follow) |
 | `-n`, `--lines INTEGER` | Number of lines to show from the end of the logs (default: 100) |
+| `-y`, `--yes` | Auto-start stopped containers without prompting |
 | `-v`, `--verbose` | Enable verbose diagnostic output |
 
 **Examples:**

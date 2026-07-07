@@ -11,12 +11,17 @@ app = typer.Typer(help="Stop a Frappe project's containers.")
 
 @handle_docker_errors
 def _stop_project(project_name: str, verbose: bool = False, status=None):
-    """The core logic for stopping a single project's containers."""
+    """The core logic for stopping a single project's containers.
+
+    Returns the number of containers stopped (0 means "found but nothing was
+    running" - a success), or ``None`` when the project does not exist so callers
+    can tell a genuine not-found failure apart from a legitimate zero count.
+    """
     containers = get_project_containers(project_name)
 
     if not containers:
         console.print(f"[bold red]Error: Project '{project_name}' not found.[/bold red]")
-        return 0
+        return None
 
     # Check which containers are running
     running_containers = [c for c in containers if c.status == "running"]
@@ -90,15 +95,24 @@ def stop(
         f"Attempting to stop [bold yellow]{len(project_names_to_process)}[/bold yellow] project(s)..."
     )
 
+    had_failure = False
+
     for name in project_names_to_process:
         with stderr_console.status(
             f"[bold yellow]Stopping '{name}'...[/bold yellow]", spinner="dots"
         ) as status:
             result = _stop_project(name, verbose=actual_verbose, status=status)
 
-        # Print outside spinner context
-        if result > 0:
+        # Print outside spinner context. ``None`` means the project did not exist
+        # (the error was already printed) - record it so the command exits 1 after
+        # processing the rest, rather than falsely reporting success.
+        if result is None:
+            had_failure = True
+        elif result > 0:
             console.print(f"Instance '{name}' stopped.")
         # If result is 0, the "already stopped" message was already printed
 
     console.print("\n[bold yellow]Stop command finished.[/bold yellow]")
+
+    if had_failure:
+        raise typer.Exit(code=1)

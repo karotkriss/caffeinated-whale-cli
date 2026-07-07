@@ -100,6 +100,15 @@ def _check_port_conflicts(
             formatted_ports = format_port_list(ports)
             stderr_console.print(f"  • Project '{proj}': {formatted_ports}")
 
+        # A non-TTY without --yes cannot answer the prompt: refuse (Exit 1) rather
+        # than hang on questionary or crash on EOF, mirroring confirm_or_exit.
+        if not assume_yes and not sys.stdin.isatty():
+            stderr_console.print(
+                f"[bold red]Error:[/bold red] Cannot start '{project_name}': required ports are "
+                "in use by other Frappe projects. Re-run with --yes to stop them non-interactively."
+            )
+            raise typer.Exit(code=1)
+
         # Ask user if they want to stop conflicting projects (auto-yes skips the prompt)
         try:
             for conflicting_project in conflicting_projects:
@@ -138,7 +147,7 @@ def _check_port_conflicts(
                     raise typer.Exit(code=1)
         except KeyboardInterrupt:
             stderr_console.print("\n[yellow]Operation cancelled.[/yellow]")
-            raise typer.Exit(code=0) from None
+            raise typer.Exit(code=1) from None
 
         # After stopping Frappe projects, re-check ALL originally required ports
         # to catch any remaining conflicts from non-Frappe processes
@@ -252,8 +261,11 @@ def _start_project(
 
     if not containers:
         console.print(f"[bold red]Error: Project '{project_name}' not found.[/bold red]")
-        # Continue to the next project instead of exiting the whole command
-        return
+        # A nonexistent project cannot be started - signal an honest failure. The
+        # start() loop records it and exits 1 (never printing "started"); the other
+        # callers (restart/restore/utils) only reach _start_project once containers
+        # exist, so this branch propagates only from a genuinely missing project.
+        raise typer.Exit(code=1)
 
     started_count = 0
     for container in containers:
@@ -474,19 +486,25 @@ def start(
         f"Attempting to start [bold cyan]{len(project_names_to_process)}[/bold cyan] project(s)..."
     )
 
+    # Collect per-project failures so one bad name (or unresolved conflict) never
+    # aborts the good ones, but the command still exits non-zero at the end - the
+    # same failures-collector honesty rm uses.
+    had_failure = False
+
     for name in project_names_to_process:
         # Check for port conflicts BEFORE starting containers
         try:
             _check_port_conflicts(name, verbose=actual_verbose, assume_yes=actual_yes)
         except typer.Exit as e:
-            # Exit code 0 = user cancelled (Ctrl+C), should exit entire operation
-            # Exit code 1 = port conflict couldn't be resolved, skip this project
+            # Exit code 0 = user cancelled (Ctrl+C), should exit entire operation.
+            # Any nonzero exit = conflict couldn't be resolved / declined: skip this
+            # project, record the failure, and continue with the rest.
             if e.exit_code == 0:
                 # User cancelled, propagate the exit to cancel entire operation
                 raise
             else:
-                # Port conflict couldn't be resolved, skip this project and continue
                 console.print(f"[yellow]Skipping project '{name}' due to port conflicts.[/yellow]")
+                had_failure = True
                 continue
 
         try:
@@ -497,12 +515,14 @@ def start(
                     name, verbose=actual_verbose, status=status, bench_selector=actual_bench
                 )
         except typer.Exit as e:
-            # Exit code 0 = user cancelled (Ctrl+C), should exit entire operation
-            # Any other exit code = this project's bench could not be started, skip it
+            # Exit code 0 = user cancelled (Ctrl+C), should exit entire operation.
+            # Any nonzero exit = project not found or its bench could not be started:
+            # skip it, record the failure, and continue with the rest.
             if e.exit_code == 0:
                 raise
             else:
-                console.print(f"[yellow]Skipping project '{name}': could not start bench.[/yellow]")
+                console.print(f"[yellow]Skipping project '{name}': could not start.[/yellow]")
+                had_failure = True
                 continue
 
         # Print outside spinner context
@@ -512,3 +532,6 @@ def start(
             console.print(f"[dim]View logs with: cwcli logs {name}[/dim]")
 
     console.print("\n[bold green]Start command finished.[/bold green]")
+
+    if had_failure:
+        raise typer.Exit(code=1)
