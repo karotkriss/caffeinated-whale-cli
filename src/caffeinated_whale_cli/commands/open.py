@@ -1,3 +1,5 @@
+import sys
+
 import typer
 from rich.console import Console
 
@@ -307,6 +309,17 @@ def open_bench(
         if len(choices) == 1:
             editor = "docker"
         else:
+            # Multiple editors and no explicit flag: interactive choice only. A
+            # non-TTY cannot answer, so refuse (Exit 1) naming the flags rather than
+            # hang on questionary or crash on EOF.
+            if not sys.stdin.isatty():
+                stderr_console.print(
+                    "[bold red]Error:[/bold red] Multiple editors are available and no editor "
+                    "flag was given. Re-run with one of --code, --code-insiders, --cursor, or "
+                    "--docker to select non-interactively."
+                )
+                raise typer.Exit(code=1)
+
             import questionary
             from questionary import Style
 
@@ -333,7 +346,7 @@ def open_bench(
 
             if choice is None:
                 stderr_console.print("[yellow]Operation cancelled.[/yellow]")
-                raise typer.Exit(code=0)
+                raise typer.Exit(code=1)
 
             editor = choice_map.get(choice, "docker")
 

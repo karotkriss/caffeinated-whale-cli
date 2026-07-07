@@ -27,6 +27,9 @@ def logs(
         "-n",
         help="Number of lines to show from the end of the logs.",
     ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Auto-start stopped containers without prompting."
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -37,8 +40,8 @@ def logs(
     """
     View bench logs in real-time from the log file.
     """
-    # Ensure containers are running, prompt user if not
-    ensure_containers_running(project_name, require_running=True, verbose=verbose)
+    # Ensure containers are running, prompt user if not (auto-start with --yes)
+    ensure_containers_running(project_name, require_running=True, verbose=verbose, auto_start=yes)
 
     containers = get_project_containers(project_name)
 

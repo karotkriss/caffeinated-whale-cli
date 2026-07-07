@@ -49,7 +49,9 @@ def ensure_containers_running(
 
     Raises:
         typer.Exit: If containers are not running and the user is prompted but chooses
-                   not to start them, or if starting containers fails.
+                   not to start them (decline or Ctrl-C), if the terminal is non-TTY
+                   and ``auto_start`` is False (so no prompt is possible), or if
+                   starting containers fails. All of these exit with code 1.
     """
     if not require_running:
         return True
@@ -85,7 +87,19 @@ def ensure_containers_running(
             )
         return False
     else:
-        # Prompt user to start containers
+        # Prompt user to start containers. Mirrors confirm_or_exit's three-branch
+        # contract exactly: a non-TTY without auto_start refuses (Exit 1) rather
+        # than hanging on questionary (open-but-idle stdin pipe) or crashing with an
+        # uncaught EOFError (closed stdin - .ask() only catches KeyboardInterrupt);
+        # an interactive decline or Ctrl-C is a refusal, so it exits non-zero too.
+        if not sys.stdin.isatty():
+            stderr_console.print(
+                f"[bold red]Error:[/bold red] Frappe container for project "
+                f"'{project_name}' is not running. Pass --yes to auto-start it, or "
+                f"start it first with 'cwcli start {project_name}'."
+            )
+            raise typer.Exit(code=1)
+
         stderr_console.print(
             f"[yellow]Warning:[/yellow] Frappe container for project '{project_name}' is not running."
         )
@@ -96,18 +110,16 @@ def ensure_containers_running(
                 default=True,
                 auto_enter=False,
             ).ask()
-
-            if answer:
-                user_wants_to_start = True
-            else:
-                stderr_console.print("[yellow]Operation cancelled.[/yellow]")
-                stderr_console.print(
-                    f"[dim]Start containers with: cwcli start {project_name}[/dim]"
-                )
-                raise typer.Exit(code=0)
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, EOFError):
             stderr_console.print("\n[yellow]Operation cancelled.[/yellow]")
-            raise typer.Exit(code=0) from None
+            raise typer.Exit(code=1) from None
+
+        if answer:
+            user_wants_to_start = True
+        else:
+            stderr_console.print("[yellow]Operation cancelled.[/yellow]")
+            stderr_console.print(f"[dim]Start containers with: cwcli start {project_name}[/dim]")
+            raise typer.Exit(code=1)
 
     # Start the containers (skipping port checks)
     if user_wants_to_start:

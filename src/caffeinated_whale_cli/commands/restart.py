@@ -13,12 +13,17 @@ app = typer.Typer(help="Restart a Frappe project's containers.")
 
 @handle_docker_errors
 def _restart_project(project_name: str, verbose: bool = False, status=None):
-    """The core logic for restarting a single project's containers."""
+    """The core logic for restarting a single project's containers.
+
+    Returns ``(log_file, stopped)``. ``stopped`` is ``None`` only when the project
+    does not exist, so the caller can tell a genuine not-found failure apart from a
+    legitimate zero count (found, but nothing was running) and exit non-zero.
+    """
     containers = get_project_containers(project_name)
 
     if not containers:
         console.print(f"[bold red]Error: Project '{project_name}' not found.[/bold red]")
-        return None, 0
+        return None, None
 
     # Check if any containers are running
     running_containers = [c for c in containers if c.status == "running"]
@@ -87,13 +92,21 @@ def restart(
         f"Attempting to restart [bold cyan]{len(project_names_to_process)}[/bold cyan] project(s)..."
     )
 
+    had_failure = False
+
     for name in project_names_to_process:
         with stderr_console.status(
             f"[bold cyan]Restarting '{name}'...[/bold cyan]", spinner="dots"
         ) as status:
             log_file, stopped = _restart_project(name, verbose=actual_verbose, status=status)
 
-        # Print outside spinner context
+        # Print outside spinner context. ``stopped is None`` means the project did
+        # not exist (error already printed): record the failure and skip the
+        # "started" line rather than falsely reporting a restart.
+        if stopped is None:
+            had_failure = True
+            continue
+
         if stopped > 0:
             console.print(f"Instance '{name}' stopped.")
         console.print(f"Instance '{name}' started.")
@@ -102,3 +115,6 @@ def restart(
             console.print(f"[dim]View logs with: cwcli logs {name}[/dim]")
 
     console.print("\n[bold green]Restart command finished.[/bold green]")
+
+    if had_failure:
+        raise typer.Exit(code=1)

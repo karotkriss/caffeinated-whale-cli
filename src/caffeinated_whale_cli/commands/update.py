@@ -290,6 +290,7 @@ def _update_project(
     failed_builds = []
     failed_cache_clears = []
     failed_website_cache_clears = []
+    failed_maintenance_disable: list[str] = []  # Sites left stuck in maintenance mode
     maintenance_sites = set()  # Track which sites have maintenance mode enabled
 
     try:
@@ -774,18 +775,28 @@ def _update_project(
                             console.print(
                                 f"[bold green]✓[/bold green] Maintenance mode disabled for '{site}'"
                             )
+                        else:
+                            failed_maintenance_disable.append(site)
                 else:
                     # Silent cleanup in non-verbose mode
-                    _set_maintenance_mode(
+                    results = _set_maintenance_mode(
                         frappe_container,
                         bench_path,
                         list(maintenance_sites),
                         enable=False,
                         verbose=False,
                     )
+                    failed_maintenance_disable.extend(
+                        site for site, ok in results.items() if not ok
+                    )
             except Exception as e:
                 stderr_console.print(
                     f"[bold red]Error:[/bold red] Failed to disable maintenance mode during cleanup: {e}"
+                )
+                # The exec crashed, so no site can be confirmed out of maintenance
+                # mode - flag any not already recorded so none is silently left stuck.
+                failed_maintenance_disable.extend(
+                    s for s in sorted(maintenance_sites) if s not in failed_maintenance_disable
                 )
 
     # Summary and error reporting
@@ -796,6 +807,7 @@ def _update_project(
         or failed_builds
         or failed_cache_clears
         or failed_website_cache_clears
+        or failed_maintenance_disable
     )
 
     if successful_apps > 0:
@@ -837,6 +849,17 @@ def _update_project(
             )
             for site in failed_website_cache_clears:
                 console.print(f"  • {site}: Website cache clearing failed")
+
+        if failed_maintenance_disable:
+            console.print(
+                f"[bold red]✗ Could not disable maintenance mode for "
+                f"{len(failed_maintenance_disable)} site(s):[/bold red]"
+            )
+            for site in failed_maintenance_disable:
+                console.print(
+                    f"  • {site}: still in maintenance mode - run "
+                    f"'bench --site {site} set-maintenance-mode off'"
+                )
 
         # Return failure status
         raise typer.Exit(code=1)
