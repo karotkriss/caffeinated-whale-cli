@@ -1,5 +1,6 @@
 """Tests for database security (permissions and sensitive data handling)."""
 
+import json
 import os
 import stat
 from pathlib import Path
@@ -135,16 +136,21 @@ class TestSensitiveDataWarnings:
             "database credentials" in doc.lower()
         ), "Security warning doesn't mention database credentials"
 
-    def test_models_have_encryption_todo(self):
-        """Test that models document need for encryption."""
+    def test_models_document_redaction(self):
+        """Models document the redaction contract, and the encryption TODO is gone.
+
+        The old TODO promised field-level encryption; issue #42 paid that debt by
+        redacting secrets at write time instead. Inverting the old TODO assertion
+        locks in that the debt is not silently reintroduced.
+        """
         common_doc = db_utils.CommonSiteConfig.__doc__
         site_doc = db_utils.SiteConfig.__doc__
 
-        assert "TODO" in common_doc, "CommonSiteConfig missing encryption TODO"
-        assert "encryption" in common_doc.lower(), "CommonSiteConfig doesn't mention encryption"
+        assert "redact" in common_doc.lower(), "CommonSiteConfig doesn't document redaction"
+        assert "redact" in site_doc.lower(), "SiteConfig doesn't document redaction"
 
-        assert "TODO" in site_doc, "SiteConfig missing encryption TODO"
-        assert "encryption" in site_doc.lower(), "SiteConfig doesn't mention encryption"
+        assert "TODO" not in common_doc, "CommonSiteConfig still carries the encryption TODO"
+        assert "TODO" not in site_doc, "SiteConfig still carries the encryption TODO"
 
 
 class TestSecurityBestPractices:
@@ -191,3 +197,142 @@ class TestSecurityBestPractices:
         assert cache_dir_str.startswith(
             home_str
         ), "Cache directory should be in user's home directory"
+
+
+@pytest.fixture()
+def temp_db(tmp_path, monkeypatch):
+    """Point db_utils at a throwaway sqlite file, restoring the real one after.
+
+    Mirrors the fixture in test_bench_label_db_and_command.py so these tests never
+    touch the real ~/.cwcli cache.
+    """
+    orig_path = db_utils.DB_PATH
+    dbfile = tmp_path / "cache.db"
+    monkeypatch.setattr(db_utils, "DB_PATH", dbfile)
+    if not db_utils.db.is_closed():
+        db_utils.db.close()
+    db_utils.db.init(str(dbfile))
+    db_utils.initialize_database()
+    yield dbfile
+    if not db_utils.db.is_closed():
+        db_utils.db.close()
+    # Restore the real DB binding so later tests in the session are unaffected.
+    db_utils.db.init(str(orig_path))
+
+
+class TestCacheRedaction:
+    """The cache must strip secrets at write time (issue #42)."""
+
+    def test_cache_strips_secrets_from_common_site_config(self, temp_db):
+        db_utils.cache_project_data(
+            "proj",
+            [
+                {
+                    "path": "/workspace/frappe-bench",
+                    "available_apps": [],
+                    "sites": [],
+                    "common_site_config": {
+                        "default_site": "a.local",
+                        "root_password": "super-secret",
+                        "redis_cache": "redis://localhost:6379/0",
+                        "encryption_key": "deadbeef",
+                    },
+                }
+            ],
+        )
+
+        bench = db_utils.Bench.get(db_utils.Bench.path == "/workspace/frappe-bench")
+        raw = db_utils.CommonSiteConfig.get(db_utils.CommonSiteConfig.bench == bench).config_json
+
+        assert json.loads(raw) == {"default_site": "a.local"}
+        assert "root_password" not in raw
+        assert "redis" not in raw
+        assert "encryption_key" not in raw
+
+    def test_cache_strips_secrets_from_site_config(self, temp_db):
+        db_utils.cache_project_data(
+            "proj",
+            [
+                {
+                    "path": "/workspace/frappe-bench",
+                    "available_apps": [],
+                    "sites": [
+                        {
+                            "name": "a.local",
+                            "installed_apps": [],
+                            "site_config": {
+                                "db_name": "_abc123",
+                                "db_password": "super-secret",
+                                "encryption_key": "deadbeef",
+                                "admin_password": "hunter2",
+                            },
+                        }
+                    ],
+                }
+            ],
+        )
+
+        site = db_utils.Site.get(db_utils.Site.name == "a.local")
+        raw = db_utils.SiteConfig.get(db_utils.SiteConfig.site == site).config_json
+
+        assert json.loads(raw) == {"db_name": "_abc123"}
+        assert "db_password" not in raw
+        assert "encryption_key" not in raw
+        assert "admin_password" not in raw
+
+    def test_get_default_site_still_works_after_redaction(self, temp_db):
+        db_utils.cache_project_data(
+            "proj",
+            [
+                {
+                    "path": "/workspace/frappe-bench",
+                    "available_apps": [],
+                    "sites": [],
+                    "common_site_config": {"default_site": "a.local", "db_password": "x"},
+                }
+            ],
+        )
+
+        assert db_utils.get_default_site("proj") == "a.local"
+
+    def test_scrub_cleans_old_secret_bearing_rows_on_init(self, temp_db):
+        # Simulate a pre-redaction cache: write a config row verbatim, bypassing
+        # cache_project_data's redaction, then prove initialize_database() scrubs it.
+        db_utils.cache_project_data(
+            "proj",
+            [{"path": "/workspace/frappe-bench", "available_apps": [], "sites": []}],
+        )
+        bench = db_utils.Bench.get(db_utils.Bench.path == "/workspace/frappe-bench")
+        secret_json = json.dumps(
+            {"default_site": "a.local", "root_password": "leak", "redis_cache": "redis://x"}
+        )
+        db_utils.CommonSiteConfig.create(bench=bench, config_json=secret_json)
+
+        db_utils.initialize_database()
+
+        raw = db_utils.CommonSiteConfig.get(db_utils.CommonSiteConfig.bench == bench).config_json
+        assert json.loads(raw) == {"default_site": "a.local"}
+        assert "root_password" not in raw
+        assert "redis" not in raw
+
+    def test_scrub_is_idempotent_noop_on_clean_rows(self, temp_db):
+        # A row already written through cache_project_data is clean; the scrub on a
+        # second initialize_database() must not change it (no spurious rewrite).
+        db_utils.cache_project_data(
+            "proj",
+            [
+                {
+                    "path": "/workspace/frappe-bench",
+                    "available_apps": [],
+                    "sites": [],
+                    "common_site_config": {"default_site": "a.local", "db_password": "x"},
+                }
+            ],
+        )
+        bench = db_utils.Bench.get(db_utils.Bench.path == "/workspace/frappe-bench")
+        before = db_utils.CommonSiteConfig.get(db_utils.CommonSiteConfig.bench == bench).config_json
+
+        db_utils.initialize_database()
+
+        after = db_utils.CommonSiteConfig.get(db_utils.CommonSiteConfig.bench == bench).config_json
+        assert before == after == json.dumps({"default_site": "a.local"})
