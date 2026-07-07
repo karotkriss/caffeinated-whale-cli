@@ -10,9 +10,10 @@ APP_NAME = ".cwcli"
 CACHE_DIR = Path.home() / APP_NAME / "cache"
 DB_PATH = CACHE_DIR / "cwc-cache.db"
 
-# SECURITY WARNING: Cache contains sensitive data (DB credentials, Redis URLs, API keys)
-# We implement strict filesystem permissions as the primary security control.
-# Future enhancement: Implement field-level encryption for sensitive config_json fields.
+# SECURITY: config_json rows are whitelist-filtered by _redact_config_for_cache
+# before write, so the cache never stores DB credentials, encryption keys, or
+# redis URLs. Restrictive filesystem permissions (0700 dir / 0600 file) remain
+# as defense-in-depth. See "Cache never stores secrets" in AGENTS.md.
 
 # Create cache directory with restricted permissions (0700 = owner-only access)
 # This prevents other users on the system from reading cached credentials
@@ -92,19 +93,18 @@ class CommonSiteConfig(BaseModel):
     Stores common_site_config.json data for each bench.
     This config applies to all sites within a bench.
 
-    SECURITY WARNING: Contains sensitive data including Redis URLs, API keys.
-    Data is stored in plaintext with filesystem permissions (0600) as protection.
-
-    TODO: Implement field-level encryption using a project-specific key from
-    environment variable or OS keyring (cryptography.fernet or similar).
-    Key management considerations:
-    - Store key in OS keyring (keyring library) or environment variable
-    - Never commit key material to repository
-    - Implement transparent encrypt/decrypt in model hooks
+    SECURITY WARNING: this table must never hold sensitive data. Sensitive fields
+    (passwords, keys, redis URLs) are stripped by ``_redact_config_for_cache``
+    before write; only the ``_COMMON_CONFIG_CACHE_KEYS`` whitelist (e.g.
+    ``default_site``, ports, ``developer_mode``) is persisted. Nothing reads
+    secrets back from the cache - every credential consumer reads live from the
+    container or from CLI flags/prompts. Old caches are cleaned in place by
+    ``_scrub_cached_config_secrets`` on init.
     """
 
     bench = ForeignKeyField(Bench, backref="common_config", unique=True)
-    config_json = TextField()  # Stores the full JSON as text (PLAINTEXT - see security warning)
+    # Whitelisted JSON as text (secrets stripped by _redact_config_for_cache before write)
+    config_json = TextField()
 
     class Meta:
         table_name = "common_site_config"
@@ -113,24 +113,72 @@ class CommonSiteConfig(BaseModel):
 class SiteConfig(BaseModel):
     """
     Stores site_config.json data for each individual site.
-    Contains site-specific settings like database credentials.
 
-    SECURITY WARNING: Contains sensitive data including database credentials.
-    Data is stored in plaintext with filesystem permissions (0600) as protection.
-
-    TODO: Implement field-level encryption using a project-specific key from
-    environment variable or OS keyring (cryptography.fernet or similar).
-    Key management considerations:
-    - Store key in OS keyring (keyring library) or environment variable
-    - Never commit key material to repository
-    - Implement transparent encrypt/decrypt in model hooks
+    SECURITY WARNING: this table must never hold sensitive data. The site's
+    database credentials (``db_password``) and ``encryption_key`` are stripped by
+    ``_redact_config_for_cache`` before caching; only the
+    ``_SITE_CONFIG_CACHE_KEYS`` whitelist (e.g. ``db_name``, ``db_type``,
+    ``developer_mode``) is persisted. Nothing reads secrets back from the cache.
+    Old caches are cleaned in place by ``_scrub_cached_config_secrets`` on init.
     """
 
     site = ForeignKeyField(Site, backref="site_config", unique=True)
-    config_json = TextField()  # Stores the full JSON as text (PLAINTEXT - see security warning)
+    # Whitelisted JSON as text (secrets stripped by _redact_config_for_cache before write)
+    config_json = TextField()
 
     class Meta:
         table_name = "site_config"
+
+
+# Whitelists of the ONLY keys persisted to the cache DB from each Frappe config.
+# Everything else (db_password, encryption_key, admin/root passwords, redis_* URLs,
+# *_secret, *_token, ...) is dropped at write time by _redact_config_for_cache.
+# Whitelist, not blacklist: a future unknown Frappe secret key fails closed.
+# Any NEW cached config field must be added here deliberately.
+_COMMON_CONFIG_CACHE_KEYS = frozenset(
+    {
+        "default_site",  # read by get_default_site (restore/backup/unlock)
+        "developer_mode",
+        "webserver_port",
+        "socketio_port",
+        "file_watcher_port",
+        "restart_supervisor_on_update",
+        "frappe_user",
+        "serve_default_site",
+        "rebase_on_pull",
+        "shallow_clone",
+        "background_workers",
+        "live_reload",
+    }
+)
+
+_SITE_CONFIG_CACHE_KEYS = frozenset(
+    {
+        "db_name",  # identifies the site's database, not a credential
+        "db_type",
+        "developer_mode",
+        "maintenance_mode",
+        "pause_scheduler",
+    }
+)
+
+
+def _redact_config_for_cache(config: dict, allowed_keys: frozenset[str]) -> dict:
+    """Whitelist-filter a Frappe config dict before caching.
+
+    Secrets (db_password, encryption_key, admin passwords, redis URLs, ...) must
+    never be persisted to the cache DB. Nothing reads them back from the cache;
+    every credential consumer reads live from the container or from CLI flags.
+    Whitelist (not blacklist) so a future Frappe secret key fails closed - an
+    unknown key is simply dropped rather than silently leaking.
+
+    A non-dict input is returned unchanged so the immediately-following
+    ``_validate_config_json`` still raises ``TypeError`` on it (preserving the
+    existing skip-and-warn path), instead of crashing here on ``.items()``.
+    """
+    if not isinstance(config, dict):
+        return config
+    return {k: v for k, v in config.items() if k in allowed_keys}
 
 
 def _validate_config_json(config_data: dict, config_type: str = "config") -> None:
@@ -215,6 +263,38 @@ def _migrate_bench_current_site_column():
         print(f"Warning: could not migrate bench.current_site column: {e}", file=sys.stderr)
 
 
+def _scrub_cached_config_secrets():
+    """One-shot: strip secrets from config rows written before redaction shipped.
+
+    Caches created before ``_redact_config_for_cache`` stored the full site /
+    common configs verbatim (db passwords, encryption_key, redis URLs). Re-filter
+    every row through the same whitelist and rewrite ONLY the rows that actually
+    change, so this is a no-op on fresh DBs and after the first run. Only
+    ``config_json`` is touched - ``Project.last_updated`` is never bumped (these
+    models carry no timestamp). Never raises: a row whose JSON won't parse is
+    replaced with ``"{}"`` (a full inspect rebuilds it).
+    """
+    try:
+        for model, allowed in (
+            (CommonSiteConfig, _COMMON_CONFIG_CACHE_KEYS),
+            (SiteConfig, _SITE_CONFIG_CACHE_KEYS),
+        ):
+            for row in model.select():
+                try:
+                    parsed = json.loads(row.config_json)
+                except (ValueError, TypeError):
+                    parsed = None
+                cleaned = (
+                    _redact_config_for_cache(parsed, allowed) if isinstance(parsed, dict) else {}
+                )
+                new_json = json.dumps(cleaned)
+                if new_json != row.config_json:
+                    row.config_json = new_json
+                    row.save()
+    except Exception as e:  # pragma: no cover - defensive; never block init
+        print(f"Warning: could not scrub cached config secrets: {e}", file=sys.stderr)
+
+
 def initialize_database():
     if db.is_closed():
         db.connect()
@@ -230,6 +310,9 @@ def initialize_database():
     # Same for the current_site column (added with the currentsite.txt default-site
     # resolution). Idempotent; NULL on old caches.
     _migrate_bench_current_site_column()
+    # Retroactively strip secrets from configs cached before redaction shipped.
+    # Idempotent no-op once every row is clean; must run after the tables exist.
+    _scrub_cached_config_secrets()
     # Secure the database file with restrictive permissions
     _set_secure_db_permissions()
 
@@ -274,10 +357,13 @@ def cache_project_data(project_name, bench_instances_data):
         # Store common site config if present (including empty configs)
         if "common_site_config" in bench_data:
             try:
-                _validate_config_json(bench_data["common_site_config"], "common_site_config")
-                CommonSiteConfig.create(
-                    bench=bench, config_json=json.dumps(bench_data["common_site_config"])
+                # Strip secrets BEFORE validating/storing so what is validated is
+                # exactly what is persisted (see _redact_config_for_cache).
+                redacted_common = _redact_config_for_cache(
+                    bench_data["common_site_config"], _COMMON_CONFIG_CACHE_KEYS
                 )
+                _validate_config_json(redacted_common, "common_site_config")
+                CommonSiteConfig.create(bench=bench, config_json=json.dumps(redacted_common))
             except (ValueError, TypeError) as e:
                 # Log warning but continue - don't fail entire cache operation
                 # User will still get other cached data
@@ -299,10 +385,11 @@ def cache_project_data(project_name, bench_instances_data):
             # Store site-specific config if present (including empty configs)
             if "site_config" in site_data:
                 try:
-                    _validate_config_json(
-                        site_data["site_config"], f"site_config for {site_data['name']}"
+                    redacted_site = _redact_config_for_cache(
+                        site_data["site_config"], _SITE_CONFIG_CACHE_KEYS
                     )
-                    SiteConfig.create(site=site, config_json=json.dumps(site_data["site_config"]))
+                    _validate_config_json(redacted_site, f"site_config for {site_data['name']}")
+                    SiteConfig.create(site=site, config_json=json.dumps(redacted_site))
                 except (ValueError, TypeError) as e:
                     # Log warning but continue - don't fail entire cache operation
                     print(

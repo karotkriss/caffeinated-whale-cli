@@ -72,6 +72,22 @@ A cwcli "instance" is one docker-compose project; its frappe container can hold 
 
 Regression coverage: `tests/test_bench_labels.py` (validation/resolution/marker I/O), `tests/test_bench_selector.py` (resolver cases incl. ambiguous/not-found), `tests/test_bench_label_db_and_command.py` (migration, `set_bench_label`, `label` command), `tests/test_inspect_label_recovery.py` (DB-loss recovery from markers via full inspect), `tests/test_yes_flag.py` (`confirm_or_exit`, `config cache clear --all`, `start`, auto-start).
 
+## Cache never stores secrets
+
+The SQLite cache (`~/.cwcli/cache/cwc-cache.db`) must never persist Frappe secrets (DB passwords, per-site `encryption_key`, admin/root passwords, Redis URLs).
+Nothing ever reads secret values back from the cache: every credential consumer reads live from the container or from CLI flags/prompts (`restore.py` reads `encryption_key` live from a file in the container; MariaDB creds come from `_prompt_mariadb_credentials`), so a cached secret is pure write-only risk.
+
+The single enforcement point is `_redact_config_for_cache` in `utils/db_utils.py`, applied at the ONLY write chokepoint (`cache_project_data`) before `_validate_config_json` and `json.dumps`, for BOTH `common_site_config` and per-site `site_config`.
+It is a whitelist, not a blacklist: only `_COMMON_CONFIG_CACHE_KEYS` / `_SITE_CONFIG_CACHE_KEYS` are kept, everything else is dropped, so a future unknown Frappe secret key fails closed.
+`default_site` MUST stay in the common whitelist or `restore`/`backup`/`unlock` lose default-site resolution (`get_default_site`).
+Redact ONLY here, never in `inspect.py` (redacting at the inspect layer would strip in-memory dicts the same run may use and leave the write path fail-open).
+
+Old caches written before this shipped still hold secrets, so `initialize_database()` runs a one-shot `_scrub_cached_config_secrets()` (idempotent, warn-and-continue, never raises) that re-filters every config row through the same whitelist, rewrites only rows that change, touches only `config_json` (never bumps `last_updated`), and replaces unparseable JSON with `"{}"`.
+
+Rule: any NEW cached config field must be added to the relevant whitelist deliberately.
+Filesystem permissions (0700 dir / 0600 file, `_set_secure_db_permissions`) remain as defense-in-depth, not the primary control.
+Regression coverage: `tests/test_db_security.py` (`TestCacheRedaction` proves secrets stripped at write, scrub cleans an old row + is a no-op on clean rows, and `get_default_site` still resolves; `test_models_document_redaction` locks in that the old encryption TODO stays paid).
+
 ## CI quality gates
 
 - `.github/workflows/lint.yml` runs `black --check` + `ruff check`.
