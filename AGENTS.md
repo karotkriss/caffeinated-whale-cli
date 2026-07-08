@@ -176,8 +176,8 @@ The receive path now carries the same destructive-restore gate the normal path h
 - It prints the `⚠ This will replace all data in site '{site}'` warning + the backup filename, then compares the backup's origin site (parsed from the database filename via `parse_backup_filename(...)["site_name"]`, which is already dots-to-underscores) against `transform_site_name_to_backup_format(site)` and prints an `⚠ Origin mismatch` line when they differ.
   A failed parse yields `origin_parsed is None`, so the mismatch check is skipped (fail-safe, no false alarm); this is the same parser that must already have matched to set `database_file`, so a hyphen-bearing site that the parser can't represent would have errored earlier.
 - The confirmation honors the new `--yes/-y` flag on `restore`: `--yes` proceeds without prompting, an interactive TTY asks `questionary.confirm("Are you sure you want to restore?")`, and a **non-TTY without `--yes` refuses and exits non-zero** rather than silently proceeding or exiting 0.
-  This new confirm exits **non-zero on any refusal** (declined confirm, non-TTY-no-yes, or Ctrl-C), unlike the normal path's pre-existing exit-0-on-cancel (a separate known AXI finding, deliberately left untouched here).
-- `--yes` is threaded through both `restore_receive_mode(...)` call sites in `restore()` and only gates the receive-mode confirm; it does NOT bypass the normal path's `questionary.confirm` (adding non-interactive selectors to the normal restore path is the separate AXI task).
+  This confirm exits **non-zero on any refusal** (declined confirm, non-TTY-no-yes, or Ctrl-C), as does the normal path now (issue #40 closed the prior exit-0-on-cancel finding).
+- `--yes` is threaded through both `restore_receive_mode(...)` call sites and BOTH confirm blocks on the normal path (the missing-apps "continue anyway?" and the destructive "are you sure?"). It bypasses every confirmation prompt on both paths; it does NOT remove the sendme-ticket prompt (receive path) or the `--mariadb-root-password` / `--mariadb-root-username` credential prompts, which already meet the standard via `_prompt_mariadb_credentials`.
 
 Two supporting fixes travel with it, and BOTH the receive path and the normal restore path share the same shapes:
 
@@ -188,6 +188,19 @@ Two supporting fixes travel with it, and BOTH the receive path and the normal re
 
 Regression coverage is in `tests/test_restore_safety.py`: it drives `restore_receive_mode` with a `FakeReceiveContainer` that records every `exec_run` (command, workdir, environment) and asserts a declined/non-TTY confirm does NOT run `bench restore --force` and exits non-zero, `--yes` proceeds, an origin mismatch is surfaced, and the DB password rides in `environment=` (never in the recorded argv).
 Testing note: `restore_receive_mode` is a plain function (not the Typer command), so tests call it directly with all args explicit; stub `TipSpinner` to a no-op (it starts a Rich spinner even with `enabled=False`) and fake `subprocess.run` to write the "downloaded" backup into its `cwd`.
+
+## `restore` command (normal path): non-interactive selectors + honest exit codes (issue #40)
+
+The normal (non `--send`/`--receive`) `cwcli restore` path is now fully drivable by an agent or script. Every prompt gets a flag, and a non-TTY without the needed flag refuses with a NON-ZERO exit instead of silently exiting 0 (the prior "exit-0-on-cancel" finding is closed). This was the deferred "AXI task" called out above.
+
+- **Backup selection.** `--latest` non-interactively selects the newest backup set for the target site; `--backup-file <filename-or-full-path>` selects one by its database file. The selector bypasses the `questionary.select` menu. `--latest` does NOT fall through to other-site backups (that would silently restore a different site's data); `--backup-file` searches both target and other backups (the caller named a specific file). The two flags are mutually exclusive, and neither applies to `--send`/`--receive` (validated up front). The resolution happens in `select_backup_set(target_backups, other_backups, *, latest, backup_file)` - a pure helper near `display_backup_selection_menu` - so it is unit-testable with no TTY or container.
+- **Non-TTTY guard.** A non-TTY with neither selector exits 1 (message names `--latest`/`--backup-file`) rather than reaching `questionary.select().ask() -> None` on a non-TTY and exiting `0` having done nothing.
+- **`--yes` widened to the normal path.** Both normal-path `questionary.confirm` prompts (the missing-apps "continue anyway?" and the destructive "are you sure?") now honor `--yes`: `--yes` proceeds without prompting, a non-TTY without `--yes` refuses with exit 1, an interactive TTY asks. A declined confirm or Ctrl-C now exits 1 (was `Exit(0)`) on BOTH the normal path and the receive path.
+- **The sentinel** `{"_restore_from_ticket": True}` (remote restore via sendme, reached from the menu) stays INSIDE the interactive branch only; the selector branch can never produce it (correct: remote restore is reached via `--receive`).
+- Both confirms still pass `auto_enter=False` (load-bearing - they must consume their own trailing Enter so the keystroke does not leak into the following credential prompt). `commands/utils.py:confirm_or_exit` omits that setting, so it is NOT used here; the local prompt code is kept.
+- Credentials fire AFTER the confirms via `_prompt_mariadb_credentials` (unchanged, already meets the standard); do not reorder.
+
+Regression coverage is in `tests/test_restore_safety.py` (`TestSelectBackupSet` for the pure helper, `TestNormalPathSelectorsAndExitCodes` for the Typer command). The Typer-command tests call `restore_mod.restore(...)` with ALL params explicit (omit any `Option` and its truthy default object leaks through - the same trap flagged for `inspect`); the `@handle_docker_errors` decorator is bypassed by patching `docker_utils`'s `shutil`/`docker` (the decorator reads them from its own namespace; `restore_mod` does not import them directly).
 
 ## `restore` + `inspect`: currentsite, default site, receive path, credential prompts, missing-apps, migrate+restart
 
@@ -270,3 +283,10 @@ Those fixes land AFTER the original E2E was run, so they ship re-validated only 
 
 Standard: after the no-mistakes run completes AND after applying any CodeRabbit fixes, run the real-instance E2E AGAIN (on an isolated throwaway instance) to confirm the final shipped code still behaves correctly end-to-end - not just that the unit suite is green.
 Treat "CodeRabbit fixes applied" as a trigger to re-E2E, the same way you would after any late behavior change.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

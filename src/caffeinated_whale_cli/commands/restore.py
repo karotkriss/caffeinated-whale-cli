@@ -522,6 +522,59 @@ def check_missing_apps(
     return sorted(missing_apps)
 
 
+def select_backup_set(
+    target_backups: list, other_backups: list, *, latest: bool, backup_file: str | None
+) -> dict | None:
+    """Resolve a backup set non-interactively. Returns None if no match.
+
+    A pure selector (no TTY, no prompts) so it is unit-testable without a
+    container or questionary. Used by the normal ``restore`` path when the
+    ``--latest`` or ``--backup-file`` selector is passed so an agent or script
+    can pick a backup without driving the interactive menu.
+
+    Args:
+        target_backups: Backup sets for the target site (newest-first, as
+            ``group_and_sort_backups`` returns).
+        other_backups: Backup sets for OTHER sites (newest-first). Deliberately
+            NOT consulted by ``--latest``: silently restoring another site's
+            newest backup over the target site is exactly the surprise this
+            command must not spring. ``--backup-file`` DOES search across both
+            lists because the caller names a specific file and may legitimately
+            need a file from another site's backup directory.
+        latest: When True, return ``target_backups[0]`` (the newest target-site
+            backup), or None if ``target_backups`` is empty.
+        backup_file: Match against ``set["database"]["filename"]`` OR
+            ``set["database"]["full_path"]`` (exact string compare, both forms
+            accepted). The first match is returned. If multiple match (should
+            not happen, filenames embed timestamps, but be safe) the first is
+            returned and a yellow note is printed.
+
+    Returns:
+        The matched backup-set dict, or None.
+    """
+    if latest:
+        return target_backups[0] if target_backups else None
+
+    if backup_file is not None:
+        matches: list[dict] = []
+        for bset in target_backups + other_backups:
+            db = bset.get("database")
+            if not db:
+                continue
+            if backup_file in (db.get("filename"), db.get("full_path")):
+                matches.append(bset)
+        if not matches:
+            return None
+        if len(matches) > 1:
+            console.print(
+                f"[yellow]Note:[/yellow] multiple backups match '{backup_file}'; "
+                "using the first match."
+            )
+        return matches[0]
+
+    return None
+
+
 def display_backup_selection_menu(
     target_backups: list, other_backups: list, target_site: str
 ) -> dict | None:
@@ -1430,6 +1483,17 @@ def restore(
         "(from common_site_config.json's default_site or sites/currentsite.txt).",
         autocompletion=complete_site_names,
     ),
+    latest: bool = typer.Option(
+        False,
+        "--latest",
+        help="Non-interactively select the most recent backup set for the target site.",
+    ),
+    backup_file: str | None = typer.Option(
+        None,
+        "--backup-file",
+        help="Non-interactively select the backup set whose database file matches this "
+        "filename (or full container path).",
+    ),
     bench: str = typer.Option(
         None,
         "--bench",
@@ -1476,11 +1540,11 @@ def restore(
         False,
         "--yes",
         "-y",
-        help="Applies to --receive mode only: skip the restore confirmation "
-        "prompts (the destructive-restore confirmation and the missing-apps "
-        "prompt); a non-TTY without --yes refuses these with a non-zero exit. "
-        "Does not remove the sendme-ticket or MariaDB-credential prompts, and "
-        "has no effect on the normal restore path.",
+        help="Skip the interactive confirmation prompts on BOTH the normal and "
+        "--receive restore paths (the destructive-restore confirmation and the "
+        "missing-apps prompt); a non-TTY without --yes refuses these with a "
+        "non-zero exit. Does not remove the sendme-ticket or MariaDB-credential "
+        "prompts.",
     ),
     no_migrate: bool = typer.Option(
         False,
@@ -1516,6 +1580,23 @@ def restore(
     if send and receive:
         stderr_console.print(
             "[bold red]Error:[/bold red] Cannot use --send and --receive together."
+        )
+        raise typer.Exit(code=1)
+
+    # The --latest/--backup-file selectors only make sense on the normal restore
+    # path (they bypass the interactive backup menu, which is not reached under
+    # --send or --receive). They are mutually exclusive with each other and with
+    # the sendme modes.
+    if latest and backup_file is not None:
+        stderr_console.print(
+            "[bold red]Error:[/bold red] Cannot use --latest and --backup-file together; "
+            "choose one non-interactive selector."
+        )
+        raise typer.Exit(code=1)
+    if (latest or backup_file is not None) and (send or receive):
+        stderr_console.print(
+            "[bold red]Error:[/bold red] --latest/--backup-file only apply to the normal "
+            "restore path, not --send or --receive."
         )
         raise typer.Exit(code=1)
 
@@ -1706,11 +1787,39 @@ def restore(
     # Group and sort backups (even if empty, we can still restore from remote)
     target_backups, other_backups = group_and_sort_backups(backups, site)
 
-    # Display selection menu (includes remote restore option)
-    selected_backup = display_backup_selection_menu(target_backups, other_backups, site)
-
-    if not selected_backup:
-        raise typer.Exit(code=0)
+    # Resolve a backup set. The non-interactive selectors (--latest/--backup-file)
+    # bypass the menu so an agent or script can pick a backup without a TTY. A
+    # non-TTY WITHOUT a selector must refuse rather than silently taking the
+    # menu's `questionary.select().ask() -> None` path and exiting 0 having done
+    # nothing. The sentinel {"_restore_from_ticket": True} (remote restore via
+    # sendme) is reachable ONLY through the interactive menu; the selector branch
+    # can never produce it (correct: remote restore is reached via --receive).
+    if latest or backup_file is not None:
+        selected_backup = select_backup_set(
+            target_backups, other_backups, latest=latest, backup_file=backup_file
+        )
+        if selected_backup is None:
+            selector_desc = "--latest" if latest else f"--backup-file {backup_file!r}"
+            stderr_console.print(
+                f"[bold red]Error:[/bold red] no backup matched {selector_desc} for site "
+                f"'{site}'."
+            )
+            stderr_console.print(
+                f"[dim]Tip: run 'cwcli restore {project_name} --site {site}' to see "
+                "available backups interactively.[/dim]"
+            )
+            raise typer.Exit(code=1)
+    elif not sys.stdin.isatty():
+        stderr_console.print(
+            "[bold red]Error:[/bold red] non-interactive session and no backup selector; "
+            "pass --latest or --backup-file <name> to pick a backup without a menu."
+        )
+        raise typer.Exit(code=1)
+    else:
+        selected_backup = display_backup_selection_menu(target_backups, other_backups, site)
+        if selected_backup is None:
+            console.print("[yellow]Restore cancelled.[/yellow]")
+            raise typer.Exit(code=1)
 
     # Check if user selected to restore from remote source
     if selected_backup.get("_restore_from_ticket"):
@@ -1764,19 +1873,35 @@ def restore(
         )
         console.print()
 
-        try:
-            proceed = questionary.confirm(
-                "Do you want to continue with the restore anyway?",
-                default=False,
-                auto_enter=False,
-            ).ask()
-        except (KeyboardInterrupt, EOFError):
-            console.print("\n[yellow]Restore cancelled.[/yellow]")
-            raise typer.Exit(code=0) from None
+        # Gate the missing-apps "continue anyway?" prompt with --yes, mirroring the
+        # receive path's contract: --yes proceeds, a non-TTY without --yes refuses
+        # non-zero, an interactive TTY asks. The confirm below keeps auto-enter
+        # DISABLED (load-bearing): it must consume its own trailing Enter or the
+        # keystroke leaks into the following credential prompt (prompt_toolkit
+        # internal buffer), so this block is NOT a candidate for
+        # commands/utils.py:confirm_or_exit (which omits that setting).
+        if yes:
+            console.print("[dim]Proceeding despite missing apps (--yes).[/dim]")
+        elif not sys.stdin.isatty():
+            stderr_console.print(
+                "[bold red]Error:[/bold red] Refusing to restore with missing apps "
+                "without confirmation. Re-run with --yes to proceed non-interactively."
+            )
+            raise typer.Exit(code=1)
+        else:
+            try:
+                proceed = questionary.confirm(
+                    "Do you want to continue with the restore anyway?",
+                    default=False,
+                    auto_enter=False,
+                ).ask()
+            except (KeyboardInterrupt, EOFError):
+                console.print("\n[yellow]Restore cancelled.[/yellow]")
+                raise typer.Exit(code=1) from None
 
-        if not proceed:
-            console.print("[yellow]Restore cancelled.[/yellow]")
-            raise typer.Exit(code=0)
+            if not proceed:
+                console.print("[yellow]Restore cancelled.[/yellow]")
+                raise typer.Exit(code=1)
 
     # Confirm restore
     console.print()
@@ -1795,17 +1920,30 @@ def restore(
     console.print(f"[dim]Will restore: {', '.join(restore_items)}[/dim]")
     console.print()
 
-    try:
-        confirm = questionary.confirm(
-            "Are you sure you want to restore?", default=False, auto_enter=False
-        ).ask()
-    except (KeyboardInterrupt, EOFError):
-        console.print("\n[yellow]Restore cancelled.[/yellow]")
-        raise typer.Exit(code=0) from None
+    # Gate the destructive-restore confirm with --yes, same shape as the receive
+    # path: --yes proceeds, a non-TTY without --yes refuses non-zero, an
+    # interactive TTY asks. Decline/Ctrl-C now exit non-zero (was Exit(0)).
+    # The confirm keeps auto-enter DISABLED too (see missing-apps block above).
+    if yes:
+        console.print("[dim]Proceeding without confirmation (--yes).[/dim]")
+    elif not sys.stdin.isatty():
+        stderr_console.print(
+            "[bold red]Error:[/bold red] Refusing to restore without confirmation. "
+            "Re-run with --yes to restore non-interactively."
+        )
+        raise typer.Exit(code=1)
+    else:
+        try:
+            confirm = questionary.confirm(
+                "Are you sure you want to restore?", default=False, auto_enter=False
+            ).ask()
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n[yellow]Restore cancelled.[/yellow]")
+            raise typer.Exit(code=1) from None
 
-    if not confirm:
-        console.print("[yellow]Restore cancelled.[/yellow]")
-        raise typer.Exit(code=0)
+        if not confirm:
+            console.print("[yellow]Restore cancelled.[/yellow]")
+            raise typer.Exit(code=1)
 
     # Resolve MariaDB credentials AFTER the confirm. Interactive: prompt for the
     # username (default root) and password, actually collecting input; the username
