@@ -1816,9 +1816,10 @@ def restore(
         )
         raise typer.Exit(code=1)
     else:
+        # display_backup_selection_menu already prints "Restore cancelled." itself
+        # on a None result; do not print it again here.
         selected_backup = display_backup_selection_menu(target_backups, other_backups, site)
         if selected_backup is None:
-            console.print("[yellow]Restore cancelled.[/yellow]")
             raise typer.Exit(code=1)
 
     # Check if user selected to restore from remote source
