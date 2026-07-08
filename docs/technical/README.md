@@ -7,6 +7,9 @@ This directory contains technical documentation, API references, and deep-dives 
 | Document | Purpose | Topics Covered |
 |----------|---------|----------------|
 | **[Bench Management](./bench.md)** | Bench system deep-dive | Bench instances, sites, apps, cache system |
+| **[Frappe Backup & Restore](./frappe-backup-restore.md)** | Frappe's `bench backup`/`bench restore` mechanics | Backup file naming, restore process, what cwcli provides today |
+| **[iroh-blobs and sendme](./iroh-blobs-and-sendme.md)** | P2P transfer protocol background | Iroh blobs, BLAKE3 verification, the sendme protocol |
+| **[sendme CLI Reference](./sendme-doc.md)** | The underlying `sendme` binary | `sendme send`/`sendme receive` flags and output |
 
 ## Overview
 
@@ -137,7 +140,7 @@ def my_command():
 
 ### Cache System
 
-**Location:** `~/caffeinated-whale-cli/cache/cwc-cache.db`
+**Location:** `~/.cwcli/cache/cwc-cache.db`
 
 **Schema:**
 ```sql
@@ -155,7 +158,7 @@ Project
 
 ### Configuration
 
-**Location:** `~/caffeinated-whale-cli/config/`
+**Location:** `~/.cwcli/config/`
 
 **Customization:**
 - Custom bench search paths
@@ -300,6 +303,8 @@ See [Testing Documentation](../testing/) for comprehensive testing guides.
 
 ## Future Architecture Plans
 
+Verified as still unshipped as of 0.34.0 (2026-07-08); re-check this list for staleness the next time this doc is substantially edited.
+
 ### Planned Enhancements
 
 1. **Plugin System** - Allow custom commands
@@ -331,7 +336,7 @@ cwcli inspect frappe-one -v
 
 ```bash
 # View cache database
-sqlite3 ~/caffeinated-whale-cli/cache/cwc-cache.db
+sqlite3 ~/.cwcli/cache/cwc-cache.db
 
 # List cached projects
 .tables
@@ -364,6 +369,8 @@ python -c "import docker; docker.from_env().ping()"
 | Tab completion | <200ms | 2s TTL cache |
 
 ### Optimization Opportunities
+
+Also unverified/unshipped as of 0.34.0 (2026-07-08).
 
 1. **Parallel container operations** - Start/stop multiple at once
 2. **Batch Docker queries** - Reduce API calls

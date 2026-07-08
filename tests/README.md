@@ -32,6 +32,11 @@ uv run pytest --pdb
 
 ## Test Files
 
+As of 0.34.0, `tests/` holds 18 `test_*.py` suites totaling 321 tests at ~41%
+overall coverage (measured with `uv run pytest --cov`). Run `ls tests/` for the
+authoritative current list; see [../docs/testing/README.md](../docs/testing/README.md)
+for the per-area breakdown.
+
 ### `test_completion_utils.py`
 Tests for tab completion functionality.
 
@@ -41,7 +46,6 @@ Tests for tab completion functionality.
 - Project name completion from Docker
 - App name completion from cache
 - Site name completion from cache
-- Bench name completion from cache
 - Cache TTL behavior
 - Docker client reuse
 - Error handling
@@ -50,24 +54,28 @@ Tests for tab completion functionality.
 - `TestCompleteProjectNames` - 7 tests
 - `TestCompleteAppNames` - 6 tests
 - `TestCompleteSiteNames` - 4 tests
-- `TestCompleteBenchNames` - 3 tests
 - `TestCacheHelpers` - 4 tests
 - `TestGetDockerClient` - 3 tests
 
 ## Test Coverage
 
-Current overall coverage: **7.46%** (only completion_utils tested)
+Current overall coverage: **~41%** at 0.34.0 (321 tests across 18 test files).
 
 ### Covered Modules
-- ✅ `utils/completion_utils.py` - 92% (9 missing lines)
-- ⚠️ `utils/db_utils.py` - 48% (partial coverage from mocking)
+- ✅ `utils/completion_utils.py` - 92% (7 missing lines)
+- ✅ `utils/bench_labels.py` - ~94% (`test_bench_labels`, `test_bench_selector`, `test_bench_label_db_and_command`)
+- ✅ `utils/db_utils.py` - ~68% (`test_db_security`, `test_config_validation`)
+- ✅ `commands/inspect.py` - ~62% (`test_inspect_partial_refresh`, `test_inspect_label_recovery`)
+- ✅ `commands/restore.py` - ~43% (`test_restore_safety`, `test_restore_inspect_fixes`)
+- ✅ `commands/rm.py` - ~76% (`test_rm_safety`, `test_rm_truth`, `test_rm_stopped`)
 
-### Modules Needing Tests
-- ❌ All command modules (0% coverage)
-- ❌ `utils/port_utils.py` (0% coverage)
-- ❌ `utils/docker_utils.py` (0% coverage)
-- ❌ `utils/vscode_utils.py` (0% coverage)
-- ❌ `utils/config_utils.py` (0% coverage)
+### Modules Needing Dedicated Suites
+- ⚠️ `utils/port_utils.py` (~9%, only incidental coverage)
+- ⚠️ `utils/docker_utils.py` (~37%, only incidental coverage)
+- ⚠️ `utils/sendme_utils.py` (~9%, only incidental coverage)
+- ⚠️ `utils/vscode_utils.py` (~16%, only incidental coverage)
+- ⚠️ `utils/config_utils.py` (~37%, distinct from `db_utils`'s config validation)
+- ⚠️ Command modules at or near 0% dedicated coverage: `backup.py`, `list.py`, `run.py`, `status.py`, `unlock.py`, `where.py`
 
 ## Writing New Tests
 
@@ -178,26 +186,22 @@ This can happen if pytest finds tests in multiple locations. Use `testpaths` in 
 
 ## Future Test Priorities
 
-1. **Port conflict detection** (`commands/start.py`)
-   - Most complex logic in codebase
-   - Critical for user experience
-   - High risk of regression
+Status as of 0.34.0 (see [../docs/testing/README.md](../docs/testing/README.md) for the full list):
 
-2. **Project inspection** (`commands/inspect.py`)
-   - Core functionality
-   - Cache system testing
+### Done
+1. **Project inspection** (`commands/inspect.py`) - covered by `test_inspect_partial_refresh`, `test_inspect_label_recovery` (~62%).
+2. **Database operations** (`utils/db_utils.py`) - covered by `test_db_security`, `test_config_validation` (~68%).
 
-3. **Docker utilities** (`utils/docker_utils.py`)
-   - Foundation for all commands
-   - Error handling critical
+### Partial
+3. **Port conflict detection** (`commands/start.py`) - `test_yes_flag` covers the non-interactive/`--yes` contract, but the port-scanning and interactive-resolution logic has no dedicated suite (~59%).
 
-4. **Database operations** (`utils/db_utils.py`)
-   - Data integrity
-   - Cache consistency
-
-5. **Integration tests**
-   - Full command workflows
-   - End-to-end scenarios
+### Still needed
+4. **Docker utilities** (`utils/docker_utils.py`) - foundation for all commands; error handling only incidentally covered (~37%).
+5. **Port utilities** (`utils/port_utils.py`) - cross-platform process detection (~9%).
+6. **VS Code integration** (`utils/vscode_utils.py`) - container attachment fallback (~16%).
+7. **Configuration management** (`utils/config_utils.py`) - distinct from `db_utils`'s config validation (~37%).
+8. **Integration tests** - full command workflows, end-to-end scenarios.
+9. Other command modules at or near 0%: `backup.py`, `list.py`, `run.py`, `status.py`, `unlock.py`, `where.py`.
 
 ## Resources
 
