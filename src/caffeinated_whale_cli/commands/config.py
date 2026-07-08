@@ -413,6 +413,7 @@ def install_startup_cmd():
             console.print("[dim]Auto-inspect will start automatically on system boot/login.[/dim]")
         else:
             console.print("[red]Failed to install startup configuration.[/red]")
+            raise typer.Exit(code=1)
 
     except Exception as e:
         console.print(f"[red]Error installing startup: {e}[/red]")
@@ -443,6 +444,7 @@ def uninstall_startup_cmd():
             )
         else:
             console.print("[red]Failed to remove startup configuration.[/red]")
+            raise typer.Exit(code=1)
 
     except Exception as e:
         console.print(f"[red]Error removing startup: {e}[/red]")
