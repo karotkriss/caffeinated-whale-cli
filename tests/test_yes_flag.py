@@ -27,6 +27,9 @@ class _Answer:
     def ask(self):
         return self.value
 
+    def unsafe_ask(self):
+        return self.value
+
 
 def _set_tty(monkeypatch, is_tty):
     class _Stdin:
@@ -383,3 +386,34 @@ class TestStartMultiProjectLoop:
         assert exc.value.exit_code == 0
         # Aborted at 'b'; 'c' is never reached.
         assert processed == ["a", "b"]
+
+    def test_ctrlc_aborts_whole_run_option_b(self, monkeypatch, capsys):
+        """A KeyboardInterrupt at the port-conflict confirm (Option B) aborts
+        the entire multi-project run (non-zero exit), and later projects are
+        never reached."""
+        self._wire(monkeypatch)
+        processed = []
+
+        def fake_start(name, verbose=False, status=None, bench_selector=None):
+            processed.append(name)
+            if name != "a":
+                raise AssertionError("_start_project should not be reached after b's abort")
+
+        monkeypatch.setattr(start_mod, "_start_project", fake_start)
+
+        checks = []
+
+        def fake_check(name, verbose=False, assume_yes=False):
+            checks.append(name)
+            if name == "b":
+                raise KeyboardInterrupt()
+            return True
+
+        monkeypatch.setattr(start_mod, "_check_port_conflicts", fake_check)
+
+        with pytest.raises(typer.Exit) as exc:
+            start_mod.start(verbose=False, bench=None, yes=False, project_name=["a", "b", "c"])
+        assert exc.value.exit_code == 1, "Ctrl-C must exit non-zero"
+        assert checks == ["a", "b"], "aborted at b; c never checked"
+        # 'a' started successfully, 'b' aborted the run.
+        assert processed == ["a"]

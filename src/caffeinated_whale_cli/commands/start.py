@@ -123,7 +123,7 @@ def _check_port_conflicts(
                         f"Stop project '{conflicting_project}' to free up its ports?",
                         default=True,
                         auto_enter=False,
-                    ).ask()
+                    ).unsafe_ask()
 
                 if answer:
                     # Stop the conflicting project
@@ -147,7 +147,7 @@ def _check_port_conflicts(
                     raise typer.Exit(code=1)
         except KeyboardInterrupt:
             stderr_console.print("\n[yellow]Operation cancelled.[/yellow]")
-            raise typer.Exit(code=1) from None
+            raise
 
         # After stopping Frappe projects, re-check ALL originally required ports
         # to catch any remaining conflicts from non-Frappe processes
@@ -495,17 +495,15 @@ def start(
         # Check for port conflicts BEFORE starting containers
         try:
             _check_port_conflicts(name, verbose=actual_verbose, assume_yes=actual_yes)
-        except typer.Exit as e:
-            # Exit code 0 = user cancelled (Ctrl+C), should exit entire operation.
-            # Any nonzero exit = conflict couldn't be resolved / declined: skip this
-            # project, record the failure, and continue with the rest.
-            if e.exit_code == 0:
-                # User cancelled, propagate the exit to cancel entire operation
-                raise
-            else:
-                console.print(f"[yellow]Skipping project '{name}' due to port conflicts.[/yellow]")
-                had_failure = True
-                continue
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Operation cancelled.[/yellow]")
+            raise typer.Exit(code=1) from None
+        except typer.Exit:
+            # Port conflict unresolved or declined: skip this project, record the
+            # failure, and continue with the rest.
+            console.print(f"[yellow]Skipping project '{name}' due to port conflicts.[/yellow]")
+            had_failure = True
+            continue
 
         try:
             with stderr_console.status(
@@ -515,9 +513,9 @@ def start(
                     name, verbose=actual_verbose, status=status, bench_selector=actual_bench
                 )
         except typer.Exit as e:
-            # Exit code 0 = user cancelled (Ctrl+C), should exit entire operation.
-            # Any nonzero exit = project not found or its bench could not be started:
-            # skip it, record the failure, and continue with the rest.
+            # Exit code 0 = deliberate abort (e.g. inspect fallback), exit the
+            # entire operation. Any nonzero exit = project not found or its bench
+            # could not be started: skip it, record the failure, and continue.
             if e.exit_code == 0:
                 raise
             else:
