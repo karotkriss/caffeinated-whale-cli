@@ -720,6 +720,6 @@ class TestNormalPathSelectorsAndExitCodes:
         assert container.restore_calls() == []
         # questionary.select is stubbed to return None -> menu cancels.
         cancelled = [line for line in container.printed if "Restore cancelled." in line]
-        assert len(cancelled) == 1, (
-            f"expected 'Restore cancelled.' exactly once, got {len(cancelled)}: {cancelled}"
-        )
+        assert (
+            len(cancelled) == 1
+        ), f"expected 'Restore cancelled.' exactly once, got {len(cancelled)}: {cancelled}"
