@@ -939,6 +939,8 @@ cwcli restore [OPTIONS] PROJECT_NAME
 | Option | Description |
 |--------|-------------|
 | `-s`, `--site TEXT` | Site name to restore. If not provided, uses the default site (from `common_site_config.json`'s `default_site` or `sites/currentsite.txt`) |
+| `--latest` | Non-interactive: select the most recent backup set for the target site (bypasses the backup menu). A non-TTY without any selector exits non-zero instead of hanging |
+| `--backup-file TEXT` | Non-interactive: select the backup set whose database file matches this filename (or full container path). Bypasses the backup menu |
 | `--bench TEXT` | Which bench to target: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)) |
 | `-p`, `--path TEXT` | Explicit bench directory inside the container (lower-level alternative to `--bench`; cannot be combined with it) |
 | `--mariadb-root-username TEXT` | MariaDB root username (defaults to `root`; prompted interactively when omitted) |
@@ -948,7 +950,7 @@ cwcli restore [OPTIONS] PROJECT_NAME
 | `--receive` | **P2P Mode:** Receive backup from another machine via peer-to-peer transfer |
 | `--no-recache` | **Deprecated no-op:** the missing-apps check now reads app availability live from the bench, so it never re-caches. Kept for backward compatibility |
 | `--no-migrate` | Skip the post-restore `bench migrate` and instance restart. By default a successful restore runs `bench migrate` (bringing the restored DB to the code's schema) then restarts the instance |
-| `-y`, `--yes` | **`--receive` mode only:** Skip the restore confirmation prompts (the destructive-restore confirmation and the missing-apps prompt). A non-TTY without `--yes` refuses these and exits non-zero. Has no effect on the normal restore path |
+| `-y`, `--yes` | Skip the interactive confirmation prompts on both the normal and `--receive` restore paths (the destructive-restore confirmation and the missing-apps prompt). A non-TTY without `--yes` refuses these and exits non-zero. Does not remove the sendme-ticket or MariaDB-credential prompts |
 | `-v`, `--verbose` | Enable verbose output and show restore command details |
 
 **What It Does:**
@@ -985,6 +987,29 @@ cwcli restore my-project -v
 # Provide password via command line (not recommended for production)
 cwcli restore my-project --mariadb-root-password "secret123"
 ```
+
+**Non-interactive / scripted restores:**
+
+The backup-selection menu and both confirmation prompts (the destructive-restore and missing-apps warnings) can be skipped so a `cwcli restore` runs to completion with no prompts.
+Pass `--latest` or `--backup-file <name>` to pick a backup without the menu, `--yes` to skip the confirmations, and `--mariadb-root-password` (and `--mariadb-root-username` if not `root`) for credentials.
+A non-TTY missing any required selector or confirmation exits non-zero with a message naming the flag to pass, so a missing piece never hangs or silently succeeds.
+
+```bash
+# Restore the newest backup for the default site, fully non-interactive
+cwcli restore my-project --latest --yes --mariadb-root-password "secret123"
+
+# Restore a specific backup file by name or full container path
+cwcli restore my-project --backup-file 20251112_105638-development_localhost-database.sql.gz \
+  --yes --mariadb-root-password "secret123"
+
+# Restore into a specific site non-interactively
+cwcli restore my-project --site production.localhost --latest --yes \
+  --mariadb-root-password "secret123"
+```
+
+> A declined confirmation (interactive `n`, or Ctrl-C), or a non-TTY run without `--yes` at a confirmation, exits non-zero rather than `0`.
+> `--latest` and `--backup-file` are mutually exclusive, and neither applies to `--send`/`--receive` (those modes never reach the backup menu).
+
 
 **Example Session:**
 

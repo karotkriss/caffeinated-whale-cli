@@ -21,6 +21,7 @@ assert which command ran and how the secret was passed.
 """
 
 import subprocess
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -29,6 +30,7 @@ import pytest
 import typer
 
 from caffeinated_whale_cli.commands import restore as restore_mod
+from caffeinated_whale_cli.utils import docker_utils as docker_utils_mod
 
 BENCH_PATH = "/workspace/frappe-bench"
 SECRET_PW = "sup3r-s3cr3t-pw"
@@ -326,3 +328,403 @@ class TestReceiveMissingAppsGate:
 
         assert excinfo.value.exit_code != 0
         assert container.restore_calls() == []
+
+
+# ---------------------------------------------------------------------------
+# Issue #40: non-interactive selectors and honest exit codes for the NORMAL
+# (non --send/--receive) restore path.
+#
+# The receive path's tests above drove ``restore_receive_mode`` directly (a plain
+# function). The normal path lives inside the ``restore`` Typer command, so these
+# tests call ``restore_mod.restore(...)`` with EVERY parameter explicit - omitting
+# any Typer ``Option`` leaves its default truthy object (CLAUDE.md / AGENTS.md flag
+# this trap for ``inspect``; it applies identically here). The ``@handle_docker_errors``
+# decorator wrapping ``restore`` is bypassed by patching the docker client at the
+# module's imported names so the decorator's ``shutil.which`` / ``docker.from_env``
+# checks succeed.
+# ---------------------------------------------------------------------------
+
+DB_FILENAME = "20251109_225726-development_localhost-database.sql.gz"
+DB_FULL_PATH = f"{BENCH_PATH}/sites/development.localhost/private/backups/{DB_FILENAME}"
+
+
+def _backup_set(site_dir: str = "development.localhost", filename: str = DB_FILENAME) -> dict:
+    """Build a single backup-set dict shaped like ``group_and_sort_backups`` output."""
+    return {
+        "timestamp": datetime(2025, 11, 9, 22, 57, 26),
+        "timestamp_str": "20251109_225726",
+        "site_name": "development_localhost",
+        "site_dir": site_dir,
+        "database": {
+            "filename": filename,
+            "full_path": f"{BENCH_PATH}/sites/{site_dir}/private/backups/{filename}",
+        },
+        "files": None,
+        "private_files": None,
+        "site_config_backup": None,
+    }
+
+
+class FakeNormalContainer:
+    """Stand-in frappe container for the normal restore path.
+
+    Answers the bench/site ``test -d`` probes, the backup-scan ``find``, the
+    missing-apps ``ls apps``/``zcat`` probes, and the restore ``exec_run``. Every
+    call is recorded for assertions.
+    """
+
+    def __init__(self):
+        self.labels = {"com.docker.compose.service": "frappe"}
+        self.status = "running"
+        self.exec_calls: list[dict] = []
+        self.scan_backups: str = DB_FILENAME  # one backup file line
+        self.printed: list[str] = []
+
+    def exec_run(self, cmd, workdir=None, environment=None):
+        self.exec_calls.append({"cmd": cmd, "workdir": workdir, "environment": environment})
+        cmd_str = " ".join(cmd) if isinstance(cmd, (list, tuple)) else str(cmd)
+
+        # Bench sites dir exists.
+        if (
+            "test -d" in cmd_str
+            and f"{BENCH_PATH}/sites" in cmd_str
+            and "development.localhost" not in cmd_str
+        ):
+            return (0, b"")
+        # Site dir exists.
+        if "test -d" in cmd_str and f"{BENCH_PATH}/sites/development.localhost" in cmd_str:
+            return (0, b"")
+        # Backup-dir existence probe (test -d <backup_dir>).
+        if "test -d" in cmd_str and "private/backups" in cmd_str:
+            return (0, b"")
+        # Backup file existence probe (test -f).
+        if "test -f" in cmd_str and DB_FILENAME in cmd_str:
+            return (0, b"")
+        # List sites in scan_backups_for_all_sites.
+        if "find" in cmd_str and f"{BENCH_PATH}/sites" in cmd_str and "-maxdepth 1" in cmd_str:
+            return (0, f"{BENCH_PATH}/sites/development.localhost\n".encode())
+        # List backup files.
+        if "find" in cmd_str and "private/backups" in cmd_str:
+            return (0, f"{self.scan_backups}\n".encode()) if self.scan_backups else (0, b"")
+        # missing-apps: ls apps dir.
+        if "ls -1" in cmd_str and f"{BENCH_PATH}/apps" in cmd_str:
+            return (0, b"frappe\n")
+        # missing-apps: zcat the dump for installed_apps.
+        if "zcat" in cmd_str and "installed_apps" in cmd_str:
+            return (0, b"[\"frappe\"]','installed_apps'")
+        # The restore itself (and any migrate) - succeed.
+        return (0, b"")
+
+    @staticmethod
+    def _cmd_str(cmd) -> str:
+        return " ".join(cmd) if isinstance(cmd, (list, tuple)) else str(cmd)
+
+    def restore_calls(self) -> list[dict]:
+        return [
+            c
+            for c in self.exec_calls
+            if "restore" in self._cmd_str(c["cmd"]) and "--force" in self._cmd_str(c["cmd"])
+        ]
+
+
+def _run_normal(
+    monkeypatch,
+    container,
+    *,
+    site="development.localhost",
+    latest=False,
+    backup_file=None,
+    yes=False,
+    isatty=True,
+    confirm_answer=True,
+    mariadb_root_password=SECRET_PW,
+    missing_apps=None,
+    confirm_stub=None,
+    group_sort_stub=None,
+):
+    """Drive the ``restore`` Typer command's normal path against ``container``.
+
+    All external deps are stubbed: the docker client (the decorator + container
+    discovery + bench resolver), the bench-path cache, site/backup probes, the
+    missing-apps check, TipSpinner, questionary, and the post-restore restart
+    (skipped via ``no_migrate=True``). Every Typer parameter is passed explicitly
+    so no ``Option`` default object leaks through. The ``@handle_docker_errors``
+    decorator is bypassed by patching the docker module names it imports.
+    """
+    mono = MagicMock()
+    mono.isatty.return_value = isatty
+    monkeypatch.setattr(restore_mod.sys, "stdin", mono)
+
+    fake_docker = MagicMock()
+    fake_docker.ping.return_value = None
+    # @handle_docker_errors reads shutil + docker from docker_utils' own namespace.
+    monkeypatch.setattr(docker_utils_mod, "shutil", MagicMock())
+    monkeypatch.setattr(docker_utils_mod, "docker", MagicMock(from_env=lambda: fake_docker))
+
+    monkeypatch.setattr(restore_mod, "ensure_containers_running", lambda *a, **k: True)
+    monkeypatch.setattr(restore_mod, "get_project_containers", lambda name: [container])
+    monkeypatch.setattr(
+        restore_mod,
+        "resolve_bench_path",
+        lambda project, bench, path, *, on_ambiguous="error", verbose=False: BENCH_PATH,
+    )
+    monkeypatch.setattr(restore_mod.db_utils, "get_cached_project_data", lambda name: None)
+    monkeypatch.setattr(restore_mod, "scan_backups_for_all_sites", lambda *a, **k: [])
+    if group_sort_stub is not None:
+        monkeypatch.setattr(restore_mod, "group_and_sort_backups", group_sort_stub)
+    else:
+        monkeypatch.setattr(
+            restore_mod,
+            "group_and_sort_backups",
+            lambda backups, target: (
+                [_backup_set()] if (latest or backup_file is not None) else [],
+                [],
+            ),
+        )
+    monkeypatch.setattr(restore_mod, "check_missing_apps", lambda *a, **k: missing_apps or [])
+    monkeypatch.setattr(restore_mod, "TipSpinner", _NullSpinner)
+    monkeypatch.setattr(restore_mod.config_utils, "get_show_tips", lambda: False)
+    monkeypatch.setattr(restore_mod, "ensure_sendme_installed", lambda *a, **k: True)
+    monkeypatch.setattr(restore_mod.questionary, "select", lambda *a, **k: _stub_question(None))
+    if confirm_stub is not None:
+        monkeypatch.setattr(restore_mod.questionary, "confirm", confirm_stub)
+    else:
+        monkeypatch.setattr(
+            restore_mod.questionary, "confirm", lambda *a, **k: _stub_question(confirm_answer)
+        )
+
+    # Capture printed output so tests can assert on refusal messages.
+    def record(*args, **kwargs):
+        container.printed.append(" ".join(str(a) for a in args))
+
+    monkeypatch.setattr(restore_mod.console, "print", record)
+    monkeypatch.setattr(restore_mod.stderr_console, "print", record)
+
+    restore_mod.restore(
+        project_name="proj",
+        site=site,
+        latest=latest,
+        backup_file=backup_file,
+        bench=None,
+        bench_path=BENCH_PATH,
+        mariadb_root_username="root",
+        mariadb_root_password=mariadb_root_password,
+        admin_password=None,
+        send=False,
+        receive=False,
+        no_recache=True,
+        yes=yes,
+        no_migrate=True,
+        verbose=False,
+    )
+
+
+class TestSelectBackupSet:
+    """Issue #40 Step 6.1: pure-function unit tests for the non-interactive selector."""
+
+    def test_latest_picks_newest_target_backup(self):
+        newest = _backup_set(
+            filename="20251110_000000-development_localhost-database.sql.gz",
+        )
+        older = _backup_set(
+            filename="20251109_000000-development_localhost-database.sql.gz",
+        )
+        # group_and_sort_backups returns newest-first, so newest is index 0.
+        assert (
+            restore_mod.select_backup_set([newest, older], [], latest=True, backup_file=None)
+            is newest
+        )
+
+    def test_latest_with_empty_target_returns_none_not_other(self):
+        other = _backup_set(
+            site_dir="othersite",
+            filename="20251109_225726-othersite-database.sql.gz",
+        )
+        # --latest must NOT fall through to other_backups (that would restore a
+        # different site's data over the target site).
+        assert restore_mod.select_backup_set([], [other], latest=True, backup_file=None) is None
+
+    def test_backup_file_matches_by_filename(self):
+        bset = _backup_set()
+        assert (
+            restore_mod.select_backup_set([bset], [], latest=False, backup_file=DB_FILENAME) is bset
+        )
+
+    def test_backup_file_matches_by_full_path(self):
+        bset = _backup_set()
+        assert (
+            restore_mod.select_backup_set([bset], [], latest=False, backup_file=DB_FULL_PATH)
+            is bset
+        )
+
+    def test_backup_file_no_match_returns_none(self):
+        bset = _backup_set()
+        assert (
+            restore_mod.select_backup_set([bset], [], latest=False, backup_file="nope.sql.gz")
+            is None
+        )
+
+    def test_backup_file_searches_other_sites_too(self):
+        other = _backup_set(
+            site_dir="othersite",
+            filename="20251109_225726-othersite-database.sql.gz",
+        )
+        assert (
+            restore_mod.select_backup_set(
+                [],
+                [other],
+                latest=False,
+                backup_file="20251109_225726-othersite-database.sql.gz",
+            )
+            is other
+        )
+
+
+class TestNormalPathSelectorsAndExitCodes:
+    """Issue #40 Steps 6.2-6.7: the normal restore path is non-interactive-drivable
+    and declines/refusals exit non-zero."""
+
+    def test_non_tty_no_selector_exits_nonzero_and_does_not_restore(self, monkeypatch):
+        container = FakeNormalContainer()
+        with pytest.raises(typer.Exit) as excinfo:
+            _run_normal(monkeypatch, container, isatty=False, latest=False, backup_file=None)
+        assert excinfo.value.exit_code != 0
+        assert container.restore_calls() == []
+        assert any("--latest" in line or "--backup-file" in line for line in container.printed)
+
+    def test_non_tty_latest_yes_password_runs_restore(self, monkeypatch):
+        container = FakeNormalContainer()
+        # The full non-interactive happy path must reach the restore command.
+        _run_normal(monkeypatch, container, isatty=False, latest=True, yes=True)
+        calls = container.restore_calls()
+        assert len(calls) == 1
+        # The destructive + missing-apps prompts must NOT have fired under --yes
+        # (confirm is stubbed below to fail in the dedicated --yes test).
+
+    def test_non_tty_latest_no_yes_refuses_at_destructive_confirm(self, monkeypatch):
+        container = FakeNormalContainer()
+        with pytest.raises(typer.Exit) as excinfo:
+            _run_normal(monkeypatch, container, isatty=False, latest=True, yes=False)
+        assert excinfo.value.exit_code != 0
+        assert container.restore_calls() == []
+
+    def test_interactive_destructive_decline_exits_nonzero(self, monkeypatch):
+        container = FakeNormalContainer()
+        with pytest.raises(typer.Exit) as excinfo:
+            _run_normal(
+                monkeypatch,
+                container,
+                isatty=True,
+                latest=True,
+                yes=False,
+                confirm_answer=False,
+            )
+        assert excinfo.value.exit_code != 0
+        assert container.restore_calls() == []
+
+    def test_interactive_missing_apps_decline_exits_nonzero(self, monkeypatch):
+        container = FakeNormalContainer()
+        with pytest.raises(typer.Exit) as excinfo:
+            _run_normal(
+                monkeypatch,
+                container,
+                isatty=True,
+                latest=True,
+                yes=False,
+                confirm_answer=False,
+                missing_apps=["erpnext"],
+            )
+        assert excinfo.value.exit_code != 0
+        assert container.restore_calls() == []
+
+    def test_latest_and_backup_file_together_exits_nonzero_before_restore(self, monkeypatch):
+        container = FakeNormalContainer()
+        with pytest.raises(typer.Exit) as excinfo:
+            _run_normal(
+                monkeypatch,
+                container,
+                isatty=False,
+                latest=True,
+                backup_file=DB_FILENAME,
+                yes=True,
+            )
+        assert excinfo.value.exit_code != 0
+        assert container.restore_calls() == []
+
+    def test_yes_skips_both_confirms_no_prompt_fires(self, monkeypatch):
+        container = FakeNormalContainer()
+
+        # If questionary.confirm were reached it would RAISE, proving --yes bypassed it.
+        def fail_confirm(*a, **k):
+            raise AssertionError("confirm prompt must not fire under --yes")
+
+        _run_normal(
+            monkeypatch,
+            container,
+            isatty=True,  # TTY so the non-TTY refusal branch is NOT why no prompt fires
+            latest=True,
+            yes=True,
+            missing_apps=["erpnext"],  # forces the missing-apps gate to be reached
+            confirm_stub=fail_confirm,
+        )
+        assert len(container.restore_calls()) == 1
+
+    def test_non_tty_no_yes_with_missing_apps_refuses_nonzero(self, monkeypatch):
+        container = FakeNormalContainer()
+        with pytest.raises(typer.Exit) as excinfo:
+            _run_normal(
+                monkeypatch,
+                container,
+                isatty=False,
+                latest=True,
+                yes=False,
+                missing_apps=["erpnext"],
+            )
+        assert excinfo.value.exit_code != 0
+        assert container.restore_calls() == []
+
+    def test_backup_file_no_match_exits_nonzero(self, monkeypatch):
+        container = FakeNormalContainer()
+        # Inject a real (non-matching) backup set via group_sort_stub, using a
+        # spy so the test can prove this stub actually ran rather than being
+        # silently overwritten by _run_normal's own internal default patch
+        # (which returns a different, matching-by-coincidence backup set).
+        nope = _backup_set(
+            filename="20251109_000000-development_localhost-database.sql.gz",
+        )
+        group_sort_spy = MagicMock(return_value=([nope], []))
+        with pytest.raises(typer.Exit) as excinfo:
+            _run_normal(
+                monkeypatch,
+                container,
+                isatty=False,
+                backup_file="does-not-exist.sql.gz",
+                yes=True,
+                group_sort_stub=group_sort_spy,
+            )
+        assert group_sort_spy.called
+        assert excinfo.value.exit_code != 0
+        assert container.restore_calls() == []
+
+    def test_interactive_menu_decline_prints_cancelled_once_and_exits_nonzero(self, monkeypatch):
+        """Interactive Ctrl-C on the backup-selection menu: "Restore cancelled."
+        prints EXACTLY ONCE (display_backup_selection_menu's own internal print on
+        a None result) and the command exits non-zero. Guards against the
+        double-print regression the exit-code-flip at the call site introduced."""
+        container = FakeNormalContainer()
+        with pytest.raises(typer.Exit) as excinfo:
+            _run_normal(
+                monkeypatch,
+                container,
+                isatty=True,  # TTY so the interactive menu branch is taken
+                latest=False,
+                backup_file=None,
+                yes=False,
+            )
+        assert excinfo.value.exit_code != 0
+        assert container.restore_calls() == []
+        # questionary.select is stubbed to return None -> menu cancels.
+        cancelled = [line for line in container.printed if "Restore cancelled." in line]
+        assert (
+            len(cancelled) == 1
+        ), f"expected 'Restore cancelled.' exactly once, got {len(cancelled)}: {cancelled}"
