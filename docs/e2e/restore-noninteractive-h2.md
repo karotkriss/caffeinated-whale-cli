@@ -5,11 +5,13 @@ Real-instance end-to-end run on an **isolated** throwaway environment (a tempora
 `cwclie2e40`, and dedicated volumes). The captain's real projects and real
 `~/.cwcli` were never touched, and the instance was torn down afterwards.
 
-One bench was built with `cwcli init`:
+Two benches were built with `cwcli init`, each on its own isolated `HOME`:
 
 - **`cwclie2e40`** - Frappe **version-15** (`15.113.4`), site `development.localhost`,
   port 8100. A `bench backup --with-files` was taken so the restore had a real
-  backup set to select.
+  backup set to select. Covers criteria 2 (`--latest`), 3, 4, and 5.
+- **`cwcli-e2e-h2b`** - same Frappe version/site/port, built in a follow-up session
+  to cover the `--backup-file` happy path specifically (see criterion 2 below).
 
 Interactive prompts were driven through a real pty (pexpect); non-interactive
 paths were driven with `echo |` (a non-TTY stdin). prompt_toolkit's raw-mode
@@ -27,6 +29,22 @@ the prompt.
   ✓ Successfully restored site 'development.localhost'
   ✓ Migrated site 'development.localhost'
   ✓ Instance restarted (logs: /tmp/bench-cwclie2e40.log)
+  exit=0
+  ```
+
+  The `--backup-file` selector was verified the same way on a second isolated
+  throwaway instance (`cwcli-e2e-h2b`, port 8100, Frappe version-15,
+  `development.localhost`). `echo | cwcli restore cwcli-e2e-h2b --site
+  development.localhost --backup-file
+  20260709_024146-development_localhost-database.sql.gz --yes
+  --mariadb-root-password 123` selected that exact backup by filename (bypassing
+  the menu, same as `--latest`), completed with ZERO prompts, and exited `0`:
+  ```
+  Backup: 20260709_024146-development_localhost-database.sql.gz
+  Proceeding without confirmation (--yes).
+  ✓ Successfully restored site 'development.localhost'
+  ✓ Migrated site 'development.localhost'
+  ✓ Instance restarted (logs: /tmp/bench-cwcli-e2e-h2b.log)
   exit=0
   ```
 
@@ -72,13 +90,17 @@ the prompt.
 
 ## Unit + lint gates
 
-- `uv run pytest` green (320 passed, including the 15 new tests in
-  `tests/test_restore_safety.py`: `TestSelectBackupSet` for the pure `select_backup_set`
-  helper, and `TestNormalPathSelectorsAndExitCodes` for the Typer command).
+- `uv run pytest` green (321 passed, including 24 in `tests/test_restore_safety.py`:
+  `TestSelectBackupSet` for the pure `select_backup_set` helper, and
+  `TestNormalPathSelectorsAndExitCodes` for the Typer command - the latter grew
+  through subsequent review rounds to also guard the `--yes` confirm-bypass
+  behavior, the menu-decline single-print fix, and the `--backup-file` no-match
+  path genuinely exercising a real non-matching backup set via an injectable
+  `group_sort_stub`).
 - `uv run mypy src/` zero errors.
 - `uv run black --check src tests` and `uv run ruff check src tests` clean.
 
 ## Teardown
 
-The `cwclie2e40` project was removed with `cwcli rm --volumes --yes` and the isolated
-`HOME` directory deleted afterwards.
+Both `cwclie2e40` and `cwcli-e2e-h2b` were removed with `cwcli rm --volumes --yes`
+and their isolated `HOME` directories deleted afterwards.
