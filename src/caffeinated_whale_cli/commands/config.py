@@ -415,6 +415,8 @@ def install_startup_cmd():
             console.print("[red]Failed to install startup configuration.[/red]")
             raise typer.Exit(code=1)
 
+    except typer.Exit:
+        raise
     except Exception as e:
         console.print(f"[red]Error installing startup: {e}[/red]")
         raise typer.Exit(code=1) from e
@@ -446,6 +448,8 @@ def uninstall_startup_cmd():
             console.print("[red]Failed to remove startup configuration.[/red]")
             raise typer.Exit(code=1)
 
+    except typer.Exit:
+        raise
     except Exception as e:
         console.print(f"[red]Error removing startup: {e}[/red]")
         raise typer.Exit(code=1) from e
