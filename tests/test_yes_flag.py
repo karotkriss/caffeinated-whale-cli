@@ -27,6 +27,9 @@ class _Answer:
     def ask(self):
         return self.value
 
+    def unsafe_ask(self):
+        return self.value
+
 
 def _set_tty(monkeypatch, is_tty):
     class _Stdin:
@@ -34,6 +37,16 @@ def _set_tty(monkeypatch, is_tty):
             return is_tty
 
     monkeypatch.setattr(cmd_utils.sys, "stdin", _Stdin())
+
+
+def _set_start_tty(monkeypatch, is_tty):
+    """``start._check_port_conflicts`` reads ``start.sys.stdin`` (its own import)."""
+
+    class _Stdin:
+        def isatty(self):
+            return is_tty
+
+    monkeypatch.setattr(start_mod.sys, "stdin", _Stdin())
 
 
 # ------------------------------------------------------------- confirm_or_exit
@@ -141,6 +154,9 @@ class TestStartPortConflictYes:
 
     def test_without_yes_prompts(self, monkeypatch):
         stopped = self._wire_conflict(monkeypatch)
+        # Interactive TTY: the prompt is offered (a non-TTY without --yes refuses,
+        # covered separately in test_exit_codes.py).
+        _set_start_tty(monkeypatch, True)
         asked = []
 
         def confirm(*a, **k):
@@ -182,6 +198,40 @@ class TestEnsureContainersAutoStart:
         result = cmd_utils.ensure_containers_running("proj", require_running=True, auto_start=True)
         assert result is True
         assert started == ["proj"]
+
+
+# ------------------------------------------------------------------ logs --yes
+
+
+class TestLogsYes:
+    """``logs`` threads ``--yes`` into ``ensure_containers_running(auto_start=...)``
+    exactly like run/backup/update/open/unlock, so a stopped project auto-starts."""
+
+    def test_yes_threads_auto_start(self, monkeypatch):
+        from caffeinated_whale_cli.commands import logs as logs_mod
+
+        recorded = {}
+
+        def rec_ensure(project_name, **kwargs):
+            recorded.update(kwargs)
+            recorded["project_name"] = project_name
+            return True
+
+        monkeypatch.setattr(logs_mod, "ensure_containers_running", rec_ensure)
+        # Stop right after the gate: an empty container list exits 1 (not found).
+        monkeypatch.setattr(logs_mod, "get_project_containers", lambda name: [])
+        # Neutralize the @handle_docker_errors docker preflight.
+        monkeypatch.setattr(docker_utils.shutil, "which", lambda _n: "/usr/bin/docker")
+        monkeypatch.setattr(
+            docker_utils.docker, "from_env", lambda: type("C", (), {"ping": lambda s: True})()
+        )
+
+        with pytest.raises(typer.Exit):
+            logs_mod.logs(project_name="proj", follow=True, lines=100, yes=True, verbose=False)
+
+        assert recorded["auto_start"] is True
+        assert recorded["require_running"] is True
+        assert recorded["project_name"] == "proj"
 
 
 # ------------------------------------------------ start's inspect-fallback exit
@@ -281,9 +331,10 @@ class TestStartProjectBenchPathOverride:
 
 class TestStartMultiProjectLoop:
     """A ``typer.Exit`` from ``_start_project`` must not abort sibling projects in
-    a ``cwcli start a b c`` run: a non-zero exit (e.g. a multi-bench ambiguity or
-    a no-bench inspect failure) skips just that project, while an exit code 0
-    (user cancel / Ctrl-C) aborts the whole run."""
+    a ``cwcli start a b c`` run: a non-zero exit (e.g. a not-found project, a
+    multi-bench ambiguity, or a no-bench inspect failure) skips just that project
+    but makes the whole command exit 1 at the end (honest failures-collector),
+    while an exit code 0 (user cancel / Ctrl-C) aborts the whole run immediately."""
 
     def _wire(self, monkeypatch):
         # Non-interactive stdin so the loop does not try to read piped names.
@@ -306,8 +357,11 @@ class TestStartMultiProjectLoop:
             return None
 
         monkeypatch.setattr(start_mod, "_start_project", fake_start)
-        # Must NOT raise: 'b' is skipped, but 'a' and 'c' are still processed.
-        start_mod.start(verbose=False, bench=None, yes=False, project_name=["a", "b", "c"])
+        # 'b' is skipped, but 'a' and 'c' are still processed - and because 'b'
+        # failed, the whole command exits 1 at the end (not silently 0).
+        with pytest.raises(typer.Exit) as exc:
+            start_mod.start(verbose=False, bench=None, yes=False, project_name=["a", "b", "c"])
+        assert exc.value.exit_code == 1
         assert processed == ["a", "b", "c"]
         out = capsys.readouterr().out
         assert "Instance 'a' started." in out
@@ -332,3 +386,34 @@ class TestStartMultiProjectLoop:
         assert exc.value.exit_code == 0
         # Aborted at 'b'; 'c' is never reached.
         assert processed == ["a", "b"]
+
+    def test_ctrlc_aborts_whole_run_option_b(self, monkeypatch, capsys):
+        """A KeyboardInterrupt at the port-conflict confirm (Option B) aborts
+        the entire multi-project run (non-zero exit), and later projects are
+        never reached."""
+        self._wire(monkeypatch)
+        processed = []
+
+        def fake_start(name, verbose=False, status=None, bench_selector=None):
+            processed.append(name)
+            if name != "a":
+                raise AssertionError("_start_project should not be reached after b's abort")
+
+        monkeypatch.setattr(start_mod, "_start_project", fake_start)
+
+        checks = []
+
+        def fake_check(name, verbose=False, assume_yes=False):
+            checks.append(name)
+            if name == "b":
+                raise KeyboardInterrupt()
+            return True
+
+        monkeypatch.setattr(start_mod, "_check_port_conflicts", fake_check)
+
+        with pytest.raises(typer.Exit) as exc:
+            start_mod.start(verbose=False, bench=None, yes=False, project_name=["a", "b", "c"])
+        assert exc.value.exit_code == 1, "Ctrl-C must exit non-zero"
+        assert checks == ["a", "b"], "aborted at b; c never checked"
+        # 'a' started successfully, 'b' aborted the run.
+        assert processed == ["a"]
