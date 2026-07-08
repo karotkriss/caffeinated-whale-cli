@@ -440,6 +440,7 @@ def _run_normal(
     mariadb_root_password=SECRET_PW,
     missing_apps=None,
     confirm_stub=None,
+    group_sort_stub=None,
 ):
     """Drive the ``restore`` Typer command's normal path against ``container``.
 
@@ -469,14 +470,17 @@ def _run_normal(
     )
     monkeypatch.setattr(restore_mod.db_utils, "get_cached_project_data", lambda name: None)
     monkeypatch.setattr(restore_mod, "scan_backups_for_all_sites", lambda *a, **k: [])
-    monkeypatch.setattr(
-        restore_mod,
-        "group_and_sort_backups",
-        lambda backups, target: (
-            [_backup_set()] if (latest or backup_file is not None) else [],
-            [],
-        ),
-    )
+    if group_sort_stub is not None:
+        monkeypatch.setattr(restore_mod, "group_and_sort_backups", group_sort_stub)
+    else:
+        monkeypatch.setattr(
+            restore_mod,
+            "group_and_sort_backups",
+            lambda backups, target: (
+                [_backup_set()] if (latest or backup_file is not None) else [],
+                [],
+            ),
+        )
     monkeypatch.setattr(restore_mod, "check_missing_apps", lambda *a, **k: missing_apps or [])
     monkeypatch.setattr(restore_mod, "TipSpinner", _NullSpinner)
     monkeypatch.setattr(restore_mod.config_utils, "get_show_tips", lambda: False)
@@ -681,15 +685,14 @@ class TestNormalPathSelectorsAndExitCodes:
 
     def test_backup_file_no_match_exits_nonzero(self, monkeypatch):
         container = FakeNormalContainer()
-        # Stub group_and_sort_backups to return a set whose filename does NOT match.
+        # Inject a real (non-matching) backup set via group_sort_stub, using a
+        # spy so the test can prove this stub actually ran rather than being
+        # silently overwritten by _run_normal's own internal default patch
+        # (which returns a different, matching-by-coincidence backup set).
         nope = _backup_set(
             filename="20251109_000000-development_localhost-database.sql.gz",
         )
-        monkeypatch.setattr(
-            restore_mod,
-            "group_and_sort_backups",
-            lambda backups, target: ([nope], []),
-        )
+        group_sort_spy = MagicMock(return_value=([nope], []))
         with pytest.raises(typer.Exit) as excinfo:
             _run_normal(
                 monkeypatch,
@@ -697,7 +700,9 @@ class TestNormalPathSelectorsAndExitCodes:
                 isatty=False,
                 backup_file="does-not-exist.sql.gz",
                 yes=True,
+                group_sort_stub=group_sort_spy,
             )
+        assert group_sort_spy.called
         assert excinfo.value.exit_code != 0
         assert container.restore_calls() == []
 
