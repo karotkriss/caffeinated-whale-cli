@@ -1805,8 +1805,8 @@ def restore(
                 f"'{site}'."
             )
             stderr_console.print(
-                f"[dim]Tip: run 'cwcli restore {project_name} --site {site}' to see "
-                "available backups interactively.[/dim]"
+                f"[dim]Tip: run 'cwcli inspect {project_name}' to check the project's "
+                "state (a non-interactive session cannot browse backups interactively).[/dim]"
             )
             raise typer.Exit(code=1)
     elif not sys.stdin.isatty():
