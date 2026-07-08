@@ -89,7 +89,10 @@ def clear_cache(
                 f"[yellow]No cache found for project '[bold cyan]{project_name}[/bold cyan]'.[/yellow]"
             )
     else:
+        # A usage error: no target given. Exit 1 (Typer's own usage errors exit 2;
+        # this is our own message, printed once).
         console.print("Please specify a project name or use the --all flag.")
+        raise typer.Exit(code=1)
 
 
 @cache_app.command("path")
@@ -144,7 +147,7 @@ def enable_auto_inspect(
         if interval:
             if interval < 60:
                 console.print("[red]Error: Interval must be at least 60 seconds.[/red]")
-                return
+                raise typer.Exit(code=1)
             config_utils.set_auto_inspect_interval(interval)
             console.print(f"[green]Inspection interval set to {interval} seconds.[/green]")
 
@@ -164,8 +167,11 @@ def enable_auto_inspect(
         console.print(
             "[yellow]Run 'cwcli config auto-inspect start' to start the background process now.[/yellow]"
         )
+    except typer.Exit:
+        raise
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(code=1) from e
 
 
 @auto_inspect_app.command("disable")
@@ -183,6 +189,7 @@ def disable_auto_inspect():
         console.print("[green]Auto-inspect disabled.[/green]")
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(code=1) from e
 
 
 @auto_inspect_app.command("start")
@@ -211,7 +218,7 @@ def start_auto_inspect(
             console.print(
                 "[red]Auto-inspect is not enabled. Run 'cwcli config auto-inspect enable' first.[/red]"
             )
-            return
+            raise typer.Exit(code=1)
 
         auto_inspect.start_daemon()
         console.print("[green]Auto-inspect background process started.[/green]")
@@ -230,8 +237,11 @@ def start_auto_inspect(
                 console.print(
                     "\n[yellow]Warning: Could not install startup configuration.[/yellow]"
                 )
+    except typer.Exit:
+        raise
     except Exception as e:
         console.print(f"[red]Error starting background process: {e}[/red]")
+        raise typer.Exit(code=1) from e
 
 
 @auto_inspect_app.command("stop")
@@ -241,6 +251,8 @@ def stop_auto_inspect():
     """
     try:
         if not auto_inspect.is_running():
+            # Asking to stop something already stopped is a no-op success, not an
+            # error, so this stays exit 0 (idempotent).
             console.print("[yellow]Auto-inspect background process is not running.[/yellow]")
             return
 
@@ -248,6 +260,7 @@ def stop_auto_inspect():
         console.print("[green]Auto-inspect background process stopped.[/green]")
     except Exception as e:
         console.print(f"[red]Error stopping background process: {e}[/red]")
+        raise typer.Exit(code=1) from e
 
 
 @auto_inspect_app.command("status")
@@ -316,7 +329,7 @@ def set_interval(
     try:
         if interval < 60:
             console.print("[red]Error: Interval must be at least 60 seconds.[/red]")
-            return
+            raise typer.Exit(code=1)
 
         config_utils.set_auto_inspect_interval(interval)
         console.print(f"[green]Inspection interval set to {interval} seconds.[/green]")
@@ -326,8 +339,11 @@ def set_interval(
                 "[yellow]Note: Restart the background process for the new interval to take effect.[/yellow]"
             )
             console.print("[dim]Run: cwcli config auto-inspect restart[/dim]")
+    except typer.Exit:
+        raise
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(code=1) from e
 
 
 @auto_inspect_app.command("restart")
@@ -348,15 +364,18 @@ def restart_auto_inspect():
             console.print(
                 "[red]Auto-inspect is not enabled. Run 'cwcli config auto-inspect enable' first.[/red]"
             )
-            return
+            raise typer.Exit(code=1)
 
         auto_inspect.start_daemon()
         console.print("[green]Auto-inspect background process restarted.[/green]")
         console.print(
             f"[cyan]Running projects will be inspected every {config['interval']} seconds.[/cyan]"
         )
+    except typer.Exit:
+        raise
     except Exception as e:
         console.print(f"[red]Error restarting background process: {e}[/red]")
+        raise typer.Exit(code=1) from e
 
 
 @auto_inspect_app.command("install-startup")
@@ -394,9 +413,13 @@ def install_startup_cmd():
             console.print("[dim]Auto-inspect will start automatically on system boot/login.[/dim]")
         else:
             console.print("[red]Failed to install startup configuration.[/red]")
+            raise typer.Exit(code=1)
 
+    except typer.Exit:
+        raise
     except Exception as e:
         console.print(f"[red]Error installing startup: {e}[/red]")
+        raise typer.Exit(code=1) from e
 
 
 @auto_inspect_app.command("uninstall-startup")
@@ -423,9 +446,13 @@ def uninstall_startup_cmd():
             )
         else:
             console.print("[red]Failed to remove startup configuration.[/red]")
+            raise typer.Exit(code=1)
 
+    except typer.Exit:
+        raise
     except Exception as e:
         console.print(f"[red]Error removing startup: {e}[/red]")
+        raise typer.Exit(code=1) from e
 
 
 @tips_app.command("enable")
@@ -445,6 +472,7 @@ def enable_tips():
         )
     except Exception as e:
         console.print(f"[red]Error enabling tips: {e}[/red]")
+        raise typer.Exit(code=1) from e
 
 
 @tips_app.command("disable")
@@ -460,6 +488,7 @@ def disable_tips():
         console.print("[dim]Only basic status messages will be shown during operations.[/dim]")
     except Exception as e:
         console.print(f"[red]Error disabling tips: {e}[/red]")
+        raise typer.Exit(code=1) from e
 
 
 @tips_app.command("status")
