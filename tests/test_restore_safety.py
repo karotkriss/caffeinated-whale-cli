@@ -439,6 +439,7 @@ def _run_normal(
     confirm_answer=True,
     mariadb_root_password=SECRET_PW,
     missing_apps=None,
+    confirm_stub=None,
 ):
     """Drive the ``restore`` Typer command's normal path against ``container``.
 
@@ -481,9 +482,12 @@ def _run_normal(
     monkeypatch.setattr(restore_mod.config_utils, "get_show_tips", lambda: False)
     monkeypatch.setattr(restore_mod, "ensure_sendme_installed", lambda *a, **k: True)
     monkeypatch.setattr(restore_mod.questionary, "select", lambda *a, **k: _stub_question(None))
-    monkeypatch.setattr(
-        restore_mod.questionary, "confirm", lambda *a, **k: _stub_question(confirm_answer)
-    )
+    if confirm_stub is not None:
+        monkeypatch.setattr(restore_mod.questionary, "confirm", confirm_stub)
+    else:
+        monkeypatch.setattr(
+            restore_mod.questionary, "confirm", lambda *a, **k: _stub_question(confirm_answer)
+        )
 
     # Capture printed output so tests can assert on refusal messages.
     def record(*args, **kwargs):
@@ -650,7 +654,6 @@ class TestNormalPathSelectorsAndExitCodes:
         def fail_confirm(*a, **k):
             raise AssertionError("confirm prompt must not fire under --yes")
 
-        monkeypatch.setattr(restore_mod.questionary, "confirm", fail_confirm)
         _run_normal(
             monkeypatch,
             container,
@@ -658,6 +661,7 @@ class TestNormalPathSelectorsAndExitCodes:
             latest=True,
             yes=True,
             missing_apps=["erpnext"],  # forces the missing-apps gate to be reached
+            confirm_stub=fail_confirm,
         )
         assert len(container.restore_calls()) == 1
 
