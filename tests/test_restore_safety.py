@@ -700,3 +700,26 @@ class TestNormalPathSelectorsAndExitCodes:
             )
         assert excinfo.value.exit_code != 0
         assert container.restore_calls() == []
+
+    def test_interactive_menu_decline_prints_cancelled_once_and_exits_nonzero(self, monkeypatch):
+        """Interactive Ctrl-C on the backup-selection menu: "Restore cancelled."
+        prints EXACTLY ONCE (display_backup_selection_menu's own internal print on
+        a None result) and the command exits non-zero. Guards against the
+        double-print regression the exit-code-flip at the call site introduced."""
+        container = FakeNormalContainer()
+        with pytest.raises(typer.Exit) as excinfo:
+            _run_normal(
+                monkeypatch,
+                container,
+                isatty=True,  # TTY so the interactive menu branch is taken
+                latest=False,
+                backup_file=None,
+                yes=False,
+            )
+        assert excinfo.value.exit_code != 0
+        assert container.restore_calls() == []
+        # questionary.select is stubbed to return None -> menu cancels.
+        cancelled = [line for line in container.printed if "Restore cancelled." in line]
+        assert len(cancelled) == 1, (
+            f"expected 'Restore cancelled.' exactly once, got {len(cancelled)}: {cancelled}"
+        )
