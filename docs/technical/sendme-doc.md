@@ -808,11 +808,10 @@ sendme send -v myfile.txt
 
 ## Integration with cwcli
 
-### Planned Features
+### Shipped Implementation
 
 The cwcli project integrates sendme for peer-to-peer Frappe backup sharing.
-
-#### Current Implementation (v0.16.0)
+This shipped as `cwcli restore --send` / `cwcli restore --receive`, not as separate `backup send`/`backup receive` commands or a `restore --from-peer` flag - see the root [README's P2P Backup Transfer section](../../README.md#command-reference) for the full flag reference and example output.
 
 **Module:** `src/caffeinated_whale_cli/utils/sendme_utils.py`
 
@@ -822,28 +821,19 @@ The cwcli project integrates sendme for peer-to-peer Frappe backup sharing.
 - PATH setup for Unix and Windows
 - Clipboard integration
 
-#### Future cwcli Commands
-
-**Send backup to peer:**
+**Send a backup:**
 ```bash
-cwcli backup send my-project
+cwcli restore my-project --send
 # Internally: sendme send <backup-file> -c
 ```
 
-**Receive backup from peer:**
+**Receive and restore a backup:**
 ```bash
-cwcli backup receive iroh-blob:...
-# Internally: sendme receive <ticket>
-# Then: cwcli restore my-project --from-received
+cwcli restore my-project --receive
+# Internally: sendme receive <ticket>, then bench restore on the downloaded file
 ```
 
-**Interactive restore from remote:**
-```bash
-cwcli restore my-project --from-peer
-# Prompts for ticket
-# Downloads via sendme
-# Restores backup automatically
-```
+`-y`/`--yes` skips the destructive-restore and missing-apps confirmations on the receive path for scripted use; without a TTY and without `--yes`, cwcli refuses and exits non-zero rather than overwriting the site silently.
 
 ### Why sendme for Frappe Backups?
 
@@ -864,14 +854,14 @@ cwcli restore my-project --from-peer
 
 ```bash
 # Production server
-cwcli backup send production-site
+cwcli restore production-site --send
 # Output: Ticket copied to clipboard
 
 # Developer shares ticket via Slack
 
 # Developer laptop
-cwcli restore dev-site --receive-ticket iroh-blob:...
-# Downloads backup, verifies hash, restores automatically
+cwcli restore dev-site --receive
+# Prompts for the ticket, downloads, verifies hash, restores automatically
 ```
 
 ---

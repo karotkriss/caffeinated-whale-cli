@@ -56,13 +56,9 @@ uv run pytest -x
 
 ### Current Test Coverage
 
-- **`test_completion_utils.py`** - Tab completion utilities (92% coverage)
-  - Project name completion
-  - App name completion
-  - Site name completion
-  - Bench name completion
-  - Cache functionality
-  - Docker client management
+`tests/` holds 18 `test_*.py` suites totaling 321 tests at ~41% overall coverage (measured with `uv run pytest --cov` at 0.34.0).
+See the [Testing Directory Index](./README.md#current-status) for the full per-area breakdown.
+`test_completion_utils.py` remains the most complete single-module suite (tab completion, ~92% coverage): project name completion, app name completion, site name completion, bench name completion, cache functionality, Docker client management.
 
 ### Test Organization
 
@@ -201,7 +197,7 @@ def temp_cache():
 
 - **Minimum**: 80% coverage for new code
 - **Target**: 90%+ coverage for critical paths
-- **Current**: 92% for completion utilities
+- **Current**: ~41% overall at 0.34.0; `completion_utils.py` is the highest-covered module at ~92% (see the [Testing Directory Index](./README.md#current-status) for the rest)
 
 ### Checking Coverage
 
@@ -320,13 +316,13 @@ uv run pytest -l  # Show local variables
 
 ## Future Test Coverage
 
-Areas that need test coverage:
+Status as of 0.34.0 (see the [Testing Directory Index](./README.md#future-test-priorities) for the full list):
 
-- [ ] `commands/inspect.py` - Project inspection logic
-- [ ] `commands/start.py` - Port conflict detection
+- [x] `commands/inspect.py` - Project inspection logic (`test_inspect_partial_refresh`, `test_inspect_label_recovery`)
+- [x] `utils/db_utils.py` - Cache database operations (`test_db_security`, `test_config_validation`)
+- [~] `commands/start.py` - Port conflict detection; `test_yes_flag` covers the non-interactive contract, but the port-scanning logic itself has no dedicated suite
 - [ ] `utils/port_utils.py` - Port management
 - [ ] `utils/docker_utils.py` - Docker interactions
-- [ ] `utils/db_utils.py` - Cache database operations
 - [ ] Integration tests for full command flows
 
 ## Resources

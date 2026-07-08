@@ -765,82 +765,66 @@ sites/*/private/backups/
 
 ## Integration with cwcli
 
-### Potential Commands
+### What cwcli Actually Provides Today
 
-Based on Frappe's backup/restore capabilities, cwcli could implement:
+Backup and restore shipped as `cwcli backup` and `cwcli restore` (flags verified against the Typer signatures in `src/caffeinated_whale_cli/commands/backup.py` and `restore.py` at 0.34.0), not as the `cwcli backup list`/`restore`/`cleanup` subcommand family sketched in an earlier draft of this doc.
 
-#### `cwcli backup`
+#### `cwcli backup` - create a backup
 
 ```bash
-# Backup project's default site
+# Backup the default site (resolved from common_site_config.json or currentsite.txt)
 cwcli backup my-project
 
-# Backup with files
-cwcli backup my-project --with-files --compress
+# Backup a specific site, with public and private files
+cwcli backup my-project --site example.com --with-files
 
-# Backup to external location
-cwcli backup my-project --path /mnt/backups
-
-# Database-only backup (fast)
-cwcli backup my-project --database-only
-
-# Exclude log tables
-cwcli backup my-project --exclude 'Error Log,Access Log'
+# Target a specific bench in a multi-bench project, auto-starting stopped containers
+cwcli backup my-project --bench 1 --yes
 ```
 
-#### `cwcli backup list`
+There is no `list`/`cleanup`/`--database-only`/`--exclude` subcommand or flag; `cwcli backup` runs `bench backup` for one site per invocation.
+
+#### `cwcli restore` - restore a site from a local backup
 
 ```bash
-# List available backups
-cwcli backup list my-project
+# Interactive backup-selection menu
+cwcli restore my-project
 
-# Output:
-┌─────────────────────┬──────────────┬──────────┬─────────┐
-│ Timestamp           │ Type         │ Site     │ Size    │
-├─────────────────────┼──────────────┼──────────┼─────────┤
-│ 2025-11-09 22:59:46 │ database     │ default  │ 45.2 MB │
-│ 2025-11-09 22:59:10 │ full (tar)   │ default  │ 2.1 GB  │
-│ 2025-11-09 22:57:26 │ full (tgz)   │ default  │892 MB   │
-└─────────────────────┴──────────────┴──────────┴─────────┘
+# Non-interactive: pick the newest backup for the target site
+cwcli restore my-project --latest --yes
 
-# Show grouped by backup set
-cwcli backup list my-project --grouped
+# Non-interactive: pick a specific backup file
+cwcli restore my-project --backup-file 20251109_225726-my_project-database.sql.gz --yes
 ```
 
-#### `cwcli backup restore`
+`--latest` and `--backup-file` are mutually exclusive selectors that replace the interactive menu; both require `--yes` (or an interactive TTY) to pass the destructive-restore confirmation.
+`--no-recache` is a **deprecated no-op** flag kept only for backward compatibility - the missing-apps check has read app availability live from the bench since the fixes in `docs/e2e/restore-inspect-e2e-r6.md`, so this flag no longer does anything.
+
+#### `cwcli restore --send` / `--receive` - P2P backup transfer
 
 ```bash
-# Restore latest backup
-cwcli backup restore my-project
+# On the source machine: share a backup via sendme
+cwcli restore my-project --send
 
-# Restore specific backup
-cwcli backup restore my-project --timestamp 20251109_225726
-
-# Restore with files
-cwcli backup restore my-project --with-files --timestamp 20251109_225726
-
-# Restore to different site
-cwcli backup restore my-project --to-site new-site.example.com
+# On the destination machine: receive and restore it
+cwcli restore my-project --receive --yes
 ```
 
-#### `cwcli backup cleanup`
+This is the "peer-to-peer restore" capability once sketched here as `cwcli backup send`/`backup receive`/`restore --from-peer`; see [sendme-doc.md](./sendme-doc.md#shipped-implementation) and the root [README's P2P Backup Transfer section](../../README.md#command-reference) for the full flag reference.
 
-```bash
-# Remove backups older than 30 days
-cwcli backup cleanup my-project --older-than 30
+#### `rm`'s backup-before-delete gate
 
-# Keep only last N backups
-cwcli backup cleanup my-project --keep 10
-
-# Dry run (show what would be deleted)
-cwcli backup cleanup my-project --older-than 30 --dry-run
-```
+`cwcli rm` is not a backup command, but it backs up every site before deleting a project's volumes: a failed or unverifiable `bench backup` aborts the removal before any container is touched.
+See the "Data-safety gates" section of the project's `AGENTS.md`/`CLAUDE.md` for the exact contract.
+`--no-backup` opts out.
 
 ### Implementation Considerations
 
+The sections below describe how the shipped commands are implemented, kept for background on the container-exec and security-validation approach (the code samples are illustrative, not verbatim - read the actual command modules for the current implementation).
+
 #### 1. Container Execution
 
-Since cwcli manages Docker containers, backup commands would execute inside the Frappe container:
+Since cwcli manages Docker containers, backup commands execute inside the Frappe container:
 
 ```python
 def backup_site(project_name: str, site: str = None, with_files: bool = False):
@@ -906,22 +890,6 @@ invalid_chars = [";", "&", "|", "$", "`", "(", ")", "<", ">", "\n", "\r", "\\"]
 if any(char in site for char in invalid_chars):
     raise ValueError("Invalid site name: shell metacharacters not allowed")
 ```
-
-### Future Roadmap
-
-**Phase 1: Read-Only Operations**
-- `cwcli backup list` - View existing backups
-- `cwcli backup info` - Show backup details
-- `cwcli backup verify` - Check backup integrity
-
-**Phase 2: Backup Creation**
-- `cwcli backup create` - Create new backups
-- `cwcli backup schedule` - Setup cron jobs
-- `cwcli backup cleanup` - Manage retention
-
-**Phase 3: Restore Operations**
-- `cwcli backup restore` - Restore from backups (with safety checks)
-- `cwcli backup test` - Test restore in temporary site
 
 ---
 
