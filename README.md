@@ -92,6 +92,7 @@ cwcli init [OPTIONS] [PROJECT_NAME]
 | `--install-erpnext` | Install ERPNext application after initialization |
 | `--erpnext-branch TEXT` | ERPNext branch to use (default: version-15) |
 | `--auto-start` | Automatically start containers if not running |
+| `--reuse-bench` / `--no-reuse-bench` | Pre-answer the existing-bench question non-interactively: `--reuse-bench` reuses the bench and skips `bench init`; `--no-reuse-bench` requires a fresh `--bench` name and errors if it already exists. Default: ask interactively (a non-TTY without either flag refuses). Distinct from `--auto-start`, which controls container startup |
 | `-v`, `--verbose` | Show verbose output with streaming command execution |
 
 **What It Does:**
@@ -195,6 +196,19 @@ Leaving the name blank (or cancelling either prompt) makes no changes and exits 
 ```
 No changes made.
 ```
+
+**Non-interactive (agents/automation):** pass a flag so `init` never prompts.
+Re-running `init` against the devcontainer's shipped bench, pass `--reuse-bench`:
+
+```bash
+# Reuse the existing bench and run site setup with zero prompts (skips bench init)
+cwcli init my-project --reuse-bench --auto-start
+
+# Require a brand-new bench; error out if the name already exists
+cwcli init my-project --bench fresh-bench --no-reuse-bench
+```
+
+Without a reuse flag, a non-interactive session (non-TTY) where the bench already exists refuses honestly with exit 1 instead of hanging, and names `--reuse-bench`/`--no-reuse-bench`.
 
 ---
 
