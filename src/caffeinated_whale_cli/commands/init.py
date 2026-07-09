@@ -37,6 +37,8 @@ Example:
 
 import shlex
 import subprocess
+import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -154,8 +156,6 @@ def _exec_in_container(
 
     try:
         if stream_output:
-            import sys
-
             for stdout, stderr in container.client.api.exec_start(exec_id, stream=True, demux=True):
                 if stdout:
                     # Use raw sys.stdout.write to preserve carriage returns for progress bars
@@ -234,20 +234,53 @@ def _resolve_bench_target(
     frappe_container,
     bench_parent_path: str,
     bench_name: str,
+    reuse_bench: bool | None = None,
 ) -> tuple[str, str, bool]:
     """Resolve which bench to set up inside the container.
 
     Returns ``(bench_name, bench_full_path, bench_exists)``.
 
-    When the chosen bench already exists, the user is asked whether to reuse it.
-    Declining no longer aborts the command: the user is prompted for a different
-    bench name so site setup can continue on a fresh bench (issue #20). A blank
-    name or a cancelled prompt exits cleanly without making changes.
+    ``reuse_bench`` pre-answers the existing-bench question so the command is
+    drivable non-interactively (issue #41):
+
+    - ``True`` (``--reuse-bench``): reuse the existing bench with no prompt
+      (``bench init`` is skipped downstream, exactly like an interactive Yes).
+    - ``False`` (``--no-reuse-bench``): refuse to reuse; error and exit 1 so the
+      caller must pass a fresh ``--bench`` name (never enters the rename loop).
+    - ``None`` (default): ask interactively on a TTY (the issue #20 loop below);
+      on a non-TTY, refuse with an honest exit 1 instead of hanging on an idle
+      pipe or crashing with ``EOFError`` inside questionary.
+
+    When ``reuse_bench is None`` and the terminal is interactive, declining reuse
+    does NOT abort: the user is prompted for a different bench name so site setup
+    can continue on a fresh bench (issue #20). A blank name or a cancelled prompt
+    exits cleanly (code 0, "No changes made.") without making changes.
     ``bench_exists`` is True when an existing bench will be reused (so
     ``bench init`` is skipped) and False when a fresh bench must be initialized.
     """
     bench_full_path = f"{bench_parent_path}/{bench_name}"
     bench_exists = _directory_exists(frappe_container, bench_full_path)
+
+    # Non-interactive pre-answers for the existing-bench case. Each branch either
+    # returns or exits, so the interactive loop below is only reached when
+    # reuse_bench is None AND stdin is a TTY.
+    if bench_exists:
+        if reuse_bench is True:
+            add_path(bench_full_path)
+            return bench_name, bench_full_path, True
+        if reuse_bench is False:
+            stderr_console.print(
+                f"[bold red]Error:[/bold red] Bench '{bench_full_path}' already exists and "
+                "--no-reuse-bench was given. Pass a different --bench name to create a new bench."
+            )
+            raise typer.Exit(code=1)
+        if not sys.stdin.isatty():
+            stderr_console.print(
+                f"[bold red]Error:[/bold red] Bench '{bench_full_path}' already exists and this is "
+                "a non-interactive session. Pass --reuse-bench to reuse it, or --no-reuse-bench "
+                "with a different --bench name to create a fresh bench."
+            )
+            raise typer.Exit(code=1)
 
     while bench_exists:
         console.print(f"[yellow]Bench '{bench_name}' already exists at {bench_full_path}.[/yellow]")
@@ -584,6 +617,37 @@ def _customize_compose_ports(
     compose_path.write_text(content)
 
 
+def _wait_for_containers_running(
+    project_name: str,
+    *,
+    verbose: bool = False,
+    attempts: int = 10,
+    delay: float = 0.5,
+) -> bool:
+    """Poll for the frappe container to reach 'running' after ``compose up -d``.
+
+    Right after ``docker compose up -d`` a container briefly reports
+    ``created``/``starting``; a single status check therefore mis-reads a normal
+    slow start as "not running". This bounded, silent poll (``prompt=False``,
+    ``auto_start=False`` so it never prompts and never starts anything) re-checks
+    status a few times over ``attempts * delay`` seconds. It is safe to call
+    under a live spinner precisely because it never prompts; the caller runs the
+    interactive prompt/refusal OUTSIDE the spinner only if this returns False.
+    """
+    for attempt in range(attempts):
+        if ensure_containers_running(
+            project_name,
+            require_running=True,
+            auto_start=False,
+            prompt=False,
+            verbose=verbose,
+        ):
+            return True
+        if attempt < attempts - 1:
+            time.sleep(delay)
+    return False
+
+
 @handle_docker_errors
 def init(
     project_name: str | None = typer.Argument(
@@ -634,6 +698,16 @@ def init(
         "--auto-start",
         help="Automatically start containers if they are not running.",
     ),
+    reuse_bench: bool | None = typer.Option(
+        None,
+        "--reuse-bench/--no-reuse-bench",
+        help=(
+            "When the target bench directory already exists: --reuse-bench reuses it "
+            "(skips bench init), --no-reuse-bench requires a fresh --bench name and errors "
+            "if it exists. Default: ask interactively (refuse on a non-TTY). Distinct from "
+            "--auto-start, which controls container startup."
+        ),
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -666,8 +740,6 @@ def init(
         cwcli init my-project --frappe-branch version-15 --install-erpnext
         cwcli init my-project --db-root-password mypass --admin-password admin123
     """
-    import time
-
     start_time = time.time()
 
     # Prompt for project name if not provided
@@ -703,7 +775,12 @@ def init(
         stderr_console.print("[dim]Pulling Docker images...[/dim]")
         _pull_compose_images(inputs.project_name, conf_dir, verbose=verbose)
         _start_compose_project(inputs.project_name, conf_dir, verbose=verbose)
-        ensure_containers_running(inputs.project_name, require_running=True, auto_start=auto_start)
+        # Bounded silent poll first (a container is often 200ms from ready right
+        # after 'compose up -d'); only prompt/refuse if it is genuinely not up.
+        if not _wait_for_containers_running(inputs.project_name, verbose=verbose):
+            ensure_containers_running(
+                inputs.project_name, require_running=True, auto_start=auto_start
+            )
         frappe_container = get_frappe_container(inputs.project_name)
     else:
         # Non-verbose mode: use spinners for user feedback
@@ -726,13 +803,19 @@ def init(
             _start_compose_project(inputs.project_name, conf_dir, verbose=verbose)
 
             spinner.update("Waiting for containers to be ready")
+            # Silent bounded poll (prompt=False) is safe under the spinner; the
+            # interactive prompt/refusal below runs only AFTER the spinner exits,
+            # so a slow container start never paints a confirm under the spinner
+            # (the repo's known deadlock pattern).
+            containers_running = _wait_for_containers_running(inputs.project_name, verbose=verbose)
+
+        # Spinner has exited. If the containers are still not up, prompt/refuse
+        # OUTSIDE the spinner, then fetch the frappe container.
+        if not containers_running:
             ensure_containers_running(
                 inputs.project_name, require_running=True, auto_start=auto_start
             )
-
-            # Get the frappe container
-            spinner.update("Getting frappe container")
-            frappe_container = get_frappe_container(inputs.project_name)
+        frappe_container = get_frappe_container(inputs.project_name)
 
     # Prepare bench paths inside the container
     bench_parent_path = bench_parent.rstrip("/") or "/workspace"
@@ -745,7 +828,7 @@ def init(
     # asked whether to reuse it; declining lets them pick a different bench name
     # and continue site setup instead of aborting (issue #20).
     inputs.bench_name, bench_full_path, bench_exists = _resolve_bench_target(
-        frappe_container, bench_parent_path, inputs.bench_name
+        frappe_container, bench_parent_path, inputs.bench_name, reuse_bench=reuse_bench
     )
 
     # Initialize bench if it doesn't exist
