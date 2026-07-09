@@ -2,12 +2,8 @@ name: Release
 
 on:
   push:
-    branches: [master]
     tags:
       - "v*.*.*"  # Trigger on version tags like v0.9.1
-  release:
-    types: [published]
-  workflow_dispatch:  # Allow manual triggers
 
 env:
   # Project variables - configure these in GitHub Settings > Secrets and variables > Actions > Variables
@@ -93,8 +89,9 @@ jobs:
 
       - name: Publish to PyPI
         # uv publish runs natively in the job's uv container (no Docker-action
-        # nesting), and authenticates via GitHub OIDC trusted publishing using
-        # the id-token permission declared above - no PyPI token secret needed.
+        # nesting), and authenticates with the UV_PUBLISH_TOKEN secret (a PyPI
+        # API token) read from the environment below - so it uses the token and
+        # does not attempt trusted publishing.
         # --check-url skips ONLY a byte-identical re-upload (content-hash dedup,
         # for retry/parallel-upload safety within the SAME build); it does NOT
         # skip a same-name but different-content upload - that errors with
@@ -102,7 +99,9 @@ jobs:
         # non-reproducible, so re-tagging an already-published version rebuilds a
         # byte-different artifact and FAILS rather than skipping. This is NOT
         # twine's skip-existing: each release must be a genuinely new version.
-        run: uv publish --trusted-publishing automatic --check-url https://pypi.org/simple/
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.UV_PUBLISH_TOKEN }}
+        run: uv publish --check-url https://pypi.org/simple/
 
       - name: Create GitHub Release (if tag triggered)
         if: startsWith(github.ref, 'refs/tags/v')
