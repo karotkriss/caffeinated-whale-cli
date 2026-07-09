@@ -2,12 +2,8 @@ name: Release
 
 on:
   push:
-    branches: [master]
     tags:
       - "v*.*.*"  # Trigger on version tags like v0.9.1
-  release:
-    types: [published]
-  workflow_dispatch:  # Allow manual triggers
 
 env:
   # Project variables - configure these in GitHub Settings > Secrets and variables > Actions > Variables
