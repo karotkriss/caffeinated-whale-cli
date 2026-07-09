@@ -17,7 +17,7 @@ The source of truth for the user-facing feature set is `README.md`.
 
 - `src/caffeinated_whale_cli/commands/` - one module per CLI command (`init`, `inspect`, `rm`, `restore`, `start`, `run`, `label`, `config`, ...) plus `utils.py` (shared resolver, confirm, container-running helpers).
 - `src/caffeinated_whale_cli/utils/` - cross-command building blocks: `db_utils.py` (SQLite cache + migrations + secret redaction), `bench_labels.py` (label model + marker I/O), `bench_sites.py` (site detection), `docker_utils.py`, `cache.py`, `sendme_utils.py`.
-- `tests/` - pytest suites (18 `test_*.py` files, ~321 tests); `bench_fakes.py` holds the container fakes. See `tests/README.md` for the coverage map.
+- `tests/` - pytest suites (18 `test_*.py` files, ~329 tests); `bench_fakes.py` holds the container fakes. See `tests/README.md` for the coverage map.
 - `docs/e2e/` - worked real-instance E2E evidence (the canonical examples for the recipe below); `docs/technical/`, `docs/testing/`, `docs/contributing/` hold design, test, and workflow docs.
 - Version-bump touches exactly four files: `pyproject.toml` (`version`), `src/caffeinated_whale_cli/__init__.py` (`__version__`), `uv.lock` (regenerate with `uv lock`), and `CHANGELOG.md`.
 - `.github/workflows/` - `lint.yml`, `test.yml`, `build.yml`, `release.yml`.
@@ -116,13 +116,26 @@ Other per-branch settings nearby in `init.py`: Python version (`branch_python`: 
 #### `init` existing-bench flow: decline must continue, not dead-end
 
 The devcontainer image ships a `/workspace/frappe-bench`, so a fresh `cwcli init` usually finds an already-existing bench at the default `bench_parent/bench_name`.
-`_resolve_bench_target(frappe_container, bench_parent_path, bench_name)` in `init.py` owns this branch and returns `(bench_name, bench_full_path, bench_exists)`.
-When the bench exists it asks "Reuse the existing bench ...?": Yes reuses it (returns `bench_exists=True` so `bench init` is skipped); No now prompts for a different bench name and loops, so site setup continues on a fresh bench (returns `bench_exists=False`).
-A blank replacement name or a cancelled prompt (`.ask()` returns `None`) exits cleanly with code 0 and "No changes made.".
+`_resolve_bench_target(frappe_container, bench_parent_path, bench_name, reuse_bench=None)` in `init.py` owns this branch and returns `(bench_name, bench_full_path, bench_exists)`.
+
+The tri-state `reuse_bench: bool | None` flag (`init`'s `--reuse-bench/--no-reuse-bench`, default `None`) pre-answers the existing-bench question so the command is fully agent-drivable (issue #41).
+When the bench exists, the resolver short-circuits BEFORE the interactive `while bench_exists` loop:
+- `reuse_bench is True` (`--reuse-bench`): reuse with no prompt, return `bench_exists=True` (`bench init` skipped), exactly like an interactive Yes.
+- `reuse_bench is False` (`--no-reuse-bench`): refuse to reuse; print an error naming the path and advising a different `--bench`, then `raise typer.Exit(1)`. It must NEVER enter the rename loop (a non-interactive loop would spin forever).
+- `reuse_bench is None` and `sys.stdin.isatty()`: the unchanged interactive issue #20 loop below.
+- `reuse_bench is None` and NOT a TTY: refuse with an honest `Exit(1)` naming both flags, BEFORE touching questionary. This replaces the old non-TTY hang (idle pipe) / `EOFError` crash (closed stdin); `.ask()` only catches `KeyboardInterrupt`, so the guard must be `sys.stdin.isatty()` checked up front.
+When the bench does NOT exist the flag is irrelevant (returns `bench_exists=False`); `--no-reuse-bench` with a fresh name is a useful no-op that just asserts freshness ("create a NEW bench or fail").
+
+Interactive loop (only reached when `reuse_bench is None` AND a TTY): "Reuse the existing bench ...?": Yes reuses it (`bench_exists=True`, `bench init` skipped); No prompts for a different bench name and loops, so site setup continues on a fresh bench (`bench_exists=False`).
+A blank replacement name or a cancelled prompt (`.ask()` returns `None`) exits cleanly with code 0 and "No changes made." - this exit-0 interactive-cancel is the DELIBERATE issue #20 behavior; only the NON-TTY path (where "no changes" is a failure to do the requested job) exits 1.
 This replaced the old behavior where declining reuse just `raise typer.Exit(0)` and aborted the whole command (issue #20).
 The resolver runs after the setup spinner has exited, so its prompts own the terminal; keep it out of any `console.status`/`TipSpinner` block.
 `inputs.bench_name` is reassigned from the resolver's return (so `bench init` and the site paths use the chosen name), which is valid because `InitInputs` is a plain mutable `@dataclass`.
-Regression coverage is in `tests/test_init_reuse_bench.py`.
+
+Spinner-race fix (issue #41): `ensure_containers_running` used to be called INSIDE init's `TipSpinner` with `prompt=True`, so a slow container start with no `--auto-start` could paint a questionary confirm under the live spinner (the repo's known deadlock pattern).
+Now `_wait_for_containers_running(project, ...)` runs a bounded SILENT poll (`ensure_containers_running(..., prompt=False, auto_start=False)`, ~10 x 0.5s) INSIDE the spinner - safe because it never prompts and absorbs normal startup latency (a container is often ~200ms from ready right after `compose up -d`, so a single check mis-reads it as down).
+Only if that returns `False` does init call `ensure_containers_running(..., auto_start=auto_start)` (which prompts on a TTY or refuses on a non-TTY) OUTSIDE the spinner, then fetches the frappe container. `--reuse-bench` and `--auto-start` are separate axes (bench reuse vs container start); do not merge them.
+Regression coverage is in `tests/test_init_reuse_bench.py` (flag/non-TTY resolver cases in `TestReuseBenchFlag`, poll behavior in `TestWaitForContainersRunning`).
 
 ### `inspect` command: 3-tier freshness model (cache / partial / full)
 

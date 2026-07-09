@@ -25,7 +25,7 @@ uv run pytest tests/test_completion_utils.py
 
 ### Test Coverage
 
-Measured with `uv run pytest --cov` at 0.34.0: 321 tests across 18 test files, ~41% overall coverage.
+Measured with `uv run pytest --cov` at 0.34.0: 329 tests across 18 test files, ~42% overall coverage.
 Per-area breakdown (highest-coverage module in each area; see the module list in each test file for what else it exercises):
 
 - **rm safety** (`test_rm_safety`, `test_rm_truth`, `test_rm_stopped`) - `commands/rm.py` ~76%
@@ -34,7 +34,7 @@ Per-area breakdown (highest-coverage module in each area; see the module list in
 - **bench labels/selectors** (`test_bench_labels`, `test_bench_selector`, `test_bench_label_db_and_command`) - `utils/bench_labels.py` ~94%
 - **yes-flag contract** (`test_yes_flag`) - covers the `confirm_or_exit`/`ensure_containers_running` non-interactive contract across `start`, `config`, `logs`
 - **db security** (`test_db_security`) - `utils/db_utils.py` ~68%
-- **init reuse** (`test_init_reuse_bench`, `test_init_mariadb_flag`) - `commands/init.py` ~18% (only the reuse-bench and MariaDB-flag branches are covered)
+- **init reuse** (`test_init_reuse_bench`, `test_init_mariadb_flag`) - `commands/init.py` ~31% (the reuse-bench resolver, the container-readiness poll, and the MariaDB-flag branches are covered)
 - **completion** (`test_completion_utils`) - `utils/completion_utils.py` ~92%
 - **tips** (`test_tips`) - `utils/tips.py` ~91%
 - **config validation** (`test_config_validation`) - config validation helpers in `utils/db_utils.py`
