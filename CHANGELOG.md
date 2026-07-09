@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.35.0] - 2026-07-09
+
+### Added
+- **`restore` command** - Non-interactive backup selection so a restore can run to completion with no prompts
+  - `--latest` selects the most recent backup set for the target site, bypassing the selection menu
+  - `--backup-file <name-or-path>` selects a backup set by its database filename (or full container path); the two flags are mutually exclusive and neither applies to `--send`/`--receive`
+  - `-y`/`--yes` now also skips the confirmation prompts on the normal restore path (previously `--receive` only), so `--latest`/`--backup-file` + `--yes` + `--mariadb-root-password` runs fully unattended
+- **`init` command** - `--reuse-bench` / `--no-reuse-bench` to pre-answer the existing-bench question non-interactively: `--reuse-bench` reuses the bench and skips `bench init`, while `--no-reuse-bench` requires a fresh `--bench` name and errors if it already exists (distinct from `--auto-start`, which only controls container startup)
+- **`logs` command** - `-y`/`--yes` to auto-start stopped containers without prompting
+
+### Changed
+- **Cache never stores secrets** - Site and common site configurations are whitelist-filtered before being written to the cache, so database passwords, per-site encryption keys, admin/root passwords, and Redis URLs are stripped and never persisted (nothing reads them back; every credential consumer reads live from the container or from CLI flags/prompts). Any cache written before this shipped is cleaned in place on the next run, and the restricted filesystem permissions remain as defense-in-depth
+- **Honest exit codes** - Commands now return a non-zero exit code when they do not do what was asked, instead of reporting success
+  - `start`, `stop`, and `restart` exit non-zero for a nonexistent instance (never printing "started"/"stopped" for it); a multi-instance run processes every name and then exits non-zero if any failed
+  - `config` error paths (invalid interval, "not enabled", no cache-clear target, and other failures) exit non-zero, while already-in-the-requested-state no-ops stay success
+  - `update` reports failure and names the site when disabling maintenance mode fails after an update
+  - `open` exits non-zero when it cannot pick an editor non-interactively (multiple editors and no `--code`/`--cursor`/etc. flag) or when the selection is cancelled
+
+### Fixed
+- **Non-interactive safety** - When containers are not running, `run`, `backup`, `update`, `open`, `unlock`, `logs`, and `inspect` now refuse with a non-zero exit in a non-interactive session (naming `--yes`) instead of hanging on a hidden prompt or crashing; pass `-y`/`--yes` to auto-start
+  - `restore` refuses with a non-zero exit (naming the flag to pass) when a non-TTY run is missing a backup selector or a confirmation, instead of silently exiting `0` or hanging
+  - `start`'s port-conflict confirmation likewise refuses on a non-TTY without `--yes` instead of hanging
+- **`init` command** - No longer prompts under the live setup spinner when a container is slow to start (a bounded silent readiness poll runs inside the spinner and only escalates to a prompt afterward); a non-interactive run where the bench already exists now refuses honestly with exit 1 instead of hanging
+
 ## [0.34.0] - 2026-07-05
 
 ### Added
