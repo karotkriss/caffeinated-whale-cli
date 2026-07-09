@@ -40,7 +40,7 @@ def _container():
     return MagicMock(name="frappe_container")
 
 
-class _StopInit(Exception):
+class _StopInitError(Exception):
     """Stop a command-level init test after the container readiness check."""
 
 
@@ -274,7 +274,7 @@ class TestInitContainerReadiness:
             return kwargs.get("prompt") is not False
 
         def stop_after_readiness(_project_name):
-            raise _StopInit
+            raise _StopInitError
 
         monkeypatch.setattr(init_mod, "TipSpinner", RecordingSpinner)
         monkeypatch.setattr(init_mod.config_utils, "get_show_tips", lambda: False)
@@ -289,7 +289,7 @@ class TestInitContainerReadiness:
         monkeypatch.setattr(init_mod.time, "sleep", lambda _seconds: None)
         monkeypatch.setattr(init_mod, "get_frappe_container", stop_after_readiness)
 
-        with pytest.raises(_StopInit):
+        with pytest.raises(_StopInitError):
             init_mod.init.__wrapped__(
                 project_name="proj",
                 port=18000,
