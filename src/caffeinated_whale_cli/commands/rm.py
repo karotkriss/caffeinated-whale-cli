@@ -460,9 +460,6 @@ def _archive_project_config(
     except Exception as e:
         if verbose:
             stderr_console.print(f"[dim]VERBOSE: Archive failed: {e}[/dim]")
-        stderr_console.print(
-            f"[yellow]Warning:[/yellow] Could not archive configuration for '{project_name}'"
-        )
         return False
 
 
@@ -795,11 +792,25 @@ def _remove_project(
                 stderr_console.print(
                     f"[dim]VERBOSE: Could not read cache for '{project_name}': " f"{e}[/dim]"
                 )
+            try:
+                from .inspect import _find_bench_instances
+
+                discovered = _find_bench_instances(frappe_container, verbose)
+                if discovered:
+                    bench_paths = discovered
+            except Exception as discover_err:
+                if verbose:
+                    stderr_console.print(
+                        f"[dim]VERBOSE: Live bench discovery also failed: " f"{discover_err}[/dim]"
+                    )
+            if bench_paths == ["/workspace/frappe-bench"]:
+                fallback_detail = f"falling back to default bench path '{bench_paths[0]}'"
+            else:
+                fallback_detail = f"discovered {len(bench_paths)} bench(es) live"
             stderr_console.print(
                 f"[yellow]Warning:[/yellow] Could not read bench paths from cache "
-                f"for '{project_name}'; falling back to default bench path "
-                f"'{bench_paths[0]}'. Multi-bench instances may not be fully "
-                "backed up."
+                f"for '{project_name}'; {fallback_detail}. Multi-bench instances may "
+                "not be fully backed up."
             )
 
         # Pre-compute per-bench archive directories.  For a single-bench instance
