@@ -1,10 +1,8 @@
 """Fake Frappe container supporting multiple bench paths for multi-bench rm tests."""
 
-import io
 import shlex
-import tarfile
 
-from tests.test_rm_safety import BENCH, _tar_bytes
+from tests.test_rm_safety import _tar_bytes
 
 
 class FakeFrappeContainerMB:
@@ -61,8 +59,13 @@ class FakeFrappeContainerMB:
         return self._bench_data(bp).get("artifacts", None)
 
     def _default_artifacts(self, bp):
-        return {s: {"backup-%s-database.sql.gz" % s: b"DBDUMPBYTES",
-                     "backup-%s-site_config_backup.json" % s: b"{}"} for s in self._sites(bp)}
+        return {
+            s: {
+                f"backup-{s}-database.sql.gz": b"DBDUMPBYTES",
+                f"backup-{s}-site_config_backup.json": b"{}",
+            }
+            for s in self._sites(bp)
+        }
 
     def exec_run(self, cmd, workdir=None):
         self.calls.append(cmd)
@@ -112,7 +115,7 @@ class FakeFrappeContainerMB:
             for site in sites:
                 prefix = f"{b}/sites/{site}/private/backups/"
                 if path.startswith(prefix):
-                    fname = path[len(prefix):]
+                    fname = path[len(prefix) :]
                     data = arts.get(site, {}).get(fname)
                     if data is None:
                         raise FileNotFoundError(path)
@@ -120,7 +123,7 @@ class FakeFrappeContainerMB:
 
                     def _chunks(blob=raw):
                         for i in range(0, len(blob), 4):
-                            yield blob[i:i+4]
+                            yield blob[i : i + 4]
 
                     return _chunks(), {"name": fname, "size": len(data)}
         raise FileNotFoundError(path)

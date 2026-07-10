@@ -340,9 +340,7 @@ class TestBackupGate:
 
         # The db dump actually landed non-empty in the archive.
         archives = list(
-            (cwcli_home / ".cwcli" / "archive").glob(
-                f"proj_*/backups/{site}/*database*"
-            )
+            (cwcli_home / ".cwcli" / "archive").glob(f"proj_*/backups/{site}/*database*")
         )
         assert archives and archives[0].stat().st_size > 0
 
@@ -555,17 +553,20 @@ class TestMultiBench:
         from .bench_fakes_mb import FakeFrappeContainerMB
 
         _patch_docker(monkeypatch)
-        project_dir = _make_project_dir(rm.PROJECTS_DIR, "proj")
-        container = FakeFrappeContainerMB({
-            self.BENCH0: {"sites": ["s0.localhost"]},
-            self.BENCH1: {"sites": ["s1.localhost"]},
-        })
+        _make_project_dir(rm.PROJECTS_DIR, "proj")
+        container = FakeFrappeContainerMB(
+            {
+                self.BENCH0: {"sites": ["s0.localhost"]},
+                self.BENCH1: {"sites": ["s1.localhost"]},
+            }
+        )
         volumes = [_make_volume("proj_sites"), _make_volume("proj_db-data")]
         monkeypatch.setattr(rm, "get_project_containers", lambda name: [container])
         monkeypatch.setattr(rm, "get_project_volumes", lambda name: list(volumes))
         monkeypatch.setattr(rm.db_utils, "clear_cache_for_project", lambda name: None)
         monkeypatch.setattr(
-            rm.db_utils, "get_cached_project_data",
+            rm.db_utils,
+            "get_cached_project_data",
             lambda name: self._make_cached_data([self.BENCH0, self.BENCH1]),
         )
 
@@ -584,16 +585,19 @@ class TestMultiBench:
 
         _patch_docker(monkeypatch)
         project_dir = _make_project_dir(rm.PROJECTS_DIR, "proj")
-        container = FakeFrappeContainerMB({
-            self.BENCH0: {"sites": ["s0.localhost"], "backup_ok": True},
-            self.BENCH1: {"sites": ["s1.localhost"], "backup_ok": False},
-        })
+        container = FakeFrappeContainerMB(
+            {
+                self.BENCH0: {"sites": ["s0.localhost"], "backup_ok": True},
+                self.BENCH1: {"sites": ["s1.localhost"], "backup_ok": False},
+            }
+        )
         volumes = [_make_volume("proj_sites"), _make_volume("proj_db-data")]
         monkeypatch.setattr(rm, "get_project_containers", lambda name: [container])
         monkeypatch.setattr(rm, "get_project_volumes", lambda name: list(volumes))
         monkeypatch.setattr(rm.db_utils, "clear_cache_for_project", lambda name: None)
         monkeypatch.setattr(
-            rm.db_utils, "get_cached_project_data",
+            rm.db_utils,
+            "get_cached_project_data",
             lambda name: self._make_cached_data([self.BENCH0, self.BENCH1]),
         )
 
@@ -612,16 +616,19 @@ class TestMultiBench:
         from .bench_fakes_mb import FakeFrappeContainerMB
 
         _patch_docker(monkeypatch)
-        project_dir = _make_project_dir(rm.PROJECTS_DIR, "proj")
-        container = FakeFrappeContainerMB({
-            self.BENCH0: {"sites": ["site1.localhost"]},
-        })
+        _make_project_dir(rm.PROJECTS_DIR, "proj")
+        container = FakeFrappeContainerMB(
+            {
+                self.BENCH0: {"sites": ["site1.localhost"]},
+            }
+        )
         volumes = [_make_volume("proj_sites"), _make_volume("proj_db-data")]
         monkeypatch.setattr(rm, "get_project_containers", lambda name: [container])
         monkeypatch.setattr(rm, "get_project_volumes", lambda name: list(volumes))
         monkeypatch.setattr(rm.db_utils, "clear_cache_for_project", lambda name: None)
         monkeypatch.setattr(
-            rm.db_utils, "get_cached_project_data",
+            rm.db_utils,
+            "get_cached_project_data",
             lambda name: self._make_cached_data([self.BENCH0]),
         )
 
@@ -633,7 +640,10 @@ class TestMultiBench:
         assert result["dir_removed"] is True
 
     def test_cache_failure_fallback_to_default_bench(
-        self, cwcli_home, monkeypatch, capsys,
+        self,
+        cwcli_home,
+        monkeypatch,
+        capsys,
     ):
         """When the cache lookup raises, _remove_project falls back to the
         default bench path ``/workspace/frappe-bench`` instead of silently
@@ -642,15 +652,18 @@ class TestMultiBench:
 
         _patch_docker(monkeypatch)
         _make_project_dir(rm.PROJECTS_DIR, "proj")
-        container = FakeFrappeContainerMB({
-            self.BENCH0: {"sites": ["s0.localhost"]},
-        })
+        container = FakeFrappeContainerMB(
+            {
+                self.BENCH0: {"sites": ["s0.localhost"]},
+            }
+        )
         volumes = [_make_volume("proj_sites"), _make_volume("proj_db-data")]
         monkeypatch.setattr(rm, "get_project_containers", lambda name: [container])
         monkeypatch.setattr(rm, "get_project_volumes", lambda name: list(volumes))
         monkeypatch.setattr(rm.db_utils, "clear_cache_for_project", lambda name: None)
         monkeypatch.setattr(
-            rm.db_utils, "get_cached_project_data",
+            rm.db_utils,
+            "get_cached_project_data",
             lambda name: (_ for _ in ()).throw(RuntimeError("cache corrupted")),
         )
 
@@ -667,7 +680,10 @@ class TestMultiBench:
         assert "falling back" in err.lower()
 
     def test_cache_failure_with_live_discovery_backs_up_every_bench(
-        self, cwcli_home, monkeypatch, capsys,
+        self,
+        cwcli_home,
+        monkeypatch,
+        capsys,
     ):
         """When the cache lookup raises but live ``find``-based discovery
         succeeds, ALL discovered benches are backed up - not just a single
@@ -701,16 +717,19 @@ class TestMultiBench:
         )
         _patch_docker(monkeypatch)
         _make_project_dir(rm.PROJECTS_DIR, "proj")
-        container = DiscoveringContainer({
-            bench_a: {"sites": ["s1.localhost"]},
-            bench_b: {"sites": ["s2.localhost"]},
-        })
+        container = DiscoveringContainer(
+            {
+                bench_a: {"sites": ["s1.localhost"]},
+                bench_b: {"sites": ["s2.localhost"]},
+            }
+        )
         volumes = [_make_volume("proj_sites"), _make_volume("proj_db-data")]
         monkeypatch.setattr(rm, "get_project_containers", lambda name: [container])
         monkeypatch.setattr(rm, "get_project_volumes", lambda name: list(volumes))
         monkeypatch.setattr(rm.db_utils, "clear_cache_for_project", lambda name: None)
         monkeypatch.setattr(
-            rm.db_utils, "get_cached_project_data",
+            rm.db_utils,
+            "get_cached_project_data",
             lambda name: (_ for _ in ()).throw(RuntimeError("cache corrupted")),
         )
 
@@ -735,7 +754,10 @@ class TestConfigArchiveWarning:
     failure)."""
 
     def test_archive_failure_warns_once_and_does_not_block(
-        self, cwcli_home, monkeypatch, capsys,
+        self,
+        cwcli_home,
+        monkeypatch,
+        capsys,
     ):
         class RaisingArchiveContainer(FakeFrappeContainer):
             """Backs up normally, but any `cat` probe (used only by config
