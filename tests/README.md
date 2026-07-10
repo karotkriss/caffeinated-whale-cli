@@ -32,7 +32,7 @@ uv run pytest --pdb
 
 ## Test Files
 
-As of 0.34.0, `tests/` holds 18 `test_*.py` suites totaling 329 tests at ~42%
+As of 0.34.0, `tests/` holds 18 `test_*.py` suites totaling 332 tests at ~42%
 overall coverage (measured with `uv run pytest --cov`). Run `ls tests/` for the
 authoritative current list; see [../docs/testing/README.md](../docs/testing/README.md)
 for the per-area breakdown.
@@ -59,7 +59,7 @@ Tests for tab completion functionality.
 
 ## Test Coverage
 
-Current overall coverage: **~42%** at 0.34.0 (329 tests across 18 test files).
+Current overall coverage: **~42%** at 0.34.0 (332 tests across 18 test files).
 
 ### Covered Modules
 - ✅ `utils/completion_utils.py` - 92% (7 missing lines)

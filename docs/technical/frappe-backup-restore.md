@@ -814,7 +814,7 @@ This is the "peer-to-peer restore" capability once sketched here as `cwcli backu
 
 #### `rm`'s backup-before-delete gate
 
-`cwcli rm` is not a backup command, but it backs up every site before deleting a project's volumes: a failed or unverifiable `bench backup` aborts the removal before any container is touched.
+`cwcli rm` is not a backup command, but it backs up every site in every bench (looping over all benches on a multi-bench project) before deleting a project's volumes: a failed or unverifiable `bench backup` for any bench aborts the removal before any container is touched.
 See the "Data-safety gates" section of the project's `AGENTS.md`/`CLAUDE.md` for the exact contract.
 `--no-backup` opts out.
 

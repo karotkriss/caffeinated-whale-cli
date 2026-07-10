@@ -25,7 +25,7 @@ uv run pytest tests/test_completion_utils.py
 
 ### Test Coverage
 
-Measured with `uv run pytest --cov` at 0.34.0: 329 tests across 18 test files, ~42% overall coverage.
+Measured with `uv run pytest --cov` at 0.34.0: 332 tests across 18 test files, ~42% overall coverage.
 Per-area breakdown (highest-coverage module in each area; see the module list in each test file for what else it exercises):
 
 - **rm safety** (`test_rm_safety`, `test_rm_truth`, `test_rm_stopped`) - `commands/rm.py` ~76%
@@ -45,7 +45,7 @@ Per-area breakdown (highest-coverage module in each area; see the module list in
 
 ### Test Files
 
-Run `ls tests/` for the authoritative, current list; as of 0.34.0 it holds 18 `test_*.py` suites plus `bench_fakes.py` (shared fakes) and `README.md`.
+Run `ls tests/` for the authoritative, current list; as of 0.34.0 it holds 18 `test_*.py` suites plus `bench_fakes.py` and `bench_fakes_mb.py` (shared fakes) and `README.md`.
 
 ## Testing Framework
 
