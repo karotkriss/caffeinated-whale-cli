@@ -755,32 +755,40 @@ def _remove_project(
 
     # Backup and archive before removal
     if frappe_running:
-        # Try to get bench path from cache first
-        bench_path = "/workspace/frappe-bench"  # default
+        # Try to get bench paths from cache first
+        bench_paths = ["/workspace/frappe-bench"]  # default fallback
         try:
             cached_data = db_utils.get_cached_project_data(project_name)
             if cached_data and cached_data.get("bench_instances"):
-                bench_path = cached_data["bench_instances"][0]["path"]
+                bench_paths = [b["path"] for b in cached_data["bench_instances"]]
         except Exception:
             pass
 
-        # Backup databases (unless --no-backup). The result is the gate on
-        # destroying data: a backup that did not fully land on the host archive
-        # must NOT be trusted, so a False here blocks volume/directory removal
-        # below just as a failed conf/ archive does.
+        # Backup ALL benches (not just the first). Each bench's sites are
+        # backed up and verified independently; the result is True only if
+        # EVERY bench fully backed up. Any single bench failure blocks volume
+        # deletion (the backup gate below).
         if not no_backup:
+            all_backups_ok = True
+            for bp in bench_paths:
+                if status:
+                    status.update(
+                        f"[bold cyan]Backing up databases for bench '{bp}'...[/bold cyan]"
+                    )
+                bench_ok = _backup_sites(
+                    project_name, frappe_container, bp, archive_dir, verbose=verbose
+                )
+                if not bench_ok:
+                    all_backups_ok = False
+            result["backup_ok"] = all_backups_ok
+
+        # Archive configuration for each bench
+        for bp in bench_paths:
             if status:
                 status.update(
-                    f"[bold cyan]Backing up databases for '{project_name}'...[/bold cyan]"
+                    f"[bold cyan]Archiving configuration for bench '{bp}'...[/bold cyan]"
                 )
-            result["backup_ok"] = _backup_sites(
-                project_name, frappe_container, bench_path, archive_dir, verbose=verbose
-            )
-
-        # Archive configuration
-        if status:
-            status.update(f"[bold cyan]Archiving configuration for '{project_name}'...[/bold cyan]")
-        _archive_project_config(project_name, frappe_container, bench_path, verbose=verbose)
+            _archive_project_config(project_name, frappe_container, bp, verbose=verbose)
     else:
         # No running container, so a live `bench backup` database dump is
         # impossible (whether the containers are stopped or already gone). Only
