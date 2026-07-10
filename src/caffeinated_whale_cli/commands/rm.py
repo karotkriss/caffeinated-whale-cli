@@ -802,14 +802,22 @@ def _remove_project(
                 "backed up."
             )
 
+        # Pre-compute per-bench archive directories.  For a single-bench instance
+        # the archive dir IS ``archive_dir`` (flat layout, easier to discover).
+        # For multi-bench, each bench gets a hash-suffixed namespace so
+        # same-named sites in different benches do not collide.
+        multi_bench = len(bench_paths) > 1
+        bench_archive_dirs: dict[str, Path] = {}
+        for bp in bench_paths:
+            bd = archive_dir
+            if multi_bench:
+                bd = bd / _bench_archive_slug(bp)
+            bench_archive_dirs[bp] = bd
+
         # Backup ALL benches (not just the first). Each bench's sites are
         # backed up and verified independently; the result is True only if
         # EVERY bench fully backed up. Any single bench failure blocks volume
         # deletion (the backup gate below).
-        #
-        # Archive directories are namespaced per bench so same-named sites
-        # in different benches (e.g. two benches each using the default
-        # `development.localhost`) do not collide in the archive.
         if not no_backup:
             all_backups_ok = True
             for bp in bench_paths:
@@ -817,8 +825,7 @@ def _remove_project(
                     status.update(
                         f"[bold cyan]Backing up databases for bench '{bp}'...[/bold cyan]"
                     )
-                bench_slug = _bench_archive_slug(bp)
-                bench_archive_dir = archive_dir / bench_slug
+                bench_archive_dir = bench_archive_dirs[bp]
                 bench_archive_dir.mkdir(parents=True, exist_ok=True)
                 bench_ok = _backup_sites(
                     project_name, frappe_container, bp, bench_archive_dir, verbose=verbose
@@ -834,11 +841,8 @@ def _remove_project(
         # the data.
         for bp in bench_paths:
             if status:
-                status.update(
-                    f"[bold cyan]Archiving configuration for bench '{bp}'...[/bold cyan]"
-                )
-            bench_slug = _bench_archive_slug(bp)
-            bench_archive_dir = archive_dir / bench_slug
+                status.update(f"[bold cyan]Archiving configuration for bench '{bp}'...[/bold cyan]")
+            bench_archive_dir = bench_archive_dirs[bp]
             bench_archive_dir.mkdir(parents=True, exist_ok=True)
             config_ok = _archive_project_config(
                 project_name,
