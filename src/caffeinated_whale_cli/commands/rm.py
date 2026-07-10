@@ -785,9 +785,7 @@ def _remove_project(
         # Archive configuration for each bench
         for bp in bench_paths:
             if status:
-                status.update(
-                    f"[bold cyan]Archiving configuration for bench '{bp}'...[/bold cyan]"
-                )
+                status.update(f"[bold cyan]Archiving configuration for bench '{bp}'...[/bold cyan]")
             _archive_project_config(project_name, frappe_container, bp, verbose=verbose)
     else:
         # No running container, so a live `bench backup` database dump is
