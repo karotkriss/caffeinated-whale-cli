@@ -17,7 +17,7 @@ The source of truth for the user-facing feature set is `README.md`.
 
 - `src/caffeinated_whale_cli/commands/` - one module per CLI command (`init`, `inspect`, `rm`, `restore`, `start`, `run`, `label`, `config`, ...) plus `utils.py` (shared resolver, confirm, container-running helpers).
 - `src/caffeinated_whale_cli/utils/` - cross-command building blocks: `db_utils.py` (SQLite cache + migrations + secret redaction), `bench_labels.py` (label model + marker I/O), `bench_sites.py` (site detection), `docker_utils.py`, `cache.py`, `sendme_utils.py`.
-- `tests/` - pytest suites (18 `test_*.py` files, ~329 tests); `bench_fakes.py` holds the container fakes. See `tests/README.md` for the coverage map.
+- `tests/` - pytest suites (18 `test_*.py` files, ~335 tests); `bench_fakes.py` and `bench_fakes_mb.py` hold the container fakes. See `tests/README.md` for the coverage map.
 - `docs/e2e/` - worked real-instance E2E evidence (the canonical examples for the recipe below); `docs/technical/`, `docs/testing/`, `docs/contributing/` hold design, test, and workflow docs.
 - Version-bump touches exactly four files: `pyproject.toml` (`version`), `src/caffeinated_whale_cli/__init__.py` (`__version__`), `uv.lock` (regenerate with `uv lock`), and `CHANGELOG.md`.
 - `.github/workflows/` - `lint.yml`, `test.yml`, `build.yml`, `release.yml`.
@@ -51,8 +51,8 @@ Each entry is the contract; the linked source file is authoritative and the Shar
 - **Multi-bench addressing** (`utils/bench_labels.py`, `commands/utils.py:resolve_bench_path`) - `--bench <index|label>` selects a bench; a multi-bench op with no selector errors instead of guessing.
   Labels persist to BOTH the DB and an in-bench marker file for cache-loss recovery.
   See Sharp edges: multi-bench.
-- **`rm` deletion + backup gate** (`commands/rm.py`) - removes named volumes and the project dir that `Container.remove(v=True)` leaves behind, gated by a verified live backup that fails closed.
-  See Sharp edges: `rm`, and Known hazards (multi-bench backup gap).
+- **`rm` deletion + backup gate** (`commands/rm.py`) - removes named volumes and the project dir that `Container.remove(v=True)` leaves behind, gated by a verified live backup of EVERY bench that fails closed.
+  See Sharp edges: `rm`.
 - **`restore` safety** (`commands/restore.py`) - destructive confirm on both normal and receive paths, non-interactive selectors/flags, secrets off the argv, streamed copies, post-restore migrate + restart.
   See Sharp edges: `restore`.
 - **Cache never stores secrets** (`utils/db_utils.py`) - a whitelist redaction at the single write chokepoint; nothing reads secrets back from the cache.
@@ -250,6 +250,18 @@ Three fail-open data-safety gaps were closed in `commands/rm.py` (audit findings
 
 `_remove_project`'s data-destruction protection is split into two gates. The backup gate is an EARLY abort (`backup_failed = remove_volumes and not no_backup and not result["backup_ok"]`) evaluated BEFORE the container-removal loop; it `return`s without touching anything so a failed backup never tears down the containers a retry needs. The LATE gate is a combined check (`container_removal_failed or archive_failed`) placed AFTER container removal, exactly where the `conf/` archive gate already sat - it protects the irreversible data (named volumes + local dir); removing containers first is intentional and non-destructive (containers are recreatable, the named volumes hold the data). When calling `_remove_project`/`rm()` directly in tests, note it is `@handle_docker_errors`-decorated (patch `docker_utils.shutil.which` + `docker.from_env`) and, like other Typer commands here, real callers pass every param explicitly.
 
+#### Multi-bench `rm`: back up EVERY bench, not just the first (2026-07-10 fix)
+
+`_remove_project` used to back up a single `bench_path = cached_data["bench_instances"][0]["path"]` (the first sorted bench) while `_remove_named_volumes` deletes ALL of the project's named volumes regardless of bench count - so on a multi-bench instance, every non-first bench's sites were destroyed with no backup, and `result["backup_ok"]` reflected only bench 0 (defeating the C1 gate for the other benches).
+
+The fix loops over `bench_paths = [b["path"] for b in cached_data["bench_instances"]]` (falling back to the single default `/workspace/frappe-bench` when there is no cache), calling `_backup_sites` and `_archive_project_config` once per bench. `result["backup_ok"]` is now `all(...)` across every bench - a single bench's failed backup blocks volume deletion for the whole instance, same as the single-bench case. This closes the gap without changing the gate's shape: the EARLY-abort-before-container-removal and scoped-to-`--volumes` behavior above are unchanged, they just now cover every bench's sites instead of only the first.
+
+- **Per-bench archive namespacing.** Two benches in one instance can share a site name (e.g. both use the frappe-docker default `development.localhost`), so their backup/config artifacts must not land in the same archive subdirectory. `_bench_archive_slug(bench_path)` hashes the full bench path (`sha256` first 8 hex chars) appended to a sanitized basename, giving a short, deterministic, collision-safe slug. This nesting is applied ONLY when `len(bench_paths) > 1` (`multi_bench`); a single-bench instance keeps the original flat `archive_dir` layout so a human can still find `archive/{project}_{timestamp}/backups/` directly without knowing the slug.
+- **Cache-read failure escalates to live discovery, not a blind default.** If `db_utils.get_cached_project_data` raises, `_remove_project` does not just fall back to the single default `/workspace/frappe-bench` - it first tries `inspect._find_bench_instances(frappe_container, verbose)` (the same `find`-based discovery the full T3 inspect uses) so a genuinely multi-bench instance still gets every bench backed up even with a corrupt/missing cache. Only when live discovery also fails or returns nothing does it fall back to the single default path. Exactly one consolidated warning is printed either way (naming which of "discovered N bench(es) live" or "falling back to default bench path" happened) - not one warning per failed step.
+- **Per-bench config-archive failure is a warning, not a gate.** `_archive_project_config` takes an `archive_dir_override` so its output lands in the same per-bench namespace as the DB backup, and it no longer prints its own warning on failure (that would double up with the caller's). The per-bench loop in `_remove_project` prints the warning itself, exactly once per failed bench, and does NOT append to `result["failures"]` - unlike backup/volume/container failures, a failed config archive does not block volume/directory deletion or cache clearing, because the verified live database backup (the C1 gate) already protects the data that matters; the config snapshot is a convenience extra.
+
+Regression coverage: `tests/test_rm_safety.py::TestMultiBench` (two-benches-both-ok, one-fails-blocks-everything, single-bench-stays-a-no-op-regression, cache-failure-fallback-to-default-bench, and cache-failure-with-live-discovery-backs-up-every-bench) and `TestConfigArchiveWarning` (a failed config archive does not block deletion/cache-clear and warns exactly once), using the multi-bench fake container in `tests/bench_fakes_mb.py`.
+
 ### `restore` command: receive-mode data-safety semantics
 
 `restore --receive` (`restore_receive_mode` in `commands/restore.py`) downloads a peer's backup over sendme and then runs `bench restore --force`, which drops and recreates the live default site's database.
@@ -394,11 +406,7 @@ Current practice at 0.34.0 (the `uv --trusted-publishing` flow), verified agains
 Known-but-UNFIXED data-loss/safety gaps in code terms, so an agent working nearby is warned.
 Prune each entry as it is fixed.
 
-- **(2026-07-08) Multi-bench `rm` backs up only bench 0 but deletes all benches' volumes.**
-  In `commands/rm.py:_remove_project`, the live backup runs against a single `bench_path = cached_data["bench_instances"][0]["path"]` (the first sorted bench), so `_backup_sites` only dumps that bench's sites.
-  But `_remove_named_volumes` enumerates volumes by the whole compose project label (`com.docker.compose.project={name}`) and removes ALL of them, which includes every non-first bench's data.
-  So on a multi-bench instance, `cwcli rm` destroys every non-first bench's sites with no backup, defeating the C1 backup gate for those benches (the gate's `backup_ok` reflects only bench 0).
-  A correct fix backs up every bench under the instance before the volume deletion, or scopes the deletion to what was backed up.
+None currently tracked.
 
 ## Maintaining this file
 

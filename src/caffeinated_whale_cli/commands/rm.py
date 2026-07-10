@@ -8,8 +8,10 @@ removes associated volumes. Before removal:
 3. Archives project configuration to ~/.cwcli/archive
 """
 
+import hashlib
 import io
 import json
+import re
 import shutil
 import sys
 import tarfile
@@ -94,6 +96,23 @@ def _list_sites(container, bench_path: str) -> list[str] | None:
     directory itself could not be listed.
     """
     return bench_sites.list_sites(container, bench_path)
+
+
+def _bench_archive_slug(bench_path: str) -> str:
+    """Return a short safe slug for a bench path, for use in archive directory
+    namespacing.
+
+    Two benches in the same instance may share a site name (e.g. both use the
+    frappe-docker default ``development.localhost``), so their backup artifacts
+    must land in distinct archive subdirectories.  This function hashes the full
+    bench path to produce a short deterministic slug that is safe across
+    platforms.
+    """
+    safe_basename = re.sub(
+        r"[^a-zA-Z0-9_-]", "_", bench_path.rstrip("/").rsplit("/", 1)[-1] or "bench"
+    )
+    short_hash = hashlib.sha256(bench_path.encode()).hexdigest()[:8]
+    return f"{safe_basename}_{short_hash}"
 
 
 class _ChunkStreamReader(io.RawIOBase):
@@ -332,6 +351,7 @@ def _archive_project_config(
     project_name: str,
     container,
     bench_path: str,
+    archive_dir_override: Path | None = None,
     verbose: bool = False,
 ) -> bool:
     """
@@ -345,16 +365,25 @@ def _archive_project_config(
         project_name: Name of the project
         container: Docker container to extract files from
         bench_path: Path to bench directory inside container
+        archive_dir_override: When set, use this directory directly instead of
+            creating a new timestamped one.  Used by the multi-bench backup loop
+            so config archives land in the same per-bench namespace as the DB
+            backups, preventing same-name collisions and stray archive dirs.
         verbose: Enable verbose output
 
     Returns:
         True if archive successful, False otherwise
     """
     try:
-        # Create archive directory
-        archive_base = Path.home() / ".cwcli" / "archive"
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        archive_dir = archive_base / f"{project_name}_{timestamp}"
+        # Determine archive directory.  When the caller provides one (e.g. from
+        # the multi-bench backup loop) use it directly so the config archive
+        # lands in the same per-bench namespace as the database backups.
+        if archive_dir_override is not None:
+            archive_dir = archive_dir_override
+        else:
+            archive_base = Path.home() / ".cwcli" / "archive"
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            archive_dir = archive_base / f"{project_name}_{timestamp}"
         archive_dir.mkdir(parents=True, exist_ok=True)
 
         if verbose:
@@ -431,9 +460,6 @@ def _archive_project_config(
     except Exception as e:
         if verbose:
             stderr_console.print(f"[dim]VERBOSE: Archive failed: {e}[/dim]")
-        stderr_console.print(
-            f"[yellow]Warning:[/yellow] Could not archive configuration for '{project_name}'"
-        )
         return False
 
 
@@ -755,32 +781,93 @@ def _remove_project(
 
     # Backup and archive before removal
     if frappe_running:
-        # Try to get bench path from cache first
-        bench_path = "/workspace/frappe-bench"  # default
+        # Try to get bench paths from cache first
+        bench_paths = ["/workspace/frappe-bench"]  # default fallback
         try:
             cached_data = db_utils.get_cached_project_data(project_name)
             if cached_data and cached_data.get("bench_instances"):
-                bench_path = cached_data["bench_instances"][0]["path"]
-        except Exception:
-            pass
-
-        # Backup databases (unless --no-backup). The result is the gate on
-        # destroying data: a backup that did not fully land on the host archive
-        # must NOT be trusted, so a False here blocks volume/directory removal
-        # below just as a failed conf/ archive does.
-        if not no_backup:
-            if status:
-                status.update(
-                    f"[bold cyan]Backing up databases for '{project_name}'...[/bold cyan]"
+                bench_paths = [b["path"] for b in cached_data["bench_instances"]]
+        except Exception as e:
+            if verbose:
+                stderr_console.print(
+                    f"[dim]VERBOSE: Could not read cache for '{project_name}': " f"{e}[/dim]"
                 )
-            result["backup_ok"] = _backup_sites(
-                project_name, frappe_container, bench_path, archive_dir, verbose=verbose
+            try:
+                from .inspect import _find_bench_instances
+
+                discovered = _find_bench_instances(frappe_container, verbose)
+                if discovered:
+                    bench_paths = discovered
+            except Exception as discover_err:
+                if verbose:
+                    stderr_console.print(
+                        f"[dim]VERBOSE: Live bench discovery also failed: " f"{discover_err}[/dim]"
+                    )
+            if bench_paths == ["/workspace/frappe-bench"]:
+                fallback_detail = f"falling back to default bench path '{bench_paths[0]}'"
+            else:
+                fallback_detail = f"discovered {len(bench_paths)} bench(es) live"
+            stderr_console.print(
+                f"[yellow]Warning:[/yellow] Could not read bench paths from cache "
+                f"for '{project_name}'; {fallback_detail}. Multi-bench instances may "
+                "not be fully backed up."
             )
 
-        # Archive configuration
-        if status:
-            status.update(f"[bold cyan]Archiving configuration for '{project_name}'...[/bold cyan]")
-        _archive_project_config(project_name, frappe_container, bench_path, verbose=verbose)
+        # Pre-compute per-bench archive directories.  For a single-bench instance
+        # the archive dir IS ``archive_dir`` (flat layout, easier to discover).
+        # For multi-bench, each bench gets a hash-suffixed namespace so
+        # same-named sites in different benches do not collide.
+        multi_bench = len(bench_paths) > 1
+        bench_archive_dirs: dict[str, Path] = {}
+        for bp in bench_paths:
+            bd = archive_dir
+            if multi_bench:
+                bd = bd / _bench_archive_slug(bp)
+            bench_archive_dirs[bp] = bd
+
+        # Backup ALL benches (not just the first). Each bench's sites are
+        # backed up and verified independently; the result is True only if
+        # EVERY bench fully backed up. Any single bench failure blocks volume
+        # deletion (the backup gate below).
+        if not no_backup:
+            all_backups_ok = True
+            for bp in bench_paths:
+                if status:
+                    status.update(
+                        f"[bold cyan]Backing up databases for bench '{bp}'...[/bold cyan]"
+                    )
+                bench_archive_dir = bench_archive_dirs[bp]
+                bench_archive_dir.mkdir(parents=True, exist_ok=True)
+                bench_ok = _backup_sites(
+                    project_name, frappe_container, bp, bench_archive_dir, verbose=verbose
+                )
+                if not bench_ok:
+                    all_backups_ok = False
+            result["backup_ok"] = all_backups_ok
+
+        # Archive configuration for each bench. A failed config archive is a
+        # warning only -- it does not block cache clearing (unlike backup,
+        # volume, or container failures which mean something was NOT deleted and
+        # should stay visible for retry). The backup gate above already protects
+        # the data.
+        for bp in bench_paths:
+            if status:
+                status.update(f"[bold cyan]Archiving configuration for bench '{bp}'...[/bold cyan]")
+            bench_archive_dir = bench_archive_dirs[bp]
+            bench_archive_dir.mkdir(parents=True, exist_ok=True)
+            config_ok = _archive_project_config(
+                project_name,
+                frappe_container,
+                bp,
+                archive_dir_override=bench_archive_dir,
+                verbose=verbose,
+            )
+            if not config_ok:
+                stderr_console.print(
+                    f"[yellow]Warning:[/yellow] Could not archive configuration "
+                    f"for bench '{bp}' -- the bench config may not be recoverable "
+                    f"from backup artifacts alone."
+                )
     else:
         # No running container, so a live `bench backup` database dump is
         # impossible (whether the containers are stopped or already gone). Only
