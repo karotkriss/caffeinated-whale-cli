@@ -632,6 +632,40 @@ class TestMultiBench:
         assert result["volumes"] == 2
         assert result["dir_removed"] is True
 
+    def test_cache_failure_fallback_to_default_bench(
+        self, cwcli_home, monkeypatch, capsys,
+    ):
+        """When the cache lookup raises, _remove_project falls back to the
+        default bench path ``/workspace/frappe-bench`` instead of silently
+        skipping backup on a multi-bench instance."""
+        from .bench_fakes_mb import FakeFrappeContainerMB
+
+        _patch_docker(monkeypatch)
+        _make_project_dir(rm.PROJECTS_DIR, "proj")
+        container = FakeFrappeContainerMB({
+            self.BENCH0: {"sites": ["s0.localhost"]},
+        })
+        volumes = [_make_volume("proj_sites"), _make_volume("proj_db-data")]
+        monkeypatch.setattr(rm, "get_project_containers", lambda name: [container])
+        monkeypatch.setattr(rm, "get_project_volumes", lambda name: list(volumes))
+        monkeypatch.setattr(rm.db_utils, "clear_cache_for_project", lambda name: None)
+        monkeypatch.setattr(
+            rm.db_utils, "get_cached_project_data",
+            lambda name: (_ for _ in ()).throw(RuntimeError("cache corrupted")),
+        )
+
+        result = rm._remove_project("proj", remove_volumes=True, no_backup=False)
+
+        # The backup proceeded on the default bench path (single bench) and
+        # succeeded, so the gate passes and volumes are deleted.
+        assert result["backup_ok"] is True
+        assert result["volumes"] == 2
+        assert result["dir_removed"] is True
+        # A warning was emitted about the cache failure and fallback.
+        err = capsys.readouterr().err
+        assert "cache" in err.lower()
+        assert "falling back" in err.lower()
+
 
 class TestBackupSitesReturn:
     """``_backup_sites`` must report success only when every site is captured."""

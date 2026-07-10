@@ -108,7 +108,9 @@ def _bench_archive_slug(bench_path: str) -> str:
     bench path to produce a short deterministic slug that is safe across
     platforms.
     """
-    safe_basename = re.sub(r"[^a-zA-Z0-9_-]", "_", bench_path.rstrip("/").rsplit("/", 1)[-1] or "bench")
+    safe_basename = re.sub(
+        r"[^a-zA-Z0-9_-]", "_", bench_path.rstrip("/").rsplit("/", 1)[-1] or "bench"
+    )
     short_hash = hashlib.sha256(bench_path.encode()).hexdigest()[:8]
     return f"{safe_basename}_{short_hash}"
 
@@ -788,8 +790,17 @@ def _remove_project(
             cached_data = db_utils.get_cached_project_data(project_name)
             if cached_data and cached_data.get("bench_instances"):
                 bench_paths = [b["path"] for b in cached_data["bench_instances"]]
-        except Exception:
-            pass
+        except Exception as e:
+            if verbose:
+                stderr_console.print(
+                    f"[dim]VERBOSE: Could not read cache for '{project_name}': " f"{e}[/dim]"
+                )
+            stderr_console.print(
+                f"[yellow]Warning:[/yellow] Could not read bench paths from cache "
+                f"for '{project_name}'; falling back to default bench path "
+                f"'{bench_paths[0]}'. Multi-bench instances may not be fully "
+                "backed up."
+            )
 
         # Backup ALL benches (not just the first). Each bench's sites are
         # backed up and verified independently; the result is True only if
@@ -816,7 +827,10 @@ def _remove_project(
                     all_backups_ok = False
             result["backup_ok"] = all_backups_ok
 
-        # Archive configuration for each bench
+        # Archive configuration for each bench. A failed config archive is
+        # recorded as a failure (it may not be recoverable from backups alone),
+        # but the backup gate above already protects the data.  The volume/dir
+        # cleanup steps evaluate `result["failures"]` separately.
         for bp in bench_paths:
             if status:
                 status.update(
@@ -825,13 +839,15 @@ def _remove_project(
             bench_slug = _bench_archive_slug(bp)
             bench_archive_dir = archive_dir / bench_slug
             bench_archive_dir.mkdir(parents=True, exist_ok=True)
-            _archive_project_config(
+            config_ok = _archive_project_config(
                 project_name,
                 frappe_container,
                 bp,
                 archive_dir_override=bench_archive_dir,
                 verbose=verbose,
             )
+            if not config_ok:
+                result["failures"].append(f"failed to archive configuration for bench '{bp}'")
     else:
         # No running container, so a live `bench backup` database dump is
         # impossible (whether the containers are stopped or already gone). Only
