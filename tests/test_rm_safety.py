@@ -340,7 +340,9 @@ class TestBackupGate:
 
         # The db dump actually landed non-empty in the archive.
         archives = list(
-            (cwcli_home / ".cwcli" / "archive").glob(f"proj_*/backups/{site}/*database*")
+            (cwcli_home / ".cwcli" / "archive").glob(
+                f"proj_*/frappe-bench_*/backups/{site}/*database*"
+            )
         )
         assert archives and archives[0].stat().st_size > 0
 
