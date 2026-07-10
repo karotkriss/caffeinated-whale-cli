@@ -539,6 +539,98 @@ class TestBackupGate:
         )
 
 
+class TestMultiBench:
+    """Multi-bench instances must back up ALL benches before volume deletion."""
+
+    BENCH0 = "/workspace/frappe-bench"
+    BENCH1 = "/workspace/second-bench"
+
+    def _make_cached_data(self, bench_paths):
+        return {"bench_instances": [{"path": bp} for bp in bench_paths]}
+
+    def test_two_benches_both_ok_allows_deletion(self, cwcli_home, monkeypatch):
+        """Both benches back up fully -> gate passes, volumes are deleted."""
+        from .bench_fakes_mb import FakeFrappeContainerMB
+
+        _patch_docker(monkeypatch)
+        project_dir = _make_project_dir(rm.PROJECTS_DIR, "proj")
+        container = FakeFrappeContainerMB({
+            self.BENCH0: {"sites": ["s0.localhost"]},
+            self.BENCH1: {"sites": ["s1.localhost"]},
+        })
+        volumes = [_make_volume("proj_sites"), _make_volume("proj_db-data")]
+        monkeypatch.setattr(rm, "get_project_containers", lambda name: [container])
+        monkeypatch.setattr(rm, "get_project_volumes", lambda name: list(volumes))
+        monkeypatch.setattr(rm.db_utils, "clear_cache_for_project", lambda name: None)
+        monkeypatch.setattr(
+            rm.db_utils, "get_cached_project_data",
+            lambda name: self._make_cached_data([self.BENCH0, self.BENCH1]),
+        )
+
+        result = rm._remove_project("proj", remove_volumes=True, no_backup=False)
+
+        assert result["backup_ok"] is True
+        assert not result["failures"]
+        assert result["volumes"] == 2
+        assert result["dir_removed"] is True
+        for v in volumes:
+            v.remove.assert_called_once_with(force=True)
+
+    def test_two_benches_one_fails_blocks_deletion(self, cwcli_home, monkeypatch):
+        """Bench 0 backs up, bench 1 fails -> gate blocks, nothing deleted."""
+        from .bench_fakes_mb import FakeFrappeContainerMB
+
+        _patch_docker(monkeypatch)
+        project_dir = _make_project_dir(rm.PROJECTS_DIR, "proj")
+        container = FakeFrappeContainerMB({
+            self.BENCH0: {"sites": ["s0.localhost"], "backup_ok": True},
+            self.BENCH1: {"sites": ["s1.localhost"], "backup_ok": False},
+        })
+        volumes = [_make_volume("proj_sites"), _make_volume("proj_db-data")]
+        monkeypatch.setattr(rm, "get_project_containers", lambda name: [container])
+        monkeypatch.setattr(rm, "get_project_volumes", lambda name: list(volumes))
+        monkeypatch.setattr(rm.db_utils, "clear_cache_for_project", lambda name: None)
+        monkeypatch.setattr(
+            rm.db_utils, "get_cached_project_data",
+            lambda name: self._make_cached_data([self.BENCH0, self.BENCH1]),
+        )
+
+        result = rm._remove_project("proj", remove_volumes=True, no_backup=False)
+
+        assert result["backup_ok"] is False
+        assert result["failures"]
+        assert result["volumes"] == 0
+        assert result["dir_removed"] is False
+        assert project_dir.exists()
+        for v in volumes:
+            v.remove.assert_not_called()
+
+    def test_single_bench_regression(self, cwcli_home, monkeypatch):
+        """Single-bench instances still work (backup_ok=True -> deletion)."""
+        from .bench_fakes_mb import FakeFrappeContainerMB
+
+        _patch_docker(monkeypatch)
+        project_dir = _make_project_dir(rm.PROJECTS_DIR, "proj")
+        container = FakeFrappeContainerMB({
+            self.BENCH0: {"sites": ["site1.localhost"]},
+        })
+        volumes = [_make_volume("proj_sites"), _make_volume("proj_db-data")]
+        monkeypatch.setattr(rm, "get_project_containers", lambda name: [container])
+        monkeypatch.setattr(rm, "get_project_volumes", lambda name: list(volumes))
+        monkeypatch.setattr(rm.db_utils, "clear_cache_for_project", lambda name: None)
+        monkeypatch.setattr(
+            rm.db_utils, "get_cached_project_data",
+            lambda name: self._make_cached_data([self.BENCH0]),
+        )
+
+        result = rm._remove_project("proj", remove_volumes=True, no_backup=False)
+
+        assert result["backup_ok"] is True
+        assert not result["failures"]
+        assert result["volumes"] == 2
+        assert result["dir_removed"] is True
+
+
 class TestBackupSitesReturn:
     """``_backup_sites`` must report success only when every site is captured."""
 
