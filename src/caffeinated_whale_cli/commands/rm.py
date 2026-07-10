@@ -827,10 +827,11 @@ def _remove_project(
                     all_backups_ok = False
             result["backup_ok"] = all_backups_ok
 
-        # Archive configuration for each bench. A failed config archive is
-        # recorded as a failure (it may not be recoverable from backups alone),
-        # but the backup gate above already protects the data.  The volume/dir
-        # cleanup steps evaluate `result["failures"]` separately.
+        # Archive configuration for each bench. A failed config archive is a
+        # warning only -- it does not block cache clearing (unlike backup,
+        # volume, or container failures which mean something was NOT deleted and
+        # should stay visible for retry). The backup gate above already protects
+        # the data.
         for bp in bench_paths:
             if status:
                 status.update(
@@ -847,7 +848,11 @@ def _remove_project(
                 verbose=verbose,
             )
             if not config_ok:
-                result["failures"].append(f"failed to archive configuration for bench '{bp}'")
+                stderr_console.print(
+                    f"[yellow]Warning:[/yellow] Could not archive configuration "
+                    f"for bench '{bp}' -- the bench config may not be recoverable "
+                    f"from backup artifacts alone."
+                )
     else:
         # No running container, so a live `bench backup` database dump is
         # impossible (whether the containers are stopped or already gone). Only
