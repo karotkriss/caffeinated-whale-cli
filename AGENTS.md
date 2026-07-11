@@ -84,6 +84,10 @@ The canonical worked examples are `docs/e2e/restore-inspect-e2e-r6.md` and `docs
 
 - **Tooling.** Use `uv` (`uv sync --frozen --all-extras`, `uv run ...`).
   Format with black and lint with ruff, both at line-length 100 and scoped to `src/` (`uv run black --check src/`, `uv run ruff check src/`).
+  `black` is a **dev-only** dependency (in the `dev` extra, NOT runtime `dependencies`): it is a formatter, never imported or subprocessed by `src/`, so keeping it out of runtime deps keeps the `uv tool install`/`uvx` environment lean - do not move it back.
+- **Distribution.** cwcli is distributed as a uv tool: `uv tool install caffeinated-whale-cli` (unpinned, so `uv tool upgrade` works) or `uvx --from caffeinated-whale-cli cwcli ...`.
+  Both `cwcli` and `caffeinated-whale-cli` console scripts point at `caffeinated_whale_cli.main:cli`; the `--from` is needed because the command name differs from the package name.
+  Install/run/upgrade docs live in `README.md`; the isolated E2E evidence is `docs/e2e/uv-tool-distribution.md`.
 - **Types.** Keep `uv run mypy src/` at zero errors; it is a blocking gate.
   Prefer accurate annotations over `# type: ignore` (there are none in `src/`), and add the matching `types-*` stub (`types-requests`, `types-toml` are dev deps) rather than ignoring an untyped import.
   Do not loosen `[tool.mypy]` to hide errors.

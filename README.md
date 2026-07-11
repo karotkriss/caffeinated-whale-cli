@@ -22,7 +22,34 @@ A command-line interface (CLI) for managing Frappe/ERPNext Docker instances duri
 
 ## Installation
 
-Ensure you have Python 3.10+ and `pip` installed.
+`cwcli` requires Python 3.10+.
+
+### With uv (recommended)
+
+[uv](https://docs.astral.sh/uv/) installs `cwcli` into an isolated environment and puts the `cwcli` command on your `PATH`, without touching your system or project Python.
+
+```bash
+# Install (adds the `cwcli` command to your PATH)
+uv tool install caffeinated-whale-cli
+
+# Upgrade to the latest release
+uv tool upgrade caffeinated-whale-cli
+
+# Uninstall
+uv tool uninstall caffeinated-whale-cli
+```
+
+If this is your first `uv tool install`, uv may print a note about adding its tool-bin directory to your `PATH`; run `uv tool update-shell` (then restart your terminal) to do so.
+
+To run a one-off command without installing, use `uvx`.
+Because the command name (`cwcli`) differs from the package name, pass it via `--from`:
+
+```bash
+uvx --from caffeinated-whale-cli cwcli --version
+uvx --from caffeinated-whale-cli cwcli ls
+```
+
+### With pip
 
 ```bash
 pip install caffeinated-whale-cli
@@ -34,8 +61,8 @@ After installation, if you see an error like `'cwcli' is not recognized...`, the
 
 To fix this:
 
-1. **Find the script's location:** Run `pip show -f caffeinated-whale-cli` and look for the location of `cwcli.exe` (or `cwcli` on macOS/Linux). It's typically in a `Scripts` or `bin` folder within your Python installation directory.
-2. **Add to PATH:** Follow your operating system's instructions to add this directory to your `PATH` environment variable.
+1. **uv:** Run `uv tool update-shell` and restart your terminal.
+2. **pip:** Run `pip show -f caffeinated-whale-cli` and look for the location of `cwcli.exe` (or `cwcli` on macOS/Linux) - typically a `Scripts` or `bin` folder within your Python installation - then add that directory to your `PATH`.
 3. **Restart your terminal:** Close and reopen your terminal for changes to take effect.
 
 ## Quick Start
