@@ -90,7 +90,7 @@ class TestResolveFrappeBranch:
         assert exc.value.exit_code == 1
 
 
-class _StopAfterBenchInit(Exception):
+class _StopAfterBenchInitError(Exception):
     """Sentinel to stop init once the bench init command is captured."""
 
 
@@ -108,7 +108,7 @@ def _drive_init_to_bench_init(monkeypatch, tmp_path, **overrides):
 
     def recording_exec(container, command, **kwargs):
         captured["command"] = command
-        raise _StopAfterBenchInit
+        raise _StopAfterBenchInitError
 
     monkeypatch.setattr(init_mod, "check_ports_in_use", lambda ports: dict.fromkeys(ports, False))
     monkeypatch.setattr(init_mod.config_utils, "get_show_tips", lambda: False)
@@ -144,7 +144,7 @@ def _drive_init_to_bench_init(monkeypatch, tmp_path, **overrides):
     )
     params.update(overrides)
 
-    with pytest.raises(_StopAfterBenchInit):
+    with pytest.raises(_StopAfterBenchInitError):
         init_mod.init.__wrapped__(**params)
     return captured["command"]
 
