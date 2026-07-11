@@ -43,7 +43,7 @@ Use **instance** as the top-level term throughout.
 
 Each entry is the contract; the linked source file is authoritative and the Sharp edges appendix holds the root-cause detail.
 
-- **`init` version gating** (`commands/init.py`) - `bench new-site` MariaDB flag, Python/Node versions, and `setuptools` pin depend on the Frappe branch.
+- **`init` version gating** (`commands/init.py`) - default branch `version-16`; `--version <N|X.Y.Z>` alias resolves to a `version-N` branch or `vX.Y.Z` tag (`--frappe-branch` still takes a raw ref; the two are mutually exclusive). `bench new-site` MariaDB flag, Python/Node versions, and `setuptools` pin gate on the major version parsed from the ref.
   Existing-bench decline continues on a fresh name instead of dead-ending.
   See Sharp edges: `init`.
 - **`inspect` 3-tier freshness** (`commands/inspect.py`) - cache-backed with a read-only drift check; escalates to a full re-cache only on real drift.
@@ -108,12 +108,17 @@ Keep the root-cause "why" so a later change does not silently re-break the fix.
 
 ### `init` command: Frappe/bench version gating
 
-`bench new-site` MariaDB flag depends on the Frappe branch (see `_select_mariadb_flag` in `commands/init.py`):
+The default Frappe branch is `version-16` (`DEFAULT_FRAPPE_BRANCH` in `commands/init.py`; `--erpnext-branch` defaults to `version-16` to match). Two mutually-exclusive flags pick the ref, resolved BEFORE any port/Docker work so a bad value fails fast:
 
-- `version-13` and `version-14` -> `--no-mariadb-socket`
-- `version-15`+ -> `--mariadb-user-host-login-scope=%` (this flag only exists in bench/Frappe 15+; passing it to bench 14 makes `bench new-site` fail)
+- `--frappe-branch <ref>` - a raw git branch/tag (e.g. `version-16`, `v16.26.3`, `develop`), passed to `bench init` unchanged.
+- `--version <value>` - a shape-resolving alias (`resolve_frappe_ref`): a bare integer `N` -> branch `version-N`; a full SemVer 2.0.0 `X.Y.Z` (`_SEMVER_RE`) -> tag `vX.Y.Z`; anything else (e.g. `16.26`, `latest`) raises `ValueError` -> `Exit(1)`. `_resolve_frappe_branch` rejects passing both flags (`Exit(1)`) and defaults to `DEFAULT_FRAPPE_BRANCH` when neither is given.
 
-Other per-branch settings nearby in `init.py`: Python version (`branch_python`: 15->3.12, 14->3.10, 13->3.9), Node major (`branch_node`: 14->16, 13->14), and `setuptools<82` is pinned only for `version-13`.
+Version gating keys on the MAJOR version parsed from the resolved ref via `_frappe_major_version` (handles BOTH `version-16`->16 and the `v16.26.3`->16 tag form; `develop`->`None`), NOT exact branch strings - so a SemVer tag is gated the same as its branch equivalent:
+
+- `bench new-site` MariaDB flag (`_select_mariadb_flag`): major `<= 14` (or a `v14.x.x`/`v13.x.x` tag) -> `--no-mariadb-socket`; else -> `--mariadb-user-host-login-scope=%` (this flag only exists in bench/Frappe 15+; passing it to bench 14 makes `bench new-site` fail). `develop`/unknown -> the 15+ flag.
+- Python version (`branch_python`, keyed by int: 15->3.12, 14->3.10, 13->3.9), Node major (`branch_node`, keyed by int: 14->16, 13->14), and `setuptools<82` pinned only when major == 13. version-16 uses the container-default Python/Node (no dict entry).
+
+Regression coverage: `tests/test_init_frappe_version.py` (resolver shapes, mutual exclusion, default, major extraction, and an end-to-end capture that the resolved ref reaches the real `bench init` command) and the tag-form cases in `tests/test_init_mariadb_flag.py`.
 
 #### `init` existing-bench flow: decline must continue, not dead-end
 
