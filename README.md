@@ -1557,8 +1557,8 @@ source ~/.zshrc   # For Zsh
 
 **What gets completed:**
 
-- **Project names** - All commands that accept project names (start, stop, restart, inspect, label, logs, open, status, run, update, unlock)
-- **App names** - Commands with `--app` option (open, update)
+- **Project names** - All commands that accept project names (start, stop, restart, inspect, label, logs, open, status, run, update, unlock, apps)
+- **App names** - Commands with `--app` option or an `APP` argument (open, update, `apps uninstall`, `apps update`)
 - **Site names** - Commands with `--site` option (unlock)
 
 **Examples:**
