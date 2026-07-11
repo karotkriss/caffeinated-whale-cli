@@ -72,6 +72,7 @@ The command SHALL run every (app, site) step, aggregate the results, exit non-ze
 The system SHALL provide `cwcli apps update <project> <app...>` as the CANONICAL app-update path, wrapping the existing update flow (`commands/update.py`) so app updates are reachable under the `apps` noun without duplicating logic.
 Updating the `frappe` framework app SHALL run `bench update --reset` instead of the normal per-app update flow; other apps SHALL use the normal flow.
 Updates SHALL honor `--site` (repeatable) to narrow the sites migrated; with no `--site` the existing all-affected-sites behavior applies.
+If `--site` is given and none of the named sites are among the actually-affected sites, the command SHALL refuse with a non-zero exit rather than silently migrating nothing; a genuinely empty affected-site set (no site has the app installed at all) SHALL still exit zero.
 When no app is given the command SHALL refuse with a non-zero exit.
 
 #### Scenario: Update a normal app through the apps group
@@ -85,6 +86,10 @@ When no app is given the command SHALL refuse with a non-zero exit.
 #### Scenario: Update with no app named
 - **WHEN** a user runs `cwcli apps update myproject` with no app argument
 - **THEN** the command reports that at least one app is required and exits non-zero
+
+#### Scenario: --site names a site the app isn't actually on
+- **WHEN** a user runs `cwcli apps update myproject payments --site b.localhost` and `payments` is installed on other sites but not `b.localhost`
+- **THEN** the command refuses, reports the requested and actually-affected sites, and exits non-zero without migrating anything
 
 ### Requirement: Deprecate the top-level update command
 The system SHALL keep `cwcli update` working as a deprecated alias for `cwcli apps update`.
