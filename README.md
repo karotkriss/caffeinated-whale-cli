@@ -754,7 +754,7 @@ cwcli apps update [OPTIONS] PROJECT_NAME APPS...
 
 **`apps install`** - fetches (`bench get-app`, honoring `--branch`) and installs each app on the target site(s). Each `APP` is a known app name **or** a git URL (passed straight to `bench get-app`, so custom apps not in bench's registry work). `--fetch-only` fetches without installing on any site.
 
-**`apps uninstall`** - removes each app from the target site(s) (`bench --site <site> uninstall-app`). This destroys site data, so it is gated by `-y`/`--yes` or an interactive confirmation (a non-TTY without `--yes` refuses). `--remove-from-bench` also deletes the app directory from the bench.
+**`apps uninstall`** - removes each app from the target site(s) (`bench --site <site> uninstall-app`). This destroys site data, so it is gated by `-y`/`--yes` or an interactive confirmation (a non-TTY without `--yes` refuses).
 
 **`apps update`** - the canonical app-update path (what the deprecated `cwcli update` now delegates to). Updating the `frappe` framework app runs `bench update --reset`; other apps use the normal git-pull + migrate flow. `--site` narrows which affected sites are migrated.
 

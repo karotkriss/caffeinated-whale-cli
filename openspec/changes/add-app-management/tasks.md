@@ -21,7 +21,7 @@
 ## 4. apps uninstall
 
 - [x] 4.1 Implement `apps uninstall <project> <app...>`: single up-front destructive gate via `confirm_or_exit(assume_yes=yes, ...)` naming the target sites; fan out `bench --site <site> uninstall-app` over the resolved site set (all sites by default).
-- [x] 4.2 Add `--remove-from-bench` (delete the app dir after site uninstalls); continue-and-report-all aggregation with honest non-zero exit and per-(app, site) report.
+- [x] 4.2 Continue-and-report-all aggregation with honest non-zero exit and per-(app, site) report.
 - [x] 4.3 Non-TTY-without-`--yes` refuses non-zero; on overall success refresh the cache and emit `--json` per-(app, site) results.
 
 ## 5. apps update + deprecate cwcli update
