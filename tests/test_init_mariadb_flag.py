@@ -21,6 +21,20 @@ class TestSelectMariadbFlag:
         # --mariadb-user-host-login-scope, so it must use --no-mariadb-socket.
         assert _select_mariadb_flag("version-14") == "--no-mariadb-socket"
 
-    @pytest.mark.parametrize("branch", ["version-15", "develop"])
+    @pytest.mark.parametrize("branch", ["version-15", "version-16", "develop"])
     def test_version_15_plus_uses_host_login_scope(self, branch):
         assert _select_mariadb_flag(branch) == "--mariadb-user-host-login-scope=%"
+
+    @pytest.mark.parametrize(
+        "ref,expected",
+        [
+            ("v14.80.0", "--no-mariadb-socket"),
+            ("v13.60.0", "--no-mariadb-socket"),
+            ("v15.40.0", "--mariadb-user-host-login-scope=%"),
+            ("v16.26.3", "--mariadb-user-host-login-scope=%"),
+        ],
+    )
+    def test_tag_refs_gate_on_major_version(self, ref, expected):
+        # Regression: a semver tag (from --version X.Y.Z) must gate the same
+        # way its branch equivalent does, not silently fall to the 15+ default.
+        assert _select_mariadb_flag(ref) == expected

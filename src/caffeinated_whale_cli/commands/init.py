@@ -35,6 +35,7 @@ Example:
     # Initializes bench and site
 """
 
+import re
 import shlex
 import subprocess
 import sys
@@ -429,13 +430,85 @@ def _build_cd_command(path: str, command: str) -> str:
     return f"cd {shlex.quote(path)} && {command}"
 
 
+DEFAULT_FRAPPE_BRANCH = "version-16"
+
+# Official SemVer 2.0.0 grammar (https://semver.org): MAJOR.MINOR.PATCH with an
+# optional pre-release and build metadata. A full match resolves to a git tag;
+# a bare integer major resolves to a version-N branch instead.
+_SEMVER_RE = re.compile(
+    r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+    r"(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)"
+    r"(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?"
+    r"(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$"
+)
+
+
+def resolve_frappe_ref(version: str) -> str:
+    """Resolve a ``--version`` value to a git ref for ``bench init``.
+
+    - a bare integer ``N`` -> branch ``version-N`` (e.g. ``16`` -> ``version-16``)
+    - a semantic version ``X.Y.Z`` -> tag ``vX.Y.Z`` (e.g. ``16.26.3`` -> ``v16.26.3``)
+
+    The value must satisfy the SemVer 2.0.0 grammar to resolve to a tag; a
+    malformed value (e.g. ``16.26`` or ``latest``) raises ``ValueError``.
+    """
+    value = version.strip()
+    if re.fullmatch(r"\d+", value):
+        return f"version-{value}"
+    if _SEMVER_RE.match(value):
+        return f"v{value}"
+    raise ValueError(
+        f"Invalid --version value {version!r}: expected a bare major version "
+        f"(e.g. 16 -> version-16) or a full semantic version "
+        f"(e.g. 16.26.3 -> v16.26.3)."
+    )
+
+
+def _resolve_frappe_branch(frappe_branch: str | None, version: str | None) -> str:
+    """Resolve the effective Frappe git ref from the mutually-exclusive
+    ``--frappe-branch`` / ``--version`` flags.
+
+    Defaults to :data:`DEFAULT_FRAPPE_BRANCH` when neither is given. A malformed
+    ``--version`` or passing both flags prints an error and exits non-zero.
+    """
+    if frappe_branch is not None and version is not None:
+        stderr_console.print(
+            "[bold red]Error:[/bold red] --frappe-branch and --version are "
+            "mutually exclusive; pass only one."
+        )
+        raise typer.Exit(code=1)
+    if version is not None:
+        try:
+            return resolve_frappe_ref(version)
+        except ValueError as exc:
+            stderr_console.print(f"[bold red]Error:[/bold red] {exc}")
+            raise typer.Exit(code=1) from None
+    if frappe_branch is not None:
+        return frappe_branch
+    return DEFAULT_FRAPPE_BRANCH
+
+
+def _frappe_major_version(ref: str) -> int | None:
+    """Extract the major Frappe version from a resolved git ref.
+
+    Handles both the branch form (``version-16`` -> 16) and the tag form
+    (``v16.26.3`` -> 16). Returns ``None`` for refs with no leading numeric
+    major (e.g. ``develop``), so version gating falls through to the modern
+    defaults.
+    """
+    m = re.match(r"^(?:version-|v)(\d+)", ref)
+    return int(m.group(1)) if m else None
+
+
 def _select_mariadb_flag(frappe_branch: str) -> str:
-    """Select the ``bench new-site`` MariaDB flag for the given Frappe branch.
+    """Select the ``bench new-site`` MariaDB flag for the given Frappe ref.
 
     ``--mariadb-user-host-login-scope`` only exists in bench/Frappe 15+, so
-    versions 13 and 14 must fall back to ``--no-mariadb-socket``.
+    versions 14 and older must fall back to ``--no-mariadb-socket``. Works for
+    both branch refs (``version-14``) and tag refs (``v14.80.0``).
     """
-    if frappe_branch in ("version-13", "version-14"):
+    major = _frappe_major_version(frappe_branch)
+    if major is not None and major <= 14:
         return "--no-mariadb-socket"
     return "--mariadb-user-host-login-scope=%"
 
@@ -678,10 +751,22 @@ def init(
         "--bench-parent",
         help="Directory inside the container where the bench will be created.",
     ),
-    frappe_branch: str = typer.Option(
-        "version-15",
+    frappe_branch: str | None = typer.Option(
+        None,
         "--frappe-branch",
-        help="Frappe branch to use for bench init.",
+        help=(
+            "Frappe branch or tag for bench init (e.g. version-16 or v16.26.3). "
+            "Mutually exclusive with --version. Default: version-16."
+        ),
+    ),
+    version: str | None = typer.Option(
+        None,
+        "--version",
+        help=(
+            "Frappe version for bench init, resolved by shape: a bare major "
+            "(16 -> version-16 branch) or a full semantic version "
+            "(16.26.3 -> v16.26.3 tag). Mutually exclusive with --frappe-branch."
+        ),
     ),
     db_root_password: str = typer.Option(
         "123",
@@ -720,7 +805,7 @@ def init(
         help="Install the ERPNext application onto the created site after initialization.",
     ),
     erpnext_branch: str = typer.Option(
-        "version-15",
+        "version-16",
         "--erpnext-branch",
         help="ERPNext branch to use when fetching the app (used with --install-erpnext).",
     ),
@@ -737,9 +822,14 @@ def init(
         cwcli init
         cwcli init my-project
         cwcli init my-project --bench my-bench --site mysite.localhost
-        cwcli init my-project --frappe-branch version-15 --install-erpnext
-        cwcli init my-project --db-root-password mypass --admin-password admin123
+        cwcli init my-project --version 16 --install-erpnext
+        cwcli init my-project --version 16.26.3
+        cwcli init my-project --frappe-branch version-16 --db-root-password mypass
     """
+    # Resolve the Frappe git ref first so a malformed --version fails fast,
+    # before any project dir / container work.
+    frappe_branch = _resolve_frappe_branch(frappe_branch, version)
+
     start_time = time.time()
 
     # Prompt for project name if not provided
@@ -836,10 +926,11 @@ def init(
         # Determine Python and Node.js requirements per branch
         env_prefix = ""
         nvm_prefix = ""
-        branch_python = {"version-15": "3.12", "version-14": "3.10", "version-13": "3.9"}
-        branch_node = {"version-14": "16", "version-13": "14"}
+        branch_python = {15: "3.12", 14: "3.10", 13: "3.9"}
+        branch_node = {14: "16", 13: "14"}
+        frappe_major = _frappe_major_version(frappe_branch)
 
-        python_prefix = branch_python.get(frappe_branch)
+        python_prefix = branch_python.get(frappe_major) if frappe_major is not None else None
         if python_prefix:
             py_version = _get_pyenv_python_version(frappe_container, python_prefix, verbose=verbose)
             if not py_version:
@@ -855,7 +946,7 @@ def init(
                         f"[dim]Using PYENV_VERSION={py_version} for {frappe_branch}[/dim]"
                     )
 
-        node_major = branch_node.get(frappe_branch)
+        node_major = branch_node.get(frappe_major) if frappe_major is not None else None
         if node_major:
             node_version = _get_nvm_node_version(frappe_container, node_major, verbose=verbose)
             if not node_version:
@@ -930,7 +1021,7 @@ def init(
                 )
 
     # Pin setuptools<82 for version-13 to retain pkg_resources
-    if frappe_branch == "version-13":
+    if _frappe_major_version(frappe_branch) == 13:
         pin_cmd = _build_cd_command(bench_full_path, "./env/bin/pip install 'setuptools<82'")
         if verbose:
             stderr_console.print("[dim]Pinning setuptools<82 for version-13...[/dim]")

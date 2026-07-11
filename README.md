@@ -87,11 +87,12 @@ cwcli init [OPTIONS] [PROJECT_NAME]
 | `-b`, `--bench TEXT` | Bench directory name inside the container (default: frappe-bench) |
 | `-s`, `--site TEXT` | Primary site name, must end with .localhost (default: development.localhost) |
 | `--bench-parent TEXT` | Directory inside container where bench is created (default: /workspace) |
-| `--frappe-branch TEXT` | Frappe branch for bench init (default: version-15) |
+| `--frappe-branch TEXT` | Frappe branch or tag for bench init, e.g. `version-16` or `v16.26.3` (default: version-16). Mutually exclusive with `--version` |
+| `--version TEXT` | Frappe version for bench init, resolved by shape: a bare major (`16` → `version-16` branch) or a full semantic version (`16.26.3` → `v16.26.3` tag). Malformed values are rejected with a non-zero exit. Mutually exclusive with `--frappe-branch` |
 | `--db-root-password TEXT` | MariaDB root password (default: 123) |
 | `--admin-password TEXT` | Administrator password for the site (default: admin) |
 | `--install-erpnext` | Install ERPNext application after initialization |
-| `--erpnext-branch TEXT` | ERPNext branch to use (default: version-15) |
+| `--erpnext-branch TEXT` | ERPNext branch to use (default: version-16) |
 | `--auto-start` | Automatically start containers if not running |
 | `--reuse-bench` / `--no-reuse-bench` | Pre-answer the existing-bench question non-interactively: `--reuse-bench` reuses the bench and skips `bench init`; `--no-reuse-bench` requires a fresh `--bench` name and errors if it already exists. Default: ask interactively (a non-TTY without either flag refuses). Distinct from `--auto-start`, which controls container startup |
 | `-v`, `--verbose` | Show verbose output with streaming command execution |
@@ -117,16 +118,21 @@ cwcli init [OPTIONS] [PROJECT_NAME]
 
 | Branch | Python | Node.js | Bench Image |
 |--------|--------|---------|-------------|
+| `version-16` (default) | Default | Default | Latest stable from Docker Hub |
 | `version-15` | 3.12.x (via pyenv) | Default | Latest stable from Docker Hub |
 | `version-14` | 3.10.x (via pyenv) | 16 (via nvm) + yarn | Latest stable from Docker Hub |
 | `version-13` | 3.9.x (via pyenv) | 14 (via nvm) + yarn | Latest stable from Docker Hub |
 | Other | Default | Default | Latest stable from Docker Hub |
 
+Version gating keys on the major version parsed from the ref, so a semantic-version tag
+(e.g. `v14.80.0` from `--version 14.80.0`) is gated the same way its branch equivalent
+(`version-14`) is.
+
 Missing Python or Node.js versions are automatically installed inside the container.
 `version-13` also pins `setuptools<82` in the bench virtualenv after init.
 
-Site creation picks the MariaDB flag per branch: `version-13` and `version-14` use `--no-mariadb-socket`,
-while `version-15` and newer use `--mariadb-user-host-login-scope=%` (a flag that only exists in bench/Frappe 15+).
+Site creation picks the MariaDB flag per major version: `14` and older use `--no-mariadb-socket`,
+while `15` and newer use `--mariadb-user-host-login-scope=%` (a flag that only exists in bench/Frappe 15+).
 
 **Examples:**
 
@@ -143,14 +149,20 @@ cwcli init my-project --port 10000
 # Initialize with ERPNext
 cwcli init my-project --install-erpnext
 
+# Pick a Frappe version by shape: a bare major -> version-N branch
+cwcli init my-project --version 16
+
+# ...or a full semantic version -> vX.Y.Z tag
+cwcli init my-project --version 16.26.3
+
 # Full customization
 cwcli init my-project \
   --port 12000 \
   --bench custom-bench \
   --site myapp.localhost \
-  --frappe-branch version-15 \
+  --frappe-branch version-16 \
   --install-erpnext \
-  --erpnext-branch version-15 \
+  --erpnext-branch version-16 \
   --admin-password secretpass
 
 # Verbose mode for debugging
