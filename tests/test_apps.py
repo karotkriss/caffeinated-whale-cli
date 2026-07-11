@@ -196,6 +196,55 @@ def test_list_multibench_no_selector_refuses(wired, monkeypatch):
     assert exc.value.exit_code == 1
 
 
+def test_list_installed_read_failure_exits_nonzero_json(wired, monkeypatch, capsys):
+    container = FakeFrappeContainer(
+        available_apps=["frappe"],
+        installed={"a.localhost": ["frappe"]},
+        fail_on=["--site b.localhost list-apps"],
+    )
+    monkeypatch.setattr(apps_mod, "get_frappe_container", lambda name: container)
+
+    with pytest.raises(typer.Exit) as exc:
+        apps_mod.list_apps(
+            "proj",
+            bench=None,
+            bench_path=None,
+            sites=[],
+            installed=True,
+            json_output=True,
+            yes=False,
+            verbose=False,
+        )
+    assert exc.value.exit_code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["installed"]["a.localhost"] == ["frappe"]
+    assert out["installed"]["b.localhost"] is None
+
+
+def test_list_installed_read_failure_exits_nonzero_human(wired, monkeypatch, capsys):
+    container = FakeFrappeContainer(
+        available_apps=["frappe"],
+        installed={"a.localhost": ["frappe"]},
+        fail_on=["--site b.localhost list-apps"],
+    )
+    monkeypatch.setattr(apps_mod, "get_frappe_container", lambda name: container)
+
+    with pytest.raises(typer.Exit) as exc:
+        apps_mod.list_apps(
+            "proj",
+            bench=None,
+            bench_path=None,
+            sites=[],
+            installed=True,
+            json_output=False,
+            yes=False,
+            verbose=False,
+        )
+    assert exc.value.exit_code == 1
+    err = capsys.readouterr().err
+    assert "could not read installed apps" in err
+
+
 # -------------------------------------------------------------------------- install
 
 
@@ -304,7 +353,6 @@ def test_uninstall_json_without_yes_refuses(wired, monkeypatch):
             bench=None,
             bench_path=None,
             sites=["a.localhost"],
-            remove_from_bench=False,
             json_output=True,
             yes=False,
             verbose=False,
@@ -325,7 +373,6 @@ def test_uninstall_non_tty_without_yes_refuses(wired, monkeypatch):
             bench=None,
             bench_path=None,
             sites=["a.localhost"],
-            remove_from_bench=False,
             json_output=False,
             yes=False,
             verbose=False,
@@ -344,7 +391,6 @@ def test_uninstall_yes_fans_out_and_refreshes(wired, monkeypatch, capsys):
         bench=None,
         bench_path=None,
         sites=[],
-        remove_from_bench=False,
         json_output=True,
         yes=True,
         verbose=False,
@@ -355,24 +401,6 @@ def test_uninstall_yes_fans_out_and_refreshes(wired, monkeypatch, capsys):
     assert len(uninstalls) == 2  # both sites
     assert all("--yes" in c for c in uninstalls)  # bench's own confirm suppressed
     assert wired.recache_calls == ["proj"]
-
-
-def test_uninstall_remove_from_bench_deletes_dir(wired, monkeypatch):
-    container = _install_container()
-    monkeypatch.setattr(apps_mod, "get_frappe_container", lambda name: container)
-
-    apps_mod.uninstall_apps(
-        "proj",
-        ["payments"],
-        bench=None,
-        bench_path=None,
-        sites=["a.localhost"],
-        remove_from_bench=True,
-        json_output=True,
-        yes=True,
-        verbose=False,
-    )
-    assert any(c.startswith("rm -rf") and "apps/payments" in c for c in container.calls)
 
 
 # ---------------------------------------------------------------------------- update

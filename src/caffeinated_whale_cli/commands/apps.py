@@ -228,11 +228,15 @@ def list_apps(
             ok, site_apps = _list_installed_apps(frappe_container, resolved, site, verbose)
             installed_by_site[site] = site_apps if ok else None
 
+    any_fail = any(v is None for v in installed_by_site.values())
+
     if json_output:
         doc = {"project": project_name, "bench": resolved, "available_apps": available}
         if installed or sites:
             doc["installed"] = installed_by_site
         typer.echo(json.dumps(doc, indent=2))
+        if any_fail:
+            raise typer.Exit(code=1)
         return
 
     console.print(f"[bold]Available apps[/bold] ([dim]{resolved}[/dim]):")
@@ -248,6 +252,8 @@ def list_apps(
             else:
                 for a in site_apps:
                     console.print(f"  • [cyan]{a}[/cyan]")
+    if any_fail:
+        raise typer.Exit(code=1)
 
 
 # -------------------------------------------------------------------------- install
@@ -359,9 +365,6 @@ def uninstall_apps(
     sites: list[str] = typer.Option(
         None, "--site", help="Uninstall from the named site(s). Repeatable. Omit for all sites."
     ),
-    remove_from_bench: bool = typer.Option(
-        False, "--remove-from-bench", help="Also delete the app directory from the bench."
-    ),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Skip the destructive confirmation and auto-start containers."
@@ -412,14 +415,6 @@ def uninstall_apps(
             )
             results.append(
                 {"app": app_name, "site": site, "action": "uninstall-app", "ok": code == 0}
-            )
-        if remove_from_bench:
-            rm_cmd = f"rm -rf {shlex.quote(f'{resolved}/apps/{app_name}')}"
-            code = _run_bench(
-                frappe_container, rm_cmd, resolved, json_output=json_output, verbose=verbose
-            )
-            results.append(
-                {"app": app_name, "site": None, "action": "remove-from-bench", "ok": code == 0}
             )
 
     if any(r["ok"] for r in results):

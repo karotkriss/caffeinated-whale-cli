@@ -597,7 +597,7 @@ def _update_project(
                     if sites:
                         temp_affected_sites.update(sites)
 
-            total_sites = len(temp_affected_sites)
+            total_sites = len(_apply_site_filter(temp_affected_sites, sites_filter))
 
             # Create only the overall progress bar
             overall_task = progress.add_task("[bold white]Overall", total=100)

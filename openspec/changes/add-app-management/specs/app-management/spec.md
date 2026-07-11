@@ -16,6 +16,7 @@ The bench SHALL be resolved through the shared `resolve_bench_path` with `on_amb
 The system SHALL, when installed apps are requested for `cwcli apps list <project>` (via `--installed` or one or more `--site <site>`), report the apps installed on the target site(s), read live via `bench --site <site> list-apps`.
 Consistent with the multi-site default, when no `--site` is given the target site set SHALL be ALL sites on the resolved bench (from the canonical `bench_sites.list_sites`); `--site` is repeatable and narrows to the named site(s).
 The result SHALL be grouped by site so a reader can tell which app is installed where.
+If the live read fails for any requested site, the command SHALL still print/emit the full result (with that site's apps as `null`/unreadable) and SHALL exit non-zero, in both human and `--json` modes.
 
 #### Scenario: List installed apps for an explicit site
 - **WHEN** a user runs `cwcli apps list myproject --site dev.localhost`
@@ -24,6 +25,10 @@ The result SHALL be grouped by site so a reader can tell which app is installed 
 #### Scenario: List installed apps across all sites by default
 - **WHEN** a user runs `cwcli apps list myproject --installed` on a bench with multiple sites and no `--site`
 - **THEN** the command lists the installed apps for every site on the bench, grouped by site, and exits zero
+
+#### Scenario: Installed-apps read fails for a site
+- **WHEN** a user runs `cwcli apps list myproject --installed` and the live `bench --site <site> list-apps` read fails for one site
+- **THEN** the command still reports every other site's apps, marks the failed site's apps as unreadable, and exits non-zero in both human and `--json` mode
 
 ### Requirement: Install one or more apps
 The system SHALL provide `cwcli apps install <project> <app...>` that fetches each app into the bench (`bench get-app`, honoring an optional `--branch`) and then installs it on the target site(s) (`bench --site <site> install-app`).
@@ -53,7 +58,6 @@ On overall success it SHALL refresh the bench's cached app lists through the exi
 The system SHALL provide `cwcli apps uninstall <project> <app...>` that removes an app from the target site(s) (`bench --site <site> uninstall-app`).
 Uninstalls SHALL be multi-site by default: with no `--site` the app is removed from ALL sites on the resolved bench; `--site` is repeatable and narrows to the named site(s).
 Because this destroys site data, it SHALL be gated by the shared destructive-confirmation contract (`confirm_or_exit`): `--yes` proceeds, an interactive TTY prompts, and a non-TTY without `--yes` refuses with a non-zero exit.
-`--remove-from-bench` SHALL additionally remove the app directory from the bench after the site uninstalls.
 The command SHALL run every (app, site) step, aggregate the results, exit non-zero if ANY step fails with a per-step report, and on overall success refresh the bench's cached app lists.
 
 #### Scenario: Non-interactive uninstall without confirmation flag
