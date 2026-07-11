@@ -17,7 +17,7 @@ The source of truth for the user-facing feature set is `README.md`.
 
 - `src/caffeinated_whale_cli/commands/` - one module per CLI command (`init`, `inspect`, `rm`, `restore`, `start`, `run`, `label`, `config`, ...) plus `utils.py` (shared resolver, confirm, container-running helpers).
 - `src/caffeinated_whale_cli/utils/` - cross-command building blocks: `db_utils.py` (SQLite cache + migrations + secret redaction), `bench_labels.py` (label model + marker I/O), `bench_sites.py` (site detection), `docker_utils.py`, `cache.py`, `sendme_utils.py`.
-- `tests/` - pytest suites (18 `test_*.py` files, ~335 tests); `bench_fakes.py` and `bench_fakes_mb.py` hold the container fakes. See `tests/README.md` for the coverage map.
+- `tests/` - pytest suites (19 `test_*.py` files, ~351 tests); `bench_fakes.py` and `bench_fakes_mb.py` hold the container fakes. See `tests/README.md` for the coverage map.
 - `docs/e2e/` - worked real-instance E2E evidence (the canonical examples for the recipe below); `docs/technical/`, `docs/testing/`, `docs/contributing/` hold design, test, and workflow docs.
 - Version-bump touches exactly four files: `pyproject.toml` (`version`), `src/caffeinated_whale_cli/__init__.py` (`__version__`), `uv.lock` (regenerate with `uv lock`), and `CHANGELOG.md`.
 - `.github/workflows/` - `lint.yml`, `test.yml`, `build.yml`, `release.yml`.
@@ -57,6 +57,8 @@ Each entry is the contract; the linked source file is authoritative and the Shar
   See Sharp edges: `restore`.
 - **Cache never stores secrets** (`utils/db_utils.py`) - a whitelist redaction at the single write chokepoint; nothing reads secrets back from the cache.
   See Sharp edges: cache secrets.
+- **`apps` command group** (`commands/apps.py`) - first-class app management (list/install/uninstall/update) per bench and multi-site by default; reuses the shared resolver/confirm/site-detection/recache primitives; `cwcli update` is now a deprecated alias for `apps update`.
+  See Sharp edges: `apps`.
 
 ## End-to-End Testing
 
@@ -359,6 +361,23 @@ A Docker/API exception raised by the migrate `exec_run` is treated as a failed-b
 `--no-migrate` skips the whole post-restore step.
 
 Regression coverage: `tests/test_restore_inspect_fixes.py` (all six) and `tests/test_bench_labels`-style DB tests; `tests/test_inspect_partial_refresh.py` and `tests/test_restore_safety.py` fakes were updated for the shared site probe and the `no_migrate` param.
+
+### `apps` command group: multi-site fan-out, JSON purity, update deprecation (2026-07-11)
+
+`commands/apps.py` is the first-class app manager (`list`/`install`/`uninstall`/`update`), registered as a Typer sub-app in `main.py` (`add_typer(apps_cmd.app, name="apps")`). It is built entirely from existing primitives - `resolve_bench_path` (`on_ambiguous="error"`, so a multi-bench op with no `--bench` refuses), `confirm_or_exit`, `ensure_containers_running(auto_start=yes)`, `bench_sites.list_sites`, and `cache.recache_project` - and adds no new dependency or cache field. It was spec-driven via OpenSpec: the artifacts live in `openspec/changes/add-app-management/` (proposal/design/specs/tasks), validated with `OPENSPEC_TELEMETRY=0 openspec validate add-app-management --strict`.
+
+Load-bearing decisions, each guarding a real constraint:
+
+- **Multi-site by DEFAULT for install/uninstall/update.** No `--site` = fan out to ALL sites from the canonical `bench_sites.list_sites` (NOT `get_default_site` - that single-site model was rejected by the captain); `--site` is repeatable and narrows. There is deliberately NO active/disabled-site distinction - one site set, the same `list_sites` everything else uses. The fan-out is **continue-and-report-all**: run every `(app, site)` step, collect a per-step `{app, site, action, ok}` result, and exit non-zero if ANY failed - never a success banner over a partial failure (`_report_and_exit`). Stop-on-first-failure was explicitly rejected.
+- **`--json` stdout purity.** `console` is stdout (see `utils/console.py`), so in JSON mode NOTHING but the final `json.dumps` may touch stdout. `_run_bench` therefore CAPTURES bench output (not streams) when `json_output`, all progress goes to `stderr_console`, and a destructive `apps uninstall --json` without `--yes` REFUSES (json implies non-interactive; a `confirm_or_exit` prompt would fight the JSON contract, and its `--yes` ack prints to stdout). Human (non-json) mode streams bench output to stdout via `_stream_bench` (mirrors `run.py`).
+- **Post-mutation refresh uses `cache.recache_project`, NOT `partial_inspect_known_benches`.** The partial pass is READ-ONLY (never persists) and cannot refresh per-site `installed_apps` - exactly what install/uninstall change. Only a full recache (which routes through `cache_project_data` -> `_redact_config_for_cache`, so no secret is ever written) makes `where`/`open`/`inspect` honest. Degrades to a warning; the mutation already succeeded.
+- **`<app>` is a name OR a git URL** passed straight to `bench get-app`; the per-site `install-app` name is derived from the URL basename (minus `.git`) via `_derive_app_name`. `uninstall-app` is always invoked with bench's own `--yes` so a non-TTY exec never hangs on bench's internal confirm (cwcli's `confirm_or_exit` gate is the human confirmation). `--remove-from-bench` is a literal `rm -rf {bench}/apps/{app}` after the site uninstalls.
+
+`cwcli update` deprecation + frappe special-case (folded into `commands/update.py`):
+- `cwcli update` is now a DEPRECATED alias that prints a notice and delegates to the shared `run_app_update`, which both `apps update` and `update` call - one implementation, no drift. `run_app_update` validates >=1 app then calls `_update_project`.
+- `_update_project` gained `sites_filter` (the repeatable `--site` narrowing, applied to `all_affected_sites` via `_apply_site_filter` in BOTH the verbose and non-verbose branches) and an early **frappe special-case**: if any named app is `frappe` (case-insensitive), it runs `_run_frappe_update_reset` (`bench update --reset`, whole-bench) and returns - the per-app `git pull` loop is skipped, and `--site` does not apply (bench update is bench-wide).
+
+Regression coverage: `tests/test_apps.py` (a `FakeFrappeContainer` recording every exec + streaming via a fake `client.api`; covers both modes, multi-site fan-out aggregation, git-URL derivation, the destructive/non-TTY refusals, cache-refresh, the frappe reset branch, and the deprecated-`update` warn+delegate). The `apps` commands are `@handle_docker_errors`-decorated, so tests patch `docker_utils.shutil.which` + `docker_utils.docker.from_env` (in the `wired` fixture) and pass every Typer param explicitly.
 
 ### Interactive AND non-interactive modes: support and test BOTH (captain standard, 2026-07-04)
 

@@ -2,6 +2,7 @@ import importlib.metadata
 
 import typer
 
+from .commands import apps as apps_cmd
 from .commands import config as config_cmd
 from .commands import list as list_cmd
 from .commands import restart as restart_cmd
@@ -63,6 +64,7 @@ app.add_typer(stop_cmd.app, name="stop")
 app.add_typer(restart_cmd.app, name="restart")
 app.add_typer(rm_cmd.app, name="rm")
 app.add_typer(config_cmd.app, name="config")
+app.add_typer(apps_cmd.app, name="apps")
 
 app.command("where")(_where_cmd)
 

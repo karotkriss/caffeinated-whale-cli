@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.0] - 2026-07-11
+
+### Added
+- **`apps` command** - First-class Frappe app management, replacing the raw `cwcli run <project> bench ...` escape hatch with per-bench/per-site addressing, `--json` output, and honest exit codes
+  - `cwcli apps list <project>` lists the apps available in a bench (live `ls apps/`); `--installed`/`--site` also lists the apps installed per site (all sites by default, grouped by site)
+  - `cwcli apps install <project> <app...>` fetches (`bench get-app`, optional `--branch`) and installs app(s); each app is a known name **or** a git URL; `--fetch-only` fetches without installing
+  - `cwcli apps uninstall <project> <app...>` removes app(s) from sites (destructive; gated by `-y`/`--yes` or an interactive confirmation); `--remove-from-bench` also deletes the app directory
+  - `cwcli apps update <project> <app...>` is the canonical app-update path; updating `frappe` runs `bench update --reset`
+  - **Multi-site by default** for install/uninstall/update: with no `--site` the command applies to every site on the bench; `--site` is repeatable and narrows. The fan-out runs per site, aggregates results, and exits non-zero if any site fails (with a per-site report) - a partial failure is never hidden behind a success banner
+  - Every subcommand supports `--json` and the non-interactive contract (a non-TTY without the required flag refuses non-zero; auto-start gated by `--yes`), and refreshes the cache after a mutation so `where`/`open`/`inspect` reflect the new state
+
+### Changed
+- **`update` command** - Deprecated in favor of `cwcli apps update`. It keeps working (and now emits a deprecation notice) as an alias, gains a repeatable `--site` to narrow which affected sites are migrated, and updating the `frappe` framework app now runs `bench update --reset`
+
 ## [0.35.0] - 2026-07-09
 
 ### Added
