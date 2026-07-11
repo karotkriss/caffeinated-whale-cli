@@ -297,6 +297,7 @@ class TestInitContainerReadiness:
                 site_name="development.localhost",
                 bench_parent="/workspace",
                 frappe_branch="version-15",
+                version=None,
                 db_root_password="123",
                 admin_password="admin",
                 auto_start=False,
