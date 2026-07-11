@@ -40,4 +40,4 @@
 ## 7. Docs and E2E
 
 - [x] 7.1 Add a `## apps` section to `README.md` (including multi-site default, git-URL install, `frappe` update behavior), mark `cwcli update` as deprecated, and add a `CHANGELOG.md` entry (Keep a Changelog format, user-facing only).
-- [ ] 7.2 Run the real-instance E2E on Frappe v14 + v15, both interactive and non-interactive, exercising multi-site fan-out and the deprecation notice, per the CLAUDE.md recipe; capture evidence under `docs/e2e/`.
+- [x] 7.2 Run the real-instance E2E on Frappe v14 + v15, both interactive and non-interactive, exercising multi-site fan-out and the deprecation notice, per the CLAUDE.md recipe; capture evidence under `docs/e2e/`.
