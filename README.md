@@ -14,6 +14,7 @@ A command-line interface (CLI) for managing Frappe/ERPNext Docker instances duri
 - **Multi-Bench Support** - Address individual benches in a multi-bench instance by numeric index or a durable label with `--bench`
 - **Default Site Support** - Optional `--site` flag when default site is configured
 - **Backup & Restore** - Interactive site restoration with automatic file archive detection and P2P transfer support
+- **App Management** - List, install, uninstall, and update Frappe apps per bench and per site with `cwcli apps` (multi-site by default, `--json`, honest exit codes)
 - **Update Management** - App updates with automatic migrations and lock cleanup
 - **Auto-Inspection** - Background process to keep project cache fresh automatically
 - **System Integration** - Auto-start on system boot with platform-specific configurations
@@ -59,7 +60,7 @@ cwcli logs my-project
 cwcli open my-project
 
 # Update apps and migrate sites
-cwcli update my-project --app erpnext --build
+cwcli apps update my-project erpnext
 ```
 
 ## Command Reference
@@ -733,9 +734,75 @@ How would you like to open this instance?
 
 ---
 
+### `apps` - Manage Frappe Apps
+
+First-class app management: list, install, uninstall, and update Frappe apps per bench and per site.
+This replaces dropping to the raw `cwcli run <project> bench get-app ...` escape hatch: every subcommand resolves the target bench (`--bench <index|label>`/`--path`), returns honest non-zero exit codes, and honors the non-interactive contract (a non-TTY without the required flag refuses non-zero; auto-start gated by `-y`/`--yes`). The `list`, `install`, and `uninstall` subcommands also support `--json` machine-readable output; `apps update` delegates to the streaming update flow and has no `--json`.
+
+**Multi-site by default:** `install`, `uninstall`, and `apps update` apply to **all** sites on the resolved bench when no `--site` is given; `--site` is repeatable and narrows to the named site(s).
+The fan-out runs per site, aggregates the results, and exits non-zero if any site fails (printing a per-site report) - a partial failure is never hidden behind a success banner.
+After a successful mutation the bench's cached app lists are refreshed so `where`/`open`/`inspect` reflect the new state.
+
+```bash
+cwcli apps list [OPTIONS] PROJECT_NAME
+cwcli apps install [OPTIONS] PROJECT_NAME APPS...
+cwcli apps uninstall [OPTIONS] PROJECT_NAME APPS...
+cwcli apps update [OPTIONS] PROJECT_NAME APPS...
+```
+
+**`apps list`** - lists apps available in the bench (live `ls apps/`); with `--installed`/`--site` it also lists the apps installed per site (all sites by default, grouped by site).
+
+**`apps install`** - fetches (`bench get-app`, honoring `--branch`) and installs each app on the target site(s). Each `APP` is a known app name **or** a git URL (passed straight to `bench get-app`, so custom apps not in bench's registry work). `--fetch-only` fetches without installing on any site.
+
+**`apps uninstall`** - removes each app from the target site(s) (`bench --site <site> uninstall-app`). This destroys site data, so it is gated by `-y`/`--yes` or an interactive confirmation (a non-TTY without `--yes` refuses).
+
+**`apps update`** - the canonical app-update path (what the deprecated `cwcli update` now delegates to). Updating the `frappe` framework app runs `bench update --reset`; other apps use the normal git-pull + migrate flow. `--site` narrows which affected sites are migrated; if none of the named site(s) actually have the app installed, the command refuses and exits non-zero rather than silently migrating nothing (a genuine typo/mismatch guard - a bench with no affected sites at all still exits zero). It accepts the same migration flags as the [deprecated `update` command](#update---update-apps-and-migrate) (`--clear-cache`, `--clear-website-cache`, `--build`, `--skip-maintenance`, `--no-recache`). When updating the `frappe` framework app the flow runs the bench-wide `bench update --reset`, so `--site` and those per-app migration flags do not apply and are reported as ignored.
+
+**Common Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--bench TEXT` | Which bench to target: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)) |
+| `-p`, `--path TEXT` | Explicit bench directory inside the container (lower-level alternative to `--bench`) |
+| `--site TEXT` | Target site(s); repeatable. Omit for all sites (list/install/uninstall) or all affected sites (update) |
+| `--json` | Machine-readable JSON output for `list`/`install`/`uninstall` (for mutations, includes the per-`(app, site)` results). Not available on `apps update` |
+| `-y`, `--yes` | Auto-start stopped containers without prompting; for `uninstall`, also skip the destructive confirmation |
+| `-v`, `--verbose` | Enable verbose output |
+
+**Examples:**
+
+```bash
+# List apps available in the (only/selected) bench
+cwcli apps list frappe-one
+
+# List apps installed across every site, as JSON
+cwcli apps list frappe-one --installed --json
+
+# Install ERPNext on every site of the bench
+cwcli apps install frappe-one erpnext
+
+# Install a custom app from a git URL on one site
+cwcli apps install frappe-one https://github.com/example/custom_app --site dev.localhost
+
+# Fetch an app into the bench without installing it anywhere
+cwcli apps install frappe-one payments --fetch-only
+
+# Uninstall an app from all sites, non-interactively
+cwcli apps uninstall frappe-one payments --yes
+
+# Update an app (or the framework) - multi-bench aware
+cwcli apps update frappe-one erpnext
+cwcli apps update frappe-one frappe        # runs 'bench update --reset'
+```
+
+---
+
 ### `update` - Update Apps and Migrate
 
+> **Deprecated:** use [`cwcli apps update`](#apps---manage-frappe-apps) instead. `cwcli update` keeps working as an alias (and now prints a deprecation notice), so existing scripts are unaffected.
+
 Updates specified Frappe apps and migrates all sites where they are installed.
+Updating the `frappe` framework app runs `bench update --reset`.
 
 ```bash
 cwcli update [OPTIONS] PROJECT_NAME
@@ -754,6 +821,7 @@ cwcli update [OPTIONS] PROJECT_NAME
 | `-a`, `--app TEXT` | App name(s) to update (specify multiple apps after `--app` or use `--app` multiple times) |
 | `--bench TEXT` | Which bench to target: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)) |
 | `-p`, `--path TEXT` | Explicit bench directory inside the container (lower-level alternative to `--bench`; cannot be combined with it) |
+| `--site TEXT` | Narrow migration to the named site(s); repeatable. Omit to migrate all affected sites. Refuses non-zero if none of the named sites are actually affected |
 | `-v`, `--verbose` | Enable verbose output with streaming command execution |
 | `-c`, `--clear-cache` | Clear cache for all affected sites after migration |
 | `-w`, `--clear-website-cache` | Clear website cache for all affected sites after migration |
@@ -1489,8 +1557,8 @@ source ~/.zshrc   # For Zsh
 
 **What gets completed:**
 
-- **Project names** - All commands that accept project names (start, stop, restart, inspect, label, logs, open, status, run, update, unlock)
-- **App names** - Commands with `--app` option (open, update)
+- **Project names** - All commands that accept project names (start, stop, restart, inspect, label, logs, open, status, run, update, unlock, apps)
+- **App names** - Commands with `--app` option or an `APP` argument (open, update, `apps uninstall`, `apps update`)
 - **Site names** - Commands with `--site` option (unlock)
 
 **Examples:**

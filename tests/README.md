@@ -32,8 +32,8 @@ uv run pytest --pdb
 
 ## Test Files
 
-As of 0.34.0, `tests/` holds 18 `test_*.py` suites totaling 335 tests at ~42%
-overall coverage (measured with `uv run pytest --cov`). Run `ls tests/` for the
+As of 0.36.0, `tests/` holds 19 `test_*.py` suites totaling 356 tests
+(measured with `uv run pytest --cov`). Run `ls tests/` for the
 authoritative current list; see [../docs/testing/README.md](../docs/testing/README.md)
 for the per-area breakdown.
 
@@ -59,7 +59,7 @@ Tests for tab completion functionality.
 
 ## Test Coverage
 
-Current overall coverage: **~42%** at 0.34.0 (335 tests across 18 test files).
+Current overall coverage at 0.36.0 (356 tests across 19 test files).
 
 ### Covered Modules
 - ✅ `utils/completion_utils.py` - 92% (7 missing lines)
@@ -68,6 +68,7 @@ Current overall coverage: **~42%** at 0.34.0 (335 tests across 18 test files).
 - ✅ `commands/inspect.py` - ~62% (`test_inspect_partial_refresh`, `test_inspect_label_recovery`)
 - ✅ `commands/restore.py` - ~43% (`test_restore_safety`, `test_restore_inspect_fixes`)
 - ✅ `commands/rm.py` - ~78% (`test_rm_safety`, `test_rm_truth`, `test_rm_stopped`)
+- ✅ `commands/apps.py` + `commands/update.py` app-update path - (`test_apps`: both modes, multi-site fan-out, frappe reset, `update` deprecation)
 
 ### Modules Needing Dedicated Suites
 - ⚠️ `utils/port_utils.py` (~9%, only incidental coverage)

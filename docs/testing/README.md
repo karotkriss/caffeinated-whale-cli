@@ -25,7 +25,7 @@ uv run pytest tests/test_completion_utils.py
 
 ### Test Coverage
 
-Measured with `uv run pytest --cov` at 0.34.0: 335 tests across 18 test files, ~42% overall coverage.
+Measured with `uv run pytest --cov` at 0.36.0: 358 tests across 19 test files, ~45% overall coverage.
 Per-area breakdown (highest-coverage module in each area; see the module list in each test file for what else it exercises):
 
 - **rm safety** (`test_rm_safety`, `test_rm_truth`, `test_rm_stopped`) - `commands/rm.py` ~78%
@@ -39,13 +39,14 @@ Per-area breakdown (highest-coverage module in each area; see the module list in
 - **tips** (`test_tips`) - `utils/tips.py` ~91%
 - **config validation** (`test_config_validation`) - config validation helpers in `utils/db_utils.py`
 - **exit codes** (`test_exit_codes`) - cross-command honest-exit-code contract
+- **app management** (`test_apps`) - `commands/apps.py` ~91%, `commands/update.py` ~44% (multi-site fan-out, frappe reset, `update` deprecation)
 
 **No dedicated suite** (only incidental coverage from other tests' mocking): `utils/port_utils.py` (~9%), `utils/docker_utils.py` (~37%), `utils/sendme_utils.py` (~9%), `utils/vscode_utils.py` (~16%).
 **Target**: add dedicated suites for those four modules next.
 
 ### Test Files
 
-Run `ls tests/` for the authoritative, current list; as of 0.34.0 it holds 18 `test_*.py` suites plus `bench_fakes.py` and `bench_fakes_mb.py` (shared fakes) and `README.md`.
+Run `ls tests/` for the authoritative, current list; as of 0.36.0 it holds 19 `test_*.py` suites plus `bench_fakes.py` and `bench_fakes_mb.py` (shared fakes) and `README.md`.
 
 ## Testing Framework
 
@@ -279,11 +280,12 @@ The `Pytest` job is the intended required gate. See the [CI/CD Workflows guide](
 
 ## Future Test Priorities
 
-Status as of 0.34.0 (based on `ls tests/` and the coverage run above):
+Status as of 0.36.0 (based on `ls tests/` and the coverage run above):
 
 ### Done
 1. **Project Inspection** (`commands/inspect.py`) - covered by `test_inspect_partial_refresh`, `test_inspect_label_recovery` (~62%).
 2. **Database Operations** (`utils/db_utils.py`) - covered by `test_db_security`, `test_config_validation` (~68%).
+3. **App Management** (`commands/apps.py`, `commands/update.py`) - covered by `test_apps` (~91% / ~44%).
 
 ### Partial
 3. **Port Conflict Detection** (`commands/start.py`) - `test_yes_flag` covers the non-interactive/`--yes` contract, but the port-scanning and interactive-resolution logic itself has no dedicated suite (~59%).
