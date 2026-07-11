@@ -54,11 +54,12 @@ class _FakeAPI:
 class FakeFrappeContainer:
     """Records every exec, and serves programmable app/site listings + failures."""
 
-    def __init__(self, *, available_apps=None, installed=None, fail_on=None):
+    def __init__(self, *, available_apps=None, installed=None, fail_on=None, get_app_creates=None):
         self.calls = []
         self.available_apps = available_apps if available_apps is not None else []
         self.installed = installed or {}  # site -> [app names]
         self.fail_on = fail_on or []  # substrings that make a command fail
+        self.get_app_creates = get_app_creates or {}  # target substring -> apps/ dirname
         self.id = "cid"
         self.status = "running"
         self.labels = {"com.docker.compose.service": "frappe"}
@@ -73,6 +74,12 @@ class FakeFrappeContainer:
         for sub in self.fail_on:
             if sub in cmd:
                 return 1, f"error running: {cmd}"
+        if cmd.startswith("bench get-app"):
+            for target, dirname in self.get_app_creates.items():
+                if target in cmd and dirname not in self.available_apps:
+                    self.available_apps.append(dirname)
+                    break
+            return 0, ""
         if cmd.startswith("ls -1") and cmd.rstrip().endswith("/apps"):
             return 0, "\n".join(self.available_apps) + "\n"
         if "list-apps" in cmd:
@@ -299,7 +306,10 @@ def test_install_one_site_fails_exits_nonzero_no_success(wired, monkeypatch, cap
 
 
 def test_install_git_url_derives_app_name(wired, monkeypatch):
-    container = FakeFrappeContainer(available_apps=["frappe"])
+    container = FakeFrappeContainer(
+        available_apps=["frappe"],
+        get_app_creates={"custom_app.git": "custom_app"},
+    )
     monkeypatch.setattr(apps_mod, "get_frappe_container", lambda name: container)
 
     apps_mod.install_apps(
@@ -314,8 +324,54 @@ def test_install_git_url_derives_app_name(wired, monkeypatch):
         yes=False,
         verbose=False,
     )
-    # get-app gets the URL; install-app gets the derived basename (no .git).
+    # get-app gets the URL; install-app gets the name detected under apps/.
     assert any("get-app" in c and "custom_app.git" in c for c in container.calls)
+    assert any("install-app custom_app" in c for c in container.calls)
+
+
+def test_install_git_url_uses_detected_dir_over_url_basename(wired, monkeypatch):
+    # The repo/basename ("hrms_custom") differs from the actual app package dir
+    # that get-app creates under apps/ ("hrms") - a renamed fork/mirror scenario.
+    container = FakeFrappeContainer(
+        available_apps=["frappe"],
+        get_app_creates={"hrms_custom.git": "hrms"},
+    )
+    monkeypatch.setattr(apps_mod, "get_frappe_container", lambda name: container)
+
+    apps_mod.install_apps(
+        "proj",
+        ["https://github.com/example/hrms_custom.git"],
+        bench=None,
+        bench_path=None,
+        sites=["a.localhost"],
+        branch=None,
+        fetch_only=False,
+        json_output=True,
+        yes=False,
+        verbose=False,
+    )
+    assert any("install-app hrms" in c for c in container.calls)
+    assert not any("install-app hrms_custom" in c for c in container.calls)
+
+
+def test_install_falls_back_to_derived_name_when_no_new_dir(wired, monkeypatch):
+    # get-app adds nothing new under apps/ (e.g. already present); fall back to
+    # parsing the target instead of failing to resolve a name at all.
+    container = FakeFrappeContainer(available_apps=["frappe"])
+    monkeypatch.setattr(apps_mod, "get_frappe_container", lambda name: container)
+
+    apps_mod.install_apps(
+        "proj",
+        ["custom_app"],
+        bench=None,
+        bench_path=None,
+        sites=["a.localhost"],
+        branch=None,
+        fetch_only=False,
+        json_output=True,
+        yes=False,
+        verbose=False,
+    )
     assert any("install-app custom_app" in c for c in container.calls)
 
 
