@@ -41,7 +41,6 @@ name = "caffeinated-whale-cli"
 version = "0.36.0"
 source = { editable = "." }
 dependencies = [
-    { name = "black" },
     { name = "docker" },
     { name = "peewee" },
     { name = "questionary" },
@@ -52,6 +51,7 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "black" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -62,7 +62,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "black", specifier = ">=25.1.0" },
+    { name = "black", marker = "extra == 'dev'", specifier = ">=25.1.0" },
     { name = "docker", specifier = ">=7.1.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13.0" },
     { name = "peewee", specifier = ">=3.17.0" },
