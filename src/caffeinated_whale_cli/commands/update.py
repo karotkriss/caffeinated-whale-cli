@@ -179,6 +179,71 @@ def _get_sites_with_app(
     return sites_with_app
 
 
+def _apply_site_filter(sites, sites_filter: list[str] | None):
+    """Narrow a set/list of sites to those named in ``sites_filter`` (``--site``).
+
+    ``--site`` narrows which of the affected sites get migrated; ``None``/empty
+    means "no narrowing" (the historical all-affected-sites behavior).
+    """
+    if not sites_filter:
+        return set(sites)
+    allowed = set(sites_filter)
+    return {s for s in sites if s in allowed}
+
+
+def _fail_if_site_filter_matched_nothing(
+    unfiltered_sites, filtered_sites, sites_filter: list[str] | None
+) -> None:
+    """Refuse when ``--site`` narrows an actually-affected set down to empty.
+
+    Distinguishes "genuinely nothing to migrate" (no site has the app
+    installed, where exiting 0 is correct) from "--site named a site the
+    app isn't actually on" (a typo/mismatch, which must not silently
+    succeed as if the update ran).
+    """
+    if sites_filter and unfiltered_sites and not filtered_sites:
+        stderr_console.print(
+            "[bold red]Error:[/bold red] --site matched no affected site(s). "
+            f"Requested: {', '.join(sorted(sites_filter))}; "
+            f"affected: {', '.join(sorted(unfiltered_sites))}"
+        )
+        raise typer.Exit(code=1)
+
+
+def _run_frappe_update_reset(
+    frappe_container: docker.models.containers.Container,
+    bench_path: str,
+    project_name: str,
+    no_recache: bool,
+    verbose: bool,
+) -> None:
+    """Update the frappe framework via ``bench update --reset`` (whole-bench).
+
+    The framework app is not updated with a per-app ``git pull``; the correct path
+    is bench's own ``bench update --reset``, which resets every app's repo, pulls,
+    migrates every site, and rebuilds. Named for the ``frappe`` app specifically.
+    """
+    console.print(
+        "[bold cyan]Updating the frappe framework with 'bench update --reset'[/bold cyan]\n"
+    )
+    exit_code = _stream_command(
+        frappe_container,
+        "bench update --reset",
+        bench_path,
+        verbose=True,
+        status_msg="Running bench update --reset...",
+    )
+    if not no_recache:
+        if not cache.recache_project(project_name, verbose=verbose) and verbose:
+            stderr_console.print(
+                "[yellow]Warning:[/yellow] Failed to recache project after frappe update."
+            )
+    if exit_code != 0:
+        stderr_console.print("[bold red]✗[/bold red] 'bench update --reset' failed")
+        raise typer.Exit(code=1)
+    console.print("[bold green]✓[/bold green] Frappe framework updated")
+
+
 def _update_project(
     project_name: str,
     apps: list[str],
@@ -191,6 +256,7 @@ def _update_project(
     no_recache: bool = False,
     bench_selector: str | None = None,
     yes: bool = False,
+    sites_filter: list[str] | None = None,
 ):
     """Core logic for updating a single project."""
     from .utils import ensure_containers_running, resolve_bench_path
@@ -283,6 +349,34 @@ def _update_project(
         )
         raise typer.Exit(code=1)
 
+    # Frappe framework app special-case: the framework is updated bench-wide via
+    # `bench update --reset`, not a per-app `git pull`. If the user names `frappe`
+    # (alone or alongside others), run the whole-bench reset+update+migrate+build,
+    # which already covers every app and every site, then return. `--site` narrowing
+    # does not apply here (bench update is bench-wide).
+    if any(app.lower() == "frappe" for app in apps):
+        # `bench update --reset` is bench-wide: it migrates and rebuilds everything,
+        # so the per-app/per-site options below do not apply. Announce that they are
+        # ignored rather than silently dropping them.
+        ignored = [
+            name
+            for name, active in (
+                ("--site", bool(sites_filter)),
+                ("--clear-cache", clear_cache),
+                ("--clear-website-cache", clear_website_cache),
+                ("--build", build),
+                ("--skip-maintenance", skip_maintenance),
+            )
+            if active
+        ]
+        if ignored:
+            stderr_console.print(
+                "[yellow]Note:[/yellow] updating 'frappe' runs a bench-wide "
+                f"'bench update --reset'; ignoring {', '.join(ignored)} (not applicable)."
+            )
+        _run_frappe_update_reset(frappe_container, bench_path, project_name, no_recache, verbose)
+        return
+
     # Track all sites that need migration
     all_affected_sites = set()
     failed_apps = []
@@ -359,6 +453,13 @@ def _update_project(
                 all_affected_sites.update(sites)
             else:
                 console.print(f"  [dim]No sites found with '{app}' installed[/dim]")
+
+        # Narrow to the sites named with --site (if any); no --site keeps them all.
+        unfiltered_affected_sites = set(all_affected_sites)
+        all_affected_sites = _apply_site_filter(all_affected_sites, sites_filter)
+        _fail_if_site_filter_matched_nothing(
+            unfiltered_affected_sites, all_affected_sites, sites_filter
+        )
 
         # Report failed apps
         if failed_apps:
@@ -538,7 +639,7 @@ def _update_project(
                     if sites:
                         temp_affected_sites.update(sites)
 
-            total_sites = len(temp_affected_sites)
+            total_sites = len(_apply_site_filter(temp_affected_sites, sites_filter))
 
             # Create only the overall progress bar
             overall_task = progress.add_task("[bold white]Overall", total=100)
@@ -603,6 +704,13 @@ def _update_project(
                         overall_task, completed=int((completed_steps / total_steps) * 100)
                     )
                     live.refresh()
+
+                # Narrow to the sites named with --site (if any); no --site keeps them all.
+                unfiltered_affected_sites = set(all_affected_sites)
+                all_affected_sites = _apply_site_filter(all_affected_sites, sites_filter)
+                _fail_if_site_filter_matched_nothing(
+                    unfiltered_affected_sites, all_affected_sites, sites_filter
+                )
 
                 # Enable maintenance mode for affected sites (unless explicitly skipped)
                 if not skip_maintenance and all_affected_sites:
@@ -865,6 +973,49 @@ def _update_project(
         raise typer.Exit(code=1)
 
 
+def run_app_update(
+    project_name: str,
+    apps: list[str] | None,
+    *,
+    bench: str | None = None,
+    bench_path: str | None = None,
+    verbose: bool = False,
+    clear_cache: bool = False,
+    clear_website_cache: bool = False,
+    build: bool = False,
+    skip_maintenance: bool = False,
+    no_recache: bool = False,
+    yes: bool = False,
+    sites: list[str] | None = None,
+):
+    """Shared app-update entry point behind both ``cwcli apps update`` and the
+    deprecated ``cwcli update``.
+
+    Validates that at least one app was given, then delegates to
+    ``_update_project`` (which owns the frappe special-case and the ``--site``
+    narrowing). Kept as one implementation so the two commands never drift.
+    """
+    if not apps:
+        stderr_console.print("[bold red]Error:[/bold red] At least one app must be specified.")
+        raise typer.Exit(code=1)
+
+    console.print(f"[bold cyan]Updating project: {project_name}[/bold cyan]\n")
+    _update_project(
+        project_name,
+        list(apps),
+        bench_path,
+        verbose,
+        clear_cache,
+        clear_website_cache,
+        build,
+        skip_maintenance,
+        no_recache,
+        bench_selector=bench,
+        yes=yes,
+        sites_filter=list(sites) if sites else None,
+    )
+
+
 @handle_docker_errors
 def update(
     project_name: str = typer.Argument(
@@ -887,6 +1038,11 @@ def update(
         "--path",
         "-p",
         help="Explicit bench directory inside the container (lower-level alternative to --bench).",
+    ),
+    sites: list[str] = typer.Option(
+        None,
+        "--site",
+        help="Narrow migration to the named site(s). Repeatable. Omit to migrate all affected sites.",
     ),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Enable verbose output with streaming command output."
@@ -916,10 +1072,10 @@ def update(
     ),
 ):
     """
-    Update specified apps and migrate all sites where they are installed.
+    [DEPRECATED] Update apps - use 'cwcli apps update' instead.
 
-    This command will:
-    1. Navigate to each app directory and run 'git pull'
+    Kept as a working alias for 'cwcli apps update'. This command will:
+    1. Navigate to each app directory and run 'git pull' (or 'bench update --reset' for frappe)
     2. Find all sites where the app is installed
     3. Enable maintenance mode for affected sites (unless --skip-maintenance is used)
     4. Run 'bench --site <site> migrate' for each affected site
@@ -932,21 +1088,21 @@ def update(
         cwcli update my-project --app erpnext --clear-cache --clear-website-cache --build
         cwcli update my-project --app erpnext --skip-maintenance
     """
-    if not apps:
-        stderr_console.print("[bold red]Error:[/bold red] At least one --app must be specified.")
-        raise typer.Exit(code=1)
-
-    console.print(f"[bold cyan]Updating project: {project_name}[/bold cyan]\n")
-    _update_project(
+    stderr_console.print(
+        "[yellow]Warning:[/yellow] 'cwcli update' is deprecated; use "
+        "[green]cwcli apps update[/green] instead."
+    )
+    run_app_update(
         project_name,
-        list(apps),
-        bench_path,
-        verbose,
-        clear_cache,
-        clear_website_cache,
-        build,
-        skip_maintenance,
-        no_recache,
-        bench_selector=bench,
+        apps,
+        bench=bench,
+        bench_path=bench_path,
+        verbose=verbose,
+        clear_cache=clear_cache,
+        clear_website_cache=clear_website_cache,
+        build=build,
+        skip_maintenance=skip_maintenance,
+        no_recache=no_recache,
         yes=yes,
+        sites=sites,
     )
