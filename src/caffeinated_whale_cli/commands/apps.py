@@ -135,10 +135,12 @@ def _resolve_target_sites(frappe_container, bench_path, sites, verbose):
 
 
 def _derive_app_name(target):
-    """The app name bench installs under ``apps/`` for a get-app target.
+    """Fallback app name when the ``apps/`` before/after diff can't tell us.
 
-    A plain name is itself; a git URL clones into ``apps/<repo-basename>`` (minus a
-    trailing ``.git``), which is the name ``install-app`` expects.
+    Used only when ``bench get-app`` added zero or more than one new ``apps/``
+    entry (already-present app, or an ambiguous multi-dir fetch). A plain name is
+    itself; a git URL clones into ``apps/<repo-basename>`` (minus a trailing
+    ``.git``) by convention, which is the name ``install-app`` expects.
     """
     if "://" in target or target.endswith(".git") or "@" in target or "/" in target:
         base = target.rstrip("/").split("/")[-1]
@@ -302,6 +304,7 @@ def install_apps(
     for target in apps:
         get_cmd = f"bench get-app {branch_arg}{shlex.quote(target)}"
         stderr_console.print(f"[bold cyan]Fetching[/bold cyan] {target}...")
+        before = set(_list_available_apps(frappe_container, resolved, verbose))
         code = _run_bench(
             frappe_container, get_cmd, resolved, json_output=json_output, verbose=verbose
         )
@@ -309,7 +312,10 @@ def install_apps(
             results.append({"app": target, "site": None, "action": "get-app", "ok": False})
             continue
         results.append({"app": target, "site": None, "action": "get-app", "ok": True})
-        fetched.append((target, _derive_app_name(target)))
+        after = set(_list_available_apps(frappe_container, resolved, verbose))
+        new_dirs = after - before
+        app_name = new_dirs.pop() if len(new_dirs) == 1 else _derive_app_name(target)
+        fetched.append((target, app_name))
 
     if not fetch_only:
         target_sites = _resolve_target_sites(frappe_container, resolved, sites, verbose)
