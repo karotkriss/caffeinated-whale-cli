@@ -71,7 +71,8 @@ The command SHALL run every (app, site) step, aggregate the results, exit non-ze
 ### Requirement: Update one or more apps
 The system SHALL provide `cwcli apps update <project> <app...>` as the CANONICAL app-update path, wrapping the existing update flow (`commands/update.py`) so app updates are reachable under the `apps` noun without duplicating logic.
 Updating the `frappe` framework app SHALL run `bench update --reset` instead of the normal per-app update flow; other apps SHALL use the normal flow.
-Updates SHALL honor `--site` (repeatable) to narrow the sites migrated; with no `--site` the existing all-affected-sites behavior applies.
+Because `bench update --reset` is bench-wide, on the `frappe` path the per-app/per-site options (`--site`, `--clear-cache`, `--clear-website-cache`, `--build`, `--skip-maintenance`) do NOT apply and SHALL be reported as ignored rather than silently dropped.
+For other apps, updates SHALL honor `--site` (repeatable) to narrow the sites migrated; with no `--site` the existing all-affected-sites behavior applies.
 If `--site` is given and none of the named sites are among the actually-affected sites, the command SHALL refuse with a non-zero exit rather than silently migrating nothing; a genuinely empty affected-site set (no site has the app installed at all) SHALL still exit zero.
 When no app is given the command SHALL refuse with a non-zero exit.
 
@@ -100,8 +101,8 @@ When invoked, `cwcli update` SHALL emit a deprecation notice pointing the user t
 - **THEN** the command prints a deprecation notice recommending `cwcli apps update`, performs the update, and exits with the update flow's exit code
 
 ### Requirement: Non-interactive output and auto-start contract
-Every `cwcli apps` subcommand SHALL support `--json` for machine-readable output and SHALL honor the project's auto-start contract: a stopped instance is auto-started only with `--yes` (via `ensure_containers_running(auto_start=yes)`), and a non-TTY without `--yes` against a stopped instance refuses with a non-zero exit rather than hanging or silently proceeding.
-For the multi-site mutating subcommands the `--json` output SHALL include the per-(app, site) results so automation can parse a partial failure.
+The `list`, `install`, and `uninstall` subcommands SHALL support `--json` for machine-readable output. `apps update` delegates to the existing streaming update flow (`commands/update.py`) and therefore does NOT provide `--json`. Every `cwcli apps` subcommand SHALL honor the project's auto-start contract: a stopped instance is auto-started only with `--yes` (via `ensure_containers_running(auto_start=yes)`), and a non-TTY without `--yes` against a stopped instance refuses with a non-zero exit rather than hanging or silently proceeding.
+For the multi-site mutating subcommands (`install`/`uninstall`) the `--json` output SHALL include the per-(app, site) results so automation can parse a partial failure.
 
 #### Scenario: JSON output for a list
 - **WHEN** a user runs `cwcli apps list myproject --json`

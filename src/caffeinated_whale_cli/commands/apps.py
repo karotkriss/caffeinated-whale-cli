@@ -97,8 +97,10 @@ def _run_bench(frappe_container, cmd, workdir, *, json_output, verbose):
 def _list_available_apps(frappe_container, bench_path, verbose):
     """Available apps in the bench = the directories under ``apps/`` (live read)."""
     if verbose:
-        stderr_console.print(f"[dim]$ ls -1 {bench_path}/apps[/dim]")
-    exit_code, output = frappe_container.exec_run(f"ls -1 {bench_path}/apps")
+        stderr_console.print(f"[dim]$ ls -1 apps (in {bench_path})[/dim]")
+    # Run via workdir rather than interpolating bench_path into the command, matching
+    # _capture_bench/_stream_bench and avoiding any quoting hazard from a --path value.
+    exit_code, output = frappe_container.exec_run("ls -1 apps", workdir=bench_path)
     if exit_code != 0:
         return []
     text = output.decode("utf-8", errors="replace") if isinstance(output, bytes) else str(output)
@@ -347,7 +349,16 @@ def install_apps(
     if any(r["ok"] for r in results):
         _refresh_cache(project_name, verbose)
 
-    _report_and_exit(results, project_name, resolved, json_output, success_msg="App(s) installed.")
+    # The banner must match what actually happened: only claim "installed" when an
+    # install-app step ran (not for --fetch-only or a bench with no sites).
+    installed = any(r["action"] == "install-app" for r in results)
+    _report_and_exit(
+        results,
+        project_name,
+        resolved,
+        json_output,
+        success_msg="App(s) installed." if installed else "App(s) fetched.",
+    )
 
 
 # ------------------------------------------------------------------------ uninstall

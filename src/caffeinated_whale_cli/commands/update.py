@@ -355,6 +355,25 @@ def _update_project(
     # which already covers every app and every site, then return. `--site` narrowing
     # does not apply here (bench update is bench-wide).
     if any(app.lower() == "frappe" for app in apps):
+        # `bench update --reset` is bench-wide: it migrates and rebuilds everything,
+        # so the per-app/per-site options below do not apply. Announce that they are
+        # ignored rather than silently dropping them.
+        ignored = [
+            name
+            for name, active in (
+                ("--site", bool(sites_filter)),
+                ("--clear-cache", clear_cache),
+                ("--clear-website-cache", clear_website_cache),
+                ("--build", build),
+                ("--skip-maintenance", skip_maintenance),
+            )
+            if active
+        ]
+        if ignored:
+            stderr_console.print(
+                "[yellow]Note:[/yellow] updating 'frappe' runs a bench-wide "
+                f"'bench update --reset'; ignoring {', '.join(ignored)} (not applicable)."
+            )
         _run_frappe_update_reset(frappe_container, bench_path, project_name, no_recache, verbose)
         return
 

@@ -25,3 +25,8 @@ frappe_docker/
 
 # sendme
 blobs.db
+
+# Agent-local config and OpenSpec's `openspec init --tools claude` scaffolding.
+# The committed OpenSpec change lives under openspec/; the .claude/ tooling is
+# per-developer and must never ship in the CLI package.
+.claude/

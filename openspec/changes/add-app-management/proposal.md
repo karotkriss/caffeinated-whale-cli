@@ -9,7 +9,7 @@ This violates the project's own captain standard that every command must work, a
 ## What Changes
 
 - Add a new `cwcli apps` command group (a Typer sub-app registered in `main.py`, mirroring `config`/`rm`) with four subcommands.
-  Each resolves its target bench through the existing shared `resolve_bench_path` (multi-bench safe, `--bench <index|label>`, `--path` escape hatch), each has a `--json` machine-readable mode, and each returns honest non-zero exit codes:
+  Each resolves its target bench through the existing shared `resolve_bench_path` (multi-bench safe, `--bench <index|label>`, `--path` escape hatch) and returns honest non-zero exit codes; `list`/`install`/`uninstall` add a `--json` machine-readable mode (`apps update` delegates to the existing streaming update flow, so it has no `--json`):
   - `cwcli apps list <project>` - available-in-bench apps (live `ls apps/`) and, when installed apps are requested, apps installed on the target site(s) (live `bench --site <site> list-apps`).
   - `cwcli apps install <project> <app...>` - fetch (`bench get-app`, optional `--branch`) then install on the target site(s) (`bench --site <site> install-app`); each `<app>` is EITHER a known app name OR a git URL passed straight through to `bench get-app`; `--fetch-only` stops after fetching.
   - `cwcli apps uninstall <project> <app...>` - `bench --site <site> uninstall-app`; destructive, gated by the shared `confirm_or_exit`/`--yes` contract.
