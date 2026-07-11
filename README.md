@@ -60,7 +60,7 @@ cwcli logs my-project
 cwcli open my-project
 
 # Update apps and migrate sites
-cwcli update my-project --app erpnext --build
+cwcli apps update my-project erpnext
 ```
 
 ## Command Reference
@@ -756,7 +756,7 @@ cwcli apps update [OPTIONS] PROJECT_NAME APPS...
 
 **`apps uninstall`** - removes each app from the target site(s) (`bench --site <site> uninstall-app`). This destroys site data, so it is gated by `-y`/`--yes` or an interactive confirmation (a non-TTY without `--yes` refuses).
 
-**`apps update`** - the canonical app-update path (what the deprecated `cwcli update` now delegates to). Updating the `frappe` framework app runs `bench update --reset`; other apps use the normal git-pull + migrate flow. `--site` narrows which affected sites are migrated.
+**`apps update`** - the canonical app-update path (what the deprecated `cwcli update` now delegates to). Updating the `frappe` framework app runs `bench update --reset`; other apps use the normal git-pull + migrate flow. `--site` narrows which affected sites are migrated; if none of the named site(s) actually have the app installed, the command refuses and exits non-zero rather than silently migrating nothing (a genuine typo/mismatch guard - a bench with no affected sites at all still exits zero). It accepts the same migration flags as the [deprecated `update` command](#update---update-apps-and-migrate) (`--clear-cache`, `--clear-website-cache`, `--build`, `--skip-maintenance`, `--no-recache`).
 
 **Common Options:**
 
@@ -821,7 +821,7 @@ cwcli update [OPTIONS] PROJECT_NAME
 | `-a`, `--app TEXT` | App name(s) to update (specify multiple apps after `--app` or use `--app` multiple times) |
 | `--bench TEXT` | Which bench to target: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)) |
 | `-p`, `--path TEXT` | Explicit bench directory inside the container (lower-level alternative to `--bench`; cannot be combined with it) |
-| `--site TEXT` | Narrow migration to the named site(s); repeatable. Omit to migrate all affected sites |
+| `--site TEXT` | Narrow migration to the named site(s); repeatable. Omit to migrate all affected sites. Refuses non-zero if none of the named sites are actually affected |
 | `-v`, `--verbose` | Enable verbose output with streaming command execution |
 | `-c`, `--clear-cache` | Clear cache for all affected sites after migration |
 | `-w`, `--clear-website-cache` | Clear website cache for all affected sites after migration |

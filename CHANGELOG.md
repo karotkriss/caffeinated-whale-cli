@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Every subcommand supports `--json` and the non-interactive contract (a non-TTY without the required flag refuses non-zero; auto-start gated by `--yes`), and refreshes the cache after a mutation so `where`/`open`/`inspect` reflect the new state
 
 ### Changed
-- **`update` command** - Deprecated in favor of `cwcli apps update`. It keeps working (and now emits a deprecation notice) as an alias, gains a repeatable `--site` to narrow which affected sites are migrated, and updating the `frappe` framework app now runs `bench update --reset`
+- **`update` command** - Deprecated in favor of `cwcli apps update`. It keeps working (and now emits a deprecation notice) as an alias, gains a repeatable `--site` to narrow which affected sites are migrated (refusing non-zero if the named site(s) match none of the actually-affected sites), and updating the `frappe` framework app now runs `bench update --reset`
 
 ## [0.35.0] - 2026-07-09
 
