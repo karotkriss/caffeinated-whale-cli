@@ -540,6 +540,43 @@ def test_update_frappe_reset_failure_exits_nonzero(monkeypatch):
     assert exc.value.exit_code == 1
 
 
+def _wire_update_site_filter(
+    monkeypatch, container, *, installed_apps, bench_path="/workspace/frappe-bench"
+):
+    _wire_update(monkeypatch, container)
+    cached = {
+        "bench_instances": [
+            {
+                "path": bench_path,
+                "sites": [
+                    {"name": site, "installed_apps": apps} for site, apps in installed_apps.items()
+                ],
+            }
+        ]
+    }
+    monkeypatch.setattr(update_mod.db_utils, "get_cached_project_data", lambda project_name: cached)
+
+
+def test_update_site_filter_matches_no_affected_site_refuses(monkeypatch, capsys):
+    container = FakeFrappeContainer(available_apps=["frappe", "payments"])
+    _wire_update_site_filter(monkeypatch, container, installed_apps={"a.localhost": ["payments"]})
+
+    with pytest.raises(typer.Exit) as exc:
+        update_mod._update_project("proj", ["payments"], verbose=True, sites_filter=["b.localhost"])
+    assert exc.value.exit_code == 1
+    err = capsys.readouterr().err
+    assert "matched no affected site" in err.lower()
+    assert not any("migrate" in c for c in container.calls)
+
+
+def test_update_site_filter_matches_affected_site_succeeds(monkeypatch):
+    container = FakeFrappeContainer(available_apps=["frappe", "payments"])
+    _wire_update_site_filter(monkeypatch, container, installed_apps={"a.localhost": ["payments"]})
+
+    update_mod._update_project("proj", ["payments"], verbose=True, sites_filter=["a.localhost"])
+    assert any("bench --site a.localhost migrate" in c for c in container.calls)
+
+
 def test_deprecated_update_warns_and_delegates(monkeypatch, capsys):
     called = {}
 

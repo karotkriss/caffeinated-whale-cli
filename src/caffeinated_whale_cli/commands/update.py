@@ -191,6 +191,25 @@ def _apply_site_filter(sites, sites_filter: list[str] | None):
     return {s for s in sites if s in allowed}
 
 
+def _fail_if_site_filter_matched_nothing(
+    unfiltered_sites, filtered_sites, sites_filter: list[str] | None
+) -> None:
+    """Refuse when ``--site`` narrows an actually-affected set down to empty.
+
+    Distinguishes "genuinely nothing to migrate" (no site has the app
+    installed, where exiting 0 is correct) from "--site named a site the
+    app isn't actually on" (a typo/mismatch, which must not silently
+    succeed as if the update ran).
+    """
+    if sites_filter and unfiltered_sites and not filtered_sites:
+        stderr_console.print(
+            "[bold red]Error:[/bold red] --site matched no affected site(s). "
+            f"Requested: {', '.join(sorted(sites_filter))}; "
+            f"affected: {', '.join(sorted(unfiltered_sites))}"
+        )
+        raise typer.Exit(code=1)
+
+
 def _run_frappe_update_reset(
     frappe_container: docker.models.containers.Container,
     bench_path: str,
@@ -417,7 +436,11 @@ def _update_project(
                 console.print(f"  [dim]No sites found with '{app}' installed[/dim]")
 
         # Narrow to the sites named with --site (if any); no --site keeps them all.
+        unfiltered_affected_sites = set(all_affected_sites)
         all_affected_sites = _apply_site_filter(all_affected_sites, sites_filter)
+        _fail_if_site_filter_matched_nothing(
+            unfiltered_affected_sites, all_affected_sites, sites_filter
+        )
 
         # Report failed apps
         if failed_apps:
@@ -664,7 +687,11 @@ def _update_project(
                     live.refresh()
 
                 # Narrow to the sites named with --site (if any); no --site keeps them all.
+                unfiltered_affected_sites = set(all_affected_sites)
                 all_affected_sites = _apply_site_filter(all_affected_sites, sites_filter)
+                _fail_if_site_filter_matched_nothing(
+                    unfiltered_affected_sites, all_affected_sites, sites_filter
+                )
 
                 # Enable maintenance mode for affected sites (unless explicitly skipped)
                 if not skip_maintenance and all_affected_sites:
