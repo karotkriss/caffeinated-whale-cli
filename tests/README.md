@@ -32,8 +32,8 @@ uv run pytest --pdb
 
 ## Test Files
 
-As of 0.34.0, `tests/` holds 18 `test_*.py` suites totaling 335 tests at ~42%
-overall coverage (measured with `uv run pytest --cov`). Run `ls tests/` for the
+As of 0.36.0, `tests/` holds 19 `test_*.py` suites totaling 356 tests
+(measured with `uv run pytest --cov`). Run `ls tests/` for the
 authoritative current list; see [../docs/testing/README.md](../docs/testing/README.md)
 for the per-area breakdown.
 

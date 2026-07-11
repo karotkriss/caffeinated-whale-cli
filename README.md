@@ -737,7 +737,7 @@ How would you like to open this instance?
 ### `apps` - Manage Frappe Apps
 
 First-class app management: list, install, uninstall, and update Frappe apps per bench and per site.
-This replaces dropping to the raw `cwcli run <project> bench get-app ...` escape hatch: every subcommand resolves the target bench (`--bench <index|label>`/`--path`), supports `--json`, returns honest non-zero exit codes, and honors the non-interactive contract (a non-TTY without the required flag refuses non-zero; auto-start gated by `-y`/`--yes`).
+This replaces dropping to the raw `cwcli run <project> bench get-app ...` escape hatch: every subcommand resolves the target bench (`--bench <index|label>`/`--path`), returns honest non-zero exit codes, and honors the non-interactive contract (a non-TTY without the required flag refuses non-zero; auto-start gated by `-y`/`--yes`). The `list`, `install`, and `uninstall` subcommands also support `--json` machine-readable output; `apps update` delegates to the streaming update flow and has no `--json`.
 
 **Multi-site by default:** `install`, `uninstall`, and `apps update` apply to **all** sites on the resolved bench when no `--site` is given; `--site` is repeatable and narrows to the named site(s).
 The fan-out runs per site, aggregates the results, and exits non-zero if any site fails (printing a per-site report) - a partial failure is never hidden behind a success banner.
@@ -756,7 +756,7 @@ cwcli apps update [OPTIONS] PROJECT_NAME APPS...
 
 **`apps uninstall`** - removes each app from the target site(s) (`bench --site <site> uninstall-app`). This destroys site data, so it is gated by `-y`/`--yes` or an interactive confirmation (a non-TTY without `--yes` refuses).
 
-**`apps update`** - the canonical app-update path (what the deprecated `cwcli update` now delegates to). Updating the `frappe` framework app runs `bench update --reset`; other apps use the normal git-pull + migrate flow. `--site` narrows which affected sites are migrated; if none of the named site(s) actually have the app installed, the command refuses and exits non-zero rather than silently migrating nothing (a genuine typo/mismatch guard - a bench with no affected sites at all still exits zero). It accepts the same migration flags as the [deprecated `update` command](#update---update-apps-and-migrate) (`--clear-cache`, `--clear-website-cache`, `--build`, `--skip-maintenance`, `--no-recache`).
+**`apps update`** - the canonical app-update path (what the deprecated `cwcli update` now delegates to). Updating the `frappe` framework app runs `bench update --reset`; other apps use the normal git-pull + migrate flow. `--site` narrows which affected sites are migrated; if none of the named site(s) actually have the app installed, the command refuses and exits non-zero rather than silently migrating nothing (a genuine typo/mismatch guard - a bench with no affected sites at all still exits zero). It accepts the same migration flags as the [deprecated `update` command](#update---update-apps-and-migrate) (`--clear-cache`, `--clear-website-cache`, `--build`, `--skip-maintenance`, `--no-recache`). When updating the `frappe` framework app the flow runs the bench-wide `bench update --reset`, so `--site` and those per-app migration flags do not apply and are reported as ignored.
 
 **Common Options:**
 
@@ -765,7 +765,7 @@ cwcli apps update [OPTIONS] PROJECT_NAME APPS...
 | `--bench TEXT` | Which bench to target: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)) |
 | `-p`, `--path TEXT` | Explicit bench directory inside the container (lower-level alternative to `--bench`) |
 | `--site TEXT` | Target site(s); repeatable. Omit for all sites (list/install/uninstall) or all affected sites (update) |
-| `--json` | Machine-readable JSON output (for mutations, includes the per-`(app, site)` results) |
+| `--json` | Machine-readable JSON output for `list`/`install`/`uninstall` (for mutations, includes the per-`(app, site)` results). Not available on `apps update` |
 | `-y`, `--yes` | Auto-start stopped containers without prompting; for `uninstall`, also skip the destructive confirmation |
 | `-v`, `--verbose` | Enable verbose output |
 

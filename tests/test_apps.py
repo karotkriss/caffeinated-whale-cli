@@ -80,7 +80,8 @@ class FakeFrappeContainer:
                     self.available_apps.append(dirname)
                     break
             return 0, ""
-        if cmd.startswith("ls -1") and cmd.rstrip().endswith("/apps"):
+        if cmd.startswith("ls -1") and cmd.rstrip().endswith("apps"):
+            # Matches both "ls -1 <bench>/apps" and the workdir form "ls -1 apps".
             return 0, "\n".join(self.available_apps) + "\n"
         if "list-apps" in cmd:
             parts = shlex.split(cmd)
@@ -395,6 +396,28 @@ def test_install_fetch_only_skips_install(wired, monkeypatch):
     assert not any("install-app" in c for c in container.calls)
 
 
+def test_install_fetch_only_banner_says_fetched(wired, monkeypatch, capsys):
+    # The success banner must not claim "installed" when nothing was installed.
+    container = _install_container()
+    monkeypatch.setattr(apps_mod, "get_frappe_container", lambda name: container)
+
+    apps_mod.install_apps(
+        "proj",
+        ["payments"],
+        bench=None,
+        bench_path=None,
+        sites=[],
+        branch=None,
+        fetch_only=True,
+        json_output=False,
+        yes=False,
+        verbose=False,
+    )
+    out = capsys.readouterr().out.lower()
+    assert "fetched" in out
+    assert "installed" not in out
+
+
 # ------------------------------------------------------------------------ uninstall
 
 
@@ -538,6 +561,23 @@ def test_update_frappe_reset_failure_exits_nonzero(monkeypatch):
     with pytest.raises(typer.Exit) as exc:
         update_mod._update_project("proj", ["frappe"], verbose=True)
     assert exc.value.exit_code == 1
+
+
+def test_update_frappe_announces_ignored_per_app_flags(monkeypatch, capsys):
+    # bench update --reset is bench-wide, so per-app/per-site flags do not apply and
+    # must be reported as ignored (not silently dropped).
+    container = FakeFrappeContainer(available_apps=["frappe"])
+    _wire_update(monkeypatch, container)
+
+    update_mod._update_project(
+        "proj", ["frappe"], verbose=True, clear_cache=True, sites_filter=["a.localhost"]
+    )
+
+    err = capsys.readouterr().err.lower()
+    assert "ignoring" in err
+    assert "--clear-cache" in err
+    assert "--site" in err
+    assert any("bench update --reset" in c for c in container.calls)
 
 
 def _wire_update_site_filter(
