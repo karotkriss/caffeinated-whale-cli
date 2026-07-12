@@ -46,6 +46,7 @@ Each entry is the contract; the linked source file is authoritative and the Shar
 - **`init` version gating** (`commands/init.py`) - default branch `version-16`; `--version <N|X.Y.Z>` alias resolves to a `version-N` branch or `vX.Y.Z` tag (`--frappe-branch` still takes a raw ref; the two are mutually exclusive). `bench new-site` MariaDB flag, Python/Node versions, and `setuptools` pin gate on the major version parsed from the ref.
   Existing-bench decline continues on a fresh name instead of dead-ending.
   See Sharp edges: `init`.
+- **`init` secret handling** (`commands/init.py`) - both `bench new-site` secrets (admin + db-root passwords) ride in the exec `environment=` and are referenced as `$CWCLI_*` in the command string (mirrors `restore.py`'s M5), so they stay off cwcli's echo/logs. The admin password is generated when `--admin-password` is omitted (interactive only; required non-interactively), used verbatim when supplied, and printed once - gated on the site actually being created. See Sharp edges: `init` secret handling.
 - **`inspect` 3-tier freshness** (`commands/inspect.py`) - cache-backed with a read-only drift check; escalates to a full re-cache only on real drift.
   See Sharp edges: `inspect`.
 - **Multi-bench addressing** (`utils/bench_labels.py`, `commands/utils.py:resolve_bench_path`) - `--bench <index|label>` selects a bench; a multi-bench op with no selector errors instead of guessing.
@@ -147,6 +148,22 @@ Spinner-race fix (issue #41): `ensure_containers_running` used to be called INSI
 Now `_wait_for_containers_running(project, ...)` runs a bounded SILENT poll (`ensure_containers_running(..., prompt=False, auto_start=False)`, ~10 x 0.5s) INSIDE the spinner - safe because it never prompts and absorbs normal startup latency (a container is often ~200ms from ready right after `compose up -d`, so a single check mis-reads it as down).
 Only if that returns `False` does init call `ensure_containers_running(..., auto_start=auto_start)` (which prompts on a TTY or refuses on a non-TTY) OUTSIDE the spinner, then fetches the frappe container. `--reuse-bench` and `--auto-start` are separate axes (bench reuse vs container start); do not merge them.
 Regression coverage is in `tests/test_init_reuse_bench.py` (flag/non-TTY resolver cases in `TestReuseBenchFlag`, poll behavior in `TestWaitForContainersRunning`).
+
+### `init` secret handling: env-transport + admin-password generation
+
+`bench new-site` needs two secrets - the admin password and the MariaDB root password - and both used to sit inline on the command's argv AND be echoed verbatim in `-v` mode (`init.py`).
+The fix mirrors `restore.py`'s M5 pattern exactly (do NOT reinvent, do NOT use `cmd.replace(secret, "***")` masking):
+
+- `_exec_in_container` gained an `environment: dict | None = None` param forwarded to `exec_create` (precedent already existed in the same file's pyenv step).
+- `new_site_cmd` references the secrets as unexpanded `"$CWCLI_ADMIN_PASSWORD"` / `"$CWCLI_DB_ROOT_PASSWORD"` and supplies the values via `environment={...}`; the in-container `bash -lc` shell expands them at exec time. Non-secret interpolations (site name, path, mariadb flag) keep `shlex.quote`.
+- **Admin password lifecycle:** generated with `secrets.token_urlsafe(18)` (helper `_generate_admin_password`) ONLY when `--admin-password` is omitted; used VERBATIM when supplied (no strength/non-empty check by captain decision - bench is the only backstop). A non-interactive session (`_is_interactive_session()` = both stdin AND stdout TTYs) with no `--admin-password` REFUSES up front (`Exit(1)`) rather than generate a secret into a captured log; an interactive run generates one and prints it ONCE.
+- **The print is gated on `admin_password_generated and not site_exists`** (`init.py` success block). `bench new-site` is skipped when the site already exists, so an idempotent re-run sets NO password; printing a fresh one there would be a lie. Never echo a user-SUPPLIED password back.
+- **`db_root_password` is NOT randomized** - its default `"123"` is coupled to the downloaded compose's hardcoded `MYSQL_ROOT_PASSWORD: 123` (`_customize_compose_ports` never rewrites it); it only gets the off-argv/off-echo env treatment.
+
+Sharp edge (verified by real-instance E2E, do NOT re-assert a false guarantee): the env-transport keeps the secret off cwcli's `-v` echo and off the `bash -lc` wrapper argv / docker exec `Cmd` record, but it does NOT hide it from `docker top` of the LEAF process.
+`bench new-site` accepts the password only as a flag, so the shell expands `$CWCLI_ADMIN_PASSWORD` into the child `frappe new-site --admin-password <plaintext>` python process's argv, which `docker top`/`/proc/<pid>/cmdline` show for the ~1-2 min the site is being created.
+This residual exposure is inherent to bench's flag-only interface (bench reads no env/stdin password channel) and is identical to `restore`'s; it is out of scope to "fix" (would need a bench change). The real, testable win is the echo/log hygiene.
+Regression coverage: `tests/test_init_admin_password.py` (env-ref not literal in the command, secrets ride in `environment=`, supplied-verbatim, generator non-empty/distinct/shell-safe, non-interactive refusal, print-once gated on site creation).
 
 ### `inspect` command: 3-tier freshness model (cache / partial / full)
 
