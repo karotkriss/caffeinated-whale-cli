@@ -8,6 +8,7 @@ and Docker-free.
 from __future__ import annotations
 
 import os
+import shutil
 from dataclasses import dataclass
 
 import pytest
@@ -70,6 +71,7 @@ def isolated_home(tmp_path_factory):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+        shutil.rmtree(tmp_home, ignore_errors=True)
 
 
 @pytest.fixture(scope="session", autouse=True)
