@@ -283,7 +283,7 @@ class TestMyFunction:
 ### Running Tests
 
 ```bash
-# All tests
+# Fast unit tier (default; no Docker needed)
 uv run pytest
 
 # Specific test file
@@ -294,6 +294,9 @@ uv run pytest --cov
 
 # Verbose output
 uv run pytest -v
+
+# Real-Docker E2E tier (needs a Docker daemon)
+CWE2E_FRAPPE_MAJOR=16 uv run pytest tests/e2e -m e2e
 ```
 
 See [Testing Guide](./docs/testing/guide.md) for comprehensive testing documentation.

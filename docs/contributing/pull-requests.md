@@ -212,7 +212,8 @@ feat: add tab completion support
 
 1. **CI checks run automatically:**
    - Lint workflow (Black, Ruff)
-   - Test workflow (pytest, plus a zero-error mypy gate)
+   - Test workflow (the fast `unit` pytest tier, plus a zero-error mypy gate)
+   - E2E workflow (real-Docker `e2e` tier, v14/v15/v16 matrix) - required on PRs into `develop`/`master`, or on-demand via the `e2e` label
 
 2. **Address CI failures:**
    ```bash
