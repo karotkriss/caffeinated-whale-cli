@@ -609,6 +609,7 @@ def _update_project(
     failed_cache_clears: list[str] = []
     failed_website_cache_clears: list[str] = []
     failed_maintenance_disable: list[str] = []  # Sites left stuck in maintenance mode
+    failed_maintenance_enable: list[str] = []  # Sites never in maintenance, so not migrated
     maintenance_sites: set[str] = set()  # Sites we actually turned maintenance ON for
 
     try:
@@ -651,6 +652,7 @@ def _update_project(
                 f"[bold green]✓[/bold green] Maintenance mode enabled for "
                 f"{len(maintenance_sites)} site(s)\n"
             )
+            failed_maintenance_enable = sorted(all_affected_sites - maintenance_sites)
 
         # Migrate only the sites actually in maintenance mode (or every affected
         # site when maintenance is skipped) - never migrate a site we could not
@@ -672,29 +674,31 @@ def _update_project(
         if build:
             _build_apps(frappe_container, bench_path, apps, failed_apps, failed_builds, verbose)
 
-        # Clear caches / locks for the affected sites (after build).
-        if clear_cache and all_affected_sites:
+        # Clear caches / locks only for sites actually eligible for migration (after
+        # build) - a site that never entered maintenance was not migrated, so it
+        # must not be cache/lock-cleared as if the update had actually run there.
+        if clear_cache and sites_to_migrate:
             _clear_site_cache(
                 frappe_container,
                 bench_path,
-                sorted(all_affected_sites),
+                sites_to_migrate,
                 "clear-cache",
                 "cache",
                 failed_cache_clears,
                 verbose,
             )
-        if clear_website_cache and all_affected_sites:
+        if clear_website_cache and sites_to_migrate:
             _clear_site_cache(
                 frappe_container,
                 bench_path,
-                sorted(all_affected_sites),
+                sites_to_migrate,
                 "clear-website-cache",
                 "website cache",
                 failed_website_cache_clears,
                 verbose,
             )
-        if all_affected_sites:
-            _clear_locks(frappe_container, bench_path, sorted(all_affected_sites), verbose)
+        if sites_to_migrate:
+            _clear_locks(frappe_container, bench_path, sites_to_migrate, verbose)
 
     finally:
         # CRITICAL: always disable maintenance mode for every site we enabled, even
@@ -718,6 +722,7 @@ def _update_project(
         or failed_cache_clears
         or failed_website_cache_clears
         or failed_maintenance_disable
+        or failed_maintenance_enable
     )
 
     if successful_apps > 0:
@@ -731,6 +736,14 @@ def _update_project(
             console.print(f"[bold red]✗ Failed to update {len(failed_apps)} app(s):[/bold red]")
             for app in failed_apps:
                 console.print(f"  • {app}: Git pull failed")
+
+        if failed_maintenance_enable:
+            console.print(
+                f"[bold red]✗[/bold red] Could not enable maintenance mode for "
+                f"{len(failed_maintenance_enable)} site(s), so they were not migrated:"
+            )
+            for site in failed_maintenance_enable:
+                console.print(f"  • {site}: could not enter maintenance mode - not migrated")
 
         if failed_migrations:
             console.print(
