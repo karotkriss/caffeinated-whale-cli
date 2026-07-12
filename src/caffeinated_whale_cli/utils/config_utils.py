@@ -21,7 +21,7 @@ def cwcli_home() -> Path:
     """
     override = os.environ.get("CWCLI_HOME")
     if override:
-        return Path(override)
+        return Path(override).expanduser()
     return Path.home() / APP_NAME
 
 
