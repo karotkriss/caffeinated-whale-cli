@@ -899,8 +899,10 @@ def update(
     1. Navigate to each app directory and run 'git pull' (or 'bench update --reset' for frappe)
     2. Find all sites where the app is installed
     3. Enable maintenance mode for affected sites (unless --skip-maintenance is used)
-    4. Run 'bench --site <site> migrate' for each affected site
-    5. Optionally clear cache and/or website cache
+    4. Run 'bench --site <site> migrate' for each site that entered maintenance mode
+       (a site that could not be put into maintenance is skipped and reported, and
+       the command exits non-zero)
+    5. Optionally clear cache and/or website cache for each migrated site
     6. Optionally rebuild assets with 'bench build'
     7. Disable maintenance mode for affected sites after completion (unless --skip-maintenance is used)
 
