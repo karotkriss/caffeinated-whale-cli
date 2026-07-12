@@ -140,7 +140,7 @@ def my_command():
 
 ### Cache System
 
-**Location:** `~/.cwcli/cache/cwc-cache.db`
+**Location:** `~/.cwcli/cache/cwc-cache.db` (or `$CWCLI_HOME/cache/cwc-cache.db` when the `CWCLI_HOME` override is set - see `config_utils.cwcli_home()`)
 
 **Schema:**
 ```sql
@@ -158,7 +158,7 @@ Project
 
 ### Configuration
 
-**Location:** `~/.cwcli/config/`
+**Location:** `~/.cwcli/config/` (or `$CWCLI_HOME/config/` when the `CWCLI_HOME` override is set)
 
 **Customization:**
 - Custom bench search paths

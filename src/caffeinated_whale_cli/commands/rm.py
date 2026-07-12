@@ -5,7 +5,8 @@ This command stops and removes all containers for a project, and optionally
 removes associated volumes. Before removal:
 1. Re-caches the project to get accurate site information
 2. Creates database backups for all sites
-3. Archives project configuration to ~/.cwcli/archive
+3. Archives project configuration to ~/.cwcli/archive (or $CWCLI_HOME/archive
+   when the CWCLI_HOME override is set)
 """
 
 import hashlib
@@ -24,7 +25,7 @@ import typer
 
 from ..utils import bench_sites, cache, db_utils
 from ..utils.completion_utils import complete_project_names
-from ..utils.config_utils import PROJECTS_DIR
+from ..utils.config_utils import PROJECTS_DIR, cwcli_home
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import (
     get_project_containers,
@@ -48,10 +49,11 @@ def _is_safe_project_dir(project_dir: Path) -> bool:
 
     This is the last-line guard against a ``project_name`` that escapes the
     projects root once joined - ``PROJECTS_DIR / ".."`` resolves to the parent
-    ``~/.cwcli`` that holds every project plus the cache and config, and an
-    absolute component resets the join entirely. Any ``rmtree``/archive of an
-    escaped path could wipe unrelated data, so callers must gate on this before
-    touching the filesystem.
+    cwcli-state directory (``~/.cwcli`` by default, or ``$CWCLI_HOME`` when
+    that override is set) that holds every project plus the cache and config,
+    and an absolute component resets the join entirely. Any ``rmtree``/archive
+    of an escaped path could wipe unrelated data, so callers must gate on this
+    before touching the filesystem.
     """
     try:
         root = PROJECTS_DIR.resolve()
@@ -69,8 +71,9 @@ def _is_valid_project_name(name: str) -> bool:
     A project name is only ever one directory beneath the projects root. Empty,
     ``.``, ``..``, absolute, or separator-bearing names let a ``pathlib`` join
     escape that root (see :func:`_is_safe_project_dir`), so ``cwcli rm ..`` could
-    otherwise archive-and-``rmtree`` the entire ``~/.cwcli`` tree. Validate before
-    any filesystem or volume operation.
+    otherwise archive-and-``rmtree`` the entire cwcli-state tree (``~/.cwcli`` by
+    default, or ``$CWCLI_HOME`` when that override is set). Validate before any
+    filesystem or volume operation.
     """
     if not name or name in (".", ".."):
         return False
@@ -355,7 +358,8 @@ def _archive_project_config(
     verbose: bool = False,
 ) -> bool:
     """
-    Archive project configuration files to ~/.cwcli/archive before removal.
+    Archive project configuration files to ~/.cwcli/archive (or
+    $CWCLI_HOME/archive when the CWCLI_HOME override is set) before removal.
 
     Archives:
     - docker-compose.yml (from container)
@@ -381,7 +385,7 @@ def _archive_project_config(
         if archive_dir_override is not None:
             archive_dir = archive_dir_override
         else:
-            archive_base = Path.home() / ".cwcli" / "archive"
+            archive_base = cwcli_home() / "archive"
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             archive_dir = archive_base / f"{project_name}_{timestamp}"
         archive_dir.mkdir(parents=True, exist_ok=True)
@@ -538,9 +542,11 @@ def _archive_project_directory(
     the local project directory is deleted.
 
     Only the small, reliable ``conf/`` subdirectory of
-    ``~/.cwcli/projects/{project_name}/`` is archived - it holds the generated
-    ``docker-compose.yml``, which is the cwcli instance config and the one thing
-    not recoverable from elsewhere. The rest of that directory is the
+    ``PROJECTS_DIR/{project_name}/`` (``~/.cwcli/projects/{project_name}/`` by
+    default, or under ``$CWCLI_HOME`` when that override is set) is archived -
+    it holds the generated ``docker-compose.yml``, which is the cwcli instance
+    config and the one thing not recoverable from elsewhere. The rest of that
+    directory is the
     frappe-docker devcontainer bind mount: a multi-hundred-MB ``frappe-bench``
     whose virtualenv and node_modules contain dangling symlinks that do not
     resolve on the host. Copying the whole tree both wastes space (its databases
@@ -641,7 +647,8 @@ def _delete_project_directory(
 
     # Last-line guard before ``rmtree``: never delete a path that resolves
     # outside the projects root. ``PROJECTS_DIR / ".."`` would otherwise wipe the
-    # entire ``~/.cwcli`` tree (every project, the cache, config).
+    # entire cwcli-state tree (every project, the cache, config - ``~/.cwcli`` by
+    # default, or ``$CWCLI_HOME`` when that override is set).
     if not _is_safe_project_dir(project_dir):
         stderr_console.print(
             f"[bold red]Error:[/bold red] Refusing to delete '{project_dir}': path is outside "
@@ -759,7 +766,7 @@ def _remove_project(
     # Create a single archive directory for this removal. Database backups,
     # config archives, and a copy of the local project directory all land here
     # so nothing is deleted without a safety copy first.
-    archive_base = Path.home() / ".cwcli" / "archive"
+    archive_base = cwcli_home() / "archive"
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     archive_dir = archive_base / f"{project_name}_{timestamp}"
     archive_dir.mkdir(parents=True, exist_ok=True)
@@ -1124,7 +1131,7 @@ def rm(
     - Stops all containers for the project
     - Removes all containers for the project
     - Removes all named Docker volumes for the project (deletes all data!)
-    - Deletes the local project directory (~/.cwcli/projects/{name}/)
+    - Deletes the local project directory (~/.cwcli/projects/{name}/, or $CWCLI_HOME/projects/{name}/ if that override is set)
     - Clears the project from the cache
 
     Use --no-volumes to keep volumes:
@@ -1178,8 +1185,9 @@ def rm(
     # runs. A project name is only ever a single directory under the projects
     # root; ``.``, ``..``, absolute, or separator-bearing names let a path join
     # escape it, so ``cwcli rm ..`` could otherwise archive-and-rmtree the entire
-    # ~/.cwcli tree. Drop invalid names with a clear error; if any was rejected
-    # the command exits non-zero even when valid names remain.
+    # cwcli-state tree (~/.cwcli by default, or $CWCLI_HOME when that override
+    # is set). Drop invalid names with a clear error; if any was rejected the
+    # command exits non-zero even when valid names remain.
     valid_names = []
     invalid_names = []
     for name in project_names_to_process:

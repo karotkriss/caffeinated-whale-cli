@@ -16,8 +16,9 @@ import docker
 
 from . import config_utils
 
-# PID file location
-PID_DIR = Path.home() / config_utils.APP_NAME / "run"
+# PID file location (under cwcli_home() so it honors the CWCLI_HOME override
+# like the rest of cwcli's footprint, rather than always the real ~/.cwcli)
+PID_DIR = config_utils.cwcli_home() / "run"
 PID_FILE = PID_DIR / "auto-inspect.pid"
 LOG_FILE = PID_DIR / "auto-inspect.log"
 

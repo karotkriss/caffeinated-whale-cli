@@ -111,7 +111,7 @@ uv run pytest --cov --cov-report=html
 
 ### Current Status
 
-- **Overall project**: ~48% coverage at 0.36.0 (409 tests across 21 test files; see the [Testing Directory](./testing/) for the per-module breakdown).
+- **Overall project**: ~48% coverage at 0.37.0 (416 tests across 22 test files; see the [Testing Directory](./testing/) for the per-module breakdown).
 - **Target**: Expand coverage on the modules that still have none (`port_utils.py`, `sendme_utils.py`, `vscode_utils.py`).
 
 See [Testing Directory](./testing/) for complete documentation.
@@ -170,9 +170,9 @@ ports                # Port conflict detection
 
 ### Test Coverage
 
-- **Test Files**: 21
-- **Total Tests**: 409
-- **Overall Coverage**: ~48% at 0.36.0
+- **Test Files**: 22
+- **Total Tests**: 416
+- **Overall Coverage**: ~48% at 0.37.0
 - See the [Testing Directory](./testing/) for the per-module breakdown.
 
 ## Common Tasks

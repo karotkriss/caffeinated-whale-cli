@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.37.0] - 2026-07-12
+
+### Added
+- **`CWCLI_HOME` environment override** - Set `CWCLI_HOME` to relocate cwcli's entire on-disk footprint (projects, config, cache, runtime/PID files, and the `rm` pre-deletion archive directory) out of `~/.cwcli` and into a directory of your choice; when set, cwcli uses `$CWCLI_HOME/projects`, `$CWCLI_HOME/config`, `$CWCLI_HOME/cache`, and `$CWCLI_HOME/run`. Unlike repointing `HOME`, it redirects only cwcli's own state (leaving `git`/`ssh` and other `HOME`-derived tools untouched), and when unset (or empty) cwcli uses the default `~/.cwcli` locations. The relocated cache keeps the same restrictive permissions (`0700` directory, `0600` database file)
+
 ## [0.36.0] - 2026-07-11
 
 ### Added
