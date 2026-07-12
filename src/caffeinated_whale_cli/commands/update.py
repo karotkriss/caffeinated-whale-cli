@@ -243,8 +243,14 @@ def _run_frappe_update_reset(
 
 
 def _dir_exists(container: docker.models.containers.Container, path: str) -> bool:
-    """True if ``path`` is a directory inside the container (shell-safe)."""
-    exit_code, _ = container.exec_run(f'sh -c "test -d {shlex.quote(path)}"')
+    """True if ``path`` is a directory inside the container (shell-safe).
+
+    The command is passed in LIST form (``["sh", "-c", script]``) so docker-py
+    execs it directly instead of re-``shlex.split``ting a ``sh -c "..."`` string;
+    that keeps ``shlex.quote(path)`` robust even when ``path`` contains a single
+    quote (a raw ``--path``/``--app`` would otherwise break the outer quoting).
+    """
+    exit_code, _ = container.exec_run(["sh", "-c", f"test -d {shlex.quote(path)}"])
     return bool(exit_code == 0)
 
 
