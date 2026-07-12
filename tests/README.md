@@ -60,10 +60,15 @@ The real-Docker E2E is Linux-only; Windows/macOS-specific code stays in the unit
 
 ## Test Files
 
-As of 0.37.0, `tests/` holds 22 `test_*.py` suites totaling 416 tests
-(measured with `uv run pytest --cov`). Run `ls tests/` for the
+As of 0.37.0, `tests/` holds 22 `test_*.py` suites totaling 416 tests in the
+`unit` tier (measured with `uv run pytest --cov`). Run `ls tests/` for the
 authoritative current list; see [../docs/testing/README.md](../docs/testing/README.md)
 for the per-area breakdown.
+
+`tests/e2e/` adds 3 more `test_*.py` suites in the real-Docker `e2e` tier
+(`test_init_e2e.py`, `test_backup_e2e.py`, `test_harness_safety.py`); run
+`ls tests/e2e/` for the current list. They are not part of the 416/22 count
+above since they need a Docker daemon and are excluded from a bare `pytest`.
 
 ### `test_completion_utils.py`
 Tests for tab completion functionality.
@@ -237,17 +242,18 @@ Status as of 0.34.0 (see [../docs/testing/README.md](../docs/testing/README.md) 
 ### Done
 1. **Project inspection** (`commands/inspect.py`) - covered by `test_inspect_partial_refresh`, `test_inspect_label_recovery` (~62%).
 2. **Database operations** (`utils/db_utils.py`) - covered by `test_db_security`, `test_config_validation` (~68%).
+3. **Real-Docker E2E for `init` and `backup`** - covered by `tests/e2e/test_init_e2e.py`, `tests/e2e/test_backup_e2e.py` (both interactive and non-interactive, on the v14/v15/v16 matrix).
 
 ### Partial
-3. **Port conflict detection** (`commands/start.py`) - `test_yes_flag` covers the non-interactive/`--yes` contract, but the port-scanning and interactive-resolution logic has no dedicated suite (~59%).
+4. **Port conflict detection** (`commands/start.py`) - `test_yes_flag` covers the non-interactive/`--yes` contract, but the port-scanning and interactive-resolution logic has no dedicated suite (~59%).
 
 ### Still needed
-4. **Docker utilities** (`utils/docker_utils.py`) - foundation for all commands; error handling only incidentally covered (~37%).
-5. **Port utilities** (`utils/port_utils.py`) - cross-platform process detection (~9%).
-6. **VS Code integration** (`utils/vscode_utils.py`) - container attachment fallback (~16%).
-7. **Configuration management** (`utils/config_utils.py`) - distinct from `db_utils`'s config validation (~37%).
-8. **Integration tests** - full command workflows, end-to-end scenarios.
-9. Other command modules at or near 0%: `backup.py`, `list.py`, `run.py`, `status.py`, `unlock.py`, `where.py`.
+5. **Docker utilities** (`utils/docker_utils.py`) - foundation for all commands; error handling only incidentally covered (~37%).
+6. **Port utilities** (`utils/port_utils.py`) - cross-platform process detection (~9%).
+7. **VS Code integration** (`utils/vscode_utils.py`) - container attachment fallback (~16%).
+8. **Configuration management** (`utils/config_utils.py`) - distinct from `db_utils`'s config validation (~37%).
+9. **Real-Docker E2E for the remaining commands** (`rm`, `restore`, `update`/`apps`, `unlock`, `inspect`) and the P2P (`sendme`) loopback - tracked in `openspec/changes/rebuild-e2e-test-suite`.
+10. Other command modules at or near 0%: `backup.py`, `list.py`, `run.py`, `status.py`, `unlock.py`, `where.py`.
 
 ## Resources
 

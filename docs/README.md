@@ -96,7 +96,7 @@ Everything related to writing and running tests.
 ### Quick Reference
 
 ```bash
-# Run all tests
+# Run the fast unit tier (default; no Docker needed)
 uv run pytest
 
 # Run with coverage
@@ -107,6 +107,9 @@ uv run pytest tests/test_completion_utils.py
 
 # Generate HTML coverage report
 uv run pytest --cov --cov-report=html
+
+# Run the real-Docker E2E tier (needs a Docker daemon)
+CWE2E_FRAPPE_MAJOR=16 uv run pytest tests/e2e -m e2e
 ```
 
 ### Current Status

@@ -144,7 +144,7 @@ See [Testing Guide](./guide.md) for detailed documentation.
 
 ## Running Tests
 
-### All Tests
+### Unit Tier (default; no Docker needed)
 
 ```bash
 uv run pytest
@@ -245,30 +245,23 @@ Run `ls tests/` for the current, authoritative list.
 
 ### By Type
 
-Use pytest markers:
+Three markers are registered in `pyproject.toml`: `unit`, `e2e`, `e2e_p2p`. `tests/conftest.py` auto-applies `unit` to any collected test not already marked `e2e`/`e2e_p2p`, so unit tests need no hand-added marker; only the real-Docker tests under `tests/e2e/` mark themselves explicitly:
 
 ```python
-@pytest.mark.unit
-def test_function():
-    """Unit test."""
-    pass
+import pytest
 
-@pytest.mark.integration
-def test_workflow():
-    """Integration test."""
-    pass
+pytestmark = pytest.mark.e2e
 
-@pytest.mark.slow
-def test_performance():
-    """Slow test."""
-    pass
+def test_real_docker_behavior(session_instance):
+    """Drives the real cwcli binary against a genuine throwaway instance."""
+    ...
 ```
 
 Run by type:
 ```bash
-pytest -m unit           # Only unit tests
-pytest -m "not slow"     # Skip slow tests
-pytest -m integration    # Only integration tests
+pytest                # Default -m "not e2e and not e2e_p2p": only the fast unit tier
+pytest -m unit         # Explicitly the unit tier
+pytest tests/e2e -m e2e  # The real-Docker tier (needs a Docker daemon)
 ```
 
 ## Debugging Tests
@@ -293,14 +286,16 @@ uv run pytest --tb=long
 
 ## CI/CD Integration
 
-Tests run in CI on every push and PR via `.github/workflows/test.yml`:
+CI is two-tiered. The fast `unit` tier runs on every push and PR via `.github/workflows/test.yml`:
 
 ```yaml
-- name: Run tests with coverage
-  run: uv run pytest --cov=caffeinated_whale_cli --cov-report=term-missing
+- name: Run unit tests with coverage
+  run: uv run pytest -m unit --cov=caffeinated_whale_cli --cov-report=term-missing
 ```
 
-The `Pytest` job is the intended required gate. See the [CI/CD Workflows guide](../contributing/ci-cd.md) for the full setup.
+The real-Docker `e2e` tier runs via `.github/workflows/e2e.yml` on a v14/v15/v16 Frappe matrix, on PRs into `develop`/`master` and on-demand via the `e2e` PR label.
+
+The `Pytest` (unit) job is the always-required gate. See the [CI/CD Workflows guide](../contributing/ci-cd.md) for the full setup.
 
 ## Future Test Priorities
 
@@ -311,6 +306,7 @@ Status as of 0.37.0 (based on `ls tests/` and the coverage run above):
 2. **Database Operations** (`utils/db_utils.py`) - covered by `test_db_security`, `test_config_validation` (~68%).
 3. **App Management** (`commands/apps.py`, `commands/update.py`) - covered by `test_apps` (~91% / ~69%).
 4. **`CWCLI_HOME` override** (`utils/config_utils.py`'s `cwcli_home()`) - covered by `test_cwcli_home`, mock-free (real env var, real filesystem, real subprocess).
+5. **Real-Docker E2E for `init` and `backup`** (`tests/e2e/test_init_e2e.py`, `tests/e2e/test_backup_e2e.py`) - genuine `bench init`/`bench backup` against throwaway Frappe instances on the v14/v15/v16 matrix, both interactive and non-interactive. The remaining commands (`rm`, `restore`, `update`/`apps`, `unlock`, `inspect`) and the P2P loopback are deferred to follow-up PRs (`openspec/changes/rebuild-e2e-test-suite`).
 
 ### Partial
 3. **Port Conflict Detection** (`commands/start.py`) - `test_yes_flag` covers the non-interactive/`--yes` contract, but the port-scanning and interactive-resolution logic itself has no dedicated suite (~59%).

@@ -4,16 +4,17 @@ This guide covers the automated GitHub Actions workflows for caffeinated-whale-c
 
 ## Overview
 
-We use four GitHub Actions workflows:
+We use five GitHub Actions workflows:
 
 | Workflow | Triggers | Purpose |
 |----------|----------|---------|
 | **Lint** | All branches, all PRs | Code quality checks (Black, Ruff) |
-| **Test** | All branches, all PRs | Run pytest (required gate) + mypy (zero-error gate) |
+| **Test** | All branches, all PRs | Run the fast `unit` pytest tier (required gate) + mypy (zero-error gate) |
+| **E2E** | PRs into `develop`/`master`, `e2e`-labeled PRs, manual dispatch | Run the real-Docker `e2e` tier on a v14/v15/v16 Frappe matrix |
 | **Build** | Push to `master`, manual dispatch | Build package, verify version consistency |
 | **Release** | Tags `v*.*.*`, push to `master`, published releases, manual dispatch | Publish to PyPI, create GitHub release |
 
-All workflows use the `ghcr.io/astral-sh/uv:python3.12-bookworm` Docker image.
+Lint, Test, Build, and Release run inside the `ghcr.io/astral-sh/uv:python3.12-bookworm` Docker image. E2E runs directly on the `ubuntu-latest` host runner (no `container:`) so `docker`/`docker compose` can reach the runner's own daemon; it installs `uv` via `astral-sh/setup-uv` instead.
 
 ---
 
@@ -41,13 +42,30 @@ See [Code Quality Guide](./code-quality.md) for details.
 
 Runs on every push and PR. Has two jobs:
 
-- **Pytest** - runs the test suite with coverage (`uv run pytest --cov=caffeinated_whale_cli --cov-report=term-missing`). This is the intended required gate. Because `develop` has no branch protection, an admin must tick `Pytest` as a required status check in the `develop` branch-protection settings for it to actually block merges.
+- **Pytest** - runs the fast `unit` tier with coverage (`uv run pytest -m unit --cov=caffeinated_whale_cli --cov-report=term-missing`). This is the always-required gate; it needs no Docker daemon and runs inside the uv container. Because `develop` has no branch protection, an admin must tick `Pytest` as a required status check in the `develop` branch-protection settings for it to actually block merges.
 - **Mypy** - runs `uv run mypy src/` as a zero-error gate. The historical ~50 errors across ~14 files were burned down to zero and `continue-on-error` was dropped from the step, so any new type error fails the job's status check. To make it *required to merge*, an admin must also tick `Mypy` as a required status check in the `develop` branch-protection settings (same outstanding step as `Pytest`).
 
 **Run locally:**
 ```bash
-uv run pytest --cov=caffeinated_whale_cli --cov-report=term-missing
+uv run pytest -m unit --cov=caffeinated_whale_cli --cov-report=term-missing
 uv run mypy src/
+```
+
+---
+
+### E2E (`.github/workflows/e2e.yml`)
+
+Runs the real-Docker `e2e` tier (`tests/e2e/`) against genuine throwaway Frappe instances, driving the real `cwcli` binary. See [tests/README.md](../../tests/README.md#e2e-harness-real-docker) for the harness itself.
+
+- **Trigger gate:** a manual dispatch, a PR carrying the `e2e` label, or a PR whose base branch is `develop`/`master`. `develop`/`master` have no branch protection today, so this is not yet a *required* merge gate - an admin must enable branch protection and tick the `E2E (frappe vNN)` checks as required for that to happen. Until then it runs informationally (or on-demand via the label) and the unit tier is the only gate that blocks a merge.
+- **Runner:** `ubuntu-latest` host runner (no `container:`), one job per `strategy.matrix.frappe: [14, 15, 16]` leg, `fail-fast: false` so a leaky instance on one leg can't cancel another.
+- **Steps:** authenticate to Docker Hub when creds are configured (dodges the anonymous-pull rate limit on the multi-GB `frappe/bench` image), a preflight upstream-reachability check (annotates an upstream/infra break distinctly from a real assertion failure), `uv sync --frozen --all-extras`, `uv run pytest tests/e2e -m e2e -o addopts=""`, then an unconditional `always()` teardown step that sweeps any leaked `cwe2e-` resources and prunes the runner's Docker state.
+- **Per-job `timeout-minutes`:** ~45 (a full `cwcli init` - image pull + bench init + new-site - is the dominant cost).
+
+**Run locally** (needs a reachable Docker daemon; installs `pexpect` via the `e2e` extra):
+```bash
+uv sync --all-extras
+CWE2E_FRAPPE_MAJOR=16 uv run pytest tests/e2e -m e2e
 ```
 
 ---
