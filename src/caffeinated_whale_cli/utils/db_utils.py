@@ -2,12 +2,15 @@ import datetime
 import json
 import os
 import sys
-from pathlib import Path
 
 from peewee import CharField, DateTimeField, ForeignKeyField, Model, SqliteDatabase, TextField
 
-APP_NAME = ".cwcli"
-CACHE_DIR = Path.home() / APP_NAME / "cache"
+from .config_utils import cwcli_home
+
+# Resolve the cache location through the shared cwcli_home() helper so the
+# cache honors the CWCLI_HOME override and can never diverge from where
+# config_utils puts config/projects. See cwcli_home() in config_utils.
+CACHE_DIR = cwcli_home() / "cache"
 DB_PATH = CACHE_DIR / "cwc-cache.db"
 
 # SECURITY: config_json rows are whitelist-filtered by _redact_config_for_cache
