@@ -25,7 +25,7 @@ uv run pytest tests/test_completion_utils.py
 
 ### Test Coverage
 
-Measured with `uv run pytest --cov` at 0.36.0: 409 tests across 21 test files, ~48% overall coverage.
+Measured with `uv run pytest --cov` at 0.37.0: 416 tests across 22 test files, ~48% overall coverage.
 Per-area breakdown (highest-coverage module in each area; see the module list in each test file for what else it exercises):
 
 - **rm safety** (`test_rm_safety`, `test_rm_truth`, `test_rm_stopped`) - `commands/rm.py` ~78%
@@ -40,13 +40,14 @@ Per-area breakdown (highest-coverage module in each area; see the module list in
 - **config validation** (`test_config_validation`) - config validation helpers in `utils/db_utils.py`
 - **exit codes** (`test_exit_codes`) - cross-command honest-exit-code contract
 - **app management** (`test_apps`) - `commands/apps.py` ~91%, `commands/update.py` ~69% (multi-site fan-out, frappe reset, `update` deprecation)
+- **`CWCLI_HOME` override** (`test_cwcli_home`) - `utils/config_utils.py`'s `cwcli_home()` ~41% file-wide; mock-free, sets a real `CWCLI_HOME` env var and resolves the import-time footprint constants in a fresh subprocess
 
 **No dedicated suite** (only incidental coverage from other tests' mocking): `utils/port_utils.py` (~9%), `utils/docker_utils.py` (~37%), `utils/sendme_utils.py` (~9%), `utils/vscode_utils.py` (~16%).
 **Target**: add dedicated suites for those four modules next.
 
 ### Test Files
 
-Run `ls tests/` for the authoritative, current list; as of 0.36.0 it holds 21 `test_*.py` suites plus `bench_fakes.py` and `bench_fakes_mb.py` (shared fakes) and `README.md`.
+Run `ls tests/` for the authoritative, current list; as of 0.37.0 it holds 22 `test_*.py` suites plus `bench_fakes.py` and `bench_fakes_mb.py` (shared fakes) and `README.md`.
 
 ## Testing Framework
 
@@ -280,12 +281,13 @@ The `Pytest` job is the intended required gate. See the [CI/CD Workflows guide](
 
 ## Future Test Priorities
 
-Status as of 0.36.0 (based on `ls tests/` and the coverage run above):
+Status as of 0.37.0 (based on `ls tests/` and the coverage run above):
 
 ### Done
 1. **Project Inspection** (`commands/inspect.py`) - covered by `test_inspect_partial_refresh`, `test_inspect_label_recovery` (~62%).
 2. **Database Operations** (`utils/db_utils.py`) - covered by `test_db_security`, `test_config_validation` (~68%).
 3. **App Management** (`commands/apps.py`, `commands/update.py`) - covered by `test_apps` (~91% / ~69%).
+4. **`CWCLI_HOME` override** (`utils/config_utils.py`'s `cwcli_home()`) - covered by `test_cwcli_home`, mock-free (real env var, real filesystem, real subprocess).
 
 ### Partial
 3. **Port Conflict Detection** (`commands/start.py`) - `test_yes_flag` covers the non-interactive/`--yes` contract, but the port-scanning and interactive-resolution logic itself has no dedicated suite (~59%).
@@ -294,7 +296,7 @@ Status as of 0.36.0 (based on `ls tests/` and the coverage run above):
 4. **Docker Utilities** (`utils/docker_utils.py`) - foundation for all commands; error handling untested by a dedicated suite (~37%, all incidental).
 5. **Port Utilities** (`utils/port_utils.py`) - cross-platform process detection (~9%).
 6. **VS Code Integration** (`utils/vscode_utils.py`) - container attachment fallback logic (~16%).
-7. **Configuration Management** (`utils/config_utils.py`) - distinct from `db_utils`'s config validation, which `test_config_validation` already covers (~37%).
+7. **Configuration Management** (`utils/config_utils.py`) - distinct from `db_utils`'s config validation, which `test_config_validation` already covers; `cwcli_home()` is now covered by `test_cwcli_home`, but `load_config`/`save_config` and the custom-path/auto-inspect-config setters remain untested (~41%).
 8. Other command modules at or near 0%: `backup.py`, `list.py`, `run.py`, `status.py`, `unlock.py`, `where.py`.
 
 ## Common Issues

@@ -1,11 +1,33 @@
+import os
 from pathlib import Path
 
 import toml
 
 APP_NAME = ".cwcli"
-CONFIG_DIR: Path = Path.home() / APP_NAME / "config"
+
+
+def cwcli_home() -> Path:
+    """Return the base directory for cwcli's on-disk state.
+
+    All of cwcli's footprint - config, the projects registry, the cache
+    database, and the auto-inspect run directory - lives under this directory.
+    The ``CWCLI_HOME`` environment variable, when set to a non-empty value,
+    relocates that footprint wholesale in place of the default ``~/.cwcli``,
+    WITHOUT repointing the process ``HOME`` (so git, ssh, and other
+    HOME-derived tooling are unaffected).
+
+    ``config_utils`` and ``db_utils`` both resolve their paths through this one
+    helper, so they can never disagree on where cwcli's state lives.
+    """
+    override = os.environ.get("CWCLI_HOME")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / APP_NAME
+
+
+CONFIG_DIR: Path = cwcli_home() / "config"
 CONFIG_FILE: Path = CONFIG_DIR / "config.toml"
-PROJECTS_DIR: Path = Path.home() / APP_NAME / "projects"
+PROJECTS_DIR: Path = cwcli_home() / "projects"
 
 DEFAULT_CONFIG_CONTENT = """
 # Caffeinated Whale CLI Configuration
