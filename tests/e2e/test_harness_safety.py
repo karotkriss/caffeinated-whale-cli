@@ -36,6 +36,20 @@ def test_home_rail_refuses_real_home(isolated_home):
     harness.enforce_isolation()
 
 
+def test_home_rail_refuses_unset_home(isolated_home):
+    """Delete HOME entirely and confirm the rail refuses rather than silently
+    passing (realpath("") resolves to the CWD, not "", so the check must read
+    the raw env value before calling realpath)."""
+    saved = os.environ.pop("HOME")
+    try:
+        with pytest.raises(RuntimeError):
+            harness.enforce_isolation()
+    finally:
+        os.environ["HOME"] = saved
+    # sanity: with HOME restored, the rail passes again
+    harness.enforce_isolation()
+
+
 def test_port_allocator_spacing():
     alloc = harness.PortAllocator()
     p0, p1, p2 = alloc.next(), alloc.next(), alloc.next()
