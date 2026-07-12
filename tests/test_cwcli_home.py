@@ -13,7 +13,6 @@ pure ``cwcli_home()`` logic is exercised directly.
 
 import json
 import os
-import stat
 import subprocess
 import sys
 from pathlib import Path
