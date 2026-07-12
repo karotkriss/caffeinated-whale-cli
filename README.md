@@ -1650,6 +1650,24 @@ The CLI uses:
 - **Cache**: `~/.cwcli/cache/cwc-cache.db` - Project inspection cache
 - **Runtime**: `~/.cwcli/run/` - PID and log files for background services
 
+**Relocating cwcli's data (`CWCLI_HOME`):**
+
+Set the `CWCLI_HOME` environment variable to move cwcli's entire on-disk footprint - projects, config, cache, and runtime files - out of `~/.cwcli` and into a directory of your choice.
+When it is set, cwcli uses `$CWCLI_HOME/projects`, `$CWCLI_HOME/config`, `$CWCLI_HOME/cache`, and `$CWCLI_HOME/run` in place of the `~/.cwcli/*` locations above.
+When it is unset (or empty), cwcli uses the default `~/.cwcli` locations, so existing installs are unaffected.
+
+Unlike repointing `HOME`, `CWCLI_HOME` redirects only cwcli's own state - it does not change your process `HOME`, so `git`, `ssh`, and other tools that read `HOME` are untouched.
+The relocated cache keeps the same restrictive permissions as the default (`0700` directory, `0600` database file).
+
+```bash
+# Keep a separate, sandboxed cwcli state for one shell session
+export CWCLI_HOME=/tmp/cwcli-sandbox
+cwcli ls        # reads/writes /tmp/cwcli-sandbox instead of ~/.cwcli
+
+# Or per-invocation, without exporting
+CWCLI_HOME=/tmp/cwcli-sandbox cwcli ls
+```
+
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
