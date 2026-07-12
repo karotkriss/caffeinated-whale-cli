@@ -36,6 +36,7 @@ Example:
 """
 
 import re
+import secrets
 import shlex
 import subprocess
 import sys
@@ -141,8 +142,17 @@ def _exec_in_container(
     description: str | None = None,
     stream_output: bool = False,
     verbose: bool = False,
+    environment: dict | None = None,
 ) -> None:
-    """Execute a command inside a Docker container using the Docker API."""
+    """Execute a command inside a Docker container using the Docker API.
+
+    ``environment`` is forwarded to ``exec_create`` so secrets can be referenced
+    as unexpanded ``$VAR`` in ``command`` and expanded by the in-container shell
+    at exec time - keeping them out of the verbose echo and off the ``bash -lc``
+    wrapper argv / exec ``Cmd`` record, which mirrors ``restore.py``'s M5 pattern.
+    (The leaf process still receives the expanded value on its own argv, an
+    unavoidable consequence of a flag-only interface - see AGENTS.md.)
+    """
     if verbose:
         stderr_console.print(f"[dim]$ {command}[/dim]")
 
@@ -153,6 +163,7 @@ def _exec_in_container(
     exec_id = container.client.api.exec_create(
         container.id,
         ["bash", "-lc", command],
+        environment=environment,
     )["Id"]
 
     try:
@@ -191,6 +202,24 @@ def _exec_in_container(
                 f"[bold red]Error:[/bold red] Command failed with exit code {exit_code}: {command}"
             )
         raise typer.Exit(code=1)
+
+
+def _generate_admin_password() -> str:
+    """Generate a strong, shell-safe admin password.
+
+    ``token_urlsafe`` yields ``[A-Za-z0-9_-]`` only, so it never needs quoting.
+    """
+    return secrets.token_urlsafe(18)
+
+
+def _is_interactive_session() -> bool:
+    """True only for a real interactive terminal (both stdin and stdout TTYs).
+
+    Gates whether a generated admin password may be shown to a human. If either
+    stream is redirected the password would leak into a captured log, so init
+    refuses instead and requires ``--admin-password``.
+    """
+    return sys.stdin.isatty() and sys.stdout.isatty()
 
 
 def _directory_exists(container, path: str) -> bool:
@@ -773,10 +802,14 @@ def init(
         "--db-root-password",
         help="MariaDB root password used for bench new-site.",
     ),
-    admin_password: str = typer.Option(
-        "admin",
+    admin_password: str | None = typer.Option(
+        None,
         "--admin-password",
-        help="Administrator password for the new site.",
+        help=(
+            "Administrator password for the new site, used verbatim (no strength "
+            "check). If omitted, a strong password is generated and printed once "
+            "in an interactive run; a non-interactive run must supply this flag."
+        ),
     ),
     auto_start: bool = typer.Option(
         False,
@@ -818,17 +851,39 @@ def init(
 
     If project_name is not provided, prompts interactively.
 
+    The site's administrator password is generated and printed once when
+    --admin-password is omitted in an interactive run; a non-interactive run
+    must pass --admin-password. A supplied value is used verbatim.
+
     Examples:
         cwcli init
         cwcli init my-project
         cwcli init my-project --bench my-bench --site mysite.localhost
         cwcli init my-project --version 16 --install-erpnext
         cwcli init my-project --version 16.26.3
-        cwcli init my-project --frappe-branch version-16 --db-root-password mypass
+        cwcli init my-project --frappe-branch version-16 --admin-password mypass
     """
     # Resolve the Frappe git ref first so a malformed --version fails fast,
     # before any project dir / container work.
     frappe_branch = _resolve_frappe_branch(frappe_branch, version)
+
+    # Resolve the admin password before any container work so a missing one
+    # fails fast. A supplied value is used verbatim (bench is the only backstop);
+    # when omitted, an interactive run gets a generated one (printed once at the
+    # end), while a non-interactive run refuses rather than leak a generated
+    # secret into a captured log.
+    admin_password_generated = False
+    if admin_password is None:
+        if _is_interactive_session():
+            admin_password = _generate_admin_password()
+            admin_password_generated = True
+        else:
+            stderr_console.print(
+                "[bold red]Error:[/bold red] No --admin-password supplied and this is a "
+                "non-interactive session. Pass --admin-password to set the site's "
+                "administrator password."
+            )
+            raise typer.Exit(code=1)
 
     start_time = time.time()
 
@@ -1063,6 +1118,15 @@ def init(
     # Create site if it doesn't exist
     if not site_exists:
         mariadb_flag = _select_mariadb_flag(frappe_branch)
+        # Both passwords ride in the environment and are referenced as unexpanded
+        # $VARs, so they stay out of the verbose echo and off the bash -lc wrapper
+        # argv - the printed command is identical to the executed one. Mirrors
+        # restore.py's M5 pattern. The db-root default "123" is coupled to the
+        # compose's MYSQL_ROOT_PASSWORD, so it is not randomized, only shielded.
+        new_site_env = {
+            "CWCLI_DB_ROOT_PASSWORD": db_root_password,
+            "CWCLI_ADMIN_PASSWORD": admin_password,
+        }
         new_site_cmd = _build_cd_command(
             bench_full_path,
             " ".join(
@@ -1070,9 +1134,9 @@ def init(
                     "bench",
                     "new-site",
                     "--db-root-password",
-                    shlex.quote(db_root_password),
+                    '"$CWCLI_DB_ROOT_PASSWORD"',
                     "--admin-password",
-                    shlex.quote(admin_password),
+                    '"$CWCLI_ADMIN_PASSWORD"',
                     mariadb_flag,
                     shlex.quote(inputs.site_name),
                     "--verbose",
@@ -1089,6 +1153,7 @@ def init(
                 description=f"Creating site '{inputs.site_name}'",
                 stream_output=True,
                 verbose=verbose,
+                environment=new_site_env,
             )
         else:
             # Non-verbose mode: use spinner
@@ -1102,6 +1167,7 @@ def init(
                     new_site_cmd,
                     stream_output=False,
                     verbose=False,
+                    environment=new_site_env,
                 )
 
     # Final configuration in a spinner
@@ -1203,4 +1269,17 @@ def init(
     if install_erpnext:
         console.print(
             f"[dim]ERPNext installed. Once services are running, open http://{inputs.site_name}:8000 in your browser.[/dim]"
+        )
+
+    # Show the generated admin password once - and only when a site was actually
+    # created this run. On an idempotent re-run bench new-site is skipped
+    # (site_exists), so no password was set; printing a fresh one would be a lie.
+    if admin_password_generated and not site_exists:
+        console.print()
+        console.print(
+            f"[bold yellow]Administrator password (generated):[/bold yellow] {admin_password}"
+        )
+        console.print(
+            "[dim]Shown once and not stored anywhere. To change it later, run "
+            f"`bench --site {inputs.site_name} set-admin-password <new-password>`.[/dim]"
         )
