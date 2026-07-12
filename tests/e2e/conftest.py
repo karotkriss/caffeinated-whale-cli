@@ -50,10 +50,21 @@ def isolated_home(tmp_path_factory):
     saved = {k: os.environ.get(k) for k in ("HOME", "CWCLI_HOME")}
     os.environ["HOME"] = str(tmp_home)
     os.environ["CWCLI_HOME"] = str(cwcli_home)
+    # `cwcli init` bind-mounts $CWCLI_HOME/projects/<name> into the frappe
+    # container as /workspace, and `bench init` writes there as the container's
+    # `frappe` user (UID 1000). When the HOST user's UID differs - GitHub-hosted
+    # runners run as UID 1001 - a default-umask 0755 workspace is not writable by
+    # frappe, so `bench init` fails immediately. Relax the umask (inherited by the
+    # cwcli subprocess) so the project/workspace dirs are created world-writable
+    # and the container can write regardless of host UID. cwcli's cache dir keeps
+    # its explicit 0700 mode (umask only removes bits, never adds), so no secret
+    # dir is loosened. Local runs whose host UID is already 1000 are unaffected.
+    saved_umask = os.umask(0o000)
     harness.enforce_isolation()  # fail closed before any instance work
     try:
         yield tmp_home
     finally:
+        os.umask(saved_umask)
         for k, v in saved.items():
             if v is None:
                 os.environ.pop(k, None)
