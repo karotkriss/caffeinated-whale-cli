@@ -70,21 +70,25 @@ class FakeFrappeContainer:
         pass
 
     def _run(self, cmd, workdir=None):
-        self.calls.append(cmd)
+        # cmd may be a str or a list form (e.g. _dir_exists' ["sh", "-c", ...]);
+        # record a normalized string so every calls-based assertion (in / == /
+        # startswith) works uniformly.
+        cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
+        self.calls.append(cmd_str)
         for sub in self.fail_on:
-            if sub in cmd:
-                return 1, f"error running: {cmd}"
-        if cmd.startswith("bench get-app"):
+            if sub in cmd_str:
+                return 1, f"error running: {cmd_str}"
+        if cmd_str.startswith("bench get-app"):
             for target, dirname in self.get_app_creates.items():
-                if target in cmd and dirname not in self.available_apps:
+                if target in cmd_str and dirname not in self.available_apps:
                     self.available_apps.append(dirname)
                     break
             return 0, ""
-        if cmd.startswith("ls -1") and cmd.rstrip().endswith("apps"):
+        if cmd_str.startswith("ls -1") and cmd_str.rstrip().endswith("apps"):
             # Matches both "ls -1 <bench>/apps" and the workdir form "ls -1 apps".
             return 0, "\n".join(self.available_apps) + "\n"
-        if "list-apps" in cmd:
-            parts = shlex.split(cmd)
+        if "list-apps" in cmd_str:
+            parts = shlex.split(cmd_str)
             site = parts[parts.index("--site") + 1] if "--site" in parts else ""
             return 0, "\n".join(self.installed.get(site, [])) + "\n"
         return 0, ""
