@@ -17,7 +17,7 @@ The source of truth for the user-facing feature set is `README.md`.
 
 - `src/caffeinated_whale_cli/commands/` - one module per CLI command (`init`, `inspect`, `rm`, `restore`, `start`, `run`, `label`, `config`, ...) plus `utils.py` (shared resolver, confirm, container-running helpers).
 - `src/caffeinated_whale_cli/utils/` - cross-command building blocks: `db_utils.py` (SQLite cache + migrations + secret redaction), `bench_labels.py` (label model + marker I/O), `bench_sites.py` (site detection), `docker_utils.py`, `cache.py`, `sendme_utils.py`.
-- `tests/` - pytest suites (21 `test_*.py` files, ~409 tests); `bench_fakes.py` and `bench_fakes_mb.py` hold the container fakes. See `tests/README.md` for the coverage map.
+- `tests/` - pytest suites (22 `test_*.py` files, ~416 tests); `bench_fakes.py` and `bench_fakes_mb.py` hold the container fakes. See `tests/README.md` for the coverage map.
 - `docs/e2e/` - worked real-instance E2E evidence (the canonical examples for the recipe below); `docs/technical/`, `docs/testing/`, `docs/contributing/` hold design, test, and workflow docs.
 - Version-bump touches exactly four files: `pyproject.toml` (`version`), `src/caffeinated_whale_cli/__init__.py` (`__version__`), `uv.lock` (regenerate with `uv lock`), and `CHANGELOG.md`.
 - `.github/workflows/` - `lint.yml`, `test.yml`, `build.yml`, `release.yml`.
@@ -58,6 +58,8 @@ Each entry is the contract; the linked source file is authoritative and the Shar
   See Sharp edges: `restore`.
 - **Cache never stores secrets** (`utils/db_utils.py`) - a whitelist redaction at the single write chokepoint; nothing reads secrets back from the cache.
   See Sharp edges: cache secrets.
+- **`CWCLI_HOME` override** (`utils/config_utils.py:cwcli_home()`) - when set to a non-empty value, relocates cwcli's entire on-disk footprint (config, projects, cache, the auto-inspect run dir, and `rm`'s archive dir) from the default `~/.cwcli` to `$CWCLI_HOME`, without repointing the process `HOME` itself.
+  See Sharp edges: `CWCLI_HOME`.
 - **`apps` command group** (`commands/apps.py`) - first-class app management (list/install/uninstall/update) per bench and multi-site by default; reuses the shared resolver/confirm/site-detection/recache primitives; `cwcli update` is now a deprecated alias for `apps update`.
   See Sharp edges: `apps`.
 
@@ -68,7 +70,7 @@ Real validation is pexpect driving `cwcli` against throwaway Frappe Docker bench
 The canonical worked examples are `docs/e2e/restore-inspect-e2e-r6.md` and `docs/e2e/bench-ux-m7-multi-bench.md` (and `docs/e2e/restore-noninteractive-h2.md`); follow the procedure below and point back to them.
 
 1. **Isolate everything.**
-   Set a temporary `HOME` so `~/.cwcli` is a fresh SQLite DB, use unique docker-compose project names (for example `cwe2e-<something>`), and dedicated volumes/network.
+   Set `CWCLI_HOME` (preferred - relocates only cwcli's own state via `config_utils.cwcli_home()`, leaving `HOME` and HOME-derived tooling like git/ssh untouched) or a temporary `HOME` (isolates cwcli plus everything else that reads `HOME`) to a fresh throwaway directory so `~/.cwcli` is never touched, use unique docker-compose project names (for example `cwe2e-<something>`), and dedicated volumes/network.
    NEVER touch the captain's real projects or real `~/.cwcli`.
 2. **Build genuine benches.**
    Use `cwcli init` + `bench init` to create real benches, not fixtures.
@@ -231,6 +233,14 @@ Old caches written before this shipped still hold secrets, so `initialize_databa
 Rule: any NEW cached config field must be added to the relevant whitelist deliberately.
 Filesystem permissions (0700 dir / 0600 file, `_set_secure_db_permissions`) remain as defense-in-depth, not the primary control.
 Regression coverage: `tests/test_db_security.py` (`TestCacheRedaction` proves secrets stripped at write, scrub cleans an old row + is a no-op on clean rows, and `get_default_site` still resolves; `test_models_document_redaction` locks in that the old encryption TODO stays paid).
+
+### `CWCLI_HOME` override: relocating cwcli's on-disk state
+
+`config_utils.cwcli_home()` is the single helper every footprint path resolves through: `CONFIG_DIR`/`PROJECTS_DIR` (`config_utils.py`), `CACHE_DIR`/`DB_PATH` (`db_utils.py`, which imports the helper instead of duplicating its own `APP_NAME`/`Path.home()` logic), the auto-inspect `PID_DIR` (`auto_inspect.py`), and `rm`'s pre-deletion archive base (`commands/rm.py`, both call sites). It reads `os.environ.get("CWCLI_HOME")`: a non-empty value relocates the whole footprint there (`.expanduser()`d); unset OR empty (falsy) falls back to the existing `Path.home() / ".cwcli"`. It never repoints the process `HOME` itself, so git/ssh/other HOME-derived tooling are unaffected, and relocated dirs keep the same 0700 dir / 0600 db-file permissions as the default location.
+
+Sharp edge (why this needs its own entry): the feature shipped in two passes - the first pass (`fb02a9e`) routed `config_utils`/`db_utils`/`auto_inspect` but missed `rm`'s two `archive_base = Path.home() / ".cwcli" / "archive"` call sites, which a no-mistakes review caught and fixed in a follow-up commit (`cfa6d92`). Until that fix, a `CWCLI_HOME` override was split-brain: every other path moved, but `rm`'s live pre-deletion backups and config archives still landed in the real `~/.cwcli/archive`. The lesson for future work: any NEW `~/.cwcli`-adjacent path must be routed through `cwcli_home()` from the start, never a fresh `Path.home() / ".cwcli"` (or `Path.home() / APP_NAME`) literal, or it silently reintroduces this gap.
+
+Regression coverage: `tests/test_cwcli_home.py` is deliberately mock-free - it sets a real `CWCLI_HOME` env var and asserts real filesystem results, resolving `CONFIG_DIR`/`PROJECTS_DIR`/`CACHE_DIR`/`DB_PATH`/`PID_DIR` in a fresh subprocess (exactly how a real `cwcli` process resolves them at import time) and calling `cwcli_home()` directly for the pure-logic (unset/empty/set) cases; it also proves the relocated cache keeps 0700/0600 permissions. It does NOT cover `rm`'s archive routing (`rm`'s own suites are still the existing mocked fakes, which never set `CWCLI_HOME`) - a mock-free assertion that `rm --no-volumes`/full `rm` writes its archive under `$CWCLI_HOME/archive` is not yet covered by any suite.
 
 ### `rm` command: what removal actually deletes
 

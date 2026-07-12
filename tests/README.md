@@ -32,7 +32,7 @@ uv run pytest --pdb
 
 ## Test Files
 
-As of 0.36.0, `tests/` holds 21 `test_*.py` suites totaling 409 tests
+As of 0.37.0, `tests/` holds 22 `test_*.py` suites totaling 416 tests
 (measured with `uv run pytest --cov`). Run `ls tests/` for the
 authoritative current list; see [../docs/testing/README.md](../docs/testing/README.md)
 for the per-area breakdown.
@@ -59,7 +59,7 @@ Tests for tab completion functionality.
 
 ## Test Coverage
 
-Current overall coverage at 0.36.0 (409 tests across 21 test files).
+Current overall coverage at 0.37.0 (416 tests across 22 test files).
 
 ### Covered Modules
 - ✅ `utils/completion_utils.py` - 92% (7 missing lines)
@@ -70,13 +70,14 @@ Current overall coverage at 0.36.0 (409 tests across 21 test files).
 - ✅ `commands/rm.py` - ~78% (`test_rm_safety`, `test_rm_truth`, `test_rm_stopped`)
 - ✅ `commands/init.py` - ~49% (`test_init_reuse_bench`, `test_init_mariadb_flag`, `test_init_admin_password`)
 - ✅ `commands/apps.py` + `commands/update.py` app-update path - (`test_apps`: both modes, multi-site fan-out, frappe reset, `update` deprecation)
+- ✅ `utils/config_utils.py`'s `cwcli_home()` - (`test_cwcli_home`: mock-free, sets a real `CWCLI_HOME` env var and checks real filesystem/subprocess results)
 
 ### Modules Needing Dedicated Suites
 - ⚠️ `utils/port_utils.py` (~9%, only incidental coverage)
 - ⚠️ `utils/docker_utils.py` (~37%, only incidental coverage)
 - ⚠️ `utils/sendme_utils.py` (~9%, only incidental coverage)
 - ⚠️ `utils/vscode_utils.py` (~16%, only incidental coverage)
-- ⚠️ `utils/config_utils.py` (~37%, distinct from `db_utils`'s config validation)
+- ⚠️ `utils/config_utils.py` (~41%; `cwcli_home()` is covered by `test_cwcli_home`, but `load_config`/`save_config`/the custom-path and auto-inspect-config setters remain untested)
 - ⚠️ Command modules at or near 0% dedicated coverage: `backup.py`, `list.py`, `run.py`, `status.py`, `unlock.py`, `where.py`
 
 ## Writing New Tests
