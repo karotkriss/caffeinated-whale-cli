@@ -475,7 +475,7 @@ View logs with: cwcli logs frappe-one
 Removes a Frappe project: its containers, its named Docker volumes, and its local project directory.
 
 **WARNING:** This action is destructive and cannot be undone.
-Before deleting anything, the command re-caches the project, backs up the databases and files for all sites across every bench (a live `bench backup --with-files`, run once per bench on a multi-bench project), and archives the `docker-compose.yml`, `site_config.json`, and the project's `conf/` directory into a timestamped folder under `~/.cwcli/archive/`. The backup and the config archive are written first, and the named volumes and project directory are only deleted once both have succeeded. When volumes are being deleted (the default `--volumes`), a backup that cannot be fully created and verified blocks removal: each backup artifact is copied out of the container to the host archive and the database dump must be present and non-empty, and if it is not, the command aborts before any container is removed and exits non-zero, so data is never destroyed without a confirmed backup. Aborting before removal keeps the whole project intact (containers, volumes, directory, and cache), so a retry can still take a live backup from the running container. Under `--no-volumes` no volume data is destroyed, so a failed backup does not block the container, directory, and cache cleanup.
+Before deleting anything, the command re-caches the project, backs up the databases and files for all sites across every bench (a live `bench backup --with-files`, run once per bench on a multi-bench project), and archives the `docker-compose.yml`, `site_config.json`, and the project's `conf/` directory into a timestamped folder under `~/.cwcli/archive/` (or `$CWCLI_HOME/archive/` when the `CWCLI_HOME` override is set). The backup and the config archive are written first, and the named volumes and project directory are only deleted once both have succeeded. When volumes are being deleted (the default `--volumes`), a backup that cannot be fully created and verified blocks removal: each backup artifact is copied out of the container to the host archive and the database dump must be present and non-empty, and if it is not, the command aborts before any container is removed and exits non-zero, so data is never destroyed without a confirmed backup. Aborting before removal keeps the whole project intact (containers, volumes, directory, and cache), so a retry can still take a live backup from the running container. Under `--no-volumes` no volume data is destroyed, so a failed backup does not block the container, directory, and cache cleanup.
 
 The recache and the live `bench backup` only run when the project's containers are actually running, since both shell into the frappe container. If the project is stopped (or its containers are already gone), `cwcli rm` does not start it just to back it up; it warns that no fresh database backup could be taken, skips the recache, still archives `conf/`, and then proceeds to remove the named volumes and project directory.
 
@@ -1649,11 +1649,12 @@ The CLI uses:
 - **Config**: `~/.cwcli/config/` - Configuration files
 - **Cache**: `~/.cwcli/cache/cwc-cache.db` - Project inspection cache
 - **Runtime**: `~/.cwcli/run/` - PID and log files for background services
+- **Archive**: `~/.cwcli/archive/` - Pre-deletion backups and config snapshots written by `cwcli rm`
 
 **Relocating cwcli's data (`CWCLI_HOME`):**
 
-Set the `CWCLI_HOME` environment variable to move cwcli's entire on-disk footprint - projects, config, cache, and runtime files - out of `~/.cwcli` and into a directory of your choice.
-When it is set, cwcli uses `$CWCLI_HOME/projects`, `$CWCLI_HOME/config`, `$CWCLI_HOME/cache`, and `$CWCLI_HOME/run` in place of the `~/.cwcli/*` locations above.
+Set the `CWCLI_HOME` environment variable to move cwcli's entire on-disk footprint - projects, config, cache, runtime, and archive files - out of `~/.cwcli` and into a directory of your choice.
+When it is set, cwcli uses `$CWCLI_HOME/projects`, `$CWCLI_HOME/config`, `$CWCLI_HOME/cache`, `$CWCLI_HOME/run`, and `$CWCLI_HOME/archive` in place of the `~/.cwcli/*` locations above.
 When it is unset (or empty), cwcli uses the default `~/.cwcli` locations, so existing installs are unaffected.
 
 Unlike repointing `HOME`, `CWCLI_HOME` redirects only cwcli's own state - it does not change your process `HOME`, so `git`, `ssh`, and other tools that read `HOME` are untouched.

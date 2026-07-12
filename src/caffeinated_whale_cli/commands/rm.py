@@ -5,7 +5,8 @@ This command stops and removes all containers for a project, and optionally
 removes associated volumes. Before removal:
 1. Re-caches the project to get accurate site information
 2. Creates database backups for all sites
-3. Archives project configuration to ~/.cwcli/archive
+3. Archives project configuration to ~/.cwcli/archive (or $CWCLI_HOME/archive
+   when the CWCLI_HOME override is set)
 """
 
 import hashlib
@@ -24,7 +25,7 @@ import typer
 
 from ..utils import bench_sites, cache, db_utils
 from ..utils.completion_utils import complete_project_names
-from ..utils.config_utils import PROJECTS_DIR
+from ..utils.config_utils import PROJECTS_DIR, cwcli_home
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import (
     get_project_containers,
@@ -355,7 +356,8 @@ def _archive_project_config(
     verbose: bool = False,
 ) -> bool:
     """
-    Archive project configuration files to ~/.cwcli/archive before removal.
+    Archive project configuration files to ~/.cwcli/archive (or
+    $CWCLI_HOME/archive when the CWCLI_HOME override is set) before removal.
 
     Archives:
     - docker-compose.yml (from container)
@@ -381,7 +383,7 @@ def _archive_project_config(
         if archive_dir_override is not None:
             archive_dir = archive_dir_override
         else:
-            archive_base = Path.home() / ".cwcli" / "archive"
+            archive_base = cwcli_home() / "archive"
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             archive_dir = archive_base / f"{project_name}_{timestamp}"
         archive_dir.mkdir(parents=True, exist_ok=True)
@@ -759,7 +761,7 @@ def _remove_project(
     # Create a single archive directory for this removal. Database backups,
     # config archives, and a copy of the local project directory all land here
     # so nothing is deleted without a safety copy first.
-    archive_base = Path.home() / ".cwcli" / "archive"
+    archive_base = cwcli_home() / "archive"
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     archive_dir = archive_base / f"{project_name}_{timestamp}"
     archive_dir.mkdir(parents=True, exist_ok=True)
