@@ -873,12 +873,12 @@ cwcli update [OPTIONS] PROJECT_NAME
 1. Runs `git pull` in each specified app directory
 2. Identifies all sites where the updated apps are installed
 3. Enables maintenance mode for affected sites (to prevent user access during updates)
-4. Runs `bench --site <site> migrate` for each affected site
+4. Runs `bench --site <site> migrate` for each site that entered maintenance mode (a site that could not be put into maintenance is skipped, reported as an error, and the command exits non-zero - it is never migrated unmaintained)
 5. (Optional) Runs `bench build --app <app>` for successfully updated apps
-6. (Optional) Runs `bench --site <site> clear-cache` for affected sites
-7. (Optional) Runs `bench --site <site> clear-website-cache` for affected sites
-8. Automatically clears locks folder for all affected sites to prevent stale locks
-9. Disables maintenance mode for affected sites after completion
+6. (Optional) Runs `bench --site <site> clear-cache` for each migrated site
+7. (Optional) Runs `bench --site <site> clear-website-cache` for each migrated site
+8. Automatically clears locks folder for each migrated site to prevent stale locks
+9. Disables maintenance mode for affected sites after completion (a site that cannot be taken back out of maintenance is reported as an error and the command exits non-zero)
 
 **Examples:**
 
