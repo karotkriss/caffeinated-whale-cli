@@ -42,6 +42,14 @@ dev = [
     "types-requests>=2.33.0.20260518",
     "types-toml>=0.10.8.20260518",
 ]
+# Real-Docker E2E tier only. pexpect drives the interactive TTY flows (awaiting
+# the prompt_toolkit ESC[?2004h raw-mode marker before each keystroke). NOT
+# testcontainers - cwcli owns the `docker compose` lifecycle, so the harness
+# drives the real `cwcli` binary, not containers directly. Picked up by
+# `uv sync --all-extras`.
+e2e = [
+    "pexpect>=4.9.0",
+]
 
 [tool.black]
 line-length = 100
@@ -79,16 +87,22 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+# A bare `pytest` runs only the fast tier: the default `-m` deselects the
+# real-Docker E2E markers, so no Docker daemon is needed for local dev / the
+# unit CI job. Override on the CLI (`-m e2e`) to run the E2E tier - the last
+# `-m` on the command line wins over this default.
 addopts = [
     "-v",
     "--strict-markers",
     "--tb=short",
     "--cov-report=term-missing",
+    "-m",
+    "not e2e and not e2e_p2p",
 ]
 markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "integration: marks tests as integration tests",
-    "unit: marks tests as unit tests",
+    "unit: fast, mock-free/mock-based tests that need no Docker daemon (the default tier). During the parallel-run migration this also carries the legacy container-mock tests until each command's real E2E lands; see tests/conftest.py.",
+    "e2e: real-Docker end-to-end tests that drive the real `cwcli` binary against genuine throwaway instances (requires a Docker daemon).",
+    "e2e_p2p: real-Docker P2P (sendme loopback) end-to-end tests; gated, off the per-version matrix.",
 ]
 
 [tool.coverage.run]

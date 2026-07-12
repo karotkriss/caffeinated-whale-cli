@@ -65,9 +65,10 @@ Each entry is the contract; the linked source file is authoritative and the Shar
 
 ## End-to-End Testing
 
-There is no runnable E2E harness and you must NOT build one.
-Real validation is pexpect driving `cwcli` against throwaway Frappe Docker benches.
-The canonical worked examples are `docs/e2e/restore-inspect-e2e-r6.md` and `docs/e2e/bench-ux-m7-multi-bench.md` (and `docs/e2e/restore-noninteractive-h2.md`); follow the procedure below and point back to them.
+There is now an automated, CI-run E2E harness in `tests/e2e/` (the `e2e` / `e2e_p2p` marker tier) that codifies the manual recipe below; it drives the real `cwcli` binary against genuine throwaway Frappe instances, on a v14/v15/v16 matrix (`.github/workflows/e2e.yml`).
+It is being filled in per command (see the open change `openspec/changes/rebuild-e2e-test-suite`); the harness contract - the `cwe2e-` name prefix, the `CWCLI_HOME` isolation seam plus temp `HOME`, the hard rails (`enforce_isolation`, name prefix) and the unconditional `sweep_cwe2e` backstop, the port allocator, real-readiness waits, and the `pexpect`/`ESC[?2004h` helper - lives in `tests/e2e/harness.py`; read `tests/README.md` before extending it.
+The manual `docs/e2e/` worked runs remain the human-precedent reference the harness was built from (canonical examples: `docs/e2e/restore-inspect-e2e-r6.md`, `docs/e2e/bench-ux-m7-multi-bench.md`, `docs/e2e/restore-noninteractive-h2.md`).
+When validating a behavior change by hand, follow the same procedure and point back to those runs.
 
 1. **Isolate everything.**
    Set `CWCLI_HOME` (preferred - relocates only cwcli's own state via `config_utils.cwcli_home()`, leaving `HOME` and HOME-derived tooling like git/ssh untouched) or a temporary `HOME` (isolates cwcli plus everything else that reads `HOME`) to a fresh throwaway directory so `~/.cwcli` is never touched, use unique docker-compose project names (for example `cwe2e-<something>`), and dedicated volumes/network.
@@ -94,10 +95,11 @@ The canonical worked examples are `docs/e2e/restore-inspect-e2e-r6.md` and `docs
 - **Types.** Keep `uv run mypy src/` at zero errors; it is a blocking gate.
   Prefer accurate annotations over `# type: ignore` (there are none in `src/`), and add the matching `types-*` stub (`types-requests`, `types-toml` are dev deps) rather than ignoring an untyped import.
   Do not loosen `[tool.mypy]` to hide errors.
-- **Tests.** `uv run pytest` (with `pytest-cov`).
-  Typer commands keep their `typer.Option(...)` default objects when a param is omitted, so tests must pass every param explicitly (see the `inspect`/`restore` notes in Sharp edges).
-- **CI gates.** `lint.yml` runs black + ruff; `test.yml` runs the `Pytest` and `Mypy` jobs on pushes and PRs to all branches (default branch is `develop`).
-  Both jobs are the intended required gates, but `develop` has no branch protection, so a repo admin must still tick `Pytest` and `Mypy` as required status checks for them to block merges.
+- **Tests.** Two tiers, split by marker (registered in `pyproject.toml`; `tests/conftest.py` auto-applies `unit` to anything not marked `e2e`/`e2e_p2p`).
+  A bare `uv run pytest` runs only the fast `unit` tier (no Docker; the default `-m "not e2e and not e2e_p2p"`); the real-Docker tier is `uv run pytest tests/e2e -m e2e` (set `CWE2E_FRAPPE_MAJOR` for the version leg).
+  Unit-tier Typer commands keep their `typer.Option(...)` default objects when a param is omitted, so tests must pass every param explicitly (see the `inspect`/`restore` notes in Sharp edges); the E2E tier instead drives the real `cwcli` binary, exercising Typer parsing.
+- **CI gates.** `lint.yml` runs black + ruff (scoped to `src/`); `test.yml` runs the `Pytest` (now `-m unit`, the fast tier) and `Mypy` jobs on pushes and PRs to all branches; `e2e.yml` runs the real-Docker `e2e` matrix (v14/v15/v16) on PRs into `develop`/`master` and on-demand via the `e2e` PR label.
+  `develop` has no branch protection, so a repo admin must still tick `Pytest`/`Mypy` (and the `E2E (frappe vNN)` checks, to make E2E a required gate) as required status checks for them to block merges.
 - **Release.** See "Cutting a release" in Sharp edges: release.
 - **Commits.** Author commits as `karotkriss <mckay.christopher73@outlook.com>` only.
   Never add an agent name as a co-author.
