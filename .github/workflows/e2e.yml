@@ -1,0 +1,117 @@
+name: E2E
+
+# Least-privilege default token: the E2E jobs only check out code and drive
+# Docker locally on the runner; read-only repo access is all they need.
+permissions:
+  contents: read
+
+on:
+  # Runs on PRs (see the job `if` for the actual gate) and on demand.
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref so a rapid push sequence does not queue
+# multiple multi-GB E2E matrices.
+concurrency:
+  group: e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: E2E (frappe v${{ matrix.frappe }})
+    # Gate: run on a manual dispatch, on a PR carrying the `e2e` label, or on a
+    # PR into a protected branch (develop / master).
+    #
+    # NOTE: develop and master have NO branch protection today, so this is not
+    # actually a *required* merge gate yet - a repo admin must enable branch
+    # protection and tick these "E2E (frappe vNN)" checks as required for them
+    # to block a merge. Until then the fast unit tier (test.yml) is the only
+    # gate that bites, and this matrix runs informationally / on the label.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'e2e') ||
+      github.event.pull_request.base.ref == 'develop' ||
+      github.event.pull_request.base.ref == 'master'
+    # Host runner (NO `container:`) so `docker` / `docker compose` and the
+    # preinstalled daemon are reachable - the uv container image has no daemon.
+    runs-on: ubuntu-latest
+    # Provisional ceiling: a full `cwcli init` (image pull + bench init build +
+    # new-site) is the dominant cost. Generous, but well under GitHub's 6h cap so
+    # a hung `bench init` fails fast. Tune once real runtimes exist.
+    timeout-minutes: 45
+    strategy:
+      # One leg per Frappe version, each on its own runner (isolation +
+      # parallelism + per-version resource headroom). A leaky instance on one
+      # leg cannot poison another; don't cancel the others when one fails.
+      fail-fast: false
+      matrix:
+        frappe: [14, 15, 16]
+    env:
+      CWE2E_FRAPPE_MAJOR: ${{ matrix.frappe }}
+      # One prefix per leg so the always() backstop sweeps exactly this leg's
+      # cwe2e- resources.
+      CWE2E_RUN_ID: gha${{ github.run_id }}-${{ matrix.frappe }}
+      # True only when a repo admin configured Docker Hub creds; gates the login
+      # step so CI still works (anonymous pulls) when they are absent.
+      HAS_DOCKERHUB: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
+
+      - name: Log in to Docker Hub
+        # Authenticated pulls dodge the anonymous per-IP rate limit on the
+        # multi-GB frappe/bench image. Skipped (anonymous pull) when creds absent.
+        if: env.HAS_DOCKERHUB == 'true'
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4.4.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Preflight - upstream reachability (a DISTINCT signal)
+        # cwcli init tracks latest upstream (the frappe_docker@main compose file
+        # and the latest frappe/bench tag), so it catches upstream breakage. Pull
+        # them here first: an upstream break annotates as an UPSTREAM/INFRA
+        # failure, never an ambiguous red assertion, and this warms the base
+        # image layers for the real init.
+        run: |
+          set -o pipefail
+          if ! curl -fsSL -o /tmp/cwe2e-compose.yml \
+              "https://raw.githubusercontent.com/frappe/frappe_docker/refs/heads/main/devcontainer-example/docker-compose.yml"; then
+            echo "::error title=Upstream fetch failed::frappe_docker compose file unreachable - upstream/infra issue, NOT a cwcli regression"
+            exit 78
+          fi
+          if ! docker pull frappe/bench:latest; then
+            echo "::error title=Upstream pull failed::frappe/bench image pull failed (Docker Hub rate limit or upstream) - NOT a cwcli regression"
+            exit 78
+          fi
+
+      - name: Install dependencies
+        run: uv sync --frozen --all-extras
+
+      - name: Run E2E (frappe v${{ matrix.frappe }})
+        # Version-sensitive tests run on every leg; version-agnostic tests skip
+        # themselves off the non-v16 legs (see tests/e2e). Empty addopts drops
+        # the default `-m "not e2e"` and the coverage machinery - the E2E tier
+        # drives the real binary out of process, so per-line coverage is moot.
+        run: uv run pytest tests/e2e -m e2e -o addopts="" -v --tb=short
+
+      - name: Teardown backstop - sweep leaked cwe2e- resources
+        # Unconditional: even if the run above crashed before `cwcli rm` fired,
+        # remove every cwe2e- compose project's containers, volumes, networks,
+        # then reclaim the 14 GB SSD. The broad prune is safe here (the runner is
+        # ephemeral and discarded) - it deliberately does NOT live in the harness,
+        # which also runs on operators' own machines.
+        if: always()
+        run: |
+          uv run python - <<'PY'
+          from tests.e2e import harness
+          print("cwe2e- projects swept by backstop:", harness.sweep_cwe2e())
+          PY
+          docker system prune -af --volumes || true

@@ -2,14 +2,35 @@
 
 This directory contains all tests for the caffeinated-whale-cli project.
 
+## Two tiers: fast `unit` vs real-Docker `e2e`
+
+The suite is split into two tiers by pytest marker.
+
+- **`unit`** - fast, needs no Docker daemon.
+  It is the default tier: a bare `pytest` runs only this tier.
+  It is the mock-free/mock-based suite that verifies pure logic and command wiring against fakes, and it runs inside the uv container in CI (`test.yml`, `-m unit`).
+  During the migration off the legacy mock suite (see [`../openspec/changes/rebuild-e2e-test-suite`](../openspec/changes/rebuild-e2e-test-suite)) this tier also carries the container-mock behavior tests; they are retired per command as each command's real E2E lands, and the mock-free pure-logic tests are kept permanently.
+- **`e2e`** / **`e2e_p2p`** - real Docker.
+  These live under [`tests/e2e/`](e2e/) and drive the real `cwcli` console script against genuine throwaway Frappe instances (real `cwcli init` up, real side-effect assertions, `cwcli rm` down).
+  They require a reachable Docker daemon and are excluded by default; run them explicitly with `-m e2e`.
+  See [E2E harness](#e2e-harness-real-docker) below.
+
+The `unit`, `e2e`, and `e2e_p2p` markers are registered in `pyproject.toml`; `tests/conftest.py` auto-applies `unit` to any test not marked `e2e`/`e2e_p2p`, so there is nothing to hand-mark.
+
 ## Quick Reference
 
 ```bash
-# Run all tests
+# Fast tier only (the default; no Docker needed)
 uv run pytest
 
-# Run all tests with coverage
-uv run pytest --cov
+# Fast tier, explicit + coverage (what CI's unit job runs)
+uv run pytest -m unit --cov=caffeinated_whale_cli
+
+# Prove the fast tier is mock-free: still green with a dead Docker endpoint
+DOCKER_HOST=tcp://127.0.0.1:1 uv run pytest -m unit
+
+# Real-Docker E2E tier (needs a Docker daemon), one Frappe version leg
+CWE2E_FRAPPE_MAJOR=16 uv run pytest tests/e2e -m e2e
 
 # Run specific test file
 uv run pytest tests/test_completion_utils.py
@@ -17,18 +38,25 @@ uv run pytest tests/test_completion_utils.py
 # Run tests matching a pattern
 uv run pytest -k "cache"
 
-# Run with verbose output
-uv run pytest -v
-
-# Stop on first failure
+# Stop on first failure / show locals / debugger
 uv run pytest -x
-
-# Show local variables on failure
 uv run pytest -l
-
-# Drop into debugger on failure
 uv run pytest --pdb
 ```
+
+## E2E harness (real Docker)
+
+The E2E harness ([`tests/e2e/harness.py`](e2e/harness.py) + [`tests/e2e/conftest.py`](e2e/conftest.py)) automates the manual `docs/e2e/` recipe so the destructive-path guarantees are enforced by machine.
+It drives the real `cwcli` binary (subprocess for non-interactive, `pexpect` for interactive - awaiting the prompt_toolkit `ESC[?2004h` raw-mode marker before each keystroke), waits on real readiness (never fixed sleeps), and asserts real side effects (e.g. a non-empty DB dump copied out to the host), in both modes.
+
+Isolation and safety are non-negotiable and layered:
+
+- Each session gets a temporary `HOME` **and** a `CWCLI_HOME` override (the precise seam that relocates only cwcli's own footprint), plus unique `cwe2e-<runid>-<n>` project/site names and a port allocator (bases ≥1006 apart).
+- A **hard rail** (`enforce_isolation`) fails closed before any Docker work if `HOME` still resolves to the operator's real home or `CWCLI_HOME` is unset, and a name rail refuses any project name lacking the `cwe2e-` prefix.
+- An **unconditional teardown backstop** (`sweep_cwe2e`) removes every `cwe2e-`-labelled compose project's containers, volumes, and networks on session teardown, so a crashed test never leaks.
+
+`CWE2E_FRAPPE_MAJOR` selects the Frappe version leg (default 16); version-agnostic E2E tests run only on the v16 leg, version-sensitive ones on every leg.
+The real-Docker E2E is Linux-only; Windows/macOS-specific code stays in the unit tier.
 
 ## Test Files
 
@@ -139,7 +167,14 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = ["-v", "--strict-markers", "--tb=short", "--cov-report=term-missing"]
+# The default `-m` deselects the real-Docker tiers, so a bare `pytest` runs only
+# the fast unit tier; override with `-m e2e` on the CLI (the last `-m` wins).
+addopts = ["-v", "--strict-markers", "--tb=short", "--cov-report=term-missing", "-m", "not e2e and not e2e_p2p"]
+markers = [
+    "unit: fast tests that need no Docker daemon (the default tier)",
+    "e2e: real-Docker end-to-end tests driving the real cwcli binary",
+    "e2e_p2p: real-Docker P2P (sendme loopback) end-to-end tests",
+]
 ```
 
 Coverage configuration:
@@ -152,14 +187,22 @@ omit = ["*/tests/*", "*/__init__.py"]
 
 ## CI/CD
 
-Tests run in CI on every push and PR via `.github/workflows/test.yml`:
+CI is two-tiered.
 
-```yaml
-- name: Run tests with coverage
-  run: uv run pytest --cov=caffeinated_whale_cli --cov-report=term-missing
-```
+- **`.github/workflows/test.yml`** runs the fast `unit` tier on every push and PR, inside the uv container:
 
-The `Pytest` job is the intended required gate. See the [CI/CD Workflows guide](../docs/contributing/ci-cd.md) for the full setup.
+  ```yaml
+  - name: Run unit tests with coverage
+    run: uv run pytest -m unit --cov=caffeinated_whale_cli --cov-report=term-missing
+  ```
+
+  The `Pytest` (unit) job is the always-required gate.
+
+- **`.github/workflows/e2e.yml`** runs the real-Docker `e2e` tier as a `strategy.matrix.frappe: [14, 15, 16]` of GitHub-hosted `ubuntu-latest` jobs (no `container:`, so `docker`/`docker compose` reach the daemon).
+  It is triggered on PRs into `develop`/`master` and on-demand via the `e2e` PR label, with per-job `timeout-minutes` and an `always()` `cwe2e-` teardown backstop.
+  Note: `develop`/`master` have no branch protection today, so a repo admin must enable it and tick these checks before the E2E matrix is a *required* gate; until then the unit tier is the only gate that blocks a merge.
+
+See the [CI/CD Workflows guide](../docs/contributing/ci-cd.md) for the full setup.
 
 ## Common Issues
 

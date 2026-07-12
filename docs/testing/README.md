@@ -2,14 +2,30 @@
 
 This directory contains all testing-related documentation for caffeinated-whale-cli.
 
+## Two-tier model: fast `unit` vs real-Docker `e2e`
+
+The suite is split into two tiers by pytest marker (registered in `pyproject.toml`; `tests/conftest.py` auto-applies `unit` to anything not marked `e2e`/`e2e_p2p`).
+
+- **`unit`** - fast, needs no Docker daemon, and is the default tier a bare `pytest` runs.
+  It verifies pure logic and command wiring against fakes and runs inside the uv container in CI (`test.yml`, `-m unit`, the always-required gate).
+  It stays green even with a dead Docker endpoint - that is the proof it is mock-free (`DOCKER_HOST=tcp://127.0.0.1:1 uv run pytest -m unit`).
+- **`e2e` / `e2e_p2p`** - real Docker, under `tests/e2e/`.
+  These drive the real `cwcli` binary against genuine throwaway Frappe instances (real `cwcli init` up, real side-effect assertions, `cwcli rm` down), are excluded by default, and run on GitHub-hosted `ubuntu-latest` in a v14/v15/v16 matrix (`e2e.yml`).
+
+The migration off the legacy container-mock suite is parallel-run: those tests are carried in the `unit` tier and retired per command as each command's real E2E lands (see [`../../openspec/changes/rebuild-e2e-test-suite`](../../openspec/changes/rebuild-e2e-test-suite)); the mock-free pure-logic tests are kept permanently.
+See [`../../tests/README.md`](../../tests/README.md) for the E2E harness (isolation rails, `cwe2e-` backstop, `CWCLI_HOME` seam, `pexpect`/`ESC[?2004h`).
+
 ## Quick Start
 
 ```bash
-# Run all tests
+# Fast tier only (the default; no Docker needed)
 uv run pytest
 
-# Run with coverage
-uv run pytest --cov
+# Fast tier, explicit + coverage (what CI's unit job runs)
+uv run pytest -m unit --cov=caffeinated_whale_cli
+
+# Real-Docker E2E tier (needs a daemon), one Frappe version leg
+CWE2E_FRAPPE_MAJOR=16 uv run pytest tests/e2e -m e2e
 
 # Run specific test file
 uv run pytest tests/test_completion_utils.py
@@ -67,7 +83,14 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = ["-v", "--strict-markers", "--tb=short", "--cov-report=term-missing"]
+# The default `-m` deselects the real-Docker tiers, so a bare `pytest` is the
+# fast unit tier; `-m e2e` on the CLI overrides it (the last `-m` wins).
+addopts = ["-v", "--strict-markers", "--tb=short", "--cov-report=term-missing", "-m", "not e2e and not e2e_p2p"]
+markers = [
+    "unit: fast tests that need no Docker daemon (the default tier)",
+    "e2e: real-Docker end-to-end tests driving the real cwcli binary",
+    "e2e_p2p: real-Docker P2P (sendme loopback) end-to-end tests",
+]
 ```
 
 ## Writing Tests
