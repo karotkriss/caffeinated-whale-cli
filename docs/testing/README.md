@@ -39,7 +39,7 @@ Per-area breakdown (highest-coverage module in each area; see the module list in
 - **tips** (`test_tips`) - `utils/tips.py` ~91%
 - **config validation** (`test_config_validation`) - config validation helpers in `utils/db_utils.py`
 - **exit codes** (`test_exit_codes`) - cross-command honest-exit-code contract
-- **app management** (`test_apps`) - `commands/apps.py` ~91%, `commands/update.py` ~44% (multi-site fan-out, frappe reset, `update` deprecation)
+- **app management** (`test_apps`) - `commands/apps.py` ~91%, `commands/update.py` ~69% (multi-site fan-out, frappe reset, `update` deprecation)
 
 **No dedicated suite** (only incidental coverage from other tests' mocking): `utils/port_utils.py` (~9%), `utils/docker_utils.py` (~37%), `utils/sendme_utils.py` (~9%), `utils/vscode_utils.py` (~16%).
 **Target**: add dedicated suites for those four modules next.
@@ -285,7 +285,7 @@ Status as of 0.36.0 (based on `ls tests/` and the coverage run above):
 ### Done
 1. **Project Inspection** (`commands/inspect.py`) - covered by `test_inspect_partial_refresh`, `test_inspect_label_recovery` (~62%).
 2. **Database Operations** (`utils/db_utils.py`) - covered by `test_db_security`, `test_config_validation` (~68%).
-3. **App Management** (`commands/apps.py`, `commands/update.py`) - covered by `test_apps` (~91% / ~44%).
+3. **App Management** (`commands/apps.py`, `commands/update.py`) - covered by `test_apps` (~91% / ~69%).
 
 ### Partial
 3. **Port Conflict Detection** (`commands/start.py`) - `test_yes_flag` covers the non-interactive/`--yes` contract, but the port-scanning and interactive-resolution logic itself has no dedicated suite (~59%).

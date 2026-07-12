@@ -70,26 +70,32 @@ class FakeFrappeContainer:
         pass
 
     def _run(self, cmd, workdir=None):
-        self.calls.append(cmd)
+        # cmd may be a str or a list form (e.g. _dir_exists' ["sh", "-c", ...]);
+        # record a normalized string so every calls-based assertion (in / == /
+        # startswith) works uniformly.
+        cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
+        self.calls.append(cmd_str)
         for sub in self.fail_on:
-            if sub in cmd:
-                return 1, f"error running: {cmd}"
-        if cmd.startswith("bench get-app"):
+            if sub in cmd_str:
+                return 1, f"error running: {cmd_str}"
+        if cmd_str.startswith("bench get-app"):
             for target, dirname in self.get_app_creates.items():
-                if target in cmd and dirname not in self.available_apps:
+                if target in cmd_str and dirname not in self.available_apps:
                     self.available_apps.append(dirname)
                     break
             return 0, ""
-        if cmd.startswith("ls -1") and cmd.rstrip().endswith("apps"):
+        if cmd_str.startswith("ls -1") and cmd_str.rstrip().endswith("apps"):
             # Matches both "ls -1 <bench>/apps" and the workdir form "ls -1 apps".
             return 0, "\n".join(self.available_apps) + "\n"
-        if "list-apps" in cmd:
-            parts = shlex.split(cmd)
+        if "list-apps" in cmd_str:
+            parts = shlex.split(cmd_str)
             site = parts[parts.index("--site") + 1] if "--site" in parts else ""
             return 0, "\n".join(self.installed.get(site, [])) + "\n"
         return 0, ""
 
-    def exec_run(self, cmd, workdir=None, environment=None):
+    def exec_run(self, cmd, workdir=None, **kwargs):
+        # Accepts environment=/demux= etc.; the non-verbose _stream_command path
+        # passes demux=False.
         code, out = self._run(cmd, workdir)
         return code, out.encode() if isinstance(out, str) else out
 
@@ -615,6 +621,107 @@ def test_update_site_filter_matches_affected_site_succeeds(monkeypatch):
 
     update_mod._update_project("proj", ["payments"], verbose=True, sites_filter=["a.localhost"])
     assert any("bench --site a.localhost migrate" in c for c in container.calls)
+
+
+# ---------------------------- update.py: verbose/non-verbose restructure (u4 + b8)
+
+
+def _count_discovery(monkeypatch, sites):
+    """Patch discovery to a counter that returns ``sites``; return the counter dict."""
+    counter = {"n": 0}
+
+    def counting(*a, **k):
+        counter["n"] += 1
+        return list(sites)
+
+    monkeypatch.setattr(update_mod, "_get_sites_with_app", counting)
+    return counter
+
+
+@pytest.mark.parametrize("verbose", [True, False])
+def test_update_pulls_and_discovers_once(monkeypatch, verbose):
+    # Both paths must git pull once per app and discover once per app - no double
+    # pull, no second discovery pass (the u4 restructure / b8 mis-bound-else fix).
+    container = FakeFrappeContainer(available_apps=["frappe", "payments"])
+    _wire_update(monkeypatch, container)
+    discovery = _count_discovery(monkeypatch, ["a.localhost"])
+
+    update_mod._update_project("proj", ["payments"], verbose=verbose)
+
+    assert sum(1 for c in container.calls if c == "git pull") == 1
+    assert discovery["n"] == 1  # one app -> exactly one discovery pass
+    assert any("bench --site a.localhost migrate" in c for c in container.calls)
+
+
+@pytest.mark.parametrize("verbose", [True, False])
+def test_update_empty_affected_set_performs_neither_second_pass(monkeypatch, verbose):
+    # b8: an empty affected-set used to re-run git pull + discovery via the
+    # mis-bound else. It must now do neither a second time, and never migrate.
+    container = FakeFrappeContainer(available_apps=["frappe", "payments"])
+    _wire_update(monkeypatch, container)
+    discovery = _count_discovery(monkeypatch, [])  # no site has the app
+
+    update_mod._update_project("proj", ["payments"], verbose=verbose)
+
+    assert sum(1 for c in container.calls if c == "git pull") == 1
+    assert discovery["n"] == 1
+    assert not any("migrate" in c for c in container.calls)
+    assert not any("set-maintenance-mode" in c for c in container.calls)
+
+
+def test_update_migrate_skipped_for_site_not_in_maintenance(monkeypatch, capsys):
+    # A site whose maintenance-enable fails is NOT migrated (never migrate a site
+    # we could not put into maintenance) and is NOT cache/lock-cleared either (it
+    # was never actually updated); this is surfaced in the summary and forces a
+    # non-zero exit, while a healthy sibling still migrates and clears normally.
+    container = FakeFrappeContainer(available_apps=["frappe", "payments"])
+    _wire_update(monkeypatch, container)
+    container.fail_on = ["--site b.localhost set-maintenance-mode on"]
+    _count_discovery(monkeypatch, ["a.localhost", "b.localhost"])
+
+    with pytest.raises(typer.Exit) as exc:
+        update_mod._update_project("proj", ["payments"], verbose=True, clear_cache=True)
+    assert exc.value.exit_code == 1
+
+    assert any("bench --site a.localhost migrate" in c for c in container.calls)
+    assert not any("bench --site b.localhost migrate" in c for c in container.calls)
+    assert any("bench --site a.localhost clear-cache" in c for c in container.calls)
+    assert not any("bench --site b.localhost clear-cache" in c for c in container.calls)
+    assert not any("b.localhost/locks" in c for c in container.calls if c.startswith("rm -rf"))
+
+    out = capsys.readouterr().out
+    assert "b.localhost" in out
+    assert "could not enter maintenance mode" in out
+
+
+def test_update_stuck_site_warns_and_exits_nonzero(monkeypatch, capsys):
+    # A failed maintenance-disable leaves a site stuck -> warn + non-zero exit.
+    container = FakeFrappeContainer(available_apps=["frappe", "payments"])
+    _wire_update(monkeypatch, container)
+    container.fail_on = ["set-maintenance-mode off"]  # disable always fails
+    _count_discovery(monkeypatch, ["a.localhost"])
+
+    with pytest.raises(typer.Exit) as exc:
+        update_mod._update_project("proj", ["payments"], verbose=True)
+    assert exc.value.exit_code == 1
+    out = capsys.readouterr().out
+    assert "a.localhost" in out
+    assert "set-maintenance-mode off" in out
+
+
+def test_update_shell_interpolations_are_shlex_quoted(monkeypatch):
+    # Every interpolated site/path rides through shlex.quote, so a shell-special
+    # site name is passed as one safe token, never word-split or injected.
+    container = FakeFrappeContainer(available_apps=["frappe", "payments"])
+    _wire_update(monkeypatch, container)
+    _count_discovery(monkeypatch, ["weird site"])
+
+    update_mod._update_project("proj", ["payments"], verbose=True, clear_cache=True)
+
+    assert any("bench --site 'weird site' set-maintenance-mode on" in c for c in container.calls)
+    assert any("bench --site 'weird site' migrate" in c for c in container.calls)
+    assert any("bench --site 'weird site' clear-cache" in c for c in container.calls)
+    assert any("'/workspace/frappe-bench/sites/weird site/locks'" in c for c in container.calls)
 
 
 def test_deprecated_update_warns_and_delegates(monkeypatch, capsys):
