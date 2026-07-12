@@ -25,7 +25,7 @@ uv run pytest tests/test_completion_utils.py
 
 ### Test Coverage
 
-Measured with `uv run pytest --cov` at 0.36.0: 358 tests across 19 test files, ~45% overall coverage.
+Measured with `uv run pytest --cov` at 0.36.0: 409 tests across 21 test files, ~48% overall coverage.
 Per-area breakdown (highest-coverage module in each area; see the module list in each test file for what else it exercises):
 
 - **rm safety** (`test_rm_safety`, `test_rm_truth`, `test_rm_stopped`) - `commands/rm.py` ~78%
@@ -34,7 +34,7 @@ Per-area breakdown (highest-coverage module in each area; see the module list in
 - **bench labels/selectors** (`test_bench_labels`, `test_bench_selector`, `test_bench_label_db_and_command`) - `utils/bench_labels.py` ~94%
 - **yes-flag contract** (`test_yes_flag`) - covers the `confirm_or_exit`/`ensure_containers_running` non-interactive contract across `start`, `config`, `logs`
 - **db security** (`test_db_security`) - `utils/db_utils.py` ~68%
-- **init reuse** (`test_init_reuse_bench`, `test_init_mariadb_flag`) - `commands/init.py` ~31% (the reuse-bench resolver, the container-readiness poll, and the MariaDB-flag branches are covered)
+- **init reuse + secrets** (`test_init_reuse_bench`, `test_init_mariadb_flag`, `test_init_admin_password`) - `commands/init.py` ~49% (the reuse-bench resolver, the container-readiness poll, the MariaDB-flag branches, and the admin-password/env-secret handling are covered)
 - **completion** (`test_completion_utils`) - `utils/completion_utils.py` ~92%
 - **tips** (`test_tips`) - `utils/tips.py` ~91%
 - **config validation** (`test_config_validation`) - config validation helpers in `utils/db_utils.py`
@@ -46,7 +46,7 @@ Per-area breakdown (highest-coverage module in each area; see the module list in
 
 ### Test Files
 
-Run `ls tests/` for the authoritative, current list; as of 0.36.0 it holds 19 `test_*.py` suites plus `bench_fakes.py` and `bench_fakes_mb.py` (shared fakes) and `README.md`.
+Run `ls tests/` for the authoritative, current list; as of 0.36.0 it holds 21 `test_*.py` suites plus `bench_fakes.py` and `bench_fakes_mb.py` (shared fakes) and `README.md`.
 
 ## Testing Framework
 

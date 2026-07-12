@@ -1225,7 +1225,7 @@ For scripted (non-interactive) receives, pass `-y`/`--yes` to skip the confirmat
 **Security:**
 
 - All command inputs (site name, paths, MariaDB username) are shell-quoted to prevent command injection
-- MariaDB and admin passwords are passed to the container via the environment, never interpolated into the command, so they never appear in the container process list (`ps`/`docker top`) or in verbose output
+- MariaDB and admin passwords are passed to the container via the environment and referenced as `$VAR`s, so they never appear in the command string itself or in verbose output; the leaf `bench`/`frappe` process still briefly shows the plaintext value on its own argv (visible via `docker top`) while the operation runs, since `bench` accepts passwords only as a flag - an inherent bench limitation, not a cwcli gap
 - Backup file existence verified before restore
 - P2P transfers are hash-verified (BLAKE3) to prevent tampering
 - Treat transfer tickets like passwords (they grant download access)

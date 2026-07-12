@@ -17,7 +17,7 @@ The source of truth for the user-facing feature set is `README.md`.
 
 - `src/caffeinated_whale_cli/commands/` - one module per CLI command (`init`, `inspect`, `rm`, `restore`, `start`, `run`, `label`, `config`, ...) plus `utils.py` (shared resolver, confirm, container-running helpers).
 - `src/caffeinated_whale_cli/utils/` - cross-command building blocks: `db_utils.py` (SQLite cache + migrations + secret redaction), `bench_labels.py` (label model + marker I/O), `bench_sites.py` (site detection), `docker_utils.py`, `cache.py`, `sendme_utils.py`.
-- `tests/` - pytest suites (19 `test_*.py` files, ~356 tests); `bench_fakes.py` and `bench_fakes_mb.py` hold the container fakes. See `tests/README.md` for the coverage map.
+- `tests/` - pytest suites (21 `test_*.py` files, ~409 tests); `bench_fakes.py` and `bench_fakes_mb.py` hold the container fakes. See `tests/README.md` for the coverage map.
 - `docs/e2e/` - worked real-instance E2E evidence (the canonical examples for the recipe below); `docs/technical/`, `docs/testing/`, `docs/contributing/` hold design, test, and workflow docs.
 - Version-bump touches exactly four files: `pyproject.toml` (`version`), `src/caffeinated_whale_cli/__init__.py` (`__version__`), `uv.lock` (regenerate with `uv lock`), and `CHANGELOG.md`.
 - `.github/workflows/` - `lint.yml`, `test.yml`, `build.yml`, `release.yml`.
