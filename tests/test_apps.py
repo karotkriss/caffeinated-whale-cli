@@ -665,19 +665,29 @@ def test_update_empty_affected_set_performs_neither_second_pass(monkeypatch, ver
     assert not any("set-maintenance-mode" in c for c in container.calls)
 
 
-def test_update_migrate_skipped_for_site_not_in_maintenance(monkeypatch):
+def test_update_migrate_skipped_for_site_not_in_maintenance(monkeypatch, capsys):
     # A site whose maintenance-enable fails is NOT migrated (never migrate a site
-    # we could not put into maintenance); a healthy sibling still migrates and the
-    # run completes (a failed *enable* is a skip, not a fatal error).
+    # we could not put into maintenance) and is NOT cache/lock-cleared either (it
+    # was never actually updated); this is surfaced in the summary and forces a
+    # non-zero exit, while a healthy sibling still migrates and clears normally.
     container = FakeFrappeContainer(available_apps=["frappe", "payments"])
     _wire_update(monkeypatch, container)
     container.fail_on = ["--site b.localhost set-maintenance-mode on"]
     _count_discovery(monkeypatch, ["a.localhost", "b.localhost"])
 
-    update_mod._update_project("proj", ["payments"], verbose=True)
+    with pytest.raises(typer.Exit) as exc:
+        update_mod._update_project("proj", ["payments"], verbose=True, clear_cache=True)
+    assert exc.value.exit_code == 1
 
     assert any("bench --site a.localhost migrate" in c for c in container.calls)
     assert not any("bench --site b.localhost migrate" in c for c in container.calls)
+    assert any("bench --site a.localhost clear-cache" in c for c in container.calls)
+    assert not any("bench --site b.localhost clear-cache" in c for c in container.calls)
+    assert not any("b.localhost/locks" in c for c in container.calls if c.startswith("rm -rf"))
+
+    out = capsys.readouterr().out
+    assert "b.localhost" in out
+    assert "could not enter maintenance mode" in out
 
 
 def test_update_stuck_site_warns_and_exits_nonzero(monkeypatch, capsys):
