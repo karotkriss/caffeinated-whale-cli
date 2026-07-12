@@ -117,7 +117,7 @@ cwcli init [OPTIONS] [PROJECT_NAME]
 | `--frappe-branch TEXT` | Frappe branch or tag for bench init, e.g. `version-16` or `v16.26.3` (default: version-16). Mutually exclusive with `--version` |
 | `--version TEXT` | Frappe version for bench init, resolved by shape: a bare major (`16` → `version-16` branch) or a full semantic version (`16.26.3` → `v16.26.3` tag). Malformed values are rejected with a non-zero exit. Mutually exclusive with `--frappe-branch` |
 | `--db-root-password TEXT` | MariaDB root password (default: 123) |
-| `--admin-password TEXT` | Administrator password for the site (default: admin) |
+| `--admin-password TEXT` | Administrator password for the site, used verbatim. If omitted, a strong password is generated and printed once (interactive runs only); a non-interactive run must supply this flag |
 | `--install-erpnext` | Install ERPNext application after initialization |
 | `--erpnext-branch TEXT` | ERPNext branch to use (default: version-16) |
 | `--auto-start` | Automatically start containers if not running |
@@ -137,7 +137,7 @@ cwcli init [OPTIONS] [PROJECT_NAME]
 9. Initializes Frappe bench with specified branch
 10. Pins `setuptools<82` inside the bench virtualenv for `version-13` (retains `pkg_resources`)
 11. Configures database and Redis connections
-12. Creates site with admin credentials
+12. Creates site with admin credentials (admin password generated and printed once when `--admin-password` is omitted in an interactive run; required as a flag non-interactively)
 13. Enables developer mode and server scripts
 14. Optionally installs ERPNext
 
@@ -202,7 +202,12 @@ cwcli init my-project -v
 ✓ Successfully initialized bench 'frappe-bench' in 8m 32s
 Bench path: /workspace/frappe-bench
 Next steps: Run `cwcli open my-project` to open the project in vscode or exec with docker.
+
+Administrator password (generated): 3sK9nQx7Lm-2pT4vWbY6Za
+Shown once and not stored anywhere. To change it later, run `bench --site development.localhost set-admin-password <new-password>`.
 ```
+
+The generated administrator password prints only when `--admin-password` is omitted in an interactive run; supply `--admin-password` to set it yourself (and to run non-interactively).
 
 **Port Conflict Handling:**
 
@@ -1220,7 +1225,7 @@ For scripted (non-interactive) receives, pass `-y`/`--yes` to skip the confirmat
 **Security:**
 
 - All command inputs (site name, paths, MariaDB username) are shell-quoted to prevent command injection
-- MariaDB and admin passwords are passed to the container via the environment, never interpolated into the command, so they never appear in the container process list (`ps`/`docker top`) or in verbose output
+- MariaDB and admin passwords are passed to the container via the environment and referenced as `$VAR`s, so they never appear in the command string itself or in verbose output; the leaf `bench`/`frappe` process still briefly shows the plaintext value on its own argv (visible via `docker top`) while the operation runs, since `bench` accepts passwords only as a flag - an inherent bench limitation, not a cwcli gap
 - Backup file existence verified before restore
 - P2P transfers are hash-verified (BLAKE3) to prevent tampering
 - Treat transfer tickets like passwords (they grant download access)
