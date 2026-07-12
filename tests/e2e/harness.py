@@ -89,8 +89,11 @@ def enforce_isolation() -> None:
     The one unacceptable failure is touching the operator's real cwcli state, so
     this is checked before any Docker/instance work.
     """
-    home = os.path.realpath(os.environ.get("HOME", ""))
-    if not home or home == _REAL_HOME:
+    raw_home = os.environ.get("HOME", "")
+    if not raw_home:
+        raise RuntimeError("E2E isolation rail: HOME is unset/empty; refusing to run any E2E.")
+    home = os.path.realpath(raw_home)
+    if home == _REAL_HOME:
         raise RuntimeError(
             f"E2E isolation rail: HOME ({home!r}) resolves to the operator's real "
             f"home ({_REAL_HOME!r}); refusing to run any E2E."
