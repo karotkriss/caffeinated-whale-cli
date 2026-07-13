@@ -1673,7 +1673,7 @@ The CLI uses:
 - **Peewee ORM** - SQLite-based caching
 
 **Logic core:** business logic and I/O live in a UI-pure `core/` package that carries no `rich`/`questionary`/`typer`; it returns a serializable typed envelope (or raises a typed error) so the human CLI, the `cwcli axi` agent surface, and any future GUI are all thin frontends over one implementation.
-The `backup` command is the first migrated onto it.
+`backup`, `ls`/`list`, and `where` are migrated onto it so far.
 
 **Data Directories:**
 - **Projects**: `~/.cwcli/projects/` - Project directories created by `cwcli init`
