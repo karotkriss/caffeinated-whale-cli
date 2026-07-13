@@ -153,12 +153,19 @@ def test_multibench_no_selector_refuses_noninteractively(running_instance):
     second = "/workspace/cwe2e-second-bench"
 
     # A cheap SECOND bench skeleton that inspect's detector recognizes
-    # (apps/ + sites/ + sites/common_site_config.json), so the cache reports two.
+    # (apps/ + sites/ + sites/common_site_config.json). inspect discovers benches
+    # ONLY under registered search roots (`cwcli init` self-registers each bench's
+    # path via `config add-path`; there is no broad filesystem scan), so a bare
+    # mkdir is invisible - register the skeleton's path so `cwcli inspect` finds it
+    # and the cache reports two benches.
     harness.exec_in_frappe(
         inst.name,
         f"mkdir -p {second}/apps {second}/sites && echo '{{}}' > {second}/sites/common_site_config.json",
     )
     try:
+        reg = harness.run_cwcli("config", "add-path", second)
+        assert reg.returncode == 0, reg.stdout + reg.stderr
+
         # Populate the cache with BOTH benches.
         insp = harness.run_cwcli("inspect", inst.name)
         assert insp.returncode == 0, insp.stdout + insp.stderr
@@ -172,7 +179,9 @@ def test_multibench_no_selector_refuses_noninteractively(running_instance):
         st = harness.run_cwcli("status", inst.name)
         assert st.returncode != 0, st.stdout + st.stderr
     finally:
-        # Restore the single-bench cache so sibling tests are undisturbed.
+        # Restore the single-bench state so sibling tests are undisturbed: drop the
+        # registered path + the skeleton, then re-inspect back to one bench.
+        harness.run_cwcli("config", "remove-path", second)
         harness.exec_in_frappe(inst.name, f"rm -rf {second}")
         harness.run_cwcli("inspect", inst.name)
         # Make sure the shared instance is still serving for whatever runs next.
