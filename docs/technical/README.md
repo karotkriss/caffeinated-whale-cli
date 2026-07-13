@@ -21,17 +21,26 @@ Caffeinated Whale CLI is a command-line tool for managing Frappe/ERPNext Docker 
 caffeinated-whale-cli/
 ├── src/caffeinated_whale_cli/
 │   ├── main.py                 # CLI entry point
-│   ├── commands/               # Command implementations
+│   ├── commands/               # Command implementations (human-facing frontends)
 │   │   ├── start.py           # Start containers + port detection
 │   │   ├── stop.py            # Stop containers
 │   │   ├── inspect.py         # Project inspection
 │   │   ├── update.py          # App updates + migrations
+│   │   ├── backup.py          # Thin frontend over core.backup
+│   │   ├── axi.py             # Agent-facing `cwcli axi` frontend
 │   │   └── ...                # Other commands
+│   ├── core/                   # UI-pure logic core (no rich/questionary/typer)
+│   │   ├── envelope.py         # Result/Status/Message/Choice DTOs
+│   │   ├── errors.py           # CwcliError + ErrorKind
+│   │   ├── resolvers.py        # Pure container-state/bench resolvers
+│   │   ├── docker.py           # Core frappe-container accessor
+│   │   └── backup.py           # core.backup - the reference migrated command
 │   └── utils/                  # Utility modules
 │       ├── docker_utils.py    # Docker client management
 │       ├── port_utils.py      # Port conflict detection
 │       ├── db_utils.py        # SQLite cache
 │       ├── completion_utils.py # Tab completion
+│       ├── toon.py            # Dependency-free TOON encoder (axi stdout)
 │       └── ...                # Other utilities
 └── tests/                      # Test suite
 ```
@@ -102,6 +111,19 @@ Development container integration:
 - Extension installation
 - Container attachment
 - Fallback to docker exec
+
+#### 6. UI-Pure Logic Core + `cwcli axi`
+
+**Modules:** `core/`, `commands/axi.py`, `utils/toon.py`
+
+Business logic and I/O live in `core/`, which imports no `rich`/`questionary`/`typer` and never prompts or calls `typer.Exit` (enforced by an AST-scan unit test):
+- A core function returns the typed envelope `Result[T]` (`status` OK/WARNING/NEEDS_CHOICE, `data`, `warnings`, `choice`) or raises a typed `CwcliError`
+- A decision the core can't make from its params comes back as `NEEDS_CHOICE`, never a prompt; each frontend resolves it its own way
+- No live Docker object crosses a `core.<verb>` return boundary - DTOs carry only serializable data
+- `cwcli axi` is a thin agent-facing frontend over the same core: it never prompts, emits [TOON](https://toonformat.dev) on stdout via the dependency-free `utils/toon.py` encoder, and maps outcomes to exit codes 0/1/2
+- `backup` is the first (and so far only) command migrated onto this pattern (`core/backup.py`); the shared bench-op resolvers were split into `core/resolvers.py`/`core/docker.py` (pure) plus thin CLI wrappers in `commands/utils.py`/`utils/docker_utils.py`
+
+See `openspec/changes/core-logic-foundation/design.md` for the seven locked architecture decisions.
 
 ### Command Architecture
 

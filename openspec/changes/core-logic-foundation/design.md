@@ -177,7 +177,7 @@ def axi_backup(project: str, site: str = None, bench: str = None, with_files: bo
     if result.status is Status.NEEDS_CHOICE:
         emit_axi_choice_as_usage_error(result.choice); raise typer.Exit(2)
     typer.echo(toon(asdict(result.data), warnings=result.warnings))
-    raise typer.Exit(0 if result.status is Status.OK else 1)
+    raise typer.Exit(0 if result.status in (Status.OK, Status.WARNING) else 1)
 ```
 
 `emit_axi_error`, `emit_axi_choice_as_usage_error`, `toon`, and `exit_for` are shared across every future verb, so per-command axi conformance is a handful of lines plus a schema choice.

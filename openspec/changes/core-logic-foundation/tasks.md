@@ -26,7 +26,7 @@
 - [x] 4.1 Add the `cwcli axi` Typer sub-app and register it in `main.py` alongside the existing `add_typer` calls.
 - [x] 4.2 Add the shared, dependency-free TOON serializer (walk `dataclasses.asdict` output; `default` for `Enum`/`Path`) plus the shared `emit_axi_error`, `emit_axi_choice_as_usage_error`, and `exit_for(kind)` helpers; stdout carries only TOON, stderr carries progress. Include a runnable self-check asserting the encoded structure matches the `--json` shape the codebase already emits.
 - [x] 4.3 Implement the content-first `cwcli axi` home: `bin:` (abs path, `~`-collapsed), one-line `description:`, live instances via the existing `_list_instances` producer, a `help[N:]` next-steps block, and a definitive empty state.
-- [x] 4.4 Implement `cwcli axi backup` (~15-25 lines): call `core.backup`, serialize `BackupOutcome` to TOON on success (exit 0/1 by status), render a raised `CwcliError` as a structured stdout error (exit 2 for `USAGE`, else 1), and render a `NEEDS_CHOICE` result as a usage error naming the exact flag (exit 2).
+- [x] 4.4 Implement `cwcli axi backup` (~15-25 lines): call `core.backup`, serialize `BackupOutcome` to TOON on success (exit 0 for `OK`/`WARNING`, else 1), render a raised `CwcliError` as a structured stdout error (exit 2 for `USAGE`, else 1), and render a `NEEDS_CHOICE` result as a usage error naming the exact flag (exit 2).
 - [x] 4.5 Unit-test the axi verb + serializer: TOON on stdout for success; no progress text on stdout; typed-error rendering and exit codes; needs-choice -> flag-naming usage error exit 2; the `ls`-DTO home (populated and empty).
 
 ## 5. Docs + validation
