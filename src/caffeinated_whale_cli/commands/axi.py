@@ -5,7 +5,17 @@ serializes the returned DTO to TOON on stdout, and maps the result status (or a
 raised :class:`CwcliError`) to an exit code (0 success, 1 error, 2 usage). It
 adds no business logic and never prompts: a decision the core cannot resolve
 from flags becomes a structured usage error on stdout, not an interactive
-prompt. Progress/diagnostics go to stderr; stdout carries only TOON.
+prompt.
+
+``axi`` stdout is ALWAYS TOON, never JSON (JSON lives only on the human commands'
+``--json`` flag). The shared emitters (:func:`emit_result`, :func:`emit_axi_error`,
+:func:`emit_axi_choice_as_usage_error`, and the empty-state line) all emit valid
+TOON - key:value ``error:``/``help:`` lines and proper ``name[N]:`` blocks, never
+bare hardcoded lines - so success, error, needs-choice, and empty-state output
+are uniformly TOON, and every later migrated verb inherits that. The spec pins
+the error format as ``error: <message>`` (plus ``help: <hint>``), so those two
+diagnostics stay raw key:value lines. Progress/diagnostics go to stderr; stdout
+carries only TOON.
 """
 
 from __future__ import annotations
@@ -17,11 +27,12 @@ from pathlib import Path
 import typer
 
 from ..core import backup as core_backup
+from ..core import list as core_list
+from ..core import where as core_where
 from ..core.envelope import Choice
 from ..core.envelope import Status as CoreStatus
 from ..core.errors import CwcliError, ErrorKind
 from ..utils import toon
-from .list import _list_instances
 
 app = typer.Typer(
     help="Agent-facing surface: structured TOON output on stdout, no interactive prompts."
@@ -38,25 +49,43 @@ def exit_for(kind: ErrorKind) -> int:
     return 2 if kind is ErrorKind.USAGE else 1
 
 
+def emit_result(data, *, warnings=None) -> None:
+    """Emit a single DTO as TOON, folding in any warnings."""
+    typer.echo(toon.encode(asdict(data), warnings=warnings or []))
+
+
 def emit_axi_error(error: CwcliError) -> None:
-    """Render a typed error as structured stdout: ``error:`` + optional ``help:``."""
+    """Render a typed error as TOON: an ``error:`` line plus an optional ``help:`` line.
+
+    The spec pins this format as ``error: <message>`` / ``help: <hint>``, so the
+    message/hint stay raw key:value lines rather than being scalar-requoted.
+    """
     typer.echo(f"error: {error.message}")
     if error.hint:
         typer.echo(f"help: {error.hint}")
 
 
-def emit_axi_choice_as_usage_error(choice: Choice) -> None:
-    """Render a needs-choice as a usage error naming the flag the agent must pass."""
+def _choice_error_message(choice: Choice) -> str:
     if choice.kind == "select_bench":
-        typer.echo("error: multiple benches; pass --bench <index|label>")
-        for option in choice.options or []:
-            typer.echo(f"  [{option['value']}] {option['label']}")
+        return "multiple benches; pass --bench <index|label>"
+    if choice.kind == "confirm_start":
+        return choice.prompt
+    return f"a decision is required: {choice.prompt}"
+
+
+def emit_axi_choice_as_usage_error(choice: Choice) -> None:
+    """Render a needs-choice as a TOON usage error naming the flag the agent must pass.
+
+    The available benches are emitted as a proper ``options[N]:`` TOON block (not
+    bare indented lines), so the whole document stays uniformly TOON-parseable.
+    """
+    typer.echo(f"error: {_choice_error_message(choice)}")
+    if choice.kind == "select_bench":
+        options = [f"[{o['value']}] {o['label']}" for o in choice.options or []]
+        typer.echo(toon.block("options", options))
         typer.echo("help: re-run with --bench <index|label>")
     elif choice.kind == "confirm_start":
-        typer.echo(f"error: {choice.prompt}")
         typer.echo("help: start it first with 'cwcli start <project>'")
-    else:  # pragma: no cover - defensive; only two choice kinds exist today
-        typer.echo(f"error: a decision is required: {choice.prompt}")
 
 
 def _collapse_home(path: str) -> str:
@@ -78,6 +107,27 @@ def _bin_path() -> str:
     return _collapse_home(resolved)
 
 
+def _instance_rows(instances) -> list[dict]:
+    """DTO -> flat TOON-table rows (ports space-joined into a single scalar cell)."""
+    return [
+        {
+            "projectName": i.project_name,
+            "status": i.status,
+            "ports": " ".join(i.ports) if i.ports else "N/A",
+        }
+        for i in instances
+    ]
+
+
+def _instances_toon(instances) -> str:
+    """The ``instances`` TOON block, or a definitive empty-state line."""
+    if instances:
+        return toon.table(
+            "instances", _instance_rows(instances), ["projectName", "status", "ports"]
+        )
+    return toon.kv("instances", "0 Frappe instances found")
+
+
 # ------------------------------------------------------------------------------------ home
 
 
@@ -87,33 +137,70 @@ def home(ctx: typer.Context) -> None:
     if ctx.invoked_subcommand is not None:
         return
 
-    instances = _list_instances()
-    lines = [toon.kv("bin", _bin_path()), toon.kv("description", _DESCRIPTION)]
+    try:
+        instances = core_list.list_instances().data
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+    assert instances is not None
 
-    if instances:
-        rows = [
-            {
-                "projectName": inst["projectName"],
-                "status": inst["status"],
-                "ports": " ".join(inst["ports"]) if inst["ports"] else "N/A",
-            }
-            for inst in instances
-        ]
-        lines.append(toon.table("instances", rows, ["projectName", "status", "ports"]))
-    else:
-        lines.append("instances: 0 Frappe instances found")
-
-    lines.append(
+    lines = [
+        toon.kv("bin", _bin_path()),
+        toon.kv("description", _DESCRIPTION),
+        _instances_toon(instances),
         toon.block(
             "help",
             [
                 "Run `cwcli axi backup <project> --site <site>` to back up a site's database",
-                "Run `cwcli axi backup <project> --with-files` to include public/private files",
-                "Run `cwcli ls` for the full human-readable instance table",
+                "Run `cwcli axi ls` to list instances",
+                "Run `cwcli axi where <term>` to search cached apps and sites",
             ],
-        )
-    )
+        ),
+    ]
     typer.echo("\n".join(lines))
+    raise typer.Exit(0)
+
+
+# -------------------------------------------------------------------------------------- ls
+
+
+@app.command("ls")
+def axi_ls() -> None:
+    """List all Frappe/ERPNext instances; emit them as TOON."""
+    try:
+        instances = core_list.list_instances().data
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+    assert instances is not None
+
+    typer.echo(_instances_toon(instances))
+    raise typer.Exit(0)
+
+
+# ----------------------------------------------------------------------------------- where
+
+
+@app.command("where")
+def axi_where(
+    search: str = typer.Argument(..., help="Match against cached app or site names."),
+    apps_only: bool = typer.Option(False, "--apps", "-a", help="Search only for apps."),
+    sites_only: bool = typer.Option(False, "--sites", "-s", help="Search only for sites."),
+    installed_only: bool = typer.Option(
+        False, "--installed", "-i", help="Show only installed apps (app search only)."
+    ),
+) -> None:
+    """Search cached instances for apps/sites matching a string; emit matches as TOON."""
+    try:
+        result = core_where.where(
+            search, apps_only=apps_only, sites_only=sites_only, installed_only=installed_only
+        )
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    assert result.data is not None
+    emit_result(result.data, warnings=result.warnings)
     raise typer.Exit(0)
 
 
@@ -144,5 +231,5 @@ def axi_backup(
         raise typer.Exit(2)
 
     assert result.data is not None  # OK/WARNING always carries a BackupOutcome
-    typer.echo(toon.encode(asdict(result.data), warnings=result.warnings))
+    emit_result(result.data, warnings=result.warnings)
     raise typer.Exit(0 if result.status in (CoreStatus.OK, CoreStatus.WARNING) else 1)

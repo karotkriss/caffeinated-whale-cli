@@ -1588,6 +1588,12 @@ It sits on the same logic core as the human commands but renders differently:
 # Content-first home: the binary path, a description, live instances, and next steps
 cwcli axi
 
+# List all Frappe/ERPNext instances as a TOON table
+cwcli axi ls
+
+# Search cached instances for an app or site by name
+cwcli axi where erpnext
+
 # Back up a site's database; the outcome prints as TOON on stdout
 cwcli axi backup frappe-one --site development.localhost
 
@@ -1595,7 +1601,7 @@ cwcli axi backup frappe-one --site development.localhost
 cwcli axi backup frappe-one --with-files
 ```
 
-`cwcli axi backup` performs exactly the same backup as `cwcli backup`; only the output and choice-handling differ.
+`cwcli axi ls`, `cwcli axi where`, and `cwcli axi backup` run on the same logic core as their human `cwcli ls`/`cwcli where`/`cwcli backup` counterparts; only the output (always TOON, never JSON) and choice-handling differ. JSON output stays on the human commands (`cwcli ls --json`, `cwcli where --json`).
 
 ### Verbose Mode for Debugging
 
@@ -1667,7 +1673,7 @@ The CLI uses:
 - **Peewee ORM** - SQLite-based caching
 
 **Logic core:** business logic and I/O live in a UI-pure `core/` package that carries no `rich`/`questionary`/`typer`; it returns a serializable typed envelope (or raises a typed error) so the human CLI, the `cwcli axi` agent surface, and any future GUI are all thin frontends over one implementation.
-The `backup` command is the first migrated onto it.
+`backup`, `ls`/`list`, and `where` are migrated onto it so far.
 
 **Data Directories:**
 - **Projects**: `~/.cwcli/projects/` - Project directories created by `cwcli init`

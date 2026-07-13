@@ -64,7 +64,7 @@ uv run pytest -x
 
 ### Current Test Coverage
 
-`tests/` holds 26 `test_*.py` suites totaling 484 tests at ~51% overall coverage (measured with `uv run pytest --cov` at 0.37.0, unreleased).
+`tests/` holds 30 `test_*.py` suites totaling 518 tests at ~55% overall coverage (measured with `uv run pytest --cov` at 0.37.0, unreleased).
 See the [Testing Directory Index](./README.md#current-status) for the full per-area breakdown.
 `test_completion_utils.py` remains the most complete single-module suite (tab completion, ~92% coverage): project name completion, app name completion, site name completion, cache functionality, Docker client management.
 
@@ -205,7 +205,7 @@ def temp_cache():
 
 - **Minimum**: 80% coverage for new code
 - **Target**: 90%+ coverage for critical paths
-- **Current**: ~51% overall at 0.37.0 (unreleased); `completion_utils.py` is the highest-covered module at ~92% (see the [Testing Directory Index](./README.md#current-status) for the rest)
+- **Current**: ~55% overall at 0.37.0 (unreleased); `completion_utils.py` is the highest-covered module at ~92% (see the [Testing Directory Index](./README.md#current-status) for the rest)
 
 ### Checking Coverage
 
