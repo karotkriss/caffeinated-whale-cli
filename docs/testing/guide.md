@@ -4,12 +4,20 @@
 
 This project uses pytest for testing. All tests are located in the `tests/` directory.
 
+The suite is split into two tiers by pytest marker (see [Testing Directory Index](./README.md#two-tier-model-fast-unit-vs-real-docker-e2e) for the full model): a fast `unit` tier (no Docker daemon needed) and a real-Docker `e2e`/`e2e_p2p` tier under `tests/e2e/`. This guide covers writing `unit`-tier tests; see [tests/README.md](../../tests/README.md#e2e-harness-real-docker) for the E2E harness.
+
 ## Running Tests
 
-### Run All Tests
+### Run the Fast Unit Tier (default)
 
 ```bash
 uv run pytest
+```
+
+### Run the Real-Docker E2E Tier
+
+```bash
+CWE2E_FRAPPE_MAJOR=16 uv run pytest tests/e2e -m e2e
 ```
 
 ### Run Specific Test File
@@ -284,15 +292,17 @@ def test_handles_exception_gracefully(self, mock_source):
 
 ## Continuous Integration
 
-Tests run in CI on every push and PR via `.github/workflows/test.yml`:
+CI is two-tiered. The fast `unit` tier runs on every push and PR via `.github/workflows/test.yml`:
 
 ```yaml
 # .github/workflows/test.yml
-- name: Run tests with coverage
-  run: uv run pytest --cov=caffeinated_whale_cli --cov-report=term-missing
+- name: Run unit tests with coverage
+  run: uv run pytest -m unit --cov=caffeinated_whale_cli --cov-report=term-missing
 ```
 
-The `Pytest` job is the intended required gate; a second `Mypy` job runs `uv run mypy src/` as a zero-error gate (it fails on any type error). See the [CI/CD Workflows guide](../contributing/ci-cd.md) for details.
+The real-Docker `e2e` tier runs via `.github/workflows/e2e.yml` on a v14/v15/v16 Frappe matrix, on PRs into `develop`/`master` and on-demand via the `e2e` PR label.
+
+The `Pytest` (unit) job is the always-required gate; a second `Mypy` job runs `uv run mypy src/` as a zero-error gate (it fails on any type error). See the [CI/CD Workflows guide](../contributing/ci-cd.md) for details.
 
 ## Debugging Tests
 
@@ -325,7 +335,8 @@ Status as of 0.37.0 (see the [Testing Directory Index](./README.md#future-test-p
 - [~] `commands/start.py` - Port conflict detection; `test_yes_flag` covers the non-interactive contract, but the port-scanning logic itself has no dedicated suite
 - [ ] `utils/port_utils.py` - Port management
 - [ ] `utils/docker_utils.py` - Docker interactions
-- [ ] Integration tests for full command flows
+- [x] Real-Docker E2E for `init` and `backup` (`tests/e2e/test_init_e2e.py`, `tests/e2e/test_backup_e2e.py`) - genuine `bench init`/`bench backup` against throwaway Frappe instances, both interactive and non-interactive
+- [ ] Real-Docker E2E for the remaining commands (`rm`, `restore`, `update`/`apps`, `unlock`, `inspect`) and the P2P (`sendme`) loopback - tracked in `openspec/changes/rebuild-e2e-test-suite`
 
 ## Resources
 

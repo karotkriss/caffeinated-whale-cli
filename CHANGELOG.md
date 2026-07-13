@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Test suite** - Reorganized into two tiers selected by pytest marker: a fast `unit` tier (the default; needs no Docker) and a real-Docker `e2e`/`e2e_p2p` tier under `tests/e2e/` that drives the real `cwcli` binary against genuine throwaway Frappe instances. A bare `pytest` runs only the fast tier; `pytest -m e2e` runs the real-Docker tier (add `pexpect` via the new `e2e` extra: `uv sync --all-extras`). The E2E harness isolates every run under a temporary `HOME` + `CWCLI_HOME` with `cwe2e-`-prefixed names, hard safety rails, and an unconditional leaked-resource backstop, and CI runs it on a v14/v15/v16 matrix on GitHub-hosted runners
+
 ## [0.37.0] - 2026-07-12
 
 ### Added

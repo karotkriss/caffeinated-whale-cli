@@ -7,7 +7,8 @@
 | Workflow | File | Triggers | Branch |
 |----------|------|----------|--------|
 | **Lint** | `lint.yml` | Push, PR | All branches |
-| **Test** | `test.yml` | Push, PR | All branches |
+| **Test** | `test.yml` | Push, PR | All branches (fast `unit` pytest tier + mypy) |
+| **E2E** | `e2e.yml` | PR, `e2e` label, Manual | PRs into `develop`/`master` (real-Docker `e2e` tier, v14/v15/v16 matrix) |
 | **Build** | `build.yml` | Push, Manual | `master` only |
 | **Release** | `release.yml` | Push, Tags, Release, Manual | `master` (push); tags fire from any branch |
 
