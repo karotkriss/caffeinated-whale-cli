@@ -1,11 +1,14 @@
-import shlex
+from typing import NoReturn
 
 import typer
 
+from ..core import backup as core_backup
+from ..core.envelope import Status
+from ..core.errors import CwcliError
 from ..utils import config_utils, db_utils
 from ..utils.completion_utils import complete_project_names, complete_site_names
 from ..utils.console import console, stderr_console
-from ..utils.docker_utils import get_project_containers, handle_docker_errors
+from ..utils.docker_utils import handle_docker_errors
 from ..utils.tips import TipSpinner
 from .utils import ensure_containers_running, resolve_bench_path
 
@@ -58,23 +61,13 @@ def backup(
         cwcli backup my-project --site example.com
         cwcli backup my-project --with-files
     """
-    # Ensure containers are running (auto-start with --yes)
+    # --- Interactive prologue (no spinner): resolve container/bench/site via the
+    # CLI wrappers, so any prompt happens BEFORE the spinner (the known
+    # spinner-over-questionary deadlock). The core.backup call below is then a
+    # straight-through, non-prompting operation. ---
+
+    # Ensure containers are running (auto-start with --yes; prompts otherwise).
     ensure_containers_running(project_name, require_running=True, verbose=verbose, auto_start=yes)
-
-    containers = get_project_containers(project_name)
-    if not containers:
-        stderr_console.print(f"[bold red]Error:[/bold red] Project '{project_name}' not found.")
-        raise typer.Exit(code=1)
-
-    frappe_container = next(
-        (c for c in containers if c.labels.get("com.docker.compose.service") == "frappe"),
-        None,
-    )
-    if not frappe_container:
-        stderr_console.print(
-            f"[bold red]Error:[/bold red] No 'frappe' service found for project '{project_name}'."
-        )
-        raise typer.Exit(code=1)
 
     # Resolve which bench to back up (--bench/--path, else the single bench, else
     # error on ambiguity). Falls back to the default path only when nothing is cached.
@@ -89,7 +82,7 @@ def backup(
             f"[yellow]Warning:[/yellow] No cached bench path found. Using default: {bench_path}"
         )
 
-    # Get default site if not provided
+    # Get default site if not provided.
     if not site:
         try:
             default_site = db_utils.get_default_site(project_name, bench_path)
@@ -116,103 +109,72 @@ def backup(
             )
             raise typer.Exit(code=1)
 
-    # Validate site name to prevent command injection
-    if not site or not site.strip():
-        stderr_console.print("[bold red]Error:[/bold red] Site name cannot be empty.")
-        raise typer.Exit(code=1)
-
-    invalid_chars = [";", "&", "|", "$", "`", "(", ")", "<", ">", "\n", "\r", "\\"]
-    if any(char in site for char in invalid_chars):
-        stderr_console.print(
-            f"[bold red]Error:[/bold red] Invalid site name '{site}'. "
-            "Site names cannot contain special shell characters."
-        )
-        raise typer.Exit(code=1)
-
-    # Validate bench_path
-    if any(char in bench_path for char in invalid_chars):
-        stderr_console.print(
-            f"[bold red]Error:[/bold red] Invalid bench path '{bench_path}'. "
-            "Paths cannot contain special shell characters."
-        )
-        raise typer.Exit(code=1)
-
-    # Verify bench path exists
-    bench_sites_path = f"{bench_path}/sites"
-    quoted_bench_sites_path = shlex.quote(bench_sites_path)
-    exit_code, _ = frappe_container.exec_run(f'sh -c "test -d {quoted_bench_sites_path}"')
-    if exit_code != 0:
-        stderr_console.print(
-            f"[bold red]Error:[/bold red] Bench directory not found at {bench_path}"
-        )
-        raise typer.Exit(code=1)
-
-    # Check if site exists
-    site_path = f"{bench_path}/sites/{site}"
-    quoted_site_path = shlex.quote(site_path)
-    exit_code, _ = frappe_container.exec_run(f'sh -c "test -d {quoted_site_path}"')
-    if exit_code != 0:
-        stderr_console.print(f"[bold red]Error:[/bold red] Site '{site}' not found at {site_path}")
-        raise typer.Exit(code=1)
-
-    # Verify backup directory exists (create if it doesn't)
-    backup_dir = f"{site_path}/private/backups"
-    quoted_backup_dir = shlex.quote(backup_dir)
-    test_cmd = f"test -d {quoted_backup_dir}"
-    exit_code, _ = frappe_container.exec_run(f"sh -c '{test_cmd}'")
-    if exit_code != 0:
-        if verbose:
-            stderr_console.print(f"[dim]Creating backup directory at {backup_dir}[/dim]")
-        # Create backup directory
-        mkdir_cmd = f"mkdir -p {quoted_backup_dir}"
-        exit_code, output = frappe_container.exec_run(f"sh -c '{mkdir_cmd}'")
-        if exit_code != 0:
-            stderr_console.print(
-                f"[bold red]Error:[/bold red] Failed to create backup directory at {backup_dir}"
-            )
-            if verbose and output:
-                stderr_console.print(output.decode("utf-8", errors="replace"))
-            raise typer.Exit(code=1)
-
-    # Build backup command
-    cmd = f"bench --site {site} backup"
-
-    # Add --with-files flag if requested
-    if with_files:
-        cmd += " --with-files"
-
+    # --- Core call inside the spinner. Everything is pre-resolved, so core.backup
+    # runs straight through; the loop only re-invokes on the (rare) confirm_start
+    # race, and that prompt runs after the spinner block exits. ---
     if verbose:
+        cmd = f"bench --site {site} backup"
+        if with_files:
+            cmd += " --with-files"
         stderr_console.print(f"[dim]$ {cmd}[/dim]")
 
-    # Execute backup with spinner
     show_tips = config_utils.get_show_tips()
     console.print()
-    with TipSpinner(
-        f"Creating backup for site '{site}'", console=stderr_console, enabled=show_tips
-    ):
-        exit_code, output = frappe_container.exec_run(cmd, workdir=bench_path)
+    while True:
+        try:
+            with TipSpinner(
+                f"Creating backup for site '{site}'", console=stderr_console, enabled=show_tips
+            ):
+                result = core_backup.backup(
+                    project_name, site=site, bench_path=bench_path, with_files=with_files
+                )
+        except CwcliError as e:
+            _handle_backup_error(e, verbose)
 
-    # Show output if verbose or on failure
-    if verbose or exit_code != 0:
+        if (
+            result.status is Status.NEEDS_CHOICE
+            and result.choice is not None
+            and result.choice.kind == "confirm_start"
+        ):
+            ensure_containers_running(
+                project_name, require_running=True, verbose=verbose, auto_start=yes
+            )
+            continue
+        break
+
+    outcome = result.data
+    assert outcome is not None  # OK/WARNING always carries a BackupOutcome
+    # ponytail: verbose mode no longer echoes bench's own success chatter (the exec now
+    # lives in core.backup, which returns a DTO, not raw output); the failure path still
+    # surfaces bench output via CwcliError.detail. Re-add a capture channel only if the
+    # success chatter is actually wanted.
+    if verbose:
+        for warning in result.warnings:
+            if warning.code == "backup_dir.created":
+                stderr_console.print(f"[dim]{warning.text}[/dim]")
+    console.print()
+    console.print(
+        f"[bold green]✓[/bold green] Successfully created backup for site '{outcome.site}'"
+    )
+    if outcome.included_files:
+        console.print("[dim]Backup includes database and files[/dim]")
+    else:
+        console.print("[dim]Backup includes database only[/dim]")
+    console.print(
+        f"[dim]Backup location: {outcome.bench_path}/sites/{outcome.site}/private/backups/[/dim]"
+    )
+
+
+def _handle_backup_error(e: CwcliError, verbose: bool) -> NoReturn:
+    """Render a core backup failure with the historical CLI messages, then Exit(1)."""
+    if e.code == "backup.failed":
+        output = (e.detail or {}).get("output")
         if output:
             console.print()
             console.print("[dim]Backup output:[/dim]")
-            try:
-                console.print(output.decode("utf-8"))
-            except UnicodeDecodeError:
-                # Fallback to replace errors if UTF-8 decoding fails
-                console.print(output.decode("utf-8", errors="replace"))
-
-    console.print()
-    if exit_code == 0:
-        console.print(f"[bold green]✓[/bold green] Successfully created backup for site '{site}'")
-        if with_files:
-            console.print("[dim]Backup includes database and files[/dim]")
-        else:
-            console.print("[dim]Backup includes database only[/dim]")
-        console.print(f"[dim]Backup location: {bench_path}/sites/{site}/private/backups/[/dim]")
-    else:
-        stderr_console.print(f"[bold red]✗[/bold red] Failed to create backup for site '{site}'")
+            console.print(output)
+        console.print()
+        stderr_console.print(f"[bold red]✗[/bold red] {e.message}")
         stderr_console.print()
         stderr_console.print("[bold]Common causes:[/bold]")
         stderr_console.print("  • Site not running or database connection issues")
@@ -222,3 +184,13 @@ def backup(
         stderr_console.print()
         stderr_console.print("[dim]Tip: Run with -v flag for detailed error output[/dim]")
         raise typer.Exit(code=1)
+
+    if e.code == "backup_dir.failed":
+        stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
+        output = (e.detail or {}).get("output")
+        if verbose and output:
+            stderr_console.print(output)
+        raise typer.Exit(code=1)
+
+    stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
+    raise typer.Exit(code=1)

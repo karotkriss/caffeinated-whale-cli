@@ -60,14 +60,14 @@ The real-Docker E2E is Linux-only; Windows/macOS-specific code stays in the unit
 
 ## Test Files
 
-As of 0.37.0, `tests/` holds 22 `test_*.py` suites totaling 416 tests in the
+As of 0.37.0 (unreleased), `tests/` holds 26 `test_*.py` suites totaling 484 tests in the
 `unit` tier (measured with `uv run pytest --cov`). Run `ls tests/` for the
 authoritative current list; see [../docs/testing/README.md](../docs/testing/README.md)
 for the per-area breakdown.
 
 `tests/e2e/` adds 3 more `test_*.py` suites in the real-Docker `e2e` tier
 (`test_init_e2e.py`, `test_backup_e2e.py`, `test_harness_safety.py`); run
-`ls tests/e2e/` for the current list. They are not part of the 416/22 count
+`ls tests/e2e/` for the current list. They are not part of the 484/26 count
 above since they need a Docker daemon and are excluded from a bare `pytest`.
 
 ### `test_completion_utils.py`
@@ -92,7 +92,7 @@ Tests for tab completion functionality.
 
 ## Test Coverage
 
-Current overall coverage at 0.37.0 (416 tests across 22 test files).
+Current overall coverage at 0.37.0, unreleased (484 tests across 26 test files, ~51% overall).
 
 ### Covered Modules
 - ✅ `utils/completion_utils.py` - 92% (7 missing lines)
@@ -104,14 +104,17 @@ Current overall coverage at 0.37.0 (416 tests across 22 test files).
 - ✅ `commands/init.py` - ~49% (`test_init_reuse_bench`, `test_init_mariadb_flag`, `test_init_admin_password`)
 - ✅ `commands/apps.py` + `commands/update.py` app-update path - (`test_apps`: both modes, multi-site fan-out, frappe reset, `update` deprecation)
 - ✅ `utils/config_utils.py`'s `cwcli_home()` - (`test_cwcli_home`: mock-free, sets a real `CWCLI_HOME` env var and checks real filesystem/subprocess results)
+- ✅ `core/envelope.py`, `core/errors.py`, `core/resolvers.py`, `core/docker.py` - 100% (`test_core_envelope`: DTO/error contract + the AST-scan purity ban; `test_core_resolvers`: split resolvers plus the `commands/utils.py`/`docker_utils.py` CLI-wrapper exit-code preservation)
+- ✅ `core/backup.py` - ~95% (`test_core_backup`: every `core.backup` branch - success, both `NEEDS_CHOICE` forks, each `CwcliError` kind - on a fake container)
+- ✅ `commands/axi.py` - ~97% (`test_axi`: verb exit-mapping (0/1/2), the content-first home, the TOON encoder)
 
 ### Modules Needing Dedicated Suites
 - ⚠️ `utils/port_utils.py` (~9%, only incidental coverage)
-- ⚠️ `utils/docker_utils.py` (~37%, only incidental coverage)
+- ⚠️ `utils/docker_utils.py` (~51%, up from ~37% now that `test_core_resolvers` dedicated-tests the `get_frappe_container` CLI wrapper; the rest of the module is still only incidentally covered)
 - ⚠️ `utils/sendme_utils.py` (~9%, only incidental coverage)
 - ⚠️ `utils/vscode_utils.py` (~16%, only incidental coverage)
 - ⚠️ `utils/config_utils.py` (~41%; `cwcli_home()` is covered by `test_cwcli_home`, but `load_config`/`save_config`/the custom-path and auto-inspect-config setters remain untested)
-- ⚠️ Command modules at or near 0% dedicated coverage: `backup.py`, `list.py`, `run.py`, `status.py`, `unlock.py`, `where.py`
+- ⚠️ Command modules at or near 0% dedicated coverage: `backup.py` (0%; its logic moved to `core/backup.py`, which is covered - see above), `list.py`, `run.py`, `status.py`, `unlock.py`, `where.py`
 
 ## Writing New Tests
 
@@ -243,17 +246,18 @@ Status as of 0.34.0 (see [../docs/testing/README.md](../docs/testing/README.md) 
 1. **Project inspection** (`commands/inspect.py`) - covered by `test_inspect_partial_refresh`, `test_inspect_label_recovery` (~62%).
 2. **Database operations** (`utils/db_utils.py`) - covered by `test_db_security`, `test_config_validation` (~68%).
 3. **Real-Docker E2E for `init` and `backup`** - covered by `tests/e2e/test_init_e2e.py`, `tests/e2e/test_backup_e2e.py` (both interactive and non-interactive, on the v14/v15/v16 matrix).
+4. **Logic core + `cwcli axi`** (`core/`, `commands/axi.py`) - covered by `test_core_envelope`, `test_core_resolvers`, `test_core_backup`, `test_axi` (envelope/resolvers/docker wrapper at 100%, `core/backup.py` ~95%, `commands/axi.py` ~97%).
 
 ### Partial
-4. **Port conflict detection** (`commands/start.py`) - `test_yes_flag` covers the non-interactive/`--yes` contract, but the port-scanning and interactive-resolution logic has no dedicated suite (~59%).
+5. **Port conflict detection** (`commands/start.py`) - `test_yes_flag` covers the non-interactive/`--yes` contract, but the port-scanning and interactive-resolution logic has no dedicated suite (~59%).
 
 ### Still needed
-5. **Docker utilities** (`utils/docker_utils.py`) - foundation for all commands; error handling only incidentally covered (~37%).
-6. **Port utilities** (`utils/port_utils.py`) - cross-platform process detection (~9%).
-7. **VS Code integration** (`utils/vscode_utils.py`) - container attachment fallback (~16%).
-8. **Configuration management** (`utils/config_utils.py`) - distinct from `db_utils`'s config validation (~37%).
-9. **Real-Docker E2E for the remaining commands** (`rm`, `restore`, `update`/`apps`, `unlock`, `inspect`) and the P2P (`sendme`) loopback - tracked in `openspec/changes/rebuild-e2e-test-suite`.
-10. Other command modules at or near 0%: `backup.py`, `list.py`, `run.py`, `status.py`, `unlock.py`, `where.py`.
+6. **Docker utilities** (`utils/docker_utils.py`) - foundation for all commands; the `get_frappe_container` CLI wrapper is now covered by `test_core_resolvers`, but the rest of the module is still only incidentally covered (~51%).
+7. **Port utilities** (`utils/port_utils.py`) - cross-platform process detection (~9%).
+8. **VS Code integration** (`utils/vscode_utils.py`) - container attachment fallback (~16%).
+9. **Configuration management** (`utils/config_utils.py`) - distinct from `db_utils`'s config validation (~37%).
+10. **Real-Docker E2E for the remaining commands** (`rm`, `restore`, `update`/`apps`, `unlock`, `inspect`) and the P2P (`sendme`) loopback - tracked in `openspec/changes/rebuild-e2e-test-suite`.
+11. Other command modules at or near 0% dedicated unit coverage: `backup.py` (its logic moved to `core/backup.py`, which is covered), `list.py`, `run.py`, `status.py`, `unlock.py`, `where.py`.
 
 ## Resources
 

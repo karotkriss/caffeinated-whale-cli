@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`cwcli axi` command group** - An agent-facing surface over cwcli's new UI-pure logic core. Its output is structured [TOON](https://toonformat.dev) on stdout (progress and diagnostics go to stderr), it never prompts, and it maps outcomes to conventional exit codes (0 success, 1 error, 2 usage). Bare `cwcli axi` is a content-first home that prints the binary path, a one-line description, the live Frappe instances, and a few next-step commands. `cwcli axi backup <project> [--site <site>] [--bench <index|label>] [--with-files]` performs the same backup as `cwcli backup` and emits the outcome as TOON; a decision it cannot make from flags (an ambiguous multi-bench project, a stopped instance) becomes a structured usage error naming the flag to pass, rather than an interactive prompt
+
 ### Changed
+- **`cwcli backup`** - Re-seated on the shared logic core (`core.backup`) with no change to its behavior: identical flags, prompts, success banner, error messages, and exit codes. This is the first command migrated onto the core; the human CLI stays a thin frontend and the E2E backup proof stays green unchanged
 - **Test suite** - Reorganized into two tiers selected by pytest marker: a fast `unit` tier (the default; needs no Docker) and a real-Docker `e2e`/`e2e_p2p` tier under `tests/e2e/` that drives the real `cwcli` binary against genuine throwaway Frappe instances. A bare `pytest` runs only the fast tier; `pytest -m e2e` runs the real-Docker tier (add `pexpect` via the new `e2e` extra: `uv sync --all-extras`). The E2E harness isolates every run under a temporary `HOME` + `CWCLI_HOME` with `cwe2e-`-prefixed names, hard safety rails, and an unconditional leaked-resource backstop, and CI runs it on a v14/v15/v16 matrix on GitHub-hosted runners
 
 ## [0.37.0] - 2026-07-12

@@ -1575,6 +1575,28 @@ cwcli ls --json | jq '.[] | select(.status=="running")'
 cwcli inspect frappe-one --json | jq '.bench_instances[0].sites'
 ```
 
+### For agents: the `cwcli axi` surface
+
+`cwcli axi` is an agent-facing surface built for autonomous tools that drive cwcli through shell execution.
+It sits on the same logic core as the human commands but renders differently:
+
+- **Structured output on stdout** in [TOON](https://toonformat.dev) (a token-efficient, agent-readable format); progress and diagnostics go to stderr, so stdout is always clean, parseable data.
+- **No prompts, ever.** Every operation completes from flags alone; a decision it cannot make (an ambiguous multi-bench project, a stopped instance) is reported as a structured usage error naming the exact flag to pass, not an interactive question.
+- **Conventional exit codes:** `0` success (including no-ops), `1` error, `2` usage error.
+
+```bash
+# Content-first home: the binary path, a description, live instances, and next steps
+cwcli axi
+
+# Back up a site's database; the outcome prints as TOON on stdout
+cwcli axi backup frappe-one --site development.localhost
+
+# Include files too
+cwcli axi backup frappe-one --with-files
+```
+
+`cwcli axi backup` performs exactly the same backup as `cwcli backup`; only the output and choice-handling differ.
+
 ### Verbose Mode for Debugging
 
 Use `-v` flag on any command to see detailed diagnostic output:
@@ -1643,6 +1665,9 @@ The CLI uses:
 - **Rich** - Terminal formatting and spinners
 - **Questionary** - Interactive prompts
 - **Peewee ORM** - SQLite-based caching
+
+**Logic core:** business logic and I/O live in a UI-pure `core/` package that carries no `rich`/`questionary`/`typer`; it returns a serializable typed envelope (or raises a typed error) so the human CLI, the `cwcli axi` agent surface, and any future GUI are all thin frontends over one implementation.
+The `backup` command is the first migrated onto it.
 
 **Data Directories:**
 - **Projects**: `~/.cwcli/projects/` - Project directories created by `cwcli init`
