@@ -332,10 +332,11 @@ Status as of 0.37.0 (see the [Testing Directory Index](./README.md#future-test-p
 - [x] `utils/db_utils.py` - Cache database operations (`test_db_security`, `test_config_validation`)
 - [x] `commands/apps.py`, `commands/update.py` - App management and update-migration logic (`test_apps`)
 - [x] `utils/config_utils.py`'s `cwcli_home()` - `CWCLI_HOME` override (`test_cwcli_home`, mock-free)
-- [~] `commands/start.py` - Port conflict detection; `test_yes_flag` covers the non-interactive contract, but the port-scanning logic itself has no dedicated suite
+- [~] `commands/start.py` - Port conflict detection; `test_yes_flag` covers the non-interactive contract, and the interactive port-conflict confirmation prompt is now driven end to end by `tests/e2e/test_start_status_e2e.py`, but the remaining port-scanning helpers still have no dedicated unit suite
 - [ ] `utils/port_utils.py` - Port management
 - [ ] `utils/docker_utils.py` - Docker interactions
 - [x] Real-Docker E2E for `init` and `backup` (`tests/e2e/test_init_e2e.py`, `tests/e2e/test_backup_e2e.py`) - genuine `bench init`/`bench backup` against throwaway Frappe instances, both interactive and non-interactive
+- [x] Real-Docker E2E for the lifecycle commands `start`/`status`/`logs`/`restart` (`tests/e2e/test_start_status_e2e.py`) - a structure-agnostic outcome net that pins the invariants the start/status core migration must preserve, both interactive and non-interactive (`openspec/changes/add-start-status-e2e-net`)
 - [ ] Real-Docker E2E for the remaining commands (`rm`, `restore`, `update`/`apps`, `unlock`, `inspect`) and the P2P (`sendme`) loopback - tracked in `openspec/changes/rebuild-e2e-test-suite`
 
 ## Resources
