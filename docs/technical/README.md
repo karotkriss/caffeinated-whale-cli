@@ -22,7 +22,9 @@ caffeinated-whale-cli/
 ├── src/caffeinated_whale_cli/
 │   ├── main.py                 # CLI entry point
 │   ├── commands/               # Command implementations (human-facing frontends)
-│   │   ├── start.py           # Start containers + port detection
+│   │   ├── start.py           # Thin frontend over core.start (idempotent) + port detection
+│   │   ├── status.py          # Thin frontend over core.status (per-process health)
+│   │   ├── logs.py            # Reads the shared bench-start log path
 │   │   ├── stop.py            # Stop containers
 │   │   ├── inspect.py         # Project inspection
 │   │   ├── update.py          # App updates + migrations
@@ -38,7 +40,10 @@ caffeinated-whale-cli/
 │   │   ├── docker.py           # Core frappe-container accessor
 │   │   ├── backup.py           # core.backup - the reference migrated command
 │   │   ├── list.py             # core.list_instances - the read-only instance listing
-│   │   └── where.py            # core.where - the read-only cached-instance search
+│   │   ├── where.py            # core.where - the read-only cached-instance search
+│   │   ├── supervision.py      # Shared tracked-state contract for start+status (honcho discovery, marker, bounded log)
+│   │   ├── start.py            # core.start - idempotent bench start (discovered-PID no-op)
+│   │   └── status.py           # core.status - per-process health + pre-computed overall
 │   └── utils/                  # Utility modules
 │       ├── docker_utils.py    # Docker client management
 │       ├── port_utils.py      # Port conflict detection
@@ -125,7 +130,7 @@ Business logic and I/O live in `core/`, which imports no `rich`/`questionary`/`t
 - A decision the core can't make from its params comes back as `NEEDS_CHOICE`, never a prompt; each frontend resolves it its own way
 - No live Docker object crosses a `core.<verb>` return boundary - DTOs carry only serializable data
 - `cwcli axi` is a thin agent-facing frontend over the same core: it never prompts, emits [TOON](https://toonformat.dev) on stdout via the dependency-free `utils/toon.py` encoder, and maps outcomes to exit codes 0/1/2
-- `backup` was the first command migrated onto this pattern (`core/backup.py`), followed by the read-only `ls`/`list` (`core/list.py`) and `where` (`core/where.py`); the shared bench-op resolvers were split into `core/resolvers.py`/`core/docker.py` (pure) plus thin CLI wrappers in `commands/utils.py`/`utils/docker_utils.py`
+- `backup` was the first command migrated onto this pattern (`core/backup.py`), followed by the read-only `ls`/`list` (`core/list.py`) and `where` (`core/where.py`), and `start`+`status` (`core/start.py`, `core/status.py`, sharing the tracked-state contract in `core/supervision.py`); the shared bench-op resolvers were split into `core/resolvers.py`/`core/docker.py` (pure) plus thin CLI wrappers in `commands/utils.py`/`utils/docker_utils.py`
 
 See `openspec/changes/core-logic-foundation/design.md` for the seven locked architecture decisions.
 

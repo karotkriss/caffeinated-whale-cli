@@ -351,7 +351,8 @@ def start(
         None,
         "--bench",
         help="Which bench runs 'bench start': its numeric index or label. "
-        "Defaults to the first bench (a note lists the rest) in a multi-bench project.",
+        "On a multi-bench project with no --bench, prompts interactively and "
+        "refuses (non-zero) on a non-TTY.",
     ),
     yes: bool = typer.Option(
         False,
