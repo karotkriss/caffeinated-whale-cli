@@ -266,7 +266,7 @@ Status as of 0.34.0 (see [../docs/testing/README.md](../docs/testing/README.md) 
 8. **VS Code integration** (`utils/vscode_utils.py`) - container attachment fallback (~16%).
 9. **Configuration management** (`utils/config_utils.py`) - distinct from `db_utils`'s config validation (~37%).
 10. **Real-Docker E2E for the remaining commands** (`rm`, `restore`, `update`/`apps`, `unlock`, `inspect`) and the P2P (`sendme`) loopback - tracked in `openspec/changes/rebuild-e2e-test-suite`.
-11. Other command modules at or near 0% dedicated unit coverage: `backup.py` (its logic moved to `core/backup.py`, which is covered), `list.py`, `run.py`, `status.py` (dedicated unit suite still ~0%, but now covered end to end by `tests/e2e/test_start_status_e2e.py`, see item 3a), `unlock.py`, `where.py`.
+11. Other command modules at or near 0% dedicated unit coverage: `backup.py` (its logic moved to `core/backup.py`, which is covered), `run.py`, `status.py` (dedicated unit suite still ~0%, but now covered end to end by `tests/e2e/test_start_status_e2e.py`, see item 3a), `unlock.py`.
 
 ## Resources
 
