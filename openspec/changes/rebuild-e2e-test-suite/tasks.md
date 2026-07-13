@@ -14,7 +14,7 @@ The per-command groups in §4 encode the parallel-run cadence: land a command's 
 - [x] 2.1 Create the `tests/e2e/` package and repurpose the markers in `pyproject.toml`: `unit` / `e2e` / `e2e_p2p` (retire the dead `slow` / `integration`); set default `addopts` to `-m "not e2e and not e2e_p2p"` so a bare `pytest` stays fast.
 - [x] 2.2 Add the E2E-only dependency group with `pexpect` (NOT `testcontainers`).
 - [x] 2.3 Docker-availability gate: detect `docker info` / `client.ping()` and SKIP LOUDLY (obvious infra failure, never silent green) when no daemon is reachable.
-- [x] 2.4 Hard isolation rails (fail-closed before any Docker work): refuse if `HOME` resolves to the real home, or if any project name lacks the `cwe2e-` prefix.
+- [x] 2.4 Hard isolation rails (fail-closed before any Docker work): refuse if `HOME` is (or nests under) the real home, if `CWCLI_HOME` is unset or does not resolve to a location inside that isolated `HOME`, or if any project name lacks the `cwe2e-` prefix.
 - [x] 2.5 Isolation fixtures: per-session temp `HOME` + `CWCLI_HOME` override + unique `cwe2e-<runid>-<n>` project/site names.
 - [x] 2.6 Port allocator: non-overlapping bases ≥1006 apart (web `{port}..{port+5}`, socketio `{port+1000}..{port+1005}`).
 - [x] 2.7 Session/instance fixture: stand up a real instance via `cwcli init` (full `bench init` + `new-site`), wait on REAL readiness (never fixed sleeps), yield, tear down via `cwcli rm --yes --volumes`.
