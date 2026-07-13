@@ -103,7 +103,12 @@ def get_project_volumes(project_name: str):
 
 def get_frappe_container(project_name: str):
     """
-    Get the frappe container for a project.
+    Get the frappe container for a project (CLI wrapper).
+
+    Thin frontend over the core accessor ``core.docker.get_frappe_container``:
+    it is the single resolution implementation; this wrapper only translates the
+    typed :class:`CwcliError` it raises into the historical stderr message and
+    ``typer.Exit(1)``, preserving the exact CLI behavior.
 
     Args:
         project_name: The name of the docker-compose project.
@@ -112,26 +117,19 @@ def get_frappe_container(project_name: str):
         The frappe container object.
 
     Raises:
-        typer.Exit: If project not found or no frappe service exists.
+        typer.Exit: If project not found, no frappe service exists, or the daemon
+            is unreachable.
     """
-    containers = get_project_containers(project_name)
+    # Lazy import breaks the docker_utils <-> core.docker cycle (core.docker imports
+    # get_project_containers from this module at load time).
+    from ..core import docker as core_docker
+    from ..core.errors import CwcliError
 
-    if not containers:
-        stderr_console.print(f"[bold red]Error:[/bold red] Project '{project_name}' not found.")
-        raise typer.Exit(code=1)
-
-    frappe_container = next(
-        (c for c in containers if c.labels.get("com.docker.compose.service") == "frappe"),
-        None,
-    )
-
-    if not frappe_container:
-        stderr_console.print(
-            f"[bold red]Error:[/bold red] No 'frappe' service found for project '{project_name}'."
-        )
-        raise typer.Exit(code=1)
-
-    return frappe_container
+    try:
+        return core_docker.get_frappe_container(project_name)
+    except CwcliError as e:
+        stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
+        raise typer.Exit(code=1) from None
 
 
 def exec_into_container(container_name: str, working_dir: str | None = None) -> None:

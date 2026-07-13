@@ -114,7 +114,7 @@ CWE2E_FRAPPE_MAJOR=16 uv run pytest tests/e2e -m e2e
 
 ### Current Status
 
-- **Overall project**: ~48% coverage at 0.37.0 (416 tests across 22 test files; see the [Testing Directory](./testing/) for the per-module breakdown).
+- **Overall project**: ~51% coverage at 0.37.0, unreleased (484 tests across 26 test files; see the [Testing Directory](./testing/) for the per-module breakdown).
 - **Target**: Expand coverage on the modules that still have none (`port_utils.py`, `sendme_utils.py`, `vscode_utils.py`).
 
 See [Testing Directory](./testing/) for complete documentation.
@@ -137,7 +137,8 @@ Deep-dives into architecture, API, and implementation details.
 
 ```
 caffeinated-whale-cli/
-├── commands/          # CLI commands
+├── commands/          # CLI commands (human + agent frontends)
+├── core/              # UI-pure logic core (no rich/questionary/typer)
 ├── utils/            # Utilities (Docker, caching, ports, etc.)
 └── tests/            # Test suite
 ```
@@ -148,6 +149,7 @@ caffeinated-whale-cli/
 - Project inspection & caching
 - Tab completion
 - VS Code integration
+- UI-pure logic core + `cwcli axi` agent surface
 
 See [Technical Directory](./technical/) for complete documentation.
 
@@ -173,9 +175,9 @@ ports                # Port conflict detection
 
 ### Test Coverage
 
-- **Test Files**: 22
-- **Total Tests**: 416
-- **Overall Coverage**: ~48% at 0.37.0
+- **Test Files**: 26
+- **Total Tests**: 484
+- **Overall Coverage**: ~51% at 0.37.0 (unreleased)
 - See the [Testing Directory](./testing/) for the per-module breakdown.
 
 ## Common Tasks
