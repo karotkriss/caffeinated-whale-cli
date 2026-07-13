@@ -109,7 +109,7 @@ def logs(
             "-it",
             container_name,
             "tail",
-            "-f",
+            "-F",
             "-n",
             str(lines),
             log_file,

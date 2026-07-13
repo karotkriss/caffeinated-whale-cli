@@ -468,7 +468,7 @@ cwcli restart frappe-one
 Attempting to restart 1 project(s)...
 ✓ Instance 'frappe-one' stopped.
 ✓ Instance 'frappe-one' started.
-✓ Started bench (logs: /tmp/bench-frappe-one.log)
+✓ Started bench (logs: /workspace/frappe-bench/logs/bench-start.log)
 View logs with: cwcli logs frappe-one
 ```
 
@@ -571,7 +571,7 @@ cwcli logs frappe-one --no-follow --lines 50
 cwcli logs frappe-one -n 200
 ```
 
-**Note:** Logs are stored at `/tmp/bench-{project_name}.log` inside the container.
+**Note:** Logs are stored at `<bench>/logs/bench-start.log` on the workspace volume inside the container.
 
 ---
 

@@ -14,7 +14,7 @@ from caffeinated_whale_cli.core import resolvers, supervision
 from caffeinated_whale_cli.core import start as core_start
 from caffeinated_whale_cli.core.envelope import Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
-from tests.test_core_supervision import _PROCFILE, BENCH, FakeContainer
+from tests.test_core_supervision import _PROCFILE, _PS_SINGLE, BENCH, FakeContainer
 
 
 class FakeSvc:
@@ -106,6 +106,20 @@ class TestIdempotent:
             "redis_cache",
             "redis_queue",
         }
+
+    def test_already_running_reports_a_crashed_worker_as_down(self, wire):
+        # honcho up for BENCH, but the worker child died: still "up" overall
+        # (D1 is read-only), yet the readout must show the dead label, not omit it.
+        ps = _PS_SINGLE.replace(
+            "105 100 499 0.3 70000 /env/bin/python /env/bin/bench worker --queue default\n", ""
+        )
+        frappe = FakeContainer(ps=ps)
+        wire(frappe, benches=[{"path": BENCH}])
+        result = core_start.start("proj")
+        assert result.data.already_running is True
+        procs = {p.label: p.pid for p in result.data.processes}
+        assert procs["worker:default"] is None
+        assert procs["web"] is not None
 
 
 class TestRestart:
