@@ -142,7 +142,7 @@ def start(
                     supervisor=supervision.SUPERVISOR,
                     log_path=log_path,
                     already_running=True,
-                    processes=[ProcessLaunch(label=p.label, pid=p.pid) for p in snapshot.processes],
+                    processes=_launched_processes(frappe_container, resolved_path, snapshot),
                 ),
                 warnings=warnings,
             )
