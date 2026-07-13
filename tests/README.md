@@ -122,7 +122,7 @@ Current overall coverage at 0.37.0, unreleased (518 tests across 30 test files, 
 - ⚠️ `utils/sendme_utils.py` (~9%, only incidental coverage)
 - ⚠️ `utils/vscode_utils.py` (~16%, only incidental coverage)
 - ⚠️ `utils/config_utils.py` (~41%; `cwcli_home()` is covered by `test_cwcli_home`, but `load_config`/`save_config`/the custom-path and auto-inspect-config setters remain untested)
-- ⚠️ Command modules at or near 0% dedicated coverage: `backup.py` (0%; its logic moved to `core/backup.py`, which is covered - see above), `run.py`, `status.py`, `unlock.py`
+- ⚠️ Command modules at or near 0% dedicated coverage: `backup.py` (0%; its logic moved to `core/backup.py`, which is covered - see above), `run.py`, `status.py` (0% dedicated unit suite, but now covered end to end by `tests/e2e/test_start_status_e2e.py`), `unlock.py`
 
 ## Writing New Tests
 
@@ -266,7 +266,7 @@ Status as of 0.34.0 (see [../docs/testing/README.md](../docs/testing/README.md) 
 8. **VS Code integration** (`utils/vscode_utils.py`) - container attachment fallback (~16%).
 9. **Configuration management** (`utils/config_utils.py`) - distinct from `db_utils`'s config validation (~37%).
 10. **Real-Docker E2E for the remaining commands** (`rm`, `restore`, `update`/`apps`, `unlock`, `inspect`) and the P2P (`sendme`) loopback - tracked in `openspec/changes/rebuild-e2e-test-suite`.
-11. Other command modules at or near 0% dedicated unit coverage: `backup.py` (its logic moved to `core/backup.py`, which is covered), `list.py`, `run.py`, `status.py`, `unlock.py`, `where.py`.
+11. Other command modules at or near 0% dedicated unit coverage: `backup.py` (its logic moved to `core/backup.py`, which is covered), `list.py`, `run.py`, `status.py` (dedicated unit suite still ~0%, but now covered end to end by `tests/e2e/test_start_status_e2e.py`, see item 3a), `unlock.py`, `where.py`.
 
 ## Resources
 
