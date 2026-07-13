@@ -13,6 +13,8 @@ from caffeinated_whale_cli.commands import axi as axi_mod
 from caffeinated_whale_cli.core.backup import BackupOutcome
 from caffeinated_whale_cli.core.envelope import Choice, Message, Result, Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
+from caffeinated_whale_cli.core.list import InstanceDTO
+from caffeinated_whale_cli.core.where import WhereMatch, WhereResult
 from caffeinated_whale_cli.utils import toon
 
 runner = CliRunner()
@@ -25,6 +27,11 @@ def _outcome():
         artifact_path="/workspace/frappe-bench/sites/s.localhost/private/backups/x.sql.gz",
         included_files=False,
     )
+
+
+def _instances_ok(instances):
+    """Patch the ls core producer axi consumes to return a fixed instance list."""
+    return lambda **k: Result(status=Status.OK, data=instances)
 
 
 # ---------------------------------------------------------------------------- axi backup
@@ -101,6 +108,9 @@ class TestAxiBackup:
         result = runner.invoke(axi_mod.app, ["backup", "proj"])
         assert result.exit_code == 2
         assert "--bench <index|label>" in result.stdout
+        # The benches ride in a proper TOON options[N]: block (uniform TOON, not
+        # bare indented lines).
+        assert "options[2]:" in result.stdout
         assert "[0] /w/b0" in result.stdout
         assert "[1] /w/b1" in result.stdout
 
@@ -122,12 +132,14 @@ class TestAxiBackup:
 class TestAxiHome:
     def test_home_shows_instances(self, monkeypatch):
         monkeypatch.setattr(
-            axi_mod,
-            "_list_instances",
-            lambda: [
-                {"projectName": "proj-a", "ports": ["8000", "8001"], "status": "running"},
-                {"projectName": "proj-b", "ports": [], "status": "exited"},
-            ],
+            axi_mod.core_list,
+            "list_instances",
+            _instances_ok(
+                [
+                    InstanceDTO(project_name="proj-a", status="running", ports=["8000", "8001"]),
+                    InstanceDTO(project_name="proj-b", status="exited", ports=[]),
+                ]
+            ),
         )
         result = runner.invoke(axi_mod.app, [])
         assert result.exit_code == 0
@@ -139,11 +151,122 @@ class TestAxiHome:
         assert "help[3]:" in result.stdout
 
     def test_home_definitive_empty_state(self, monkeypatch):
-        monkeypatch.setattr(axi_mod, "_list_instances", lambda: [])
+        monkeypatch.setattr(axi_mod.core_list, "list_instances", _instances_ok([]))
         result = runner.invoke(axi_mod.app, [])
         assert result.exit_code == 0
         assert "instances: 0 Frappe instances found" in result.stdout
         assert "help[" in result.stdout
+
+    def test_home_docker_error_is_structured_stdout(self, monkeypatch):
+        def _raise(**k):
+            raise CwcliError(ErrorKind.DOCKER, "docker.unreachable", "Could not connect to Docker.")
+
+        monkeypatch.setattr(axi_mod.core_list, "list_instances", _raise)
+        result = runner.invoke(axi_mod.app, [])
+        assert result.exit_code == 1
+        assert result.stdout.startswith("error: Could not connect to Docker.")
+        assert "Traceback" not in result.stdout
+
+
+# -------------------------------------------------------------------------------- axi ls
+
+
+class TestAxiLs:
+    def test_ls_emits_toon_table_exit_0(self, monkeypatch):
+        monkeypatch.setattr(
+            axi_mod.core_list,
+            "list_instances",
+            _instances_ok(
+                [
+                    InstanceDTO(project_name="proj-a", status="running", ports=["8000", "8001"]),
+                    InstanceDTO(project_name="proj-b", status="exited", ports=[]),
+                ]
+            ),
+        )
+        result = runner.invoke(axi_mod.app, ["ls"])
+        assert result.exit_code == 0
+        # Focused verb: JUST the instances block, no bin/description/help wrapper.
+        assert result.stdout.startswith("instances[2]{projectName,status,ports}:")
+        assert "proj-a,running,8000 8001" in result.stdout
+        assert "proj-b,exited,N/A" in result.stdout
+        assert "bin:" not in result.stdout
+
+    def test_ls_definitive_empty_state(self, monkeypatch):
+        monkeypatch.setattr(axi_mod.core_list, "list_instances", _instances_ok([]))
+        result = runner.invoke(axi_mod.app, ["ls"])
+        assert result.exit_code == 0
+        assert result.stdout.strip() == "instances: 0 Frappe instances found"
+
+    def test_ls_never_emits_json(self, monkeypatch):
+        # axi is TOON-only; there is no --json/-j flag on the verb.
+        monkeypatch.setattr(axi_mod.core_list, "list_instances", _instances_ok([]))
+        assert runner.invoke(axi_mod.app, ["ls", "--json"]).exit_code == 2
+        assert runner.invoke(axi_mod.app, ["ls", "-j"]).exit_code == 2
+
+    def test_ls_docker_error_exit_1(self, monkeypatch):
+        def _raise(**k):
+            raise CwcliError(ErrorKind.DOCKER, "docker.unreachable", "Could not connect to Docker.")
+
+        monkeypatch.setattr(axi_mod.core_list, "list_instances", _raise)
+        result = runner.invoke(axi_mod.app, ["ls"])
+        assert result.exit_code == 1
+        assert result.stdout.startswith("error: Could not connect to Docker.")
+
+
+# ----------------------------------------------------------------------------- axi where
+
+
+class TestAxiWhere:
+    def test_where_emits_toon_matches_exit_0(self, monkeypatch):
+        matches = [
+            WhereMatch(
+                type="app",
+                project="proj-a",
+                bench="/w/b",
+                name="erpnext",
+                version="15.0.0",
+                branch="version-15",
+                site="s.localhost",
+                installed=True,
+            ),
+            WhereMatch(type="site", project="proj-a", bench="/w/b", name="s.localhost"),
+        ]
+        monkeypatch.setattr(
+            axi_mod.core_where,
+            "where",
+            lambda *a, **k: Result(status=Status.OK, data=WhereResult(matches=matches)),
+        )
+        result = runner.invoke(axi_mod.app, ["where", "erp"])
+        assert result.exit_code == 0
+        assert result.stdout.startswith(
+            "matches[2]{type,project,bench,name,version,branch,site,installed}:"
+        )
+        assert "app,proj-a,/w/b,erpnext,15.0.0,version-15,s.localhost,true" in result.stdout
+        assert "site,proj-a,/w/b,s.localhost,null,null,null,false" in result.stdout
+
+    def test_where_definitive_empty_state(self, monkeypatch):
+        monkeypatch.setattr(
+            axi_mod.core_where,
+            "where",
+            lambda *a, **k: Result(status=Status.OK, data=WhereResult(matches=[])),
+        )
+        result = runner.invoke(axi_mod.app, ["where", "zzz"])
+        assert result.exit_code == 0
+        # An empty typed collection is still a definitive TOON empty state.
+        assert result.stdout.strip() == "matches[0]:"
+
+    def test_where_usage_error_exit_2(self, monkeypatch):
+        def _raise(*a, **k):
+            raise CwcliError(
+                ErrorKind.USAGE,
+                "where.apps_sites_conflict",
+                "Cannot use --apps and --sites together.",
+            )
+
+        monkeypatch.setattr(axi_mod.core_where, "where", _raise)
+        result = runner.invoke(axi_mod.app, ["where", "x", "--apps", "--sites"])
+        assert result.exit_code == 2
+        assert "error: Cannot use --apps and --sites together." in result.stdout
 
 
 # ---------------------------------------------------------------------------- toon encoder

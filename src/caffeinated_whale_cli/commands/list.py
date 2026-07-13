@@ -1,11 +1,12 @@
 import json
 
-import docker
 import typer
 from rich.console import Console
 from rich.table import Table
 
-from ..utils.docker_utils import handle_docker_errors
+from ..core import list as core_list
+from ..core.errors import CwcliError
+from ..utils.docker_utils import handle_docker_errors, stderr_console
 
 app = typer.Typer(
     name="list",
@@ -51,49 +52,8 @@ def _format_ports_as_ranges(ports: list[str]) -> str:
     return ", ".join(ranges)
 
 
-def _get_container_ports(container) -> set[str]:
-    ports = set()
-    if container.ports:
-        for _container_port, host_ports in container.ports.items():
-            if host_ports:
-                for host_port_info in host_ports:
-                    if host_port_info and "HostPort" in host_port_info:
-                        ports.add(host_port_info["HostPort"])
-    if not ports and container.attrs:
-        port_bindings = container.attrs.get("HostConfig", {}).get("PortBindings")
-        if port_bindings:
-            for _container_port, bindings in port_bindings.items():
-                if bindings:
-                    for binding in bindings:
-                        if "HostPort" in binding and binding["HostPort"]:
-                            ports.add(binding["HostPort"])
-    return ports
-
-
-@handle_docker_errors
-def _list_instances(service_name: str = "frappe") -> list[dict]:
-    client = docker.from_env()
-    containers = client.containers.list(
-        all=True, filters={"label": f"com.docker.compose.service={service_name}"}
-    )
-
-    projects = {}
-    for container in containers:
-        project_name = container.labels.get("com.docker.compose.project")
-        if not project_name:
-            continue
-        if project_name not in projects:
-            projects[project_name] = {"status": container.status, "ports": set()}
-        ports = _get_container_ports(container)
-        projects[project_name]["ports"].update(ports)
-
-    return [
-        {"projectName": name, "ports": sorted(list(data["ports"])), "status": data["status"]}
-        for name, data in projects.items()
-    ]
-
-
 @app.callback(invoke_without_command=True)
+@handle_docker_errors
 def default(
     ctx: typer.Context,
     verbose: bool = typer.Option(
@@ -124,30 +84,37 @@ def default(
         return
 
     # In quiet or json mode, we don't want the spinner.
-    if not quiet and not json_output:
-        with console.status(
-            "[bold green]Connecting to Docker and fetching instances...[/bold green]"
-        ):
-            instances = _list_instances()
-    else:
-        instances = _list_instances()
-
-    if not instances:
+    try:
         if not quiet and not json_output:
-            console.print("[yellow]No Frappe instances found.[/yellow]")
-        raise typer.Exit()
+            with console.status(
+                "[bold green]Connecting to Docker and fetching instances...[/bold green]"
+            ):
+                instances = core_list.list_instances().data
+        else:
+            instances = core_list.list_instances().data
+    except CwcliError as e:
+        # @handle_docker_errors pings first, so a daemon-down is caught above; this
+        # only guards the rare race where the daemon dies between ping and list.
+        stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
+        raise typer.Exit(code=1) from None
 
-    # --- UPDATED LOGIC FOR OUTPUT MODES ---
+    assert instances is not None  # Status.OK always carries the list (possibly empty)
+
+    # JSON first, so an empty instance set emits a definitive `[]` rather than nothing.
+    if json_output:
+        rows = [
+            {"projectName": i.project_name, "ports": i.ports, "status": i.status} for i in instances
+        ]
+        typer.echo(json.dumps(rows, indent=4))
+        raise typer.Exit()
 
     if quiet:
         for instance in instances:
-            typer.echo(instance["projectName"])
+            typer.echo(instance.project_name)
         raise typer.Exit()
 
-    if json_output:
-        # Dump the instances list to a formatted JSON string
-        json_string = json.dumps(instances, indent=4)
-        typer.echo(json_string)
+    if not instances:
+        console.print("[yellow]No Frappe instances found.[/yellow]")
         raise typer.Exit()
 
     table = Table(title="Caffeinated Whale Instances")
@@ -156,7 +123,7 @@ def default(
     table.add_column("Ports", style="green")
 
     for instance in instances:
-        status = instance["status"]
+        status = instance.status
         if "exited" in status or "dead" in status:
             status_style = f"[red]{status}[/red]"
         elif "running" in status or "healthy" in status:
@@ -165,10 +132,10 @@ def default(
             status_style = f"[yellow]{status}[/yellow]"
 
         if verbose:
-            ports_str = ", ".join(instance["ports"]) if instance["ports"] else "N/A"
+            ports_str = ", ".join(instance.ports) if instance.ports else "N/A"
         else:
-            ports_str = _format_ports_as_ranges(instance["ports"])
+            ports_str = _format_ports_as_ranges(instance.ports)
 
-        table.add_row(instance["projectName"], status_style, ports_str)
+        table.add_row(instance.project_name, status_style, ports_str)
 
     console.print(table)
