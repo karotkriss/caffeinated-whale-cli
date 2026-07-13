@@ -145,4 +145,4 @@ def axi_backup(
 
     assert result.data is not None  # OK/WARNING always carries a BackupOutcome
     typer.echo(toon.encode(asdict(result.data), warnings=result.warnings))
-    raise typer.Exit(0 if result.status is CoreStatus.OK else 1)
+    raise typer.Exit(0 if result.status in (CoreStatus.OK, CoreStatus.WARNING) else 1)

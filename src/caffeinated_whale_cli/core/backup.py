@@ -150,6 +150,7 @@ def backup(
                 f"Failed to create backup directory at {backup_dir}",
                 detail={"output": _decode(output)},
             )
+        warnings.append(Message("backup_dir.created", f"Creating backup directory at {backup_dir}"))
 
     # 10. Run the backup.
     cmd = f"bench --site {site} backup"

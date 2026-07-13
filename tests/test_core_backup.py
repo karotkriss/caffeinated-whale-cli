@@ -112,6 +112,17 @@ class TestSuccess:
         blob = dataclasses.asdict(result.data)
         assert set(blob) == {"site", "bench_path", "artifact_path", "included_files"}
 
+    def test_created_backup_dir_warns(self, wire):
+        wire(FakeContainer(backup_dir_exists=False, mkdir_ok=True))
+        result = core_backup.backup("proj", site="s.localhost")
+        assert result.status is Status.OK
+        assert any(w.code == "backup_dir.created" for w in result.warnings)
+
+    def test_existing_backup_dir_does_not_warn(self, wire):
+        wire(FakeContainer(backup_dir_exists=True))
+        result = core_backup.backup("proj", site="s.localhost")
+        assert not any(w.code == "backup_dir.created" for w in result.warnings)
+
 
 class TestChoices:
     def test_stopped_container_returns_confirm_start(self, wire):
