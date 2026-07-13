@@ -73,7 +73,9 @@ def _web_reachable(project: str) -> bool:
     Mirrors ``status``'s probe: curl exits 0 when it connects to a live server
     (any HTTP code), non-zero when the port is not being served yet.
     """
-    code, _ = harness.exec_in_frappe(project, "curl -s -o /dev/null http://localhost:8000")
+    code, _ = harness.exec_in_frappe(
+        project, "curl -s --max-time 5 -o /dev/null http://localhost:8000"
+    )
     return code == 0
 
 
