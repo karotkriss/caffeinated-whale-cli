@@ -317,6 +317,23 @@ def _axi_resolve_port_conflicts(project: str, yes: bool) -> None:
         for proj in conflicting:
             _stop_project(proj, verbose=False)
 
+        # Re-check ALL ports after stopping (mirrors _check_port_conflicts' post-
+        # stop recheck): a teardown race or a non-Frappe process could still hold
+        # them, and core.start's container.start() has no CwcliError of its own
+        # for a port already in use - so a residual conflict must be caught here,
+        # not left to surface as a raw docker.errors.APIError.
+        remaining_conflicting, remaining_non_frappe = detect_port_conflicts(project)
+        if remaining_conflicting or remaining_non_frappe:
+            emit_axi_error(
+                CwcliError(
+                    ErrorKind.CONFLICT,
+                    "port.conflict_after_stop",
+                    f"Ports needed by '{project}' are still in use after stopping "
+                    "conflicting Frappe projects.",
+                )
+            )
+            raise typer.Exit(exit_for(ErrorKind.CONFLICT))
+
 
 # ---------------------------------------------------------------------------- status
 

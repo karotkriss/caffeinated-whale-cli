@@ -154,8 +154,11 @@ def resolve_bench_path(
          - single-bench project: that bench's path,
          - multi-bench project: with ``on_ambiguous="error"`` (the data-op default)
            this errors and lists the benches so the user picks one with ``--bench``;
-           with ``on_ambiguous="first"`` (used by ``start``) it returns the first
-           bench and prints a note, so ``cwcli start`` keeps working,
+           with ``on_ambiguous="first"`` (used by the internal ``_start_project``
+           wrapper - ``restart``/auto-start/post-restore callers) it returns the
+           first bench and prints a note; with ``on_ambiguous="prompt"`` (used by
+           the interactive ``cwcli start``/``status`` commands) it prompts on a
+           TTY and refuses naming ``--bench`` on a non-TTY,
          - no cached benches at all: returns ``None`` so the caller can fall back to
            its own behavior (run inspect / use a hardcoded default).
 
