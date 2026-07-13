@@ -65,10 +65,15 @@ As of 0.37.0 (unreleased), `tests/` holds 30 `test_*.py` suites totaling 518 tes
 authoritative current list; see [../docs/testing/README.md](../docs/testing/README.md)
 for the per-area breakdown.
 
-`tests/e2e/` adds 3 more `test_*.py` suites in the real-Docker `e2e` tier
-(`test_init_e2e.py`, `test_backup_e2e.py`, `test_harness_safety.py`); run
-`ls tests/e2e/` for the current list. They are not part of the 518/30 count
-above since they need a Docker daemon and are excluded from a bare `pytest`.
+`tests/e2e/` adds more `test_*.py` suites in the real-Docker `e2e` tier
+(`test_init_e2e.py`, `test_backup_e2e.py`, `test_start_status_e2e.py`,
+`test_harness_safety.py`); run `ls tests/e2e/` for the current list. They are not
+part of the 518/30 count above since they need a Docker daemon and are excluded
+from a bare `pytest`. `test_start_status_e2e.py` is the lifecycle-command net
+(`start`/`status`/`logs`/`restart`, both modes) that pins the outcome-level
+invariants the start/status core migration must preserve; it is structure-agnostic
+(it asserts observable states, not `/tmp` log paths, `pkill` patterns, or the exact
+status tokens) so it survives that migration unchanged.
 
 ### `test_completion_utils.py`
 Tests for tab completion functionality.
@@ -117,7 +122,7 @@ Current overall coverage at 0.37.0, unreleased (518 tests across 30 test files, 
 - ⚠️ `utils/sendme_utils.py` (~9%, only incidental coverage)
 - ⚠️ `utils/vscode_utils.py` (~16%, only incidental coverage)
 - ⚠️ `utils/config_utils.py` (~41%; `cwcli_home()` is covered by `test_cwcli_home`, but `load_config`/`save_config`/the custom-path and auto-inspect-config setters remain untested)
-- ⚠️ Command modules at or near 0% dedicated coverage: `backup.py` (0%; its logic moved to `core/backup.py`, which is covered - see above), `run.py`, `status.py`, `unlock.py`
+- ⚠️ Command modules at or near 0% dedicated coverage: `backup.py` (0%; its logic moved to `core/backup.py`, which is covered - see above), `run.py`, `status.py` (0% dedicated unit suite, but now covered end to end by `tests/e2e/test_start_status_e2e.py`), `unlock.py`
 
 ## Writing New Tests
 
@@ -249,10 +254,11 @@ Status as of 0.34.0 (see [../docs/testing/README.md](../docs/testing/README.md) 
 1. **Project inspection** (`commands/inspect.py`) - covered by `test_inspect_partial_refresh`, `test_inspect_label_recovery` (~62%).
 2. **Database operations** (`utils/db_utils.py`) - covered by `test_db_security`, `test_config_validation` (~68%).
 3. **Real-Docker E2E for `init` and `backup`** - covered by `tests/e2e/test_init_e2e.py`, `tests/e2e/test_backup_e2e.py` (both interactive and non-interactive, on the v14/v15/v16 matrix).
+3a. **Real-Docker E2E for the lifecycle commands** (`start`, `status`, `logs`, `restart`) - covered by `tests/e2e/test_start_status_e2e.py` (both modes; structure-agnostic outcome invariants that survive the pending start/status core migration - see `openspec/changes/add-start-status-e2e-net`).
 4. **Logic core + `cwcli axi`** (`core/`, `commands/axi.py`) - covered by `test_core_envelope`, `test_core_resolvers`, `test_core_backup`, `test_axi` (envelope/resolvers/docker wrapper at 100%, `core/backup.py` ~95%, `commands/axi.py` ~97%).
 
 ### Partial
-5. **Port conflict detection** (`commands/start.py`) - `test_yes_flag` covers the non-interactive/`--yes` contract, but the port-scanning and interactive-resolution logic has no dedicated suite (~59%).
+5. **Port conflict detection** (`commands/start.py`) - `test_yes_flag` covers the non-interactive/`--yes` contract; the interactive port-conflict confirmation prompt is now driven end to end in `tests/e2e/test_start_status_e2e.py`, and the remaining port-scanning helpers still have no dedicated unit suite (~59%).
 
 ### Still needed
 6. **Docker utilities** (`utils/docker_utils.py`) - foundation for all commands; the `get_frappe_container` CLI wrapper is now covered by `test_core_resolvers`, but the rest of the module is still only incidentally covered (~51%).
@@ -260,7 +266,7 @@ Status as of 0.34.0 (see [../docs/testing/README.md](../docs/testing/README.md) 
 8. **VS Code integration** (`utils/vscode_utils.py`) - container attachment fallback (~16%).
 9. **Configuration management** (`utils/config_utils.py`) - distinct from `db_utils`'s config validation (~37%).
 10. **Real-Docker E2E for the remaining commands** (`rm`, `restore`, `update`/`apps`, `unlock`, `inspect`) and the P2P (`sendme`) loopback - tracked in `openspec/changes/rebuild-e2e-test-suite`.
-11. Other command modules at or near 0% dedicated unit coverage: `backup.py` (its logic moved to `core/backup.py`, which is covered), `list.py`, `run.py`, `status.py`, `unlock.py`, `where.py`.
+11. Other command modules at or near 0% dedicated unit coverage: `backup.py` (its logic moved to `core/backup.py`, which is covered), `run.py`, `status.py` (dedicated unit suite still ~0%, but now covered end to end by `tests/e2e/test_start_status_e2e.py`, see item 3a), `unlock.py`.
 
 ## Resources
 
