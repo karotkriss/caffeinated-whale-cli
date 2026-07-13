@@ -454,7 +454,10 @@ def start(
             continue
 
         if outcome is None:
-            had_failure = True
+            # Soft skip (frappe.not_found): the containers came up but there was no
+            # bench to start. The warning was already printed; this is NOT a failure
+            # (preserves the pre-migration behavior), so the command still exits 0.
+            console.print(f"Instance '{name}' started.")
             continue
 
         _render_start_outcome(name, outcome)
@@ -476,6 +479,13 @@ def _run_start(name: str, bench_selector: str | None, verbose: bool) -> StartOut
             ):
                 result = core_start.start(name, bench=bench_selector, bench_path=override)
         except CwcliError as e:
+            if e.code == "frappe.not_found":
+                # Soft skip (matches the internal _handle_start_project_error and the
+                # pre-migration behavior): the containers came up, but there is no
+                # frappe service / bench to start. Warn and return a soft-skip (None) -
+                # NOT a hard failure, so the whole command does not exit 1 over it.
+                stderr_console.print(f"[yellow]Warning: {e.message} Skipping bench start.[/yellow]")
+                return None
             _handle_start_error(e, name)
 
         if (

@@ -18,6 +18,7 @@ from caffeinated_whale_cli.commands import start as start_mod
 from caffeinated_whale_cli.commands import utils as cmd_utils
 from caffeinated_whale_cli.core import start as core_start
 from caffeinated_whale_cli.core.envelope import Result, Status
+from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from caffeinated_whale_cli.core.start import ProcessLaunch, StartOutcome
 from caffeinated_whale_cli.utils import docker_utils
 
@@ -387,3 +388,43 @@ class TestStartMultiProjectLoop:
         assert checks == ["a", "b"], "aborted at b; c never checked"
         # 'a' started successfully, 'b' aborted the run.
         assert processed == ["a"]
+
+
+class TestStartFrappeNotFoundSoftSkip:
+    """Interactive `cwcli start` on a project whose containers came up but has NO
+    `frappe` service SOFT-skips: it warns "Skipping bench start" and exits 0,
+    matching the internal `_start_project` handler and the pre-migration behavior -
+    NOT the hard-fail path. A rare degenerate state with no E2E fixture, so it is
+    pinned here (the captain's Option A decision on the migration review)."""
+
+    def _wire(self, monkeypatch):
+        class _Stdin:
+            def isatty(self):
+                return True
+
+        monkeypatch.setattr(start_mod.sys, "stdin", _Stdin())
+        monkeypatch.setattr(start_mod, "_frappe_running", lambda name: False)
+        monkeypatch.setattr(start_mod, "_check_port_conflicts", lambda *a, **k: True)
+
+    def test_frappe_not_found_is_soft_skip_not_failure(self, monkeypatch, capsys):
+        self._wire(monkeypatch)
+
+        def _raise(*a, **k):
+            raise CwcliError(
+                ErrorKind.NOT_FOUND,
+                "frappe.not_found",
+                "No 'frappe' service found for project 'proj'.",
+            )
+
+        monkeypatch.setattr(start_mod.core_start, "start", _raise)
+
+        # No had_failure -> start() returns normally (exit 0); it must NOT raise
+        # typer.Exit(1) the way the hard-fail path would.
+        start_mod.start(verbose=False, bench=None, yes=False, project_name=["proj"])
+
+        out = capsys.readouterr()
+        combined = out.out + out.err
+        assert "Instance 'proj' started." in out.out
+        assert "Skipping bench start" in combined
+        # NOT the hard-fail ("could not start") path.
+        assert "could not start" not in combined
