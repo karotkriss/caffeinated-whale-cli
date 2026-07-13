@@ -29,4 +29,7 @@ blobs.db
 # Agent-local config and OpenSpec's `openspec init --tools claude` scaffolding.
 # The committed OpenSpec change lives under openspec/; the .claude/ tooling is
 # per-developer and must never ship in the CLI package.
-.claude/
+# Exception: .claude/skills/ holds committed project-level deep-dive skills that
+# AGENTS.md points to, so those DO ship in the repo (but not the CLI package).
+.claude/*
+!.claude/skills/

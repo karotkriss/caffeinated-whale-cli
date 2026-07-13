@@ -816,7 +816,7 @@ This is the "peer-to-peer restore" capability once sketched here as `cwcli backu
 
 `cwcli rm` is not a backup command, but it backs up every site in every bench (looping over all benches on a multi-bench project) before deleting a project's volumes: a failed or unverifiable `bench backup` for any bench aborts the removal before any container is touched.
 This gate only applies when volumes will be deleted (the default `--volumes`); under `--no-volumes` no volume data is destroyed, so a failed backup does not block container removal, directory cleanup, or cache clearing.
-See the "Data-safety gates" section of the project's `AGENTS.md`/`CLAUDE.md` for the exact contract.
+See the "Data-safety gates" section of the `cwcli-lifecycle` skill (`.claude/skills/cwcli-lifecycle/references/rm.md`) for the exact contract.
 `--no-backup` opts out of the gate entirely.
 
 ### Implementation Considerations
