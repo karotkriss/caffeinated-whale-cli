@@ -12,8 +12,9 @@ footprint - see ``utils/config_utils.cwcli_home``). Two independent safety
 layers guard the operator's real state:
 
 - a hard rail (``enforce_isolation``) that fails closed before any Docker work if
-  ``HOME`` still resolves to the real home or ``CWCLI_HOME`` is unset, and a name
-  rail that refuses any project name lacking the ``cwe2e-`` prefix;
+  ``HOME`` is (or nests under) the real home, or if ``CWCLI_HOME`` is unset or does
+  not resolve to a location inside that isolated ``HOME``, and a name rail that
+  refuses any project name lacking the ``cwe2e-`` prefix;
 - an unconditional teardown backstop (``sweep_cwe2e``) that removes every
   ``cwe2e-``-labelled compose project's containers, volumes, and networks even
   when a test crashes before its ``cwcli rm`` teardown fires.
@@ -83,23 +84,50 @@ CWCLI = shutil.which("cwcli") or "cwcli"
 # --------------------------------------------------------------------------- #
 # Safety rails (fail-closed before any Docker work)
 # --------------------------------------------------------------------------- #
+def _at_or_under(path: str, ancestor: str) -> bool:
+    """True if ``path`` equals or is nested inside ``ancestor`` (both absolute).
+
+    Fail-safe: if the two paths share no common root (``commonpath`` raises), they
+    are not nested, so this returns False.
+    """
+    try:
+        return os.path.commonpath([path, ancestor]) == ancestor
+    except ValueError:
+        return False
+
+
 def enforce_isolation() -> None:
     """Refuse to run if we are not genuinely isolated. Fail closed, non-zero.
 
     The one unacceptable failure is touching the operator's real cwcli state, so
-    this is checked before any Docker/instance work.
+    both HOME and CWCLI_HOME are validated before any Docker/instance work:
+
+    - ``HOME`` must not be the operator's real home (nor nested under it).
+    - ``CWCLI_HOME`` - where cwcli writes ALL of its on-disk state - must resolve
+      to a location INSIDE that isolated ``HOME``. Requiring containment (not just
+      "is set") closes the hole where a ``CWCLI_HOME`` pointing at/under the real
+      home would pass while cwcli wrote real state.
     """
     raw_home = os.environ.get("HOME", "")
     if not raw_home:
         raise RuntimeError("E2E isolation rail: HOME is unset/empty; refusing to run any E2E.")
     home = os.path.realpath(raw_home)
-    if home == _REAL_HOME:
+    if _at_or_under(home, _REAL_HOME):
         raise RuntimeError(
-            f"E2E isolation rail: HOME ({home!r}) resolves to the operator's real "
+            f"E2E isolation rail: HOME ({home!r}) is at or under the operator's real "
             f"home ({_REAL_HOME!r}); refusing to run any E2E."
         )
-    if not os.environ.get("CWCLI_HOME"):
+    raw_cwcli_home = os.environ.get("CWCLI_HOME", "")
+    if not raw_cwcli_home:
         raise RuntimeError("E2E isolation rail: CWCLI_HOME is not set; refusing to run any E2E.")
+    cwcli_home = os.path.realpath(raw_cwcli_home)
+    if not _at_or_under(cwcli_home, home):
+        raise RuntimeError(
+            f"E2E isolation rail: CWCLI_HOME ({cwcli_home!r}) is not inside the isolated "
+            f"session HOME ({home!r}); cwcli writes all of its state there, so a "
+            f"CWCLI_HOME outside the isolated root (e.g. at/under the operator's real "
+            f"home) could touch real instances. Refusing to run any E2E."
+        )
 
 
 def assert_prefixed(name: str) -> None:

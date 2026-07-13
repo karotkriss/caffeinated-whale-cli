@@ -50,6 +50,30 @@ def test_home_rail_refuses_unset_home(isolated_home):
     harness.enforce_isolation()
 
 
+def test_cwcli_home_rail_refuses_outside_isolated_root(isolated_home):
+    """A CWCLI_HOME pointing at/under the operator's real home must be refused even
+    when HOME itself is isolated - otherwise cwcli would write real state through a
+    rail that only checked HOME. CWCLI_HOME must resolve INSIDE the isolated HOME."""
+    saved = os.environ["CWCLI_HOME"]
+    try:
+        # CWCLI_HOME == the real home (HOME stays isolated) -> refused
+        os.environ["CWCLI_HOME"] = harness._REAL_HOME
+        with pytest.raises(RuntimeError):
+            harness.enforce_isolation()
+        # a subdirectory of the real home is refused too
+        os.environ["CWCLI_HOME"] = os.path.join(harness._REAL_HOME, ".cwcli")
+        with pytest.raises(RuntimeError):
+            harness.enforce_isolation()
+        # any absolute path outside the isolated HOME is refused
+        os.environ["CWCLI_HOME"] = "/tmp/cwe2e-not-under-isolated-home"
+        with pytest.raises(RuntimeError):
+            harness.enforce_isolation()
+    finally:
+        os.environ["CWCLI_HOME"] = saved
+    # sanity: with the isolated CWCLI_HOME (inside HOME) restored, the rail passes
+    harness.enforce_isolation()
+
+
 def test_port_allocator_spacing():
     alloc = harness.PortAllocator()
     p0, p1, p2 = alloc.next(), alloc.next(), alloc.next()

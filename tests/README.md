@@ -52,7 +52,7 @@ It drives the real `cwcli` binary (subprocess for non-interactive, `pexpect` for
 Isolation and safety are non-negotiable and layered:
 
 - Each session gets a temporary `HOME` **and** a `CWCLI_HOME` override (the precise seam that relocates only cwcli's own footprint), plus unique `cwe2e-<runid>-<n>` project/site names and a port allocator (bases ≥1006 apart).
-- A **hard rail** (`enforce_isolation`) fails closed before any Docker work if `HOME` still resolves to the operator's real home or `CWCLI_HOME` is unset, and a name rail refuses any project name lacking the `cwe2e-` prefix.
+- A **hard rail** (`enforce_isolation`) fails closed before any Docker work if `HOME` is (or nests under) the operator's real home, or if `CWCLI_HOME` is unset or does not resolve to a location inside that isolated `HOME` (so a `CWCLI_HOME` pointing at the real home can never slip through), and a name rail refuses any project name lacking the `cwe2e-` prefix.
 - An **unconditional teardown backstop** (`sweep_cwe2e`) removes every `cwe2e-`-labelled compose project's containers, volumes, and networks on session teardown, so a crashed test never leaks.
 
 `CWE2E_FRAPPE_MAJOR` selects the Frappe version leg (default 16); version-agnostic E2E tests run only on the v16 leg, version-sensitive ones on every leg.
