@@ -112,6 +112,12 @@ def backup(
     # --- Core call inside the spinner. Everything is pre-resolved, so core.backup
     # runs straight through; the loop only re-invokes on the (rare) confirm_start
     # race, and that prompt runs after the spinner block exits. ---
+    if verbose:
+        cmd = f"bench --site {site} backup"
+        if with_files:
+            cmd += " --with-files"
+        stderr_console.print(f"[dim]$ {cmd}[/dim]")
+
     show_tips = config_utils.get_show_tips()
     console.print()
     while True:
@@ -142,6 +148,10 @@ def backup(
     # lives in core.backup, which returns a DTO, not raw output); the failure path still
     # surfaces bench output via CwcliError.detail. Re-add a capture channel only if the
     # success chatter is actually wanted.
+    if verbose:
+        for warning in result.warnings:
+            if warning.code == "backup_dir.created":
+                stderr_console.print(f"[dim]{warning.text}[/dim]")
     console.print()
     console.print(
         f"[bold green]✓[/bold green] Successfully created backup for site '{outcome.site}'"
