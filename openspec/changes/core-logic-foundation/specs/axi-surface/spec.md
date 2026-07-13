@@ -25,6 +25,11 @@ Structured output (data AND errors) SHALL go to stdout; progress and diagnostics
 - **WHEN** `cwcli axi backup <project> --site <site>` succeeds
 - **THEN** stdout carries a TOON document describing the `BackupOutcome`, stderr carries any progress, and the process exits 0
 
+#### Scenario: A WARNING outcome still exits 0
+
+- **WHEN** a core function returns `Result(status=WARNING, data=<outcome>, warnings=[...])` (a completed operation with a non-fatal note, e.g. a partial fan-out or a no-op)
+- **THEN** the axi verb renders the outcome plus the warning(s) as usual, and the process still exits 0 - `WARNING` is a success status, not an error
+
 #### Scenario: No progress text on stdout
 
 - **WHEN** any `cwcli axi` verb runs
