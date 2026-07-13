@@ -101,7 +101,6 @@ def start(
             "frappe.not_found",
             f"No 'frappe' service found for project '{project_name}'.",
         )
-    frappe_container.reload()
 
     # 3. Resolve which bench to run (--bench/--path, else single, else default).
     resolved = resolvers.resolve_bench(project_name, bench, bench_path)

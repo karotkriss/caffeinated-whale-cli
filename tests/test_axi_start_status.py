@@ -116,7 +116,14 @@ class TestAxiStart:
 
     def test_yes_auto_resolves_frappe_conflict_then_starts(self, monkeypatch):
         monkeypatch.setattr(start_mod, "_frappe_running", lambda name: False)
-        monkeypatch.setattr(start_mod, "detect_port_conflicts", lambda name: (["other-proj"], []))
+        calls = {"n": 0}
+
+        def _detect(name):
+            calls["n"] += 1
+            # First call finds the conflict; the post-stop recheck finds it clear.
+            return (["other-proj"], []) if calls["n"] == 1 else ([], [])
+
+        monkeypatch.setattr(start_mod, "detect_port_conflicts", _detect)
         stopped = []
         monkeypatch.setattr(
             stop_mod, "_stop_project", lambda proj, verbose=False: stopped.append(proj)
@@ -130,6 +137,21 @@ class TestAxiStart:
         assert result.exit_code == 0
         assert stopped == ["other-proj"]
         assert "already_running: false" in result.stdout
+
+    def test_residual_conflict_after_stop_is_reported_exit_1(self, monkeypatch):
+        # The recheck still finds a conflict after stopping (teardown race or a
+        # non-Frappe process grabbed the port) - must not fall through to core.start.
+        monkeypatch.setattr(start_mod, "_frappe_running", lambda name: False)
+        monkeypatch.setattr(start_mod, "detect_port_conflicts", lambda name: (["other-proj"], []))
+        monkeypatch.setattr(stop_mod, "_stop_project", lambda proj, verbose=False: None)
+        monkeypatch.setattr(
+            axi_mod.core_start,
+            "start",
+            lambda *a, **k: pytest.fail("core.start reached on residual conflict"),
+        )
+        result = runner.invoke(axi_mod.app, ["start", "proj", "--yes"])
+        assert result.exit_code == 1
+        assert "still in use" in result.stdout
 
     def test_non_frappe_conflict_is_unresolvable_exit_1(self, monkeypatch):
         monkeypatch.setattr(start_mod, "_frappe_running", lambda name: False)
