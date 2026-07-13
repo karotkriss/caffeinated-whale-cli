@@ -32,7 +32,7 @@ Each decision below was a real fork in the recon audit (§5 D1-D6, §7). The cap
 
 ### D2. Isolation: temp HOME + explicit `CWCLI_HOME` + hard rails + label backstop (recon D2)
 **Chosen:** per-session temp `HOME` **and** a new first-class `CWCLI_HOME` source override, plus unique `cwe2e-<runid>-<n>` names, a port allocator, and two independent safety layers.
-- **Hard rail (fail-closed before any Docker work):** refuse to run if `HOME` resolves to the real home directory, or if any project name lacks the `cwe2e-` prefix.
+- **Hard rail (fail-closed before any Docker work):** refuse to run if `HOME` is (or nests under) the real home directory, if `CWCLI_HOME` is unset or does not resolve to a location inside that isolated `HOME` (validating only that it is *set* is insufficient - a `CWCLI_HOME` at/under the real home would otherwise pass while cwcli wrote real state), or if any project name lacks the `cwe2e-` prefix.
 - **Teardown backstop (unconditional):** an `always()`/session-teardown sweep of every `com.docker.compose.project` matching `cwe2e-` (`compose down -v` + `docker volume prune` by label + drop the temp `HOME`), so a crashed test cannot leak.
 
 **Why `CWCLI_HOME` and not just temp `HOME`:** repointing the whole process `HOME` is a blunt instrument - it is the isolation seam only as a side effect of an env var that many host-side tools also read. An explicit `CWCLI_HOME` redirects exactly cwcli's own footprint and nothing else, which is both cleaner for the harness and a genuinely useful user feature (redirect cwcli's state without disturbing git/ssh/etc.). The harness sets both (temp `HOME` as the belt, `CWCLI_HOME` as the precise control) and the rail checks both.

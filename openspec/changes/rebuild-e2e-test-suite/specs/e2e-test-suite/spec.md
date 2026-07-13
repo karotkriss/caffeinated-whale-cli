@@ -39,13 +39,18 @@ The harness SHALL wait on real readiness (health / a `bench` command responding)
 
 ### Requirement: Hard isolation safety rails and a leaked-resource backstop
 The E2E harness SHALL guarantee it can never touch the operator's real cwcli state or instances.
-Before any Docker work, a hard rail SHALL refuse to run (fail-closed, non-zero) if `HOME` resolves to the operator's real home directory, or if any E2E project name lacks the `cwe2e-` prefix.
-Isolation SHALL be provided by a per-session temporary `HOME` plus the `CWCLI_HOME` override, unique `cwe2e-<runid>-<n>` project and site names, and a port allocator that assigns non-overlapping bases at least 1006 apart (web `{port}..{port+5}`, socketio `{port+1000}..{port+1005}`).
+Before any Docker work, a hard rail SHALL refuse to run (fail-closed, non-zero) if `HOME` resolves to (or nests under) the operator's real home directory, if `CWCLI_HOME` is unset or does not resolve to a location inside that isolated `HOME`, or if any E2E project name lacks the `cwe2e-` prefix.
+Because `CWCLI_HOME` is where cwcli writes ALL of its on-disk state, validating only that it is *set* is insufficient: the rail SHALL additionally verify (via realpath) that `CWCLI_HOME` is contained within the isolated `HOME`, so a `CWCLI_HOME` pointing at or under the operator's real home can never pass while cwcli writes real state.
+Isolation SHALL be provided by a per-session temporary `HOME` plus the `CWCLI_HOME` override (with `CWCLI_HOME` nested inside that temporary `HOME`), unique `cwe2e-<runid>-<n>` project and site names, and a port allocator that assigns non-overlapping bases at least 1006 apart (web `{port}..{port+5}`, socketio `{port+1000}..{port+1005}`).
 An unconditional teardown backstop SHALL run regardless of test outcome and sweep every `com.docker.compose.project` matching the `cwe2e-` prefix (`docker compose down -v` + volume prune by label + drop the temporary `HOME`), so a crashed or aborted test never leaks containers, volumes, or a project directory.
 
 #### Scenario: Refuse to run against the real home
 - **WHEN** the E2E harness is started but `HOME` still resolves to the operator's real home directory
 - **THEN** the harness refuses to run any E2E, exits non-zero, and touches no Docker resource
+
+#### Scenario: Refuse a CWCLI_HOME outside the isolated root
+- **WHEN** the E2E harness is started with an isolated `HOME` but `CWCLI_HOME` resolves to a location at or under the operator's real home (or otherwise outside the isolated `HOME`)
+- **THEN** the harness refuses to run any E2E, exits non-zero, and touches no Docker resource or real cwcli state
 
 #### Scenario: Refuse a non-prefixed project name
 - **WHEN** an E2E attempts to create or operate on a project whose name lacks the `cwe2e-` prefix
