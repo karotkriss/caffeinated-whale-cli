@@ -1,13 +1,23 @@
-import shlex
+"""``cwcli status`` - a thin frontend over ``core.status``.
+
+The primary line on STDOUT is the pre-computed ``overall`` aggregate
+(``offline``/``online``/``running``/``degraded``) and NOTHING else, so it stays a
+clean machine-parseable token (the same contract the old three-token probe had,
+now enriched). The per-process health detail and every diagnostic go to STDERR,
+so a script reading ``cwcli status`` still gets one word while a human at a
+terminal still sees the full breakdown. Exit 0 across the lifecycle states.
+"""
 
 import typer
-from docker.errors import APIError, NotFound
-from rich.console import Console
 
+from ..core import status as core_status
+from ..core.envelope import Status
+from ..core.errors import CwcliError
+from ..core.status import StatusReport
 from ..utils.completion_utils import complete_project_names
-from ..utils.docker_utils import get_project_containers, handle_docker_errors
-
-stderr_console = Console(stderr=True)
+from ..utils.console import stderr_console
+from ..utils.docker_utils import handle_docker_errors
+from .utils import resolve_bench_path
 
 
 @handle_docker_errors
@@ -15,62 +25,89 @@ def status(
     project_name: str = typer.Argument(
         ..., help="The Docker Compose project name to check.", autocompletion=complete_project_names
     ),
+    bench: str = typer.Option(
+        None,
+        "--bench",
+        help="Which bench to report: its numeric index or label (multi-bench projects).",
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
         "-v",
-        help="Show the health-check command, raw curl output, and explain the reported status.",
+        help="Show the per-process health detail and the web HTTP probe on stderr.",
     ),
 ):
     """
     Check the health status of a Frappe project instance.
+
+    Prints one aggregate token on stdout - offline / online / running / degraded -
+    with the per-process breakdown (up/uptime/CPU/RSS) and the web HTTP code on
+    stderr. Exits 0 across all lifecycle states.
     """
-    containers = get_project_containers(project_name)
-    if not containers:
-        typer.echo("offline")
-        raise typer.Exit(code=0)
-
-    frappe_container = next(
-        (c for c in containers if c.labels.get("com.docker.compose.service") == "frappe"),
-        None,
-    )
-    if not frappe_container:
-        typer.echo("offline")
-        raise typer.Exit(code=0)
-
-    # Refresh status info
-    try:
-        frappe_container.reload()
-    except (APIError, NotFound) as e:
-        if verbose:
-            stderr_console.print(f"[dim]Failed to reload container: {e}[/dim]")
-        typer.echo("offline")
-        raise typer.Exit(code=0) from e
-
-    if frappe_container.status != "running":
-        typer.echo("offline")
-        raise typer.Exit(code=0)
-
-    # Execute curl inside container
-    cmd = shlex.split('curl -s -o /dev/null -w "%{http_code}" http://localhost:8000')
-    if verbose:
-        stderr_console.print(f"[dim]$ {' '.join(shlex.quote(arg) for arg in cmd)}[/dim]")
-    exit_code, output = frappe_container.exec_run(cmd)
-    if verbose:
-        stderr_console.print(f"[yellow]VERBOSE: Exit Code:[/yellow] [cyan]{exit_code}[/cyan]")
-        decoded = (output or b"").decode("utf-8", errors="replace").strip()
-        stderr_console.print(f"[yellow]VERBOSE: Output:[/yellow] [cyan]{decoded}[/cyan]")
-
-    # Decide and explain status: 'running' if HTTP probe succeeded, otherwise 'online'.
-    http_code = (output or b"").decode("utf-8").strip()
-    if exit_code == 0 and http_code and http_code != "000":
-        if verbose:
-            stderr_console.print("[bold green]VERBOSE: bench is started and running.[/bold green]")
-        typer.echo("running")
-    else:
-        if verbose:
-            stderr_console.print(
-                "[bold yellow]VERBOSE: Bench is not running but containers are online.[/bold yellow]"
+    override: str | None = None
+    while True:
+        try:
+            result = core_status.status(project_name, bench=bench, bench_path=override)
+        except CwcliError as e:
+            # Only an unreachable Docker daemon reaches here (absent/stopped is a
+            # returned ``offline``, not a raise); surface it distinctly from offline.
+            stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
+            raise typer.Exit(code=1) from None
+        if (
+            result.status is Status.NEEDS_CHOICE
+            and result.choice is not None
+            and result.choice.kind == "select_bench"
+        ):
+            override = resolve_bench_path(
+                project_name, None, None, verbose=verbose, on_ambiguous="prompt"
             )
-        typer.echo("online")
+            continue
+        break
+
+    report = result.data
+    assert report is not None  # OK/WARNING always carries a StatusReport
+    if verbose:
+        for warning in result.warnings:
+            stderr_console.print(f"[dim]{warning.text}[/dim]")
+    _render_detail(report, verbose)
+
+    # The one machine-readable token on stdout (nothing else).
+    typer.echo(report.overall)
     raise typer.Exit(code=0)
+
+
+_OVERALL_STYLE = {
+    "running": "bold green",
+    "online": "yellow",
+    "degraded": "bold red",
+    "offline": "dim",
+}
+
+
+def _render_detail(report: StatusReport, verbose: bool) -> None:
+    """Render the per-process health + web probe to stderr (never stdout)."""
+    style = _OVERALL_STYLE.get(report.overall, "white")
+    stderr_console.print(
+        f"[{style}]{report.project}: {report.overall}[/{style}]"
+        f" (supervisor {'up' if report.supervisor_up else 'down'})"
+    )
+    if report.web_http_code is not None:
+        stderr_console.print(f"[dim]web http: {report.web_http_code}[/dim]")
+    elif verbose and report.container_running:
+        stderr_console.print("[dim]web http: no response[/dim]")
+
+    for p in report.processes:
+        mark = "[green]up[/green]" if p.up else "[red]down[/red]"
+        detail = ""
+        if p.up:
+            bits = []
+            if p.pid is not None:
+                bits.append(f"pid={p.pid}")
+            if p.uptime_s is not None:
+                bits.append(f"uptime={p.uptime_s}s")
+            if p.cpu_pct is not None:
+                bits.append(f"cpu={p.cpu_pct}%")
+            if p.rss_kb is not None:
+                bits.append(f"rss={p.rss_kb}KB")
+            detail = "  " + " ".join(bits) if bits else ""
+        stderr_console.print(f"  {p.label:<16} {mark}{detail}")

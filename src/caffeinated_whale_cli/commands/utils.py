@@ -215,12 +215,52 @@ def resolve_bench_path(
         stderr_console.print(bench_labels.format_bench_list(benches))
         return first_path
 
+    if on_ambiguous == "prompt":
+        # start/status: prompt which bench on a TTY, refuse on a non-TTY. Mirrors
+        # the "support BOTH interactive and non-interactive" contract - a non-TTY
+        # without --bench must refuse (Exit 1), never silently pick one.
+        return _prompt_select_bench(project_name, benches)
+
     stderr_console.print(
         f"[bold red]Error:[/bold red] project '{project_name}' has multiple benches; "
         "specify one with --bench <index|label>:"
     )
     stderr_console.print(bench_labels.format_bench_list(benches))
     raise typer.Exit(code=1)
+
+
+def _prompt_select_bench(project_name: str, benches: list[dict]) -> str:
+    """Interactively pick a bench (TTY), or refuse naming ``--bench`` (non-TTY)."""
+    if not sys.stdin.isatty():
+        stderr_console.print(
+            f"[bold red]Error:[/bold red] project '{project_name}' has multiple benches; "
+            "specify one with --bench <index|label>:"
+        )
+        stderr_console.print(bench_labels.format_bench_list(benches))
+        raise typer.Exit(code=1)
+
+    choice_map: dict[str, str] = {}
+    choices: list[str] = []
+    for i, b in enumerate(benches):
+        label = b.get("label")
+        prefix = f"'{label}' " if label else ""
+        text = f"[{i}] {prefix}{b.get('path', '?')}"
+        choices.append(text)
+        choice_map[text] = str(b["path"])
+
+    try:
+        answer = questionary.select(
+            f"Project '{project_name}' has multiple benches; select one:",
+            choices=choices,
+        ).ask()
+    except (KeyboardInterrupt, EOFError):
+        stderr_console.print("\n[yellow]Operation cancelled.[/yellow]")
+        raise typer.Exit(code=1) from None
+
+    if answer is None:
+        stderr_console.print("[yellow]Operation cancelled.[/yellow]")
+        raise typer.Exit(code=1)
+    return choice_map[answer]
 
 
 def _cached_benches(project_name: str) -> list[dict]:

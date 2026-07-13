@@ -238,7 +238,9 @@ def _post_restore_migrate_and_restart(
     # Restart the SAME bench that was just migrated/restored (bench_path), never the
     # first sorted bench: pass it as an explicit override so a multi-bench restore
     # into a non-first bench does not kill/restart the wrong dev server.
-    log_file = _start_project(project_name, verbose=verbose, bench_path_override=bench_path)
+    log_file = _start_project(
+        project_name, verbose=verbose, bench_path_override=bench_path, restart=True
+    )
     if log_file:
         console.print(f"[bold green]✓[/bold green] Instance restarted (logs: {log_file})")
     else:
