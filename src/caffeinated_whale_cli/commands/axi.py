@@ -28,6 +28,8 @@ import typer
 
 from ..core import backup as core_backup
 from ..core import list as core_list
+from ..core import start as core_start
+from ..core import status as core_status
 from ..core import where as core_where
 from ..core.envelope import Choice
 from ..core.envelope import Status as CoreStatus
@@ -233,3 +235,109 @@ def axi_backup(
     assert result.data is not None  # OK/WARNING always carries a BackupOutcome
     emit_result(result.data, warnings=result.warnings)
     raise typer.Exit(0 if result.status in (CoreStatus.OK, CoreStatus.WARNING) else 1)
+
+
+# ----------------------------------------------------------------------------- start
+
+
+@app.command("start")
+def axi_start(
+    project: str = typer.Argument(..., help="The Docker Compose project name."),
+    bench: str = typer.Option(None, "--bench", help="Which bench: numeric index or label."),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Auto-resolve port conflicts by stopping conflicting Frappe projects.",
+    ),
+) -> None:
+    """Start a project's containers + bench; emit the outcome as TOON (never prompts).
+
+    An already-running bench is a clean no-op (``already_running: true``). Port
+    conflicts are surfaced as a ``CONFLICT`` error naming ``--yes`` (which
+    auto-resolves conflicting Frappe projects); a multi-bench project with no
+    ``--bench`` is a usage error naming ``--bench``.
+    """
+    _axi_resolve_port_conflicts(project, yes)
+
+    try:
+        result = core_start.start(project, bench=bench)
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    if result.status is CoreStatus.NEEDS_CHOICE:
+        assert result.choice is not None
+        emit_axi_choice_as_usage_error(result.choice)
+        raise typer.Exit(2)
+
+    assert result.data is not None  # OK/WARNING always carries a StartOutcome
+    emit_result(result.data, warnings=result.warnings)
+    raise typer.Exit(0 if result.status in (CoreStatus.OK, CoreStatus.WARNING) else 1)
+
+
+def _axi_resolve_port_conflicts(project: str, yes: bool) -> None:
+    """Never-prompt host-side port pre-step for ``axi start`` (D6).
+
+    Only meaningful when the container is not already up (a running instance owns
+    its ports). A non-Frappe holder cannot be auto-resolved -> ``CONFLICT``; a
+    Frappe holder is a ``CONFLICT`` naming ``--yes`` unless ``--yes`` was passed,
+    in which case the conflicting Frappe projects are stopped (stdout stays TOON).
+    """
+    from .start import _frappe_running, detect_port_conflicts
+
+    if _frappe_running(project):
+        return
+    conflicting, non_frappe = detect_port_conflicts(project)
+    if non_frappe:
+        emit_axi_error(
+            CwcliError(
+                ErrorKind.CONFLICT,
+                "port.conflict_external",
+                f"Ports {', '.join(str(p) for p in non_frappe)} are held by non-Frappe "
+                "processes; stop them before starting this project.",
+            )
+        )
+        raise typer.Exit(exit_for(ErrorKind.CONFLICT))
+    if conflicting:
+        if not yes:
+            emit_axi_error(
+                CwcliError(
+                    ErrorKind.CONFLICT,
+                    "port.conflict_frappe",
+                    f"Ports needed by '{project}' are in use by other Frappe "
+                    f"projects: {', '.join(conflicting)}.",
+                    hint="pass --yes to stop the conflicting Frappe project(s)",
+                )
+            )
+            raise typer.Exit(exit_for(ErrorKind.CONFLICT))
+        # --yes: stop the conflicting Frappe projects (running -> stdout-silent).
+        from .stop import _stop_project
+
+        for proj in conflicting:
+            _stop_project(proj, verbose=False)
+
+
+# ---------------------------------------------------------------------------- status
+
+
+@app.command("status")
+def axi_status(
+    project: str = typer.Argument(..., help="The Docker Compose project name."),
+    bench: str = typer.Option(None, "--bench", help="Which bench: numeric index or label."),
+) -> None:
+    """Report a project's per-process health; emit the report as TOON (``overall`` first)."""
+    try:
+        result = core_status.status(project, bench=bench)
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    if result.status is CoreStatus.NEEDS_CHOICE:
+        assert result.choice is not None
+        emit_axi_choice_as_usage_error(result.choice)
+        raise typer.Exit(2)
+
+    assert result.data is not None  # OK/WARNING always carries a StatusReport
+    emit_result(result.data, warnings=result.warnings)
+    raise typer.Exit(0)

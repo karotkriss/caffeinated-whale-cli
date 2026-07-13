@@ -125,6 +125,8 @@ class TestStartNotFound:
         monkeypatch.setattr(start_mod.sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr(start_mod, "_check_port_conflicts", lambda *a, **k: True)
         monkeypatch.setattr(start_mod, "get_project_containers", lambda name: [])
+        # core.start resolves the project through its OWN imported accessor.
+        monkeypatch.setattr(start_mod.core_start, "get_project_containers", lambda name: [])
 
         with pytest.raises(typer.Exit) as exc:
             start_mod.start(verbose=False, bench=None, yes=False, project_name=["no-such"])

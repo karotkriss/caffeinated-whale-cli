@@ -14,9 +14,11 @@ import pytest
 import typer
 
 from caffeinated_whale_cli.commands import config as config_mod
-from caffeinated_whale_cli.commands import inspect as inspect_mod
 from caffeinated_whale_cli.commands import start as start_mod
 from caffeinated_whale_cli.commands import utils as cmd_utils
+from caffeinated_whale_cli.core import start as core_start
+from caffeinated_whale_cli.core.envelope import Result, Status
+from caffeinated_whale_cli.core.start import ProcessLaunch, StartOutcome
 from caffeinated_whale_cli.utils import docker_utils
 
 
@@ -234,107 +236,73 @@ class TestLogsYes:
         assert recorded["project_name"] == "proj"
 
 
-# ------------------------------------------------ start's inspect-fallback exit
+# ------------------------------------------------ reseated _start_project wrapper
 
 
-class _RunningFrappe:
-    status = "running"
-    labels = {"com.docker.compose.service": "frappe"}
-    name = "proj-frappe-1"
+def _outcome(project="proj", bench_path="/workspace/frappe-bench", already_running=False):
+    return StartOutcome(
+        project=project,
+        container=f"{project}-frappe-1",
+        bench_path=bench_path,
+        supervisor="honcho",
+        log_path=f"{bench_path}/logs/bench-start.log",
+        already_running=already_running,
+        processes=[ProcessLaunch(label="web", pid=101 if already_running else None)],
+    )
 
-    def start(self):  # pragma: no cover - already running
-        pass
 
+class TestStartProjectWrapper:
+    """The reseated ``_start_project`` (restart / auto-start callers) delegates to
+    ``core.start`` and preserves the return contract those callers rely on."""
 
-class TestStartInspectExitPropagates:
-    """`_start_project`'s inspect fallback must re-raise ``typer.Exit`` (e.g. a
-    multi-bench ambiguity) instead of swallowing it in the broad ``except`` -
-    mirroring the guard already in ``open``/``update``."""
-
-    def _wire(self, monkeypatch):
-        # Neutralize the @handle_docker_errors preflight so the body runs.
+    def _neutralize(self, monkeypatch):
         monkeypatch.setattr(docker_utils.shutil, "which", lambda _n: "/usr/bin/docker")
         monkeypatch.setattr(
             docker_utils.docker, "from_env", lambda: type("C", (), {"ping": lambda s: True})()
         )
-        monkeypatch.setattr(start_mod, "get_project_containers", lambda name: [_RunningFrappe()])
-        # No cached bench -> the inspect fallback branch runs.
-        monkeypatch.setattr(cmd_utils, "resolve_bench_path", lambda *a, **k: None)
 
-    def test_inspect_exit_propagates(self, monkeypatch):
-        self._wire(monkeypatch)
-
-        def _boom(**kwargs):
-            raise typer.Exit(code=1)
-
-        monkeypatch.setattr(inspect_mod, "inspect", _boom)
-        with pytest.raises(typer.Exit) as exc:
-            start_mod._start_project("proj", verbose=False, status=None, bench_selector=None)
-        assert exc.value.exit_code == 1
-
-    def test_generic_inspect_error_is_still_swallowed(self, monkeypatch):
-        # Control: a NON-Exit failure from inspect stays swallowed (degrade to the
-        # "could not detect bench path" warning + return), so the guard is scoped.
-        self._wire(monkeypatch)
-
-        def _oops(**kwargs):
-            raise ValueError("inspect blew up")
-
-        monkeypatch.setattr(inspect_mod, "inspect", _oops)
-        # Must not raise; returns None after warning that bench start was skipped.
-        assert (
-            start_mod._start_project("proj", verbose=False, status=None, bench_selector=None)
-            is None
-        )
-
-
-class TestStartProjectBenchPathOverride:
-    """An explicit ``bench_path_override`` is used VERBATIM: ``_start_project`` must
-    NOT consult ``resolve_bench_path`` (which would guess the first bench on a
-    multi-bench project) - so the post-restore restart hits the SAME bench that was
-    just restored/migrated."""
-
-    def test_override_is_used_and_resolve_is_skipped(self, monkeypatch):
-        monkeypatch.setattr(docker_utils.shutil, "which", lambda _n: "/usr/bin/docker")
-        monkeypatch.setattr(
-            docker_utils.docker, "from_env", lambda: type("C", (), {"ping": lambda s: True})()
-        )
-        monkeypatch.setattr(start_mod, "get_project_containers", lambda name: [_RunningFrappe()])
+    def test_override_is_used_verbatim_and_resolve_is_skipped(self, monkeypatch):
+        # An explicit bench_path_override is passed to core.start VERBATIM and
+        # resolve_bench_path is NOT consulted (the post-restore restart must hit
+        # the SAME bench it just migrated, never the first sorted one).
+        self._neutralize(monkeypatch)
 
         def _fail_resolve(*a, **k):
             raise AssertionError("resolve_bench_path must not be called when an override is given")
 
-        monkeypatch.setattr(cmd_utils, "resolve_bench_path", _fail_resolve)
+        monkeypatch.setattr(start_mod, "resolve_bench_path", _fail_resolve)
+        captured = {}
 
-        captured = {"cmds": []}
+        def fake_core_start(name, *, bench=None, bench_path=None, auto_start=False, restart=False):
+            captured["bench_path"] = bench_path
+            return Result(status=Status.OK, data=_outcome(bench_path=bench_path))
 
-        def fake_run(cmd, **k):
-            captured["cmds"].append(cmd)
-            return type("R", (), {"returncode": 0})()
-
-        monkeypatch.setattr(start_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(start_mod.core_start, "start", fake_core_start)
 
         override = "/workspace/second-bench"
         log_file = start_mod._start_project(
             "proj", verbose=False, status=None, bench_path_override=override
         )
-        assert log_file == "/tmp/bench-proj.log"
-        # The `bench start` command cd's into the override path, verbatim (match the
-        # nohup launch, not the `pkill -f 'bench start'` cleanup that precedes it).
-        bench_cmds = [c for c in captured["cmds"] if any("nohup bench start" in str(t) for t in c)]
-        assert bench_cmds
-        assert any(f"cd {override} &&" in str(t) for t in bench_cmds[0])
+        assert captured["bench_path"] == override
+        assert log_file == "/workspace/second-bench/logs/bench-start.log"
+
+    def test_missing_project_exits_one(self, monkeypatch):
+        self._neutralize(monkeypatch)
+        monkeypatch.setattr(start_mod, "resolve_bench_path", lambda *a, **k: None)
+        monkeypatch.setattr(core_start, "get_project_containers", lambda name: [])
+        with pytest.raises(typer.Exit) as exc:
+            start_mod._start_project("ghost", verbose=False, status=None)
+        assert exc.value.exit_code == 1
 
 
 # ------------------------------------------------ start multi-project loop
 
 
 class TestStartMultiProjectLoop:
-    """A ``typer.Exit`` from ``_start_project`` must not abort sibling projects in
-    a ``cwcli start a b c`` run: a non-zero exit (e.g. a not-found project, a
-    multi-bench ambiguity, or a no-bench inspect failure) skips just that project
-    but makes the whole command exit 1 at the end (honest failures-collector),
-    while an exit code 0 (user cancel / Ctrl-C) aborts the whole run immediately."""
+    """A ``typer.Exit`` from starting one project must not abort its siblings in a
+    ``cwcli start a b c`` run: a non-zero exit (not-found, ambiguous multi-bench)
+    skips just that project but makes the whole command exit 1 at the end (honest
+    failures-collector), while an exit code 0 aborts the whole run immediately."""
 
     def _wire(self, monkeypatch):
         # Non-interactive stdin so the loop does not try to read piped names.
@@ -343,20 +311,21 @@ class TestStartMultiProjectLoop:
                 return True
 
         monkeypatch.setattr(start_mod.sys, "stdin", _Stdin())
-        # No port conflicts for any project.
+        # Containers not already running, and no port conflicts for any project.
+        monkeypatch.setattr(start_mod, "_frappe_running", lambda name: False)
         monkeypatch.setattr(start_mod, "_check_port_conflicts", lambda *a, **k: True)
 
     def test_failing_project_is_skipped_others_continue(self, monkeypatch, capsys):
         self._wire(monkeypatch)
         processed = []
 
-        def fake_start(name, verbose=False, status=None, bench_selector=None):
+        def fake_run(name, bench_selector, verbose):
             processed.append(name)
             if name == "b":
                 raise typer.Exit(code=1)
-            return None
+            return _outcome(project=name)
 
-        monkeypatch.setattr(start_mod, "_start_project", fake_start)
+        monkeypatch.setattr(start_mod, "_run_start", fake_run)
         # 'b' is skipped, but 'a' and 'c' are still processed - and because 'b'
         # failed, the whole command exits 1 at the end (not silently 0).
         with pytest.raises(typer.Exit) as exc:
@@ -374,13 +343,13 @@ class TestStartMultiProjectLoop:
         self._wire(monkeypatch)
         processed = []
 
-        def fake_start(name, verbose=False, status=None, bench_selector=None):
+        def fake_run(name, bench_selector, verbose):
             processed.append(name)
             if name == "b":
                 raise typer.Exit(code=0)
-            return None
+            return _outcome(project=name)
 
-        monkeypatch.setattr(start_mod, "_start_project", fake_start)
+        monkeypatch.setattr(start_mod, "_run_start", fake_run)
         with pytest.raises(typer.Exit) as exc:
             start_mod.start(verbose=False, bench=None, yes=False, project_name=["a", "b", "c"])
         assert exc.value.exit_code == 0
@@ -394,12 +363,13 @@ class TestStartMultiProjectLoop:
         self._wire(monkeypatch)
         processed = []
 
-        def fake_start(name, verbose=False, status=None, bench_selector=None):
+        def fake_run(name, bench_selector, verbose):
             processed.append(name)
             if name != "a":
-                raise AssertionError("_start_project should not be reached after b's abort")
+                raise AssertionError("_run_start should not be reached after b's abort")
+            return _outcome(project=name)
 
-        monkeypatch.setattr(start_mod, "_start_project", fake_start)
+        monkeypatch.setattr(start_mod, "_run_start", fake_run)
 
         checks = []
 

@@ -2,10 +2,12 @@ import subprocess
 
 import typer
 
+from ..core import supervision
+from ..core.resolvers import DEFAULT_BENCH_PATH
 from ..utils.completion_utils import complete_project_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import get_project_containers, handle_docker_errors
-from .utils import ensure_containers_running
+from .utils import ensure_containers_running, resolve_bench_path
 
 
 @handle_docker_errors
@@ -27,6 +29,11 @@ def logs(
         "-n",
         help="Number of lines to show from the end of the logs.",
     ),
+    bench: str = typer.Option(
+        None,
+        "--bench",
+        help="Which bench's logs to view: its numeric index or label (multi-bench projects).",
+    ),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Auto-start stopped containers without prompting."
     ),
@@ -38,7 +45,7 @@ def logs(
     ),
 ):
     """
-    View bench logs in real-time from the log file.
+    View bench logs in real-time from the captured bench-start log.
     """
     # Ensure containers are running, prompt user if not (auto-start with --yes)
     ensure_containers_running(project_name, require_running=True, verbose=verbose, auto_start=yes)
@@ -61,7 +68,14 @@ def logs(
         raise typer.Exit(code=1)
 
     container_name = frappe_container.name
-    log_file = f"/tmp/bench-{project_name}.log"
+    # Resolve which bench's captured log to tail, via the shared wrapper (single
+    # bench unchanged; multi-bench uses the --bench / select_bench contract). The
+    # path itself comes from the ONE source of truth in the supervision substrate
+    # (killing the old hardcoded /tmp/bench-<project>.log duplication).
+    bench_path = (
+        resolve_bench_path(project_name, bench, None, verbose=verbose) or DEFAULT_BENCH_PATH
+    )
+    log_file = supervision.bench_start_log_path(bench_path)
 
     if verbose:
         stderr_console.print(

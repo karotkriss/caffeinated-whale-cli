@@ -348,7 +348,10 @@ Found 2 matches.
 
 ### `start` - Start Containers
 
-Starts a project's containers with **automatic port conflict detection and resolution**.
+Starts a project's containers and runs `bench start` (under honcho), with
+**automatic port conflict detection and resolution**. It is **idempotent**:
+re-running against an already-running bench reports "already running" and does
+nothing - it never spawns a second `bench start` stack.
 
 ```bash
 cwcli start [OPTIONS] [PROJECT_NAME]...
@@ -364,17 +367,18 @@ cwcli start [OPTIONS] [PROJECT_NAME]...
 
 | Option | Description |
 |--------|-------------|
-| `--bench TEXT` | Which bench runs `bench start`: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)). Defaults to the first bench in a multi-bench project (a note lists the rest) |
+| `--bench TEXT` | Which bench runs `bench start`: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)). On a multi-bench project with no `--bench` it prompts interactively and refuses (non-zero) on a non-TTY |
 | `-y`, `--yes` | Auto-confirm stopping conflicting Frappe projects to free their ports (non-interactive) |
 | `-v`, `--verbose` | Enable verbose diagnostic output |
 
 **Features:**
 
+- **Idempotent:** a re-run on an already-running bench is a clean no-op ("already running: N/N processes up"), never a second honcho stack
 - **Port Conflict Detection:** Automatically checks if required ports are available
 - **Interactive Resolution:** Offers to stop conflicting Frappe projects (use `--yes` to auto-confirm)
 - **Process Identification:** Shows which processes are using ports (cross-platform)
 - **Smart Error Messages:** Provides actionable guidance for resolution
-- **Multi-Bench Aware:** On a multi-bench project, `bench start` runs in the first bench by default (a note lists the others); pick another with `--bench <index|label>`
+- **Multi-Bench Aware:** On a multi-bench project with no `--bench`, it prompts which bench interactively and refuses non-interactively; pick one explicitly with `--bench <index|label>`
 
 **Example:**
 
@@ -530,7 +534,9 @@ cwcli ls | cwcli rm
 
 ### `logs` - View Bench Logs
 
-View bench logs in real-time from the log file inside the container.
+View the captured `bench start` log in real-time. The log lives on the workspace
+volume at `<bench>/logs/bench-start.log` (so it survives a container restart) and
+is size-bounded, replacing the old ephemeral `/tmp/bench-<project>.log`.
 
 ```bash
 cwcli logs [OPTIONS] PROJECT_NAME
@@ -548,6 +554,7 @@ cwcli logs [OPTIONS] PROJECT_NAME
 |--------|-------------|
 | `-f`, `--follow` / `--no-follow` | Follow log output in real-time (default: follow) |
 | `-n`, `--lines INTEGER` | Number of lines to show from the end of the logs (default: 100) |
+| `--bench TEXT` | Which bench's log to view: its numeric index or label (multi-bench projects) |
 | `-y`, `--yes` | Auto-start stopped containers without prompting |
 | `-v`, `--verbose` | Enable verbose diagnostic output |
 
@@ -1287,7 +1294,8 @@ cwcli run frappe-one migrate --path /workspace/custom-bench
 
 ### `status` - Check Health Status
 
-Checks the health status of a Frappe project instance.
+Reports the health of a Frappe project instance: a single aggregate token on
+stdout, with the per-process breakdown on stderr.
 
 ```bash
 cwcli status [OPTIONS] PROJECT_NAME
@@ -1303,18 +1311,28 @@ cwcli status [OPTIONS] PROJECT_NAME
 
 | Option | Description |
 |--------|-------------|
-| `-v`, `--verbose` | Show the health-check command, raw curl output, and explain the reported status |
+| `--bench` | Which bench to report: its numeric index or label (multi-bench projects) |
+| `-v`, `--verbose` | Show the per-process detail and the web HTTP probe on stderr |
 
-**Status Values:**
+**Aggregate values** (printed on stdout, one token, always exit 0):
 
-- **`offline`** - Container is not running
-- **`online`** - Container is running but HTTP probe failed
-- **`running`** - Container is running and HTTP probe succeeded
+- **`offline`** - no containers / the frappe container is not running
+- **`online`** - the container is up, but the bench was never started (no supervisor)
+- **`running`** - the supervisor (honcho) is up and the web server answers on `:8000`
+- **`degraded`** - the bench was started but the supervisor is down (e.g. after a
+  container restart), or it is up but the web server is not answering
+
+**Per-process detail (stderr):** each Procfile process (`web`, `socketio`,
+`worker`, `schedule`, `watch`, `redis_cache`, `redis_queue`) with up/down plus
+its PID, uptime, CPU%, and RSS - read from one `ps` in the container. The stdout
+token stays a single word so it is safe to script against; the detail is on
+stderr for humans (and in structured form via `cwcli axi status`).
 
 **Example:**
 
 ```bash
-cwcli status frappe-one
+cwcli status frappe-one              # -> running
+cwcli status frappe-one -v           # token on stdout, per-process table on stderr
 ```
 
 ---
@@ -1541,7 +1559,7 @@ Error: project 'my-project' has multiple benches; specify one with --bench <inde
 
 Single-bench projects are unaffected: with only one bench, that bench is used automatically and `--bench` is optional.
 
-**`start` is the exception:** `cwcli start` keeps working on a multi-bench project by running `bench start` in the first bench (index `0`) and printing a note listing the others; use `--bench` to start a different one.
+`start` and `status` follow the same family rule: on a multi-bench project with no `--bench` they prompt which bench interactively and refuse (non-zero) on a non-TTY. `cwcli restart` (which has no `--bench`) restarts the first bench with a note.
 
 **`--path` escape hatch:** `-p`/`--path` still accepts an explicit bench directory for cases outside the cached set. It takes precedence over `--bench`, but the two cannot be combined (that is an error).
 
@@ -1599,9 +1617,17 @@ cwcli axi backup frappe-one --site development.localhost
 
 # Include files too
 cwcli axi backup frappe-one --with-files
+
+# Start a project's containers + bench; the outcome (including already_running)
+# prints as TOON. --bench selects a bench on a multi-bench project; --yes
+# auto-resolves a port conflict by stopping the conflicting Frappe project.
+cwcli axi start frappe-one --yes
+
+# Report per-process health as TOON, with the "overall" aggregate up front
+cwcli axi status frappe-one
 ```
 
-`cwcli axi ls`, `cwcli axi where`, and `cwcli axi backup` run on the same logic core as their human `cwcli ls`/`cwcli where`/`cwcli backup` counterparts; only the output (always TOON, never JSON) and choice-handling differ. JSON output stays on the human commands (`cwcli ls --json`, `cwcli where --json`).
+`cwcli axi ls`, `cwcli axi where`, `cwcli axi backup`, `cwcli axi start`, and `cwcli axi status` run on the same logic core as their human counterparts; only the output (always TOON, never JSON) and choice-handling differ. `cwcli axi start` never prompts: an ambiguous multi-bench project is a `--bench` usage error (exit 2), and an unresolved port conflict is a `CONFLICT` error naming `--yes` (exit 1). `cwcli axi status` always exits 0, leading with the `overall` aggregate (`offline`/`online`/`running`/`degraded`). JSON output stays on the human commands (`cwcli ls --json`, `cwcli where --json`).
 
 ### Verbose Mode for Debugging
 
