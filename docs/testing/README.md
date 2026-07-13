@@ -325,7 +325,7 @@ Status as of 0.37.0 (based on `ls tests/` and the coverage run above):
 9. **Port Utilities** (`utils/port_utils.py`) - cross-platform process detection (~9%).
 10. **VS Code Integration** (`utils/vscode_utils.py`) - container attachment fallback logic (~16%).
 11. **Configuration Management** (`utils/config_utils.py`) - distinct from `db_utils`'s config validation, which `test_config_validation` already covers; `cwcli_home()` is now covered by `test_cwcli_home`, but `load_config`/`save_config` and the custom-path/auto-inspect-config setters remain untested (~41%).
-12. Other command modules at or near 0% dedicated unit coverage: `backup.py` (its logic moved to `core/backup.py`, which is covered), `run.py`, `status.py`, `unlock.py`.
+12. Other command modules at or near 0% dedicated unit coverage: `backup.py` (its logic moved to `core/backup.py`, which is covered), `run.py`, `status.py` (dedicated unit suite still ~0%, but now covered end to end by `tests/e2e/test_start_status_e2e.py`, see item 5a), `unlock.py`.
 
 ## Common Issues
 
