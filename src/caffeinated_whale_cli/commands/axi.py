@@ -13,9 +13,12 @@ prompt.
 TOON - key:value ``error:``/``help:`` lines and proper ``name[N]:`` blocks, never
 bare hardcoded lines - so success, error, needs-choice, and empty-state output
 are uniformly TOON, and every later migrated verb inherits that. The spec pins
-the error format as ``error: <message>`` (plus ``help: <hint>``), so those two
-diagnostics stay raw key:value lines. Progress/diagnostics go to stderr; stdout
-carries only TOON.
+the error format as ``error: <message>`` (plus ``help: <hint>``); those two
+diagnostics go through ``toon.kv``, which renders a plain message unquoted
+(``error: <message>``, matching the spec) and only quotes it when it holds a
+TOON-special character (``:`` ``"`` ``'`` ``,``, edge whitespace, a bare number)
+- exactly what keeps a stray-colon message parseable. Progress/diagnostics go to
+stderr; stdout carries only TOON.
 """
 
 from __future__ import annotations
@@ -59,12 +62,13 @@ def emit_result(data, *, warnings=None) -> None:
 def emit_axi_error(error: CwcliError) -> None:
     """Render a typed error as TOON: an ``error:`` line plus an optional ``help:`` line.
 
-    The spec pins this format as ``error: <message>`` / ``help: <hint>``, so the
-    message/hint stay raw key:value lines rather than being scalar-requoted.
+    Both go through ``toon.kv`` so a plain message stays ``error: <message>`` (the
+    spec format) while a message carrying a TOON-special character is quoted, so
+    the line stays parseable rather than being mis-split by a strict TOON reader.
     """
-    typer.echo(f"error: {error.message}")
+    typer.echo(toon.kv("error", error.message))
     if error.hint:
-        typer.echo(f"help: {error.hint}")
+        typer.echo(toon.kv("help", error.hint))
 
 
 def _choice_error_message(choice: Choice) -> str:
@@ -81,13 +85,13 @@ def emit_axi_choice_as_usage_error(choice: Choice) -> None:
     The available benches are emitted as a proper ``options[N]:`` TOON block (not
     bare indented lines), so the whole document stays uniformly TOON-parseable.
     """
-    typer.echo(f"error: {_choice_error_message(choice)}")
+    typer.echo(toon.kv("error", _choice_error_message(choice)))
     if choice.kind == "select_bench":
         options = [f"[{o['value']}] {o['label']}" for o in choice.options or []]
         typer.echo(toon.block("options", options))
-        typer.echo("help: re-run with --bench <index|label>")
+        typer.echo(toon.kv("help", "re-run with --bench <index|label>"))
     elif choice.kind == "confirm_start":
-        typer.echo("help: start it first with 'cwcli start <project>'")
+        typer.echo(toon.kv("help", "start it first with 'cwcli start <project>'"))
 
 
 def _collapse_home(path: str) -> str:
