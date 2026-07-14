@@ -73,7 +73,7 @@ def _describe(item) -> str:
         doc = None
     if doc:
         return doc.strip().splitlines()[0].strip()
-    name = getattr(item, "originalname", None) or item.name
+    name: str = getattr(item, "originalname", None) or item.name
     stem = name[5:] if name.startswith("test_") else name
     return stem.replace("_", " ").strip()
 
