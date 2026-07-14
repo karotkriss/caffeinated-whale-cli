@@ -13,6 +13,7 @@ from caffeinated_whale_cli.commands import status as status_mod
 from caffeinated_whale_cli.core.envelope import Result, Status
 from caffeinated_whale_cli.core.status import StatusReport
 from caffeinated_whale_cli.core.supervision import ProcessHealth
+from caffeinated_whale_cli.utils import docker_utils
 
 
 def _report(overall, processes=None):
@@ -27,6 +28,12 @@ def _report(overall, processes=None):
 
 
 def _run(monkeypatch, capsys, report):
+    # Neutralize @handle_docker_errors' real docker CLI/daemon preflight (this
+    # unit tier runs without Docker; see test_yes_flag.py's `_neutralize`).
+    monkeypatch.setattr(docker_utils.shutil, "which", lambda _n: "/usr/bin/docker")
+    monkeypatch.setattr(
+        docker_utils.docker, "from_env", lambda: type("C", (), {"ping": lambda s: True})()
+    )
     monkeypatch.setattr(
         status_mod.core_status, "status", lambda *a, **k: Result(status=Status.OK, data=report)
     )
