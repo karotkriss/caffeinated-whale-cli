@@ -87,8 +87,17 @@ def status(
     *,
     bench: str | None = None,
     bench_path: str | None = None,
+    probe_web: bool = True,
 ) -> Result[StatusReport]:
-    """Report a project's bench health. See module docstring."""
+    """Report a project's bench health. See module docstring.
+
+    ``probe_web=False`` suppresses the in-container ``curl localhost:8000`` web
+    probe entirely (``web_http_code`` comes back ``None``) so a repeated caller -
+    the ``status --watch`` loop - leaves ZERO HTTP requests in the bench's access
+    logs. Per-process liveness still comes from the single ``ps`` read, so
+    ``overall`` stays honest: with no web signal it is driven by honcho-up alone
+    (honcho is all-or-nothing, so honcho-up already implies the stack is up).
+    """
     warnings: list[Message] = []
 
     containers = get_project_containers(project_name)
@@ -145,13 +154,14 @@ def status(
     marker = supervision.read_marker(frappe_container, resolved_path)
     snapshot = supervision.discover_stack(frappe_container, resolved_path)
     expected = supervision.expected_labels(frappe_container, resolved_path)
-    web_code = supervision.web_http_code(frappe_container)
+    web_code = supervision.web_http_code(frappe_container) if probe_web else None
 
     processes = _merge_health(expected, snapshot.processes)
     overall = _overall(
         started=marker is not None,
         supervisor_up=snapshot.supervisor_up,
         web_code=web_code,
+        web_probed=probe_web,
     )
 
     return Result(
@@ -185,11 +195,20 @@ def _merge_health(expected: list[str], discovered: list[ProcessHealth]) -> list[
     return out
 
 
-def _overall(*, started: bool, supervisor_up: bool, web_code: str | None) -> str:
-    """The pre-computed lifecycle aggregate (see module docstring's table)."""
+def _overall(
+    *, started: bool, supervisor_up: bool, web_code: str | None, web_probed: bool = True
+) -> str:
+    """The pre-computed lifecycle aggregate (see module docstring's table).
+
+    When ``web_probed`` is False (watch mode suppressed the web probe), honcho-up
+    alone decides ``running`` vs ``degraded`` - a missing web code must NOT falsely
+    degrade the aggregate, since honcho-up already implies the stack is up.
+    """
     if not started:
         return ONLINE
     if not supervisor_up:
         return DEGRADED
+    if not web_probed:
+        return RUNNING
     web_ok = web_code not in (None, "000")
     return RUNNING if web_ok else DEGRADED
