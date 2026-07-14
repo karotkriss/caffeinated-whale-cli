@@ -69,6 +69,43 @@ class TestOverall:
         assert report.web_http_code is None
 
 
+class TestProbeWeb:
+    """``probe_web=False`` (the ``--watch`` loop) must never hit the web server."""
+
+    def test_no_web_probe_when_suppressed(self, wire):
+        # THE load-bearing behavior: a watch tick reads process health from ``ps``
+        # but must NOT run the ``curl localhost:8000`` web probe (which is what
+        # spams the bench's access logs).
+        c = FakeContainer(marker=_MARKER, web_code="200")
+        wire(c, benches=[{"path": BENCH}])
+        report = core_status.status("proj", probe_web=False).data
+        assert report.web_http_code is None
+        assert not any(isinstance(cmd, list) and cmd[0] == "curl" for cmd in c.calls)
+
+    def test_running_without_web_probe_when_honcho_up(self, wire):
+        # With the web probe suppressed, honcho-up alone drives ``running`` - a
+        # missing web code must NOT falsely degrade the aggregate.
+        wire(FakeContainer(marker=_MARKER, web_code="200"), benches=[{"path": BENCH}])
+        report = core_status.status("proj", probe_web=False).data
+        assert report.overall == "running"
+        assert report.supervisor_up is True
+
+    def test_degraded_without_web_probe_when_supervisor_down(self, wire):
+        # Suppressing the web probe does NOT mask a genuinely dead supervisor.
+        c = FakeContainer(marker=_MARKER, ps="1 0 5 0.0 1000 /sbin/init\n", cwds={})
+        wire(c, benches=[{"path": BENCH}])
+        report = core_status.status("proj", probe_web=False).data
+        assert report.overall == "degraded"
+
+    def test_web_probe_runs_by_default(self, wire):
+        # The plain one-shot path keeps its web probe (probe_web defaults True).
+        c = FakeContainer(marker=_MARKER, web_code="200")
+        wire(c, benches=[{"path": BENCH}])
+        report = core_status.status("proj").data
+        assert report.web_http_code == "200"
+        assert any(isinstance(cmd, list) and cmd[0] == "curl" for cmd in c.calls)
+
+
 class TestOffline:
     def test_stopped_is_offline_and_does_not_raise(self, wire):
         # A real-but-stopped project (containers exist, frappe not running) stays

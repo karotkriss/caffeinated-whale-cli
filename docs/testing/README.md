@@ -43,7 +43,7 @@ uv run pytest tests/test_completion_utils.py
 
 ### Test Coverage
 
-Measured with `uv run pytest --cov` at 0.37.0 (unreleased): 632 tests across 41 test files, ~60% overall coverage.
+Measured with `uv run pytest --cov` at 0.37.0 (unreleased): 643 tests across 42 test files, ~60% overall coverage.
 Per-area breakdown (highest-coverage module in each area; see the module list in each test file for what else it exercises):
 
 - **rm safety** (`test_rm_safety`, `test_rm_truth`, `test_rm_stopped`) - `commands/rm.py` ~78%
@@ -69,7 +69,8 @@ Per-area breakdown (highest-coverage module in each area; see the module list in
 - **`ls`/`where` human frontends** (`test_list`, `test_where`) - `commands/list.py` ~80%, `commands/where.py` 100% (the `--json` empty-`[]` fix, quiet/table rendering, the `--apps`/`--sites` conflict)
 - **supervision substrate** (`test_core_supervision`) - `core/supervision.py` ~81% (discovery + label-mapping + bench-keying against faked `ps`/Procfile/exec I/O, the supervisor marker present/absent, the web probe, the launch command shape, the honcho-prefix per-process parse)
 - **core start/status slices** (`test_core_start`, `test_core_status`) - `core/start.py` ~98%, `core/status.py` ~91% (the launch outcome, the idempotent no-op, multi-bench `NEEDS_CHOICE`, an explicit `bench_path` used verbatim, every `overall` branch, the stopped-is-offline-not-raised contract vs the nonexistent-project `NOT_FOUND` raise, docker-unreachable errors)
-- **`status` human frontend** (`test_status_frontend`) - `commands/status.py` ~91% (the stdout-token-only contract the PR-1 E2E net pins, per-process detail on stderr, exit 0 for a stopped project vs non-zero for a nonexistent one)
+- **`status` human frontend** (`test_status_frontend`) - `commands/status.py` ~95% (the stdout-token-only contract the PR-1 E2E net pins, per-process detail on stderr, exit 0 for a stopped project vs non-zero for a nonexistent one)
+- **`status --watch` live view** (`test_status_watch`) - the load-bearing behavior that every watch tick re-polls with `probe_web=False` (zero `curl localhost:8000` calls), the non-TTY-either-stream single-quiet-snapshot degrade, the `--interval` 1s floor, and a clean `KeyboardInterrupt` exit (exit 0, nothing on stdout)
 - **`axi start`/`axi status` verbs** (`test_axi_start_status`) - TOON rendering, exit-code mapping, needs-choice/`CONFLICT` flag-naming, the never-prompt port-conflict pre-step (core stubbed)
 - **`self-update`** (`test_core_version`, `test_self_update`) - `core/version.py` ~92% (install-method detection tree, fail-open PyPI lookup, PEP 440 compare incl. the dev-ahead case, the ~1-day TTL cache), `commands/self_update.py` 100% (dev/uvx no-op, the default upgrade run, `--check`, `--no-cache`)
 
@@ -79,7 +80,7 @@ Per-area breakdown (highest-coverage module in each area; see the module list in
 
 ### Test Files
 
-Run `ls tests/` for the authoritative, current list; as of 0.37.0 (unreleased) it holds 41 `test_*.py` suites plus `bench_fakes.py` and `bench_fakes_mb.py` (shared fakes) and `README.md`.
+Run `ls tests/` for the authoritative, current list; as of 0.37.0 (unreleased) it holds 42 `test_*.py` suites plus `bench_fakes.py` and `bench_fakes_mb.py` (shared fakes) and `README.md`.
 
 ## Testing Framework
 
@@ -325,7 +326,7 @@ Status as of 0.37.0 (based on `ls tests/` and the coverage run above):
 5. **Real-Docker E2E for `init` and `backup`** (`tests/e2e/test_init_e2e.py`, `tests/e2e/test_backup_e2e.py`) - genuine `bench init`/`bench backup` against throwaway Frappe instances on the v14/v15/v16 matrix, both interactive and non-interactive. The remaining commands (`rm`, `restore`, `update`/`apps`, `unlock`, `inspect`) and the P2P loopback are deferred to follow-up PRs (`openspec/changes/rebuild-e2e-test-suite`).
 5a. **Real-Docker E2E for the lifecycle commands `start`/`status`/`logs`/`restart`** (`tests/e2e/test_start_status_e2e.py`, both modes, v14/v15/v16 matrix) - a structure-agnostic outcome net (a started instance genuinely serves, `status` discriminates the real lifecycle states, `logs` shows the bench stream, `restart` recovers the instance, honest exit codes) that pinned the invariants the start/status core migration had to preserve and abstained from the mechanics it replaced, so it survived that migration unchanged (`openspec/changes/add-start-status-e2e-net`). `tests/e2e/test_start_status_new_behavior_e2e.py` is that migration's own net for the behavior it ADDED (genuine idempotency, `degraded`, real per-process health, the relocated bounded log, the multi-bench refuse) - see item 6a and `openspec/changes/migrate-start-status-core`.
 6. **Logic core + `cwcli axi`** (`core/`, `commands/axi.py`) - covered by `test_core_envelope`, `test_core_resolvers`, `test_core_backup`, `test_axi` (envelope/resolvers/docker wrapper at 100%, `core/backup.py` ~95%, `commands/axi.py` ~97%). The read-only `ls`/`list` and `where` slices followed the same pattern onto `core/list.py`/`core/where.py` (both 100%) and thin frontends `commands/list.py` (~80%)/`commands/where.py` (100%), covered by `test_core_list`, `test_core_where`, `test_list`, `test_where`, plus `axi ls`/`axi where` in `test_axi`.
-6a. **`start`+`status` onto the logic core** (`core/start.py` ~98%, `core/status.py` ~91%, sharing `core/supervision.py` ~81%) - covered by `test_core_start`, `test_core_status`, `test_core_supervision` (every branch against faked `ps`/Procfile/exec I/O: idempotent no-op, multi-bench `NEEDS_CHOICE`, every `overall` state, the supervisor marker, the honcho discovery/bench-keying). The reseated `commands/status.py` (~91%) is covered by `test_status_frontend` (the stdout-token-only contract), and the new `cwcli axi start`/`axi status` verbs by `test_axi_start_status`.
+6a. **`start`+`status` onto the logic core** (`core/start.py` ~98%, `core/status.py` ~91%, sharing `core/supervision.py` ~81%) - covered by `test_core_start`, `test_core_status`, `test_core_supervision` (every branch against faked `ps`/Procfile/exec I/O: idempotent no-op, multi-bench `NEEDS_CHOICE`, every `overall` state including the `probe_web=False`/`web_probed` branch the `--watch` loop uses, the supervisor marker, the honcho discovery/bench-keying). The reseated `commands/status.py` (~95%) is covered by `test_status_frontend` (the stdout-token-only contract) and its `--watch` live view by `test_status_watch` (zero web-probe calls, non-TTY degrade, `--interval` floor, clean `KeyboardInterrupt` exit), and the `cwcli axi start`/`axi status` verbs by `test_axi_start_status`.
 6b. **`self-update`** (`commands/self_update.py` 100%, `core/version.py` ~92%) - covered by `test_self_update` (dev/uvx no-op, the default upgrade run incl. failure/`FileNotFoundError`, `--check`, `--no-cache`) and `test_core_version` (install-method detection tree, fail-open PyPI lookup, PEP 440 compare incl. the dev-ahead case, the TTL cache). No `cwcli axi` verb (deferred).
 
 ### Partial
