@@ -114,7 +114,7 @@ CWE2E_FRAPPE_MAJOR=16 uv run pytest tests/e2e -m e2e
 
 ### Current Status
 
-- **Overall project**: ~60% coverage at 0.37.0, unreleased (705 tests across 45 test files; see the [Testing Directory](./testing/) for the per-module breakdown).
+- **Overall project**: ~60% coverage at 0.37.0, unreleased (711 tests across 45 test files; see the [Testing Directory](./testing/) for the per-module breakdown).
 - **Target**: Expand coverage on the modules that still have none (`port_utils.py`, `sendme_utils.py`, `vscode_utils.py`).
 
 See [Testing Directory](./testing/) for complete documentation.
@@ -176,7 +176,7 @@ ports                # Port conflict detection
 ### Test Coverage
 
 - **Test Files**: 45
-- **Total Tests**: 705
+- **Total Tests**: 711
 - **Overall Coverage**: ~60% at 0.37.0 (unreleased)
 - See the [Testing Directory](./testing/) for the per-module breakdown.
 
