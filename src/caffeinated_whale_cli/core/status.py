@@ -25,6 +25,11 @@ so honcho-up already implies the stack is up; keying on the reliable web signal
 keeps ``overall`` robust across frappe versions' cmdline shapes while the
 per-process list still reports each label's liveness for detail.
 
+With ``probe_web=False`` (the ``status --watch`` loop, so repeated ticks never
+hit the bench's web server) the web probe is skipped entirely and ``running``
+is driven by honcho-up alone - a missing web code must not falsely ``degrade``
+the aggregate.
+
 A real-but-stopped project (containers exist but frappe is not running) is
 ``offline`` and is RETURNED (never raised), preserving today's "offline, exit 0"
 contract. A truly-nonexistent project (no containers with the label at all, or no
