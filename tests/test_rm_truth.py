@@ -76,6 +76,7 @@ class TestRemoveProjectDirectory:
     """Archive-then-delete: the dir is copied to the archive before deletion."""
 
     def test_deletes_directory(self, cwcli_home):
+        """`_delete_project_directory` removes the project directory."""
         projects_dir = rm.PROJECTS_DIR
         project_dir = _make_project_dir(projects_dir, "proj")
         assert project_dir.exists()
@@ -84,6 +85,7 @@ class TestRemoveProjectDirectory:
         assert not project_dir.exists()
 
     def test_archives_before_deleting(self, cwcli_home, tmp_path):
+        """`_archive_project_directory` copies conf out before deletion."""
         projects_dir = rm.PROJECTS_DIR
         _make_project_dir(projects_dir, "proj")
         archive_dir = tmp_path / "archive"

@@ -358,6 +358,7 @@ class TestDefaultSiteFromCurrentSite:
     """#4: default resolves from currentsite.txt when common config lacks it."""
 
     def test_read_current_site(self):
+        """`read_current_site` reads and strips the bench's current site."""
         c = RecordingContainer(currentsite="development.localhost\n")
         assert bench_sites.read_current_site(c, BENCH_PATH) == "development.localhost"
 

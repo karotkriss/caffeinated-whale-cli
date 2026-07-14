@@ -326,6 +326,7 @@ class TestBenchNameValidation:
 
     @pytest.mark.parametrize("value", ["frappe-bench", "my_bench2", "Primis-Bench", "  abc  "])
     def test_valid_names_pass(self, value):
+        """`_bench_name_validation` accepts valid bench names."""
         assert _bench_name_validation(value) is True
 
     @pytest.mark.parametrize("value", ["my bench", "bad/name", "name!", "a.b"])

@@ -38,6 +38,7 @@ def test_no_cache_returns_none(cache):
 
 
 def test_path_override_wins(cache):
+    """An explicit bench path overrides the cached bench list."""
     cache["proj"] = [{"path": "/a"}, {"path": "/b"}]
     assert cmd_utils.resolve_bench_path("proj", None, "/explicit") == "/explicit"
 
@@ -50,16 +51,19 @@ def test_bench_and_path_conflict_errors(cache):
 
 
 def test_resolve_by_index(cache):
+    """`resolve_bench_path` resolves a bench by numeric index."""
     cache["proj"] = [{"path": "/a"}, {"path": "/b"}, {"path": "/c"}]
     assert cmd_utils.resolve_bench_path("proj", "1", None) == "/b"
 
 
 def test_resolve_by_label(cache):
+    """`resolve_bench_path` resolves a bench by user label."""
     cache["proj"] = [{"path": "/a"}, {"path": "/b", "label": "staging"}]
     assert cmd_utils.resolve_bench_path("proj", "staging", None) == "/b"
 
 
 def test_unknown_selector_errors(cache):
+    """`resolve_bench_path` exits 1 on an unknown selector."""
     cache["proj"] = [{"path": "/a"}, {"path": "/b"}]
     with pytest.raises(typer.Exit) as exc:
         cmd_utils.resolve_bench_path("proj", "nope", None)
