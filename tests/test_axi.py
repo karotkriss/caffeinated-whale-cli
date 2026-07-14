@@ -72,7 +72,8 @@ class TestAxiBackup:
         monkeypatch.setattr(axi_mod.core_backup, "backup", _raise)
         result = runner.invoke(axi_mod.app, ["backup", "proj"])
         assert result.exit_code == 1
-        assert result.stdout.startswith("error: Project 'proj' not found.")
+        # The message carries single quotes (TOON-special), so toon.kv quotes it.
+        assert result.stdout.startswith("error: \"Project 'proj' not found.\"")
         assert "Traceback" not in result.stdout
 
     def test_usage_error_exit_2(self, monkeypatch):
@@ -82,7 +83,7 @@ class TestAxiBackup:
         monkeypatch.setattr(axi_mod.core_backup, "backup", _raise)
         result = runner.invoke(axi_mod.app, ["backup", "proj", "--site", "a;b"])
         assert result.exit_code == 2
-        assert "error: Invalid site name" in result.stdout
+        assert 'error: "Invalid site name' in result.stdout
 
     def test_error_hint_rendered(self, monkeypatch):
         """A CwcliError hint is surfaced as a `help:` line in axi output."""
@@ -94,6 +95,26 @@ class TestAxiBackup:
         result = runner.invoke(axi_mod.app, ["backup", "proj"])
         assert result.exit_code == 1
         assert "help: cwcli start proj" in result.stdout
+
+    def test_simple_error_message_stays_unquoted(self, monkeypatch):
+        """A special-char-free message renders as a plain `error: <msg>` TOON line."""
+
+        def _raise(*a, **k):
+            raise CwcliError(ErrorKind.NOT_RUNNING, "x", "container is not running")
+
+        monkeypatch.setattr(axi_mod.core_backup, "backup", _raise)
+        result = runner.invoke(axi_mod.app, ["backup", "proj"])
+        assert result.stdout.splitlines()[0] == "error: container is not running"
+
+    def test_colon_bearing_error_message_is_quoted(self, monkeypatch):
+        """A message with a stray colon is TOON-quoted so a strict parser can't mis-split it."""
+
+        def _raise(*a, **k):
+            raise CwcliError(ErrorKind.PRECONDITION, "x", "connection refused: port 8000")
+
+        monkeypatch.setattr(axi_mod.core_backup, "backup", _raise)
+        result = runner.invoke(axi_mod.app, ["backup", "proj"])
+        assert result.stdout.splitlines()[0] == 'error: "connection refused: port 8000"'
 
     def test_needs_choice_select_bench_is_usage_error_exit_2(self, monkeypatch):
         choice = Choice(

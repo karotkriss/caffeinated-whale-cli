@@ -10,6 +10,7 @@ import dataclasses
 
 import pytest
 import typer
+from docker.errors import APIError, NotFound
 
 from caffeinated_whale_cli.commands import utils as cmd_utils
 from caffeinated_whale_cli.core import docker as core_docker
@@ -62,6 +63,19 @@ class TestResolveContainerState:
         result = resolvers.resolve_container_state("proj", _FakeContainer("running"))
         blob = dataclasses.asdict(result.data)
         assert blob == {"running": True, "start_requested": False}
+
+    @pytest.mark.parametrize("exc", [APIError("boom"), NotFound("gone")])
+    def test_reload_docker_error_becomes_typed_error(self, exc):
+        """A raw docker error on reload() (e.g. container rm'd mid-op) never leaks the core."""
+
+        class _Exploding(_FakeContainer):
+            def reload(self):
+                raise exc
+
+        with pytest.raises(CwcliError) as caught:
+            resolvers.resolve_container_state("proj", _Exploding("running"))
+        assert caught.value.kind is ErrorKind.DOCKER
+        assert caught.value.code == "container.reload_failed"
 
 
 # --------------------------------------------------------------------- resolve_bench

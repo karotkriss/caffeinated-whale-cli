@@ -170,7 +170,8 @@ class TestAxiStart:
         monkeypatch.setattr(axi_mod.core_start, "start", _raise)
         result = runner.invoke(axi_mod.app, ["start", "proj", "--yes"])
         assert result.exit_code == 1
-        assert "error: Project 'proj' not found." in result.stdout
+        # The message carries single quotes (TOON-special), so toon.kv quotes it.
+        assert "error: \"Project 'proj' not found.\"" in result.stdout
 
 
 # -------------------------------------------------------------------------- axi status

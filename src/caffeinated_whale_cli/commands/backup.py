@@ -120,6 +120,7 @@ def backup(
 
     show_tips = config_utils.get_show_tips()
     console.print()
+    started = False
     while True:
         try:
             with TipSpinner(
@@ -136,9 +137,19 @@ def backup(
             and result.choice is not None
             and result.choice.kind == "confirm_start"
         ):
+            # Re-invoke at most ONCE after an attempted start. A second confirm_start
+            # after ensure_containers_running already claimed success means the start
+            # didn't take (crash-loop / teardown race) - fail closed, don't spin.
+            if started:
+                stderr_console.print(
+                    "[bold red]Error:[/bold red] Frappe container for project "
+                    f"'{project_name}' failed to start."
+                )
+                raise typer.Exit(code=1)
             ensure_containers_running(
                 project_name, require_running=True, verbose=verbose, auto_start=yes
             )
+            started = True
             continue
         break
 
