@@ -80,7 +80,7 @@ cwcli ls
 # Start a project (with automatic port conflict detection)
 cwcli start my-project
 
-# View bench logs in real-time
+# View recent bench logs (add -f to follow in real-time)
 cwcli logs my-project
 
 # Open project in VS Code
@@ -552,7 +552,7 @@ cwcli logs [OPTIONS] PROJECT_NAME
 
 | Option | Description |
 |--------|-------------|
-| `-f`, `--follow` / `--no-follow` | Follow log output in real-time (default: follow) |
+| `-f`, `--follow` / `--no-follow` | Follow log output in real-time (default: no-follow - print the tail and exit) |
 | `-n`, `--lines INTEGER` | Number of lines to show from the end of the logs (default: 100) |
 | `--bench TEXT` | Which bench's log to view: its numeric index or label (multi-bench projects) |
 | `-y`, `--yes` | Auto-start stopped containers without prompting |
@@ -561,14 +561,17 @@ cwcli logs [OPTIONS] PROJECT_NAME
 **Examples:**
 
 ```bash
-# Follow logs in real-time (default)
+# Print the last 100 lines and exit (default)
 cwcli logs frappe-one
 
 # Show last 50 lines and exit
-cwcli logs frappe-one --no-follow --lines 50
+cwcli logs frappe-one --lines 50
+
+# Follow logs in real-time
+cwcli logs frappe-one --follow
 
 # Show last 200 lines and follow
-cwcli logs frappe-one -n 200
+cwcli logs frappe-one -n 200 --follow
 ```
 
 **Note:** Logs are stored at `<bench>/logs/bench-start.log` on the workspace volume inside the container.
@@ -1314,13 +1317,18 @@ cwcli status [OPTIONS] PROJECT_NAME
 | `--bench` | Which bench to report: its numeric index or label (multi-bench projects) |
 | `-v`, `--verbose` | Show the per-process detail and the web HTTP probe on stderr |
 
-**Aggregate values** (printed on stdout, one token, always exit 0):
+**Aggregate values** (printed on stdout, one token, exit 0):
 
-- **`offline`** - no containers / the frappe container is not running
+- **`offline`** - a real-but-stopped instance: the containers exist but the frappe container is not running
 - **`online`** - the container is up, but the bench was never started (no supervisor)
 - **`running`** - the supervisor (honcho) is up and the web server answers on `:8000`
 - **`degraded`** - the bench was started but the supervisor is down (e.g. after a
   container restart), or it is up but the web server is not answering
+
+A truly-nonexistent project name (a typo, or one never created - no containers
+with the label at all) is NOT `offline`: it exits non-zero with a "no such
+project" error on stderr, so a script can tell a stopped instance apart from a
+name that does not exist.
 
 **Per-process detail (stderr):** each Procfile process (`web`, `socketio`,
 `worker`, `schedule`, `watch`, `redis_cache`, `redis_queue`) with up/down plus

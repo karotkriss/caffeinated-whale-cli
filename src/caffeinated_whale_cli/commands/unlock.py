@@ -132,10 +132,12 @@ def unlock(
         )
         raise typer.Exit(code=1)
 
-    # Verify bench path exists
-    exit_code, _ = frappe_container.exec_run(f'sh -c "test -d {bench_path}/sites"')
+    # Verify bench path exists. Run via an argv list (no shell): none of these
+    # container commands need shell features, and argv is immune to metacharacter
+    # interpolation regardless of the input validation above.
+    exit_code, _ = frappe_container.exec_run(["test", "-d", f"{bench_path}/sites"])
     if verbose:
-        stderr_console.print(f'[dim]$ sh -c "test -d {bench_path}/sites"[/dim]')
+        stderr_console.print(f"[dim]$ test -d {bench_path}/sites[/dim]")
         stderr_console.print(f"[dim]Exit code: {exit_code}[/dim]")
 
     if exit_code != 0:
@@ -146,21 +148,21 @@ def unlock(
 
     # Check if site exists
     site_path = f"{bench_path}/sites/{site}"
-    exit_code, _ = frappe_container.exec_run(f'sh -c "test -d {site_path}"')
+    exit_code, _ = frappe_container.exec_run(["test", "-d", site_path])
     if verbose:
-        stderr_console.print(f'[dim]$ sh -c "test -d {site_path}"[/dim]')
+        stderr_console.print(f"[dim]$ test -d {site_path}[/dim]")
         stderr_console.print(f"[dim]Exit code: {exit_code}[/dim]")
 
     if exit_code != 0:
         stderr_console.print(f"[bold red]Error:[/bold red] Site '{site}' not found at {site_path}")
         raise typer.Exit(code=1)
 
-    # Remove locks folder
+    # Remove locks folder. argv list (no shell), -v for streamed per-file output.
     locks_path = f"{site_path}/locks"
-    cmd = f"rm -rfv {locks_path}"  # Use -v for verbose output
+    cmd = ["rm", "-rfv", locks_path]
 
     if verbose:
-        stderr_console.print(f"[dim]$ {cmd}[/dim]")
+        stderr_console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
 
         # Stream output in verbose mode
         api = frappe_container.client.api
