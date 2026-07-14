@@ -77,9 +77,7 @@ class TestWhere:
         assert exc.value.kind is ErrorKind.USAGE
         assert exc.value.code == "where.apps_sites_conflict"
 
-    @pytest.mark.parametrize(
-        "helper", ["_search_apps", "_search_sites"]
-    )
+    @pytest.mark.parametrize("helper", ["_search_apps", "_search_sites"])
     def test_peewee_error_becomes_typed_error(self, temp_db, monkeypatch, helper):
         """A raw peewee error (corrupt/locked cache) never leaks past the core boundary."""
 

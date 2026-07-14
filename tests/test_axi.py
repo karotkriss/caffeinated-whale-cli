@@ -73,7 +73,7 @@ class TestAxiBackup:
         result = runner.invoke(axi_mod.app, ["backup", "proj"])
         assert result.exit_code == 1
         # The message carries single quotes (TOON-special), so toon.kv quotes it.
-        assert result.stdout.startswith('error: "Project \'proj\' not found."')
+        assert result.stdout.startswith("error: \"Project 'proj' not found.\"")
         assert "Traceback" not in result.stdout
 
     def test_usage_error_exit_2(self, monkeypatch):

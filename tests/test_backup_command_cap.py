@@ -28,9 +28,7 @@ def _wire(monkeypatch, *, backup_side_effects):
         "ensure_containers_running",
         lambda *a, **k: ensure_calls.append(True) or True,
     )
-    monkeypatch.setattr(
-        backup_mod, "resolve_bench_path", lambda *a, **k: "/workspace/frappe-bench"
-    )
+    monkeypatch.setattr(backup_mod, "resolve_bench_path", lambda *a, **k: "/workspace/frappe-bench")
     monkeypatch.setattr(backup_mod.config_utils, "get_show_tips", lambda: False)
 
     core_calls = {"n": 0}
