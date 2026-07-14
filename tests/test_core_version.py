@@ -235,3 +235,68 @@ class TestCheck:
         assert result.data.latest is None
         assert result.data.is_outdated is False
         assert result.warnings[0].code == "pypi.unreachable"
+
+
+class TestPassiveNotice:
+    """The cache-only, non-blocking gate behind the passive 'update' notice."""
+
+    def _patch(self, monkeypatch, *, method="uv", current="0.35.0"):
+        monkeypatch.setattr(core_version, "_detect_method", lambda: (method, None))
+        monkeypatch.setattr(core_version, "_current_version", lambda: current)
+        spawned = []
+        monkeypatch.setattr(
+            core_version, "_spawn_background_refresh", lambda **kw: spawned.append(kw)
+        )
+        # A fresh cache read must NEVER trigger a network call on the hot path.
+        monkeypatch.setattr(
+            core_version.urllib.request,
+            "urlopen",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("passive notice must not hit net")),
+        )
+        return spawned
+
+    def test_outdated_from_fresh_cache_notifies_without_network_or_spawn(
+        self, isolated_cache, monkeypatch
+    ):
+        spawned = self._patch(monkeypatch, method="uv", current="0.35.0")
+        monkeypatch.setattr(core_version, "_read_cache", lambda: "0.37.0")
+        info = core_version.passive_notice()
+        assert info is not None
+        assert info.is_outdated is True
+        assert info.current == "0.35.0" and info.latest == "0.37.0"
+        assert info.upgrade_command == ["uv", "tool", "upgrade", "caffeinated-whale-cli"]
+        assert spawned == []  # fresh cache -> no background refresh
+
+    def test_up_to_date_shows_nothing(self, monkeypatch):
+        self._patch(monkeypatch, current="0.37.0")
+        monkeypatch.setattr(core_version, "_read_cache", lambda: "0.37.0")
+        assert core_version.passive_notice() is None
+
+    def test_missing_cache_returns_none_and_spawns_refresh(self, monkeypatch):
+        spawned = self._patch(monkeypatch)
+        monkeypatch.setattr(core_version, "_read_cache", lambda: None)
+        assert core_version.passive_notice() is None
+        assert len(spawned) == 1  # kicked a detached refresh for next time
+
+    def test_dev_checkout_never_fetches_or_spawns(self, monkeypatch):
+        spawned = self._patch(monkeypatch, method="dev")
+        monkeypatch.setattr(
+            core_version, "_read_cache", lambda: (_ for _ in ()).throw(AssertionError("no read"))
+        )
+        assert core_version.passive_notice() is None
+        assert spawned == []
+
+    def test_uvx_never_fetches_or_spawns(self, monkeypatch):
+        spawned = self._patch(monkeypatch, method="uvx")
+        monkeypatch.setattr(
+            core_version, "_read_cache", lambda: (_ for _ in ()).throw(AssertionError("no read"))
+        )
+        assert core_version.passive_notice() is None
+        assert spawned == []
+
+    def test_fail_open_on_error(self, monkeypatch):
+        self._patch(monkeypatch)
+        monkeypatch.setattr(
+            core_version, "_read_cache", lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+        )
+        assert core_version.passive_notice() is None  # swallowed -> no notice
