@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 from caffeinated_whale_cli.commands import axi as axi_mod
 from caffeinated_whale_cli.commands import start as start_mod
 from caffeinated_whale_cli.commands import stop as stop_mod
-from caffeinated_whale_cli.core.envelope import Choice, Result, Status
+from caffeinated_whale_cli.core.envelope import Choice, Message, Result, Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from caffeinated_whale_cli.core.start import ProcessLaunch, StartOutcome
 from caffeinated_whale_cli.core.status import StatusReport
@@ -33,14 +33,15 @@ def _start_outcome(already_running=False):
     )
 
 
-def _status_report(overall="running", processes=None):
+def _status_report(overall="running", processes=None, *, not_cwcli_supervised=False):
     return StatusReport(
         overall=overall,
         project="proj",
         container_running=overall != "offline",
-        supervisor_up=overall in ("running", "degraded"),
+        supervisor_up=overall in ("running", "degraded") and not not_cwcli_supervised,
         web_http_code="200" if overall == "running" else None,
         processes=processes if processes is not None else [],
+        not_cwcli_supervised=not_cwcli_supervised,
     )
 
 
@@ -222,6 +223,32 @@ class TestAxiStatus:
         assert result.exit_code == 0
         assert result.stdout.splitlines()[0] == "overall: offline"
         assert "container_running: false" in result.stdout
+
+    def test_not_cwcli_supervised_flag_and_hint_in_toon(self, monkeypatch):
+        # An agent driving `cwcli axi status` on a honcho instance must see the true
+        # process state (up), the not_cwcli_supervised flag, and the hint - not a
+        # false all-down.
+        report = _status_report(
+            overall="running",
+            processes=[ProcessHealth(label="web", up=True, pid=201, uptime_s=499)],
+            not_cwcli_supervised=True,
+        )
+        monkeypatch.setattr(
+            axi_mod.core_status,
+            "status",
+            lambda *a, **k: Result(
+                status=Status.OK,
+                data=report,
+                warnings=[
+                    Message("supervisor.not_cwcli", "run `cwcli start` to bring it under...")
+                ],
+            ),
+        )
+        result = runner.invoke(axi_mod.app, ["status", "proj"])
+        assert result.exit_code == 0
+        assert result.stdout.splitlines()[0] == "overall: running"
+        assert "not_cwcli_supervised: true" in result.stdout
+        assert "cwcli start" in result.stdout  # the hint rides in the warnings block
 
     def test_multi_bench_names_the_flag_exit_2(self, monkeypatch):
         choice = Choice(

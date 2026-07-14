@@ -45,6 +45,21 @@ schedule: bench schedule
 worker_default: bench worker --queue default
 """
 
+# A bench running under honcho (bench's own ``bench start``), which cwcli never
+# launched: honcho pid 200 (cwd == BENCH), its Procfile children by ppid. NO
+# supervisord line anywhere - this is exactly how a pre-v3 instance looks.
+_PS_HONCHO = """\
+1 0 99999 0.0 1000 /sbin/init
+200 1 500 0.1 2000 /env/bin/python /env/bin/honcho start
+201 200 499 0.5 80000 /env/bin/python /env/bin/bench serve --port 8000
+202 200 499 0.2 60000 node /workspace/frappe-bench/apps/frappe/socketio.js
+203 200 499 0.1 50000 /env/bin/python /env/bin/bench schedule
+204 200 499 0.1 50000 /env/bin/python /env/bin/bench watch
+205 200 499 0.3 70000 /env/bin/python /env/bin/bench worker --queue default
+206 200 499 0.0 3000 redis-server /workspace/frappe-bench/config/redis_cache.conf
+207 200 499 0.0 3000 redis-server /workspace/frappe-bench/config/redis_queue.conf
+"""
+
 # supervisorctl status for the single-bench stack (every program RUNNING).
 _CTL_SINGLE = """\
 redis_cache   RUNNING   pid 106, uptime 0:05:00
@@ -189,6 +204,29 @@ class TestDiscovery:
         # supervisord itself is the supervisor, never a per-process entry.
         assert "supervisord" not in labels
 
+    def test_real_bench_helper_cmdlines_map_to_labels(self):
+        # The load-bearing regression guard: once the ``bench`` wrapper execs away,
+        # the live process is ``python -m frappe.utils.bench_helper frappe <cmd>`` -
+        # NOT ``bench <cmd>``. web/schedule/watch must still map (else a serving web
+        # reads as down, the false-down this fixes).
+        ps = (
+            f"1 0 99999 0.0 1000 /sbin/init\n"
+            f"100 1 500 0.1 2000 /env/bin/python -m supervisor.supervisord -c {_CFG}\n"
+            "101 100 499 0.5 80000 /env/bin/python -m frappe.utils.bench_helper frappe serve"
+            " --port 8000\n"
+            "102 100 499 0.2 60000 /home/frappe/.nvm/node/bin/node apps/frappe/socketio.js\n"
+            "103 100 499 0.1 50000 /env/bin/python -m frappe.utils.bench_helper frappe schedule\n"
+            "104 100 499 0.1 50000 /env/bin/python -m frappe.utils.bench_helper frappe watch\n"
+            "105 100 499 0.3 70000 bash -c   bench worker 1>> logs/worker.log\n"
+            "106 105 499 0.3 70000 /env/bin/python -m frappe.utils.bench_helper frappe worker\n"
+        )
+        c = FakeContainer(ps=ps)
+        snap = supervision.discover_stack(c, BENCH)
+        assert snap.supervisor_up is True
+        by_label = {p.label: p for p in snap.processes}
+        assert {"web", "socketio", "schedule", "watch", "worker"} <= set(by_label)
+        assert by_label["web"].up is True and by_label["web"].pid == 101
+
     def test_no_supervisord_means_supervisor_down(self):
         c = FakeContainer(ps="1 0 5 0.0 1000 /sbin/init\n", cwds={})
         snap = supervision.discover_stack(c, BENCH)
@@ -224,6 +262,46 @@ class TestDiscovery:
         snap = supervision.discover_stack(c, BENCH)
         assert snap.supervisor_up is True
         assert snap.supervisor_pid == 300
+
+
+class TestUnsupervisedFallback:
+    """``discover_unsupervised_stack`` - the honcho / ``bench start`` fallback."""
+
+    def test_honcho_processes_map_to_labels_up(self):
+        # A bench under honcho (no cwcli supervisord) still reports every live
+        # process UP with its real pid/uptime - the regression this fixes.
+        c = FakeContainer(ps=_PS_HONCHO, cwds={200: BENCH})
+        stack = supervision.discover_unsupervised_stack(c, BENCH)
+        assert stack.manager_up is True
+        by_label = {p.label: p for p in stack.processes}
+        assert set(by_label) == {
+            "web",
+            "socketio",
+            "schedule",
+            "watch",
+            "worker:default",
+            "redis_cache",
+            "redis_queue",
+        }
+        web = by_label["web"]
+        assert web.up is True and web.pid == 201 and web.uptime_s == 499
+        # No supervisord state exists in this mode - up is the ps truth.
+        assert web.state is None
+        # honcho itself (the manager) is never a per-process entry.
+        assert "honcho" not in by_label
+
+    def test_no_manager_means_manager_down(self):
+        # cwcli supervisord absent AND no honcho -> genuinely nothing to report.
+        c = FakeContainer(ps="1 0 5 0.0 1000 /sbin/init\n", cwds={})
+        stack = supervision.discover_unsupervised_stack(c, BENCH)
+        assert stack.manager_up is False
+        assert stack.processes == []
+
+    def test_keyed_to_the_resolved_bench_by_cwd(self):
+        # honcho for another bench (cwd != BENCH) must NOT be attributed here.
+        c = FakeContainer(ps=_PS_HONCHO, cwds={200: "/workspace/other-bench"})
+        stack = supervision.discover_unsupervised_stack(c, BENCH)
+        assert stack.manager_up is False
 
 
 class TestStopSupervisor:
