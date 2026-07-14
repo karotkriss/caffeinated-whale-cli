@@ -4,7 +4,8 @@ description: >
   Incident-level root-cause internals of cwcli's lifecycle and destructive commands - init
   (Frappe/bench version gating, admin/db-root secret env-transport, existing-bench reuse flow),
   rm (what deletion actually removes, conf/-only archive, recache-under-spinner deadlock, the
-  C1/H5/M11 backup+name+exit-code data-safety gates, multi-bench per-bench backup), and restore
+  C1/H5/M11 backup+name+exit-code data-safety gates, multi-bench per-bench backup, the
+  start-back-up-delete transient-start flow for a stopped project), and restore
   (receive-mode and normal-path data-safety, non-interactive selectors, secrets off the argv,
   streamed copies, shared site detection, default-site resolution, post-restore migrate+restart),
   and start/status/logs/restart (the supervisord per-process supervision substrate: PID-keyed
@@ -26,7 +27,7 @@ files below. Read only the one for the command you are touching.
 | You are touching... | Read |
 | --- | --- |
 | `commands/init.py` - version gating, secret env-transport, existing-bench reuse, container-start spinner race | `references/init.md` |
-| `commands/rm.py` - what deletion removes, conf/-only archive, recache-under-spinner deadlock, the C1/H5/M11 data-safety gates, multi-bench per-bench backup | `references/rm.md` |
+| `commands/rm.py` - what deletion removes, conf/-only archive, recache-under-spinner deadlock, the C1/H5/M11 data-safety gates, multi-bench per-bench backup, the stopped-project start -> back up -> delete flow | `references/rm.md` |
 | `commands/restore.py` - receive-mode + normal-path data-safety, selectors, secrets off argv, streamed copies, and the six restore+inspect bugs (shared `utils/bench_sites.py` site detection, default-site resolution, migrate+restart) | `references/restore.md` |
 | `commands/start.py`, `status.py`, `restart.py`, `logs.py` + `core/supervision.py`, `start.py`, `status.py`, `restart.py` - the supervisord per-process supervision substrate: PID-keyed idempotency (the `pkill` double-start bug), config/launcher generation, per-process log files, the stdout-token-only status contract, single-program restart + auto-heal, the restore-restart tension | `references/start-status.md` |
 

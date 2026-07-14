@@ -43,10 +43,10 @@ uv run pytest tests/test_completion_utils.py
 
 ### Test Coverage
 
-Measured with `uv run pytest --cov` at 0.37.0 (unreleased): 711 tests across 45 test files, ~60% overall coverage.
+Measured with `uv run pytest --cov` at 0.37.0 (unreleased): 740 tests across 46 test files, ~61% overall coverage.
 Per-area breakdown (highest-coverage module in each area; see the module list in each test file for what else it exercises):
 
-- **rm safety** (`test_rm_safety`, `test_rm_truth`, `test_rm_stopped`) - `commands/rm.py` ~78%
+- **rm safety** (`test_rm_safety`, `test_rm_truth`, `test_rm_stopped`, `test_rm_stopped_backup`) - `commands/rm.py` ~84%
 - **restore safety** (`test_restore_safety`, `test_restore_inspect_fixes`) - `commands/restore.py` ~43%
 - **inspect freshness** (`test_inspect_partial_refresh`, `test_inspect_label_recovery`, `test_inspect_apps_error`) - `commands/inspect.py` ~63% (includes the `_get_installed_apps` failure path: a non-zero `list-apps` exit warns to stderr and caches `[]`, never the old poisoned sentinel string)
 - **bench labels/selectors** (`test_bench_labels`, `test_bench_selector`, `test_bench_label_db_and_command`) - `utils/bench_labels.py` ~94%
@@ -82,7 +82,7 @@ Per-area breakdown (highest-coverage module in each area; see the module list in
 
 ### Test Files
 
-Run `ls tests/` for the authoritative, current list; as of 0.37.0 (unreleased) it holds 45 `test_*.py` suites plus `bench_fakes.py` and `bench_fakes_mb.py` (shared fakes) and `README.md`.
+Run `ls tests/` for the authoritative, current list; as of 0.37.0 (unreleased) it holds 46 `test_*.py` suites plus `bench_fakes.py` and `bench_fakes_mb.py` (shared fakes) and `README.md`.
 
 ## Testing Framework
 
