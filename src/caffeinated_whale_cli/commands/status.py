@@ -91,6 +91,10 @@ def status(
     assert report is not None  # OK/WARNING always carries a StatusReport
     if verbose:
         for warning in result.warnings:
+            # The not-cwcli-supervised hint is rendered by _render_detail (in BOTH
+            # modes), so don't also echo it here as a warning - it would double up.
+            if warning.code == "supervisor.not_cwcli":
+                continue
             stderr_console.print(f"[dim]{warning.text}[/dim]")
     _render_detail(report, verbose)
 
@@ -176,12 +180,14 @@ _OVERALL_STYLE = {
 
 
 def _title(report: StatusReport) -> str:
-    """The shared styled ``{project}: {overall} (supervisor up/down)`` heading."""
+    """The shared styled ``{project}: {overall} (supervisor state)`` heading."""
     style = _OVERALL_STYLE.get(report.overall, "white")
-    return (
-        f"[{style}]{report.project}: {report.overall}[/{style}]"
-        f" (supervisor {'up' if report.supervisor_up else 'down'})"
-    )
+    if report.not_cwcli_supervised:
+        # Running under honcho / bench start: "supervisor down" would be a lie.
+        supervisor = "not under cwcli supervision"
+    else:
+        supervisor = f"supervisor {'up' if report.supervisor_up else 'down'}"
+    return f"[{style}]{report.project}: {report.overall}[/{style}] ({supervisor})"
 
 
 def _up_mark(up: bool) -> str:
@@ -192,6 +198,8 @@ def _up_mark(up: bool) -> str:
 def _render_detail(report: StatusReport, verbose: bool) -> None:
     """Render the per-process health + web probe to stderr (never stdout)."""
     stderr_console.print(_title(report))
+    if report.not_cwcli_supervised:
+        stderr_console.print(f"[yellow]{core_status.NOT_CWCLI_SUPERVISED_HINT}[/yellow]")
     if report.web_http_code is not None:
         stderr_console.print(f"[dim]web http: {report.web_http_code}[/dim]")
     elif verbose and report.container_running:

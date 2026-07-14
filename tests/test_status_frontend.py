@@ -18,14 +18,15 @@ from caffeinated_whale_cli.core.supervision import ProcessHealth
 from caffeinated_whale_cli.utils import docker_utils
 
 
-def _report(overall, processes=None):
+def _report(overall, processes=None, *, not_cwcli_supervised=False):
     return StatusReport(
         overall=overall,
         project="proj",
         container_running=overall != "offline",
-        supervisor_up=overall in ("running", "degraded"),
+        supervisor_up=overall in ("running", "degraded") and not not_cwcli_supervised,
         web_http_code="200" if overall == "running" else None,
         processes=processes if processes is not None else [],
+        not_cwcli_supervised=not_cwcli_supervised,
     )
 
 
@@ -75,6 +76,18 @@ def test_process_state_is_visible_on_stderr(monkeypatch, capsys):
     captured = _run(monkeypatch, capsys, _report("degraded", procs))
     assert "state=FATAL" in captured.err
     assert "state=RUNNING" in captured.err
+
+
+def test_not_cwcli_supervised_hint_and_heading_on_stderr(monkeypatch, capsys):
+    # A honcho / bench-start instance: the real overall token on stdout, the
+    # not-cwcli-supervised heading + actionable hint on stderr (never "supervisor
+    # down", which would be a lie while honcho serves).
+    procs = [ProcessHealth(label="web", up=True, pid=201, uptime_s=499)]
+    captured = _run(monkeypatch, capsys, _report("running", procs, not_cwcli_supervised=True))
+    assert captured.out.strip() == "running"
+    assert "not under cwcli supervision" in captured.err
+    assert "cwcli start" in captured.err
+    assert "supervisor down" not in captured.err
 
 
 def test_stopped_project_is_offline_exit_0(monkeypatch, capsys):

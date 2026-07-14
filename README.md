@@ -1367,6 +1367,17 @@ with the label at all) is NOT `offline`: it exits non-zero with a "no such
 project" error on stderr, so a script can tell a stopped instance apart from a
 name that does not exist.
 
+**Not under cwcli supervision:** if a bench is running but was NOT started by
+cwcli's supervisord - a plain `bench start`, or an instance already running before
+cwcli's supervisor existed - `status` does not report every process as down. It
+falls back to detecting the honcho / `bench start` process tree and reports each
+process's true `up`/PID/uptime, aggregating to the honest `running`/`degraded`. The
+report is flagged `not_cwcli_supervised` (shown as `(not under cwcli supervision)`
+in the human heading, `not_cwcli_supervised: true` in `cwcli axi status`) with a
+hint to run `cwcli start` to bring it under cwcli's supervisor. In this mode the
+per-process supervisord `state` is unavailable (there is no supervisord to ask);
+`up` comes straight from `ps`. `status` only reads - it never launches supervisord.
+
 **Per-process detail (stderr):** each Procfile process (`web`, `socketio`,
 `worker`, `schedule`, `watch`, `redis_cache`, `redis_queue`) with up/down plus
 its PID, uptime, CPU%, RSS, and supervisord's authoritative `state`

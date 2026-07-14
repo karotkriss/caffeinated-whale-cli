@@ -36,6 +36,17 @@ hit the bench's web server) the web probe is skipped entirely; the per-program
 health still comes from ``ps`` + ``supervisorctl`` (neither touches :8000), so a
 missing web code must not by itself ``degrade`` the aggregate.
 
+When NO cwcli supervisord manages the bench, ``status`` does NOT blindly report
+all-down: it falls back to :func:`supervision.discover_unsupervised_stack`, which
+detects a bench still running under honcho / ``bench start`` (how every pre-v3
+instance, or a plain ``bench start``, looks) and reports each process's TRUE
+``up``/pid/uptime from ``ps``. Such a report is flagged ``not_cwcli_supervised``
+(a running-but-not-yet-migrated state, NOT ``offline``) with an actionable hint
+to run ``cwcli start``, and ``overall`` reflects the real process state
+(``running``/``degraded``). Per-process supervisord ``state`` is unavailable here
+(``None``) - correct, since supervisord is not what manages these. The fallback
+is a pure READ: it never launches supervisord (migrating is ``cwcli start``'s job).
+
 A real-but-stopped project (containers exist but frappe is not running) is
 ``offline`` and is RETURNED (never raised), preserving today's "offline, exit 0"
 contract. A truly-nonexistent project (no containers with the label at all, or no
@@ -77,6 +88,18 @@ class StatusReport:
     supervisor_up: bool
     web_http_code: str | None
     processes: list[ProcessHealth]
+    # True when the bench is running under honcho / ``bench start`` rather than
+    # cwcli's supervisord (pre-v3, or a plain ``bench start``): the processes are
+    # genuinely up but not yet under cwcli supervision. ``supervisor_up`` (which
+    # means *cwcli's* supervisord) stays False in this state.
+    not_cwcli_supervised: bool = False
+
+
+# The hint surfaced when the bench runs under honcho / ``bench start`` (not cwcli).
+NOT_CWCLI_SUPERVISED_HINT = (
+    "running under honcho / not under cwcli supervision - run `cwcli start` to "
+    "bring it under cwcli's supervisor."
+)
 
 
 def _offline(project_name: str) -> Result[StatusReport]:
@@ -165,26 +188,55 @@ def status(
     marker = supervision.read_marker(frappe_container, resolved_path)
     snapshot = supervision.discover_stack(frappe_container, resolved_path)
     expected = supervision.expected_labels(frappe_container, resolved_path)
-    # supervisord's authoritative per-program state (RUNNING/BACKOFF/FATAL/...),
-    # read over the unix control socket - it never touches the bench web server, so
-    # it is safe even in the quiet ``--watch`` loop. Only meaningful when up.
-    states = (
-        supervision.states_by_label(
+    web_code = supervision.web_http_code(frappe_container) if probe_web else None
+    not_cwcli_supervised = False
+
+    if snapshot.supervisor_up:
+        # cwcli's supervisord manages this bench (the v3 path): use supervisord's
+        # authoritative per-program state (RUNNING/BACKOFF/FATAL/...), read over the
+        # unix control socket - it never touches the bench web server, so it is safe
+        # even in the quiet ``--watch`` loop.
+        states = supervision.states_by_label(
             supervision.supervisorctl_states(frappe_container, resolved_path)
         )
-        if snapshot.supervisor_up
-        else {}
-    )
-    web_code = supervision.web_http_code(frappe_container) if probe_web else None
-
-    processes = _merge_health(expected, snapshot.processes, states)
-    overall = _overall(
-        started=marker is not None,
-        supervisor_up=snapshot.supervisor_up,
-        all_healthy=_all_healthy(processes),
-        web_code=web_code,
-        web_probed=probe_web,
-    )
+        processes = _merge_health(expected, snapshot.processes, states)
+        overall = _overall(
+            started=marker is not None,
+            supervisor_up=True,
+            all_healthy=_all_healthy(processes),
+            web_code=web_code,
+            web_probed=probe_web,
+        )
+    else:
+        # No cwcli supervisord for this bench. Before reporting all-down, fall back
+        # to detecting whatever DOES run the Procfile (honcho / ``bench start`` - how
+        # every pre-v3 instance looks). A READ-ONLY probe: it reports the true state
+        # but never launches supervisord (that stays ``cwcli start``'s job).
+        fallback = supervision.discover_unsupervised_stack(frappe_container, resolved_path)
+        if fallback.manager_up:
+            not_cwcli_supervised = True
+            processes = _merge_health(expected, fallback.processes, {})
+            # A manager is alive, so drive ``overall`` off the real process state
+            # (there is no supervisord ``state``; ``up`` comes from ``ps``).
+            overall = _overall(
+                started=True,
+                supervisor_up=True,
+                all_healthy=_all_healthy(processes),
+                web_code=web_code,
+                web_probed=probe_web,
+            )
+            warnings.append(Message("supervisor.not_cwcli", NOT_CWCLI_SUPERVISED_HINT))
+        else:
+            # Genuinely not running under any manager: keep the marker-based
+            # never-started (online) vs supervisor-died (degraded) distinction.
+            processes = _merge_health(expected, [], {})
+            overall = _overall(
+                started=marker is not None,
+                supervisor_up=False,
+                all_healthy=_all_healthy(processes),
+                web_code=web_code,
+                web_probed=probe_web,
+            )
 
     return Result(
         status=Status.OK,
@@ -195,6 +247,7 @@ def status(
             supervisor_up=snapshot.supervisor_up,
             web_http_code=web_code,
             processes=processes,
+            not_cwcli_supervised=not_cwcli_supervised,
         ),
         warnings=warnings,
     )
