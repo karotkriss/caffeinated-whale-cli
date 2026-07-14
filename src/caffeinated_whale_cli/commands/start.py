@@ -1,9 +1,13 @@
-import subprocess
 import sys
+from typing import NoReturn
 
 import questionary
 import typer
 
+from ..core import start as core_start
+from ..core.envelope import Status
+from ..core.errors import CwcliError, ErrorKind
+from ..core.start import StartOutcome
 from ..utils.completion_utils import complete_project_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import get_project_containers, handle_docker_errors
@@ -14,6 +18,7 @@ from ..utils.port_utils import (
     get_ports_in_use_with_processes,
     get_project_ports,
 )
+from .utils import resolve_bench_path
 
 app = typer.Typer(help="Start a Frappe project's containers.")
 
@@ -231,6 +236,41 @@ def _check_port_conflicts(
     return True
 
 
+def detect_port_conflicts(project_name: str) -> tuple[list[str], list[int]]:
+    """Detect host-port conflicts WITHOUT printing or prompting (the axi/frontend split).
+
+    Returns ``(conflicting_frappe_projects, blocking_non_frappe_ports)``: the other
+    Frappe projects holding this project's ports (auto-resolvable by stopping them)
+    and the ports held by non-Frappe processes (NOT auto-resolvable). ``([], [])``
+    means the ports are clear. This is the pure detection half of
+    :func:`_check_port_conflicts`; the interactive prompting/printing stays there.
+    """
+    project_ports = get_project_ports(project_name)
+    if not project_ports:
+        return ([], [])
+    ports_status = check_ports_in_use(project_ports)
+    ports_in_use = [port for port, in_use in ports_status.items() if in_use]
+    if not ports_in_use:
+        return ([], [])
+    frappe_projects_on_ports = find_project_using_ports(ports_in_use, exclude_project=project_name)
+    frappe_ports = set(frappe_projects_on_ports.keys())
+    non_frappe_ports = sorted(set(ports_in_use) - frappe_ports)
+    conflicting_projects = sorted(set(frappe_projects_on_ports.values()))
+    return (conflicting_projects, non_frappe_ports)
+
+
+def _frappe_running(project_name: str) -> bool:
+    """True iff the project's frappe container is already up (used to gate the port check)."""
+    containers = get_project_containers(project_name)
+    if not containers:
+        return False
+    frappe = next(
+        (c for c in containers if c.labels.get("com.docker.compose.service") == "frappe"),
+        None,
+    )
+    return bool(frappe and frappe.status == "running")
+
+
 @handle_docker_errors
 def _start_project(
     project_name: str,
@@ -238,178 +278,65 @@ def _start_project(
     status=None,
     bench_selector=None,
     bench_path_override: str | None = None,
+    restart: bool = False,
 ):
+    """Start a single project's containers + bench, over ``core.start``.
+
+    The thin frontend used by ``restart`` and the auto-start path
+    (``ensure_containers_running`` -> ``_start_containers_for_command``). Returns
+    the captured bench-start log path (or ``None`` on a soft skip), the return
+    contract those callers rely on.
+
+    Note: Port conflict checks are the caller's job (they are a host-side
+    pre-step). This resolves the bench the historical lenient way for these
+    callers (they have no ``--bench`` and run under a spinner, so they cannot
+    prompt): an explicit ``bench_path_override`` is used VERBATIM (the post-restore
+    restart must restart the SAME bench it migrated); otherwise the cached bench,
+    falling back to the FIRST bench with a note on a multi-bench project
+    (``on_ambiguous="first"``), and to ``core.start``'s default when nothing is
+    cached. The actual container start + ``bench start`` launch + idempotency live
+    in ``core.start``.
+
+    ``restart=True`` (the post-restore restart) forces a genuine relaunch rather
+    than the idempotent no-op, so the app reconnects to the restored/migrated DB.
     """
-    The core logic for starting a single project's containers.
+    if status:
+        status.update(f"[bold green]Starting '{project_name}'...[/bold green]")
 
-    Note: Port conflict checks should be performed by the caller before
-    calling this function. This function only handles container startup.
-
-    Args:
-        project_name: The name of the docker-compose project.
-        verbose: Enable verbose output.
-        status: Optional rich status object for progress updates.
-        bench_selector: Optional ``--bench`` selector to pick which bench runs
-            ``bench start`` (resolved against the cache, ``on_ambiguous="first"``).
-        bench_path_override: Optional explicit bench path used VERBATIM, skipping
-            the ``resolve_bench_path`` guessing entirely. Callers that already know
-            the exact bench (e.g. the post-restore restart, which must restart the
-            SAME bench it just migrated) pass it so a multi-bench project never
-            falls back to the first sorted bench.
-    """
-    containers = get_project_containers(project_name)
-
-    if not containers:
-        console.print(f"[bold red]Error: Project '{project_name}' not found.[/bold red]")
-        # A nonexistent project cannot be started - signal an honest failure. The
-        # start() loop records it and exits 1 (never printing "started"); the other
-        # callers (restart/restore/utils) only reach _start_project once containers
-        # exist, so this branch propagates only from a genuinely missing project.
-        raise typer.Exit(code=1)
-
-    started_count = 0
-    for container in containers:
-        if container.status != "running":
-            if verbose:
-                stderr_console.print(f"[dim]VERBOSE: Starting container '{container.name}'[/dim]")
-            if status:
-                status.update(f"[bold green]Starting '{container.name}'...[/bold green]")
-            container.start()
-            started_count += 1
-
-    # Find the frappe container
-    frappe_container = next(
-        (c for c in containers if c.labels.get("com.docker.compose.service") == "frappe"),
-        None,
-    )
-    if not frappe_container:
-        stderr_console.print(
-            f"[yellow]Warning: No 'frappe' service found for project '{project_name}'. Skipping bench start.[/yellow]"
-        )
-        return
-
-    # Resolve which bench to run `bench start` in. An explicit bench_path_override
-    # is used VERBATIM (the caller already knows the exact bench - e.g. the
-    # post-restore restart must restart the SAME bench it just migrated, never the
-    # first sorted one). Otherwise, unlike the data commands, `start` KEEPS WORKING
-    # on a multi-bench project when no --bench is given: it starts the first sorted
-    # bench and prints a note listing the others (on_ambiguous="first").
-    from .utils import resolve_bench_path
-
-    bench_path: str | None
     if bench_path_override:
-        bench_path = bench_path_override
+        resolved_path: str | None = bench_path_override
     else:
-        bench_path = resolve_bench_path(
+        resolved_path = resolve_bench_path(
             project_name, bench_selector, None, verbose=verbose, on_ambiguous="first"
         )
 
-    if not bench_path:
-        # No cache found, run inspect
-        if verbose:
-            stderr_console.print(
-                "[dim]VERBOSE: No cached bench path found. Running inspect...[/dim]"
-            )
-
-        # Exit spinner context to run inspect (it has its own spinner)
-        if status:
-            status.stop()
-
-        stderr_console.print("[yellow]No cached bench path found. Running inspect...[/yellow]")
-
-        try:
-            from .inspect import inspect as inspect_cmd_func
-
-            inspect_cmd_func(
-                project_name=project_name,
-                verbose=verbose,
-                json_output=False,
-                update=False,
-                no_refresh=False,
-                show_apps=False,
-                interactive=False,
-                yes=False,
-            )
-
-            # Re-resolve now that inspect has populated the cache.
-            bench_path = resolve_bench_path(
-                project_name, bench_selector, None, verbose=verbose, on_ambiguous="first"
-            )
-            if bench_path and verbose:
-                stderr_console.print(
-                    f"[dim]VERBOSE: Using cached bench path from inspect: {bench_path}[/dim]"
-                )
-        except typer.Exit:
-            # A multi-bench ambiguity (or any deliberate exit) from inspect must
-            # propagate, not be swallowed as a fall-back-to-default (mirrors open/update).
-            raise
-        except Exception as e:
-            if verbose:
-                stderr_console.print(f"[dim]VERBOSE: Inspect error: {e}[/dim]")
-
-        # Resume spinner if it was active
-        if status:
-            status.start()
-
-    # If we still don't have a bench path, skip bench start but continue with container start
-    if not bench_path:
-        stderr_console.print(
-            "[yellow]Warning: Could not detect bench path. Skipping bench start.[/yellow]"
-        )
-        stderr_console.print(
-            "[dim]Containers started, but bench was not started automatically.[/dim]"
-        )
-        return None
-
-    container_name = frappe_container.name
-    log_file = f"/tmp/bench-{project_name}.log"
-
-    if verbose:
-        stderr_console.print(f"[dim]VERBOSE: Starting bench in container '{container_name}'[/dim]")
-        stderr_console.print(f"[dim]VERBOSE: Logs will be written to {log_file}[/dim]")
-    if status:
-        status.update(f"[bold green]Starting bench and logging to {log_file}...[/bold green]")
-
-    # Start bench in background with output redirected to log file
     try:
-        # Kill any existing bench processes
-        if verbose:
-            stderr_console.print("[dim]VERBOSE: Checking for existing bench processes[/dim]")
-        kill_cmd = [
-            "docker",
-            "exec",
-            container_name,
-            "bash",
-            "-c",
-            "pkill -f 'bench start' || true",
-        ]
-        subprocess.run(kill_cmd, check=False)
+        result = core_start.start(project_name, bench_path=resolved_path, restart=restart)
+    except CwcliError as e:
+        return _handle_start_project_error(e, project_name)
 
-        # Start bench in background with nohup, redirecting all output to log file
-        cmd = [
-            "docker",
-            "exec",
-            "-d",
-            container_name,
-            "bash",
-            "-c",
-            f"cd {bench_path} && nohup bench start > {log_file} 2>&1 &",
-        ]
-
-        if verbose:
-            stderr_console.print(
-                f'[dim]VERBOSE: $ docker exec -d {container_name} bash -c "cd {bench_path} && nohup bench start > {log_file} 2>&1 &"[/dim]'
-            )
-
-        subprocess.run(cmd, check=True)
-
-        return log_file
-    except subprocess.CalledProcessError as e:
-        stderr_console.print(f"[bold red]Error:[/bold red] Failed to start bench: {e}")
+    outcome = result.data
+    if outcome is None:  # pragma: no cover - a resolved path never yields a choice
         return None
-    except Exception as e:
-        stderr_console.print(f"[bold red]Error:[/bold red] {e}")
+    if verbose:
+        stderr_console.print(f"[dim]VERBOSE: bench start logging to {outcome.log_path}[/dim]")
+    return outcome.log_path
+
+
+def _handle_start_project_error(e: CwcliError, project_name: str):
+    """Map a core.start failure to the historical ``_start_project`` behavior."""
+    if e.code == "project.not_found":
+        console.print(f"[bold red]Error: Project '{project_name}' not found.[/bold red]")
+        raise typer.Exit(code=1) from None
+    if e.code == "frappe.not_found":
+        # Historical soft skip: containers came up, but there is no bench to start.
+        stderr_console.print(f"[yellow]Warning: {e.message} Skipping bench start.[/yellow]")
         return None
+    if e.kind is ErrorKind.DOCKER:
+        stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
+        raise typer.Exit(code=1) from None
+    stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
+    return None
 
 
 @app.callback(invoke_without_command=True)
@@ -424,7 +351,8 @@ def start(
         None,
         "--bench",
         help="Which bench runs 'bench start': its numeric index or label. "
-        "Defaults to the first bench (a note lists the rest) in a multi-bench project.",
+        "On a multi-bench project with no --bench, prompts interactively and "
+        "refuses (non-zero) on a non-TTY.",
     ),
     yes: bool = typer.Option(
         False,
@@ -440,7 +368,12 @@ def start(
     ),
 ):
     """
-    Starts all containers for a project and runs bench start in tmux.
+    Start a project's containers and run bench start (under honcho).
+
+    Idempotent: re-running against an already-running bench reports "already
+    running" and does nothing (no second honcho stack). On a multi-bench project
+    with no --bench, it prompts which bench interactively and refuses (non-zero)
+    on a non-TTY.
     """
     project_names_to_process = []
 
@@ -492,44 +425,105 @@ def start(
     had_failure = False
 
     for name in project_names_to_process:
-        # Check for port conflicts BEFORE starting containers
-        try:
-            _check_port_conflicts(name, verbose=actual_verbose, assume_yes=actual_yes)
-        except KeyboardInterrupt:
-            console.print("\n[yellow]Operation cancelled.[/yellow]")
-            raise typer.Exit(code=1) from None
-        except typer.Exit:
-            # Port conflict unresolved or declined: skip this project, record the
-            # failure, and continue with the rest.
-            console.print(f"[yellow]Skipping project '{name}' due to port conflicts.[/yellow]")
-            had_failure = True
-            continue
-
-        try:
-            with stderr_console.status(
-                f"[bold green]Starting '{name}'...[/bold green]", spinner="dots"
-            ) as status:
-                log_file = _start_project(
-                    name, verbose=actual_verbose, status=status, bench_selector=actual_bench
-                )
-        except typer.Exit as e:
-            # Exit code 0 = deliberate abort (e.g. inspect fallback), exit the
-            # entire operation. Any nonzero exit = project not found or its bench
-            # could not be started: skip it, record the failure, and continue.
-            if e.exit_code == 0:
-                raise
-            else:
-                console.print(f"[yellow]Skipping project '{name}': could not start.[/yellow]")
+        # Port conflicts only matter when host ports must be BOUND, i.e. when the
+        # frappe container is not already up. An already-running instance owns its
+        # own ports, so skip the check (this also avoids the self-conflict a naive
+        # re-run would hit, letting core.start report the idempotent no-op).
+        if not _frappe_running(name):
+            try:
+                _check_port_conflicts(name, verbose=actual_verbose, assume_yes=actual_yes)
+            except KeyboardInterrupt:
+                console.print("\n[yellow]Operation cancelled.[/yellow]")
+                raise typer.Exit(code=1) from None
+            except typer.Exit:
+                # Port conflict unresolved or declined: skip this project, record
+                # the failure, and continue with the rest.
+                console.print(f"[yellow]Skipping project '{name}' due to port conflicts.[/yellow]")
                 had_failure = True
                 continue
 
-        # Print outside spinner context
-        console.print(f"Instance '{name}' started.")
-        if log_file:
-            console.print(f"[bold green]✓ Started bench (logs: {log_file})[/bold green]")
-            console.print(f"[dim]View logs with: cwcli logs {name}[/dim]")
+        try:
+            outcome = _run_start(name, actual_bench, actual_verbose)
+        except typer.Exit as e:
+            # Exit code 0 = deliberate abort, exit the entire operation. Any
+            # nonzero exit = project not found, ambiguous multi-bench on a non-TTY,
+            # or its bench could not be started: skip it, record it, continue.
+            if e.exit_code == 0:
+                raise
+            console.print(f"[yellow]Skipping project '{name}': could not start.[/yellow]")
+            had_failure = True
+            continue
+
+        if outcome is None:
+            # Soft skip (frappe.not_found): the containers came up but there was no
+            # bench to start. The warning was already printed; this is NOT a failure
+            # (preserves the pre-migration behavior), so the command still exits 0.
+            console.print(f"Instance '{name}' started.")
+            continue
+
+        _render_start_outcome(name, outcome)
 
     console.print("\n[bold green]Start command finished.[/bold green]")
 
     if had_failure:
         raise typer.Exit(code=1)
+
+
+def _run_start(name: str, bench_selector: str | None, verbose: bool) -> StartOutcome | None:
+    """Call ``core.start`` under the spinner, resolving a multi-bench choice via a
+    prompt OUTSIDE the spinner (the known spinner-over-questionary deadlock)."""
+    override: str | None = None
+    while True:
+        try:
+            with stderr_console.status(
+                f"[bold green]Starting '{name}'...[/bold green]", spinner="dots"
+            ):
+                result = core_start.start(name, bench=bench_selector, bench_path=override)
+        except CwcliError as e:
+            if e.code == "frappe.not_found":
+                # Soft skip (matches the internal _handle_start_project_error and the
+                # pre-migration behavior): the containers came up, but there is no
+                # frappe service / bench to start. Warn and return a soft-skip (None) -
+                # NOT a hard failure, so the whole command does not exit 1 over it.
+                stderr_console.print(f"[yellow]Warning: {e.message} Skipping bench start.[/yellow]")
+                return None
+            _handle_start_error(e, name)
+
+        if (
+            result.status is Status.NEEDS_CHOICE
+            and result.choice is not None
+            and result.choice.kind == "select_bench"
+        ):
+            # Prompt (TTY) / refuse (non-TTY) which bench, then re-invoke with the
+            # chosen path verbatim. bench_selector was None to reach here.
+            override = resolve_bench_path(name, None, None, verbose=verbose, on_ambiguous="prompt")
+            continue
+        break
+
+    if verbose:
+        for warning in result.warnings:
+            stderr_console.print(f"[dim]{warning.text}[/dim]")
+    return result.data
+
+
+def _handle_start_error(e: CwcliError, name: str) -> NoReturn:
+    """Render a core.start failure and Exit (nonzero -> the loop skips this project)."""
+    if e.code == "project.not_found":
+        console.print(f"[bold red]Error: Project '{name}' not found.[/bold red]")
+    else:
+        stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
+        if e.hint:
+            stderr_console.print(f"[dim]{e.hint}[/dim]")
+    raise typer.Exit(code=1)
+
+
+def _render_start_outcome(name: str, outcome: StartOutcome) -> None:
+    """Print the start result (idempotent no-op or a fresh launch)."""
+    console.print(f"Instance '{name}' started.")
+    if outcome.already_running:
+        up = sum(1 for p in outcome.processes if p.pid is not None)
+        total = len(outcome.processes)
+        console.print(f"[bold green]✓ Already running ({up}/{total} processes up)[/bold green]")
+    else:
+        console.print(f"[bold green]✓ Started bench (logs: {outcome.log_path})[/bold green]")
+    console.print(f"[dim]View logs with: cwcli logs {name}[/dim]")
