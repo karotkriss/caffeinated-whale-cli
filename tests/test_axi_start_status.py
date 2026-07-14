@@ -171,7 +171,7 @@ class TestAxiStart:
         result = runner.invoke(axi_mod.app, ["start", "proj", "--yes"])
         assert result.exit_code == 1
         # The message carries single quotes (TOON-special), so toon.kv quotes it.
-        assert 'error: "Project \'proj\' not found."' in result.stdout
+        assert "error: \"Project 'proj' not found.\"" in result.stdout
 
 
 # -------------------------------------------------------------------------- axi status
