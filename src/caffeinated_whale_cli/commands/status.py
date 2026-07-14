@@ -8,18 +8,34 @@ so a script reading ``cwcli status`` still gets one word while a human at a
 terminal still sees the full breakdown. Exit 0 across the lifecycle states
 (including a real-but-stopped ``offline`` project); a truly-nonexistent project
 name exits non-zero with a "no such project" error instead.
+
+``--watch`` adds a live, continuously-refreshing per-process view (rich ``Live``
+on stderr). Crucially it re-polls with ``probe_web=False`` so repeated ticks make
+ZERO ``curl localhost:8000`` requests against the bench - the whole point is to
+watch health WITHOUT spamming the Frappe access logs. Per-process health still
+comes from the single ``ps`` read each tick, which leaves no log trace. When
+stdout or stderr is not a TTY (piped/redirected - the live view renders to
+stderr, so both streams must be interactive), ``--watch`` degrades to one quiet
+snapshot instead of starting the live loop.
 """
 
+import sys
+import time
+
 import typer
+from rich.live import Live
+from rich.table import Table
 
 from ..core import status as core_status
-from ..core.envelope import Status
+from ..core.envelope import Result, Status
 from ..core.errors import CwcliError
 from ..core.status import StatusReport
 from ..utils.completion_utils import complete_project_names
 from ..utils.console import stderr_console
 from ..utils.docker_utils import handle_docker_errors
 from .utils import resolve_bench_path
+
+_MIN_INTERVAL = 1.0
 
 
 @handle_docker_errors
@@ -38,6 +54,18 @@ def status(
         "-v",
         help="Show the per-process health detail and the web HTTP probe on stderr.",
     ),
+    watch: bool = typer.Option(
+        False,
+        "--watch",
+        "-w",
+        help="Live, continuously-refreshing per-process view (no web probe - leaves "
+        "no HTTP requests in the bench logs). Ctrl-C to exit.",
+    ),
+    interval: float = typer.Option(
+        2.0,
+        "--interval",
+        help="Seconds between --watch refreshes (floored at 1s).",
+    ),
 ):
     """
     Check the health status of a Frappe project instance.
@@ -46,11 +74,49 @@ def status(
     with the per-process breakdown (up/uptime/CPU/RSS) and the web HTTP code on
     stderr. Exits 0 across all lifecycle states (a stopped instance is ``offline``);
     a truly-nonexistent project name exits non-zero with a "no such project" error.
+
+    ``--watch`` shows a live refreshing view without probing the web server (so
+    repeated ticks leave no HTTP requests in the bench's access logs); it degrades
+    to a single snapshot when stdout or stderr is not a TTY.
     """
-    override: str | None = None
+    if watch and sys.stdout.isatty() and sys.stderr.isatty():
+        # Live view: quiet (probe_web=False) so repeated ticks never hit :8000.
+        _watch_loop(project_name, bench, verbose, max(_MIN_INTERVAL, interval))
+        raise typer.Exit(code=0)
+
+    # One-shot. The plain command keeps its web probe; a non-TTY --watch degrades
+    # to a single quiet snapshot (probe_web=False) to preserve watch semantics.
+    result, _ = _fetch(project_name, bench, None, verbose, probe_web=not watch)
+    report = result.data
+    assert report is not None  # OK/WARNING always carries a StatusReport
+    if verbose:
+        for warning in result.warnings:
+            stderr_console.print(f"[dim]{warning.text}[/dim]")
+    _render_detail(report, verbose)
+
+    # The one machine-readable token on stdout (nothing else).
+    typer.echo(report.overall)
+    raise typer.Exit(code=0)
+
+
+def _fetch(
+    project_name: str,
+    bench: str | None,
+    override: str | None,
+    verbose: bool,
+    *,
+    probe_web: bool,
+) -> tuple[Result[StatusReport], str | None]:
+    """One snapshot, resolving a multi-bench ``NEEDS_CHOICE`` via a prompt.
+
+    Returns ``(result, resolved_bench_path)`` so a watch loop can resolve the bench
+    once up front and re-poll with the settled path (no per-tick re-prompt).
+    """
     while True:
         try:
-            result = core_status.status(project_name, bench=bench, bench_path=override)
+            result = core_status.status(
+                project_name, bench=bench, bench_path=override, probe_web=probe_web
+            )
         except CwcliError as e:
             # A truly-nonexistent project (NOT_FOUND) or an unreachable Docker daemon
             # (DOCKER) reaches here; a real-but-stopped project is a returned
@@ -68,17 +134,37 @@ def status(
             )
             continue
         break
+    assert result.data is not None
+    return result, override
 
-    report = result.data
-    assert report is not None  # OK/WARNING always carries a StatusReport
-    if verbose:
-        for warning in result.warnings:
-            stderr_console.print(f"[dim]{warning.text}[/dim]")
-    _render_detail(report, verbose)
 
-    # The one machine-readable token on stdout (nothing else).
-    typer.echo(report.overall)
-    raise typer.Exit(code=0)
+def _watch_loop(project_name: str, bench: str | None, verbose: bool, interval: float) -> None:
+    """Live per-process view on stderr, re-polling with the web probe suppressed.
+
+    The bench is resolved once (prompting if ambiguous) BEFORE the live view takes
+    over the terminal; every subsequent tick re-polls with the settled path and
+    ``probe_web=False``, so the watch loop makes zero HTTP requests to the bench.
+    Ctrl-C exits cleanly (Live restores the terminal on context exit); exit 0,
+    nothing on stdout.
+    """
+    try:
+        report, override = _snapshot(project_name, bench, None, verbose)
+        with Live(_render_table(report), console=stderr_console, refresh_per_second=4) as live:
+            while True:
+                time.sleep(interval)
+                report, override = _snapshot(project_name, bench, override, verbose)
+                live.update(_render_table(report))
+    except KeyboardInterrupt:
+        pass
+
+
+def _snapshot(
+    project_name: str, bench: str | None, override: str | None, verbose: bool
+) -> tuple[StatusReport, str | None]:
+    """A quiet (``probe_web=False``) watch snapshot: the report plus settled path."""
+    result, override = _fetch(project_name, bench, override, verbose, probe_web=False)
+    assert result.data is not None
+    return result.data, override
 
 
 _OVERALL_STYLE = {
@@ -89,20 +175,30 @@ _OVERALL_STYLE = {
 }
 
 
-def _render_detail(report: StatusReport, verbose: bool) -> None:
-    """Render the per-process health + web probe to stderr (never stdout)."""
+def _title(report: StatusReport) -> str:
+    """The shared styled ``{project}: {overall} (supervisor up/down)`` heading."""
     style = _OVERALL_STYLE.get(report.overall, "white")
-    stderr_console.print(
+    return (
         f"[{style}]{report.project}: {report.overall}[/{style}]"
         f" (supervisor {'up' if report.supervisor_up else 'down'})"
     )
+
+
+def _up_mark(up: bool) -> str:
+    """The shared per-process up/down mark."""
+    return "[green]up[/green]" if up else "[red]down[/red]"
+
+
+def _render_detail(report: StatusReport, verbose: bool) -> None:
+    """Render the per-process health + web probe to stderr (never stdout)."""
+    stderr_console.print(_title(report))
     if report.web_http_code is not None:
         stderr_console.print(f"[dim]web http: {report.web_http_code}[/dim]")
     elif verbose and report.container_running:
         stderr_console.print("[dim]web http: no response[/dim]")
 
     for p in report.processes:
-        mark = "[green]up[/green]" if p.up else "[red]down[/red]"
+        mark = _up_mark(p.up)
         detail = ""
         if p.up:
             bits = []
@@ -116,3 +212,29 @@ def _render_detail(report: StatusReport, verbose: bool) -> None:
                 bits.append(f"rss={p.rss_kb}KB")
             detail = "  " + " ".join(bits) if bits else ""
         stderr_console.print(f"  {p.label:<16} {mark}{detail}")
+
+
+def _render_table(report: StatusReport) -> Table:
+    """The live ``--watch`` frame: one row per process (no web probe, so no web row)."""
+    table = Table(
+        title=_title(report),
+        title_justify="left",
+        expand=False,
+    )
+    table.add_column("process")
+    table.add_column("status")
+    table.add_column("pid", justify="right")
+    table.add_column("uptime", justify="right")
+    table.add_column("cpu%", justify="right")
+    table.add_column("rss", justify="right")
+    for p in report.processes:
+        mark = _up_mark(p.up)
+        table.add_row(
+            p.label,
+            mark,
+            str(p.pid) if p.pid is not None else "-",
+            f"{p.uptime_s}s" if p.uptime_s is not None else "-",
+            f"{p.cpu_pct}" if p.cpu_pct is not None else "-",
+            f"{p.rss_kb}KB" if p.rss_kb is not None else "-",
+        )
+    return table

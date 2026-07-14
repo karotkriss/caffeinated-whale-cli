@@ -40,7 +40,7 @@ def _run(monkeypatch, capsys, report):
         status_mod.core_status, "status", lambda *a, **k: Result(status=Status.OK, data=report)
     )
     with pytest.raises(typer.Exit) as exc:
-        status_mod.status(project_name="proj", bench=None, verbose=False)
+        status_mod.status(project_name="proj", bench=None, verbose=False, watch=False, interval=2.0)
     assert exc.value.exit_code == 0
     return capsys.readouterr()
 
@@ -86,7 +86,7 @@ def test_nonexistent_project_exits_nonzero(monkeypatch, capsys):
 
     monkeypatch.setattr(status_mod.core_status, "status", _raise)
     with pytest.raises(typer.Exit) as exc:
-        status_mod.status(project_name="proj", bench=None, verbose=False)
+        status_mod.status(project_name="proj", bench=None, verbose=False, watch=False, interval=2.0)
     assert exc.value.exit_code == 1
     captured = capsys.readouterr()
     # Nothing on stdout (no misleading "offline" token); the error is on stderr.
