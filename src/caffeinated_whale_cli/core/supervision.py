@@ -17,6 +17,11 @@ What lives here:
 - :func:`discover_stack` - ONE ``ps`` in the frappe container mapping each PID to
   its Procfile label from its self-describing cmdline, keyed to a RESOLVED bench
   path so a multi-bench instance never mis-attributes another bench's processes.
+- :func:`discover_unsupervised_stack` - the ``status`` FALLBACK for an instance
+  cwcli's supervisord did not start (pre-v3, or a plain ``bench start``): the same
+  ``ps``/``label_for`` machinery walks the honcho manager's tree instead, so the
+  truly-running processes are reported up rather than a false all-down. Detection
+  is READ-ONLY - it never launches supervisord (that is ``cwcli start``'s job).
 - :func:`expected_labels` / :func:`procfile_programs` - the live ``Procfile``
   parse (which labels/programs SHOULD run), normalized and raw.
 - :func:`read_marker` / :func:`write_marker` - the minimal supervisor marker that
@@ -116,6 +121,22 @@ class StackSnapshot:
 
     supervisor_up: bool
     supervisor_pid: int | None
+    processes: list[ProcessHealth]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class UnsupervisedStack:
+    """A bench whose Procfile runs under a NON-cwcli manager (honcho / ``bench start``).
+
+    The fallback for an instance cwcli's supervisord did not start - a pre-v3
+    instance, or one launched with a plain ``bench start`` - so ``status`` reports
+    the truly-running processes instead of a false all-down. ``manager_up`` is True
+    iff a honcho/bench-start manager rooted at this bench is live; ``processes`` is
+    the label-mapped live children (up/pid/uptime from ``ps`` only - there is no
+    supervisord ``state`` to read here).
+    """
+
+    manager_up: bool
     processes: list[ProcessHealth]
 
 
@@ -308,7 +329,14 @@ def _descendants(rows: list[_PsRow], roots: set[int]) -> set[int]:
 
 
 def label_for(args: str) -> str | None:
-    """Map a self-describing cmdline to its Procfile label (supervisor/launcher excluded)."""
+    """Map a self-describing cmdline to its Procfile label (supervisor/launcher excluded).
+
+    A Procfile line's ``bench <cmd>`` resolves at runtime to the actual worker
+    process ``python -m frappe.utils.bench_helper frappe <cmd>``, so once the
+    ``bench``/``sh -c`` wrapper execs away the live cmdline reads ``frappe serve``
+    /``frappe schedule``/``frappe watch``/``frappe worker`` - NOT ``bench serve``.
+    Match BOTH forms, or a genuinely-running web/watch/schedule reads as down.
+    """
     if "supervisord" in args:
         return None
     if _LAUNCHER_NAME in args:
@@ -325,11 +353,11 @@ def label_for(args: str) -> str | None:
     if "bench worker" in args or "frappe worker" in args:
         queue = _queue_from_args(args)
         return f"worker:{queue}" if queue else "worker"
-    if "bench schedule" in args:
+    if "bench schedule" in args or "frappe schedule" in args:
         return "schedule"
-    if "bench watch" in args:
+    if "bench watch" in args or "frappe watch" in args:
         return "watch"
-    if "bench serve" in args or "gunicorn" in args:
+    if "bench serve" in args or "frappe serve" in args or "gunicorn" in args:
         return "web"
     return None
 
@@ -377,6 +405,61 @@ def discover_stack(container, bench_path: str) -> StackSnapshot:
             )
         )
     return StackSnapshot(supervisor_up=True, supervisor_pid=sup_pids[0], processes=processes)
+
+
+def _is_process_manager(args: str) -> bool:
+    """A NON-cwcli Procfile manager (honcho, which is what ``bench start`` runs)."""
+    return "honcho" in args
+
+
+def _manager_pids_for_bench(container, rows: list[_PsRow], bench_path: str) -> list[int]:
+    """PIDs of a honcho / ``bench start`` manager rooted at ``bench_path`` (keyed by cwd).
+
+    honcho (bench's own dev launcher) runs with cwd == the bench dir and has no
+    cwcli config/socket to key on, so a multi-bench instance is disambiguated by
+    ``/proc/<pid>/cwd`` - exactly the cwd fallback the supervisord keying already uses.
+    """
+    candidates = [r for r in rows if _is_process_manager(r.args)]
+    if not candidates:
+        return []
+    cwds = _resolve_cwds(container, [r.pid for r in candidates])
+    return [r.pid for r in candidates if _same_path(cwds.get(r.pid), bench_path)]
+
+
+def discover_unsupervised_stack(container, bench_path: str) -> UnsupervisedStack:
+    """Discover a bench's stack when it runs under honcho / ``bench start``, not cwcli.
+
+    The fallback used by ``status`` when :func:`discover_stack` finds no cwcli
+    supervisord: locate the honcho manager rooted at this bench (keyed by cwd) and
+    label-map its live process tree from the SAME ``ps`` machinery. Every reported
+    process is genuinely up (its ``ps`` presence is the truth); there is no
+    supervisord ``state`` in this mode, so ``state`` stays ``None``. Returns
+    ``manager_up=False`` (no processes) when no such manager is running for the bench.
+    """
+    rows = _ps_rows(container)
+    mgr_pids = _manager_pids_for_bench(container, rows, bench_path)
+    if not mgr_pids:
+        return UnsupervisedStack(manager_up=False, processes=[])
+
+    tree = _descendants(rows, set(mgr_pids))
+    processes: list[ProcessHealth] = []
+    for r in rows:
+        if r.pid not in tree or r.pid in mgr_pids:
+            continue
+        label = label_for(r.args)
+        if label is None:
+            continue
+        processes.append(
+            ProcessHealth(
+                label=label,
+                up=True,
+                pid=r.pid,
+                uptime_s=r.etimes,
+                cpu_pct=r.cpu,
+                rss_kb=r.rss,
+            )
+        )
+    return UnsupervisedStack(manager_up=True, processes=processes)
 
 
 def stop_supervisor(container, bench_path: str, *, timeout: float = 15.0) -> bool:
@@ -678,6 +761,13 @@ def _self_check() -> None:
     assert label_for("/env/bin/bench watch") == "watch"
     assert label_for("/env/bin/bench worker") == "worker"
     assert label_for("/env/bin/bench worker --queue short") == "worker:short"
+    # The real runtime form once the ``bench`` wrapper execs into bench_helper.
+    assert label_for("/env/bin/python -m frappe.utils.bench_helper frappe serve --port 8000") == (
+        "web"
+    )
+    assert label_for("/env/bin/python -m frappe.utils.bench_helper frappe schedule") == "schedule"
+    assert label_for("/env/bin/python -m frappe.utils.bench_helper frappe watch") == "watch"
+    assert label_for("/env/bin/python -m frappe.utils.bench_helper frappe worker") == "worker"
     assert label_for("redis-server /w/b/config/redis_cache.conf") == "redis_cache"
     assert label_for("redis-server /w/b/config/redis_queue.conf") == "redis_queue"
     assert (
@@ -707,6 +797,10 @@ def _self_check() -> None:
     assert _config_from_args("python supervisord -c /w/b/logs/.cwcli-supervisor.conf") == (
         "/w/b/logs/.cwcli-supervisor.conf"
     )
+
+    # honcho / bench-start is a manager (the status fallback root); supervisord/leaves are not.
+    assert _is_process_manager("/env/bin/python /env/bin/honcho start") is True
+    assert _is_process_manager("/env/bin/python /env/bin/bench serve") is False
 
     # supervisorctl status parse -> normalized-label states.
     class _C:

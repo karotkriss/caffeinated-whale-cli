@@ -87,6 +87,25 @@ are now the whole point. Each note below guards a real bug.
   distinguishes a crash-looping `BACKOFF` and give-up `FATAL` from a clean down - detail `ps` alone cannot.
   `online` = container up, no marker (never started). `offline` = a real-but-stopped project - RETURNED,
   never raised. A truly-nonexistent project RAISES `NOT_FOUND`; a dead daemon RAISES `DOCKER`.
+- **Not-cwcli-supervised FALLBACK (regression fix - v3 broke this).** v3 switched detection to supervisord-ONLY,
+  so a bench running under honcho / a plain `bench start` (how EVERY instance started before v3 looks) found no
+  supervisord, walked no tree, and falsely reported EVERY process `down`. Fix: when `discover_stack` finds no
+  cwcli supervisord, status falls back to `supervision.discover_unsupervised_stack` - the SAME `ps` +
+  `label_for` + `_descendants` machinery walking the honcho / `bench start` process tree (keyed by honcho's
+  `/proc/<pid>/cwd == bench`, the same cwd fallback supervisord keying uses). It reports each process's TRUE
+  `up`/pid/uptime from `ps`; the per-process supervisord `state` is `None` here (there is no supervisord to ask -
+  correct: `up` is the observable truth). The report is flagged `StatusReport.not_cwcli_supervised=True` with a
+  `supervisor.not_cwcli` hint warning ("run `cwcli start`..."), the heading reads `(not under cwcli supervision)`
+  not `(supervisor down)`, and `overall` is the honest `running`/`degraded` off the real processes. It is a PURE
+  READ - status NEVER launches supervisord or mutates the instance (captain decision; migrating is `cwcli start`'s
+  job) - and applies to `status`, `status --watch`, and `axi status`. **`discover_stack` stays supervisord-ONLY**
+  (its `supervisor_up` gates `start` idempotency + `restart`'s precondition - do NOT reroute it through the
+  fallback, or start/restart mistake a honcho bench for a cwcli-supervised one).
+- **`label_for` must match the runtime `frappe <cmd>` form, not just `bench <cmd>`.** A Procfile `web: bench serve`
+  resolves at runtime (once the `bench`/`sh -c` wrapper execs away) to `python -m frappe.utils.bench_helper frappe
+  serve` - so `label_for` matches BOTH `bench serve|schedule|watch|worker` AND `frappe serve|schedule|watch|worker`
+  (worker already had the dual form). Miss this and a genuinely-serving web/watch/schedule reads as `down` under
+  the supervisord path too (the fakes used `bench serve` cmdlines and masked it; `test_real_bench_helper_cmdlines_map_to_labels` guards it now).
 - **`cwcli status --watch` must NOT probe the web server** (the load-bearing reason the flag exists).
   `probe_web=False` suppresses the `curl localhost:8000` call (which is what spams the bench's access logs);
   per-program health still comes from `ps` + `supervisorctl` (the control socket, NOT :8000), so repeated

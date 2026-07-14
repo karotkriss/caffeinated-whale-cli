@@ -14,7 +14,7 @@ from caffeinated_whale_cli.core import resolvers
 from caffeinated_whale_cli.core import status as core_status
 from caffeinated_whale_cli.core.envelope import Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
-from tests.test_core_supervision import _CTL_SINGLE, _PS_SINGLE, BENCH, FakeContainer
+from tests.test_core_supervision import _CTL_SINGLE, _PS_HONCHO, _PS_SINGLE, BENCH, FakeContainer
 
 _MARKER = {"supervisor": "supervisord", "started_at": "t", "config_path": "p"}
 
@@ -87,6 +87,64 @@ class TestOverall:
         worker = next(p for p in report.processes if p.label == "worker:default")
         assert worker.state == "FATAL"
         assert worker.up is False
+
+
+class TestNotCwcliSupervisedFallback:
+    """The REGRESSION guard: a bench under honcho (no cwcli supervisord) must report
+    its processes UP + the not-cwcli-supervised flag/hint, NOT a false all-down."""
+
+    def test_honcho_instance_reports_processes_up_not_all_down(self, wire):
+        # No marker (cwcli never started it), honcho running the Procfile, web up.
+        c = FakeContainer(marker=None, ps=_PS_HONCHO, cwds={200: BENCH}, web_code="200")
+        wire(c, benches=[{"path": BENCH}])
+        report = core_status.status("proj").data
+        # Not the regression's false all-down: every expected process is UP.
+        assert report.not_cwcli_supervised is True
+        assert report.supervisor_up is False  # cwcli's supervisord is NOT up
+        assert all(p.up for p in report.processes)
+        web = next(p for p in report.processes if p.label == "web")
+        assert web.up is True and web.pid == 201
+        # supervisord state is unavailable in the fallback (up is the ps truth).
+        assert web.state is None
+        # overall is the real state, never offline/online-all-down.
+        assert report.overall == "running"
+
+    def test_hint_warning_is_surfaced(self, wire):
+        c = FakeContainer(marker=None, ps=_PS_HONCHO, cwds={200: BENCH}, web_code="200")
+        wire(c, benches=[{"path": BENCH}])
+        result = core_status.status("proj")
+        assert any("cwcli start" in w.text for w in result.warnings)
+
+    def test_degraded_when_a_process_is_missing_under_honcho(self, wire):
+        # honcho up but the worker died (not in ps) -> honestly degraded, still
+        # flagged not-cwcli-supervised (not all-down).
+        ps = _PS_HONCHO.replace(
+            "205 200 499 0.3 70000 /env/bin/python /env/bin/bench worker --queue default\n", ""
+        )
+        c = FakeContainer(marker=None, ps=ps, cwds={200: BENCH}, web_code="200")
+        wire(c, benches=[{"path": BENCH}])
+        report = core_status.status("proj").data
+        assert report.not_cwcli_supervised is True
+        assert report.overall == "degraded"
+        worker = next(p for p in report.processes if p.label == "worker:default")
+        assert worker.up is False
+
+    def test_no_manager_at_all_is_not_flagged(self, wire):
+        # Neither cwcli supervisord nor honcho, no marker -> the never-started
+        # (online) path, NOT the not-cwcli-supervised fallback.
+        c = FakeContainer(marker=None, ps="1 0 5 0.0 1000 /sbin/init\n", cwds={})
+        wire(c, benches=[{"path": BENCH}])
+        report = core_status.status("proj").data
+        assert report.not_cwcli_supervised is False
+        assert report.overall == "online"
+
+    def test_supervised_instance_is_not_flagged(self, wire):
+        # The v3 supervisord path is untouched: never flagged not-cwcli-supervised.
+        wire(FakeContainer(marker=_MARKER, web_code="200"), benches=[{"path": BENCH}])
+        report = core_status.status("proj").data
+        assert report.not_cwcli_supervised is False
+        assert report.supervisor_up is True
+        assert report.overall == "running"
 
 
 class TestProbeWeb:
