@@ -567,6 +567,14 @@ they survive a container restart, with built-in rotation). With no `--process`,
 `cwcli logs` synthesizes a combined view across every program; `--process <label>`
 tails just one program's log.
 
+**Not under cwcli supervision:** if a bench is running but was NOT started by
+cwcli's supervisord - a plain `bench start`, or an instance already running before
+cwcli's supervisor existed - `cwcli logs` does not falsely report no logs. It falls
+back to discovering and tailing the bench's real `<bench>/logs/*.log` files
+(honcho's log names differ from supervisord's per-process files), with `--process`
+filtered by file stem. `cwcli logs` only reads - it never launches or installs
+supervisord.
+
 ```bash
 cwcli logs [OPTIONS] PROJECT_NAME
 ```
