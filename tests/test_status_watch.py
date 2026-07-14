@@ -65,6 +65,28 @@ def _record_probe_web(monkeypatch):
     return calls
 
 
+def test_render_table_includes_state_column():
+    # The --watch live table must surface supervisord's authoritative state (not
+    # just up/down), matching the one-shot stderr detail.
+    from rich.console import Console
+
+    report = StatusReport(
+        overall="degraded",
+        project="proj",
+        container_running=True,
+        supervisor_up=True,
+        web_http_code=None,
+        processes=[ProcessHealth(label="worker:default", up=False, state="BACKOFF")],
+    )
+    table = status_mod._render_table(report)
+    console = Console(width=120)
+    with console.capture() as capture:
+        console.print(table)
+    rendered = capture.get()
+    assert "state" in rendered
+    assert "BACKOFF" in rendered
+
+
 def test_watch_tty_never_runs_the_web_probe(monkeypatch, capsys):
     # THE load-bearing behavior: every watch tick re-polls with probe_web=False,
     # so the loop makes ZERO web requests against the bench.

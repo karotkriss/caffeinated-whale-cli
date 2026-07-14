@@ -10,6 +10,7 @@ explicit ``bench_path`` honored verbatim, the not-started / container-down
 from __future__ import annotations
 
 import pytest
+from docker.errors import APIError, NotFound
 
 from caffeinated_whale_cli.core import resolvers
 from caffeinated_whale_cli.core import restart as core_restart
@@ -124,3 +125,19 @@ class TestHardErrors:
         with pytest.raises(CwcliError) as exc:
             core_restart.restart_process("proj", "web")
         assert exc.value.kind is ErrorKind.DOCKER
+
+    @pytest.mark.parametrize("exc", [APIError("boom"), NotFound("gone")])
+    def test_reload_docker_error_becomes_typed_error(self, wire, exc):
+        # A stale container (e.g. concurrently rm'd) must never leak a raw docker
+        # exception past the core boundary - it becomes a typed CwcliError.
+        c = FakeContainer()
+
+        def _exploding_reload():
+            raise exc
+
+        c.reload = _exploding_reload
+        wire(c, benches=[{"path": BENCH}])
+        with pytest.raises(CwcliError) as caught:
+            core_restart.restart_process("proj", "web")
+        assert caught.value.kind is ErrorKind.DOCKER
+        assert caught.value.code == "container.reload_failed"

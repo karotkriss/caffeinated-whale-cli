@@ -261,6 +261,12 @@ def axi_start(
         "-y",
         help="Auto-resolve port conflicts by stopping conflicting Frappe projects.",
     ),
+    autorestart: bool = typer.Option(
+        True,
+        "--autorestart/--no-autorestart",
+        help="Self-heal crashed processes: supervisord restarts a program that "
+        "crashes (not one that exits cleanly). Set at launch.",
+    ),
 ) -> None:
     """Start a project's containers + bench; emit the outcome as TOON (never prompts).
 
@@ -272,7 +278,7 @@ def axi_start(
     _axi_resolve_port_conflicts(project, yes)
 
     try:
-        result = core_start.start(project, bench=bench)
+        result = core_start.start(project, bench=bench, autorestart=autorestart)
     except CwcliError as error:
         emit_axi_error(error)
         raise typer.Exit(exit_for(error.kind)) from None
