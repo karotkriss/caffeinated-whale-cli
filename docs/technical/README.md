@@ -32,6 +32,7 @@ caffeinated-whale-cli/
 │   │   ├── list.py            # Thin frontend over core.list_instances (`cwcli ls`)
 │   │   ├── where.py           # Thin frontend over core.where
 │   │   ├── axi.py             # Agent-facing `cwcli axi` frontend
+│   │   ├── self_update.py     # Install-method-aware `cwcli self-update`, over core.version
 │   │   └── ...                # Other commands
 │   ├── core/                   # UI-pure logic core (no rich/questionary/typer)
 │   │   ├── envelope.py         # Result/Status/Message/Choice DTOs
@@ -43,7 +44,8 @@ caffeinated-whale-cli/
 │   │   ├── where.py            # core.where - the read-only cached-instance search
 │   │   ├── supervision.py      # Shared tracked-state contract for start+status (honcho discovery, marker, bounded log)
 │   │   ├── start.py            # core.start - idempotent bench start (discovered-PID no-op)
-│   │   └── status.py           # core.status - per-process health + pre-computed overall
+│   │   ├── status.py           # core.status - per-process health + pre-computed overall
+│   │   └── version.py          # core.version - install-method detection + PyPI lookup for self-update
 │   └── utils/                  # Utility modules
 │       ├── docker_utils.py    # Docker client management
 │       ├── port_utils.py      # Port conflict detection
