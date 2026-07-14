@@ -6,6 +6,47 @@ This project uses pytest for testing. All tests are located in the `tests/` dire
 
 The suite is split into two tiers by pytest marker (see [Testing Directory Index](./README.md#two-tier-model-fast-unit-vs-real-docker-e2e) for the full model): a fast `unit` tier (no Docker daemon needed) and a real-Docker `e2e`/`e2e_p2p` tier under `tests/e2e/`. This guide covers writing `unit`-tier tests; see [tests/README.md](../../tests/README.md#e2e-harness-real-docker) for the E2E harness.
 
+## Gate Policy
+
+These are the authoritative team norms for validating a change - the policy behind the mechanics documented in the rest of this guide.
+Where a norm refers to mechanics, this section points at where they already live (the [Continuous Integration](#continuous-integration) section, [tests/README.md](../../tests/README.md), and the [E2E testing skill](../../.claude/skills/cwcli-e2e-testing/SKILL.md)) rather than restating them.
+
+### Gate scope: fast tests only; CI owns E2E
+
+The validation gate runs only the tests relevant to your change, on the fast `unit` tier.
+A bare `pytest` already deselects the real-Docker tiers - `addopts` in `pyproject.toml` ends in `-m "not e2e and not e2e_p2p"`, and `tests/conftest.py` auto-marks any unmarked test `unit` - so the gate runs the fast tier by design.
+Do not spin up or run the E2E suite as part of local validation: the v14/v15/v16 real-Docker matrix in [`.github/workflows/e2e.yml`](../../.github/workflows/e2e.yml) is CI's job, and CI catches the rest.
+When a change needs E2E coverage, write or adjust the relevant test and let CI run it.
+
+### Both interactive and non-interactive modes are required
+
+Every prompting command must SUPPORT and be TESTED in BOTH interactive and non-interactive modes.
+Interactive means a real human at a TTY sees each prompt and it genuinely collects input.
+Non-interactive means every prompt has a flag (`--yes`/`-y` for confirmations, credential flags, the `--site`/backup selectors, ...) so an agent or any non-TTY runs to completion with no prompt, and a non-TTY missing a needed flag refuses with a non-zero exit rather than hanging or silently defaulting.
+Drive the interactive path through a real pty; the [E2E testing skill](../../.claude/skills/cwcli-e2e-testing/SKILL.md) documents the pty mechanics (awaiting prompt_toolkit's `ESC[?2004h` raw-mode marker before each keystroke).
+
+### Test-writing discipline (per change)
+
+Scope test changes to what the change actually did:
+
+- A function's behavior changed -> update its test(s) and E2E.
+- Genuinely new behavior -> add a new test or E2E.
+- Logic refactored but behavior unchanged -> leave its tests untouched.
+
+### Real-instance discipline
+
+When a change genuinely needs a live Frappe instance to validate, spin up EXACTLY ONE throwaway instance (default Frappe v16), reuse that single instance for all real testing through development, and tear it down when done.
+Never spin up multiple instances - each `cwcli init` is a slow full bench build.
+Test only what relates to the change, never unrelated behavior and never the whole suite.
+The [E2E testing skill](../../.claude/skills/cwcli-e2e-testing/SKILL.md) holds the isolation mechanics (the `CWCLI_HOME`/temp-`HOME` seam and the `cwe2e-` project prefix).
+
+### Never broad-prune the shared Docker daemon
+
+Never run system-wide Docker cleanup when testing locally.
+No `docker system prune`, no bare `docker container/volume/image prune`, and no `docker rm` or `docker compose down -v` outside a run-scoped sweep - a developer's own Frappe instances share the local daemon, and a broad prune destroys them.
+Scope every cleanup to the run's own `cwe2e-`-prefixed / uniquely-labelled resources (the E2E harness already does this on purpose).
+If disk is tight, stop and reclaim narrowly rather than broad-pruning the shared daemon.
+
 ## Running Tests
 
 ### Run the Fast Unit Tier (default)

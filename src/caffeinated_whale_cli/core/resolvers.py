@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from docker.errors import APIError, NotFound
+
 from ..utils import bench_labels, db_utils
 from .envelope import Choice, Result, Status
 from .errors import CwcliError, ErrorKind
@@ -41,7 +43,17 @@ def resolve_container_state(
     - stopped, no auto-start, ``offer_choice`` -> ``NEEDS_CHOICE`` ``confirm_start``
     - stopped, no auto-start, not ``offer_choice`` -> raises ``CwcliError(NOT_RUNNING)``
     """
-    frappe_container.reload()
+    # A container rm'd/errored between resolution and here would otherwise leak a
+    # raw docker exception past the core boundary; map it to a typed CwcliError.
+    try:
+        frappe_container.reload()
+    except (APIError, NotFound) as e:
+        raise CwcliError(
+            ErrorKind.DOCKER,
+            "container.reload_failed",
+            f"Could not read state of the frappe container for project '{project_name}'.",
+            detail={"output": str(e)},
+        ) from e
 
     if frappe_container.status == "running":
         return Result(status=Status.OK, data=ContainerState(running=True, start_requested=False))

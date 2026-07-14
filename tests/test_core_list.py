@@ -82,6 +82,13 @@ class TestListInstances:
         [inst] = core_list.list_instances().data
         assert inst.ports == ["8000", "8002", "9000"]
 
+    def test_ports_sorted_numerically_not_lexicographically(self, wire):
+        # Lexicographic sort would put "10000" before "8000" (and "8000" after "10000");
+        # numeric sort must order them 8000 < 9000 < 10000.
+        wire([FakeContainer(project="proj-a", ports=_ports("10000", "8000", "9000"))])
+        [inst] = core_list.list_instances().data
+        assert inst.ports == ["8000", "9000", "10000"]
+
     def test_ports_fall_back_to_host_config_bindings(self, wire):
         # No published .ports, but PortBindings in attrs (a stopped container).
         attrs = {"HostConfig": {"PortBindings": {"8000/tcp": [{"HostPort": "8080"}]}}}
