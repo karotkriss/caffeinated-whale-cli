@@ -18,6 +18,7 @@ from .commands.logs import logs as _logs_cmd
 from .commands.open import open_bench as _open_cmd
 from .commands.restore import restore as _restore_cmd
 from .commands.run import run as _run_cmd
+from .commands.self_update import self_update as _self_update_cmd
 from .commands.status import status as _status_cmd
 from .commands.unlock import unlock as _unlock_cmd
 from .commands.update import update as _update_cmd
@@ -72,6 +73,7 @@ app.command("where")(_where_cmd)
 
 app.command("run")(_run_cmd)
 app.command("update")(_update_cmd)
+app.command("self-update")(_self_update_cmd)
 app.command("status")(_status_cmd)
 app.command("open")(_open_cmd)
 app.command("logs")(_logs_cmd)

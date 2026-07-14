@@ -43,7 +43,7 @@ uv run pytest tests/test_completion_utils.py
 
 ### Test Coverage
 
-Measured with `uv run pytest --cov` at 0.37.0 (unreleased): 582 tests across 38 test files, ~58% overall coverage.
+Measured with `uv run pytest --cov` at 0.37.0 (unreleased): 632 tests across 41 test files, ~60% overall coverage.
 Per-area breakdown (highest-coverage module in each area; see the module list in each test file for what else it exercises):
 
 - **rm safety** (`test_rm_safety`, `test_rm_truth`, `test_rm_stopped`) - `commands/rm.py` ~78%
@@ -71,6 +71,7 @@ Per-area breakdown (highest-coverage module in each area; see the module list in
 - **core start/status slices** (`test_core_start`, `test_core_status`) - `core/start.py` ~98%, `core/status.py` ~91% (the launch outcome, the idempotent no-op, multi-bench `NEEDS_CHOICE`, an explicit `bench_path` used verbatim, every `overall` branch, the stopped-is-offline-not-raised contract vs the nonexistent-project `NOT_FOUND` raise, docker-unreachable errors)
 - **`status` human frontend** (`test_status_frontend`) - `commands/status.py` ~91% (the stdout-token-only contract the PR-1 E2E net pins, per-process detail on stderr, exit 0 for a stopped project vs non-zero for a nonexistent one)
 - **`axi start`/`axi status` verbs** (`test_axi_start_status`) - TOON rendering, exit-code mapping, needs-choice/`CONFLICT` flag-naming, the never-prompt port-conflict pre-step (core stubbed)
+- **`self-update`** (`test_core_version`, `test_self_update`) - `core/version.py` ~92% (install-method detection tree, fail-open PyPI lookup, PEP 440 compare incl. the dev-ahead case, the ~1-day TTL cache), `commands/self_update.py` 100% (dev/uvx no-op, the default upgrade run, `--check`, `--no-cache`)
 
 **No dedicated suite** (only incidental coverage from other tests' mocking): `utils/port_utils.py` (~9%), `utils/sendme_utils.py` (~9%), `utils/vscode_utils.py` (~16%).
 `utils/docker_utils.py` is now partially covered (~51%, up from ~37%) since `test_core_resolvers` dedicated-tests its `get_frappe_container` CLI wrapper; the rest of the module remains incidental.
@@ -78,7 +79,7 @@ Per-area breakdown (highest-coverage module in each area; see the module list in
 
 ### Test Files
 
-Run `ls tests/` for the authoritative, current list; as of 0.37.0 (unreleased) it holds 38 `test_*.py` suites plus `bench_fakes.py` and `bench_fakes_mb.py` (shared fakes) and `README.md`.
+Run `ls tests/` for the authoritative, current list; as of 0.37.0 (unreleased) it holds 41 `test_*.py` suites plus `bench_fakes.py` and `bench_fakes_mb.py` (shared fakes) and `README.md`.
 
 ## Testing Framework
 
@@ -325,6 +326,7 @@ Status as of 0.37.0 (based on `ls tests/` and the coverage run above):
 5a. **Real-Docker E2E for the lifecycle commands `start`/`status`/`logs`/`restart`** (`tests/e2e/test_start_status_e2e.py`, both modes, v14/v15/v16 matrix) - a structure-agnostic outcome net (a started instance genuinely serves, `status` discriminates the real lifecycle states, `logs` shows the bench stream, `restart` recovers the instance, honest exit codes) that pinned the invariants the start/status core migration had to preserve and abstained from the mechanics it replaced, so it survived that migration unchanged (`openspec/changes/add-start-status-e2e-net`). `tests/e2e/test_start_status_new_behavior_e2e.py` is that migration's own net for the behavior it ADDED (genuine idempotency, `degraded`, real per-process health, the relocated bounded log, the multi-bench refuse) - see item 6a and `openspec/changes/migrate-start-status-core`.
 6. **Logic core + `cwcli axi`** (`core/`, `commands/axi.py`) - covered by `test_core_envelope`, `test_core_resolvers`, `test_core_backup`, `test_axi` (envelope/resolvers/docker wrapper at 100%, `core/backup.py` ~95%, `commands/axi.py` ~97%). The read-only `ls`/`list` and `where` slices followed the same pattern onto `core/list.py`/`core/where.py` (both 100%) and thin frontends `commands/list.py` (~80%)/`commands/where.py` (100%), covered by `test_core_list`, `test_core_where`, `test_list`, `test_where`, plus `axi ls`/`axi where` in `test_axi`.
 6a. **`start`+`status` onto the logic core** (`core/start.py` ~98%, `core/status.py` ~91%, sharing `core/supervision.py` ~81%) - covered by `test_core_start`, `test_core_status`, `test_core_supervision` (every branch against faked `ps`/Procfile/exec I/O: idempotent no-op, multi-bench `NEEDS_CHOICE`, every `overall` state, the supervisor marker, the honcho discovery/bench-keying). The reseated `commands/status.py` (~91%) is covered by `test_status_frontend` (the stdout-token-only contract), and the new `cwcli axi start`/`axi status` verbs by `test_axi_start_status`.
+6b. **`self-update`** (`commands/self_update.py` 100%, `core/version.py` ~92%) - covered by `test_self_update` (dev/uvx no-op, the default upgrade run incl. failure/`FileNotFoundError`, `--check`, `--no-cache`) and `test_core_version` (install-method detection tree, fail-open PyPI lookup, PEP 440 compare incl. the dev-ahead case, the TTL cache). No `cwcli axi` verb (deferred).
 
 ### Partial
 7. **Port Conflict Detection** (`commands/start.py`) - `test_yes_flag` covers the non-interactive/`--yes` contract, and the interactive port-conflict confirmation prompt is driven end to end by `tests/e2e/test_start_status_e2e.py`; the remaining port-scanning helpers still have no dedicated unit suite (~57%).

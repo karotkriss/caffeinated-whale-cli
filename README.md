@@ -16,6 +16,7 @@ A command-line interface (CLI) for managing Frappe/ERPNext Docker instances duri
 - **Backup & Restore** - Interactive site restoration with automatic file archive detection and P2P transfer support
 - **App Management** - List, install, uninstall, and update Frappe apps per bench and per site with `cwcli apps` (multi-site by default, `--json`, honest exit codes)
 - **Update Management** - App updates with automatic migrations and lock cleanup
+- **Self-Update** - Upgrade cwcli itself to the latest release with `cwcli self-update` (install-method aware)
 - **Auto-Inspection** - Background process to keep project cache fresh automatically
 - **System Integration** - Auto-start on system boot with platform-specific configurations
 - **Contextual Tips** - Helpful tips displayed during long-running operations to help you discover features
@@ -38,6 +39,8 @@ uv tool upgrade caffeinated-whale-cli
 # Uninstall
 uv tool uninstall caffeinated-whale-cli
 ```
+
+Or let cwcli upgrade itself - `cwcli self-update` detects your install method and runs the right command (see [`self-update`](#self-update---upgrade-cwcli-itself)).
 
 If this is your first `uv tool install`, uv may print a note about adding its tool-bin directory to your `PATH`; run `uv tool update-shell` (then restart your terminal) to do so.
 
@@ -1532,6 +1535,48 @@ cwcli config auto-inspect logs
 - Process stops on system restart unless startup is enabled
 - Logs stored in `~/.cwcli/run/auto-inspect.log`
 - PID file stored in `~/.cwcli/run/auto-inspect.pid`
+
+### `self-update` - Upgrade cwcli Itself
+
+Upgrades cwcli to the latest version published on PyPI. It detects how cwcli was installed and runs the matching upgrade for you, so you don't have to remember whether you used `uv` or `pip`.
+
+```bash
+cwcli self-update [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--check` | Dry run: report current vs latest and print the upgrade command without executing. Exits non-zero when an update is available (so scripts/CI can gate on it) |
+| `--no-cache` | Force a fresh PyPI check, ignoring the shared ≤1-day version cache. Use right after publishing a release |
+
+**How it behaves:**
+
+- **uv tool install** → runs `uv tool upgrade caffeinated-whale-cli`.
+- **pip install** → runs `python -m pip install --upgrade caffeinated-whale-cli` (using the current interpreter).
+- **dev/editable checkout** → a no-op; it tells you to `git pull` instead of self-modifying your source tree.
+- **`uvx --from ... cwcli`** (ephemeral) → a no-op; there is nothing persistent to upgrade.
+
+**Exit codes:**
+
+| Code | When |
+|------|------|
+| `0` | Already up to date (including a dev checkout that is ahead of PyPI), upgraded successfully, or a dev/uvx no-op. Also a `--check` that found no update, or a `--check` whose network lookup failed open |
+| `1` | The upgrade subprocess failed, a network failure blocked an actual upgrade, or `--check` found that an update is available |
+
+**Examples:**
+
+```bash
+# Upgrade cwcli if a newer version exists
+cwcli self-update
+
+# Report only; exit 1 if an update is available (handy in CI)
+cwcli self-update --check
+
+# Force a fresh PyPI check, bypassing the version cache
+cwcli self-update --no-cache
+```
 
 ---
 
