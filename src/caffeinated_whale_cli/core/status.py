@@ -11,7 +11,7 @@ The ``overall`` aggregate distinguishes the four lifecycle states:
 ===========  ===========================================================
 ``overall``  condition
 ===========  ===========================================================
-offline      no containers / no frappe service / frappe not running
+offline      a real-but-stopped project: containers exist, frappe not running
 online       container up, no supervisor marker (bench never started)
 running      marker present, honcho up, and the web probe answers
 degraded     marker present and honcho down (started, supervisor died),
@@ -25,9 +25,13 @@ so honcho-up already implies the stack is up; keying on the reliable web signal
 keeps ``overall`` robust across frappe versions' cmdline shapes while the
 per-process list still reports each label's liveness for detail.
 
-An absent project / absent frappe / stopped container is ``offline`` and is
-RETURNED (never raised), preserving today's "offline, exit 0" contract; only an
-unreachable Docker daemon raises. No print/prompt/``typer.Exit``.
+A real-but-stopped project (containers exist but frappe is not running) is
+``offline`` and is RETURNED (never raised), preserving today's "offline, exit 0"
+contract. A truly-nonexistent project (no containers with the label at all, or no
+frappe service among them) instead RAISES a ``NOT_FOUND`` :class:`CwcliError`, so
+a frontend can distinguish a typo/never-created name (non-zero exit) from a
+stopped instance. Only an unreachable Docker daemon raises ``DOCKER``. No
+print/prompt/``typer.Exit``.
 """
 
 from __future__ import annotations
@@ -92,15 +96,26 @@ def status(
         raise CwcliError(
             ErrorKind.DOCKER, "docker.unreachable", "Could not connect to Docker daemon."
         )
+    # A truly-nonexistent project (typo / never created) has NO containers with the
+    # label at all - distinct from a real-but-stopped project, which has a non-empty
+    # container list. Raise NOT_FOUND so a frontend can exit non-zero and say so,
+    # while the stopped case below still returns "offline"/exit 0 (the documented
+    # contract).
     if not containers:
-        return _offline(project_name)
+        raise CwcliError(
+            ErrorKind.NOT_FOUND, "project.not_found", f"No such project '{project_name}'."
+        )
 
     frappe_container = next(
         (c for c in containers if c.labels.get("com.docker.compose.service") == "frappe"),
         None,
     )
     if frappe_container is None:
-        return _offline(project_name)
+        raise CwcliError(
+            ErrorKind.NOT_FOUND,
+            "project.no_frappe_service",
+            f"No 'frappe' service found for project '{project_name}'.",
+        )
 
     try:
         frappe_container.reload()

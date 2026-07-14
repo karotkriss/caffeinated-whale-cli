@@ -52,8 +52,12 @@ process dies, it tears the rest down and never restarts one). Each note below gu
   Because honcho is all-or-nothing, honcho-up already implies the stack is up; keying `running` on the
   reliable web signal keeps `overall` robust across frappe versions' cmdline shapes (the `[verify on a
   container]` risk). `degraded` = marker present but honcho down (container restart), or honcho up but
-  web not answering. `online` = container up, no marker (never started). `offline` = absent/stopped -
-  RETURNED, never raised (only a dead Docker daemon raises), preserving the "offline, exit 0" contract.
+  web not answering. `online` = container up, no marker (never started). `offline` = a real-but-stopped
+  project (containers exist, frappe not running) - RETURNED, never raised, preserving the "offline, exit
+  0" contract. A truly-nonexistent project (no containers with the label at all, or none labeled
+  `frappe`) instead RAISES `CwcliError(ErrorKind.NOT_FOUND, ...)`, so a typo/never-created name exits
+  non-zero with a "no such project" message instead of masquerading as `offline`. Only that and a dead
+  Docker daemon (`ErrorKind.DOCKER`) raise.
 
 ## Multi-bench (D5) and the axi verbs
 

@@ -68,7 +68,13 @@ def _get_installed_apps(
     cmd = f"bench --site {site} list-apps"
     exit_code, output = _run_command(container, cmd, verbose, workdir=bench_dir)
     if exit_code != 0:
-        return [f"Error fetching apps for site {site}"]
+        # Surface the failure to stderr, never into the returned/cached data. A
+        # site with genuinely no apps and a site whose list-apps failed both cache
+        # as [] (the honest "nothing to record / unknown" state) - never a poisoned
+        # sentinel string that would be persisted and re-emitted forever by the
+        # partial-refresh path and rendered as a fake app in the tree.
+        console_err.print(f"[yellow]Warning:[/yellow] Failed to list apps for site '{site}'.")
+        return []
     return [app for app in output.split("\n") if app]
 
 
