@@ -69,7 +69,7 @@ The real-Docker E2E is Linux-only; Windows/macOS-specific code stays in the unit
 
 ## Test Files
 
-As of 0.37.0 (unreleased), `tests/` holds 45 `test_*.py` suites totaling 694 tests in the
+As of 0.37.0 (unreleased), `tests/` holds 45 `test_*.py` suites totaling 705 tests in the
 `unit` tier (measured with `uv run pytest --cov`). Run `ls tests/` for the
 authoritative current list; see [../docs/testing/README.md](../docs/testing/README.md)
 for the per-area breakdown.
@@ -78,7 +78,7 @@ for the per-area breakdown.
 (`test_init_e2e.py`, `test_backup_e2e.py`, `test_start_status_e2e.py`,
 `test_start_status_new_behavior_e2e.py`, `test_per_process_supervisor_e2e.py`,
 `test_harness_safety.py`); run `ls tests/e2e/`
-for the current list. They are not part of the 694/45 count above since they need a
+for the current list. They are not part of the 705/45 count above since they need a
 Docker daemon and are excluded from a bare `pytest`. `test_start_status_e2e.py` is the
 lifecycle-command net (`start`/`status`/`logs`/`restart`, both modes) that pins the
 outcome-level invariants the start/status core migration must preserve; it is
@@ -115,7 +115,7 @@ Tests for tab completion functionality.
 
 ## Test Coverage
 
-Current overall coverage at 0.37.0, unreleased (694 tests across 45 test files, ~60% overall).
+Current overall coverage at 0.37.0, unreleased (705 tests across 45 test files, ~60% overall).
 
 ### Covered Modules
 - ✅ `utils/completion_utils.py` - 92% (7 missing lines)
@@ -133,11 +133,11 @@ Current overall coverage at 0.37.0, unreleased (694 tests across 45 test files, 
 - ✅ `core/list.py`, `core/where.py` - 100% (`test_core_list`: fake docker client, empty/aggregate/DOCKER-raise; `test_core_where`: throwaway sqlite, dedup/scoping/installed-only/USAGE)
 - ✅ `commands/list.py` - ~80% (`test_list`: the `ls --json` empty-`[]` fix, quiet/table rendering, port-range condensing)
 - ✅ `commands/where.py` - 100% (`test_where`: table/JSON rendering, the `--apps`/`--sites` conflict, the definitive `[]` empty state)
-- ✅ `core/supervision.py` - ~82% (`test_core_supervision`: supervisord discovery + label-mapping + bench-keying, the expected-set Procfile parse, config/launcher generation, the `pip install supervisor` fail-closed bootstrap, the supervisor marker present/absent, the web probe, per-process log-path resolution)
+- ✅ `core/supervision.py` - ~82% (`test_core_supervision`: supervisord discovery + label-mapping + bench-keying, the expected-set Procfile parse, config/launcher generation, the `pip install supervisor` fail-closed bootstrap, the supervisor marker present/absent, the web probe, per-process log-path resolution, `discover_unsupervised_stack`'s honcho/`bench start` fallback (cwd-keyed, live processes reported up, no-manager case), the real `frappe <cmd>` bench-helper cmdline forms mapping to labels)
 - ✅ `core/start.py` - ~98% (`test_core_start`: the launch outcome, the idempotent no-op, multi-bench `NEEDS_CHOICE`, an explicit `bench_path` used verbatim, the `--autorestart`/`--no-autorestart` config-state toggle, missing-project/docker-unreachable errors)
-- ✅ `core/status.py` - ~93% (`test_core_status`: every `overall` branch including the stable-partial-stack `degraded` (a program `FATAL` while web serves), the offline-not-raised contract, supervisor-down vs never-started, the docker-unreachable raise)
+- ✅ `core/status.py` - ~93% (`test_core_status`: every `overall` branch including the stable-partial-stack `degraded` (a program `FATAL` while web serves), the offline-not-raised contract, supervisor-down vs never-started, the docker-unreachable raise, the not-cwcli-supervised honcho fallback (real up/pid/uptime, the `degraded` case, the no-manager and still-supervised non-flagged cases))
 - ✅ `core/restart.py` - ~95% (`test_core_restart`: `core.restart_process` restarting one program leaving siblings running, multi-bench `select_bench` and unknown/ambiguous `select_process` `NEEDS_CHOICE`, `NOT_RUNNING` for a down supervisor/container)
-- ✅ `commands/status.py` - ~95% (`test_status_frontend`: the stdout-token-only contract the PR-1 E2E net pins, per-process detail (incl. supervisord `state`) on stderr, exit 0 across lifecycle states; `test_status_watch`: the `--watch` live view - every tick re-polls with `probe_web=False` so it makes ZERO web requests, the non-TTY single-quiet-snapshot degrade, the `--interval` 1s floor, a clean `KeyboardInterrupt` exit)
+- ✅ `commands/status.py` - ~93% (`test_status_frontend`: the stdout-token-only contract the PR-1 E2E net pins, per-process detail (incl. supervisord `state`) on stderr, exit 0 across lifecycle states, the not-cwcli-supervised heading/hint; `test_status_watch`: the `--watch` live view - every tick re-polls with `probe_web=False` so it makes ZERO web requests, the non-TTY single-quiet-snapshot degrade, the `--interval` 1s floor, a clean `KeyboardInterrupt` exit)
 - ✅ `commands/axi.py` `start`/`status` verbs - (`test_axi_start_status`: TOON rendering, exit-code mapping, needs-choice/`CONFLICT` flag-naming, the never-prompt port-conflict pre-step)
 - ✅ `commands/axi.py` `restart` verb - (`test_axi_restart`: TOON `ProcessRestartOutcome` rendering, exit-code mapping, `--process` required, unknown/ambiguous process and multi-bench `select_bench` as usage errors listing valid labels)
 - ✅ `core/version.py` - ~90% (`test_core_version`: install-method detection tree (dev/uv/uvx/pip fallback), the fail-open PyPI lookup, PEP 440 compare including the dev-ahead case, the TTL cache, and the `passive_notice` cache-only gate incl. the `attempted_at` once/day refresh throttle)
