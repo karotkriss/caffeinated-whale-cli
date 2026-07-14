@@ -184,6 +184,33 @@ class TestLatestVersionAndCache:
         assert core_version._latest_version(use_cache=False, timeout=1.0) == "0.99.0"
 
 
+class TestRecordAttempt:
+    def test_success_writes_latest_checked_at_and_attempted_at(self, isolated_cache):
+        core_version._record_attempt("0.42.0")
+        raw = json.loads((isolated_cache / "cache" / "version_check.json").read_text())
+        assert raw["latest"] == "0.42.0"
+        assert "checked_at" in raw
+        assert "attempted_at" in raw
+
+    def test_failure_stamps_attempt_without_clobbering_prior_success(self, isolated_cache):
+        core_version._record_attempt("0.42.0")
+        before = json.loads((isolated_cache / "cache" / "version_check.json").read_text())
+        core_version._record_attempt(None)
+        after = json.loads((isolated_cache / "cache" / "version_check.json").read_text())
+        assert after["latest"] == before["latest"]
+        assert after["checked_at"] == before["checked_at"]
+        assert after["attempted_at"] >= before["attempted_at"]
+
+    def test_latest_version_fetch_failure_still_stamps_attempt(self, isolated_cache, monkeypatch):
+        import urllib.error
+
+        _patch_urlopen(monkeypatch, raises=urllib.error.URLError("no route"))
+        assert core_version._latest_version(use_cache=False, timeout=1.0) is None
+        raw = json.loads((isolated_cache / "cache" / "version_check.json").read_text())
+        assert "attempted_at" in raw
+        assert "latest" not in raw
+
+
 class TestFailOpen:
     def test_network_error_returns_none(self, isolated_cache, monkeypatch):
         import urllib.error
@@ -235,3 +262,89 @@ class TestCheck:
         assert result.data.latest is None
         assert result.data.is_outdated is False
         assert result.warnings[0].code == "pypi.unreachable"
+
+
+class TestPassiveNotice:
+    """The cache-only, non-blocking gate behind the passive 'update' notice."""
+
+    def _patch(self, monkeypatch, *, method="uv", current="0.35.0"):
+        monkeypatch.setattr(core_version, "_detect_method", lambda: (method, None))
+        monkeypatch.setattr(core_version, "_current_version", lambda: current)
+        spawned = []
+        monkeypatch.setattr(
+            core_version, "_spawn_background_refresh", lambda **kw: spawned.append(kw)
+        )
+        # A fresh cache read must NEVER trigger a network call on the hot path.
+        monkeypatch.setattr(
+            core_version.urllib.request,
+            "urlopen",
+            lambda *a, **k: (_ for _ in ()).throw(
+                AssertionError("passive notice must not hit net")
+            ),
+        )
+        return spawned
+
+    def test_outdated_from_fresh_cache_notifies_without_network_or_spawn(
+        self, isolated_cache, monkeypatch
+    ):
+        spawned = self._patch(monkeypatch, method="uv", current="0.35.0")
+        monkeypatch.setattr(core_version, "_read_cache", lambda: "0.37.0")
+        info = core_version.passive_notice()
+        assert info is not None
+        assert info.is_outdated is True
+        assert info.current == "0.35.0" and info.latest == "0.37.0"
+        assert info.upgrade_command == ["uv", "tool", "upgrade", "caffeinated-whale-cli"]
+        assert spawned == []  # fresh cache -> no background refresh
+
+    def test_up_to_date_shows_nothing(self, monkeypatch):
+        self._patch(monkeypatch, current="0.37.0")
+        monkeypatch.setattr(core_version, "_read_cache", lambda: "0.37.0")
+        assert core_version.passive_notice() is None
+
+    def test_missing_cache_returns_none_and_spawns_refresh(self, isolated_cache, monkeypatch):
+        spawned = self._patch(monkeypatch)
+        monkeypatch.setattr(core_version, "_read_cache", lambda: None)
+        assert core_version.passive_notice() is None
+        assert len(spawned) == 1  # kicked a detached refresh for next time
+
+    def test_dev_checkout_never_fetches_or_spawns(self, isolated_cache, monkeypatch):
+        spawned = self._patch(monkeypatch, method="dev")
+        monkeypatch.setattr(
+            core_version, "_read_cache", lambda: (_ for _ in ()).throw(AssertionError("no read"))
+        )
+        assert core_version.passive_notice() is None
+        assert spawned == []
+
+    def test_uvx_never_fetches_or_spawns(self, isolated_cache, monkeypatch):
+        spawned = self._patch(monkeypatch, method="uvx")
+        monkeypatch.setattr(
+            core_version, "_read_cache", lambda: (_ for _ in ()).throw(AssertionError("no read"))
+        )
+        assert core_version.passive_notice() is None
+        assert spawned == []
+
+    def test_fail_open_on_error(self, isolated_cache, monkeypatch):
+        self._patch(monkeypatch)
+        monkeypatch.setattr(
+            core_version, "_read_cache", lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+        )
+        assert core_version.passive_notice() is None  # swallowed -> no notice
+
+    def test_persistent_failure_throttles_spawn(self, isolated_cache, monkeypatch):
+        spawned = self._patch(monkeypatch)
+        cache = isolated_cache / "cache" / "version_check.json"
+        cache.parent.mkdir(parents=True)
+        cache.write_text(json.dumps({"attempted_at": time.time()}))
+        monkeypatch.setattr(core_version, "_read_cache", lambda: None)
+        assert core_version.passive_notice() is None
+        assert spawned == []  # recent attempt already on file -> no re-spawn
+
+    def test_stale_attempt_spawns_refresh_again(self, isolated_cache, monkeypatch):
+        spawned = self._patch(monkeypatch)
+        cache = isolated_cache / "cache" / "version_check.json"
+        cache.parent.mkdir(parents=True)
+        stale = time.time() - core_version._CACHE_TTL_SECONDS - 10
+        cache.write_text(json.dumps({"attempted_at": stale}))
+        monkeypatch.setattr(core_version, "_read_cache", lambda: None)
+        assert core_version.passive_notice() is None
+        assert len(spawned) == 1
