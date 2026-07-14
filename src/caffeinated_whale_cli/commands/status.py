@@ -14,7 +14,8 @@ on stderr). Crucially it re-polls with ``probe_web=False`` so repeated ticks mak
 ZERO ``curl localhost:8000`` requests against the bench - the whole point is to
 watch health WITHOUT spamming the Frappe access logs. Per-process health still
 comes from the single ``ps`` read each tick, which leaves no log trace. When
-stdout is not a TTY (piped/redirected), ``--watch`` degrades to one quiet
+stdout or stderr is not a TTY (piped/redirected - the live view renders to
+stderr, so both streams must be interactive), ``--watch`` degrades to one quiet
 snapshot instead of starting the live loop.
 """
 
@@ -76,9 +77,9 @@ def status(
 
     ``--watch`` shows a live refreshing view without probing the web server (so
     repeated ticks leave no HTTP requests in the bench's access logs); it degrades
-    to a single snapshot when stdout is not a TTY.
+    to a single snapshot when stdout or stderr is not a TTY.
     """
-    if watch and sys.stdout.isatty():
+    if watch and sys.stdout.isatty() and sys.stderr.isatty():
         # Live view: quiet (probe_web=False) so repeated ticks never hit :8000.
         _watch_loop(project_name, bench, verbose, max(_MIN_INTERVAL, interval))
         raise typer.Exit(code=0)
@@ -174,20 +175,30 @@ _OVERALL_STYLE = {
 }
 
 
-def _render_detail(report: StatusReport, verbose: bool) -> None:
-    """Render the per-process health + web probe to stderr (never stdout)."""
+def _title(report: StatusReport) -> str:
+    """The shared styled ``{project}: {overall} (supervisor up/down)`` heading."""
     style = _OVERALL_STYLE.get(report.overall, "white")
-    stderr_console.print(
+    return (
         f"[{style}]{report.project}: {report.overall}[/{style}]"
         f" (supervisor {'up' if report.supervisor_up else 'down'})"
     )
+
+
+def _up_mark(up: bool) -> str:
+    """The shared per-process up/down mark."""
+    return "[green]up[/green]" if up else "[red]down[/red]"
+
+
+def _render_detail(report: StatusReport, verbose: bool) -> None:
+    """Render the per-process health + web probe to stderr (never stdout)."""
+    stderr_console.print(_title(report))
     if report.web_http_code is not None:
         stderr_console.print(f"[dim]web http: {report.web_http_code}[/dim]")
     elif verbose and report.container_running:
         stderr_console.print("[dim]web http: no response[/dim]")
 
     for p in report.processes:
-        mark = "[green]up[/green]" if p.up else "[red]down[/red]"
+        mark = _up_mark(p.up)
         detail = ""
         if p.up:
             bits = []
@@ -205,12 +216,8 @@ def _render_detail(report: StatusReport, verbose: bool) -> None:
 
 def _render_table(report: StatusReport) -> Table:
     """The live ``--watch`` frame: one row per process (no web probe, so no web row)."""
-    style = _OVERALL_STYLE.get(report.overall, "white")
     table = Table(
-        title=(
-            f"[{style}]{report.project}: {report.overall}[/{style}]"
-            f"  (supervisor {'up' if report.supervisor_up else 'down'})"
-        ),
+        title=_title(report),
         title_justify="left",
         expand=False,
     )
@@ -221,7 +228,7 @@ def _render_table(report: StatusReport) -> Table:
     table.add_column("cpu%", justify="right")
     table.add_column("rss", justify="right")
     for p in report.processes:
-        mark = "[green]up[/green]" if p.up else "[red]down[/red]"
+        mark = _up_mark(p.up)
         table.add_row(
             p.label,
             mark,

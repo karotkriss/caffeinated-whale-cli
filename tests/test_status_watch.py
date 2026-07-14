@@ -3,8 +3,9 @@
 The load-bearing behavior is that a repeated ``--watch`` tick re-polls with
 ``probe_web=False`` so it NEVER runs the ``curl localhost:8000`` web probe -
 watching health must not spam the bench's access logs. Also pinned: the non-TTY
-single-snapshot degrade, the ``--interval`` 1s floor, and a clean
-``KeyboardInterrupt`` exit (exit 0, nothing on stdout).
+single-snapshot degrade (stdout OR stderr not a TTY - the live view renders to
+stderr, so both streams must be interactive), the ``--interval`` 1s floor, and a
+clean ``KeyboardInterrupt`` exit (exit 0, nothing on stdout).
 """
 
 import pytest
@@ -69,6 +70,7 @@ def test_watch_tty_never_runs_the_web_probe(monkeypatch, capsys):
     # so the loop makes ZERO web requests against the bench.
     _neutralize_docker(monkeypatch)
     monkeypatch.setattr(status_mod.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(status_mod.sys.stderr, "isatty", lambda: True)
     monkeypatch.setattr(status_mod, "Live", _FakeLive)
     calls = _record_probe_web(monkeypatch)
 
@@ -82,9 +84,7 @@ def test_watch_tty_never_runs_the_web_probe(monkeypatch, capsys):
     monkeypatch.setattr(status_mod.time, "sleep", _sleep)
 
     with pytest.raises(typer.Exit) as exc:
-        status_mod.status(
-            project_name="proj", bench=None, verbose=False, watch=True, interval=2.0
-        )
+        status_mod.status(project_name="proj", bench=None, verbose=False, watch=True, interval=2.0)
     assert exc.value.exit_code == 0
     captured = capsys.readouterr()
     assert captured.out.strip() == ""  # watch writes NOTHING to stdout
@@ -97,12 +97,28 @@ def test_watch_non_tty_degrades_to_single_quiet_snapshot(monkeypatch, capsys):
     # (watch semantics stay quiet), and the token lands on stdout.
     _neutralize_docker(monkeypatch)
     monkeypatch.setattr(status_mod.sys.stdout, "isatty", lambda: False)
+    monkeypatch.setattr(status_mod.sys.stderr, "isatty", lambda: True)
     calls = _record_probe_web(monkeypatch)
 
     with pytest.raises(typer.Exit) as exc:
-        status_mod.status(
-            project_name="proj", bench=None, verbose=False, watch=True, interval=2.0
-        )
+        status_mod.status(project_name="proj", bench=None, verbose=False, watch=True, interval=2.0)
+    assert exc.value.exit_code == 0
+    captured = capsys.readouterr()
+    assert captured.out.strip() == "running"  # single snapshot token on stdout
+    assert calls == [False]  # exactly one poll, web probe suppressed
+
+
+def test_watch_redirected_stderr_degrades_to_single_quiet_snapshot(monkeypatch, capsys):
+    # stdout is a TTY but stderr is redirected (e.g. `2>err.log`): the live view
+    # renders to stderr, so this must also degrade rather than start a Live that
+    # silently renders nothing.
+    _neutralize_docker(monkeypatch)
+    monkeypatch.setattr(status_mod.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(status_mod.sys.stderr, "isatty", lambda: False)
+    calls = _record_probe_web(monkeypatch)
+
+    with pytest.raises(typer.Exit) as exc:
+        status_mod.status(project_name="proj", bench=None, verbose=False, watch=True, interval=2.0)
     assert exc.value.exit_code == 0
     captured = capsys.readouterr()
     assert captured.out.strip() == "running"  # single snapshot token on stdout
@@ -114,6 +130,7 @@ def test_watch_interval_floored_at_one_second(given, expected, monkeypatch):
     # --interval is floored at 1s so --interval 0 can't hammer the docker daemon.
     _neutralize_docker(monkeypatch)
     monkeypatch.setattr(status_mod.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(status_mod.sys.stderr, "isatty", lambda: True)
     seen: list = []
     monkeypatch.setattr(
         status_mod, "_watch_loop", lambda project, bench, verbose, interval: seen.append(interval)
