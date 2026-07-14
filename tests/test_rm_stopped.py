@@ -161,55 +161,147 @@ class TestRmStoppedProjectSkipsRecache:
         recache_called.assert_not_called()
 
 
-class TestStoppedContainerSkipsExecBackup:
-    """A present-but-stopped frappe container must not be shelled into for backup.
+class TestStoppedRemoveProjectFailsClosed:
+    """A present-but-stopped frappe container on the --volumes path must FAIL CLOSED.
 
-    ``_backup_sites`` and ``_archive_project_config`` both ``exec_run`` inside the
-    frappe container, which only works while it is running. For a stopped project
-    they would just emit confusing "could not backup/archive" warnings, so
-    ``_remove_project`` skips them and emits the same clean "no container was
-    running" warning as the orphan path - while still tearing everything down via
-    the host-side conf/ archive.
+    A live ``bench backup`` needs a running frappe + mariadb, so ``_remove_project``
+    cannot back up a stopped project itself. Rather than delete the databases with
+    no backup (the old, accepted-tradeoff bug), the core now refuses: it marks the
+    backup not-OK so the EARLY gate aborts before any container is removed, keeping
+    every byte intact and reporting a failure. The transient start-for-backup is
+    orchestrated by the CLI frontend (``rm()``) BEFORE ``_remove_project`` runs;
+    reaching the stopped branch here means the start never happened, so fail closed.
+    ``--no-backup`` (delete without a backup) and ``--no-volumes`` (destroy no data)
+    still proceed.
     """
 
     def _patch_docker(self, monkeypatch):
         monkeypatch.setattr(docker_utils.shutil, "which", lambda _name: "/usr/bin/docker")
         monkeypatch.setattr(docker_utils.docker, "from_env", lambda: MagicMock())
 
-    def test_stopped_container_is_not_exec_backed_up(self, cwcli_home, monkeypatch, capsys):
-        self._patch_docker(monkeypatch)
+    def _wire(self, monkeypatch, cwcli_home, container, volumes):
         project_dir = cwcli_home / "projects" / "proj"
         (project_dir / "conf").mkdir(parents=True)
         (project_dir / "conf" / "docker-compose.yml").write_text("# fake\n")
         monkeypatch.setattr(rm, "PROJECTS_DIR", cwcli_home / "projects")
-
-        container = _stopped_frappe_container()
-        container.name = "proj-frappe-1"
-        volumes = [MagicMock(name="vol")]
-        volumes[0].name = "proj_db-data"
-
         monkeypatch.setattr(rm, "get_project_containers", lambda name: [container])
         monkeypatch.setattr(rm, "get_project_volumes", lambda name: list(volumes))
         monkeypatch.setattr(rm.db_utils, "clear_cache_for_project", lambda name: None)
+        return project_dir
+
+    def test_stopped_volumes_backup_is_refused_not_deleted(self, cwcli_home, monkeypatch, capsys):
+        self._patch_docker(monkeypatch)
+        container = _stopped_frappe_container()
+        container.name = "proj-frappe-1"
+        container.remove = MagicMock()
+        container.stop = MagicMock()
+        volumes = [MagicMock(name="vol")]
+        volumes[0].name = "proj_db-data"
+        project_dir = self._wire(monkeypatch, cwcli_home, container, volumes)
 
         backup = MagicMock()
         archive_cfg = MagicMock()
         monkeypatch.setattr(rm, "_backup_sites", backup)
         monkeypatch.setattr(rm, "_archive_project_config", archive_cfg)
 
-        # no_backup=False: a running container WOULD be backed up; a stopped one
-        # must NOT be (it cannot be exec'd into).
         result = rm._remove_project("proj", remove_volumes=True, no_backup=False)
 
+        # No exec backup attempted (cannot exec into a stopped container)...
         backup.assert_not_called()
         archive_cfg.assert_not_called()
-        # Teardown still happens via the host-side conf/ archive.
+        # ...and CRUCIALLY nothing is destroyed: the early gate aborts.
+        assert result["backup_ok"] is False
+        assert result["failures"]  # non-empty -> non-zero exit
+        assert result["containers"] == 0
+        assert result["volumes"] == 0
+        assert result["dir_removed"] is False
+        container.remove.assert_not_called()
+        container.stop.assert_not_called()
+        assert not volumes[0].remove.called
+        assert project_dir.exists()  # bench tree preserved
+        err = capsys.readouterr().err.lower()
+        assert "not running" in err
+
+    def test_stopped_no_backup_still_deletes(self, cwcli_home, monkeypatch):
+        """``--no-backup`` is the escape hatch: a stopped project is deleted."""
+        self._patch_docker(monkeypatch)
+        container = _stopped_frappe_container()
+        container.name = "proj-frappe-1"
+        volumes = [MagicMock(name="vol")]
+        volumes[0].name = "proj_db-data"
+        project_dir = self._wire(monkeypatch, cwcli_home, container, volumes)
+
+        result = rm._remove_project("proj", remove_volumes=True, no_backup=True)
+
+        assert result["backup_ok"] is True
+        assert not result["failures"]
         assert result["containers"] == 1
         assert result["volumes"] == 1
         assert result["dir_removed"] is True
         assert not project_dir.exists()
-        # And the user is told a live backup was impossible.
-        assert "no container was running" in capsys.readouterr().err.lower()
+
+    def test_stopped_no_volumes_still_removes_without_backup(self, cwcli_home, monkeypatch):
+        """``--no-volumes`` destroys no data, so a stopped project still cleans up
+        its containers + directory and keeps the volumes (no failure)."""
+        self._patch_docker(monkeypatch)
+        container = _stopped_frappe_container()
+        container.name = "proj-frappe-1"
+        volumes = [MagicMock(name="vol")]
+        volumes[0].name = "proj_db-data"
+        project_dir = self._wire(monkeypatch, cwcli_home, container, volumes)
+
+        result = rm._remove_project("proj", remove_volumes=False, no_backup=False)
+
+        assert result["backup_ok"] is True
+        assert not result["failures"]
+        assert result["containers"] == 1
+        assert result["volumes"] == 0  # volumes preserved
+        assert not volumes[0].remove.called
+        assert result["dir_removed"] is True
+        assert not project_dir.exists()
+
+    def test_orphan_volumes_backup_is_refused(self, cwcli_home, monkeypatch, capsys):
+        """An orphan (no containers) can never be started, so on the --volumes
+        backup path it is refused too (route through --no-backup to clean up)."""
+        self._patch_docker(monkeypatch)
+        volumes = [MagicMock(name="vol")]
+        volumes[0].name = "proj_db-data"
+        project_dir = cwcli_home / "projects" / "proj"
+        (project_dir / "conf").mkdir(parents=True)
+        monkeypatch.setattr(rm, "PROJECTS_DIR", cwcli_home / "projects")
+        monkeypatch.setattr(rm, "get_project_containers", lambda name: [])
+        monkeypatch.setattr(rm, "get_project_volumes", lambda name: list(volumes))
+        monkeypatch.setattr(rm.db_utils, "clear_cache_for_project", lambda name: None)
+
+        result = rm._remove_project("proj", remove_volumes=True, no_backup=False)
+
+        assert result["orphan"] is True
+        assert result["backup_ok"] is False
+        assert result["failures"]
+        assert result["volumes"] == 0
+        assert not volumes[0].remove.called
+        assert project_dir.exists()
+        assert "no containers to start" in capsys.readouterr().err.lower()
+
+    def test_orphan_no_backup_cleans_up(self, cwcli_home, monkeypatch):
+        """An orphan WITH --no-backup still cleans up its leftover volume + dir."""
+        self._patch_docker(monkeypatch)
+        volumes = [MagicMock(name="vol")]
+        volumes[0].name = "proj_db-data"
+        project_dir = cwcli_home / "projects" / "proj"
+        (project_dir / "conf").mkdir(parents=True)
+        monkeypatch.setattr(rm, "PROJECTS_DIR", cwcli_home / "projects")
+        monkeypatch.setattr(rm, "get_project_containers", lambda name: [])
+        monkeypatch.setattr(rm, "get_project_volumes", lambda name: list(volumes))
+        monkeypatch.setattr(rm.db_utils, "clear_cache_for_project", lambda name: None)
+
+        result = rm._remove_project("proj", remove_volumes=True, no_backup=True)
+
+        assert result["orphan"] is True
+        assert not result["failures"]
+        assert result["volumes"] == 1
+        assert result["dir_removed"] is True
+        assert not project_dir.exists()
 
 
 @pytest.fixture()

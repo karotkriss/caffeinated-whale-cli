@@ -69,7 +69,7 @@ The real-Docker E2E is Linux-only; Windows/macOS-specific code stays in the unit
 
 ## Test Files
 
-As of 0.37.0 (unreleased), `tests/` holds 45 `test_*.py` suites totaling 711 tests in the
+As of 0.37.0 (unreleased), `tests/` holds 46 `test_*.py` suites totaling 740 tests in the
 `unit` tier (measured with `uv run pytest --cov`). Run `ls tests/` for the
 authoritative current list; see [../docs/testing/README.md](../docs/testing/README.md)
 for the per-area breakdown.
@@ -78,7 +78,7 @@ for the per-area breakdown.
 (`test_init_e2e.py`, `test_backup_e2e.py`, `test_start_status_e2e.py`,
 `test_start_status_new_behavior_e2e.py`, `test_per_process_supervisor_e2e.py`,
 `test_harness_safety.py`); run `ls tests/e2e/`
-for the current list. They are not part of the 711/45 count above since they need a
+for the current list. They are not part of the 740/46 count above since they need a
 Docker daemon and are excluded from a bare `pytest`. `test_start_status_e2e.py` is the
 lifecycle-command net (`start`/`status`/`logs`/`restart`, both modes) that pins the
 outcome-level invariants the start/status core migration must preserve; it is
@@ -115,7 +115,7 @@ Tests for tab completion functionality.
 
 ## Test Coverage
 
-Current overall coverage at 0.37.0, unreleased (711 tests across 45 test files, ~60% overall).
+Current overall coverage at 0.37.0, unreleased (740 tests across 46 test files, ~61% overall).
 
 ### Covered Modules
 - ✅ `utils/completion_utils.py` - 92% (7 missing lines)
@@ -123,7 +123,7 @@ Current overall coverage at 0.37.0, unreleased (711 tests across 45 test files, 
 - ✅ `utils/db_utils.py` - ~68% (`test_db_security`, `test_config_validation`)
 - ✅ `commands/inspect.py` - ~62% (`test_inspect_partial_refresh`, `test_inspect_label_recovery`)
 - ✅ `commands/restore.py` - ~43% (`test_restore_safety`, `test_restore_inspect_fixes`)
-- ✅ `commands/rm.py` - ~78% (`test_rm_safety`, `test_rm_truth`, `test_rm_stopped`)
+- ✅ `commands/rm.py` - ~84% (`test_rm_safety`, `test_rm_truth`, `test_rm_stopped`, `test_rm_stopped_backup`)
 - ✅ `commands/init.py` - ~49% (`test_init_reuse_bench`, `test_init_mariadb_flag`, `test_init_admin_password`)
 - ✅ `commands/apps.py` + `commands/update.py` app-update path - (`test_apps`: both modes, multi-site fan-out, frappe reset, `update` deprecation)
 - ✅ `utils/config_utils.py`'s `cwcli_home()` - (`test_cwcli_home`: mock-free, sets a real `CWCLI_HOME` env var and checks real filesystem/subprocess results)

@@ -16,6 +16,7 @@ import re
 import shutil
 import sys
 import tarfile
+import time
 from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
@@ -875,10 +876,31 @@ def _remove_project(
                     f"for bench '{bp}' -- the bench config may not be recoverable "
                     f"from backup artifacts alone."
                 )
+    elif remove_volumes and not no_backup:
+        # No running frappe container, so a live `bench backup` is impossible -
+        # and this is the data-destroying path (--volumes without --no-backup).
+        # Mark the backup not-OK so the EARLY gate below aborts before anything is
+        # removed, keeping every byte intact. The CLI frontend (`rm()`) transiently
+        # starts a stopped project for its backup BEFORE calling this, so reaching
+        # here on the backup path means the project is an orphan (no container to
+        # start) or the transient start did not take - either way, fail closed
+        # rather than delete the databases with no backup. `--no-backup` remains
+        # the explicit escape hatch to delete without one.
+        result["backup_ok"] = False
+        if is_orphan:
+            stderr_console.print(
+                f"[yellow]Warning:[/yellow] '{project_name}' has no containers to start, so a "
+                "fresh database backup could not be taken."
+            )
+        else:
+            stderr_console.print(
+                f"[yellow]Warning:[/yellow] '{project_name}' is not running, so a fresh database "
+                "backup could not be taken."
+            )
     else:
-        # No running container, so a live `bench backup` database dump is
-        # impossible (whether the containers are stopped or already gone). Only
-        # the host-side conf/ archive can be preserved.
+        # --no-backup or --no-volumes: nothing data-bearing is destroyed without a
+        # backup, so it is safe to proceed with cleanup. Only the host-side conf/
+        # archive can be preserved (a live DB dump is impossible while stopped).
         stderr_console.print(
             f"[yellow]Warning:[/yellow] No container was running for '{project_name}', "
             "so a fresh database backup could not be taken before cleanup."
@@ -1053,6 +1075,165 @@ def _frappe_container_running(project_name: str) -> bool:
     return False
 
 
+def _project_run_state(project_name: str) -> str:
+    """Classify a project so ``rm`` can decide whether to start it for a backup.
+
+    Returns one of:
+      * ``"running"`` - the frappe container is up (a live backup is possible),
+      * ``"stopped"`` - containers exist but the frappe container is not running
+        (it CAN be started for a transient pre-delete backup),
+      * ``"orphan"`` - no containers at all (nothing to start; only ``--no-backup``
+        can remove it), or
+      * ``"error"`` - Docker could not be reached.
+    """
+    containers = get_project_containers(project_name)
+    if containers is None:
+        return "error"
+    if not containers:
+        return "orphan"
+    frappe = next(
+        (c for c in containers if c.labels.get("com.docker.compose.service") == "frappe"),
+        None,
+    )
+    if frappe is not None and frappe.status == "running":
+        return "running"
+    return "stopped"
+
+
+def _wait_for_db_ready(
+    container,
+    *,
+    attempts: int = 60,
+    delay: float = 1.0,
+    verbose: bool = False,
+) -> bool:
+    """Poll until MariaDB accepts connections, from inside the frappe container.
+
+    A cold ``docker start`` returns before MariaDB has finished crash-recovery and
+    init, so a ``bench backup`` run immediately after would fail to connect and
+    spuriously fail the backup. MariaDB binds its 3306 port only once it is ready
+    to serve, so a successful TCP connect to the ``mariadb`` service (``cwcli init``
+    pins ``db_host mariadb``) is a reliable, credential-free readiness signal. Uses
+    the frappe container's own Python (always present in a bench image). Bounded, so
+    a DB that never comes up fails closed instead of hanging - the caller then
+    aborts and keeps all data.
+    """
+    probe = (
+        "import socket,sys; s=socket.socket(); s.settimeout(3); "
+        "sys.exit(0 if s.connect_ex(('mariadb',3306))==0 else 1)"
+    )
+    for attempt in range(attempts):
+        try:
+            exit_code, _ = container.exec_run(["python3", "-c", probe])
+        except Exception:
+            exit_code = 1
+        if exit_code == 0:
+            if verbose:
+                stderr_console.print("[dim]VERBOSE: MariaDB is accepting connections[/dim]")
+            return True
+        if attempt < attempts - 1:
+            time.sleep(delay)
+    if verbose:
+        stderr_console.print(
+            "[dim]VERBOSE: MariaDB did not become ready within " f"{attempts * delay:.0f}s[/dim]"
+        )
+    return False
+
+
+def _transient_start_for_backup(
+    project_name: str,
+    verbose: bool = False,
+    assume_yes: bool = False,
+) -> tuple[bool, bool]:
+    """Bring a STOPPED project up just long enough to take a pre-delete backup.
+
+    A live ``bench backup`` needs the frappe + mariadb containers running, so when
+    ``rm`` targets a stopped project on the data-destroying path (``--volumes``
+    without ``--no-backup``) the databases would otherwise be deleted with no
+    backup. This transiently starts the project - reusing ``start``'s port-conflict
+    handling (:func:`commands.start._check_port_conflicts`) so it behaves exactly
+    like ``cwcli start`` when other Frappe projects hold the ports - then waits for
+    MariaDB to accept connections. Only the CONTAINERS are started; the supervisord
+    web/worker stack is NOT launched, because a backup does not need it (and
+    launching it would add failure modes, e.g. a first-time ``pip install
+    supervisor``, that must not block a delete-time backup).
+
+    Must be called OUTSIDE the removal spinner: ``_check_port_conflicts`` may prompt
+    at a TTY (the documented spinner-over-questionary deadlock).
+
+    Returns ``(ok, started)``:
+      * ``ok`` - the project is up and MariaDB is ready to be backed up.
+      * ``started`` - at least one container was started, so the caller can stop the
+        project again (return it to its stopped state) if the removal is aborted.
+
+    Raises ``typer.Exit`` (from ``_check_port_conflicts``) when host ports cannot be
+    freed; the caller treats that as a failed start and aborts, keeping all data.
+    """
+    from .start import _check_port_conflicts  # lazy import: avoid a module-load cycle
+
+    # 1. Free the host ports (may prompt at a TTY; refuses non-interactively). This
+    #    runs BEFORE any container is started, so ``started`` stays False if it
+    #    raises typer.Exit.
+    _check_port_conflicts(project_name, verbose=verbose, assume_yes=assume_yes)
+
+    # 2. Start every stopped container.
+    containers = get_project_containers(project_name)
+    if not containers:
+        return (False, False)
+
+    started = False
+    try:
+        for container in containers:
+            if container.status != "running":
+                container.start()
+                started = True
+    except Exception as e:
+        stderr_console.print(
+            f"[yellow]Warning:[/yellow] Could not start '{project_name}' to take a backup: {e}"
+        )
+        return (False, started)
+
+    frappe_container = next(
+        (c for c in containers if c.labels.get("com.docker.compose.service") == "frappe"),
+        None,
+    )
+    if frappe_container is None:
+        return (False, started)
+
+    # 3. Wait for MariaDB to accept connections before the caller runs `bench backup`.
+    if not _wait_for_db_ready(frappe_container, verbose=verbose):
+        stderr_console.print(
+            f"[yellow]Warning:[/yellow] MariaDB for '{project_name}' did not become ready; "
+            "a backup could not be taken."
+        )
+        return (False, started)
+
+    return (True, started)
+
+
+def _stop_after_transient_start(project_name: str, verbose: bool = False) -> None:
+    """Return a project to its stopped state after a transient start-for-backup.
+
+    Called on the keep-everything abort path (the start failed, or the backup could
+    not be verified) so ``rm`` never leaves a project running that it found stopped.
+    Best-effort: a failure to stop is a warning, not a hard error - the data is
+    intact either way and the user can stop it manually.
+    """
+    from .stop import _stop_project  # lazy import: avoid a module-load cycle
+
+    console.print(f"[dim]Returning '{project_name}' to its stopped state...[/dim]")
+    try:
+        with stderr_console.status(
+            f"[bold yellow]Stopping '{project_name}'...[/bold yellow]", spinner="dots"
+        ) as status:
+            _stop_project(project_name, verbose=verbose, status=status)
+    except Exception as e:
+        stderr_console.print(
+            f"[yellow]Warning:[/yellow] Could not stop '{project_name}' after aborting; it may "
+            f"still be running: {e}"
+        )
+
+
 def _recover_trailing_flags(
     names: list[str] | None,
     verbose: bool,
@@ -1148,6 +1329,14 @@ def rm(
     orphan with no live database to back up. Under --no-volumes no volume data is
     destroyed, so a failed backup does NOT block the container/directory/cache
     cleanup and does not force a non-zero exit.
+
+    A STOPPED project on the --volumes path is transiently STARTED so a live
+    backup can be taken (start -> back up -> delete), reusing the same port-conflict
+    handling as `cwcli start`. If it cannot be started, or the backup fails, the
+    removal is aborted, ALL data is kept, the project is returned to its stopped
+    state, and the command exits non-zero - pass --no-backup to delete without a
+    backup instead. An orphan project (no containers) cannot be started, so it too
+    is refused on the --volumes path unless --no-backup is given.
 
     Use --no-backup to skip backups (not recommended):
     - Skips database backups (and the backup safety gate)
@@ -1256,6 +1445,27 @@ def rm(
                 "[dim]This removes the containers, the named Docker volumes (databases, "
                 "sites, and files), and the local project directory.[/dim]"
             )
+            # Disclose BEFORE the confirm (not after) that a stopped project will be
+            # started to take a backup first. A live `bench backup` needs a running
+            # project, so a stopped one is transiently started -> backed up ->
+            # deleted; the user should know that at decision time.
+            if not no_backup:
+                to_start = [
+                    p for p in project_names_to_process if _project_run_state(p) == "stopped"
+                ]
+                if to_start:
+                    console.print()
+                    console.print(
+                        "[yellow]Note:[/yellow] The following project(s) are stopped and will be "
+                        "started to take a backup first, then deleted "
+                        "(start [bold]->[/bold] back up [bold]->[/bold] delete):"
+                    )
+                    for p in to_start:
+                        console.print(f"  • [bold]{p}[/bold]")
+                    console.print(
+                        "[dim]If a project cannot be started or backed up, it is left untouched "
+                        "and nothing is deleted.[/dim]"
+                    )
         else:
             console.print(
                 "[bold yellow]Note:[/bold yellow] Named volumes will be preserved (--no-volumes flag set)."
@@ -1293,6 +1503,52 @@ def rm(
     total_found = 0
     any_failure = names_rejected
     for name in project_names_to_process:
+        # For a STOPPED project on the data-destroying path, bring it up just long
+        # enough to take a verified backup, THEN let _remove_project delete it. A
+        # live `bench backup` is impossible while stopped, so without this the
+        # databases would be deleted with no backup. Done OUTSIDE the removal spinner
+        # because port-conflict resolution may prompt (the spinner-over-questionary
+        # deadlock). If the start/backup cannot happen, abort this project and keep
+        # ALL its data; the user can retry, or pass --no-backup to delete without a
+        # backup.
+        started_for_backup = False
+        if volumes and not no_backup and _project_run_state(name) == "stopped":
+            console.print(
+                f"[cyan]'{name}' is stopped; starting it to take a backup before removal...[/cyan]"
+            )
+            start_ok = False
+            try:
+                start_ok, started_for_backup = _transient_start_for_backup(
+                    name, verbose=actual_verbose, assume_yes=yes
+                )
+            except typer.Exit:
+                # Port conflict could not be resolved (or was declined): treat as a
+                # failed start and abort this project.
+                start_ok = False
+            except KeyboardInterrupt:
+                console.print("\n[yellow]Operation cancelled.[/yellow]")
+                if started_for_backup:
+                    _stop_after_transient_start(name, verbose=actual_verbose)
+                raise typer.Exit(code=1) from None
+
+            if not start_ok:
+                # Could not bring the project up for a backup (port conflict, image
+                # gone, crash, or the DB never became ready). Do NOT delete anything;
+                # return it to its stopped state and record the failure so the
+                # command exits non-zero.
+                if started_for_backup:
+                    _stop_after_transient_start(name, verbose=actual_verbose)
+                any_failure = True
+                stderr_console.print(
+                    f"[bold red]✗[/bold red] Project '{name}' was not removed: it could not be "
+                    "started to take a backup (nothing was deleted)."
+                )
+                stderr_console.print(
+                    "[dim]Fix the start failure and retry, or pass --no-backup to delete without "
+                    "a backup (the databases will be lost).[/dim]"
+                )
+                continue
+
         with stderr_console.status(
             f"[bold red]Removing '{name}'...[/bold red]", spinner="dots"
         ) as status:
@@ -1309,6 +1565,13 @@ def rm(
         # error). Do not print a green check for a project that did not fully
         # remove - report the failures and force a non-zero exit.
         step_failures = result.get("failures") or []
+
+        # If the removal was aborted (e.g. a backup could not be verified) and we
+        # transiently started this project for the backup, return it to its original
+        # stopped state - the early abort leaves the containers running.
+        if step_failures and started_for_backup:
+            _stop_after_transient_start(name, verbose=actual_verbose)
+
         if step_failures:
             any_failure = True
 
