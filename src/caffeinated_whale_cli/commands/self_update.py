@@ -98,7 +98,13 @@ def self_update(
         f"[cyan]Upgrading cwcli {info.current} -> {info.latest}[/cyan] "
         f"via [dim]{' '.join(info.upgrade_command)}[/dim]"
     )
-    completed = subprocess.run(info.upgrade_command)
+    try:
+        completed = subprocess.run(info.upgrade_command)
+    except FileNotFoundError as exc:
+        stderr_console.print(
+            f"[bold red]Error:[/bold red] '{info.upgrade_command[0]}' not found on PATH."
+        )
+        raise typer.Exit(1) from exc
     if completed.returncode != 0:
         stderr_console.print(
             f"[bold red]Error:[/bold red] Upgrade failed (exit {completed.returncode})."
