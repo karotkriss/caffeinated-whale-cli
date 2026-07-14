@@ -26,7 +26,7 @@ caffeinated-whale-cli/
 │   │   ├── start.py           # Thin frontend over core.start (idempotent) + port detection
 │   │   ├── status.py          # Thin frontend over core.status (per-process health)
 │   │   ├── restart.py         # Whole-stack restart, or one program via core.restart_process
-│   │   ├── logs.py            # Per-process supervisord log files (combined view or --process)
+│   │   ├── logs.py            # Per-process supervisord log files (combined view or --process); falls back to raw bench logs when not cwcli-supervised
 │   │   ├── stop.py            # Stop containers
 │   │   ├── inspect.py         # Project inspection
 │   │   ├── update.py          # App updates + migrations
