@@ -1,9 +1,9 @@
 """``core.version`` - install-method detection + latest-version lookup, UI-pure.
 
 One shared helper behind two consumers: the active ``cwcli self-update`` command
-(this PR) and the passive "update available" notice (``cwcli-update-notify-n4``,
-NOT built here) reuse it verbatim, so the detection tree, the fail-open PyPI
-lookup, the PEP 440 compare, and the TTL cache all live here once.
+and the passive "update available" notice (:func:`passive_notice`) reuse it
+verbatim, so the detection tree, the fail-open PyPI lookup, the PEP 440 compare,
+and the TTL cache all live here once.
 
 The distribution name is always ``caffeinated-whale-cli`` (the ``cwcli`` PyPI
 name is an abandoned 2016 package - never use it). Like every ``core`` module
@@ -79,6 +79,66 @@ def check(*, use_cache: bool = True, timeout: float = _DEFAULT_TIMEOUT) -> Resul
     )
     status = Status.WARNING if warnings else Status.OK
     return Result(status=status, data=info, warnings=warnings)
+
+
+def passive_notice(*, timeout: float = _DEFAULT_TIMEOUT) -> VersionInfo | None:
+    """Cache-only, non-blocking gate for the passive "update available" notice.
+
+    Returns a :class:`VersionInfo` to display ONLY when the install method is
+    upgradable (not ``dev``/``uvx``) AND the shared ≤1-day cache already knows a
+    newer version is published. It NEVER blocks on the network: on a
+    missing/stale cache it fires a detached background refresh for the NEXT run
+    and returns ``None`` now. Fully fail-open - any error yields ``None`` (no
+    notice), so a passive check can never break, delay, or hang a command.
+    """
+    try:
+        method, _ = _detect_method()
+        upgrade_command = _upgrade_command(method)
+        if upgrade_command is None:
+            return None  # dev / uvx: nothing to upgrade -> never fetch or notify
+        cached = _read_cache()  # fresh value, or None if missing/stale
+        if cached is None:
+            _spawn_background_refresh(timeout=timeout)
+            return None
+        current = _current_version()
+        if not _is_outdated(current, cached):
+            return None
+        return VersionInfo(
+            current=current,
+            latest=cached,
+            method=method,
+            upgrade_command=upgrade_command,
+            is_outdated=True,
+            is_dev=False,
+        )
+    except Exception:
+        return None
+
+
+def _spawn_background_refresh(*, timeout: float = _DEFAULT_TIMEOUT) -> None:
+    """Fire-and-forget a fully detached refresh of the shared version cache.
+
+    Runs one ``check(use_cache=False)`` in a separate process that survives this
+    (often sub-second) command's exit, so the ≤1-day cache is populated for the
+    NEXT run without ever blocking THIS one - and once written, the cache's TTL
+    throttles further refreshes to ~once/day. Any failure to spawn is swallowed.
+    """
+    import subprocess
+
+    snippet = (
+        "from caffeinated_whale_cli.core import version as v;"
+        f"v.check(use_cache=False, timeout={timeout!r})"
+    )
+    try:
+        subprocess.Popen(
+            [sys.executable, "-c", snippet],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception:
+        pass  # a background refresh must never break the caller
 
 
 def _current_version() -> str:

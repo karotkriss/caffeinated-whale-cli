@@ -55,6 +55,13 @@ def main(
     # Initialize context object
     ctx.ensure_object(dict)
 
+    # Passive, once/day, stderr-only "update available" notice (never blocks,
+    # never touches stdout). Covers the human CLI and `cwcli axi` in one seam,
+    # since this root callback runs before every subcommand.
+    from .update_notice import notify_if_outdated
+
+    notify_if_outdated()
+
 
 app.command("init")(_init_cmd)
 app.command("inspect")(inspect_cmd_func)
