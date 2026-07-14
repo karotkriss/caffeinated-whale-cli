@@ -1,6 +1,6 @@
-"""``cwcli logs``: non-follow by default and no ``-it`` without a real TTY.
+"""``cwcli logs``: per-process supervisord log tailing.
 
-Two behaviors are pinned:
+Behaviors pinned:
 
 - **Default is non-follow.** ``logs`` used to default ``--follow`` on, so a plain
   ``cwcli logs proj`` blocked forever tailing (``tail -F``). The default is now
@@ -8,6 +8,8 @@ Two behaviors are pinned:
 - **``-it`` is gated on ``sys.stdin.isatty()``.** ``docker exec -it`` errors "the
   input device is not a TTY" under a pipe/agent, so the ``-i``/``-t`` flags are
   only added when actually interactive.
+- **``--process`` tails one program's file; omitted tails them all** (a combined
+  view over the per-process supervisord log files).
 
 The default/parsing assertions go through the real Typer parser (``CliRunner``);
 the ``isatty`` gating is exercised by calling the command function directly, since
@@ -43,24 +45,23 @@ def _wire(monkeypatch, *, isatty: bool):
     monkeypatch.setattr(logs_mod, "get_project_containers", lambda name: [_FakeFrappe()])
     monkeypatch.setattr(logs_mod, "resolve_bench_path", lambda *a, **k: "/w/bench")
     monkeypatch.setattr(
-        logs_mod.supervision, "bench_start_log_path", lambda p: f"{p}/logs/bench-start.log"
+        logs_mod.supervision, "procfile_programs", lambda c, b: ["web", "worker_default"]
     )
+    # Every candidate log "exists" (echo the list back), so the tail targets them.
+    monkeypatch.setattr(logs_mod, "_existing_files", lambda name, files: files)
     monkeypatch.setattr(logs_mod.sys, "stdin", types.SimpleNamespace(isatty=lambda: isatty))
 
     calls: list[list[str]] = []
 
     def fake_run(cmd, *a, **k):
         calls.append(cmd)
-        # First call is the `test -f` pre-flight check (must "succeed"); the second
-        # is the tail. Return an object with a returncode either way.
-        return types.SimpleNamespace(returncode=0)
+        return types.SimpleNamespace(returncode=0, stdout="")
 
     monkeypatch.setattr(logs_mod.subprocess, "run", fake_run)
     return calls
 
 
 def _tail_cmd(calls: list[list[str]]) -> list[str]:
-    # The tail is the last subprocess.run; the first is the `test -f` pre-flight.
     return calls[-1]
 
 
@@ -70,7 +71,7 @@ def _app():
     return app
 
 
-def _call_logs(follow: bool):
+def _call_logs(follow: bool, process: str | None = None):
     """Invoke the command function directly with every param explicit (Typer's
     ``Option`` defaults are left as objects otherwise; see the inspect tests)."""
     logs_mod.logs(
@@ -78,6 +79,7 @@ def _call_logs(follow: bool):
         follow=follow,
         lines=100,
         bench=None,
+        process=process,
         yes=False,
         verbose=False,
     )
@@ -91,6 +93,9 @@ def test_default_is_non_follow(monkeypatch):
     tail = _tail_cmd(calls)
     assert "-F" not in tail  # not following
     assert "tail" in tail
+    # No --process -> every program's log file is tailed (combined view).
+    assert "/w/bench/logs/web.supervisor.log" in tail
+    assert "/w/bench/logs/worker_default.supervisor.log" in tail
 
 
 def test_follow_flag_opts_in(monkeypatch):
@@ -98,6 +103,21 @@ def test_follow_flag_opts_in(monkeypatch):
     result = runner.invoke(_app(), ["proj", "--follow"])
     assert result.exit_code == 0
     assert "-F" in _tail_cmd(calls)  # -f opted into following
+
+
+def test_process_tails_one_file(monkeypatch):
+    calls = _wire(monkeypatch, isatty=True)
+    result = runner.invoke(_app(), ["proj", "--process", "worker:default"])
+    assert result.exit_code == 0
+    tail = _tail_cmd(calls)
+    assert "/w/bench/logs/worker_default.supervisor.log" in tail
+    assert "/w/bench/logs/web.supervisor.log" not in tail
+
+
+def test_unknown_process_errors(monkeypatch):
+    _wire(monkeypatch, isatty=True)
+    result = runner.invoke(_app(), ["proj", "--process", "nope"])
+    assert result.exit_code == 1
 
 
 def test_no_it_flag_without_tty(monkeypatch):
