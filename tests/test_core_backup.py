@@ -50,17 +50,20 @@ class FakeContainer:
         pass
 
     def exec_run(self, cmd, workdir=None, environment=None):
+        # `cmd` is now an argv list for test/mkdir/bench (only _newest_dump's ls
+        # stays a `sh -c` string); normalize to text so routing handles both.
         self.calls.append((cmd, workdir))
-        if cmd.startswith("bench --site"):
+        text = cmd if isinstance(cmd, str) else " ".join(cmd)
+        if text.startswith("bench --site"):
             return (0 if self.backup_ok else 1, b"bench backup chatter")
-        if "ls -1t" in cmd:
+        if "ls -1t" in text:
             return (0, (self.dump_path or "").encode())
-        if "mkdir -p" in cmd:
+        if "mkdir -p" in text:
             return (0 if self.mkdir_ok else 1, b"mkdir failed")
-        if "test -d" in cmd:
-            if "/private/backups" in cmd:
+        if "test -d" in text:
+            if "/private/backups" in text:
                 return (0 if self.backup_dir_exists else 1, b"")
-            if "/sites/" in cmd:  # {bench}/sites/{site}
+            if "/sites/" in text:  # {bench}/sites/{site}
                 return (0 if self.site_dir_ok else 1, b"")
             return (0 if self.bench_dir_ok else 1, b"")  # {bench}/sites
         return (0, b"")
@@ -105,7 +108,22 @@ class TestSuccess:
         wire(c)
         result = core_backup.backup("proj", site="s.localhost", with_files=True)
         assert result.data.included_files is True
-        assert any("--with-files" in cmd for cmd, _ in c.calls)
+        assert any(isinstance(cmd, list) and "--with-files" in cmd for cmd, _ in c.calls)
+
+    def test_container_commands_are_argv_lists(self, wire):
+        """test/mkdir/bench run as argv lists (no shell); only the newest-dump ls is `sh -c`."""
+        c = FakeContainer(backup_dir_exists=False, mkdir_ok=True)
+        wire(c)
+        core_backup.backup("proj", site="s.localhost")
+        cmds = [cmd for cmd, _ in c.calls]
+        # The backup exec is an argv list, never an interpolated shell string.
+        assert ["bench", "--site", "s.localhost", "backup"] in cmds
+        # Directory checks/creation are argv lists too.
+        assert any(cmd[:2] == ["test", "-d"] for cmd in cmds if isinstance(cmd, list))
+        assert any(cmd[:2] == ["mkdir", "-p"] for cmd in cmds if isinstance(cmd, list))
+        # Only the glob/pipe newest-dump lookup keeps the shell.
+        shell_cmds = [cmd for cmd in cmds if isinstance(cmd, str)]
+        assert shell_cmds and all("ls -1t" in cmd for cmd in shell_cmds)
 
     def test_outcome_dto_is_json_safe(self, wire):
         wire(FakeContainer())

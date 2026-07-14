@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import peewee
+
 from ..utils import db_utils
 from .envelope import Result, Status
 from .errors import CwcliError, ErrorKind
@@ -146,14 +148,24 @@ def where(
 
     matches: list[WhereMatch] = []
 
-    if not sites_only:
-        app_matches = _search_apps(search)
-        if installed_only:
-            app_matches = [m for m in app_matches if m.installed]
-        matches.extend(_deduplicate_app_results(app_matches))
+    # A corrupt/locked cache or a schema mismatch surfaces here as a raw peewee
+    # error; keep it inside the core boundary as a typed CwcliError.
+    try:
+        if not sites_only:
+            app_matches = _search_apps(search)
+            if installed_only:
+                app_matches = [m for m in app_matches if m.installed]
+            matches.extend(_deduplicate_app_results(app_matches))
 
-    if not apps_only:
-        matches.extend(_search_sites(search))
+        if not apps_only:
+            matches.extend(_search_sites(search))
+    except peewee.PeeweeException as e:
+        raise CwcliError(
+            ErrorKind.INTERNAL,
+            "cache.read_failed",
+            "Failed to read the local cache.",
+            detail={"output": str(e)},
+        ) from e
 
     matches.sort(key=lambda m: (m.project, m.type, m.name))
     return Result(status=Status.OK, data=WhereResult(matches=matches))
