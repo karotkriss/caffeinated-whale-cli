@@ -55,13 +55,12 @@ _fixture_stats: dict[str, list] = {}
 _phase_totals: dict[str, float] = {"setup": 0.0, "call": 0.0, "teardown": 0.0}
 
 # Friendly labels for the shared fixtures worth explaining in the timing summary.
-# The E2E init pole (session_instance) is timed and reported separately (it is
-# session-scoped, which the generic pytest_fixture_setup wrapper below does not
-# see - its setup is dispatched above the tests/ conftest); see e2e/conftest.py.
+# Only function/module/class-scoped fixtures can ever land here - the
+# pytest_fixture_setup wrapper below never observes session-scoped fixtures
+# (their setup is dispatched above the tests/ conftest; same reason the E2E
+# init pole in session_instance is timed explicitly in e2e/conftest.py instead).
 _NOTABLE_FIXTURES = {
     "running_instance": "ensure the frappe container is running",
-    "isolated_home": "temp HOME + CWCLI_HOME isolation rail",
-    "port_allocator": "hand out non-overlapping port bases",
 }
 
 
