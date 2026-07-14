@@ -1,17 +1,18 @@
 """``core.start`` - start a project's containers + bench, idempotently, on the core.
 
 Owns what ``commands/start.py:_start_project`` used to do: start the project's
-stopped containers, resolve which bench to run, and launch ``bench start``
-detached to the persisted, bounded log while writing the supervisor marker. It
-prints, prompts, and exits nothing: it returns ``NEEDS_CHOICE`` for the
-multi-bench fork, raises :class:`~.errors.CwcliError` for hard failures, and
-returns ``Result(OK, StartOutcome(...))`` on success.
+stopped containers, resolve which bench to run, and launch **supervisord** over
+the bench's dev Procfile (openspec ``add-per-process-supervisor``) while writing
+the supervisor marker. It prints, prompts, and exits nothing: it returns
+``NEEDS_CHOICE`` for the multi-bench fork, raises :class:`~.errors.CwcliError` for
+hard failures (including a failed ``pip install supervisor``), and returns
+``Result(OK, StartOutcome(...))`` on success.
 
 Idempotent (openspec ``migrate-start-status-core`` D4): an already-running bench
-is detected by its DISCOVERED honcho supervisor PID keyed to the resolved bench
-path - NOT the old ``pkill -f 'bench start'``, which never matched honcho's
-steady-state cmdline and so double-started the stack. When the bench is already
-running, ``core.start`` no-ops and returns ``already_running=True``.
+is detected by its DISCOVERED supervisord supervisor PID keyed to the resolved
+bench path. When the bench is already running, ``core.start`` no-ops and returns
+``already_running=True`` (leaving the running config, and its autorestart state,
+untouched).
 
 Port-conflict resolution stays a CLI-frontend host-side pre-step (D6); this core
 assumes the host ports are already clear (a documented precondition, exactly as
@@ -62,16 +63,22 @@ def start(
     bench_path: str | None = None,
     auto_start: bool = False,
     restart: bool = False,
+    autorestart: bool = True,
 ) -> Result[StartOutcome]:
     """Start a project's containers and its bench. See module docstring.
 
     ``auto_start`` is accepted for signature symmetry with the family; ``start``
     always brings the containers up regardless (bringing things up is its job).
 
-    ``restart=True`` forces a genuine relaunch: an already-running honcho for the
-    bench is terminated (by discovered PID) and a fresh one is launched, instead
-    of the idempotent no-op. The post-restore restart uses it so the app
+    ``restart=True`` forces a genuine relaunch: an already-running supervisord for
+    the bench is terminated (by discovered PID) and a fresh one is launched,
+    instead of the idempotent no-op. The post-restore restart uses it so the app
     reconnects to the restored/migrated DB (``already_running`` is always False).
+
+    ``autorestart`` sets the generated supervisord config's per-program self-heal
+    (True -> ``autorestart=unexpected``, the ``--autorestart`` default; False ->
+    ``--no-autorestart``, a crashed program stays down until an explicit restart).
+    It only takes effect on a genuine (re)launch, not the idempotent no-op.
     """
     warnings: list[Message] = []
 
@@ -126,10 +133,10 @@ def start(
             f"Invalid bench path '{resolved_path}'. Paths cannot contain special shell characters.",
         )
 
-    log_path = supervision.bench_start_log_path(resolved_path)
+    log_path = supervision.logs_dir(resolved_path)
 
-    # 4. Idempotency: an already-running honcho for THIS bench is a clean no-op -
-    #    UNLESS restart=True, which terminates it first for a genuine relaunch.
+    # 4. Idempotency: an already-running supervisord for THIS bench is a clean no-op
+    #    - UNLESS restart=True, which terminates it first for a genuine relaunch.
     snapshot = supervision.discover_stack(frappe_container, resolved_path)
     if snapshot.supervisor_up:
         if not restart:
@@ -148,8 +155,8 @@ def start(
             )
         supervision.stop_supervisor(frappe_container, resolved_path)
 
-    # 5. Launch: bench start -> bounded log, write the marker, discover the set.
-    supervision.launch(frappe_container, resolved_path)
+    # 5. Launch supervisord over the Procfile, write the marker, discover the set.
+    supervision.launch(frappe_container, resolved_path, autorestart=autorestart)
     supervision.write_marker(frappe_container, resolved_path)
     launched = supervision.discover_stack(frappe_container, resolved_path)
     processes = _launched_processes(frappe_container, resolved_path, launched)

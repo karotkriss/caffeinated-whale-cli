@@ -13,22 +13,28 @@ The ``overall`` aggregate distinguishes the four lifecycle states:
 ===========  ===========================================================
 offline      a real-but-stopped project: containers exist, frappe not running
 online       container up, no supervisor marker (bench never started)
-running      marker present, honcho up, and the web probe answers
-degraded     marker present and honcho down (started, supervisor died),
-             OR honcho up but the web probe is not answering
+running      marker present, supervisord up, every expected program healthy
+             (RUNNING/STARTING), and the web probe answers
+degraded     marker present and supervisord down (started, supervisor died),
+             OR up but a program is not healthy (BACKOFF/FATAL/EXITED/STOPPED
+             /down), OR the web probe is not answering
 ===========  ===========================================================
 
-``running`` keys on honcho-up + the web probe answering rather than requiring
-every Procfile label to be individually detected as up, because honcho is
-all-or-nothing (one process dies, it tears the rest down and never restarts one),
-so honcho-up already implies the stack is up; keying on the reliable web signal
-keeps ``overall`` robust across frappe versions' cmdline shapes while the
-per-process list still reports each label's liveness for detail.
+Unlike the honcho model this replaced, ``running`` now requires every expected
+program to be healthy, because supervisord keeps siblings alive when one dies -
+so "web serving while a worker is FATAL" is a real, STABLE partial stack that
+must report ``degraded``, honestly (honcho made this impossible: one death tore
+the whole stack down, so supervisor-up implied the stack was up). Per-program
+state (RUNNING/STARTING/BACKOFF/EXITED/FATAL/STOPPED) comes from supervisord
+itself (``supervisorctl status``), which distinguishes a crash-looping BACKOFF
+and a give-up FATAL from a clean down - detail a ``ps``-only view cannot. The
+crash-loop/FATAL detail rides in each process's ``state`` field; ``overall``
+keeps its four tokens (a FATAL program folds into ``degraded``, no fifth token).
 
 With ``probe_web=False`` (the ``status --watch`` loop, so repeated ticks never
-hit the bench's web server) the web probe is skipped entirely and ``running``
-is driven by honcho-up alone - a missing web code must not falsely ``degrade``
-the aggregate.
+hit the bench's web server) the web probe is skipped entirely; the per-program
+health still comes from ``ps`` + ``supervisorctl`` (neither touches :8000), so a
+missing web code must not by itself ``degrade`` the aggregate.
 
 A real-but-stopped project (containers exist but frappe is not running) is
 ``offline`` and is RETURNED (never raised), preserving today's "offline, exit 0"
@@ -41,7 +47,7 @@ print/prompt/``typer.Exit``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from docker.errors import APIError, NotFound
 
@@ -99,9 +105,9 @@ def status(
     ``probe_web=False`` suppresses the in-container ``curl localhost:8000`` web
     probe entirely (``web_http_code`` comes back ``None``) so a repeated caller -
     the ``status --watch`` loop - leaves ZERO HTTP requests in the bench's access
-    logs. Per-process liveness still comes from the single ``ps`` read, so
-    ``overall`` stays honest: with no web signal it is driven by honcho-up alone
-    (honcho is all-or-nothing, so honcho-up already implies the stack is up).
+    logs. Per-program liveness + state still come from the ``ps`` read and
+    ``supervisorctl`` (neither touches :8000), so ``overall`` stays honest: with no
+    web signal it is driven by supervisor-up + every program healthy.
     """
     warnings: list[Message] = []
 
@@ -159,12 +165,23 @@ def status(
     marker = supervision.read_marker(frappe_container, resolved_path)
     snapshot = supervision.discover_stack(frappe_container, resolved_path)
     expected = supervision.expected_labels(frappe_container, resolved_path)
+    # supervisord's authoritative per-program state (RUNNING/BACKOFF/FATAL/...),
+    # read over the unix control socket - it never touches the bench web server, so
+    # it is safe even in the quiet ``--watch`` loop. Only meaningful when up.
+    states = (
+        supervision.states_by_label(
+            supervision.supervisorctl_states(frappe_container, resolved_path)
+        )
+        if snapshot.supervisor_up
+        else {}
+    )
     web_code = supervision.web_http_code(frappe_container) if probe_web else None
 
-    processes = _merge_health(expected, snapshot.processes)
+    processes = _merge_health(expected, snapshot.processes, states)
     overall = _overall(
         started=marker is not None,
         supervisor_up=snapshot.supervisor_up,
+        all_healthy=_all_healthy(processes),
         web_code=web_code,
         web_probed=probe_web,
     )
@@ -183,35 +200,81 @@ def status(
     )
 
 
-def _merge_health(expected: list[str], discovered: list[ProcessHealth]) -> list[ProcessHealth]:
-    """Every expected label (down if not discovered) plus any extra live process."""
+# supervisord states that count as "not a stable failure": RUNNING is up,
+# STARTING is a program still coming up (a one-shot status shouldn't degrade over
+# a transient). Everything else (BACKOFF/EXITED/FATAL/STOPPED) is a real down.
+_HEALTHY_STATES = {"RUNNING", "STARTING"}
+
+
+def _merge_health(
+    expected: list[str],
+    discovered: list[ProcessHealth],
+    states: dict[str, tuple[str, int | None]],
+) -> list[ProcessHealth]:
+    """Every expected label (down if not discovered) plus any extra live process.
+
+    Each process is annotated with supervisord's authoritative ``state`` (from
+    ``supervisorctl status``); a program supervisord knows about but ``ps`` did not
+    catch (e.g. a FATAL crash-loop with no live process) is reported down WITH its
+    ``state``, so the failure is visible rather than a bare "down".
+    """
     by_label = {p.label: p for p in discovered}
     out: list[ProcessHealth] = []
     seen: set[str] = set()
+
+    def _annotate(p: ProcessHealth) -> ProcessHealth:
+        state = states.get(p.label, (None, None))[0]
+        return replace(p, state=state) if state is not None else p
+
     for label in expected:
         if label in seen:
             continue
         seen.add(label)
-        out.append(by_label.get(label) or ProcessHealth(label=label, up=False))
+        p = by_label.get(label)
+        if p is not None:
+            out.append(_annotate(p))
+        else:
+            state = states.get(label, (None, None))[0]
+            out.append(ProcessHealth(label=label, up=False, state=state))
     for p in discovered:
         if p.label not in seen:
             seen.add(p.label)
-            out.append(p)
+            out.append(_annotate(p))
     return out
 
 
+def _all_healthy(processes: list[ProcessHealth]) -> bool:
+    """True iff every process is healthy (RUNNING/STARTING by state, else ``up``)."""
+    for p in processes:
+        if p.state is not None:
+            if p.state not in _HEALTHY_STATES:
+                return False
+        elif not p.up:
+            return False
+    return True
+
+
 def _overall(
-    *, started: bool, supervisor_up: bool, web_code: str | None, web_probed: bool = True
+    *,
+    started: bool,
+    supervisor_up: bool,
+    all_healthy: bool,
+    web_code: str | None,
+    web_probed: bool = True,
 ) -> str:
     """The pre-computed lifecycle aggregate (see module docstring's table).
 
-    When ``web_probed`` is False (watch mode suppressed the web probe), honcho-up
-    alone decides ``running`` vs ``degraded`` - a missing web code must NOT falsely
-    degrade the aggregate, since honcho-up already implies the stack is up.
+    Unlike the honcho model, a stable partial stack (``all_healthy`` False - a
+    program is BACKOFF/FATAL/EXITED/STOPPED/down while supervisord keeps the rest
+    alive) is a genuine ``degraded``. When ``web_probed`` is False (watch mode
+    suppressed the web probe), a missing web code alone must NOT degrade the
+    aggregate - only supervisor-down or an unhealthy program does.
     """
     if not started:
         return ONLINE
     if not supervisor_up:
+        return DEGRADED
+    if not all_healthy:
         return DEGRADED
     if not web_probed:
         return RUNNING

@@ -61,12 +61,12 @@ pytestmark = pytest.mark.e2e
 
 
 # --------------------------------------------------------------------------- #
-# Serving helpers (honcho actually up on :8000, the real "serves" signal).
+# Serving helpers (the web server actually up on :8000, the real "serves" signal).
 #
 # ``harness.wait_for_site_ready`` only proves the DB is reachable (``bench
-# list-apps``); it does NOT prove honcho is serving the web port. The lifecycle
-# invariants here mean "genuinely serves", so we poll the web port exactly as
-# ``cwcli status`` does (a curl inside the container), not just DB readiness.
+# list-apps``); it does NOT prove the web server is up. The lifecycle invariants
+# here mean "genuinely serves", so we poll the web port exactly as ``cwcli status``
+# does (a curl inside the container), not just DB readiness.
 # --------------------------------------------------------------------------- #
 def _web_reachable(project: str) -> bool:
     """True iff the frappe web server answers on :8000 inside the container.
@@ -90,12 +90,12 @@ def _wait_web_ready(project: str, *, timeout: int = 300) -> None:
 
 
 def _ensure_serving(project: str) -> None:
-    """Guarantee honcho is serving :8000, idempotently and order-independently.
+    """Guarantee the web server is up on :8000, idempotently and order-independently.
 
     A no-op curl check when already serving (so only the FIRST serving test in the
-    module pays honcho's boot cost); otherwise drives the real ``cwcli stop`` ->
-    ``cwcli start`` from-stopped path that actually runs ``bench start``, then waits
-    for the web port. Restores the running state so sibling tests sharing the
+    module pays the supervisor's boot cost); otherwise drives the real ``cwcli stop``
+    -> ``cwcli start`` from-stopped path that actually launches the supervisor, then
+    waits for the web port. Restores the running state so sibling tests sharing the
     session instance are undisturbed (mirrors ``running_instance``'s guarantee).
     """
     if _web_reachable(project):
@@ -297,11 +297,12 @@ def test_logs_shows_bench_stream(running_instance):
         child.close(force=True)
 
     out = harness.strip_ansi(log.getvalue())
-    # The header only prints once the captured log FILE was found and is being
-    # tailed - if it were missing, logs errors out before this line.
+    # The header only prints once at least one per-process log FILE was found and is
+    # being tailed - if none existed, logs errors out before this line.
     assert f"Viewing bench logs for '{inst.name}'" in out, out[-1500:]
-    # Real bench-stream content (honcho multiplexes the Procfile processes into the
-    # captured log): at least one well-known process/label is present.
+    # Real per-process content: the combined view tails each program's supervisord
+    # log file, so at least one well-known process/label appears (in a file header
+    # and/or its output).
     assert any(
         tok in out for tok in ("web", "redis", "watch", "schedule", "worker", "socketio")
     ), out[-1500:]
@@ -323,33 +324,30 @@ def test_restart_recovers_reachable_instance(running_instance):
     assert harness.frappe_container_id(inst.name) is not None
 
 
-# Task 2.3 lives here (after the other serving tests) on purpose: it STOPS honcho,
-# so running it last among serving tests avoids forcing a re-serve (an extra honcho
-# boot) on the CI leg's clock. ``_ensure_serving`` keeps it correct in any order.
+# Task 2.3 lives here (after the other serving tests) on purpose: it STOPS the
+# supervisor, so running it last among serving tests avoids forcing a re-serve (an
+# extra supervisor boot) on the CI leg's clock. ``_ensure_serving`` keeps it correct
+# in any order.
 def test_status_containers_up_bench_down_is_distinct_from_running(running_instance):
     """2.3 Not-started state is DISTINCT from running: with the containers up but
-    honcho stopped, ``status`` reports neither ``running`` nor ``offline`` and
-    exits 0. Asserted by the INVARIANT (containers up + site not answering), NOT by
-    string-matching the transitional token (today ``online``) that PR 2 may enrich
-    toward an aggregate. Leaves the instance un-served but containers up (a valid
-    state; nothing later in the session needs it serving)."""
+    the supervisor stopped, ``status`` reports neither ``running`` nor ``offline``
+    and exits 0. Asserted by the INVARIANT (containers up + site not answering), NOT
+    by string-matching the transitional token that the migration may enrich toward
+    an aggregate. Leaves the instance un-served but containers up (a valid state;
+    nothing later in the session needs it serving)."""
     inst = running_instance
-    _ensure_serving(inst.name)  # honcho up first, so there is something to stop
+    _ensure_serving(inst.name)  # supervisor up first, so there is something to stop
 
-    # Stop honcho (SIGTERM triggers its "one dies, all die" teardown) plus the web
-    # process directly, then wait until :8000 genuinely stops answering. This only
-    # CREATES the state under test; nothing here is asserted (the pkill pattern is a
-    # migration-transient mechanic).
-    harness.exec_in_frappe(
-        inst.name,
-        "pkill -TERM -f honcho || true; pkill -f 'bench serve' || true; "
-        "pkill -f gunicorn || true",
-    )
+    # Stop the supervisor itself (NOT an individual program: supervisord would just
+    # auto-restart a killed ``bench serve``). SIGTERM to supervisord shuts its whole
+    # program group down; then wait until :8000 genuinely stops answering. This only
+    # CREATES the state under test; nothing here is asserted.
+    harness.exec_in_frappe(inst.name, "pkill -TERM -f supervisord || true")
     harness.wait_until(
         lambda: not _web_reachable(inst.name),
         timeout=120,
         interval=3,
-        desc=f"{inst.name} web :8000 stopped after honcho teardown",
+        desc=f"{inst.name} web :8000 stopped after supervisor teardown",
     )
 
     result = harness.run_cwcli("status", inst.name)

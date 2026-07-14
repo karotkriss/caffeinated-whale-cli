@@ -31,6 +31,7 @@ import typer
 
 from ..core import backup as core_backup
 from ..core import list as core_list
+from ..core import restart as core_restart
 from ..core import start as core_start
 from ..core import status as core_status
 from ..core import where as core_where
@@ -74,6 +75,8 @@ def emit_axi_error(error: CwcliError) -> None:
 def _choice_error_message(choice: Choice) -> str:
     if choice.kind == "select_bench":
         return "multiple benches; pass --bench <index|label>"
+    if choice.kind == "select_process":
+        return "unknown or ambiguous process; pass --process <label>"
     if choice.kind == "confirm_start":
         return choice.prompt
     return f"a decision is required: {choice.prompt}"
@@ -90,6 +93,10 @@ def emit_axi_choice_as_usage_error(choice: Choice) -> None:
         options = [f"[{o['value']}] {o['label']}" for o in choice.options or []]
         typer.echo(toon.block("options", options))
         typer.echo(toon.kv("help", "re-run with --bench <index|label>"))
+    elif choice.kind == "select_process":
+        options = [o["label"] for o in choice.options or []]
+        typer.echo(toon.block("options", options))
+        typer.echo(toon.kv("help", "re-run with --process <label>"))
     elif choice.kind == "confirm_start":
         typer.echo(toon.kv("help", "start it first with 'cwcli start <project>'"))
 
@@ -362,3 +369,37 @@ def axi_status(
     assert result.data is not None  # OK/WARNING always carries a StatusReport
     emit_result(result.data, warnings=result.warnings)
     raise typer.Exit(0)
+
+
+# --------------------------------------------------------------------------- restart
+
+
+@app.command("restart")
+def axi_restart(
+    project: str = typer.Argument(..., help="The Docker Compose project name."),
+    process: str = typer.Option(
+        ..., "--process", "-p", help="Which Procfile process to restart (e.g. web, worker)."
+    ),
+    bench: str = typer.Option(None, "--bench", help="Which bench: numeric index or label."),
+) -> None:
+    """Restart ONE supervised process; emit the outcome as TOON (never prompts, no --watch).
+
+    A one-shot single-program mutation (siblings keep running). ``--process`` is
+    required; an unknown/ambiguous process is a usage error listing the valid
+    labels, and a multi-bench project with no ``--bench`` is a usage error naming
+    ``--bench``. Whole-stack restart is not an axi verb (use ``cwcli axi start``).
+    """
+    try:
+        result = core_restart.restart_process(project, process, bench=bench)
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    if result.status is CoreStatus.NEEDS_CHOICE:
+        assert result.choice is not None
+        emit_axi_choice_as_usage_error(result.choice)
+        raise typer.Exit(2)
+
+    assert result.data is not None  # OK/WARNING always carries a ProcessRestartOutcome
+    emit_result(result.data, warnings=result.warnings)
+    raise typer.Exit(0 if result.status in (CoreStatus.OK, CoreStatus.WARNING) else 1)
