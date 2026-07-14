@@ -86,6 +86,7 @@ def wire(monkeypatch):
 
 class TestSuccess:
     def test_success_returns_outcome(self, wire):
+        """`backup` returns an OK BackupOutcome plus a default-bench-path warning."""
         c = FakeContainer()
         wire(c)
         result = core_backup.backup("proj", site="s.localhost")

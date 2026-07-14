@@ -16,13 +16,16 @@ from tests.bench_fakes import MarkerFakeContainer
 
 class TestValidateUserLabel:
     def test_accepts_normal_labels(self):
+        """`validate_user_label` accepts ordinary label strings."""
         for good in ["staging", "prod-2", "v15_test", "site.local", "A1"]:
             assert bench_labels.validate_user_label(good) is None
 
     def test_rejects_empty(self):
+        """`validate_user_label` rejects an empty label."""
         assert bench_labels.validate_user_label("") is not None
 
     def test_rejects_purely_numeric(self):
+        """`validate_user_label` rejects numeric labels (they collide with bench indexes)."""
         # Would collide with a bench's numeric index.
         for numeric in ["0", "1", "42"]:
             err = bench_labels.validate_user_label(numeric)
@@ -39,10 +42,12 @@ class TestValidateUserLabel:
             assert bench_labels.validate_user_label(uni) is not None
 
     def test_rejects_bad_charset(self):
+        """`validate_user_label` rejects labels with disallowed characters."""
         for bad in ["has space", "semi;colon", "slash/es", "quote'd", "star*"]:
             assert bench_labels.validate_user_label(bad) is not None
 
     def test_rejects_too_long(self):
+        """`validate_user_label` rejects an over-length label."""
         assert bench_labels.validate_user_label("a" * 65) is not None
 
 
@@ -55,11 +60,13 @@ class TestResolveBench:
         ]
 
     def test_resolve_by_index(self):
+        """`resolve_bench` selects a bench by its numeric index."""
         b = self._benches()
         assert bench_labels.resolve_bench(b, "0")["path"] == "/a"
         assert bench_labels.resolve_bench(b, "2")["path"] == "/c"
 
     def test_resolve_by_label(self):
+        """`resolve_bench` selects a bench by its user label."""
         assert bench_labels.resolve_bench(self._benches(), "staging")["path"] == "/b"
 
     def test_label_wins_over_index_namespace(self):
@@ -119,6 +126,7 @@ class TestMarkerIO:
         assert bench_labels.read_label_marker(c, self.BENCH) is None
 
     def test_clear_removes_marker(self):
+        """Clearing a label removes the in-bench marker file."""
         c = MarkerFakeContainer(bench_path=self.BENCH)
         bench_labels.write_label_marker(c, self.BENCH, "staging")
         assert self.MARKER in c.fs

@@ -33,6 +33,7 @@ class _FakeContainer:
 
 class TestResolveContainerState:
     def test_running(self):
+        """`resolve_container_state` reports a running container as running, not start-requested."""
         result = resolvers.resolve_container_state("proj", _FakeContainer("running"))
         assert result.status is Status.OK
         assert result.data.running is True
@@ -76,6 +77,7 @@ def _patch_benches(monkeypatch, benches):
 
 class TestResolveBench:
     def test_path_override_wins(self, monkeypatch):
+        """An explicit bench path overrides any selector or cache lookup."""
         _patch_benches(monkeypatch, None)
         result = resolvers.resolve_bench("proj", None, "/explicit/path")
         assert result.status is Status.OK
@@ -95,6 +97,7 @@ class TestResolveBench:
         assert result.warnings[0].code == "bench.sole"
 
     def test_selector_match(self, monkeypatch):
+        """`resolve_bench` resolves a bench by user label and by numeric index."""
         _patch_benches(monkeypatch, [{"path": "/w/b0"}, {"path": "/w/b1", "label": "staging"}])
         assert resolvers.resolve_bench("proj", "staging", None).data == "/w/b1"
         assert resolvers.resolve_bench("proj", "0", None).data == "/w/b0"
@@ -160,6 +163,7 @@ class TestCoreDockerAccessor:
 
 class TestEnsureContainersRunningWrapper:
     def test_running_returns_true(self, monkeypatch):
+        """`ensure_containers_running` returns True when the frappe container is up."""
         monkeypatch.setattr(
             cmd_utils, "get_frappe_container", lambda name: _FakeContainer("running")
         )
@@ -205,6 +209,7 @@ class TestEnsureContainersRunningWrapper:
 
 class TestResolveBenchPathWrapper:
     def test_conflict_exits_1(self, monkeypatch):
+        """`resolve_bench_path` exits 1 when it cannot resolve the bench."""
         _patch_benches(monkeypatch, None)
         with pytest.raises(typer.Exit) as exc:
             cmd_utils.resolve_bench_path("proj", "0", "/p")

@@ -85,6 +85,8 @@ class TestAxiBackup:
         assert "error: Invalid site name" in result.stdout
 
     def test_error_hint_rendered(self, monkeypatch):
+        """A CwcliError hint is surfaced as a `help:` line in axi output."""
+
         def _raise(*a, **k):
             raise CwcliError(ErrorKind.NOT_RUNNING, "x", "not running", hint="cwcli start proj")
 
@@ -131,6 +133,7 @@ class TestAxiBackup:
 
 class TestAxiHome:
     def test_home_shows_instances(self, monkeypatch):
+        """Bare `axi` renders the instance list as a TOON table."""
         monkeypatch.setattr(
             axi_mod.core_list,
             "list_instances",
@@ -274,15 +277,18 @@ class TestAxiWhere:
 
 class TestToonEncoder:
     def test_flat_object(self):
+        """`toon.encode` renders a flat object with true/null scalars."""
         doc = toon.encode({"a": "x", "b": True, "n": None})
         assert doc == "a: x\nb: true\nn: null"
 
     def test_numeric_string_quoted(self):
+        """`toon.encode` quotes a numeric string so "42" is not read as the number 42."""
         # so an agent doesn't read the string "42" as the number 42
         assert toon.encode({"id": "42"}) == 'id: "42"'
         assert toon.encode({"id": 42}) == "id: 42"
 
     def test_table_shape(self):
+        """`toon.table` emits the `name[count]{cols}` header and CSV-style rows."""
         rows = [{"id": "a", "n": 1}, {"id": "b", "n": 2}]
         out = toon.table("rows", rows, ["id", "n"])
         assert out.splitlines()[0] == "rows[2]{id,n}:"
@@ -296,6 +302,7 @@ class TestToonEncoder:
         assert out == "help[2]:\n  do x\n  do y"
 
     def test_self_check_runs(self):
+        """The toon module's internal self-check passes."""
         toon._self_check()  # asserts internally; must not raise
 
 

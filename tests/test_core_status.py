@@ -109,6 +109,7 @@ class TestChoicesAndErrors:
         assert report.overall in ("running", "degraded", "online")
 
     def test_docker_unreachable_raises(self, monkeypatch):
+        """`status` raises a DOCKER CwcliError when Docker is unreachable."""
         monkeypatch.setattr(core_status, "get_project_containers", lambda name: None)
         with pytest.raises(CwcliError) as exc:
             core_status.status("proj")

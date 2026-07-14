@@ -81,6 +81,7 @@ class TestCwcliHomeHelper:
         assert config_utils.cwcli_home() == Path.home() / ".cwcli"
 
     def test_set_redirects_base(self, monkeypatch, tmp_path):
+        """CWCLI_HOME redirects the base directory `cwcli_home()` returns."""
         target = tmp_path / "cwe2e-home"
         monkeypatch.setenv("CWCLI_HOME", str(target))
         assert config_utils.cwcli_home() == target
@@ -126,6 +127,7 @@ class TestCwcliHomeRelocation:
         assert resolved["db_file_mode"] == oct(0o600)
 
     def test_single_helper_agreement(self, tmp_path):
+        """Every footprint dir resolves under the same CWCLI_HOME base."""
         # config_utils, db_utils, and auto_inspect all resolve under the SAME
         # base when CWCLI_HOME is set, because they share the one cwcli_home()
         # helper - they can never diverge on where cwcli's state lives.

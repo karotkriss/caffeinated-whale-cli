@@ -63,6 +63,7 @@ class TestListInstances:
         assert result.data == []
 
     def test_single_instance(self, wire):
+        """`list_instances` maps one container to an InstanceDTO with sorted ports."""
         wire([FakeContainer(project="proj-a", status="running", ports=_ports("8000", "8001"))])
         result = core_list.list_instances()
         assert result.status is Status.OK

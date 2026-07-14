@@ -963,6 +963,7 @@ class TestStreamedCopy:
 class TestProjectNameValidation:
     @pytest.mark.parametrize("name", ["proj", "my-project", "a_b.localhost"])
     def test_valid_names_accepted(self, cwcli_home, name):
+        """`_is_valid_project_name` accepts safe project names."""
         assert rm._is_valid_project_name(name) is True
 
     @pytest.mark.parametrize(
@@ -970,6 +971,7 @@ class TestProjectNameValidation:
         ["", ".", "..", "/", "/etc", "a/b", "..\\x", "sub/../../etc", "\0evil"],
     )
     def test_escaping_names_rejected(self, cwcli_home, name):
+        """`_is_valid_project_name` rejects path-escaping project names."""
         assert rm._is_valid_project_name(name) is False
 
     def test_delete_directory_refuses_escaping_path(self, cwcli_home):
