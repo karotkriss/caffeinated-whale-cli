@@ -1,9 +1,9 @@
 """``core.version`` - install-method detection + latest-version lookup, UI-pure.
 
 One shared helper behind two consumers: the active ``cwcli self-update`` command
-(this PR) and the passive "update available" notice (``cwcli-update-notify-n4``,
-NOT built here) reuse it verbatim, so the detection tree, the fail-open PyPI
-lookup, the PEP 440 compare, and the TTL cache all live here once.
+and the passive "update available" notice (:func:`passive_notice`) reuse it
+verbatim, so the detection tree, the fail-open PyPI lookup, the PEP 440 compare,
+and the TTL cache all live here once.
 
 The distribution name is always ``caffeinated-whale-cli`` (the ``cwcli`` PyPI
 name is an abandoned 2016 package - never use it). Like every ``core`` module
@@ -81,6 +81,72 @@ def check(*, use_cache: bool = True, timeout: float = _DEFAULT_TIMEOUT) -> Resul
     return Result(status=status, data=info, warnings=warnings)
 
 
+def passive_notice(*, timeout: float = _DEFAULT_TIMEOUT) -> VersionInfo | None:
+    """Cache-only, non-blocking gate for the passive "update available" notice.
+
+    Returns a :class:`VersionInfo` to display ONLY when the install method is
+    upgradable (not ``dev``/``uvx``) AND the shared ≤1-day cache already knows a
+    newer version is published. It NEVER blocks on the network: on a
+    missing/stale cache it fires a detached background refresh for the NEXT run
+    and returns ``None`` now - throttled to ~once/day by ``attempted_at``, which
+    is stamped on EVERY fetch (success or failure), so persistent PyPI failures
+    (offline, corporate proxy, blocked) don't re-spawn a refresh on every
+    invocation. Fully fail-open - any error yields ``None`` (no notice), so a
+    passive check can never break, delay, or hang a command.
+    """
+    try:
+        method, _ = _detect_method()
+        upgrade_command = _upgrade_command(method)
+        if upgrade_command is None:
+            return None  # dev / uvx: nothing to upgrade -> never fetch or notify
+        cached = _read_cache()  # fresh value, or None if missing/stale
+        if cached is None:
+            if not _recently_attempted():
+                _spawn_background_refresh(timeout=timeout)
+            return None
+        current = _current_version()
+        if not _is_outdated(current, cached):
+            return None
+        return VersionInfo(
+            current=current,
+            latest=cached,
+            method=method,
+            upgrade_command=upgrade_command,
+            is_outdated=True,
+            is_dev=False,
+        )
+    except Exception:
+        return None
+
+
+def _spawn_background_refresh(*, timeout: float = _DEFAULT_TIMEOUT) -> None:
+    """Fire-and-forget a fully detached refresh of the shared version cache.
+
+    Runs one ``check(use_cache=False)`` in a separate process that survives this
+    (often sub-second) command's exit, so the ≤1-day cache is populated for the
+    NEXT run without ever blocking THIS one. ``check`` stamps ``attempted_at`` on
+    EVERY fetch it makes, success or failure, so ``_recently_attempted`` throttles
+    further refreshes to ~once/day even when PyPI is persistently unreachable.
+    Any failure to spawn is swallowed.
+    """
+    import subprocess
+
+    snippet = (
+        "from caffeinated_whale_cli.core import version as v;"
+        f"v.check(use_cache=False, timeout={timeout!r})"
+    )
+    try:
+        subprocess.Popen(
+            [sys.executable, "-c", snippet],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception:
+        pass  # a background refresh must never break the caller
+
+
 def _current_version() -> str:
     import importlib.metadata
 
@@ -155,8 +221,7 @@ def _latest_version(*, use_cache: bool, timeout: float) -> str | None:
         if cached is not None:
             return cached
     latest = _fetch_latest(timeout)
-    if latest is not None:
-        _write_cache(latest)
+    _record_attempt(latest)
     return latest
 
 
@@ -190,10 +255,35 @@ def _read_cache() -> str | None:
     return None
 
 
-def _write_cache(latest: str) -> None:
+def _recently_attempted() -> bool:
+    """Whether a fetch (success or failure) landed within the TTL.
+
+    Fail-open to ``False`` on any error, so a corrupt/missing cache never
+    blocks a refresh from being spawned.
+    """
     try:
+        raw = json.loads(_cache_file().read_text())
+        return time.time() - float(raw["attempted_at"]) < _CACHE_TTL_SECONDS
+    except Exception:
+        return False
+
+
+def _record_attempt(latest: str | None) -> None:
+    """Stamp ``attempted_at`` on every fetch; update ``latest``/``checked_at``
+    only on success, preserving any previously known-good value on failure.
+    """
+    try:
+        try:
+            raw = json.loads(_cache_file().read_text())
+        except Exception:
+            raw = {}
+        now = time.time()
+        raw["attempted_at"] = now
+        if latest is not None:
+            raw["latest"] = latest
+            raw["checked_at"] = now
         path = _cache_file()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"latest": latest, "checked_at": time.time()}))
+        path.write_text(json.dumps(raw))
     except Exception:
         pass  # a cache write must never break a version check
