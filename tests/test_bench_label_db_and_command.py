@@ -205,6 +205,7 @@ class TestLabelCommand:
         assert MARKER_B not in container.fs
 
     def test_reject_numeric_label(self, temp_db, monkeypatch):
+        """`label` refuses a numeric label and writes nothing."""
         _seed_two_benches()
         container = MarkerFakeContainer(bench_path=BENCH_B)
         with pytest.raises(typer.Exit) as exc:
@@ -214,6 +215,7 @@ class TestLabelCommand:
         assert MARKER_B not in container.fs
 
     def test_reject_duplicate_label(self, temp_db, monkeypatch):
+        """`label` refuses a label already used by another bench."""
         _seed_two_benches(labels=("staging", None))
         container = MarkerFakeContainer(bench_path=BENCH_B)
         with pytest.raises(typer.Exit) as exc:
@@ -221,6 +223,7 @@ class TestLabelCommand:
         assert exc.value.exit_code == 1
 
     def test_unknown_selector_errors(self, temp_db, monkeypatch):
+        """`label` exits 1 on an unknown bench selector."""
         _seed_two_benches()
         container = MarkerFakeContainer(bench_path=BENCH_B)
         with pytest.raises(typer.Exit) as exc:

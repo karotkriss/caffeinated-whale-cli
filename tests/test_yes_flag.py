@@ -57,6 +57,8 @@ def _set_start_tty(monkeypatch, is_tty):
 
 class TestConfirmOrExit:
     def test_assume_yes_proceeds(self, monkeypatch):
+        """`confirm_or_exit` proceeds under --yes without ever prompting."""
+
         # Never even consults the TTY / prompt.
         def _boom(*a, **k):
             raise AssertionError("must not prompt under --yes")
@@ -84,6 +86,7 @@ class TestConfirmOrExit:
         assert exc.value.exit_code == 1
 
     def test_tty_accept_proceeds(self, monkeypatch):
+        """`confirm_or_exit` proceeds when the TTY prompt is accepted."""
         _set_tty(monkeypatch, True)
         monkeypatch.setattr(cmd_utils.questionary, "confirm", lambda *a, **k: _Answer(True))
         assert cmd_utils.confirm_or_exit("ok?", assume_yes=False, refuse_message="refused") is None
@@ -156,6 +159,7 @@ class TestStartPortConflictYes:
         assert stopped == ["other"]
 
     def test_without_yes_prompts(self, monkeypatch):
+        """The port-conflict check prompts on an interactive TTY (and stops the conflicting container)."""
         stopped = self._wire_conflict(monkeypatch)
         # Interactive TTY: the prompt is offered (a non-TTY without --yes refuses,
         # covered separately in test_exit_codes.py).

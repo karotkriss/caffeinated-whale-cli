@@ -46,6 +46,7 @@ class TestLsJson:
         assert result.stdout.strip() == "[]"
 
     def test_json_shape_preserved(self, wired, monkeypatch):
+        """`list --json` emits the instance DTO shape verbatim."""
         _patch_instances(
             monkeypatch,
             [InstanceDTO(project_name="p1", status="running", ports=["8000", "8001"])],
@@ -58,6 +59,7 @@ class TestLsJson:
 
 class TestLsOtherModes:
     def test_quiet_lists_names(self, wired, monkeypatch):
+        """`list --quiet` prints only the instance names."""
         _patch_instances(
             monkeypatch,
             [

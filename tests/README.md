@@ -44,6 +44,15 @@ uv run pytest -l
 uv run pytest --pdb
 ```
 
+## Reading the output (timing & descriptions)
+
+`tests/conftest.py` layers pure-observability reporting on top of every run (it changes nothing a test asserts), so the output explains itself instead of being a wall of opaque `file::test_name` lines. This surfaces in CI logs too, where the E2E matrix runs:
+
+- **Each `-v` line carries its own time and a plain-English description**, e.g. `... test_tty_accept_proceeds PASSED  0.000s  · \`confirm_or_exit\` proceeds when the TTY prompt is accepted.`. The description is the test's docstring first line when it has one, else its function name humanised - so a newcomer can read what a test does without decoding the filename. Docstring-first is the convention; the humanised name is the floor. Improve a description by giving the test a one-line docstring.
+- **A single "two-faced" end-of-run summary** (built in [`_reporting.py`](_reporting.py)): one report, two faces from one code path. When stdout is a colour-capable terminal it renders **Cockpit** - a header verdict line, the highlighted init pole, a colour-graded slowest-tests table, a per-file rollup with bars, and a phase-totals panel; otherwise it renders **Ledger** - the identical sections as plain aligned columns under `==== headers ====`, no boxes or colour, so raw CI logs and piped output stay clean and greppable. Colour is forced only on the reporter's own `rich.Console`, never via `FORCE_COLOR` (which would leak ANSI into the app-under-test's stdout and break string-match assertions).
+- **The E2E `cwcli init` / bench-build pole is highlighted separately** in that summary (the `One-time E2E cost` panel / section). That one session-scoped step is what makes the E2E matrix ~10-30+ min, so it is split out and flagged as **not** per-test time; the fixture that builds it times itself in [`e2e/conftest.py`](e2e/conftest.py) and stashes the duration on `config`. It is session-scoped, which a generic per-test timer cannot observe (the session node sits above `tests/`), hence the explicit timing there - and the panel appears only when that duration was recorded, so the fast tier (no bench build) omits it.
+- `--durations=15` (in `pyproject.toml` addopts) adds pytest's built-in slowest-N view for a quick scan.
+
 ## E2E harness (real Docker)
 
 The E2E harness ([`tests/e2e/harness.py`](e2e/harness.py) + [`tests/e2e/conftest.py`](e2e/conftest.py)) automates the manual `docs/e2e/` recipe so the destructive-path guarantees are enforced by machine.
@@ -194,7 +203,7 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 # The default `-m` deselects the real-Docker tiers, so a bare `pytest` runs only
 # the fast unit tier; override with `-m e2e` on the CLI (the last `-m` wins).
-addopts = ["-v", "--strict-markers", "--tb=short", "--cov-report=term-missing", "-m", "not e2e and not e2e_p2p"]
+addopts = ["-v", "--strict-markers", "--tb=short", "--cov-report=term-missing", "--durations=15", "-m", "not e2e and not e2e_p2p"]
 markers = [
     "unit: fast tests that need no Docker daemon (the default tier)",
     "e2e: real-Docker end-to-end tests driving the real cwcli binary",

@@ -100,6 +100,8 @@ def test_caches_results(self):
     # Test implementation
 ```
 
+`tests/conftest.py` also surfaces a test's docstring first line as its human-readable description on the `-v` output line (falling back to the humanised function name when there's no docstring), so a good one-line docstring doubles as documentation for anyone reading the test run. See [tests/README.md](../../tests/README.md#reading-the-output-timing--descriptions).
+
 ### Fixtures
 
 Use pytest fixtures for common test setup:
