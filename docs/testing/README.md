@@ -2,6 +2,8 @@
 
 This directory contains all testing-related documentation for caffeinated-whale-cli.
 
+The authoritative team norms for validating a change - gate scope, both-modes testing, per-change test-writing discipline, real-instance discipline, and the no-broad-prune rule - are in the [Testing Guide's Gate Policy](./guide.md#gate-policy).
+
 ## Two-tier model: fast `unit` vs real-Docker `e2e`
 
 The suite is split into two tiers by pytest marker (registered in `pyproject.toml`; `tests/conftest.py` auto-applies `unit` to anything not marked `e2e`/`e2e_p2p`).
