@@ -44,6 +44,15 @@ uv run pytest -l
 uv run pytest --pdb
 ```
 
+## Reading the output (timing & descriptions)
+
+`tests/conftest.py` layers pure-observability reporting on top of every run (it changes nothing a test asserts), so the output explains itself instead of being a wall of opaque `file::test_name` lines. This surfaces in CI logs too, where the E2E matrix runs:
+
+- **Each `-v` line carries its own time and a plain-English description**, e.g. `... test_tty_accept_proceeds PASSED  0.000s  · tty accept proceeds`. The description is the test's docstring first line when it has one, else its function name humanised - so a newcomer can read what a test does without decoding the filename. Improve a description by giving the test a one-line docstring.
+- **A `timing summary` block** at the end reports the setup / call / teardown totals and the slowest shared fixtures.
+- **The E2E `cwcli init` / bench-build pole is reported separately and prominently** in that block (`E2E session init ...`). That one session-scoped step is what makes the E2E matrix ~10-30+ min, so it is split out and flagged as **not** per-test time; the fixture that builds it times itself in [`e2e/conftest.py`](e2e/conftest.py). It is session-scoped, which the generic fixture-setup timer cannot observe (conftest hook scoping is path-based, and the session node sits above `tests/`), hence the explicit timing there.
+- `--durations=15` (in `pyproject.toml` addopts) adds pytest's built-in slowest-N view for a quick scan.
+
 ## E2E harness (real Docker)
 
 The E2E harness ([`tests/e2e/harness.py`](e2e/harness.py) + [`tests/e2e/conftest.py`](e2e/conftest.py)) automates the manual `docs/e2e/` recipe so the destructive-path guarantees are enforced by machine.

@@ -96,6 +96,10 @@ addopts = [
     "--strict-markers",
     "--tb=short",
     "--cov-report=term-missing",
+    # Built-in slowest-N view (setup/call/teardown), on top of the per-test time
+    # + description that tests/conftest.py prints inline on each -v line and the
+    # E2E init-pole callout in its timing summary. Surfaces in CI logs.
+    "--durations=15",
     "-m",
     "not e2e and not e2e_p2p",
 ]

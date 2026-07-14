@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import time
 from dataclasses import dataclass
 
 import pytest
@@ -88,7 +89,7 @@ def port_allocator():
 
 
 @pytest.fixture(scope="session")
-def session_instance(isolated_home, _docker_gate, _teardown_backstop, port_allocator):
+def session_instance(isolated_home, _docker_gate, _teardown_backstop, port_allocator, request):
     """One real throwaway instance for the whole session: a genuine `cwcli init`
     (bench init + new-site), torn down with `cwcli rm --yes --volumes`.
 
@@ -99,6 +100,10 @@ def session_instance(isolated_home, _docker_gate, _teardown_backstop, port_alloc
     harness.enforce_isolation()
     name = harness.project_name("main")
     port = port_allocator.next()
+    # Time the `cwcli init` build (image pull + bench init + new-site): this one
+    # session-scoped step is the E2E pole, so the timing summary reports it
+    # separately from per-test durations (see tests/conftest.py).
+    _init_start = time.perf_counter()
     result = harness.run_cwcli(
         "init",
         name,
@@ -111,6 +116,7 @@ def session_instance(isolated_home, _docker_gate, _teardown_backstop, port_alloc
         "--auto-start",
         timeout=harness.INIT_TIMEOUT,
     )
+    request.config._cwcli_e2e_init_seconds = time.perf_counter() - _init_start
     if result.returncode != 0:
         pytest.fail(
             f"`cwcli init {name}` (frappe {harness.FRAPPE_BRANCH}) failed "
