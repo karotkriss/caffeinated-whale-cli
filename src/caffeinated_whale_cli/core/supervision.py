@@ -1,27 +1,38 @@
-"""``core.supervision`` - the shared read-side process-supervision substrate.
+"""``core.supervision`` - the shared in-container process-supervision substrate.
 
-This is the ONE tracked-state contract that :mod:`core.start` writes and
-:mod:`core.status` reads, so the two verbs always agree on which bench they act
-on and what "running" means (openspec ``migrate-start-status-core``, D1/D2). cwcli
-is a short-lived CLI reaching long-lived in-container processes only through
-``docker exec``, so it can never be the live PARENT of the bench stack; it owns
-the READ side only. bench keeps launching its own ``honcho`` supervisor; this
-module observes it.
+cwcli is a short-lived CLI reaching long-lived in-container processes only
+through ``docker exec``, so it can never be the live PARENT of the bench stack;
+it owns the READ side plus discrete mutations. bench's own dev launcher runs the
+Procfile under ``honcho``, which is all-or-nothing (one child dies, it tears the
+rest down and never restarts one), so per-process restart and auto-heal are
+impossible under it. This module instead launches **supervisord** inside the
+container over the SAME dev Procfile commands (openspec ``add-per-process-supervisor``,
+reversing ``migrate-start-status-core`` D1), which gives per-process restart,
+``autorestart`` self-heal, crash-loop ``FATAL`` surfacing, and per-process log
+files, while keeping cwcli stateless between calls (it cold-re-discovers the
+supervisord on every invocation, exactly as it did honcho).
 
 What lives here:
 
 - :func:`discover_stack` - ONE ``ps`` in the frappe container mapping each PID to
   its Procfile label from its self-describing cmdline, keyed to a RESOLVED bench
   path so a multi-bench instance never mis-attributes another bench's processes.
-- :func:`expected_labels` - the live ``Procfile`` parse (which labels SHOULD run).
+- :func:`expected_labels` / :func:`procfile_programs` - the live ``Procfile``
+  parse (which labels/programs SHOULD run), normalized and raw.
 - :func:`read_marker` / :func:`write_marker` - the minimal supervisor marker that
-  distinguishes "started, supervisor now down" (marker present, honcho absent)
-  from "never started" (no marker); honcho writes no pidfile, so pure discovery
-  cannot make this distinction.
-- :func:`bench_start_log_path` / :func:`launch` / :func:`web_http_code` /
-  :func:`per_process_log_lines` - the persisted, size-bounded bench-start log on
-  the workspace volume, the detached ``bench start`` launch, the retained curl web
-  probe, and honcho's ``HH:MM:SS name|`` prefix parse for per-process log views.
+  distinguishes "started, supervisor now down" (marker present, supervisord
+  absent) from "never started" (no marker), and records the config path detection
+  keys on.
+- :func:`ensure_supervisor_installed` / :func:`launch` / :func:`stop_supervisor` -
+  the idempotent ``pip install supervisor`` bootstrap (fail-closed), the detached
+  supervisord launch over a generated config, and the PID-based teardown.
+- :func:`supervisorctl_states` / :func:`restart_program` - supervisord's
+  authoritative per-program state (RUNNING/STARTING/BACKOFF/EXITED/FATAL/STOPPED)
+  and the single-program restart primitive.
+- :func:`process_log_path` / :func:`logs_dir` - the per-process log files
+  (supervisord ``stdout_logfile`` + built-in rotation, replacing honcho's
+  combined-stream capper); ``commands/logs.py`` tails one or all of them (the
+  multi-file tail is the combined view).
 
 No ``rich``/``questionary``/``typer`` (a unit test enforces the ban), and the
 frappe ``Container`` object stays INTERNAL - it is passed in for exec calls and is
@@ -31,64 +42,49 @@ never returned across a boundary; every return is plain serializable data.
 from __future__ import annotations
 
 import json
-import re
 import shlex
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-# The captured honcho stream + the tracked-state files all live under the bench's
-# own ``logs/`` dir, which sits on the frappe_docker workspace volume, so they
-# survive a container restart (unlike the old ephemeral ``/tmp/bench-<p>.log``).
-_LOG_NAME = "bench-start.log"
+# All cwcli supervision state lives under the bench's own ``logs/`` dir, which
+# sits on the frappe_docker workspace volume, so it survives a container restart.
 _MARKER_NAME = ".cwcli-supervisor.json"
-_CAPPER_NAME = ".cwcli-logcap.py"
+_CONFIG_NAME = ".cwcli-supervisor.conf"
+_LAUNCHER_NAME = ".cwcli-run.sh"
+_SOCK_NAME = ".cwcli-supervisor.sock"
+_SUPERVISORD_LOG_NAME = ".cwcli-supervisord.log"
+_SUPERVISORD_PID_NAME = ".cwcli-supervisord.pid"
+# Per-program supervisord logs are named ``<program>.supervisor.log`` under logs/.
+_PROC_LOG_SUFFIX = ".supervisor.log"
 
-SUPERVISOR = "honcho"
+SUPERVISOR = "supervisord"
 
-# The per-run byte cap for the captured log (D2): a real (re)launch truncates the
-# log; this bounds it WITHIN a run without a daemon. When the live segment reaches
-# the cap it is rotated to ``<log>.1`` and a fresh segment is opened, so the file
-# set is hard-bounded at ~2x this value while the most recent output is always in
-# the live segment ``cwcli logs`` tails.
-_LOG_CAP_BYTES = 5 * 1024 * 1024
+# Per-program supervisord log rotation (built into supervisord, no cwcli daemon).
+_PROC_LOG_MAXBYTES = "5MB"
+_PROC_LOG_BACKUPS = 1
 
-# The in-container log capper (D2). Streamed as honcho's stdout sink: it truncates
-# the log on (re)launch (open "w"), hard-bounds it within a run by rotating at the
-# cap, preserves honcho's line prefix (lines pass through verbatim), and NEVER
-# exits early or lets a write error propagate - draining stdin unconditionally so
-# it can never SIGPIPE honcho. Uses only python3 (guaranteed in the frappe image),
-# no new dependency, no cwcli daemon. Deliberately single-quote-free so it can be
-# written to the container with a list-form exec (no shell quoting). Unit-tested
-# on the host (it is a self-contained python3 program).
-_LOG_CAPPER_SRC = (
-    "import sys, os\n"
-    "log = sys.argv[1]\n"
-    "cap = int(sys.argv[2])\n"
-    "size = 0\n"
-    "def _open():\n"
-    "    try:\n"
-    '        return open(log, "w")\n'
-    "    except Exception:\n"
-    "        return None\n"
-    "f = _open()\n"
-    "for line in sys.stdin:\n"
-    '    n = len(line.encode("utf-8", "replace"))\n'
-    "    if f is not None and size + n > cap:\n"
-    "        try:\n"
-    "            f.close()\n"
-    '            os.replace(log, log + ".1")\n'
-    "        except Exception:\n"
-    "            pass\n"
-    "        f = _open()\n"
-    "        size = 0\n"
-    "    if f is not None:\n"
-    "        try:\n"
-    "            f.write(line)\n"
-    "            f.flush()\n"
-    "        except Exception:\n"
-    "            pass\n"
-    "    size += n\n"
+# The in-container program launcher (openspec ``add-per-process-supervisor`` D2/D7).
+# supervisord execs its ``command`` directly (no shell), but the frappe dev Procfile
+# lines rely on shell semantics (PATH resolution, redirections like
+# ``bench worker 1>> logs/worker.log``, and honcho's ``.env`` auto-load). This tiny
+# launcher restores honcho-equivalent behavior for ONE program: source ``.env`` if
+# present, pull that program's command line out of the live Procfile, and ``exec``
+# it (so the final process replaces the launcher and supervisord tracks the real
+# PID). Keeping the command in the Procfile - not baked into the INI - sidesteps all
+# supervisord config quoting. Deliberately single-quote-free so it can be written to
+# the container with a list-form exec (no shell quoting). Runs with cwd == the bench
+# (supervisord's per-program ``directory=``).
+_LAUNCHER_SRC = (
+    "#!/usr/bin/env bash\n"
+    "# cwcli per-program launcher (honcho-equivalent env). Usage: <this> <program>\n"
+    "set -a\n"
+    "[ -f .env ] && . ./.env 2>/dev/null || true\n"
+    "set +a\n"
+    'name="$1"\n'
+    'line=$(grep -E "^[[:space:]]*${name}:" Procfile | head -n1)\n'
+    "cmd=${line#*:}\n"
+    'exec bash -c "$cmd"\n'
 )
 
 # A tiny writer used to drop a controlled file into the container via a LIST-form
@@ -100,13 +96,10 @@ _WRITE_FILE_PROG = (
     'open(p, "w").write(sys.argv[2])\n'
 )
 
-# honcho prefixes every multiplexed line with ``HH:MM:SS name| `` (honcho/printer).
-_HONCHO_PREFIX_RE = re.compile(r"^\d{2}:\d{2}:\d{2}\s+(?P<name>\S+?)\s*\|\s?(?P<rest>.*)$")
-
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ProcessHealth:
-    """Per-process liveness + resources, from one ``ps`` (serializable, no live obj)."""
+    """Per-process liveness + resources + supervisord state (serializable, no live obj)."""
 
     label: str
     up: bool
@@ -114,11 +107,12 @@ class ProcessHealth:
     uptime_s: int | None = None
     cpu_pct: float | None = None
     rss_kb: int | None = None
+    state: str | None = None  # supervisord state: RUNNING/STARTING/BACKOFF/EXITED/FATAL/STOPPED
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class StackSnapshot:
-    """The discovered honcho stack for one resolved bench."""
+    """The discovered supervisord stack for one resolved bench."""
 
     supervisor_up: bool
     supervisor_pid: int | None
@@ -138,17 +132,35 @@ class _PsRow:
 # --------------------------------------------------------------------------- paths
 
 
-def bench_start_log_path(bench_path: str) -> str:
-    """The single-source-of-truth captured-log path for a bench (``cwcli logs`` reads this)."""
-    return f"{bench_path}/logs/{_LOG_NAME}"
+def logs_dir(bench_path: str) -> str:
+    """The bench ``logs/`` dir where per-process supervisord logs + cwcli state live."""
+    return f"{bench_path}/logs"
+
+
+def process_log_path(bench_path: str, program: str) -> str:
+    """The per-program supervisord ``stdout_logfile`` path for ``program``."""
+    return f"{bench_path}/logs/{program}{_PROC_LOG_SUFFIX}"
 
 
 def _marker_path(bench_path: str) -> str:
     return f"{bench_path}/logs/{_MARKER_NAME}"
 
 
-def _capper_path(bench_path: str) -> str:
-    return f"{bench_path}/logs/{_CAPPER_NAME}"
+def _config_path(bench_path: str) -> str:
+    return f"{bench_path}/logs/{_CONFIG_NAME}"
+
+
+def _launcher_path(bench_path: str) -> str:
+    return f"{bench_path}/logs/{_LAUNCHER_NAME}"
+
+
+def _sock_path(bench_path: str) -> str:
+    return f"{bench_path}/logs/{_SOCK_NAME}"
+
+
+def _venv_python(bench_path: str) -> str:
+    """The bench virtualenv's python (supervisor is installed + run through it)."""
+    return f"{bench_path}/env/bin/python"
 
 
 def _decode(output) -> str:
@@ -206,8 +218,9 @@ def _float_or_none(value: str) -> float | None:
         return None
 
 
-def _is_honcho(args: str) -> bool:
-    return "honcho" in args and " start" in args
+def _is_supervisord(args: str) -> bool:
+    """A supervisord supervisor process (its config ``-c`` arg keys it to a bench)."""
+    return "supervisord" in args
 
 
 def _resolve_cwds(container, pids: list[int]) -> dict[int, str]:
@@ -240,42 +253,42 @@ def _same_path(a: str | None, b: str | None) -> bool:
     return a.rstrip("/") == b.rstrip("/")
 
 
-def _honcho_pids_for_bench(container, rows: list[_PsRow], bench_path: str) -> list[int]:
-    """The honcho supervisor PID(s) whose bench is ``bench_path`` (keyed by ``-f`` arg or cwd)."""
-    candidates = [r for r in rows if _is_honcho(r.args)]
+def _config_from_args(args: str) -> str | None:
+    """If supervisord was launched ``-c <path>``, return ``<path>``; else None."""
+    tokens = args.split()
+    for i, tok in enumerate(tokens):
+        if tok in ("-c", "--configuration") and i + 1 < len(tokens):
+            return tokens[i + 1]
+        if tok.startswith("--configuration="):
+            return tok.split("=", 1)[1]
+    return None
+
+
+def _supervisord_pids_for_bench(container, rows: list[_PsRow], bench_path: str) -> list[int]:
+    """The supervisord PID(s) whose bench is ``bench_path`` (keyed by ``-c`` config or cwd)."""
+    candidates = [r for r in rows if _is_supervisord(r.args)]
     if not candidates:
         return []
 
+    want = _config_path(bench_path)
     matched: list[int] = []
     need_cwd: list[int] = []
     for r in candidates:
-        # honcho launched with ``-f <bench>/Procfile`` is self-describing.
-        f_dir = _procfile_dir_from_args(r.args)
-        if f_dir is not None:
-            if _same_path(f_dir, bench_path):
+        # supervisord launched with ``-c <bench>/logs/.cwcli-supervisor.conf`` is
+        # self-describing; its config path encodes the exact bench.
+        cfg = _config_from_args(r.args)
+        if cfg is not None:
+            if _same_path(cfg, want):
                 matched.append(r.pid)
         else:
             need_cwd.append(r.pid)
 
     if need_cwd:
-        # bench's default ``bench start`` runs honcho with cwd == bench_path.
         cwds = _resolve_cwds(container, need_cwd)
         for pid in need_cwd:
             if _same_path(cwds.get(pid), bench_path):
                 matched.append(pid)
     return matched
-
-
-def _procfile_dir_from_args(args: str) -> str | None:
-    """If honcho was launched ``-f <dir>/Procfile``, return ``<dir>``; else None."""
-    tokens = args.split()
-    for i, tok in enumerate(tokens):
-        if tok in ("-f", "--procfile") and i + 1 < len(tokens):
-            path = tokens[i + 1]
-            if "/" in path:
-                return path.rsplit("/", 1)[0]
-            return "."
-    return None
 
 
 def _descendants(rows: list[_PsRow], roots: set[int]) -> set[int]:
@@ -295,7 +308,12 @@ def _descendants(rows: list[_PsRow], roots: set[int]) -> set[int]:
 
 
 def label_for(args: str) -> str | None:
-    """Map a self-describing cmdline to its Procfile label (honcho excluded)."""
+    """Map a self-describing cmdline to its Procfile label (supervisor/launcher excluded)."""
+    if "supervisord" in args:
+        return None
+    if _LAUNCHER_NAME in args:
+        # The launcher bash normally execs away, but guard the transient case.
+        return None
     if "socketio" in args:
         return "socketio"
     if "redis_cache" in args:
@@ -327,21 +345,23 @@ def _queue_from_args(args: str) -> str | None:
 
 
 def discover_stack(container, bench_path: str) -> StackSnapshot:
-    """Discover the honcho stack for ``bench_path`` from one ``ps`` (keyed to the bench).
+    """Discover the supervisord stack for ``bench_path`` from one ``ps`` (keyed to the bench).
 
-    Returns ``supervisor_up`` (a honcho for this bench is live), its pid, and the
-    label-mapped live child processes with uptime/CPU/RSS. On a multi-bench
-    instance this reports ONLY the requested bench's processes.
+    Returns ``supervisor_up`` (a supervisord for this bench is live), its pid, and
+    the label-mapped live child processes with uptime/CPU/RSS. On a multi-bench
+    instance this reports ONLY the requested bench's processes. Per-program
+    supervisord STATE (RUNNING/BACKOFF/FATAL) is read separately via
+    :func:`supervisorctl_states`; discovery here is the cheap ``ps`` liveness read.
     """
     rows = _ps_rows(container)
-    honcho_pids = _honcho_pids_for_bench(container, rows, bench_path)
-    if not honcho_pids:
+    sup_pids = _supervisord_pids_for_bench(container, rows, bench_path)
+    if not sup_pids:
         return StackSnapshot(supervisor_up=False, supervisor_pid=None, processes=[])
 
-    tree = _descendants(rows, set(honcho_pids))
+    tree = _descendants(rows, set(sup_pids))
     processes: list[ProcessHealth] = []
     for r in rows:
-        if r.pid not in tree or r.pid in honcho_pids:
+        if r.pid not in tree or r.pid in sup_pids:
             continue
         label = label_for(r.args)
         if label is None:
@@ -356,20 +376,19 @@ def discover_stack(container, bench_path: str) -> StackSnapshot:
                 rss_kb=r.rss,
             )
         )
-    return StackSnapshot(supervisor_up=True, supervisor_pid=honcho_pids[0], processes=processes)
+    return StackSnapshot(supervisor_up=True, supervisor_pid=sup_pids[0], processes=processes)
 
 
 def stop_supervisor(container, bench_path: str, *, timeout: float = 15.0) -> bool:
-    """Terminate the honcho supervisor for ``bench_path`` by its DISCOVERED PID.
+    """Terminate the supervisord supervisor for ``bench_path`` by its DISCOVERED PID.
 
-    ``SIGTERM`` to honcho triggers its own "one dies, all die" teardown of the
-    stack. Waits (bounded) for the tree to actually exit before returning, so a
-    caller relaunching does not race a still-running honcho on the container
-    ports; escalates to ``SIGKILL`` if it overstays. Keyed to the bench PID (NOT
-    the old ``pkill -f 'bench start'``, which never matched honcho). Returns True
-    if a supervisor was found and signalled.
+    ``SIGTERM`` to supervisord makes it shut its programs down cleanly (unlike
+    honcho's panic teardown). Waits (bounded) for the tree to actually exit before
+    returning, so a caller relaunching does not race a still-running supervisord on
+    the container ports; escalates to ``SIGKILL`` if it overstays. Keyed to the
+    bench's supervisord PID. Returns True if a supervisor was found and signalled.
     """
-    pids = _honcho_pids_for_bench(container, _ps_rows(container), bench_path)
+    pids = _supervisord_pids_for_bench(container, _ps_rows(container), bench_path)
     if not pids:
         return False
     joined = " ".join(str(p) for p in pids)
@@ -377,7 +396,7 @@ def stop_supervisor(container, bench_path: str, *, timeout: float = 15.0) -> boo
 
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if not _honcho_pids_for_bench(container, _ps_rows(container), bench_path):
+        if not _supervisord_pids_for_bench(container, _ps_rows(container), bench_path):
             return True
         time.sleep(0.5)
 
@@ -385,22 +404,29 @@ def stop_supervisor(container, bench_path: str, *, timeout: float = 15.0) -> boo
     return True
 
 
+# ------------------------------------------------------------------ Procfile parse
+
+
 def expected_labels(container, bench_path: str) -> list[str]:
-    """The labels a bench's live ``Procfile`` defines (the expected-to-run set)."""
+    """The labels a bench's live ``Procfile`` defines (the expected-to-run set, normalized)."""
+    return [_normalize_procfile_key(k) for k in procfile_programs(container, bench_path)]
+
+
+def procfile_programs(container, bench_path: str) -> list[str]:
+    """The RAW Procfile keys (supervisord program names) in file order."""
     quoted = shlex.quote(f"{bench_path}/Procfile")
     exit_code, output = container.exec_run(["sh", "-c", f"cat {quoted}"])
     if exit_code not in (0, None):
         return []
-    labels: list[str] = []
+    programs: list[str] = []
     for line in _decode(output).splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#") or ":" not in stripped:
             continue
         key = stripped.split(":", 1)[0].strip()
-        if not key:
-            continue
-        labels.append(_normalize_procfile_key(key))
-    return labels
+        if key and key not in programs:
+            programs.append(key)
+    return programs
 
 
 def _normalize_procfile_key(key: str) -> str:
@@ -408,6 +434,19 @@ def _normalize_procfile_key(key: str) -> str:
     if key.startswith("worker_"):
         return "worker:" + key[len("worker_") :]
     return key
+
+
+def program_for_label(programs: list[str], label: str) -> str | None:
+    """Resolve a user ``--process`` label to a supervisord program name (or None).
+
+    Accepts either the discovery label (``worker:default``, what ``status`` shows)
+    or the raw Procfile key (``worker_default``). Matches against the live program
+    set so an unknown/ambiguous label yields None (the caller returns NEEDS_CHOICE).
+    """
+    for program in programs:
+        if label == program or label == _normalize_procfile_key(program):
+            return program
+    return None
 
 
 # ------------------------------------------------------------------- marker (state)
@@ -429,17 +468,21 @@ def read_marker(container, bench_path: str) -> dict | None:
 
 
 def write_marker(container, bench_path: str) -> str:
-    """Write the launch marker (``supervisor``/``started_at``/``log_path``); return log path."""
-    log_path = bench_start_log_path(bench_path)
+    """Write the launch marker (``supervisor``/``started_at``/``config_path``/``log_path``).
+
+    Returns the bench ``logs/`` dir (where the per-process logs live).
+    """
+    log_dir = logs_dir(bench_path)
     payload = json.dumps(
         {
             "supervisor": SUPERVISOR,
             "started_at": datetime.now(timezone.utc).isoformat(),
-            "log_path": log_path,
+            "config_path": _config_path(bench_path),
+            "log_path": log_dir,
         }
     )
     container.exec_run(["python3", "-c", _WRITE_FILE_PROG, _marker_path(bench_path), payload])
-    return log_path
+    return log_dir
 
 
 # -------------------------------------------------------------------------- launch
@@ -456,51 +499,179 @@ def web_http_code(container) -> str | None:
     return code or None
 
 
-def launch(container, bench_path: str) -> str:
-    """Launch ``bench start`` detached, streaming into the bounded log; return its path.
-
-    Writes the log capper into the bench, then starts honcho (via ``bench start``)
-    with cwd == ``bench_path`` (so discovery can key it to this bench) piped through
-    the capper. Truncate-on-launch happens inside the capper (it opens the log
-    ``"w"``). The exec is detached; ``nohup`` keeps honcho alive past it.
-    """
-    log_path = bench_start_log_path(bench_path)
-    capper_path = _capper_path(bench_path)
-    # 1. Drop the capper into the bench (list-form exec: no shell, no quoting risk).
-    container.exec_run(["python3", "-c", _WRITE_FILE_PROG, capper_path, _LOG_CAPPER_SRC])
-    # 2. Launch honcho detached, piping its combined stream through the capper.
-    b = shlex.quote(bench_path)
-    log = shlex.quote(log_path)
-    capper = shlex.quote(capper_path)
-    cmd = (
-        f"cd {b} && mkdir -p logs && "
-        f"nohup bench start 2>&1 | python3 {capper} {log} {_LOG_CAP_BYTES} &"
+def supervisor_installed(container, bench_path: str) -> bool:
+    """True iff ``supervisor`` is importable in the bench virtualenv."""
+    py = _venv_python(bench_path)
+    exit_code, _ = container.exec_run(
+        ["bash", "-c", f"{shlex.quote(py)} -c 'import supervisor' 2>/dev/null"]
     )
+    return exit_code in (0, None)
+
+
+def ensure_supervisor_installed(container, bench_path: str) -> bool:
+    """Idempotently ``pip install supervisor`` into the bench env; fail CLOSED.
+
+    supervisord is not preinstalled in the frappe dev image. Installs it into the
+    bench virtualenv on first supervise (skip if already importable). Returns True
+    if it installed it now, False if it was already present. Raises ``CwcliError``
+    on a failed install rather than silently falling back to honcho.
+    """
+    from .errors import CwcliError, ErrorKind
+
+    if supervisor_installed(container, bench_path):
+        return False
+    py = _venv_python(bench_path)
+    exit_code, output = container.exec_run(
+        ["bash", "-c", f"{shlex.quote(py)} -m pip install supervisor"]
+    )
+    if exit_code not in (0, None) or not supervisor_installed(container, bench_path):
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "supervisor.install_failed",
+            "Could not install 'supervisor' into the bench environment "
+            f"({bench_path}/env). A network connection is required on first supervise.",
+            detail={"output": _decode(output)[-2000:]},
+        )
+    return True
+
+
+def _ini_value(value: str) -> str:
+    """Escape a value for a supervisord config line (guard against ``%`` interpolation)."""
+    return value.replace("%", "%%")
+
+
+def render_config(programs: list[str], bench_path: str, *, autorestart: bool = True) -> str:
+    """Generate the supervisord config for a bench from its Procfile program names.
+
+    One ``[program:<name>]`` per Procfile key (its command run via the launcher, so
+    PATH/redirections/``.env`` behave as under honcho). ``autorestart=unexpected``
+    (the default) self-heals a crash but not a clean exit; ``startretries`` bounds
+    the retries so a crash-loop reaches supervisord's visible ``FATAL`` state;
+    ``stopasgroup``/``killasgroup`` clean up grandchildren. Per-program
+    ``stdout_logfile`` + built-in rotation replace honcho's combined-stream capper.
+    """
+    launcher = _ini_value(_launcher_path(bench_path))
+    directory = _ini_value(bench_path)
+    autorestart_val = "unexpected" if autorestart else "false"
+
+    lines = [
+        "[unix_http_server]",
+        f"file={_ini_value(_sock_path(bench_path))}",
+        "chmod=0700",
+        "",
+        "[supervisord]",
+        f"logfile={_ini_value(f'{bench_path}/logs/{_SUPERVISORD_LOG_NAME}')}",
+        f"pidfile={_ini_value(f'{bench_path}/logs/{_SUPERVISORD_PID_NAME}')}",
+        f"childlogdir={_ini_value(logs_dir(bench_path))}",
+        "nodaemon=false",
+        "",
+        "[rpcinterface:supervisor]",
+        "supervisor.rpcinterface_factory = " "supervisor.rpcinterface:make_main_rpcinterface",
+        "",
+        "[supervisorctl]",
+        f"serverurl=unix://{_ini_value(_sock_path(bench_path))}",
+        "",
+    ]
+    for program in programs:
+        lines += [
+            f"[program:{program}]",
+            f'command=bash "{launcher}" {program}',
+            f"directory={directory}",
+            "autostart=true",
+            f"autorestart={autorestart_val}",
+            "startretries=3",
+            "startsecs=3",
+            "stopasgroup=true",
+            "killasgroup=true",
+            "redirect_stderr=true",
+            f"stdout_logfile={_ini_value(process_log_path(bench_path, program))}",
+            f"stdout_logfile_maxbytes={_PROC_LOG_MAXBYTES}",
+            f"stdout_logfile_backups={_PROC_LOG_BACKUPS}",
+            "",
+        ]
+    return "\n".join(lines) + "\n"
+
+
+def launch(container, bench_path: str, *, autorestart: bool = True) -> str:
+    """Install supervisor if needed, write the config + launcher, launch supervisord detached.
+
+    Returns the bench ``logs/`` dir (where per-process logs land). Raises
+    ``CwcliError`` if supervisor cannot be installed. The supervisord process
+    daemonizes itself (``nodaemon=false``); the exec is detached and returns at once.
+    """
+    ensure_supervisor_installed(container, bench_path)
+
+    programs = procfile_programs(container, bench_path)
+    config = render_config(programs, bench_path, autorestart=autorestart)
+
+    # Drop the launcher + config into the bench (list-form exec: no shell quoting).
+    container.exec_run(
+        ["python3", "-c", _WRITE_FILE_PROG, _launcher_path(bench_path), _LAUNCHER_SRC]
+    )
+    container.exec_run(["python3", "-c", _WRITE_FILE_PROG, _config_path(bench_path), config])
+
+    py = shlex.quote(_venv_python(bench_path))
+    cfg = shlex.quote(_config_path(bench_path))
+    b = shlex.quote(bench_path)
+    cmd = f"cd {b} && mkdir -p logs && {py} -m supervisor.supervisord -c {cfg}"
     container.exec_run(["bash", "-c", cmd], detach=True)
-    return log_path
+    return logs_dir(bench_path)
 
 
-# --------------------------------------------------------------- per-process logs
+# ----------------------------------------------------------------- supervisorctl
 
 
-def per_process_log_lines(log_text: str, label: str) -> list[str]:
-    """Select a label's lines from honcho's combined, prefixed stream (D2)."""
-    out: list[str] = []
-    for line in log_text.splitlines():
-        m = _HONCHO_PREFIX_RE.match(line)
-        if m and m.group("name") == label:
-            out.append(m.group("rest"))
-    return out
+def _supervisorctl(container, bench_path: str, *args: str) -> tuple[int | None, str]:
+    """Run ``supervisorctl -c <config> <args...>`` in the bench env; return (code, text)."""
+    py = shlex.quote(_venv_python(bench_path))
+    cfg = shlex.quote(_config_path(bench_path))
+    quoted_args = " ".join(shlex.quote(a) for a in args)
+    cmd = f"{py} -m supervisor.supervisorctl -c {cfg} {quoted_args}"
+    exit_code, output = container.exec_run(["bash", "-c", cmd])
+    return exit_code, _decode(output)
+
+
+def supervisorctl_states(container, bench_path: str) -> dict[str, tuple[str, int | None]]:
+    """Per-program supervisord state + PID keyed by the RAW program name (Procfile key).
+
+    Parses ``supervisorctl status`` lines like ``web RUNNING pid 123, uptime ...``
+    or ``worker_default FATAL Exited too quickly``. Keyed by the raw program name
+    supervisord prints (the source of truth for what is actually supervised);
+    callers normalize to the discovery label (``worker_default`` ->
+    ``worker:default``) via :func:`_normalize_procfile_key` where they need it.
+    """
+    exit_code, text = _supervisorctl(container, bench_path, "status")
+    # supervisorctl exits non-zero when any program is not RUNNING; still parse the
+    # body (the state tokens are what we want), so do not bail on the exit code.
+    states: dict[str, tuple[str, int | None]] = {}
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        program, state = parts[0], parts[1]
+        pid: int | None = None
+        # "... pid 123, uptime ..." -> capture the pid when present.
+        for i, tok in enumerate(parts):
+            if tok == "pid" and i + 1 < len(parts):
+                pid = _int_or_none(parts[i + 1].rstrip(","))
+                break
+        states[program] = (state, pid)
+    return states
+
+
+def states_by_label(states: dict[str, tuple[str, int | None]]) -> dict[str, tuple[str, int | None]]:
+    """Re-key raw-program supervisord states to discovery labels (for the status merge)."""
+    return {_normalize_procfile_key(k): v for k, v in states.items()}
+
+
+def restart_program(container, bench_path: str, program: str) -> tuple[int | None, str]:
+    """Restart ONE supervisord program (siblings untouched); return (code, text)."""
+    return _supervisorctl(container, bench_path, "restart", program)
 
 
 def _self_check() -> None:
-    """Runnable check: the capper bounds the file and keeps recent output; labels map."""
-    import os
-    import subprocess
-    import sys
-    import tempfile
-
-    # Label mapping covers every Procfile process shape.
+    """Runnable check: labels map, config generates, program resolution, ctl parse."""
+    # Label mapping covers every Procfile process shape (supervisor/launcher excluded).
     assert label_for("/env/bin/python /env/bin/bench serve --port 8000") == "web"
     assert label_for("node /apps/frappe/socketio.js") == "socketio"
     assert label_for("/env/bin/bench schedule") == "schedule"
@@ -509,27 +680,45 @@ def _self_check() -> None:
     assert label_for("/env/bin/bench worker --queue short") == "worker:short"
     assert label_for("redis-server /w/b/config/redis_cache.conf") == "redis_cache"
     assert label_for("redis-server /w/b/config/redis_queue.conf") == "redis_queue"
-    assert label_for("/env/bin/python /env/bin/honcho start") is None
+    assert (
+        label_for("/env/bin/python /env/bin/supervisord -c /w/b/logs/.cwcli-supervisor.conf")
+        is None
+    )
     assert _normalize_procfile_key("worker_short") == "worker:short"
 
-    # honcho prefix parse -> per-process view.
-    combined = "10:00:01 web    | GET /\n10:00:02 worker | job done\n10:00:03 web    | GET /x\n"
-    assert per_process_log_lines(combined, "web") == ["GET /", "GET /x"]
+    # Config generation: one program section, autorestart toggle, per-program log.
+    cfg = render_config(["web", "worker_short"], "/w/b", autorestart=True)
+    assert "[program:web]" in cfg
+    assert "[program:worker_short]" in cfg
+    assert "autorestart=unexpected" in cfg
+    assert 'command=bash "/w/b/logs/.cwcli-run.sh" web' in cfg
+    assert "stdout_logfile=/w/b/logs/web.supervisor.log" in cfg
+    off = render_config(["web"], "/w/b", autorestart=False)
+    assert "autorestart=false" in off
 
-    # The capper hard-bounds the log and keeps the most recent output.
-    with tempfile.TemporaryDirectory() as d:
-        log = os.path.join(d, "bench-start.log")
-        cap = 200
-        payload = "".join(f"line-{i:04d} some honcho output here\n" for i in range(400))
-        subprocess.run(
-            [sys.executable, "-c", _LOG_CAPPER_SRC, log, str(cap)],
-            input=payload,
-            text=True,
-            check=True,
-        )
-        assert os.path.getsize(log) <= cap, os.path.getsize(log)
-        tail = open(log).read()
-        assert "line-0399" in tail, "capper must keep the most recent output"
+    # Program-for-label accepts both the discovery label and the raw key.
+    programs = ["web", "worker_short", "redis_cache"]
+    assert program_for_label(programs, "web") == "web"
+    assert program_for_label(programs, "worker:short") == "worker_short"
+    assert program_for_label(programs, "worker_short") == "worker_short"
+    assert program_for_label(programs, "nope") is None
+
+    # -c config detection.
+    assert _config_from_args("python supervisord -c /w/b/logs/.cwcli-supervisor.conf") == (
+        "/w/b/logs/.cwcli-supervisor.conf"
+    )
+
+    # supervisorctl status parse -> normalized-label states.
+    class _C:
+        def exec_run(self, cmd, detach=False):
+            text = "web   RUNNING   pid 123, uptime 0:05:00\nworker_short   FATAL   Exited too quickly\n"
+            return (3, text.encode())
+
+    states = supervisorctl_states(_C(), "/w/b")
+    assert states["web"] == ("RUNNING", 123)
+    assert states["worker_short"] == ("FATAL", None)
+    by_label = states_by_label(states)
+    assert by_label["worker:short"] == ("FATAL", None)
 
     print("supervision self-check OK")
 

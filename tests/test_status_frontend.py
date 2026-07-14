@@ -65,6 +65,18 @@ def test_per_process_detail_goes_to_stderr_not_stdout(monkeypatch, capsys):
     assert "web" not in captured.out
 
 
+def test_process_state_is_visible_on_stderr(monkeypatch, capsys):
+    # The whole point of reading supervisorctl state: a BACKOFF/FATAL program must
+    # be distinguishable from a clean down, not render identically as bare "down".
+    procs = [
+        ProcessHealth(label="worker:default", up=False, state="FATAL"),
+        ProcessHealth(label="web", up=True, pid=101, state="RUNNING"),
+    ]
+    captured = _run(monkeypatch, capsys, _report("degraded", procs))
+    assert "state=FATAL" in captured.err
+    assert "state=RUNNING" in captured.err
+
+
 def test_stopped_project_is_offline_exit_0(monkeypatch, capsys):
     # Regression guard: a real-but-stopped project stays offline/exit 0 (the token
     # on stdout), NOT a non-zero error. This is the contract the NOT_FOUND

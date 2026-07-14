@@ -1,6 +1,6 @@
 """``core.start`` branch coverage against faked I/O (task 2.4).
 
-Every fork: the launch outcome, the idempotent no-op (no second honcho), the
+Every fork: the launch outcome, the idempotent no-op (no second supervisord), the
 multi-bench NEEDS_CHOICE, an explicit ``bench_path`` used verbatim, and the
 missing-project / docker-unreachable hard errors. The core prints/prompts/exits
 nothing, so these are plain function calls.
@@ -50,7 +50,7 @@ def wire(monkeypatch):
 
 class TestLaunch:
     def test_launch_returns_process_set_and_writes_marker(self, wire):
-        # No honcho yet -> a real launch. Start from a stack with no honcho.
+        # No supervisord yet -> a real launch. Start from a stack with no supervisord.
         frappe = FakeContainer(ps="1 0 5 0.0 1000 /sbin/init\n", cwds={})
         frappe.status = "exited"
         db = FakeSvc("db")
@@ -60,12 +60,12 @@ class TestLaunch:
         assert result.status is Status.OK
         outcome = result.data
         assert outcome.already_running is False
-        assert outcome.supervisor == "honcho"
+        assert outcome.supervisor == "supervisord"
         assert outcome.bench_path == resolvers.DEFAULT_BENCH_PATH
-        assert outcome.log_path == supervision.bench_start_log_path(resolvers.DEFAULT_BENCH_PATH)
+        assert outcome.log_path == supervision.logs_dir(resolvers.DEFAULT_BENCH_PATH)
         # Stopped sibling container was started; a real launch happened; marker written.
         assert db.started is True
-        assert frappe.launches, "bench start must be launched"
+        assert frappe.launches, "supervisord must be launched"
         assert supervision._marker_path(resolvers.DEFAULT_BENCH_PATH) in frappe.writes
         # The launched set is the EXPECTED Procfile labels (from the live Procfile).
         assert {p.label for p in outcome.processes} == {
@@ -87,14 +87,14 @@ class TestLaunch:
 
 class TestIdempotent:
     def test_already_running_is_a_clean_noop(self, wire):
-        # honcho already up for BENCH -> no second launch.
-        frappe = FakeContainer()  # _PS_SINGLE has honcho pid 100 at BENCH
+        # supervisord already up for BENCH -> no second launch.
+        frappe = FakeContainer()  # _PS_SINGLE has supervisord pid 100 at BENCH
         wire(frappe, benches=[{"path": BENCH}])
         result = core_start.start("proj")
         assert result.status is Status.OK
         assert result.data.already_running is True
         assert result.data.bench_path == BENCH
-        assert frappe.launches == [], "must NOT launch a second honcho"
+        assert frappe.launches == [], "must NOT launch a second supervisord"
         # No marker rewrite on the no-op path (started_at is preserved).
         assert supervision._marker_path(BENCH) not in frappe.writes
         assert {p.label for p in result.data.processes} == {
@@ -108,8 +108,8 @@ class TestIdempotent:
         }
 
     def test_already_running_reports_a_crashed_worker_as_down(self, wire):
-        # honcho up for BENCH, but the worker child died: still "up" overall
-        # (D1 is read-only), yet the readout must show the dead label, not omit it.
+        # supervisord up for BENCH, but the worker child died: the readout must
+        # show the dead label, not omit it.
         ps = _PS_SINGLE.replace(
             "105 100 499 0.3 70000 /env/bin/python /env/bin/bench worker --queue default\n", ""
         )
@@ -124,15 +124,15 @@ class TestIdempotent:
 
 class TestRestart:
     def test_restart_terminates_then_relaunches(self, wire):
-        # honcho already up, but restart=True forces a genuine relaunch (the
+        # supervisord already up, but restart=True forces a genuine relaunch (the
         # post-restore restart), NOT the idempotent no-op.
-        frappe = FakeContainer()  # honcho pid 100 at BENCH
+        frappe = FakeContainer()  # supervisord pid 100 at BENCH
         wire(frappe, benches=[{"path": BENCH}])
         result = core_start.start("proj", bench_path=BENCH, restart=True)
         assert result.status is Status.OK
         assert result.data.already_running is False
-        assert frappe.killed, "restart must terminate the running honcho"
-        assert frappe.launches, "restart must relaunch bench start"
+        assert frappe.killed, "restart must terminate the running supervisord"
+        assert frappe.launches, "restart must relaunch supervisord"
 
 
 class TestChoices:
@@ -148,13 +148,14 @@ class TestChoices:
 class TestExplicitPath:
     def test_explicit_bench_path_is_used_verbatim(self, wire):
         explicit = "/workspace/restored-bench"
-        # honcho for the explicit bench is already up -> no-op, proving the path was used.
+        # supervisord for the explicit bench is already up -> no-op, proving path use.
         ps = (
             "1 0 5 0.0 1000 /sbin/init\n"
-            "300 1 100 0.1 2000 /env/bin/python /env/bin/honcho start\n"
+            "300 1 100 0.1 2000 /env/bin/python /env/bin/supervisord "
+            f"-c {supervision._config_path(explicit)}\n"
             "301 300 99 0.4 80000 /env/bin/python /env/bin/bench serve\n"
         )
-        frappe = FakeContainer(ps=ps, cwds={300: explicit}, procfile=_PROCFILE)
+        frappe = FakeContainer(ps=ps, cwds={}, procfile=_PROCFILE)
         # Multi-bench cache present, but bench_path must win verbatim (post-restore).
         wire(frappe, benches=[{"path": "/w/b0"}, {"path": "/w/b1"}])
         result = core_start.start("proj", bench_path=explicit)

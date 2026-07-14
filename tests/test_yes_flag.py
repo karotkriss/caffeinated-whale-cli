@@ -324,7 +324,7 @@ class TestStartMultiProjectLoop:
         self._wire(monkeypatch)
         processed = []
 
-        def fake_run(name, bench_selector, verbose):
+        def fake_run(name, bench_selector, verbose, autorestart=True):
             processed.append(name)
             if name == "b":
                 raise typer.Exit(code=1)
@@ -348,7 +348,7 @@ class TestStartMultiProjectLoop:
         self._wire(monkeypatch)
         processed = []
 
-        def fake_run(name, bench_selector, verbose):
+        def fake_run(name, bench_selector, verbose, autorestart=True):
             processed.append(name)
             if name == "b":
                 raise typer.Exit(code=0)
@@ -368,7 +368,7 @@ class TestStartMultiProjectLoop:
         self._wire(monkeypatch)
         processed = []
 
-        def fake_run(name, bench_selector, verbose):
+        def fake_run(name, bench_selector, verbose, autorestart=True):
             processed.append(name)
             if name != "a":
                 raise AssertionError("_run_start should not be reached after b's abort")

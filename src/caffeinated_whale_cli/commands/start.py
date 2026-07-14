@@ -360,6 +360,13 @@ def start(
         "-y",
         help="Auto-confirm stopping conflicting projects to free their ports.",
     ),
+    autorestart: bool = typer.Option(
+        True,
+        "--autorestart/--no-autorestart",
+        help="Self-heal crashed processes: supervisord restarts a program that "
+        "crashes (not one that exits cleanly), surfacing a crash-loop as FATAL. "
+        "Set at launch; --no-autorestart leaves a crashed program down.",
+    ),
     # Accept zero, one, or more project names. Default is None.
     project_name: list[str] = typer.Argument(
         None,
@@ -368,12 +375,13 @@ def start(
     ),
 ):
     """
-    Start a project's containers and run bench start (under honcho).
+    Start a project's containers and run its bench under supervisord.
 
     Idempotent: re-running against an already-running bench reports "already
-    running" and does nothing (no second honcho stack). On a multi-bench project
-    with no --bench, it prompts which bench interactively and refuses (non-zero)
-    on a non-TTY.
+    running" and does nothing (no second supervisor stack). On a multi-bench
+    project with no --bench, it prompts which bench interactively and refuses
+    (non-zero) on a non-TTY. Crashed processes self-heal by default
+    (--no-autorestart to disable).
     """
     project_names_to_process = []
 
@@ -383,6 +391,7 @@ def start(
     actual_verbose = verbose
     actual_yes = yes
     actual_bench = bench
+    actual_autorestart = autorestart
     filtered_project_names = []
 
     if project_name:
@@ -394,6 +403,10 @@ def start(
                 actual_verbose = True
             elif token in ("-y", "--yes"):
                 actual_yes = True
+            elif token == "--autorestart":
+                actual_autorestart = True
+            elif token == "--no-autorestart":
+                actual_autorestart = False
             elif token == "--bench":
                 if i + 1 < len(tokens):
                     actual_bench = tokens[i + 1]
@@ -443,7 +456,7 @@ def start(
                 continue
 
         try:
-            outcome = _run_start(name, actual_bench, actual_verbose)
+            outcome = _run_start(name, actual_bench, actual_verbose, actual_autorestart)
         except typer.Exit as e:
             # Exit code 0 = deliberate abort, exit the entire operation. Any
             # nonzero exit = project not found, ambiguous multi-bench on a non-TTY,
@@ -469,7 +482,9 @@ def start(
         raise typer.Exit(code=1)
 
 
-def _run_start(name: str, bench_selector: str | None, verbose: bool) -> StartOutcome | None:
+def _run_start(
+    name: str, bench_selector: str | None, verbose: bool, autorestart: bool = True
+) -> StartOutcome | None:
     """Call ``core.start`` under the spinner, resolving a multi-bench choice via a
     prompt OUTSIDE the spinner (the known spinner-over-questionary deadlock)."""
     override: str | None = None
@@ -478,7 +493,9 @@ def _run_start(name: str, bench_selector: str | None, verbose: bool) -> StartOut
             with stderr_console.status(
                 f"[bold green]Starting '{name}'...[/bold green]", spinner="dots"
             ):
-                result = core_start.start(name, bench=bench_selector, bench_path=override)
+                result = core_start.start(
+                    name, bench=bench_selector, bench_path=override, autorestart=autorestart
+                )
         except CwcliError as e:
             if e.code == "frappe.not_found":
                 # Soft skip (matches the internal _handle_start_project_error and the

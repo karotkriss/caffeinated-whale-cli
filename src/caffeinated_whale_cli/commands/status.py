@@ -199,9 +199,10 @@ def _render_detail(report: StatusReport, verbose: bool) -> None:
 
     for p in report.processes:
         mark = _up_mark(p.up)
-        detail = ""
+        bits = []
+        if p.state is not None:
+            bits.append(f"state={p.state}")
         if p.up:
-            bits = []
             if p.pid is not None:
                 bits.append(f"pid={p.pid}")
             if p.uptime_s is not None:
@@ -210,7 +211,7 @@ def _render_detail(report: StatusReport, verbose: bool) -> None:
                 bits.append(f"cpu={p.cpu_pct}%")
             if p.rss_kb is not None:
                 bits.append(f"rss={p.rss_kb}KB")
-            detail = "  " + " ".join(bits) if bits else ""
+        detail = "  " + " ".join(bits) if bits else ""
         stderr_console.print(f"  {p.label:<16} {mark}{detail}")
 
 
@@ -223,6 +224,7 @@ def _render_table(report: StatusReport) -> Table:
     )
     table.add_column("process")
     table.add_column("status")
+    table.add_column("state")
     table.add_column("pid", justify="right")
     table.add_column("uptime", justify="right")
     table.add_column("cpu%", justify="right")
@@ -232,6 +234,7 @@ def _render_table(report: StatusReport) -> Table:
         table.add_row(
             p.label,
             mark,
+            p.state if p.state is not None else "-",
             str(p.pid) if p.pid is not None else "-",
             f"{p.uptime_s}s" if p.uptime_s is not None else "-",
             f"{p.cpu_pct}" if p.cpu_pct is not None else "-",

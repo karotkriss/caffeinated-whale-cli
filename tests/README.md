@@ -69,15 +69,16 @@ The real-Docker E2E is Linux-only; Windows/macOS-specific code stays in the unit
 
 ## Test Files
 
-As of 0.37.0 (unreleased), `tests/` holds 43 `test_*.py` suites totaling 659 tests in the
+As of 0.37.0 (unreleased), `tests/` holds 45 `test_*.py` suites totaling 694 tests in the
 `unit` tier (measured with `uv run pytest --cov`). Run `ls tests/` for the
 authoritative current list; see [../docs/testing/README.md](../docs/testing/README.md)
 for the per-area breakdown.
 
 `tests/e2e/` adds more `test_*.py` suites in the real-Docker `e2e` tier
 (`test_init_e2e.py`, `test_backup_e2e.py`, `test_start_status_e2e.py`,
-`test_start_status_new_behavior_e2e.py`, `test_harness_safety.py`); run `ls tests/e2e/`
-for the current list. They are not part of the 659/43 count above since they need a
+`test_start_status_new_behavior_e2e.py`, `test_per_process_supervisor_e2e.py`,
+`test_harness_safety.py`); run `ls tests/e2e/`
+for the current list. They are not part of the 694/45 count above since they need a
 Docker daemon and are excluded from a bare `pytest`. `test_start_status_e2e.py` is the
 lifecycle-command net (`start`/`status`/`logs`/`restart`, both modes) that pins the
 outcome-level invariants the start/status core migration must preserve; it is
@@ -86,6 +87,11 @@ patterns, or the exact status tokens) so it survives that migration unchanged.
 `test_start_status_new_behavior_e2e.py` is PR 2's own net for the NEW behavior the
 migration adds (per-process health, `degraded`, the idempotent single-supervisor
 no-op, the relocated bounded log, the multi-bench prompt/error), on top of PR 1's net.
+`test_per_process_supervisor_e2e.py` is `add-per-process-supervisor`'s own net for the
+features honcho's all-or-nothing model made impossible: supervisord as the live
+supervisor, `cwcli restart --process`/`cwcli axi restart --process` cycling one program
+while its siblings keep their pids, auto-heal after a killed process, `cwcli logs
+--process`, and the unknown-process usage error.
 
 ### `test_completion_utils.py`
 Tests for tab completion functionality.
@@ -109,7 +115,7 @@ Tests for tab completion functionality.
 
 ## Test Coverage
 
-Current overall coverage at 0.37.0, unreleased (659 tests across 43 test files, ~60% overall).
+Current overall coverage at 0.37.0, unreleased (694 tests across 45 test files, ~60% overall).
 
 ### Covered Modules
 - ✅ `utils/completion_utils.py` - 92% (7 missing lines)
@@ -127,11 +133,13 @@ Current overall coverage at 0.37.0, unreleased (659 tests across 43 test files, 
 - ✅ `core/list.py`, `core/where.py` - 100% (`test_core_list`: fake docker client, empty/aggregate/DOCKER-raise; `test_core_where`: throwaway sqlite, dedup/scoping/installed-only/USAGE)
 - ✅ `commands/list.py` - ~80% (`test_list`: the `ls --json` empty-`[]` fix, quiet/table rendering, port-range condensing)
 - ✅ `commands/where.py` - 100% (`test_where`: table/JSON rendering, the `--apps`/`--sites` conflict, the definitive `[]` empty state)
-- ✅ `core/supervision.py` - ~81% (`test_core_supervision`: discovery + label-mapping + bench-keying, the expected-set Procfile parse, the supervisor marker present/absent, the web probe, the launch command shape, the honcho-prefix per-process parse)
-- ✅ `core/start.py` - ~98% (`test_core_start`: the launch outcome, the idempotent no-op, multi-bench `NEEDS_CHOICE`, an explicit `bench_path` used verbatim, missing-project/docker-unreachable errors)
-- ✅ `core/status.py` - ~91% (`test_core_status`: every `overall` branch, the offline-not-raised contract, supervisor-down vs never-started, the docker-unreachable raise)
-- ✅ `commands/status.py` - ~95% (`test_status_frontend`: the stdout-token-only contract the PR-1 E2E net pins, per-process detail on stderr, exit 0 across lifecycle states; `test_status_watch`: the `--watch` live view - every tick re-polls with `probe_web=False` so it makes ZERO web requests, the non-TTY single-quiet-snapshot degrade, the `--interval` 1s floor, a clean `KeyboardInterrupt` exit)
+- ✅ `core/supervision.py` - ~82% (`test_core_supervision`: supervisord discovery + label-mapping + bench-keying, the expected-set Procfile parse, config/launcher generation, the `pip install supervisor` fail-closed bootstrap, the supervisor marker present/absent, the web probe, per-process log-path resolution)
+- ✅ `core/start.py` - ~98% (`test_core_start`: the launch outcome, the idempotent no-op, multi-bench `NEEDS_CHOICE`, an explicit `bench_path` used verbatim, the `--autorestart`/`--no-autorestart` config-state toggle, missing-project/docker-unreachable errors)
+- ✅ `core/status.py` - ~93% (`test_core_status`: every `overall` branch including the stable-partial-stack `degraded` (a program `FATAL` while web serves), the offline-not-raised contract, supervisor-down vs never-started, the docker-unreachable raise)
+- ✅ `core/restart.py` - ~95% (`test_core_restart`: `core.restart_process` restarting one program leaving siblings running, multi-bench `select_bench` and unknown/ambiguous `select_process` `NEEDS_CHOICE`, `NOT_RUNNING` for a down supervisor/container)
+- ✅ `commands/status.py` - ~95% (`test_status_frontend`: the stdout-token-only contract the PR-1 E2E net pins, per-process detail (incl. supervisord `state`) on stderr, exit 0 across lifecycle states; `test_status_watch`: the `--watch` live view - every tick re-polls with `probe_web=False` so it makes ZERO web requests, the non-TTY single-quiet-snapshot degrade, the `--interval` 1s floor, a clean `KeyboardInterrupt` exit)
 - ✅ `commands/axi.py` `start`/`status` verbs - (`test_axi_start_status`: TOON rendering, exit-code mapping, needs-choice/`CONFLICT` flag-naming, the never-prompt port-conflict pre-step)
+- ✅ `commands/axi.py` `restart` verb - (`test_axi_restart`: TOON `ProcessRestartOutcome` rendering, exit-code mapping, `--process` required, unknown/ambiguous process and multi-bench `select_bench` as usage errors listing valid labels)
 - ✅ `core/version.py` - ~90% (`test_core_version`: install-method detection tree (dev/uv/uvx/pip fallback), the fail-open PyPI lookup, PEP 440 compare including the dev-ahead case, the TTL cache, and the `passive_notice` cache-only gate incl. the `attempted_at` once/day refresh throttle)
 - ✅ `commands/self_update.py` - 100% (`test_self_update`: dev/uvx no-op, the default upgrade run (success/failure/`FileNotFoundError`), `--check`, `--no-cache`)
 - ✅ `update_notice.py` - ~95% (`test_update_notice`: stderr-only rendering never on stdout, `sys.stderr.isatty()` gating, `CWCLI_NO_UPDATE_CHECK` suppression, fail-open when the core gate raises)
@@ -143,6 +151,7 @@ Current overall coverage at 0.37.0, unreleased (659 tests across 43 test files, 
 - ⚠️ `utils/vscode_utils.py` (~16%, only incidental coverage)
 - ⚠️ `utils/config_utils.py` (~41%; `cwcli_home()` is covered by `test_cwcli_home`, but `load_config`/`save_config`/the custom-path and auto-inspect-config setters remain untested)
 - ⚠️ `commands/start.py` (~57%; `test_yes_flag` covers the non-interactive/`--yes` contract and `tests/e2e/test_start_status_e2e.py` drives it end to end, but the port-scanning/conflict-resolution branches still have no dedicated unit suite)
+- ⚠️ `commands/restart.py` (~40%; the single-process path's core call is dedicated-tested via `test_core_restart`/`test_axi_restart`, and both the whole-stack and `--process` paths are driven end to end by `tests/e2e/test_start_status_e2e.py`/`tests/e2e/test_per_process_supervisor_e2e.py`, but the CLI frontend itself - the argv-forgiveness reparsing, the multi-project loop, `_resolve_process_choice`'s TTY/non-TTY forks - has no dedicated unit suite)
 - ⚠️ Command modules at or near 0% dedicated coverage: `backup.py` (0%; its logic moved to `core/backup.py`, which is covered - see above), `run.py`, `unlock.py`
 
 ## Writing New Tests
@@ -276,7 +285,7 @@ Status as of 0.34.0 (see [../docs/testing/README.md](../docs/testing/README.md) 
 2. **Database operations** (`utils/db_utils.py`) - covered by `test_db_security`, `test_config_validation` (~68%).
 3. **Real-Docker E2E for `init` and `backup`** - covered by `tests/e2e/test_init_e2e.py`, `tests/e2e/test_backup_e2e.py` (both interactive and non-interactive, on the v14/v15/v16 matrix).
 3a. **Real-Docker E2E for the lifecycle commands** (`start`, `status`, `logs`, `restart`) - covered by `tests/e2e/test_start_status_e2e.py` (both modes; structure-agnostic outcome invariants that the start/status core migration preserved unchanged - see `openspec/changes/add-start-status-e2e-net`) plus `tests/e2e/test_start_status_new_behavior_e2e.py` (the migration's own net for the NEW behavior: idempotency, `degraded`, real per-process health, the relocated log, multi-bench refuse - see `openspec/changes/migrate-start-status-core`).
-4. **Logic core + `cwcli axi`** (`core/`, `commands/axi.py`) - covered by `test_core_envelope`, `test_core_resolvers`, `test_core_backup`, `test_axi` (envelope/resolvers/docker wrapper at 100%, `core/backup.py` ~95%, `commands/axi.py` ~97%). `start`/`status` followed the same pattern onto `core/start.py`/`core/status.py`/`core/supervision.py` (~98%/~91%/~81%), covered by `test_core_start`, `test_core_status`, `test_core_supervision`, plus the frontends `test_status_frontend` and `test_status_watch` (the `--watch` live view's zero-web-probe/non-TTY-degrade/interval-floor/clean-`KeyboardInterrupt` contract) and `axi start`/`axi status` in `test_axi_start_status`.
+4. **Logic core + `cwcli axi`** (`core/`, `commands/axi.py`) - covered by `test_core_envelope`, `test_core_resolvers`, `test_core_backup`, `test_axi` (envelope/resolvers/docker wrapper at 100%, `core/backup.py` ~95%, `commands/axi.py` ~97%). `start`/`status` followed the same pattern onto `core/start.py`/`core/status.py`/`core/supervision.py` (~98%/~93%/~82%), covered by `test_core_start`, `test_core_status`, `test_core_supervision`, plus the frontends `test_status_frontend` and `test_status_watch` (the `--watch` live view's zero-web-probe/non-TTY-degrade/interval-floor/clean-`KeyboardInterrupt` contract) and `axi start`/`axi status` in `test_axi_start_status`. `add-per-process-supervisor` re-pointed `core/supervision.py` from honcho to supervisord and added `core/restart.py` (~95%, `core.restart_process` restarting one program leaving siblings running), covered by `test_core_restart` and the `cwcli axi restart` verb in `test_axi_restart`.
 4a. **`self-update`** (`commands/self_update.py`, `core/version.py`) - covered by `test_core_version` (install-method tree, fail-open PyPI lookup, PEP 440 compare, TTL cache - ~90%) and `test_self_update` (dev/uvx no-op, the default upgrade run, `--check`, `--no-cache` - 100%). No `cwcli axi` verb (deferred).
 4b. **Passive update notice** (`update_notice.py` ~95%, wired once into `main.py`'s root Typer callback) - covered by `test_update_notice` (stderr-only, TTY-gated, `CWCLI_NO_UPDATE_CHECK`-suppressible, fail-open) and `test_core_version`'s `TestPassiveNotice` class (the cache-only hot path, the detached background refresh, the `attempted_at` once/day throttle on persistent failure).
 

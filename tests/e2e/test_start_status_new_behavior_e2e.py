@@ -1,16 +1,19 @@
-"""Real-Docker E2E for the NEW start/status behavior (PR 2, migrate-start-status-core).
+"""Real-Docker E2E for the NEW start/status behavior (migrate-start-status-core),
+updated for the supervisord per-process supervisor (add-per-process-supervisor).
 
 These sit ON TOP of the structure-agnostic PR-1 net (``test_start_status_e2e.py``,
 which stays green unchanged) and assert the migration's ADDED behavior - the
 things the net deliberately does NOT pin:
 
   - ``start`` is genuinely idempotent: a re-run is a no-op that leaves EXACTLY ONE
-    honcho supervisor (the double-start bug is fixed), reported as
+    supervisord supervisor (the double-start bug stays fixed), reported as
     ``already_running: true`` by ``cwcli axi start``.
-  - ``status`` reports REAL per-process health (up/uptime/CPU/RSS) + the aggregate,
-    via both the human token (stdout) and ``cwcli axi status`` TOON.
-  - ``degraded``: with the marker present but honcho down, status says ``degraded``.
-  - the captured log is RELOCATED onto the bench ``logs/`` volume (not ``/tmp``).
+  - ``status`` reports REAL per-process health (up/uptime/CPU/RSS/state) + the
+    aggregate, via both the human token (stdout) and ``cwcli axi status`` TOON.
+  - ``degraded``: with the marker present but the supervisor down, status says
+    ``degraded``.
+  - the captured logs are per-process files on the bench ``logs/`` volume (not
+    ``/tmp``, and no combined ``bench-start.log``).
   - multi-bench with no selector REFUSES non-interactively (never silently picks).
 
 Runs on the shared session instance; every test that leaves it un-served relies on
@@ -28,12 +31,10 @@ from .test_start_status_e2e import _ensure_serving, _wait_web_ready, _web_reacha
 
 pytestmark = pytest.mark.e2e
 
-_LOG_REL = "logs/bench-start.log"
 
-
-def _honcho_count(project: str) -> int:
-    """How many honcho supervisors are live in the container (double-start guard)."""
-    code, out = harness.exec_in_frappe(project, "ps -eo args | grep -c '[h]oncho start' || true")
+def _supervisord_count(project: str) -> int:
+    """How many supervisord supervisors are live in the container (double-start guard)."""
+    code, out = harness.exec_in_frappe(project, "ps -eo args | grep -c '[s]upervisord' || true")
     if code != 0:
         return -1
     try:
@@ -48,17 +49,18 @@ def _honcho_count(project: str) -> int:
 def test_start_rerun_is_idempotent_single_supervisor(running_instance):
     inst = running_instance
     _ensure_serving(inst.name)
-    assert _honcho_count(inst.name) == 1, "setup: exactly one honcho after serving"
+    assert _supervisord_count(inst.name) == 1, "setup: exactly one supervisord after serving"
 
     # axi start on an already-running bench is a clean no-op (exit 0, TOON, no prompt).
     res = harness.run_cwcli("axi", "start", inst.name, "--yes")
     assert res.returncode == 0, res.stdout + res.stderr
     assert "already_running: true" in res.stdout, res.stdout
+    assert "supervisor: supervisord" in res.stdout, res.stdout
     # stdout stays TOON-clean (no progress chatter).
     assert "Starting" not in res.stdout
 
-    # The load-bearing invariant: NO second honcho was spawned.
-    assert _honcho_count(inst.name) == 1, "a re-run must not spawn a second honcho stack"
+    # The load-bearing invariant: NO second supervisord was spawned.
+    assert _supervisord_count(inst.name) == 1, "a re-run must not spawn a second supervisord"
     assert _web_reachable(inst.name), "the instance is still serving after the no-op"
 
 
@@ -98,13 +100,14 @@ def test_status_degraded_when_supervisor_down(running_instance):
     inst = running_instance
     _ensure_serving(inst.name)  # writes the supervisor marker
 
-    # Kill honcho (its "one dies, all die" tears the stack down); the marker stays.
-    harness.exec_in_frappe(inst.name, "pkill -TERM -f '[h]oncho' || true")
+    # Kill supervisord itself (it shuts its program group down); the marker stays.
+    # (Killing one program would auto-restart, so target the supervisor.)
+    harness.exec_in_frappe(inst.name, "pkill -TERM -f '[s]upervisord' || true")
     harness.wait_until(
         lambda: not _web_reachable(inst.name),
         timeout=120,
         interval=3,
-        desc=f"{inst.name} honcho down",
+        desc=f"{inst.name} supervisord down",
     )
 
     res = harness.run_cwcli("status", inst.name)
@@ -117,23 +120,26 @@ def test_status_degraded_when_supervisor_down(running_instance):
 
 
 # --------------------------------------------------------------------------- #
-# 4. the captured log is relocated onto the workspace volume, not /tmp
+# 4. logs are per-process files on the workspace volume, not /tmp or a combined log
 # --------------------------------------------------------------------------- #
-def test_bench_start_log_is_relocated_onto_the_volume(running_instance):
+def test_logs_are_per_process_files_on_the_volume(running_instance):
     inst = running_instance
     _ensure_serving(inst.name)
 
     bench = harness.DEFAULT_BENCH_PATH
-    code, _ = harness.exec_in_frappe(inst.name, f"test -f {bench}/{_LOG_REL}")
-    assert code == 0, f"captured log must exist at {bench}/{_LOG_REL}"
-    # The old ephemeral /tmp path is no longer used.
+    # supervisord writes one <program>.supervisor.log per Procfile program.
+    code, _ = harness.exec_in_frappe(inst.name, f"test -f {bench}/logs/web.supervisor.log")
+    assert code == 0, f"web's per-process log must exist at {bench}/logs/web.supervisor.log"
+    # The old honcho combined log and the ephemeral /tmp path are no longer used.
+    code_combined, _ = harness.exec_in_frappe(inst.name, f"test -f {bench}/logs/bench-start.log")
+    assert code_combined != 0, "the old combined bench-start.log must no longer be written"
     code_tmp, _ = harness.exec_in_frappe(inst.name, f"test -f /tmp/bench-{inst.name}.log")
     assert code_tmp != 0, "the old /tmp/bench-<project>.log must no longer be written"
 
-    # cwcli logs follows the relocated path and shows real bench-stream content.
+    # cwcli logs --process tails one program's file and shows real content.
     import pexpect
 
-    child = harness.spawn_cwcli(["logs", inst.name, "--no-follow"], timeout=300)
+    child = harness.spawn_cwcli(["logs", inst.name, "--process", "web", "--no-follow"], timeout=300)
     log = io.StringIO()
     child.logfile_read = log
     try:

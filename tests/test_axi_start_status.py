@@ -26,8 +26,8 @@ def _start_outcome(already_running=False):
         project="proj",
         container="proj-frappe-1",
         bench_path="/workspace/frappe-bench",
-        supervisor="honcho",
-        log_path="/workspace/frappe-bench/logs/bench-start.log",
+        supervisor="supervisord",
+        log_path="/workspace/frappe-bench/logs",
         already_running=already_running,
         processes=[ProcessLaunch(label="web", pid=101 if already_running else None)],
     )
@@ -64,11 +64,26 @@ class TestAxiStart:
         result = runner.invoke(axi_mod.app, ["start", "proj", "--yes"])
         assert result.exit_code == 0
         assert "already_running: false" in result.stdout
-        assert "supervisor: honcho" in result.stdout
+        assert "supervisor: supervisord" in result.stdout
         assert "processes[1]{label,pid}:" in result.stdout
         # No progress/status text an agent could misread as data.
         assert "Starting" not in result.stdout
         assert "..." not in result.stdout
+
+    def test_no_autorestart_flag_reaches_core_start(self, monkeypatch):
+        # An agent driving cwcli via axi must be able to launch with self-heal off,
+        # mirroring the human `cwcli start --no-autorestart` flag.
+        _no_conflicts(monkeypatch)
+        seen = {}
+
+        def _fake_start(*a, **k):
+            seen.update(k)
+            return Result(status=Status.OK, data=_start_outcome())
+
+        monkeypatch.setattr(axi_mod.core_start, "start", _fake_start)
+        result = runner.invoke(axi_mod.app, ["start", "proj", "--no-autorestart"])
+        assert result.exit_code == 0
+        assert seen["autorestart"] is False
 
     def test_already_running_noop_is_emitted(self, monkeypatch):
         _no_conflicts(monkeypatch)
@@ -194,7 +209,7 @@ class TestAxiStatus:
         assert result.exit_code == 0
         # overall is the FIRST line of the TOON document.
         assert result.stdout.splitlines()[0] == "overall: running"
-        assert "processes[1]{label,up,pid,uptime_s,cpu_pct,rss_kb}:" in result.stdout
+        assert "processes[1]{label,up,pid,uptime_s,cpu_pct,rss_kb,state}:" in result.stdout
         assert "..." not in result.stdout
 
     def test_offline_is_a_definitive_state(self, monkeypatch):
