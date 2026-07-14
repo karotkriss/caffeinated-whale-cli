@@ -109,6 +109,17 @@ class TestDefaultRun:
         result = runner.invoke(app, [])
         assert result.exit_code == 1
 
+    def test_upgrade_binary_missing_exit_1(self, monkeypatch):
+        _patch_check(monkeypatch, _info())
+
+        def fake_run(cmd, *a, **kw):
+            raise FileNotFoundError(cmd[0])
+
+        monkeypatch.setattr(su_mod.subprocess, "run", fake_run)
+        result = runner.invoke(app, [])
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower()
+
     def test_network_failure_blocking_upgrade_exit_1(self, monkeypatch, no_real_subprocess):
         _patch_check(
             monkeypatch,
