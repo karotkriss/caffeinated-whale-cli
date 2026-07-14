@@ -14,9 +14,9 @@ from caffeinated_whale_cli.core import resolvers
 from caffeinated_whale_cli.core import status as core_status
 from caffeinated_whale_cli.core.envelope import Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
-from tests.test_core_supervision import BENCH, FakeContainer
+from tests.test_core_supervision import _CTL_SINGLE, _PS_SINGLE, BENCH, FakeContainer
 
-_MARKER = {"supervisor": "honcho", "started_at": "t", "log_path": "p"}
+_MARKER = {"supervisor": "supervisord", "started_at": "t", "config_path": "p"}
 
 
 @pytest.fixture
@@ -34,7 +34,7 @@ def wire(monkeypatch):
 
 
 class TestOverall:
-    def test_running_when_marker_honcho_and_web(self, wire):
+    def test_running_when_marker_up_and_web(self, wire):
         wire(FakeContainer(marker=_MARKER, web_code="200"), benches=[{"path": BENCH}])
         result = core_status.status("proj")
         assert result.status is Status.OK
@@ -52,7 +52,7 @@ class TestOverall:
         assert report.overall == "online"
 
     def test_degraded_when_marker_but_supervisor_down(self, wire):
-        # marker present, but no honcho in ps (container restart / crash).
+        # marker present, but no supervisord in ps (container restart / crash).
         c = FakeContainer(marker=_MARKER, ps="1 0 5 0.0 1000 /sbin/init\n", cwds={})
         wire(c, benches=[{"path": BENCH}])
         report = core_status.status("proj").data
@@ -61,12 +61,32 @@ class TestOverall:
         # every expected label is reported down.
         assert all(not p.up for p in report.processes)
 
-    def test_degraded_when_honcho_up_but_web_down(self, wire):
+    def test_degraded_when_supervisor_up_but_web_down(self, wire):
         wire(FakeContainer(marker=_MARKER, web_ok=False), benches=[{"path": BENCH}])
         report = core_status.status("proj").data
         assert report.overall == "degraded"
         assert report.supervisor_up is True
         assert report.web_http_code is None
+
+    def test_degraded_when_a_program_is_fatal(self, wire):
+        # Supervisord keeps siblings alive when one dies, so "web serving while a
+        # worker is FATAL" is a REAL, stable partial stack -> degraded (honcho made
+        # this impossible; supervisor-up no longer implies the whole stack is up).
+        ps = _PS_SINGLE.replace(
+            "105 100 499 0.3 70000 /env/bin/python /env/bin/bench worker --queue default\n", ""
+        )
+        ctl = _CTL_SINGLE.replace(
+            "worker_default   RUNNING   pid 105, uptime 0:05:00\n",
+            "worker_default   FATAL   Exited too quickly\n",
+        )
+        c = FakeContainer(marker=_MARKER, ps=ps, ctl_status=ctl, web_code="200")
+        wire(c, benches=[{"path": BENCH}])
+        report = core_status.status("proj").data
+        assert report.overall == "degraded"
+        assert report.supervisor_up is True
+        worker = next(p for p in report.processes if p.label == "worker:default")
+        assert worker.state == "FATAL"
+        assert worker.up is False
 
 
 class TestProbeWeb:
@@ -82,9 +102,9 @@ class TestProbeWeb:
         assert report.web_http_code is None
         assert not any(isinstance(cmd, list) and cmd[0] == "curl" for cmd in c.calls)
 
-    def test_running_without_web_probe_when_honcho_up(self, wire):
-        # With the web probe suppressed, honcho-up alone drives ``running`` - a
-        # missing web code must NOT falsely degrade the aggregate.
+    def test_running_without_web_probe_when_supervisor_up(self, wire):
+        # With the web probe suppressed, supervisor-up + all-healthy drives
+        # ``running`` - a missing web code must NOT falsely degrade the aggregate.
         wire(FakeContainer(marker=_MARKER, web_code="200"), benches=[{"path": BENCH}])
         report = core_status.status("proj", probe_web=False).data
         assert report.overall == "running"

@@ -352,10 +352,13 @@ Found 2 matches.
 
 ### `start` - Start Containers
 
-Starts a project's containers and runs `bench start` (under honcho), with
+Starts a project's containers and runs the bench under **supervisord**, with
 **automatic port conflict detection and resolution**. It is **idempotent**:
 re-running against an already-running bench reports "already running" and does
-nothing - it never spawns a second `bench start` stack.
+nothing - it never spawns a second supervisor stack. On first supervise it
+installs `supervisor` into the bench environment; each Procfile process becomes a
+supervised program that can be restarted or self-healed individually (see
+[`restart`](#restart---restart-containers)).
 
 ```bash
 cwcli start [OPTIONS] [PROJECT_NAME]...
@@ -371,13 +374,15 @@ cwcli start [OPTIONS] [PROJECT_NAME]...
 
 | Option | Description |
 |--------|-------------|
-| `--bench TEXT` | Which bench runs `bench start`: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)). On a multi-bench project with no `--bench` it prompts interactively and refuses (non-zero) on a non-TTY |
+| `--bench TEXT` | Which bench to run: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)). On a multi-bench project with no `--bench` it prompts interactively and refuses (non-zero) on a non-TTY |
+| `--autorestart` / `--no-autorestart` | Self-heal crashed processes (default on): supervisord restarts a program that crashes (not one that exits cleanly), surfacing a crash-loop as `FATAL`. `--no-autorestart` leaves a crashed program down until an explicit restart. Set at launch |
 | `-y`, `--yes` | Auto-confirm stopping conflicting Frappe projects to free their ports (non-interactive) |
 | `-v`, `--verbose` | Enable verbose diagnostic output |
 
 **Features:**
 
-- **Idempotent:** a re-run on an already-running bench is a clean no-op ("already running: N/N processes up"), never a second honcho stack
+- **Idempotent:** a re-run on an already-running bench is a clean no-op ("already running: N/N processes up"), never a second supervisor stack
+- **Per-process supervision:** each Procfile process runs under supervisord, so one can be restarted or auto-healed without disturbing the others
 - **Port Conflict Detection:** Automatically checks if required ports are available
 - **Interactive Resolution:** Offers to stop conflicting Frappe projects (use `--yes` to auto-confirm)
 - **Process Identification:** Shows which processes are using ports (cross-platform)
@@ -442,7 +447,10 @@ cwcli stop frappe-one frappe-two
 
 ### `restart` - Restart Containers
 
-Restarts a project's containers and bench instance.
+Restarts a project. Without `--process` it restarts the whole stack (stop + start
+the containers, relaunching the supervisor). With `--process <label>` it restarts
+just that **one** supervised program while its siblings keep running - so a stuck
+`web` or `worker` can be cycled without a full-stack bounce.
 
 ```bash
 cwcli restart [OPTIONS] [PROJECT_NAME]...
@@ -458,22 +466,32 @@ cwcli restart [OPTIONS] [PROJECT_NAME]...
 
 | Option | Description |
 |--------|-------------|
+| `-p`, `--process TEXT` | Restart ONE Procfile process (e.g. `web`, `worker`, `socketio`), leaving its siblings running. Omit to restart the whole stack |
+| `--bench TEXT` | Which bench the `--process` belongs to: its numeric index or label (multi-bench projects) |
 | `-v`, `--verbose` | Enable verbose diagnostic output |
 
 **Example:**
 
 ```bash
+# Whole-stack restart
 cwcli restart frappe-one
+
+# Restart just the web process (siblings keep running)
+cwcli restart frappe-one --process web
 ```
 
 **Example Output:**
 
 ```
+# whole stack
 Attempting to restart 1 project(s)...
 ✓ Instance 'frappe-one' stopped.
 ✓ Instance 'frappe-one' started.
-✓ Started bench (logs: /workspace/frappe-bench/logs/bench-start.log)
+✓ Started bench (logs: /workspace/frappe-bench/logs)
 View logs with: cwcli logs frappe-one
+
+# single process
+Instance 'frappe-one': restarted process web (pid 123 -> 456, RUNNING)
 ```
 
 ---
@@ -538,9 +556,11 @@ cwcli ls | cwcli rm
 
 ### `logs` - View Bench Logs
 
-View the captured `bench start` log in real-time. The log lives on the workspace
-volume at `<bench>/logs/bench-start.log` (so it survives a container restart) and
-is size-bounded, replacing the old ephemeral `/tmp/bench-<project>.log`.
+View the bench's process logs. supervisord writes one log file per Procfile
+program under `<bench>/logs/<program>.supervisor.log` on the workspace volume (so
+they survive a container restart, with built-in rotation). With no `--process`,
+`cwcli logs` synthesizes a combined view across every program; `--process <label>`
+tails just one program's log.
 
 ```bash
 cwcli logs [OPTIONS] PROJECT_NAME
@@ -558,15 +578,19 @@ cwcli logs [OPTIONS] PROJECT_NAME
 |--------|-------------|
 | `-f`, `--follow` / `--no-follow` | Follow log output in real-time (default: no-follow - print the tail and exit) |
 | `-n`, `--lines INTEGER` | Number of lines to show from the end of the logs (default: 100) |
-| `--bench TEXT` | Which bench's log to view: its numeric index or label (multi-bench projects) |
+| `-p`, `--process TEXT` | Tail ONE process's log (e.g. `web`, `worker`, `socketio`). Omit for a combined view of every process |
+| `--bench TEXT` | Which bench's logs to view: its numeric index or label (multi-bench projects) |
 | `-y`, `--yes` | Auto-start stopped containers without prompting |
 | `-v`, `--verbose` | Enable verbose diagnostic output |
 
 **Examples:**
 
 ```bash
-# Print the last 100 lines and exit (default)
+# Combined view: last 100 lines of every process, then exit (default)
 cwcli logs frappe-one
+
+# Tail just the web process's log
+cwcli logs frappe-one --process web
 
 # Show last 50 lines and exit
 cwcli logs frappe-one --lines 50
@@ -578,7 +602,7 @@ cwcli logs frappe-one --follow
 cwcli logs frappe-one -n 200 --follow
 ```
 
-**Note:** Logs are stored at `<bench>/logs/bench-start.log` on the workspace volume inside the container.
+**Note:** Per-process logs are stored at `<bench>/logs/<program>.supervisor.log` on the workspace volume inside the container.
 
 ---
 
@@ -1327,9 +1351,11 @@ cwcli status [OPTIONS] PROJECT_NAME
 
 - **`offline`** - a real-but-stopped instance: the containers exist but the frappe container is not running
 - **`online`** - the container is up, but the bench was never started (no supervisor)
-- **`running`** - the supervisor (honcho) is up and the web server answers on `:8000`
+- **`running`** - supervisord is up, every expected program is healthy, and the web server answers on `:8000`
 - **`degraded`** - the bench was started but the supervisor is down (e.g. after a
-  container restart), or it is up but the web server is not answering
+  container restart), OR it is up but a program is not healthy (a `FATAL`/`BACKOFF`
+  worker while the rest keeps serving - a stable partial stack), OR the web server
+  is not answering
 
 A truly-nonexistent project name (a typo, or one never created - no containers
 with the label at all) is NOT `offline`: it exits non-zero with a "no such
@@ -1338,15 +1364,18 @@ name that does not exist.
 
 **Per-process detail (stderr):** each Procfile process (`web`, `socketio`,
 `worker`, `schedule`, `watch`, `redis_cache`, `redis_queue`) with up/down plus
-its PID, uptime, CPU%, and RSS - read from one `ps` in the container. The stdout
-token stays a single word so it is safe to script against; the detail is on
-stderr for humans (and in structured form via `cwcli axi status`).
+its PID, uptime, CPU%, RSS, and supervisord's authoritative `state`
+(`RUNNING`/`STARTING`/`BACKOFF`/`EXITED`/`FATAL`/`STOPPED`) - so a crash-looping or
+give-up program is visible, not just "down". The stdout token stays a single word
+so it is safe to script against; the detail is on stderr for humans (and in
+structured form via `cwcli axi status`).
 
 **Live view (`--watch`):** `cwcli status --watch frappe-one` shows a continuously
 refreshing per-process table (rendered on stderr; Ctrl-C exits cleanly). Unlike
 the one-shot command, the watch loop **never probes the web server** - it reads
-process health from the single `ps` each tick, so watching leaves ZERO
-`GET localhost:8000` requests in the bench's access logs. When stdout or stderr
+process health from `ps` + supervisord's control socket each tick (neither touches
+`:8000`), so watching leaves ZERO `GET localhost:8000` requests in the bench's
+access logs. When stdout or stderr
 is not a TTY (piped or redirected - the live view renders to stderr, so both
 streams must be interactive), `--watch` degrades to a single quiet snapshot
 instead of starting the live loop. (`cwcli axi status` stays one-shot - agents
@@ -1631,7 +1660,7 @@ Error: project 'my-project' has multiple benches; specify one with --bench <inde
 
 Single-bench projects are unaffected: with only one bench, that bench is used automatically and `--bench` is optional.
 
-`start` and `status` follow the same family rule: on a multi-bench project with no `--bench` they prompt which bench interactively and refuse (non-zero) on a non-TTY. `cwcli restart` (which has no `--bench`) restarts the first bench with a note.
+`start`, `status`, and `cwcli restart --process` follow the same family rule: on a multi-bench project with no `--bench` they prompt which bench interactively and refuse (non-zero) on a non-TTY. A whole-stack `cwcli restart` (no `--process`) restarts each project's default bench.
 
 **`--path` escape hatch:** `-p`/`--path` still accepts an explicit bench directory for cases outside the cached set. It takes precedence over `--bench`, but the two cannot be combined (that is an error).
 
@@ -1697,9 +1726,13 @@ cwcli axi start frappe-one --yes
 
 # Report per-process health as TOON, with the "overall" aggregate up front
 cwcli axi status frappe-one
+
+# Restart ONE supervised process (siblings keep running); the outcome prints as
+# TOON. --process is required; --bench selects a bench on a multi-bench project.
+cwcli axi restart frappe-one --process web
 ```
 
-`cwcli axi ls`, `cwcli axi where`, `cwcli axi backup`, `cwcli axi start`, and `cwcli axi status` run on the same logic core as their human counterparts; only the output (always TOON, never JSON) and choice-handling differ. `cwcli axi start` never prompts: an ambiguous multi-bench project is a `--bench` usage error (exit 2), and an unresolved port conflict is a `CONFLICT` error naming `--yes` (exit 1). `cwcli axi status` always exits 0, leading with the `overall` aggregate (`offline`/`online`/`running`/`degraded`). JSON output stays on the human commands (`cwcli ls --json`, `cwcli where --json`).
+`cwcli axi ls`, `cwcli axi where`, `cwcli axi backup`, `cwcli axi start`, `cwcli axi status`, and `cwcli axi restart` run on the same logic core as their human counterparts; only the output (always TOON, never JSON) and choice-handling differ. `cwcli axi start` never prompts: an ambiguous multi-bench project is a `--bench` usage error (exit 2), and an unresolved port conflict is a `CONFLICT` error naming `--yes` (exit 1). `cwcli axi status` always exits 0, leading with the `overall` aggregate (`offline`/`online`/`running`/`degraded`). `cwcli axi restart` requires `--process`; an unknown/ambiguous process is a usage error listing the valid labels (exit 2). JSON output stays on the human commands (`cwcli ls --json`, `cwcli where --json`).
 
 ### Verbose Mode for Debugging
 

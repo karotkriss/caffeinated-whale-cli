@@ -179,7 +179,9 @@ class TestRestartHonesty:
         monkeypatch.setattr(restart_mod.sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr(restart_mod, "get_project_containers", lambda name: [])
         with pytest.raises(typer.Exit) as exc:
-            restart_mod.restart(ctx=None, verbose=False, project_name=["no-such"])
+            restart_mod.restart(
+                ctx=None, verbose=False, process=None, bench=None, project_name=["no-such"]
+            )
         assert exc.value.exit_code == 1
         out = capsys.readouterr().out
         assert "not found" in out.lower()
