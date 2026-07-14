@@ -21,6 +21,7 @@ Caffeinated Whale CLI is a command-line tool for managing Frappe/ERPNext Docker 
 caffeinated-whale-cli/
 ├── src/caffeinated_whale_cli/
 │   ├── main.py                 # CLI entry point
+│   ├── update_notice.py        # Passive stderr-only "update available" notice, over core.version
 │   ├── commands/               # Command implementations (human-facing frontends)
 │   │   ├── start.py           # Thin frontend over core.start (idempotent) + port detection
 │   │   ├── status.py          # Thin frontend over core.status (per-process health)
@@ -45,7 +46,7 @@ caffeinated-whale-cli/
 │   │   ├── supervision.py      # Shared tracked-state contract for start+status (honcho discovery, marker, bounded log)
 │   │   ├── start.py            # core.start - idempotent bench start (discovered-PID no-op)
 │   │   ├── status.py           # core.status - per-process health + pre-computed overall
-│   │   └── version.py          # core.version - install-method detection + PyPI lookup for self-update
+│   │   └── version.py          # core.version - install-method detection + PyPI lookup, shared by self-update and the passive notice
 │   └── utils/                  # Utility modules
 │       ├── docker_utils.py    # Docker client management
 │       ├── port_utils.py      # Port conflict detection

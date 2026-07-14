@@ -17,6 +17,7 @@ A command-line interface (CLI) for managing Frappe/ERPNext Docker instances duri
 - **App Management** - List, install, uninstall, and update Frappe apps per bench and per site with `cwcli apps` (multi-site by default, `--json`, honest exit codes)
 - **Update Management** - App updates with automatic migrations and lock cleanup
 - **Self-Update** - Upgrade cwcli itself to the latest release with `cwcli self-update` (install-method aware)
+- **Update Notices** - A passive, once/day "a newer cwcli is available" hint on stderr, shown only to a human at a TTY
 - **Auto-Inspection** - Background process to keep project cache fresh automatically
 - **System Integration** - Auto-start on system boot with platform-specific configurations
 - **Contextual Tips** - Helpful tips displayed during long-running operations to help you discover features
@@ -1591,6 +1592,10 @@ cwcli self-update --check
 # Force a fresh PyPI check, bypassing the version cache
 cwcli self-update --no-cache
 ```
+
+**Passive update notices:**
+
+Every `cwcli` and `cwcli axi` run also does a passive, cache-only check: if a newer release is already known (from the same ≤1-day cache `self-update`/`--check` share) and you're at an interactive terminal, cwcli prints a one-line "a newer cwcli is available" hint - with the right upgrade command for how you installed it - to stderr. It never makes a blocking network call itself: PyPI is actually re-checked at most once/day, via a detached background refresh kicked off whenever the cache is missing or stale, so this never delays a command; until that refresh lands, the hint keeps showing on every run. It never touches stdout, so it's invisible to pipes, scripts, CI, and `cwcli axi`'s TOON output. Set `CWCLI_NO_UPDATE_CHECK=1` to suppress it entirely.
 
 ---
 

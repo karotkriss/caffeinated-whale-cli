@@ -1,4 +1,4 @@
-"""Passive "a newer cwcli is available" notice, shown once/day to a human.
+"""Passive "a newer cwcli is available" notice, checked against PyPI at most once/day.
 
 Thin frontend over :func:`core.version.passive_notice` (the cache-only,
 non-blocking, fail-open gate). Rendered to STDERR only, and only when stderr is
