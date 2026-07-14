@@ -70,6 +70,21 @@ class TestAxiStart:
         assert "Starting" not in result.stdout
         assert "..." not in result.stdout
 
+    def test_no_autorestart_flag_reaches_core_start(self, monkeypatch):
+        # An agent driving cwcli via axi must be able to launch with self-heal off,
+        # mirroring the human `cwcli start --no-autorestart` flag.
+        _no_conflicts(monkeypatch)
+        seen = {}
+
+        def _fake_start(*a, **k):
+            seen.update(k)
+            return Result(status=Status.OK, data=_start_outcome())
+
+        monkeypatch.setattr(axi_mod.core_start, "start", _fake_start)
+        result = runner.invoke(axi_mod.app, ["start", "proj", "--no-autorestart"])
+        assert result.exit_code == 0
+        assert seen["autorestart"] is False
+
     def test_already_running_noop_is_emitted(self, monkeypatch):
         _no_conflicts(monkeypatch)
         monkeypatch.setattr(

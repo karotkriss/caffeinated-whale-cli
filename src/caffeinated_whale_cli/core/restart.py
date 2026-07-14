@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from docker.errors import APIError, NotFound
+
 from ..utils.docker_utils import get_project_containers
 from . import resolvers, supervision
 from .envelope import Choice, Message, Result, Status
@@ -67,7 +69,15 @@ def restart_process(
             "project.no_frappe_service",
             f"No 'frappe' service found for project '{project_name}'.",
         )
-    frappe_container.reload()
+    try:
+        frappe_container.reload()
+    except (APIError, NotFound) as e:
+        raise CwcliError(
+            ErrorKind.DOCKER,
+            "container.reload_failed",
+            f"Could not read state of the frappe container for project '{project_name}'.",
+            detail={"output": str(e)},
+        ) from e
     if frappe_container.status != "running":
         raise CwcliError(
             ErrorKind.NOT_RUNNING,

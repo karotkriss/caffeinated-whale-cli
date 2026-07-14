@@ -452,6 +452,11 @@ the containers, relaunching the supervisor). With `--process <label>` it restart
 just that **one** supervised program while its siblings keep running - so a stuck
 `web` or `worker` can be cycled without a full-stack bounce.
 
+**Known limitation:** a whole-stack `cwcli restart` (and the restart `cwcli
+restore` runs after a migration) always relaunches with the `--autorestart`
+default (on). It does NOT persist a prior `cwcli start --no-autorestart`
+choice - re-run `cwcli start --no-autorestart` afterward to reassert it.
+
 ```bash
 cwcli restart [OPTIONS] [PROJECT_NAME]...
 ```
