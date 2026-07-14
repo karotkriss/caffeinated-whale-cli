@@ -1,0 +1,199 @@
+"""``core.version`` - install-method detection + latest-version lookup, UI-pure.
+
+One shared helper behind two consumers: the active ``cwcli self-update`` command
+(this PR) and the passive "update available" notice (``cwcli-update-notify-n4``,
+NOT built here) reuse it verbatim, so the detection tree, the fail-open PyPI
+lookup, the PEP 440 compare, and the TTL cache all live here once.
+
+The distribution name is always ``caffeinated-whale-cli`` (the ``cwcli`` PyPI
+name is an abandoned 2016 package - never use it). Like every ``core`` module
+this imports NO ``rich``/``questionary``/``typer``: it returns a serializable
+:class:`VersionInfo` wrapped in :class:`~.envelope.Result` and prints/exits
+nothing. The network lookup is FAIL-OPEN by contract: any error yields
+``latest=None`` (with a ``pypi.unreachable`` warning) so a version check can
+never break or hang a command.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+import time
+import urllib.request
+from dataclasses import dataclass
+from urllib.parse import urlparse
+from urllib.request import url2pathname
+
+from ..utils.config_utils import cwcli_home
+from .envelope import Message, Result, Status
+
+DIST = "caffeinated-whale-cli"
+_PYPI_URL = f"https://pypi.org/pypi/{DIST}/json"
+_CACHE_TTL_SECONDS = 86_400  # ~1 day; the passive notice reuses this cache
+_DEFAULT_TIMEOUT = 4.0
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class VersionInfo:
+    """The install-method + version comparison for the running cwcli.
+
+    ``method`` is one of ``uv`` (persistent uv tool), ``pip``, ``dev`` (an
+    editable/source checkout), or ``uvx`` (an ephemeral ``uvx --from`` run).
+    ``upgrade_command`` is the subprocess argv to run, or ``None`` for the two
+    non-upgradable methods (``dev``/``uvx``). ``latest`` is ``None`` iff the
+    PyPI lookup failed open. Serializable: every field is a builtin/None.
+    """
+
+    current: str
+    latest: str | None
+    method: str
+    upgrade_command: list[str] | None
+    is_outdated: bool
+    is_dev: bool
+    dev_path: str | None = None
+
+
+def check(*, use_cache: bool = True, timeout: float = _DEFAULT_TIMEOUT) -> Result[VersionInfo]:
+    """Detect the install method and compare the running version against PyPI.
+
+    ``use_cache`` reads the shared ≤1-day TTL cache (fast, shared with the
+    passive notice); a successful fetch always refreshes that cache regardless.
+    A failed lookup rides as a ``pypi.unreachable`` warning with ``latest=None``.
+    """
+    current = _current_version()
+    method, dev_path = _detect_method()
+    latest = _latest_version(use_cache=use_cache, timeout=timeout)
+
+    warnings: list[Message] = []
+    if latest is None:
+        warnings.append(Message("pypi.unreachable", "Could not reach PyPI to check for updates."))
+
+    info = VersionInfo(
+        current=current,
+        latest=latest,
+        method=method,
+        upgrade_command=_upgrade_command(method),
+        is_outdated=_is_outdated(current, latest),
+        is_dev=method == "dev",
+        dev_path=dev_path,
+    )
+    status = Status.WARNING if warnings else Status.OK
+    return Result(status=status, data=info, warnings=warnings)
+
+
+def _current_version() -> str:
+    import importlib.metadata
+
+    return importlib.metadata.version(DIST)
+
+
+def _detect_method() -> tuple[str, str | None]:
+    """Three-way (plus uvx) install-method tree; see module docstring.
+
+    Order: editable checkout (PEP 610 ``direct_url.json``) -> uv tool dir ->
+    ephemeral uvx cache -> pip fallback. Any unexpected failure defaults to the
+    safe ``pip`` branch rather than breaking the command.
+    """
+    import importlib.metadata
+
+    try:
+        dist = importlib.metadata.distribution(DIST)
+
+        direct_url = dist.read_text("direct_url.json")
+        if direct_url:
+            info = json.loads(direct_url)
+            if info.get("dir_info", {}).get("editable"):
+                return "dev", _url_to_path(info.get("url", ""))
+
+        location = str(dist.locate_file("")).replace("\\", "/")
+        if "/uv/tools/" in location:
+            return "uv", None
+        if "/uv/" in location:
+            # Under uv's dir but not a persistent tool -> an ephemeral `uvx` run;
+            # a real pip install never has a `/uv/` path segment.
+            return "uvx", None
+    except Exception:
+        pass
+    return "pip", None
+
+
+def _url_to_path(url: str) -> str | None:
+    if not url:
+        return None
+    try:
+        return url2pathname(urlparse(url).path)
+    except Exception:
+        return None
+
+
+def _upgrade_command(method: str) -> list[str] | None:
+    if method == "uv":
+        return ["uv", "tool", "upgrade", DIST]
+    if method == "pip":
+        # sys.executable -m pip, never a bare `pip` (which may target a different env).
+        return [sys.executable, "-m", "pip", "install", "--upgrade", DIST]
+    return None  # dev / uvx are never upgraded in place
+
+
+def _is_outdated(current: str, latest: str | None) -> bool:
+    if not latest:
+        return False
+    from packaging.version import InvalidVersion, Version
+
+    try:
+        return Version(latest) > Version(current)
+    except InvalidVersion:
+        return False
+
+
+# --- latest-version lookup + TTL cache ------------------------------------
+
+
+def _latest_version(*, use_cache: bool, timeout: float) -> str | None:
+    if use_cache:
+        cached = _read_cache()
+        if cached is not None:
+            return cached
+    latest = _fetch_latest(timeout)
+    if latest is not None:
+        _write_cache(latest)
+    return latest
+
+
+def _fetch_latest(timeout: float) -> str | None:
+    """PyPI ``info.version`` (the canonical latest; never sort ``releases``).
+
+    FAIL-OPEN: any error (URLError/timeout/JSON/KeyError) returns ``None``.
+    """
+    try:
+        req = urllib.request.Request(_PYPI_URL, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+        version = data["info"]["version"]
+        return version if isinstance(version, str) else None
+    except Exception:
+        return None
+
+
+def _cache_file():
+    return cwcli_home() / "cache" / "version_check.json"
+
+
+def _read_cache() -> str | None:
+    try:
+        raw = json.loads(_cache_file().read_text())
+        if time.time() - float(raw["checked_at"]) < _CACHE_TTL_SECONDS:
+            latest = raw["latest"]
+            return latest if isinstance(latest, str) else None
+    except Exception:
+        pass
+    return None
+
+
+def _write_cache(latest: str) -> None:
+    try:
+        path = _cache_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"latest": latest, "checked_at": time.time()}))
+    except Exception:
+        pass  # a cache write must never break a version check
