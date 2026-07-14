@@ -41,6 +41,22 @@ are now the whole point. Each note below guards a real bug.
   view (the multi-file `tail`, which also supports `--follow`). A program that
   has produced no output has no file yet - `logs.py:_existing_files` filters to existing paths so `tail`
   does not error.
+- **`cwcli logs` not-cwcli-supervised FALLBACK (regression fix - same class as the status one).** The
+  supervisord path builds its file list purely from `supervision.process_log_path` (`<program>.supervisor.log`).
+  A bench running under honcho / `bench start` (pre-v3, or a plain `bench start`) has NONE of those files, so
+  `_existing_files` came back empty and `logs.py` falsely errored `No process logs found ... The bench may not
+  be running` on a bench that WAS up with real logs. Fix: when the supervisord log files are absent, ask
+  `discover_unsupervised_stack` if a honcho/bench-start manager is live for the bench; if so, DISCOVER the real
+  `{bench}/logs/*.log` files (`_discover_bench_log_files` globs the dir - honcho log names differ from
+  supervisord's, so NEVER assume `<program>.supervisor.log`; excludes `.supervisor.log`, and the `*.log` glob
+  skips cwcli's `.cwcli-*` dotfiles) and tail them, with `--process` filtered by file stem
+  (`_program_log_matches`: `web`->`web.log`/`web.error.log`, `worker_default`->`worker.log`,
+  `schedule`->`scheduler.log`, `_`/`-` treated alike). It is a PURE READ - `cwcli logs` must NOT
+  launch/install/restart supervisord or resurrect a deliberately-honcho-run bench (captain's
+  read-commands-don't-mutate rule); the `ensure_containers_running` call stays container-running detection only.
+  The supervisord path is byte-for-byte unchanged (the fallback triggers ONLY when the `.supervisor.log` files
+  are absent), and the "may not be running" hint now shows only when NEITHER supervisord nor honcho is running,
+  so a genuinely-running-but-unsupervised bench no longer reads as down.
 
 ## `core/start.py` - idempotency (D4) + the autorestart toggle
 

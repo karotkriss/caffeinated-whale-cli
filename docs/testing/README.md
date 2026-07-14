@@ -43,7 +43,7 @@ uv run pytest tests/test_completion_utils.py
 
 ### Test Coverage
 
-Measured with `uv run pytest --cov` at 0.37.0 (unreleased): 705 tests across 45 test files, ~60% overall coverage.
+Measured with `uv run pytest --cov` at 0.37.0 (unreleased): 711 tests across 45 test files, ~60% overall coverage.
 Per-area breakdown (highest-coverage module in each area; see the module list in each test file for what else it exercises):
 
 - **rm safety** (`test_rm_safety`, `test_rm_truth`, `test_rm_stopped`) - `commands/rm.py` ~78%
@@ -58,7 +58,7 @@ Per-area breakdown (highest-coverage module in each area; see the module list in
 - **config validation** (`test_config_validation`) - config validation helpers in `utils/db_utils.py`
 - **exit codes** (`test_exit_codes`) - cross-command honest-exit-code contract
 - **app management** (`test_apps`) - `commands/apps.py` ~91%, `commands/update.py` ~69% (multi-site fan-out, frappe reset, `update` deprecation)
-- **logs** (`test_logs`) - `commands/logs.py` ~73% (the `--follow` default flip to `False`, and gating `docker exec -it` on `sys.stdin.isatty()` so a non-TTY/piped invocation never requests a TTY)
+- **logs** (`test_logs`) - `commands/logs.py` ~80% (the `--follow` default flip to `False`, gating `docker exec -it` on `sys.stdin.isatty()` so a non-TTY/piped invocation never requests a TTY, and the not-cwcli-supervised fallback - discovering and tailing a honcho/`bench start` bench's real log files, `--process` file-stem filtering, the honest "running but has not written those logs yet" vs "may not be running" hints, and that the supervised path never calls the fallback)
 - **unlock** (`test_unlock`) - `commands/unlock.py` ~44% (the `test -d` probes and `rm -rfv` locks removal run as argv lists, not `sh -c` string interpolation)
 - **`CWCLI_HOME` override** (`test_cwcli_home`) - `utils/config_utils.py`'s `cwcli_home()` ~41% file-wide; mock-free, sets a real `CWCLI_HOME` env var and resolves the import-time footprint constants in a fresh subprocess
 - **logic core purity + contract** (`test_core_envelope`) - AST-scans `core/*.py` for the `rich`/`questionary`/`typer` import ban and `typer.Exit`/`confirm_or_exit` references, and pins the `Result`/`CwcliError` DTO shapes - `core/envelope.py`, `core/errors.py` 100%

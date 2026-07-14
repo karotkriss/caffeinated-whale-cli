@@ -25,6 +25,46 @@ def _existing_files(container_name: str, files: list[str]) -> list[str]:
     return [line for line in result.stdout.splitlines() if line.strip()]
 
 
+def _discover_bench_log_files(container_name: str, bench_path: str) -> list[str]:
+    """The real ``*.log`` files a bench writes under ``logs/`` (one exec, sorted).
+
+    The not-cwcli-supervised fallback: a bench running under honcho / ``bench start``
+    (a pre-v3 instance, or a plain ``bench start``) writes differently-named log
+    files than supervisord's ``<program>.supervisor.log``, so DISCOVER what is
+    actually present rather than assume supervisord names. Excludes supervisord's
+    own per-process logs (the supervised path stays the sole source for those); the
+    ``*.log`` glob already skips cwcli's dotfile state (``.cwcli-*``).
+    """
+    logs = shlex.quote(f"{bench_path}/logs")
+    result = subprocess.run(
+        ["docker", "exec", container_name, "sh", "-c", f"ls -1 {logs}/*.log 2>/dev/null"],
+        capture_output=True,
+        text=True,
+    )
+    files = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return sorted(f for f in files if not f.endswith(supervision._PROC_LOG_SUFFIX))
+
+
+def _program_log_matches(file_path: str, program: str) -> bool:
+    """Whether a discovered log file belongs to Procfile ``program`` (honcho naming).
+
+    honcho/``bench start`` log names are not the supervisord ``<program>.supervisor.log``
+    form, so ``--process`` filtering in the fallback matches on the file stem:
+    ``web`` -> ``web.log``/``web.error.log``, ``worker_default`` -> ``worker.log``,
+    ``schedule`` -> ``schedule.log``/``scheduler.log``. Underscores and dashes are
+    treated alike (``redis_cache`` -> ``redis-cache.log``).
+    """
+    stem = file_path.rsplit("/", 1)[-1]
+    if stem.endswith(".log"):
+        stem = stem[:-4]
+    base = "worker" if program.startswith(("worker_", "worker:")) else program
+
+    def _norm(s: str) -> str:
+        return s.lower().replace("_", "-")
+
+    return _norm(stem).startswith(_norm(base))
+
+
 @handle_docker_errors
 def logs(
     project_name: str = typer.Argument(
@@ -70,7 +110,10 @@ def logs(
     View bench logs from supervisord's per-process log files.
 
     With --process, tail that one program's log; without it, a combined view of
-    every process's log.
+    every process's log. When cwcli's supervisord is not managing the bench (a
+    pre-v3 instance, or a bench brought up with honcho / ``bench start``), fall back
+    to the bench's real log files under ``logs/`` so a genuinely-running bench still
+    shows its logs. Always a PURE READ - never launches or mutates the bench.
     """
     # Ensure containers are running, prompt user if not (auto-start with --yes)
     ensure_containers_running(project_name, require_running=True, verbose=verbose, auto_start=yes)
@@ -103,6 +146,7 @@ def logs(
     # supervisord writes one log file per Procfile program. --process tails just
     # that one; otherwise tail every program's file for a combined view.
     programs = supervision.procfile_programs(frappe_container, bench_path)
+    program: str | None = None
     if process:
         program = supervision.program_for_label(programs, process)
         if program is None:
@@ -121,13 +165,41 @@ def logs(
     # has produced no output yet has no file); tail errors on a missing path.
     existing = _existing_files(container_name, log_files)
     if not existing:
-        stderr_console.print(
-            f"[bold red]Error: No process logs found under '{bench_path}/logs'.[/bold red]"
-        )
-        stderr_console.print(
-            f"[dim]The bench may not be running. Start it with: cwcli start {project_name}[/dim]"
-        )
-        raise typer.Exit(code=1)
+        # No cwcli-supervisord per-process logs for this bench. It may instead be
+        # running under honcho / `bench start` (a pre-v3 instance, or a plain
+        # `bench start`), whose real log files under {bench}/logs/ are named
+        # differently. Fall back to discovering and tailing those - a PURE READ that
+        # never launches, installs, or restarts supervisord or the bench.
+        fallback = supervision.discover_unsupervised_stack(frappe_container, bench_path)
+        if fallback.manager_up:
+            real = _discover_bench_log_files(container_name, bench_path)
+            if program is not None:
+                real = [f for f in real if _program_log_matches(f, program)]
+            existing = real
+            if existing:
+                stderr_console.print(
+                    "[dim](bench not under cwcli supervision - tailing its raw log files)[/dim]"
+                )
+        if not existing:
+            if process:
+                stderr_console.print(
+                    f"[bold red]Error: No logs found for process '{process}' under "
+                    f"'{bench_path}/logs'.[/bold red]"
+                )
+            else:
+                stderr_console.print(
+                    f"[bold red]Error: No process logs found under '{bench_path}/logs'.[/bold red]"
+                )
+            if fallback.manager_up:
+                stderr_console.print(
+                    "[dim]The bench is running but has not written those logs yet.[/dim]"
+                )
+            else:
+                stderr_console.print(
+                    "[dim]The bench may not be running. "
+                    f"Start it with: cwcli start {project_name}[/dim]"
+                )
+            raise typer.Exit(code=1)
 
     if verbose:
         stderr_console.print(f"[dim]VERBOSE: Tailing {', '.join(existing)}[/dim]")
