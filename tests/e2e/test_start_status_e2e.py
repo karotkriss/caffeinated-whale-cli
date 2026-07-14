@@ -16,9 +16,10 @@ migration must PRESERVE and abstains from the mechanics it replaces:
   re-running start leaves it serving         | the in-container process count /
                                              |   whether a 2nd honcho spawned; the
                                              |   exit code of a re-run (idempotency)
-  ``status`` -> ``offline`` for absent/stopped | the exact ``online`` token for the
-  ``status`` reports running distinctly from   |   containers-up-but-not-started state
-    the not-started state                    | the single-curl probe internals
+  ``status`` -> ``offline`` for a stopped inst | the exact ``online`` token for the
+  (absent = a distinct non-zero NOT_FOUND)     |   containers-up-but-not-started state
+  ``status`` reports running distinctly from   |   the single-curl probe internals
+    the not-started state                      | -
   ``logs`` shows the bench stream            | that ``logs`` reads ``/tmp``
   ``restart`` recovers a reachable instance  | the ``stop`` + ``_start_project`` wiring
   honest exit codes                          | -
@@ -248,12 +249,17 @@ def test_start_interactive_port_conflict_prompt_is_driven(running_instance):
 # --------------------------------------------------------------------------- #
 # 2. status (lifecycle-state discrimination)
 # --------------------------------------------------------------------------- #
-def test_status_offline_when_absent():
-    """2.1 ``offline`` when the project's containers are absent (never created)."""
+def test_status_nonexistent_fails_honestly():
+    """2.1 A truly-nonexistent project (never created - no containers at all) is NOT
+    ``offline``: it exits non-zero with a "no such project" error, distinct from a
+    real-but-stopped instance (which stays ``offline``/exit 0, covered in 1.2)."""
     ghost = harness.project_name("status-ghost")
     result = harness.run_cwcli("status", ghost)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert result.stdout.strip() == "offline", result.stdout + result.stderr
+    assert result.returncode != 0, result.stdout + result.stderr
+    combined = (result.stdout + result.stderr).lower()
+    assert "no such project" in combined, result.stdout + result.stderr
+    # Never the misleading offline token on stdout for a name that doesn't exist.
+    assert result.stdout.strip() != "offline", result.stdout + result.stderr
 
 
 def test_status_reports_running_when_serving(running_instance):

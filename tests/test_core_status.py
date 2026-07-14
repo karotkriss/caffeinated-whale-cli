@@ -1,8 +1,9 @@
 """``core.status`` branch coverage against faked I/O (task 3.4).
 
 Every ``overall`` branch (offline / online / running / degraded), the
-offline-not-raised contract, supervisor-down vs never-started, the multi-bench
-NEEDS_CHOICE sharing start's selector, and the docker-unreachable raise.
+stopped-is-offline-not-raised contract vs the nonexistent-project NOT_FOUND raise,
+supervisor-down vs never-started, the multi-bench NEEDS_CHOICE sharing start's
+selector, and the docker-unreachable raise.
 """
 
 from __future__ import annotations
@@ -69,28 +70,38 @@ class TestOverall:
 
 
 class TestOffline:
-    def test_offline_when_absent_does_not_raise(self, wire):
-        wire(None)
+    def test_stopped_is_offline_and_does_not_raise(self, wire):
+        # A real-but-stopped project (containers exist, frappe not running) stays
+        # ``offline``/exit-0 - the PRESERVED contract. This is the regression guard
+        # that the NOT_FOUND distinction below must never disturb.
+        c = FakeContainer()
+        c.status = "exited"
+        wire(c)
         result = core_status.status("proj")
         assert result.status is Status.OK
         assert result.data.overall == "offline"
         assert result.data.container_running is False
 
-    def test_offline_when_stopped_does_not_raise(self, wire):
-        c = FakeContainer()
-        c.status = "exited"
-        wire(c)
-        report = core_status.status("proj").data
-        assert report.overall == "offline"
 
-    def test_offline_when_no_frappe_service(self, monkeypatch):
+class TestNotFound:
+    """A truly-nonexistent project is a NOT_FOUND raise, distinct from stopped."""
+
+    def test_absent_project_raises_not_found(self, wire):
+        # No containers with the label at all -> typo / never created.
+        wire(None)
+        with pytest.raises(CwcliError) as exc:
+            core_status.status("proj")
+        assert exc.value.kind is ErrorKind.NOT_FOUND
+
+    def test_no_frappe_service_raises_not_found(self, monkeypatch):
         class Other:
             labels = {"com.docker.compose.service": "db"}
             status = "running"
 
         monkeypatch.setattr(core_status, "get_project_containers", lambda name: [Other()])
-        report = core_status.status("proj").data
-        assert report.overall == "offline"
+        with pytest.raises(CwcliError) as exc:
+            core_status.status("proj")
+        assert exc.value.kind is ErrorKind.NOT_FOUND
 
 
 class TestChoicesAndErrors:

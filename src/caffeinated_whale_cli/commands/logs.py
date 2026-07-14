@@ -1,4 +1,5 @@
 import subprocess
+import sys
 
 import typer
 
@@ -18,7 +19,7 @@ def logs(
         autocompletion=complete_project_names,
     ),
     follow: bool = typer.Option(
-        True,
+        False,
         "--follow/--no-follow",
         "-f",
         help="Follow log output in real-time.",
@@ -102,11 +103,14 @@ def logs(
     console.print(f"[bold green]Viewing bench logs for '{project_name}'...[/bold green]")
     console.print("[dim]Press Ctrl+c to exit[/dim]\n")
 
+    # Only request an interactive TTY (`docker exec -it`) when we actually have one:
+    # under a pipe/agent (non-TTY) `-it` errors "the input device is not a TTY".
+    exec_flags = ["-it"] if sys.stdin.isatty() else []
     if follow:
         tail_cmd = [
             "docker",
             "exec",
-            "-it",
+            *exec_flags,
             container_name,
             "tail",
             "-F",
@@ -115,7 +119,16 @@ def logs(
             log_file,
         ]
     else:
-        tail_cmd = ["docker", "exec", "-it", container_name, "tail", "-n", str(lines), log_file]
+        tail_cmd = [
+            "docker",
+            "exec",
+            *exec_flags,
+            container_name,
+            "tail",
+            "-n",
+            str(lines),
+            log_file,
+        ]
 
     if verbose:
         stderr_console.print(f"[dim]VERBOSE: $ {' '.join(tail_cmd)}[/dim]")

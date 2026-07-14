@@ -5,7 +5,9 @@ The primary line on STDOUT is the pre-computed ``overall`` aggregate
 clean machine-parseable token (the same contract the old three-token probe had,
 now enriched). The per-process health detail and every diagnostic go to STDERR,
 so a script reading ``cwcli status`` still gets one word while a human at a
-terminal still sees the full breakdown. Exit 0 across the lifecycle states.
+terminal still sees the full breakdown. Exit 0 across the lifecycle states
+(including a real-but-stopped ``offline`` project); a truly-nonexistent project
+name exits non-zero with a "no such project" error instead.
 """
 
 import typer
@@ -42,15 +44,18 @@ def status(
 
     Prints one aggregate token on stdout - offline / online / running / degraded -
     with the per-process breakdown (up/uptime/CPU/RSS) and the web HTTP code on
-    stderr. Exits 0 across all lifecycle states.
+    stderr. Exits 0 across all lifecycle states (a stopped instance is ``offline``);
+    a truly-nonexistent project name exits non-zero with a "no such project" error.
     """
     override: str | None = None
     while True:
         try:
             result = core_status.status(project_name, bench=bench, bench_path=override)
         except CwcliError as e:
-            # Only an unreachable Docker daemon reaches here (absent/stopped is a
-            # returned ``offline``, not a raise); surface it distinctly from offline.
+            # A truly-nonexistent project (NOT_FOUND) or an unreachable Docker daemon
+            # (DOCKER) reaches here; a real-but-stopped project is a returned
+            # ``offline``, not a raise. Either way, surface it distinctly from
+            # offline with a clear message and a non-zero exit.
             stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
             raise typer.Exit(code=1) from None
         if (
