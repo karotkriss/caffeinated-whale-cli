@@ -7,6 +7,7 @@ The core reads only the cache DB, prints/exits nothing, and returns
 
 import dataclasses
 
+import peewee
 import pytest
 
 from caffeinated_whale_cli.core import where as core_where
@@ -75,6 +76,19 @@ class TestWhere:
             core_where.where("x", apps_only=True, sites_only=True)
         assert exc.value.kind is ErrorKind.USAGE
         assert exc.value.code == "where.apps_sites_conflict"
+
+    @pytest.mark.parametrize("helper", ["_search_apps", "_search_sites"])
+    def test_peewee_error_becomes_typed_error(self, temp_db, monkeypatch, helper):
+        """A raw peewee error (corrupt/locked cache) never leaks past the core boundary."""
+
+        def _boom(*a, **k):
+            raise peewee.OperationalError("database is locked")
+
+        monkeypatch.setattr(core_where, helper, _boom)
+        with pytest.raises(CwcliError) as exc:
+            core_where.where("x")
+        assert exc.value.kind is ErrorKind.INTERNAL
+        assert exc.value.code == "cache.read_failed"
 
     def test_matches_apps_and_sites_sorted(self, temp_db):
         _seed()

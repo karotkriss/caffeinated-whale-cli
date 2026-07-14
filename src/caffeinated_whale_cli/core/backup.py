@@ -115,10 +115,9 @@ def backup(
             f"Invalid bench path '{bench_path}'. Paths cannot contain special shell characters.",
         )
 
-    # 7. Verify the bench directory exists.
+    # 7. Verify the bench directory exists. (argv list: no shell, no quoting to reason about.)
     bench_sites_path = f"{bench_path}/sites"
-    quoted_bench_sites_path = shlex.quote(bench_sites_path)
-    exit_code, _ = frappe_container.exec_run(f'sh -c "test -d {quoted_bench_sites_path}"')
+    exit_code, _ = frappe_container.exec_run(["test", "-d", bench_sites_path])
     if exit_code != 0:
         raise CwcliError(
             ErrorKind.NOT_FOUND,
@@ -128,8 +127,7 @@ def backup(
 
     # 8. Verify the site exists.
     site_path = f"{bench_path}/sites/{site}"
-    quoted_site_path = shlex.quote(site_path)
-    exit_code, _ = frappe_container.exec_run(f'sh -c "test -d {quoted_site_path}"')
+    exit_code, _ = frappe_container.exec_run(["test", "-d", site_path])
     if exit_code != 0:
         raise CwcliError(
             ErrorKind.NOT_FOUND,
@@ -139,10 +137,9 @@ def backup(
 
     # 9. Ensure the backup directory exists (create if missing).
     backup_dir = f"{site_path}/private/backups"
-    quoted_backup_dir = shlex.quote(backup_dir)
-    exit_code, _ = frappe_container.exec_run(f"sh -c 'test -d {quoted_backup_dir}'")
+    exit_code, _ = frappe_container.exec_run(["test", "-d", backup_dir])
     if exit_code != 0:
-        exit_code, output = frappe_container.exec_run(f"sh -c 'mkdir -p {quoted_backup_dir}'")
+        exit_code, output = frappe_container.exec_run(["mkdir", "-p", backup_dir])
         if exit_code != 0:
             raise CwcliError(
                 ErrorKind.PRECONDITION,
@@ -153,9 +150,9 @@ def backup(
         warnings.append(Message("backup_dir.created", f"Creating backup directory at {backup_dir}"))
 
     # 10. Run the backup.
-    cmd = f"bench --site {site} backup"
+    cmd = ["bench", "--site", site, "backup"]
     if with_files:
-        cmd += " --with-files"
+        cmd.append("--with-files")
     exit_code, output = frappe_container.exec_run(cmd, workdir=bench_path)
     if exit_code != 0:
         raise CwcliError(

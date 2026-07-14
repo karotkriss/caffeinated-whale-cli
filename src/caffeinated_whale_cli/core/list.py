@@ -76,7 +76,8 @@ def list_instances(*, service_name: str = "frappe") -> Result[list[InstanceDTO]]
         entry["ports"].update(_container_ports(container))
 
     instances = [
-        InstanceDTO(project_name=name, status=data["status"], ports=sorted(data["ports"]))
+        # Sort ports numerically ("8000" before "10000"), not lexicographically.
+        InstanceDTO(project_name=name, status=data["status"], ports=sorted(data["ports"], key=int))
         for name, data in projects.items()
     ]
     return Result(status=Status.OK, data=instances)
