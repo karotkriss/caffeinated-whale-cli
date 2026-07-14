@@ -53,7 +53,7 @@ Each entry is the contract; the linked source file is authoritative and the name
 - **Multi-bench addressing** (`utils/bench_labels.py`, `commands/utils.py:resolve_bench_path`) - `--bench <index|label>` selects a bench; a multi-bench op with no selector errors instead of guessing.
   Labels persist to BOTH the DB and an in-bench marker file for cache-loss recovery.
   See skill: `cwcli-inspect-benches`.
-- **`rm` deletion + backup gate** (`commands/rm.py`) - removes named volumes and the project dir that `Container.remove(v=True)` leaves behind, gated by a verified live backup of EVERY bench that fails closed.
+- **`rm` deletion + backup gate** (`commands/rm.py`) - removes named volumes and the project dir that `Container.remove(v=True)` leaves behind, gated by a verified live backup of EVERY bench that fails closed. A STOPPED project on the `--volumes` path is transiently STARTED for that backup (start -> back up -> delete, reusing `start`'s port-conflict handling); if it cannot be started or backed up, rm ABORTS, keeps all data, returns the project to stopped, and exits non-zero (`--no-backup` is the escape hatch; orphans are refused likewise). `_remove_project`'s not-running branch is the fail-closed backstop.
   See skill: `cwcli-lifecycle`.
 - **`restore` safety** (`commands/restore.py`) - destructive confirm on both normal and receive paths, non-interactive selectors/flags, secrets off the argv, streamed copies, post-restore migrate + restart.
   See skill: `cwcli-lifecycle`.
