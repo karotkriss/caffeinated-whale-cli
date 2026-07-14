@@ -62,7 +62,7 @@ def restart(
     ),
 ):
     """
-    Restarts all containers for a project and runs bench start in tmux.
+    Restart all containers for a project and run bench start (under honcho).
     """
     project_names_to_process = []
 
