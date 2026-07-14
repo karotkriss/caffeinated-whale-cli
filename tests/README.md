@@ -203,7 +203,7 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 # The default `-m` deselects the real-Docker tiers, so a bare `pytest` runs only
 # the fast unit tier; override with `-m e2e` on the CLI (the last `-m` wins).
-addopts = ["-v", "--strict-markers", "--tb=short", "--cov-report=term-missing", "-m", "not e2e and not e2e_p2p"]
+addopts = ["-v", "--strict-markers", "--tb=short", "--cov-report=term-missing", "--durations=15", "-m", "not e2e and not e2e_p2p"]
 markers = [
     "unit: fast tests that need no Docker daemon (the default tier)",
     "e2e: real-Docker end-to-end tests driving the real cwcli binary",
