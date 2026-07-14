@@ -24,6 +24,7 @@ import typer
 from typer.testing import CliRunner
 
 from caffeinated_whale_cli.commands import logs as logs_mod
+from caffeinated_whale_cli.core import supervision
 from caffeinated_whale_cli.utils import docker_utils
 
 runner = CliRunner()
@@ -134,3 +135,116 @@ def test_it_flag_added_with_tty(monkeypatch):
     tail = _tail_cmd(calls)
     assert "-it" in tail
     assert "-F" in tail
+
+
+def test_supervised_path_never_calls_fallback(monkeypatch):
+    # When cwcli-supervisord per-process logs exist, the honcho/bench-start fallback
+    # must NOT run (the supervised path stays byte-for-byte as before).
+    calls = _wire(monkeypatch, isatty=True)
+
+    def _boom(*a, **k):
+        raise AssertionError("fallback discover_unsupervised_stack called on supervised path")
+
+    monkeypatch.setattr(logs_mod.supervision, "discover_unsupervised_stack", _boom)
+    result = runner.invoke(_app(), ["proj"])
+    assert result.exit_code == 0
+    assert "/w/bench/logs/web.supervisor.log" in _tail_cmd(calls)
+
+
+# ------------------------- not-cwcli-supervised fallback -------------------------
+# A bench running under honcho / `bench start` (pre-v3, or a plain `bench start`)
+# has NO `*.supervisor.log` files, so the supervisord path finds nothing. The
+# fallback discovers the bench's REAL log files under logs/ and tails those.
+
+
+def _wire_unsupervised(monkeypatch, *, manager_up, real_files, isatty=False):
+    """No supervisord logs; a honcho manager may (manager_up) be running the bench."""
+    monkeypatch.setattr(docker_utils.shutil, "which", lambda _n: "/usr/bin/docker")
+    monkeypatch.setattr(
+        docker_utils.docker, "from_env", lambda: type("C", (), {"ping": lambda s: True})()
+    )
+    monkeypatch.setattr(logs_mod, "ensure_containers_running", lambda *a, **k: True)
+    monkeypatch.setattr(logs_mod, "get_project_containers", lambda name: [_FakeFrappe()])
+    monkeypatch.setattr(logs_mod, "resolve_bench_path", lambda *a, **k: "/w/bench")
+    monkeypatch.setattr(
+        logs_mod.supervision, "procfile_programs", lambda c, b: ["web", "worker_default"]
+    )
+    # No supervisord per-process logs exist -> forces the fallback branch.
+    monkeypatch.setattr(logs_mod, "_existing_files", lambda name, files: [])
+    monkeypatch.setattr(
+        logs_mod.supervision,
+        "discover_unsupervised_stack",
+        lambda c, b: supervision.UnsupervisedStack(manager_up=manager_up, processes=[]),
+    )
+    monkeypatch.setattr(logs_mod, "_discover_bench_log_files", lambda name, b: list(real_files))
+    monkeypatch.setattr(logs_mod.sys, "stdin", types.SimpleNamespace(isatty=lambda: isatty))
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, *a, **k):
+        calls.append(cmd)
+        return types.SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(logs_mod.subprocess, "run", fake_run)
+    return calls
+
+
+def test_fallback_tails_real_logs_when_honcho_running(monkeypatch):
+    real = ["/w/bench/logs/bench.log", "/w/bench/logs/web.log", "/w/bench/logs/worker.log"]
+    calls = _wire_unsupervised(monkeypatch, manager_up=True, real_files=real, isatty=True)
+    result = runner.invoke(_app(), ["proj"])
+    assert result.exit_code == 0
+    tail = _tail_cmd(calls)
+    assert "tail" in tail
+    for f in real:
+        assert f in tail
+    # It must NOT invent supervisord names that don't exist.
+    assert "/w/bench/logs/web.supervisor.log" not in tail
+
+
+def test_fallback_process_filters_real_logs(monkeypatch):
+    real = [
+        "/w/bench/logs/web.error.log",
+        "/w/bench/logs/web.log",
+        "/w/bench/logs/worker.log",
+    ]
+    calls = _wire_unsupervised(monkeypatch, manager_up=True, real_files=real, isatty=True)
+    result = runner.invoke(_app(), ["proj", "--process", "web"])
+    assert result.exit_code == 0
+    tail = _tail_cmd(calls)
+    assert "/w/bench/logs/web.log" in tail
+    assert "/w/bench/logs/web.error.log" in tail
+    assert "/w/bench/logs/worker.log" not in tail
+
+
+def test_not_running_reports_start_hint(monkeypatch):
+    # Container up but NEITHER supervisord nor honcho manages the bench: honest
+    # "may not be running" guidance, exit 1, and NO tail is attempted.
+    calls = _wire_unsupervised(monkeypatch, manager_up=False, real_files=[], isatty=True)
+    result = runner.invoke(_app(), ["proj"])
+    assert result.exit_code == 1
+    assert calls == []  # never reached the tail
+
+
+def test_running_but_no_matching_log_is_not_reported_as_down(monkeypatch):
+    # honcho IS running but the requested process has no log file yet: the message
+    # must NOT say the bench may not be running (it IS running).
+    calls = _wire_unsupervised(
+        monkeypatch, manager_up=True, real_files=["/w/bench/logs/web.log"], isatty=True
+    )
+    result = runner.invoke(_app(), ["proj", "--process", "worker:default"])
+    assert result.exit_code == 1
+    assert calls == []
+    assert "may not be running" not in result.output.lower()
+
+
+def test_program_log_matches():
+    m = logs_mod._program_log_matches
+    assert m("/w/logs/web.log", "web")
+    assert m("/w/logs/web.error.log", "web")
+    assert not m("/w/logs/worker.log", "web")
+    assert m("/w/logs/worker.log", "worker_default")
+    assert m("/w/logs/worker.error.log", "worker_short")
+    assert m("/w/logs/scheduler.log", "schedule")
+    assert m("/w/logs/redis-cache.log", "redis_cache")
+    assert not m("/w/logs/bench.log", "web")
