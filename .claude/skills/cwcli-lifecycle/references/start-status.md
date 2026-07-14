@@ -66,8 +66,10 @@ process dies, it tears the rest down and never restarts one). Each note below gu
   `probe_web=False`, `_overall` is driven by honcho-up alone (`web_probed=False` short-circuits to
   `running`); a missing web code must NOT falsely `degrade` the aggregate. `--watch` is a **frontend
   re-poll** of the one-shot snapshot on an interval (`commands/status.py:_watch_loop` with `rich.Live` on
-  stderr) - the core stays one-shot (the data is `ps`-pull, nothing to stream). Non-TTY stdout degrades to
-  a single quiet snapshot (still `probe_web=False`); `--interval` floors at 1s; Ctrl-C exits 0 cleanly.
+  stderr) - the core stays one-shot (the data is `ps`-pull, nothing to stream). Since the live view renders
+  to stderr, the loop only starts when BOTH stdout and stderr are TTYs; either one not a TTY (e.g. stderr
+  redirected) degrades to a single quiet snapshot (still `probe_web=False`); `--interval` floors at 1s;
+  Ctrl-C exits 0 cleanly.
   The plain one-shot `cwcli status` keeps `probe_web=True` unchanged. `cwcli axi status` stays one-shot
   (no `--watch`): a live TUI breaks the one-TOON-document-per-invocation agent contract.
 

@@ -1345,10 +1345,11 @@ stderr for humans (and in structured form via `cwcli axi status`).
 refreshing per-process table (rendered on stderr; Ctrl-C exits cleanly). Unlike
 the one-shot command, the watch loop **never probes the web server** - it reads
 process health from the single `ps` each tick, so watching leaves ZERO
-`GET localhost:8000` requests in the bench's access logs. When stdout is not a
-TTY (piped or redirected), `--watch` degrades to a single quiet snapshot instead
-of starting the live loop. (`cwcli axi status` stays one-shot - agents re-invoke
-it for fresh reads rather than consuming a live stream.)
+`GET localhost:8000` requests in the bench's access logs. When stdout or stderr
+is not a TTY (piped or redirected - the live view renders to stderr, so both
+streams must be interactive), `--watch` degrades to a single quiet snapshot
+instead of starting the live loop. (`cwcli axi status` stays one-shot - agents
+re-invoke it for fresh reads rather than consuming a live stream.)
 
 **Example:**
 
