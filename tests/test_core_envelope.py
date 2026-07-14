@@ -120,10 +120,12 @@ class TestEnvelopeDTOs:
         assert choice.options[0]["value"] == "0"
 
     def test_message_detail_optional(self):
+        """A Message's detail defaults to None and round-trips when set."""
         assert Message("code", "text").detail is None
         assert Message("code", "text", {"k": 1}).detail == {"k": 1}
 
     def test_result_is_frozen(self):
+        """Result is frozen - reassigning a field raises."""
         result = Result(status=Status.OK)
         with pytest.raises(dataclasses.FrozenInstanceError):
             result.status = Status.WARNING  # type: ignore[misc]

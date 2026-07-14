@@ -58,6 +58,7 @@ class TestResolveFrappeRef:
         ],
     )
     def test_malformed_raises(self, value):
+        """`resolve_frappe_ref` raises on a malformed version string."""
         with pytest.raises(ValueError):
             resolve_frappe_ref(value)
 
@@ -70,13 +71,16 @@ class TestResolveFrappeBranch:
         assert DEFAULT_FRAPPE_BRANCH == "version-16"
 
     def test_frappe_branch_passthrough(self):
+        """A raw `--frappe-branch` ref passes through unchanged."""
         assert _resolve_frappe_branch("version-15", None) == "version-15"
         assert _resolve_frappe_branch("develop", None) == "develop"
 
     def test_version_int_resolves(self):
+        """`--version 16` resolves to the `version-16` branch."""
         assert _resolve_frappe_branch(None, "16") == "version-16"
 
     def test_version_semver_resolves(self):
+        """`--version 16.26.3` resolves to the `v16.26.3` tag."""
         assert _resolve_frappe_branch(None, "16.26.3") == "v16.26.3"
 
     def test_malformed_version_exits_nonzero(self):
@@ -182,4 +186,5 @@ class TestFrappeMajorVersion:
         ],
     )
     def test_major_extraction(self, ref, expected):
+        """`_frappe_major_version` extracts the major number from a ref."""
         assert _frappe_major_version(ref) == expected

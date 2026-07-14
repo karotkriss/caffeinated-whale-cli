@@ -86,24 +86,29 @@ class TestFrappeContainerRunning:
     """``_frappe_container_running`` drives whether rm even attempts a recache."""
 
     def test_running(self):
+        """`_frappe_container_running` reports True for a running frappe container."""
         c = _stopped_frappe_container()
         c.status = "running"
         with patch.object(rm, "get_project_containers", return_value=[c]):
             assert rm._frappe_container_running("proj") is True
 
     def test_stopped(self):
+        """`_frappe_container_running` reports False when the frappe container is stopped."""
         with patch.object(rm, "get_project_containers", return_value=[_stopped_frappe_container()]):
             assert rm._frappe_container_running("proj") is False
 
     def test_no_containers(self):
+        """`_frappe_container_running` reports False when the project has no containers."""
         with patch.object(rm, "get_project_containers", return_value=[]):
             assert rm._frappe_container_running("proj") is False
 
     def test_docker_error(self):
+        """`_frappe_container_running` reports False when the Docker lookup fails."""
         with patch.object(rm, "get_project_containers", return_value=None):
             assert rm._frappe_container_running("proj") is False
 
     def test_no_frappe_service(self):
+        """`_frappe_container_running` reports False when no container is the frappe service."""
         other = MagicMock()
         other.labels = {"com.docker.compose.service": "db"}
         with patch.object(rm, "get_project_containers", return_value=[other]):

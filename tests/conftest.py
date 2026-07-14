@@ -25,16 +25,21 @@ top (nothing here changes what a test asserts):
   (``pytest_report_teststatus``). The description is the test's docstring first
   line when it has one, else its function name humanised (``test_stopped_container
   _returns_false`` -> "stopped container returns false"). So every test explains
-  itself alongside its name, no filename-decoding needed.
-- **The E2E ``cwcli init`` / bench-build pole reported SEPARATELY and prominently**
-  in ``pytest_terminal_summary``. That one session-scoped step is what makes the
-  E2E matrix ~10-30+ min; splitting it out makes "init vs test time" obvious at a
-  glance instead of buried in per-test durations. It times itself in
-  ``e2e/conftest.py`` and stashes the result on ``config`` - a session-scoped
-  fixture's setup is dispatched above the ``tests/`` conftest, so the generic
-  ``pytest_fixture_setup`` timer here cannot observe it.
-- **Honest setup / call / teardown totals**, and the slowest function/module-scoped
-  shared fixtures (``pytest_fixture_setup`` timer), from the per-test phase reports.
+  itself alongside its name, no filename-decoding needed. Docstring-first is the
+  convention now; the reworded-name fallback is the FLOOR so nothing regresses.
+- **A single "two-faced" end-of-run summary** (``pytest_terminal_summary`` ->
+  ``tests/_reporting.py``): one report, two faces from one code path. Cockpit
+  (colour) when stdout is a colour-capable terminal, Ledger (plain aligned
+  columns) otherwise, chosen from the reporter's own markup capability. Colour is
+  forced only on the reporter's own ``rich.Console``, never via ``FORCE_COLOR``
+  (which leaks ANSI into the app-under-test's stdout). Its sections: a header
+  verdict line, the E2E ``cwcli init`` / bench-build pole (highlighted, and only
+  shown when ``config._cwcli_e2e_init_seconds`` was recorded - the fast tier has
+  no bench build, so it is absent there), the slowest tests with descriptions,
+  a per-file rollup, and honest setup/call/teardown phase totals.
+- The init pole times itself in ``e2e/conftest.py`` and stashes the result on
+  ``config``; a session-scoped fixture's setup is dispatched above the ``tests/``
+  conftest, so a generic per-test timer here cannot observe it.
 
 ``--durations`` (set in ``pyproject.toml`` addopts) gives the built-in
 slowest-N view on top. All of this surfaces in CI logs, where the E2E matrix runs.
@@ -43,25 +48,17 @@ slowest-N view on top. All of this surfaces in CI logs, where the E2E matrix run
 from __future__ import annotations
 
 import inspect
-import time
 
 import pytest
 
+from ._reporting import build_report, render
+
 # nodeid -> one-line human description, built at collection time.
 _descriptions: dict[str, str] = {}
-# fixture argname -> [setup_count, total_setup_seconds, scope], from the setup timer.
-_fixture_stats: dict[str, list] = {}
+# nodeid -> total measured seconds (setup + call + teardown), for the summary.
+_test_durations: dict[str, float] = {}
 # Wall-honest phase totals (each test's phase duration is measured once by pytest).
 _phase_totals: dict[str, float] = {"setup": 0.0, "call": 0.0, "teardown": 0.0}
-
-# Friendly labels for the shared fixtures worth explaining in the timing summary.
-# Only function/module/class-scoped fixtures can ever land here - the
-# pytest_fixture_setup wrapper below never observes session-scoped fixtures
-# (their setup is dispatched above the tests/ conftest; same reason the E2E
-# init pole in session_instance is timed explicitly in e2e/conftest.py instead).
-_NOTABLE_FIXTURES = {
-    "running_instance": "ensure the frappe container is running",
-}
 
 
 def _describe(item) -> str:
@@ -103,51 +100,18 @@ def pytest_report_teststatus(report, config):
 
 def pytest_runtest_logreport(report):
     _phase_totals[report.when] = _phase_totals.get(report.when, 0.0) + report.duration
-
-
-@pytest.hookimpl(wrapper=True)
-def pytest_fixture_setup(fixturedef, request):
-    """Time fixture setups so the summary can call out the slow shared ones.
-
-    Catches function/module/class-scoped fixtures; the session-scoped init pole is
-    timed explicitly in e2e/conftest.py (its setup is dispatched above this
-    conftest, so this wrapper never sees it)."""
-    start = time.perf_counter()
-    try:
-        return (yield)
-    finally:
-        dur = time.perf_counter() - start
-        st = _fixture_stats.setdefault(fixturedef.argname, [0, 0.0, fixturedef.scope])
-        st[0] += 1
-        st[1] += dur
+    # Per-test total across all three phases, for the slowest-tests table.
+    _test_durations[report.nodeid] = _test_durations.get(report.nodeid, 0.0) + report.duration
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
-    tw = terminalreporter
-    tw.write_sep("=", "timing summary", cyan=True)
-    tw.write_line(f"  fixture setup total : {_phase_totals['setup']:9.2f}s")
-    tw.write_line(f"  test call total     : {_phase_totals['call']:9.2f}s")
-    tw.write_line(f"  teardown total      : {_phase_totals['teardown']:9.2f}s")
+    """Render the single two-faced summary (see tests/_reporting.py).
 
-    # The E2E init pole: separate and unmissable, and flagged as NOT per-test
-    # time. Stashed on config by e2e/conftest.py's session_instance fixture.
-    init = getattr(config, "_cwcli_e2e_init_seconds", None)
-    if init is not None:
-        tw.write_sep("-", "E2E session init (the cwcli init / bench-build pole)")
-        tw.write_line(
-            f"  cwcli init : {init:9.2f}s  "
-            f"<- this one build dominates the E2E matrix; it is NOT per-test time",
-            yellow=True,
-        )
-
-    slow = sorted(
-        (item for item in _fixture_stats.items() if item[1][1] >= 0.05),
-        key=lambda kv: kv[1][1],
-        reverse=True,
-    )[:15]
-    if slow:
-        tw.write_sep("-", "slowest fixtures (cumulative setup)")
-        for name, (count, total, scope) in slow:
-            label = _NOTABLE_FIXTURES.get(name, "")
-            suffix = f"  - {label}" if label else ""
-            tw.write_line(f"  {total:9.2f}s  {name} [{scope}, x{count}]{suffix}")
+    Colour vs plain is decided from the reporter's own markup capability, so
+    colour is confined to our own rich Console and never leaks via FORCE_COLOR.
+    """
+    report = build_report(terminalreporter, config, _phase_totals, _test_durations, _descriptions)
+    tw = terminalreporter._tw
+    block = render(report, color=tw.hasmarkup, width=tw.fullwidth)
+    terminalreporter.write("\n")
+    terminalreporter.write(block)
