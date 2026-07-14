@@ -1319,6 +1319,8 @@ cwcli status [OPTIONS] PROJECT_NAME
 |--------|-------------|
 | `--bench` | Which bench to report: its numeric index or label (multi-bench projects) |
 | `-v`, `--verbose` | Show the per-process detail and the web HTTP probe on stderr |
+| `-w`, `--watch` | Live, continuously-refreshing per-process view (Ctrl-C to exit) |
+| `--interval` | Seconds between `--watch` refreshes (default 2, floored at 1s) |
 
 **Aggregate values** (printed on stdout, one token, exit 0):
 
@@ -1339,11 +1341,22 @@ its PID, uptime, CPU%, and RSS - read from one `ps` in the container. The stdout
 token stays a single word so it is safe to script against; the detail is on
 stderr for humans (and in structured form via `cwcli axi status`).
 
+**Live view (`--watch`):** `cwcli status --watch frappe-one` shows a continuously
+refreshing per-process table (rendered on stderr; Ctrl-C exits cleanly). Unlike
+the one-shot command, the watch loop **never probes the web server** - it reads
+process health from the single `ps` each tick, so watching leaves ZERO
+`GET localhost:8000` requests in the bench's access logs. When stdout is not a
+TTY (piped or redirected), `--watch` degrades to a single quiet snapshot instead
+of starting the live loop. (`cwcli axi status` stays one-shot - agents re-invoke
+it for fresh reads rather than consuming a live stream.)
+
 **Example:**
 
 ```bash
 cwcli status frappe-one              # -> running
 cwcli status frappe-one -v           # token on stdout, per-process table on stderr
+cwcli status --watch frappe-one      # live table, no web-log spam; Ctrl-C to exit
+cwcli status -w --interval 5 frappe-one   # refresh every 5s
 ```
 
 ---

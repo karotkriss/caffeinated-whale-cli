@@ -58,6 +58,18 @@ process dies, it tears the rest down and never restarts one). Each note below gu
   `frappe`) instead RAISES `CwcliError(ErrorKind.NOT_FOUND, ...)`, so a typo/never-created name exits
   non-zero with a "no such project" message instead of masquerading as `offline`. Only that and a dead
   Docker daemon (`ErrorKind.DOCKER`) raise.
+- **`cwcli status --watch` must NOT probe the web server** (the load-bearing reason the flag exists).
+  The one-shot path calls `supervision.web_http_code()` = `curl -s localhost:8000` in-container, and THAT
+  is the request that spams the bench's Frappe/werkzeug access logs. So `core.status(..., probe_web=False)`
+  suppresses that call entirely (`web_http_code=None`) while per-process health still comes from the one
+  `ps` read (which leaves no log trace) - repeated watch ticks must produce ZERO HTTP requests. When
+  `probe_web=False`, `_overall` is driven by honcho-up alone (`web_probed=False` short-circuits to
+  `running`); a missing web code must NOT falsely `degrade` the aggregate. `--watch` is a **frontend
+  re-poll** of the one-shot snapshot on an interval (`commands/status.py:_watch_loop` with `rich.Live` on
+  stderr) - the core stays one-shot (the data is `ps`-pull, nothing to stream). Non-TTY stdout degrades to
+  a single quiet snapshot (still `probe_web=False`); `--interval` floors at 1s; Ctrl-C exits 0 cleanly.
+  The plain one-shot `cwcli status` keeps `probe_web=True` unchanged. `cwcli axi status` stays one-shot
+  (no `--watch`): a live TUI breaks the one-TOON-document-per-invocation agent contract.
 
 ## Multi-bench (D5) and the axi verbs
 
