@@ -117,7 +117,18 @@ def _poll_exit_code(api, exec_id: str) -> int:
     """
     deadline = time.monotonic() + _EXIT_CODE_POLL_TIMEOUT
     while True:
-        result = api.exec_inspect(exec_id)
+        try:
+            result = api.exec_inspect(exec_id)
+        except DockerException as e:
+            # Same failure the streaming loop is designed to make honest: the
+            # daemon connection dropped mid-poll, so the outcome is genuinely
+            # unknown rather than a clean end of stream.
+            raise CwcliError(
+                ErrorKind.DOCKER,
+                "exec.stream_lost",
+                f"Lost the connection while checking the command's exit code: {e}",
+                hint="Check the container, then re-run. Nothing about its outcome is known.",
+            ) from e
         exit_code = result.get("ExitCode")
         if exit_code is not None:
             return int(exit_code)

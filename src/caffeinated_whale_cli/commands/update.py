@@ -5,6 +5,7 @@ import time
 import docker
 import typer
 
+from ..core.errors import CwcliError
 from ..core.exec_stream import ExecChunk, exec_stream
 from ..utils import cache, db_utils
 from ..utils.completion_utils import complete_app_names, complete_project_names
@@ -40,14 +41,22 @@ def _stream_command(
                 time.sleep(0.1)
 
     exit_code = 1
-    for event in exec_stream(container, cmd, workdir=workdir):
-        if isinstance(event, ExecChunk):
-            if verbose:
-                # Write directly to stdout to preserve carriage returns and progress bars
-                sys.stdout.write(event.text)
-                sys.stdout.flush()
-        else:
-            exit_code = event.exit_code
+    try:
+        for event in exec_stream(container, cmd, workdir=workdir):
+            if isinstance(event, ExecChunk):
+                if verbose:
+                    # Write directly to stdout to preserve carriage returns and progress bars
+                    sys.stdout.write(event.text)
+                    sys.stdout.flush()
+            else:
+                exit_code = event.exit_code
+    except CwcliError as e:
+        # Rendered the way run.py does for the identical failure; _update_project's
+        # `finally` still runs (via this typer.Exit) to disable maintenance mode.
+        stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
+        if e.hint:
+            stderr_console.print(f"[dim]{e.hint}[/dim]")
+        raise typer.Exit(code=1) from e
     return exit_code
 
 

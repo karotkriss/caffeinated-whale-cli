@@ -24,6 +24,7 @@ import sys
 
 import typer
 
+from ..core.errors import CwcliError
 from ..core.exec_stream import ExecChunk, exec_stream
 from ..utils import bench_sites, cache
 from ..utils.completion_utils import complete_app_names, complete_project_names
@@ -53,6 +54,18 @@ def _resolve_bench(project_name, bench, bench_path, verbose):
     return resolve_bench_path(project_name, bench, bench_path, verbose=verbose) or _DEFAULT_BENCH
 
 
+def _exit_on_exec_error(e: CwcliError):
+    """Render a core exec-stream failure the way ``run.py`` does, then exit non-zero.
+
+    Always to stderr, so ``--json``'s stdout-purity contract holds even on this
+    path.
+    """
+    stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
+    if e.hint:
+        stderr_console.print(f"[dim]{e.hint}[/dim]")
+    raise typer.Exit(code=1) from e
+
+
 def _capture_bench(frappe_container, cmd, workdir):
     """Run ``cmd`` in the container, capturing output. Returns ``(exit_code, text)``.
 
@@ -61,11 +74,14 @@ def _capture_bench(frappe_container, cmd, workdir):
     """
     text = []
     exit_code = 1
-    for event in exec_stream(frappe_container, cmd, workdir=workdir):
-        if isinstance(event, ExecChunk):
-            text.append(event.text)
-        else:
-            exit_code = event.exit_code
+    try:
+        for event in exec_stream(frappe_container, cmd, workdir=workdir):
+            if isinstance(event, ExecChunk):
+                text.append(event.text)
+            else:
+                exit_code = event.exit_code
+    except CwcliError as e:
+        _exit_on_exec_error(e)
     return exit_code, "".join(text)
 
 
@@ -77,12 +93,15 @@ def _stream_bench(frappe_container, cmd, workdir):
     combined stream this used to get from a non-demuxed exec.
     """
     exit_code = 1
-    for event in exec_stream(frappe_container, cmd, workdir=workdir):
-        if isinstance(event, ExecChunk):
-            sys.stdout.write(event.text)
-            sys.stdout.flush()
-        else:
-            exit_code = event.exit_code
+    try:
+        for event in exec_stream(frappe_container, cmd, workdir=workdir):
+            if isinstance(event, ExecChunk):
+                sys.stdout.write(event.text)
+                sys.stdout.flush()
+            else:
+                exit_code = event.exit_code
+    except CwcliError as e:
+        _exit_on_exec_error(e)
     return exit_code
 
 

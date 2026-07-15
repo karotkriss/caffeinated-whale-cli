@@ -334,6 +334,63 @@ def test_run_passes_the_bench_selector_through(monkeypatch, frontend):
     assert seen["workdir"] == "/workspace/b"
 
 
+def test_run_retries_once_on_confirm_start_then_succeeds(monkeypatch, frontend):
+    """Mirrors backup.py/unlock.py: a confirm_start race retries the start once,
+
+    rather than printing the (wrong) --bench hint for a container-not-running
+    error.
+    """
+    calls = {"ensure": 0, "plan": 0}
+
+    def fake_ensure(*a, **k):
+        calls["ensure"] += 1
+
+    def fake_plan(*a, **k):
+        calls["plan"] += 1
+        if calls["plan"] == 1:
+            from caffeinated_whale_cli.core.envelope import Choice, Result
+
+            return Result(
+                status=Status.NEEDS_CHOICE,
+                choice=Choice(kind="confirm_start", param="yes", prompt="start it?"),
+            )
+        return core_run.run_plan(*a, **k)
+
+    monkeypatch.setattr(run_mod, "ensure_containers_running", fake_ensure)
+    monkeypatch.setattr(run_mod, "run_plan", fake_plan)
+    monkeypatch.setattr(run_mod, "run_stream", stream_of(es.ExecDone(exit_code=0)))
+
+    with pytest.raises(typer.Exit) as exc:
+        invoke()
+
+    assert exc.value.exit_code == 0
+    assert calls["plan"] == 2
+    assert calls["ensure"] == 2  # the interactive prologue, then exactly one retry
+
+
+def test_run_fails_closed_on_a_repeated_confirm_start(monkeypatch, frontend, capsys):
+    """A second confirm_start after an attempted start means the start didn't
+
+    take (crash-loop/teardown race) - fail closed rather than spin forever.
+    """
+    from caffeinated_whale_cli.core.envelope import Choice, Result
+
+    def always_confirm_start(*a, **k):
+        return Result(
+            status=Status.NEEDS_CHOICE,
+            choice=Choice(kind="confirm_start", param="yes", prompt="start it?"),
+        )
+
+    monkeypatch.setattr(run_mod, "ensure_containers_running", lambda *a, **k: None)
+    monkeypatch.setattr(run_mod, "run_plan", always_confirm_start)
+
+    with pytest.raises(typer.Exit) as exc:
+        invoke()
+
+    assert exc.value.exit_code == 1
+    assert "failed to start" in capsys.readouterr().err.lower()
+
+
 def test_run_verbose_reports_the_envelope_warnings(monkeypatch, frontend, capsys):
     monkeypatch.setattr(run_mod, "run_stream", stream_of(es.ExecDone(exit_code=0)))
 

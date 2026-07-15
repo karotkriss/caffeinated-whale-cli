@@ -9,6 +9,7 @@ the exit code is polled rather than read once.
 import typer
 from rich.console import Console
 
+from ..core.envelope import Status
 from ..core.errors import CwcliError
 from ..core.exec_stream import ExecChunk
 from ..core.run import run_plan, run_stream
@@ -53,15 +54,38 @@ def run(
     # then re-checks and only returns confirm_start on the (rare) race.
     ensure_containers_running(project_name, require_running=True, verbose=verbose, auto_start=yes)
 
-    try:
-        result = run_plan(
-            project_name, bench_args, bench=bench, bench_path=bench_path, auto_start=yes
-        )
-    except CwcliError as e:
-        stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
-        if e.hint:
-            stderr_console.print(f"[dim]{e.hint}[/dim]")
-        raise typer.Exit(code=1) from e
+    started = False
+    while True:
+        try:
+            result = run_plan(
+                project_name, bench_args, bench=bench, bench_path=bench_path, auto_start=yes
+            )
+        except CwcliError as e:
+            stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
+            if e.hint:
+                stderr_console.print(f"[dim]{e.hint}[/dim]")
+            raise typer.Exit(code=1) from e
+
+        if (
+            result.status is Status.NEEDS_CHOICE
+            and result.choice is not None
+            and result.choice.kind == "confirm_start"
+        ):
+            # Mirrors backup.py/unlock.py: re-invoke at most ONCE after an attempted
+            # start. A second confirm_start after ensure_containers_running already
+            # claimed success means the start didn't take - fail closed, don't spin.
+            if started:
+                stderr_console.print(
+                    "[bold red]Error:[/bold red] Frappe container for project "
+                    f"'{project_name}' failed to start."
+                )
+                raise typer.Exit(code=1)
+            ensure_containers_running(
+                project_name, require_running=True, verbose=verbose, auto_start=yes
+            )
+            started = True
+            continue
+        break
 
     if result.choice is not None:
         stderr_console.print(f"[bold red]Error:[/bold red] {result.choice.prompt}")
