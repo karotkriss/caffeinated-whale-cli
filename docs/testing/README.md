@@ -43,7 +43,7 @@ uv run pytest tests/test_completion_utils.py
 
 ### Test Coverage
 
-Measured with `uv run pytest --cov` at 0.37.0 (unreleased): 821 tests across 53 test files, ~63% overall coverage.
+Measured with `uv run pytest --cov` at 0.37.0 (unreleased): 867 tests across 55 test files, ~64% overall coverage.
 Per-area breakdown (highest-coverage module in each area; see the module list in each test file for what else it exercises):
 
 - **rm safety** (`test_rm_safety`, `test_rm_truth`, `test_rm_stopped`, `test_rm_stopped_backup`) - `commands/rm.py` ~84%
@@ -65,6 +65,7 @@ Per-area breakdown (highest-coverage module in each area; see the module list in
 - **core resolvers + CLI wrappers** (`test_core_resolvers`) - `core/resolvers.py` ~97%, `core/docker.py` 100%; also dedicated-tests the thin `commands/utils.py`/`docker_utils.py` wrappers that translate a core choice/error into today's prompts, messages, and exit codes. The shared bench-op helpers (`resolve_default_site`, `validate_site_name`, `validate_bench_path`, `require_bench_dir`, `require_site_dir`), extracted out of `core/backup.py` on `unlock`'s migration, are exercised via `test_core_backup`/`test_core_unlock` instead
 - **core backup slice** (`test_core_backup`) - `core/backup.py` ~95% (success, both `NEEDS_CHOICE` forks, every `CwcliError` kind, on a fake container)
 - **core unlock/stop slices** (`test_core_unlock`, `test_core_stop`) - `core/unlock.py` ~98% (built from the same primitives as `core/backup.py` with zero new ones - the foundation's generality proof; the locks removal is a single buffered `exec_run` parsed into a structured `removed` list, never streamed), `core/stop.py` 100% (stopped count, already-stopped, `NOT_FOUND`, docker-unreachable, names-not-objects, prints nothing at all)
+- **exec-stream contract + core run slice** (`test_core_exec_stream`, `test_core_run`) - `core/exec_stream.py` ~97% (tagged chunks, per-stream mid-character splits, the bounded exit-code poll settling vs. expiring, a dropped connection - whether mid-stream or mid-poll - raised as `CwcliError(DOCKER)` rather than guessed), `core/run.py` 100% (every `run_plan` branch plus the reseated `commands/run.py` frontend: exit-code passthrough, honest non-zero on an unknown code, `--bench`/`--path` plumbing, the `confirm_start` retry-once-then-fail-closed race). `apps`/`update` are re-pointed at the same primitive (not migrated as commands); `test_apps` pins that a `CwcliError` from it is caught and rendered rather than escaping as a raw traceback
 - **`cwcli axi` surface** (`test_axi`) - `commands/axi.py` ~97% (TOON serializer round-trip, verb exit-mapping 0/1/2, the content-first home, `axi ls`/`axi where`)
 - **core read-only slices** (`test_core_list`, `test_core_where`) - `core/list.py`, `core/where.py` 100% (fake docker client / throwaway sqlite - empty/aggregate/DOCKER-raise, dedup/scoping/installed-only/USAGE)
 - **`ls`/`where` human frontends** (`test_list`, `test_where`) - `commands/list.py` ~80%, `commands/where.py` 100% (the `--json` empty-`[]` fix, quiet/table rendering, the `--apps`/`--sites` conflict)
@@ -79,12 +80,12 @@ Per-area breakdown (highest-coverage module in each area; see the module list in
 - **passive update notice** (`test_update_notice`) - `update_notice.py` ~95% (stderr-only rendering, gated on `sys.stderr.isatty()`, `CWCLI_NO_UPDATE_CHECK` suppression, fail-open when the core gate raises; the core `passive_notice` gate itself is faked here and dedicated-tested in `test_core_version`)
 
 **No dedicated suite** (only incidental coverage from other tests' mocking): `utils/port_utils.py` (~9%), `utils/sendme_utils.py` (~9%), `utils/vscode_utils.py` (~16%).
-`utils/docker_utils.py` is now partially covered (~58%, up from ~51%) since `test_exec_stream_decode` dedicated-tests its `utf8_stream_decoder`/`decode_exec_stream` helpers on top of `test_core_resolvers`'s `get_frappe_container` CLI wrapper; the rest of the module remains incidental.
+`utils/docker_utils.py` is now partially covered (~58%) since `test_exec_stream_decode` dedicated-tests its `utf8_stream_decoder` helper on top of `test_core_resolvers`'s `get_frappe_container` CLI wrapper; the rest of the module remains incidental. `decode_exec_stream` is GONE - `core/exec_stream.py` superseded it and its only three callers were re-pointed at that primitive.
 **Target**: add dedicated suites for the remaining three modules next.
 
 ### Test Files
 
-Run `ls tests/` for the authoritative, current list; as of 0.37.0 (unreleased) it holds 53 `test_*.py` suites plus `bench_fakes.py` and `bench_fakes_mb.py` (shared fakes) and `README.md`.
+Run `ls tests/` for the authoritative, current list; as of 0.37.0 (unreleased) it holds 55 `test_*.py` suites plus `bench_fakes.py` and `bench_fakes_mb.py` (shared fakes) and `README.md`.
 
 ## Testing Framework
 
