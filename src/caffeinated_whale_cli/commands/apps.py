@@ -27,7 +27,11 @@ import typer
 from ..utils import bench_sites, cache
 from ..utils.completion_utils import complete_app_names, complete_project_names
 from ..utils.console import console, stderr_console
-from ..utils.docker_utils import get_frappe_container, handle_docker_errors
+from ..utils.docker_utils import (
+    decode_exec_stream,
+    get_frappe_container,
+    handle_docker_errors,
+)
 from .update import run_app_update
 from .utils import confirm_or_exit, ensure_containers_running, resolve_bench_path
 
@@ -67,11 +71,8 @@ def _stream_bench(frappe_container, cmd, workdir):
     """
     api = frappe_container.client.api
     exec_id = api.exec_create(frappe_container.id, cmd, workdir=workdir)["Id"]
-    for chunk in api.exec_start(exec_id, stream=True):
-        if isinstance(chunk, (bytes, bytearray)):
-            sys.stdout.write(chunk.decode("utf-8", errors="replace"))
-        else:
-            sys.stdout.write(str(chunk))
+    for text in decode_exec_stream(api.exec_start(exec_id, stream=True)):
+        sys.stdout.write(text)
         sys.stdout.flush()
     result = api.exec_inspect(exec_id)
     return result.get("ExitCode", 1) or 0

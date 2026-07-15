@@ -69,7 +69,7 @@ The real-Docker E2E is Linux-only; Windows/macOS-specific code stays in the unit
 
 ## Test Files
 
-As of 0.37.0 (unreleased), `tests/` holds 52 `test_*.py` suites totaling 815 tests in the
+As of 0.37.0 (unreleased), `tests/` holds 53 `test_*.py` suites totaling 821 tests in the
 `unit` tier (measured with `uv run pytest --cov`). Run `ls tests/` for the
 authoritative current list; see [../docs/testing/README.md](../docs/testing/README.md)
 for the per-area breakdown.
@@ -79,7 +79,7 @@ for the per-area breakdown.
 `test_start_status_new_behavior_e2e.py`, `test_per_process_supervisor_e2e.py`,
 `test_status_unsupervised_e2e.py`, `test_unlock_e2e.py`, `test_label_e2e.py`,
 `test_harness_safety.py`); run `ls tests/e2e/`
-for the current list. They are not part of the 815/52 count above since they need a
+for the current list. They are not part of the 821/53 count above since they need a
 Docker daemon and are excluded from a bare `pytest`. `test_start_status_e2e.py` is the
 lifecycle-command net (`start`/`status`/`logs`/`restart`, both modes) that pins the
 outcome-level invariants the start/status core migration must preserve; it is
@@ -116,7 +116,7 @@ Tests for tab completion functionality.
 
 ## Test Coverage
 
-Current overall coverage at 0.37.0, unreleased (815 tests across 52 test files, ~62% overall).
+Current overall coverage at 0.37.0, unreleased (821 tests across 53 test files, ~62% overall).
 
 ### Covered Modules
 - ✅ `utils/completion_utils.py` - 92% (7 missing lines)
@@ -161,7 +161,7 @@ Current overall coverage at 0.37.0, unreleased (815 tests across 52 test files, 
 - ✅ `commands/label.py` - (`test_bench_label_db_and_command`: the 15 pre-migration tests, re-pointed at the core with their assertions untouched - including the two that pin the clear-path consistency invariant; `tests/e2e/test_label_e2e.py` drives the two-store invariant against a real container, non-interactive only because `label` has no prompt)
 - ⚠️ `commands/unlock.py` (~50%; its logic moved to `core/unlock.py`, which is covered - see above; `test_unlock_command_cli.py` dedicated-tests the `--bench` selector resolution, and `tests/e2e/test_unlock_e2e.py` drives both modes end to end, but the CLI frontend's choice-resolution/verbose-print branches still have no dedicated unit suite)
 - ⚠️ `commands/stop.py` (~68%; its logic moved to `core/stop.py`, which is covered - see above; `test_axi_unlock_stop.py`/`test_yes_flag.py`/`test_exit_codes.py` exercise it incidentally, but the CLI frontend itself - the multi-project loop, `stop_project_best_effort` - has no dedicated unit suite)
-- ⚠️ Command modules at or near 0% dedicated coverage: `backup.py` (0%; its logic moved to `core/backup.py`, which is covered - see above), `run.py`
+- ⚠️ Command modules at or near 0% dedicated coverage: `backup.py` (0%; its logic moved to `core/backup.py`, which is covered - see above), `run.py` (its only guard is `test_exec_stream_decode.py`, which pins the exec-stream decode across all four streaming consumers; the rest of the command is still untested)
 
 ## Writing New Tests
 
