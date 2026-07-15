@@ -45,6 +45,17 @@ def strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
 
 
+def collapse_ws(text: str) -> str:
+    """Collapse whitespace runs to one space.
+
+    rich word-wraps console output to the terminal width, and the wrap point
+    shifts with content length (e.g. a project name whose length varies by
+    environment - CI's run id is far longer than a local random one). A
+    multi-word substring check must not assume its phrase lands on one line.
+    """
+    return re.sub(r"\s+", " ", text)
+
+
 CWE2E_PREFIX = "cwe2e-"
 
 # The Frappe major for this leg (the CI matrix sets CWE2E_FRAPPE_MAJOR per job;
