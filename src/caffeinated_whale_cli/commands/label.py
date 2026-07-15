@@ -13,6 +13,7 @@ from typing import NoReturn
 import typer
 
 from ..core import label as core_label
+from ..core import resolvers
 from ..core.envelope import Status
 from ..core.errors import CwcliError
 from ..utils import bench_labels
@@ -102,6 +103,12 @@ def label(
         assert listing.data is not None
         _print_bench_list(project_name, listing.data.benches)
         return
+
+    try:
+        core_label.list_benches(project_name)
+        resolvers.resolve_bench(project_name, bench_selector, None)
+    except CwcliError as e:
+        _handle_label_error(e, project_name)
 
     if not clear and new_label is None:
         stderr_console.print(

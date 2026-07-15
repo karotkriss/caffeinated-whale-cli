@@ -232,6 +232,21 @@ class TestLabelCommand:
             _run_label(monkeypatch, container, bench_selector="99", new_label="x")
         assert exc.value.exit_code == 1
 
+    def test_unknown_selector_without_new_label_reports_unknown_selector(
+        self, temp_db, monkeypatch, capsys
+    ):
+        """An unresolved selector wins over the missing-new-label error, not the
+        reverse: the real problem is the selector, so that is what must surface."""
+        _seed_two_benches()
+        container = MarkerFakeContainer(bench_path=BENCH_B)
+        with pytest.raises(typer.Exit) as exc:
+            _run_label(monkeypatch, container, bench_selector="99")
+        assert exc.value.exit_code == 1
+        err = capsys.readouterr().err
+        assert "No bench '99' in project 'proj'" in err
+        assert "Available benches" in err
+        assert "Provide a new label" not in err
+
     def test_stopped_container_refuses_set(self, temp_db, monkeypatch):
         _seed_two_benches()
         container = MarkerFakeContainer(bench_path=BENCH_B)
