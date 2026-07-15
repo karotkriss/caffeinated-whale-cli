@@ -22,6 +22,7 @@ from caffeinated_whale_cli.commands import start as start_mod
 from caffeinated_whale_cli.commands import stop as stop_mod
 from caffeinated_whale_cli.commands import update as update_mod
 from caffeinated_whale_cli.commands import utils as cmd_utils
+from caffeinated_whale_cli.core import stop as core_stop
 from caffeinated_whale_cli.utils import docker_utils
 
 
@@ -152,7 +153,7 @@ class TestStopHonesty:
     def test_nonexistent_project_exits_one(self, monkeypatch, capsys):
         _neutralize_docker(monkeypatch)
         monkeypatch.setattr(stop_mod.sys.stdin, "isatty", lambda: True)
-        monkeypatch.setattr(stop_mod, "get_project_containers", lambda name: [])
+        monkeypatch.setattr(core_stop, "get_project_containers", lambda name: [])
         with pytest.raises(typer.Exit) as exc:
             stop_mod.stop(ctx=None, verbose=False, project_name=["no-such"])
         assert exc.value.exit_code == 1
@@ -165,7 +166,7 @@ class TestStopHonesty:
         def containers(name):
             return [_RunningFrappe()] if name == "good" else []
 
-        monkeypatch.setattr(stop_mod, "get_project_containers", containers)
+        monkeypatch.setattr(core_stop, "get_project_containers", containers)
         with pytest.raises(typer.Exit) as exc:
             stop_mod.stop(ctx=None, verbose=False, project_name=["good", "no-such"])
         assert exc.value.exit_code == 1

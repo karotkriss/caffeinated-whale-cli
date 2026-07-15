@@ -140,11 +140,13 @@ class TestStartPortConflictYes:
 
         monkeypatch.setattr(start_mod, "check_ports_in_use", check_ports)
         stopped = []
-        # _stop_project is imported inside the function from .stop
+        # stop_project_best_effort is imported inside the function from .stop
         from caffeinated_whale_cli.commands import stop as stop_mod
 
         monkeypatch.setattr(
-            stop_mod, "_stop_project", lambda name, verbose=False: stopped.append(name)
+            stop_mod,
+            "stop_project_best_effort",
+            lambda name, verbose=False: stopped.append(name) or 1,
         )
         return stopped
 

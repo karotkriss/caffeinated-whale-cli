@@ -11,11 +11,11 @@ from typer.testing import CliRunner
 
 from caffeinated_whale_cli.commands import axi as axi_mod
 from caffeinated_whale_cli.commands import start as start_mod
-from caffeinated_whale_cli.commands import stop as stop_mod
 from caffeinated_whale_cli.core.envelope import Choice, Message, Result, Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from caffeinated_whale_cli.core.start import ProcessLaunch, StartOutcome
 from caffeinated_whale_cli.core.status import StatusReport
+from caffeinated_whale_cli.core.stop import StopOutcome
 from caffeinated_whale_cli.core.supervision import ProcessHealth
 
 runner = CliRunner()
@@ -30,6 +30,15 @@ def _start_outcome(already_running=False):
         log_path="/workspace/frappe-bench/logs",
         already_running=already_running,
         processes=[ProcessLaunch(label="web", pid=101 if already_running else None)],
+    )
+
+
+def _stop_result(project="other-proj"):
+    return Result(
+        status=Status.OK,
+        data=StopOutcome(
+            project=project, stopped=1, already_stopped=False, containers=[f"{project}-frappe-1"]
+        ),
     )
 
 
@@ -141,8 +150,10 @@ class TestAxiStart:
 
         monkeypatch.setattr(start_mod, "detect_port_conflicts", _detect)
         stopped = []
+        # axi calls core.stop DIRECTLY (never the CLI helper): a core callee cannot
+        # print, so no branch of it can corrupt the one-TOON-document contract.
         monkeypatch.setattr(
-            stop_mod, "_stop_project", lambda proj, verbose=False: stopped.append(proj)
+            axi_mod.core_stop, "stop", lambda proj: stopped.append(proj) or _stop_result()
         )
         monkeypatch.setattr(
             axi_mod.core_start,
@@ -159,7 +170,7 @@ class TestAxiStart:
         # non-Frappe process grabbed the port) - must not fall through to core.start.
         monkeypatch.setattr(start_mod, "_frappe_running", lambda name: False)
         monkeypatch.setattr(start_mod, "detect_port_conflicts", lambda name: (["other-proj"], []))
-        monkeypatch.setattr(stop_mod, "_stop_project", lambda proj, verbose=False: None)
+        monkeypatch.setattr(axi_mod.core_stop, "stop", lambda proj: _stop_result())
         monkeypatch.setattr(
             axi_mod.core_start,
             "start",

@@ -69,7 +69,7 @@ The real-Docker E2E is Linux-only; Windows/macOS-specific code stays in the unit
 
 ## Test Files
 
-As of 0.37.0 (unreleased), `tests/` holds 46 `test_*.py` suites totaling 740 tests in the
+As of 0.37.0 (unreleased), `tests/` holds 50 `test_*.py` suites totaling 780 tests in the
 `unit` tier (measured with `uv run pytest --cov`). Run `ls tests/` for the
 authoritative current list; see [../docs/testing/README.md](../docs/testing/README.md)
 for the per-area breakdown.
@@ -77,8 +77,9 @@ for the per-area breakdown.
 `tests/e2e/` adds more `test_*.py` suites in the real-Docker `e2e` tier
 (`test_init_e2e.py`, `test_backup_e2e.py`, `test_start_status_e2e.py`,
 `test_start_status_new_behavior_e2e.py`, `test_per_process_supervisor_e2e.py`,
+`test_status_unsupervised_e2e.py`, `test_unlock_e2e.py`,
 `test_harness_safety.py`); run `ls tests/e2e/`
-for the current list. They are not part of the 740/46 count above since they need a
+for the current list. They are not part of the 780/50 count above since they need a
 Docker daemon and are excluded from a bare `pytest`. `test_start_status_e2e.py` is the
 lifecycle-command net (`start`/`status`/`logs`/`restart`, both modes) that pins the
 outcome-level invariants the start/status core migration must preserve; it is
@@ -115,7 +116,7 @@ Tests for tab completion functionality.
 
 ## Test Coverage
 
-Current overall coverage at 0.37.0, unreleased (740 tests across 46 test files, ~61% overall).
+Current overall coverage at 0.37.0, unreleased (780 tests across 50 test files, ~62% overall).
 
 ### Covered Modules
 - ✅ `utils/completion_utils.py` - 92% (7 missing lines)
@@ -127,8 +128,10 @@ Current overall coverage at 0.37.0, unreleased (740 tests across 46 test files, 
 - ✅ `commands/init.py` - ~49% (`test_init_reuse_bench`, `test_init_mariadb_flag`, `test_init_admin_password`)
 - ✅ `commands/apps.py` + `commands/update.py` app-update path - (`test_apps`: both modes, multi-site fan-out, frappe reset, `update` deprecation)
 - ✅ `utils/config_utils.py`'s `cwcli_home()` - (`test_cwcli_home`: mock-free, sets a real `CWCLI_HOME` env var and checks real filesystem/subprocess results)
-- ✅ `core/envelope.py`, `core/errors.py`, `core/resolvers.py`, `core/docker.py` - 100% (`test_core_envelope`: DTO/error contract + the AST-scan purity ban; `test_core_resolvers`: split resolvers plus the `commands/utils.py`/`docker_utils.py` CLI-wrapper exit-code preservation)
+- ✅ `core/envelope.py`, `core/errors.py`, `core/docker.py` - 100%, `core/resolvers.py` - ~97% (`test_core_envelope`: DTO/error contract + the AST-scan purity ban; `test_core_resolvers`: split resolvers plus the `commands/utils.py`/`docker_utils.py` CLI-wrapper exit-code preservation; the shared bench-op helpers `resolve_default_site`/`validate_site_name`/`validate_bench_path`/`require_bench_dir`/`require_site_dir`, extracted on `unlock`'s migration, are exercised via `test_core_backup` and `test_core_unlock`)
 - ✅ `core/backup.py` - ~95% (`test_core_backup`: every `core.backup` branch - success, both `NEEDS_CHOICE` forks, each `CwcliError` kind - on a fake container)
+- ✅ `core/unlock.py` - ~98% (`test_core_unlock`: every branch - removal with a parsed `removed` list, already-unlocked, default-site resolution, `select_bench`/`confirm_start` choices, each `CwcliError` kind - built from the same primitives as `core/backup.py` with zero new ones)
+- ✅ `core/stop.py` - 100% (`test_core_stop`: stopped count, already-stopped, `NOT_FOUND`, docker-unreachable, names-not-objects, and that it prints nothing at all)
 - ✅ `commands/axi.py` - ~97% (`test_axi`: verb exit-mapping (0/1/2), the content-first home, `axi ls`/`axi where`, the TOON encoder)
 - ✅ `core/list.py`, `core/where.py` - 100% (`test_core_list`: fake docker client, empty/aggregate/DOCKER-raise; `test_core_where`: throwaway sqlite, dedup/scoping/installed-only/USAGE)
 - ✅ `commands/list.py` - ~80% (`test_list`: the `ls --json` empty-`[]` fix, quiet/table rendering, port-range condensing)
@@ -140,6 +143,7 @@ Current overall coverage at 0.37.0, unreleased (740 tests across 46 test files, 
 - ✅ `commands/status.py` - ~93% (`test_status_frontend`: the stdout-token-only contract the PR-1 E2E net pins, per-process detail (incl. supervisord `state`) on stderr, exit 0 across lifecycle states, the not-cwcli-supervised heading/hint; `test_status_watch`: the `--watch` live view - every tick re-polls with `probe_web=False` so it makes ZERO web requests, the non-TTY single-quiet-snapshot degrade, the `--interval` 1s floor, a clean `KeyboardInterrupt` exit)
 - ✅ `commands/axi.py` `start`/`status` verbs - (`test_axi_start_status`: TOON rendering, exit-code mapping, needs-choice/`CONFLICT` flag-naming, the never-prompt port-conflict pre-step)
 - ✅ `commands/axi.py` `restart` verb - (`test_axi_restart`: TOON `ProcessRestartOutcome` rendering, exit-code mapping, `--process` required, unknown/ambiguous process and multi-bench `select_bench` as usage errors listing valid labels)
+- ✅ `commands/axi.py` `unlock`/`stop` verbs - (`test_axi_unlock_stop`: TOON `UnlockOutcome`/`StopOutcome` rendering incl. `removed` as a structured list, exit-code mapping, `axi unlock`'s multi-bench `select_bench` and stopped-container `confirm_start` as usage errors (no `--yes` on this verb - it mirrors `axi backup`), `axi stop`'s idempotent already-stopped success and structured not-found error)
 - ✅ `core/version.py` - ~90% (`test_core_version`: install-method detection tree (dev/uv/uvx/pip fallback), the fail-open PyPI lookup, PEP 440 compare including the dev-ahead case, the TTL cache, and the `passive_notice` cache-only gate incl. the `attempted_at` once/day refresh throttle)
 - ✅ `commands/self_update.py` - 100% (`test_self_update`: dev/uvx no-op, the default upgrade run (success/failure/`FileNotFoundError`), `--check`, `--no-cache`)
 - ✅ `update_notice.py` - ~95% (`test_update_notice`: stderr-only rendering never on stdout, `sys.stderr.isatty()` gating, `CWCLI_NO_UPDATE_CHECK` suppression, fail-open when the core gate raises)
@@ -152,7 +156,9 @@ Current overall coverage at 0.37.0, unreleased (740 tests across 46 test files, 
 - ⚠️ `utils/config_utils.py` (~41%; `cwcli_home()` is covered by `test_cwcli_home`, but `load_config`/`save_config`/the custom-path and auto-inspect-config setters remain untested)
 - ⚠️ `commands/start.py` (~57%; `test_yes_flag` covers the non-interactive/`--yes` contract and `tests/e2e/test_start_status_e2e.py` drives it end to end, but the port-scanning/conflict-resolution branches still have no dedicated unit suite)
 - ⚠️ `commands/restart.py` (~40%; the single-process path's core call is dedicated-tested via `test_core_restart`/`test_axi_restart`, and both the whole-stack and `--process` paths are driven end to end by `tests/e2e/test_start_status_e2e.py`/`tests/e2e/test_per_process_supervisor_e2e.py`, but the CLI frontend itself - the argv-forgiveness reparsing, the multi-project loop, `_resolve_process_choice`'s TTY/non-TTY forks - has no dedicated unit suite)
-- ⚠️ Command modules at or near 0% dedicated coverage: `backup.py` (0%; its logic moved to `core/backup.py`, which is covered - see above), `run.py`, `unlock.py`
+- ⚠️ `commands/unlock.py` (~50%; its logic moved to `core/unlock.py`, which is covered - see above; `test_unlock_command_cli.py` dedicated-tests the `--bench` selector resolution, and `tests/e2e/test_unlock_e2e.py` drives both modes end to end, but the CLI frontend's choice-resolution/verbose-print branches still have no dedicated unit suite)
+- ⚠️ `commands/stop.py` (~68%; its logic moved to `core/stop.py`, which is covered - see above; `test_axi_unlock_stop.py`/`test_yes_flag.py`/`test_exit_codes.py` exercise it incidentally, but the CLI frontend itself - the multi-project loop, `stop_project_best_effort` - has no dedicated unit suite)
+- ⚠️ Command modules at or near 0% dedicated coverage: `backup.py` (0%; its logic moved to `core/backup.py`, which is covered - see above), `run.py`
 
 ## Writing New Tests
 
@@ -288,6 +294,7 @@ Status as of 0.34.0 (see [../docs/testing/README.md](../docs/testing/README.md) 
 4. **Logic core + `cwcli axi`** (`core/`, `commands/axi.py`) - covered by `test_core_envelope`, `test_core_resolvers`, `test_core_backup`, `test_axi` (envelope/resolvers/docker wrapper at 100%, `core/backup.py` ~95%, `commands/axi.py` ~97%). `start`/`status` followed the same pattern onto `core/start.py`/`core/status.py`/`core/supervision.py` (~98%/~93%/~82%), covered by `test_core_start`, `test_core_status`, `test_core_supervision`, plus the frontends `test_status_frontend` and `test_status_watch` (the `--watch` live view's zero-web-probe/non-TTY-degrade/interval-floor/clean-`KeyboardInterrupt` contract) and `axi start`/`axi status` in `test_axi_start_status`. `add-per-process-supervisor` re-pointed `core/supervision.py` from honcho to supervisord and added `core/restart.py` (~95%, `core.restart_process` restarting one program leaving siblings running), covered by `test_core_restart` and the `cwcli axi restart` verb in `test_axi_restart`.
 4a. **`self-update`** (`commands/self_update.py`, `core/version.py`) - covered by `test_core_version` (install-method tree, fail-open PyPI lookup, PEP 440 compare, TTL cache - ~90%) and `test_self_update` (dev/uvx no-op, the default upgrade run, `--check`, `--no-cache` - 100%). No `cwcli axi` verb (deferred).
 4b. **Passive update notice** (`update_notice.py` ~95%, wired once into `main.py`'s root Typer callback) - covered by `test_update_notice` (stderr-only, TTY-gated, `CWCLI_NO_UPDATE_CHECK`-suppressible, fail-open) and `test_core_version`'s `TestPassiveNotice` class (the cache-only hot path, the detached background refresh, the `attempted_at` once/day throttle on persistent failure).
+4c. **`unlock`+`stop` onto the logic core** (`core/unlock.py` ~98%, `core/stop.py` 100%, the shared bench-op helpers in `core/resolvers.py` ~97%) - the foundation's generality proof: `unlock` was migrated with zero new primitives. Covered by `test_core_unlock`, `test_core_stop`, `test_unlock` (re-pointed argv-injection guards), `test_unlock_command_cli` (the `--bench` selector resolution), and the `cwcli axi unlock`/`cwcli axi stop` verbs in `test_axi_unlock_stop`. `tests/e2e/test_unlock_e2e.py` closes `unlock`'s standing both-modes E2E gap (pty-driven interactive leg, non-interactive `--yes` leg, real locks-directory removal); `stop` needed no new E2E, already pinned by `test_start_status_e2e.py`/`test_status_unsupervised_e2e.py`. See `openspec/changes/migrate-unlock-stop-core`.
 
 ### Partial
 5. **Port conflict detection** (`commands/start.py`) - `test_yes_flag` covers the non-interactive/`--yes` contract; the interactive port-conflict confirmation prompt is driven end to end in `tests/e2e/test_start_status_e2e.py`, and the remaining port-scanning helpers still have no dedicated unit suite (~57%).
@@ -297,8 +304,8 @@ Status as of 0.34.0 (see [../docs/testing/README.md](../docs/testing/README.md) 
 7. **Port utilities** (`utils/port_utils.py`) - cross-platform process detection (~9%).
 8. **VS Code integration** (`utils/vscode_utils.py`) - container attachment fallback (~16%).
 9. **Configuration management** (`utils/config_utils.py`) - distinct from `db_utils`'s config validation (~37%).
-10. **Real-Docker E2E for the remaining commands** (`rm`, `restore`, `update`/`apps`, `unlock`, `inspect`) and the P2P (`sendme`) loopback - tracked in `openspec/changes/rebuild-e2e-test-suite`.
-11. Other command modules at or near 0% dedicated unit coverage: `backup.py` (its logic moved to `core/backup.py`, which is covered), `run.py`, `unlock.py`. `status.py` is no longer in this bucket: `test_status_frontend` and `test_status_watch` now dedicated-test it (~95%), on top of the end-to-end coverage from `tests/e2e/test_start_status_e2e.py` (see item 3a).
+10. **Real-Docker E2E for the remaining commands** (`rm`, `restore`, `update`/`apps`, `inspect`) and the P2P (`sendme`) loopback - tracked in `openspec/changes/rebuild-e2e-test-suite`. `unlock` is no longer in this list: `tests/e2e/test_unlock_e2e.py` covers it (see item 4c).
+11. Other command modules at or near 0% dedicated unit coverage: `backup.py` (its logic moved to `core/backup.py`, which is covered), `run.py`. `status.py` and `unlock.py` are no longer in this bucket: `test_status_frontend`/`test_status_watch` dedicated-test `status.py` (~95%, on top of `tests/e2e/test_start_status_e2e.py`, see item 3a), and `unlock.py`'s logic moved to `core/unlock.py` (covered, see item 4c) with `commands/unlock.py` itself now at ~50% via `test_unlock_command_cli`.
 
 ## Resources
 
