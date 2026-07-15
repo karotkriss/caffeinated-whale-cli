@@ -225,10 +225,27 @@ def logs(
         stderr_console.print(f"[dim]VERBOSE: $ {' '.join(tail_cmd)}[/dim]")
 
     try:
-        subprocess.run(tail_cmd)
-    except subprocess.CalledProcessError as e:
-        stderr_console.print(f"[bold red]Error:[/bold red] Failed to tail log file: {e}")
-        raise typer.Exit(code=1) from None
+        result = subprocess.run(tail_cmd)
     except KeyboardInterrupt:
-        # User pressed Ctrl+C, which is normal
+        # Ctrl+C on the non-TTY path (no `-it`): SIGINT reaches this process.
         console.print("\n[yellow]Stopped viewing logs.[/yellow]")
+        return
+
+    # 130 is `tail` killed by SIGINT, i.e. the user's own Ctrl+C: on the `-it`
+    # path docker puts the terminal in raw mode and forwards ^C into the
+    # container, so the stop arrives as an exit code rather than as the
+    # KeyboardInterrupt above. Treating it as a failure would make every
+    # interactive `cwcli logs -f` exit non-zero.
+    if result.returncode == 130:
+        console.print("\n[yellow]Stopped viewing logs.[/yellow]")
+        return
+
+    if result.returncode != 0:
+        # The returncode is propagated, not flattened to 1: `subprocess.run`
+        # without check= silently discarded it, so `cwcli logs` reported success
+        # for every failed tail.
+        stderr_console.print(
+            f"[bold red]Error:[/bold red] Failed to tail log file "
+            f"(tail exited {result.returncode})."
+        )
+        raise typer.Exit(code=result.returncode)

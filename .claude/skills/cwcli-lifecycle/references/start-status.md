@@ -141,3 +141,33 @@ are now the whole point. Each note below guards a real bug.
   lifecycle: it heals crashed PROGRAMS on its own, but it is NOT auto-relaunched when the container itself
   restarts (that needs the image entrypoint, which cwcli cannot set via `docker exec`). A `cwcli start` is
   still required after a container restart - unchanged from honcho.
+
+## `commands/logs.py` - tail's exit code, and why `logs` is NOT on `exec_stream`
+
+- **The fail-open (fixed).** `logs` ran `subprocess.run(tail_cmd)` with no `check=`, discarded the
+  result, and caught `subprocess.CalledProcessError` beneath it. `subprocess.run` raises that ONLY
+  when `check=True`, so the returncode was thrown away and the handler was **unreachable dead code**:
+  `cwcli logs` exited 0 no matter what `tail` did. Verified E2E against a real container - a `tail`
+  exiting 1 gave `cwcli exit=0`. The fix reads `result.returncode` and PROPAGATES it (`tail` 137 ->
+  `cwcli` 137), rather than flattening to 1.
+- **Ctrl+C arrives as exit 130, NOT as a `KeyboardInterrupt`** - this is why the fix is not simply
+  `check=True`. On the interactive path `docker exec -it` puts the terminal in raw mode and forwards
+  `^C` INTO the container, so `tail` takes the SIGINT and exits 130 while the cwcli process is never
+  signalled (measured through a real pty). 130 is therefore the user's normal stop and must exit 0;
+  the `except KeyboardInterrupt` handler still covers the NON-TTY path, where SIGINT does reach cwcli.
+  `check=True` would raise on that 130 and make every interactive `cwcli logs -f` exit non-zero.
+  `tests/test_logs.py`'s fake models `subprocess.run`'s real `check=` semantics so a future
+  `check=True` "fix" fails the 130 test rather than shipping.
+- **`logs` is a deliberate NON-consumer of `core/exec_stream.py`** despite reaching the same fail-open
+  class (`run`/`apps` leaked it via `ExitCode: None`; `logs` via a discarded returncode). `exec_stream`
+  is a non-TTY docker-py exec with no `tty` parameter, while `logs` is a `docker exec -it` passthrough
+  whose job is an interactive `tail -F`. Re-pointing it would (1) need a `tty` param on a primitive
+  that deliberately has none, (2) leak a `tail -F` inside the container on every Ctrl+C, since without
+  a TTY the SIGINT never reaches it, and (3) make `_poll_exit_code` see the still-`Running` exec and
+  raise `exec.stream_lost` for what is a normal user stop. `logs` was long mis-filed as a
+  process-handover command; it hands over nothing (no `execvp`), but it is still not an `exec_stream`
+  consumer.
+- The two other `subprocess.run` calls here (`_existing_files`, `_discover_bench_log_files`) are
+  deliberately tolerant probes (`[ -f ]`, `ls ... 2>/dev/null`): a non-zero exit is expected and
+  yields an empty list, which the "No process logs found" branch already turns into a non-zero exit.
+  They are NOT the same bug - do not "fix" them with `check=True`.

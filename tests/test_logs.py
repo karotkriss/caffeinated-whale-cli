@@ -18,8 +18,10 @@ the ``isatty`` gating is exercised by calling the command function directly, sin
 
 from __future__ import annotations
 
+import subprocess
 import types
 
+import pytest
 import typer
 from typer.testing import CliRunner
 
@@ -35,8 +37,16 @@ class _FakeFrappe:
     name = "proj-frappe-1"
 
 
-def _wire(monkeypatch, *, isatty: bool):
-    """Neutralize the Docker preflight/collaborators and capture every subprocess.run."""
+def _wire(monkeypatch, *, isatty: bool, returncode: int = 0):
+    """Neutralize the Docker preflight/collaborators and capture every subprocess.run.
+
+    ``returncode`` is what the faked ``tail`` exits with. The fake models
+    ``subprocess.run``'s REAL ``check=`` semantics - it raises
+    ``CalledProcessError`` only when ``check=True`` - because that is precisely
+    what made the old ``except subprocess.CalledProcessError`` handler
+    unreachable, and what a future ``check=True`` "fix" would break (it would
+    turn a user's Ctrl+C into an exception; see the 130 test).
+    """
     # @handle_docker_errors preflight (no real Docker on the unit tier).
     monkeypatch.setattr(docker_utils.shutil, "which", lambda _n: "/usr/bin/docker")
     monkeypatch.setattr(
@@ -56,7 +66,9 @@ def _wire(monkeypatch, *, isatty: bool):
 
     def fake_run(cmd, *a, **k):
         calls.append(cmd)
-        return types.SimpleNamespace(returncode=0, stdout="")
+        if k.get("check") and returncode != 0:
+            raise subprocess.CalledProcessError(returncode, cmd)
+        return types.SimpleNamespace(returncode=returncode, stdout="")
 
     monkeypatch.setattr(logs_mod.subprocess, "run", fake_run)
     return calls
@@ -149,6 +161,60 @@ def test_supervised_path_never_calls_fallback(monkeypatch):
     result = runner.invoke(_app(), ["proj"])
     assert result.exit_code == 0
     assert "/w/bench/logs/web.supervisor.log" in _tail_cmd(calls)
+
+
+# ------------------------------ tail's exit code ------------------------------
+# `logs` called `subprocess.run(tail_cmd)` with no check=, discarded the result,
+# and caught `subprocess.CalledProcessError` beneath it - which `subprocess.run`
+# raises ONLY when check=True. So the returncode was thrown away and the handler
+# was unreachable dead code: `cwcli logs` exited 0 no matter what tail did.
+#
+# This is the same fail-open class `core/exec_stream.py` was built to kill
+# (`run`/`apps` leaked it through `ExitCode: None`), but `logs` is NOT re-pointed
+# onto that primitive: exec_stream is a non-TTY docker-py exec, while `logs` is a
+# `docker exec -it` passthrough whose whole job is an interactive `tail -F`.
+
+
+def test_failing_tail_exits_non_zero(monkeypatch):
+    # The headline repro, through the real Typer parser: tail exits 1, so must cwcli.
+    _wire(monkeypatch, isatty=False, returncode=1)
+    result = runner.invoke(_app(), ["proj"])
+    assert result.exit_code == 1
+
+
+def test_failing_tail_propagates_the_real_code(monkeypatch):
+    # 137 = SIGKILL (128+9). The code is propagated, not flattened to 1.
+    _wire(monkeypatch, isatty=False, returncode=137)
+    with pytest.raises(typer.Exit) as excinfo:
+        _call_logs(follow=False)
+    assert excinfo.value.exit_code == 137
+
+
+def test_ctrl_c_through_dockers_tty_is_a_clean_exit(monkeypatch):
+    # Verified against real docker: on the `-it` path docker puts the terminal in
+    # raw mode and forwards ^C INTO the container, so the user's own Ctrl+C arrives
+    # as tail exiting 130 and NOT as a KeyboardInterrupt here. Reporting that as a
+    # failure would make every interactive `cwcli logs -f` exit non-zero - which is
+    # why the fix is not simply `check=True`.
+    _wire(monkeypatch, isatty=True, returncode=130)
+    _call_logs(follow=True)  # returns normally == exit 0
+
+
+def test_keyboard_interrupt_is_a_clean_exit(monkeypatch):
+    # The non-TTY path (no `-it`): SIGINT reaches cwcli itself instead.
+    _wire(monkeypatch, isatty=False)
+
+    def interrupted(cmd, *a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(logs_mod.subprocess, "run", interrupted)
+    _call_logs(follow=True)  # returns normally == exit 0
+
+
+def test_successful_tail_exits_zero(monkeypatch):
+    _wire(monkeypatch, isatty=False, returncode=0)
+    result = runner.invoke(_app(), ["proj"])
+    assert result.exit_code == 0
 
 
 # ------------------------- not-cwcli-supervised fallback -------------------------
