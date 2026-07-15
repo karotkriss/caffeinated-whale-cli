@@ -5,11 +5,11 @@ import time
 import docker
 import typer
 
+from ..core.exec_stream import ExecChunk, exec_stream
 from ..utils import cache, db_utils
 from ..utils.completion_utils import complete_app_names, complete_project_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import (
-    decode_exec_stream,
     get_project_containers,
     handle_docker_errors,
 )
@@ -22,7 +22,14 @@ def _stream_command(
     verbose: bool = False,
     status_msg: str | None = None,
 ) -> int:
-    """Execute command and optionally stream output in real-time."""
+    """Execute command and optionally stream output in real-time.
+
+    One exec, two consumption modes. `verbose` decides whether to RENDER the
+    events, not how to obtain them: the verbose/non-verbose fork used to reach
+    all the way down to two different exec mechanisms, but rendering was always a
+    presentation concern. Non-verbose still prints nothing, because it runs
+    inside a `console.status` spinner that streaming would shred.
+    """
     if verbose:
         stderr_console.print(f"[dim]$ {cmd}[/dim]")
 
@@ -30,36 +37,18 @@ def _stream_command(
         if status_msg:
             with stderr_console.status(f"[bold green]{status_msg}[/bold green]", spinner="dots"):
                 # Give the spinner a moment to render
-                import time
-
                 time.sleep(0.1)
 
-        # Stream output in verbose mode
-        api = container.client.api
-        exec_id = api.exec_create(container.id, cmd, workdir=workdir, tty=False)["Id"]
-
-        # Write directly to stdout to preserve carriage returns and progress bars
-        for text in decode_exec_stream(api.exec_start(exec_id, stream=True, demux=False)):
-            sys.stdout.write(text)
-            sys.stdout.flush()
-
-        # Wait for the command to fully complete
-        result = api.exec_inspect(exec_id)
-        exit_code = result.get("ExitCode")
-
-        # If ExitCode is None, the command is still running - wait for it
-        while exit_code is None:
-            time.sleep(0.1)
-            result = api.exec_inspect(exec_id)
-            exit_code = result.get("ExitCode")
-
-        return exit_code if exit_code is not None else 1
-    else:
-        # Non-verbose mode: just run the command without streaming
-        # demux=False ensures we wait for the command to fully complete
-        exit_code, _ = container.exec_run(cmd, workdir=workdir, demux=False)
-        return_code: int = exit_code
-        return return_code
+    exit_code = 1
+    for event in exec_stream(container, cmd, workdir=workdir):
+        if isinstance(event, ExecChunk):
+            if verbose:
+                # Write directly to stdout to preserve carriage returns and progress bars
+                sys.stdout.write(event.text)
+                sys.stdout.flush()
+        else:
+            exit_code = event.exit_code
+    return exit_code
 
 
 def _run_command_quiet(
