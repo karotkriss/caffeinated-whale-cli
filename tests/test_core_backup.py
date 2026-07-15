@@ -80,9 +80,7 @@ def wire(monkeypatch):
             "get_cached_project_data",
             lambda name: {"bench_instances": benches} if benches is not None else None,
         )
-        monkeypatch.setattr(
-            core_backup.db_utils, "get_default_site", lambda name, path: default_site
-        )
+        monkeypatch.setattr(resolvers.db_utils, "get_default_site", lambda name, path: default_site)
 
     return _wire
 

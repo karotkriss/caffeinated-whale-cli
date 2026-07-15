@@ -50,3 +50,31 @@ Six defense-in-depth fixes on the already-migrated core/`axi` surface, surfaced 
 - **`commands/backup.py`'s `confirm_start` retry loop is capped at ONE re-invoke** - see the updated note above.
 
 Regression coverage: `tests/test_core_backup.py` (argv execs, still-`sh -c` newest-dump lookup), `tests/test_core_resolvers.py` (reload `APIError`/`NotFound` -> `CwcliError(DOCKER)`), `tests/test_core_where.py` (peewee exception -> `CwcliError(INTERNAL)`), `tests/test_core_list.py` (9-vs-10 numeric ordering), `tests/test_backup_command_cap.py` (fails closed after one retry, succeeds when the second attempt takes), `tests/test_axi.py` + `tests/test_axi_start_status.py` (quoted vs. plain `error:`/`help:` lines).
+
+### `unlock` + `stop` onto the core - the generality proof (2026-07-15)
+
+The batch after `start`/`status`: `openspec/changes/migrate-unlock-stop-core`.
+Its point was not the two verbs but the question the foundation left open - were the primitives general, or built for `backup`?
+
+- **`unlock` was migrated with ZERO new primitives, and that is the load-bearing result.**
+  `commands/unlock.py` was `backup`'s near-twin: the same eight steps in the same order, with the shell-metacharacter denylist duplicated character-for-character.
+  `core/unlock.py` is built from `core.docker.get_frappe_container`, `resolvers.resolve_container_state` / `resolve_bench` / `resolve_default_site`, the shared validation + probe helpers, and the envelope - nothing bent, nothing widened.
+  So the pattern is confirmed NOT overfitted to its first caller.
+  A later bench-verb migration that needs a primitive bent is a real signal about the foundation: report it, do not quietly widen the primitive to fit.
+- **The shared bench-op steps live in `core/resolvers.py`, extracted on the SECOND caller.** `resolve_default_site`, `validate_site_name`, `validate_bench_path`, `require_bench_dir`, `require_site_dir`, plus the single `_INVALID_CHARS` list.
+  One caller is not evidence of a shared concern; two identical ones are. `core/backup.py` calls the same helpers, so the two verbs cannot drift apart on what they reject.
+  The denylist is defense in depth only - the real injection guard is that every container command is an argv list (no shell), which is what `tests/test_unlock.py` pins.
+- **`unlock`'s `rm -rfv` is BUFFERED, never streamed - do not "fix" this back.**
+  The recon called unlock "the typed event iterator case", and the rework defers streaming machinery to `logs`/`update`. The premise was wrong: the payload is a locks directory (a handful of small files, gone in milliseconds), and it streamed only so verbose mode could echo removed paths.
+  `core.unlock` runs one buffered `exec_run` and parses the paths into `UnlockOutcome.removed`, which is strictly more useful to an agent than a byte stream.
+  Disclosed cost: `--verbose` prints the paths at completion rather than incrementally (sub-second, indistinguishable). `logs`/`update` remain the streaming contract's first real consumers and should design it against their own needs.
+- **An absent locks dir is `already_unlocked=True`, a CLEAN SUCCESS - never `NOT_FOUND`.** `rm -rf` always exited 0 on a missing target, and a site that simply is not locked is what the caller asked for. `core.unlock` probes `test -d` explicitly rather than inferring "nothing removed" from rm's `-v` output, so the flag stays independent of rm's human-readable format.
+- **`cwcli axi unlock` deliberately carries NO `--yes`, even though the human `cwcli unlock` has one.** This is an intentional deviation from the change proposal's draft signature, not an oversight: `axi unlock` mirrors `axi backup` (the reference bench-op verb) exactly, where a stopped container is a `confirm_start` `NEEDS_CHOICE` rendered as a structured usage error with a `help` line pointing at `cwcli start <project>` - never a prompt, never an auto-start. Adding `--yes` to `axi unlock` alone would open a new start-from-axi code path that diverges from its twin for no reason; if agent-driven auto-start of a stopped container is ever wanted, it belongs on both bench-op verbs at once, not bolted onto one.
+- **`core.stop` exists because a `rich` helper was load-bearing substrate (a real latent bug).**
+  `commands/stop.py:_stop_project` printed rich markup to **stdout** on its not-found and already-stopped branches, and `commands/axi.py` called it from `axi start --yes`'s port-conflict resolution. The comment there claimed "running -> stdout-silent", which was an assumption about which internal branch the callee took: a teardown race between conflict detection and the stop (the same race the adjacent recheck already guards) reached those prints and corrupted the one-TOON-document contract.
+  A core callee that cannot print closes it structurally. `axi` now calls `core.stop` directly.
+- **`_stop_project`'s `None` sentinel became `CwcliError(NOT_FOUND)`**, and a dead daemon is now honestly `DOCKER` rather than being misreported as "project not found".
+  `core.stop` deliberately does NOT route through `core.docker.get_frappe_container`: stop is project-wide and must still stop a project that has containers but no frappe service.
+  `commands/stop.py:stop_project_best_effort` is a frontend rendering adapter (stderr only, no logic) mapping the typed error back to the `None` two callers were written against; `axi` and `rm` do not use it.
+
+Regression coverage: `tests/test_core_unlock.py` (every branch, the buffered single-`exec_run`, already-unlocked), `tests/test_unlock.py` (argv guards, re-pointed at the core), `tests/test_core_stop.py` (typed errors, names-not-objects, and that `core.stop` prints nothing at all), `tests/test_axi_unlock_stop.py` (TOON + exit codes), `tests/test_rm_stopped_backup.py::TestRmOrchestration::test_not_found_during_return_to_stopped_still_fails_closed` (the `rm` gate still fails closed under the typed error), `tests/e2e/test_unlock_e2e.py` (both modes, real removal).

@@ -1211,7 +1211,7 @@ def _transient_start_for_backup(
     return (True, started)
 
 
-def _stop_after_transient_start(project_name: str, verbose: bool = False) -> None:
+def _stop_after_transient_start(project_name: str) -> None:
     """Return a project to its stopped state after a transient start-for-backup.
 
     Called on the keep-everything abort path (the start failed, or the backup could
@@ -1219,14 +1219,14 @@ def _stop_after_transient_start(project_name: str, verbose: bool = False) -> Non
     Best-effort: a failure to stop is a warning, not a hard error - the data is
     intact either way and the user can stop it manually.
     """
-    from .stop import _stop_project  # lazy import: avoid a module-load cycle
+    from ..core import stop as core_stop  # lazy import: avoid a module-load cycle
 
     console.print(f"[dim]Returning '{project_name}' to its stopped state...[/dim]")
     try:
         with stderr_console.status(
             f"[bold yellow]Stopping '{project_name}'...[/bold yellow]", spinner="dots"
-        ) as status:
-            _stop_project(project_name, verbose=verbose, status=status)
+        ):
+            core_stop.stop(project_name)
     except Exception as e:
         stderr_console.print(
             f"[yellow]Warning:[/yellow] Could not stop '{project_name}' after aborting; it may "
@@ -1528,7 +1528,7 @@ def rm(
             except KeyboardInterrupt:
                 console.print("\n[yellow]Operation cancelled.[/yellow]")
                 if started_for_backup:
-                    _stop_after_transient_start(name, verbose=actual_verbose)
+                    _stop_after_transient_start(name)
                 raise typer.Exit(code=1) from None
 
             if not start_ok:
@@ -1537,7 +1537,7 @@ def rm(
                 # return it to its stopped state and record the failure so the
                 # command exits non-zero.
                 if started_for_backup:
-                    _stop_after_transient_start(name, verbose=actual_verbose)
+                    _stop_after_transient_start(name)
                 any_failure = True
                 stderr_console.print(
                     f"[bold red]✗[/bold red] Project '{name}' was not removed: it could not be "
@@ -1570,7 +1570,7 @@ def rm(
         # transiently started this project for the backup, return it to its original
         # stopped state - the early abort leaves the containers running.
         if step_failures and started_for_backup:
-            _stop_after_transient_start(name, verbose=actual_verbose)
+            _stop_after_transient_start(name)
 
         if step_failures:
             any_failure = True

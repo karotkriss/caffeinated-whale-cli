@@ -12,7 +12,7 @@ from ..utils.completion_utils import complete_project_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import get_project_containers, handle_docker_errors
 from .start import _start_project
-from .stop import _stop_project
+from .stop import stop_project_best_effort
 from .utils import resolve_bench_path
 
 app = typer.Typer(help="Restart a Frappe project's containers.")
@@ -46,8 +46,10 @@ def _restart_project(project_name: str, verbose: bool = False, status=None):
                 f"[dim]VERBOSE: No running containers found for '{project_name}'[/dim]"
             )
 
-    # Stop then start
-    stopped = _stop_project(project_name, verbose=verbose, status=status)
+    # Stop then start. `stopped is None` (project vanished) is only reachable via a
+    # teardown race, since the not-found check above already returned; the caller
+    # still handles it.
+    stopped = stop_project_best_effort(project_name, verbose=verbose)
     log_file = _start_project(project_name, verbose=verbose, status=status)
 
     return log_file, stopped
