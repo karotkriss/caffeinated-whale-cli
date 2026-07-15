@@ -43,7 +43,7 @@ uv run pytest tests/test_completion_utils.py
 
 ### Test Coverage
 
-Measured with `uv run pytest --cov` at 0.37.0 (unreleased): 867 tests across 55 test files, ~64% overall coverage.
+Measured with `uv run pytest --cov` at 0.37.0 (unreleased): 870 tests across 55 test files, ~64% overall coverage.
 Per-area breakdown (highest-coverage module in each area; see the module list in each test file for what else it exercises):
 
 - **rm safety** (`test_rm_safety`, `test_rm_truth`, `test_rm_stopped`, `test_rm_stopped_backup`) - `commands/rm.py` ~84%
@@ -57,7 +57,7 @@ Per-area breakdown (highest-coverage module in each area; see the module list in
 - **tips** (`test_tips`) - `utils/tips.py` ~91%
 - **config validation** (`test_config_validation`) - config validation helpers in `utils/db_utils.py`
 - **exit codes** (`test_exit_codes`) - cross-command honest-exit-code contract
-- **app management** (`test_apps`) - `commands/apps.py` ~91%, `commands/update.py` ~69% (multi-site fan-out, frappe reset, `update` deprecation)
+- **app management** (`test_apps`) - `commands/apps.py` ~91%, `commands/update.py` ~71% (multi-site fan-out, frappe reset, `update` deprecation, the summary reported from the `finally` surviving a mid-fan-out stream loss with remediation intact)
 - **logs** (`test_logs`) - `commands/logs.py` ~80% (the `--follow` default flip to `False`, gating `docker exec -it` on `sys.stdin.isatty()` so a non-TTY/piped invocation never requests a TTY, and the not-cwcli-supervised fallback - discovering and tailing a honcho/`bench start` bench's real log files, `--process` file-stem filtering, the honest "running but has not written those logs yet" vs "may not be running" hints, and that the supervised path never calls the fallback)
 - **unlock** (`test_unlock`, `test_unlock_command_cli`) - `commands/unlock.py` ~50% (the `test -d` probes and locks removal run as argv lists, not `sh -c` string interpolation; its logic moved to `core/unlock.py` - see the core unlock/stop slice below)
 - **`CWCLI_HOME` override** (`test_cwcli_home`) - `utils/config_utils.py`'s `cwcli_home()` ~41% file-wide; mock-free, sets a real `CWCLI_HOME` env var and resolves the import-time footprint constants in a fresh subprocess
@@ -326,7 +326,7 @@ Status as of 0.37.0 (based on `ls tests/` and the coverage run above):
 ### Done
 1. **Project Inspection** (`commands/inspect.py`) - covered by `test_inspect_partial_refresh`, `test_inspect_label_recovery` (~62%).
 2. **Database Operations** (`utils/db_utils.py`) - covered by `test_db_security`, `test_config_validation` (~68%).
-3. **App Management** (`commands/apps.py`, `commands/update.py`) - covered by `test_apps` (~91% / ~69%).
+3. **App Management** (`commands/apps.py`, `commands/update.py`) - covered by `test_apps` (~91% / ~71%).
 4. **`CWCLI_HOME` override** (`utils/config_utils.py`'s `cwcli_home()`) - covered by `test_cwcli_home`, mock-free (real env var, real filesystem, real subprocess).
 5. **Real-Docker E2E for `init` and `backup`** (`tests/e2e/test_init_e2e.py`, `tests/e2e/test_backup_e2e.py`) - genuine `bench init`/`bench backup` against throwaway Frappe instances on the v14/v15/v16 matrix, both interactive and non-interactive. The remaining commands (`rm`, `restore`, `update`/`apps`, `inspect`) and the P2P loopback are deferred to follow-up PRs (`openspec/changes/rebuild-e2e-test-suite`); `unlock` closed its own gap - see item 6d.
 5a. **Real-Docker E2E for the lifecycle commands `start`/`status`/`logs`/`restart`** (`tests/e2e/test_start_status_e2e.py`, both modes, v14/v15/v16 matrix) - a structure-agnostic outcome net (a started instance genuinely serves, `status` discriminates the real lifecycle states, `logs` shows the bench stream, `restart` recovers the instance, honest exit codes) that pinned the invariants the start/status core migration had to preserve and abstained from the mechanics it replaced, so it survived that migration unchanged (`openspec/changes/add-start-status-e2e-net`). `tests/e2e/test_start_status_new_behavior_e2e.py` is that migration's own net for the behavior it ADDED (genuine idempotency, `degraded`, real per-process health, the relocated bounded log, the multi-bench refuse) - see item 6a and `openspec/changes/migrate-start-status-core`. `tests/e2e/test_per_process_supervisor_e2e.py` is `add-per-process-supervisor`'s own net for the features honcho's all-or-nothing model made impossible (supervisord as the live in-container supervisor, `cwcli restart --process`/`cwcli axi restart --process` cycling one program while its siblings keep their pids, auto-heal after a killed process, `cwcli logs --process`, the unknown-process usage error) - see item 6a. `tests/e2e/test_status_unsupervised_e2e.py` guards the not-cwcli-supervised FALLBACK regression: with the bench's supervisord stopped and the Procfile relaunched under plain honcho, `status`/`axi status` report the real per-process up/pid state (not a false all-down), flag `not_cwcli_supervised`, and never launch supervisord themselves, in both interactive and non-interactive modes; the supervisord path is restored afterward so sibling tests are undisturbed - see item 6a.
