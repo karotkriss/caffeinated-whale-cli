@@ -238,7 +238,7 @@ def _gather_bench_data(
     # full inspect rebuild labels after the SQLite cache is lost: the marker lives
     # inside the bench, so it survives a cache wipe. The marker is the source of
     # truth for labels; the rest of the bench config is re-derived live as above.
-    marker_label = bench_labels.read_label_marker(frappe_container, bench_dir, verbose)
+    marker_label = bench_labels.read_label_marker(frappe_container, bench_dir)
     if marker_label:
         bench_data["label"] = marker_label
         if verbose:
@@ -608,7 +608,7 @@ def inspect(
             bench["label"] = new_label
             if interactive_container is not None:
                 if not bench_labels.write_label_marker(
-                    interactive_container, bench["path"], new_label, verbose
+                    interactive_container, bench["path"], new_label
                 ):
                     console_err.print(
                         f"[yellow]Warning:[/yellow] could not write marker file for "

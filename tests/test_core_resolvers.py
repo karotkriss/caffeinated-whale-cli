@@ -59,6 +59,28 @@ class TestResolveContainerState:
             resolvers.resolve_container_state("proj", _FakeContainer("exited"), offer_choice=False)
         assert exc.value.kind is ErrorKind.NOT_RUNNING
 
+    def test_not_running_hint_defaults_to_the_yes_wording(self):
+        """Callers that DO have a --yes (backup, unlock, the CLI wrapper) are unchanged."""
+        with pytest.raises(CwcliError) as exc:
+            resolvers.resolve_container_state("proj", _FakeContainer("exited"), offer_choice=False)
+        assert exc.value.hint == (
+            "Pass --yes to auto-start it, or start it first with 'cwcli start proj'."
+        )
+
+    def test_not_running_hint_can_be_supplied_by_the_caller(self):
+        """The default names --yes, which a caller like `label` has no such flag for;
+        it would tell a user (and, via axi's help line, an agent) to pass a flag that
+        does not exist."""
+        with pytest.raises(CwcliError) as exc:
+            resolvers.resolve_container_state(
+                "proj",
+                _FakeContainer("exited"),
+                offer_choice=False,
+                not_running_hint="Start the project first.",
+            )
+        assert exc.value.hint == "Start the project first."
+        assert "--yes" not in exc.value.hint
+
     def test_container_state_dto_has_no_live_object(self):
         result = resolvers.resolve_container_state("proj", _FakeContainer("running"))
         blob = dataclasses.asdict(result.data)

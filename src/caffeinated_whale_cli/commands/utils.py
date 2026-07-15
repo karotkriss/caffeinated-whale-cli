@@ -14,7 +14,7 @@ import typer
 from ..core import resolvers
 from ..core.envelope import Status
 from ..core.errors import CwcliError, ErrorKind
-from ..utils import bench_labels, db_utils
+from ..utils import bench_labels
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import get_frappe_container
 
@@ -180,7 +180,7 @@ def resolve_bench_path(
             )
             raise typer.Exit(code=1) from None
         # NOT_FOUND: an explicit --bench selector matched no cached bench.
-        benches = _cached_benches(project_name)
+        benches = resolvers.cached_benches(project_name)
         stderr_console.print(
             f"[bold red]Error:[/bold red] No bench '{bench_selector}' in project "
             f"'{project_name}'."
@@ -208,7 +208,7 @@ def resolve_bench_path(
         return path
 
     # NEEDS_CHOICE select_bench: multiple benches, no selector.
-    benches = _cached_benches(project_name)
+    benches = resolvers.cached_benches(project_name)
     if on_ambiguous == "first":
         first_path: str = benches[0]["path"]
         stderr_console.print(
@@ -264,12 +264,6 @@ def _prompt_select_bench(project_name: str, benches: list[dict]) -> str:
         stderr_console.print("[yellow]Operation cancelled.[/yellow]")
         raise typer.Exit(code=1)
     return choice_map[answer]
-
-
-def _cached_benches(project_name: str) -> list[dict]:
-    """The cached bench list for a project (for rendering error/ambiguity output)."""
-    cached_data = db_utils.get_cached_project_data(project_name)
-    return (cached_data or {}).get("bench_instances") or []
 
 
 def confirm_or_exit(

@@ -733,7 +733,7 @@ cwcli label [OPTIONS] PROJECT_NAME [SELECTOR] [NEW_LABEL]
 | Option | Description |
 |--------|-------------|
 | `--clear` | Remove the selected bench's user label (revert to its numeric index) |
-| `-v`, `--verbose` | Enable verbose output |
+| `-v`, `--verbose` | Print the resolved marker file path and any operation notes on completion |
 
 **Label rules:**
 
@@ -1767,9 +1767,23 @@ cwcli axi status frappe-one
 # Restart ONE supervised process (siblings keep running); the outcome prints as
 # TOON. --process is required; --bench selects a bench on a multi-bench project.
 cwcli axi restart frappe-one --process web
+
+# List a project's benches with their indices and labels. This is what answers
+# "pass --bench <index|label>" from any other verb - no other verb can.
+cwcli axi benches frappe-one
+
+# Set or clear a bench's durable user label. Exactly one of --set/--clear is
+# required; listing is `cwcli axi benches`, not a mode of this verb.
+cwcli axi label frappe-one --bench 0 --set staging
+cwcli axi label frappe-one --bench staging --clear
+
+# Report whether a newer cwcli is published. READ-ONLY: --check is required and
+# this verb never upgrades. Exits 0 on any successful read - the answer is the
+# is_outdated field, not the exit code.
+cwcli axi self-update --check
 ```
 
-`cwcli axi ls`, `cwcli axi where`, `cwcli axi backup`, `cwcli axi unlock`, `cwcli axi stop`, `cwcli axi start`, `cwcli axi status`, and `cwcli axi restart` run on the same logic core as their human counterparts; only the output (always TOON, never JSON) and choice-handling differ. `cwcli axi start` never prompts: an ambiguous multi-bench project is a `--bench` usage error (exit 2), and an unresolved port conflict is a `CONFLICT` error naming `--yes` (exit 1). `cwcli axi unlock` follows `cwcli axi backup`'s conventions exactly: an ambiguous multi-bench project is a `--bench` usage error (exit 2) and a stopped instance is a usage error pointing at `cwcli start` (exit 2). `cwcli axi stop` is idempotent for an agent - stopping an already-stopped project is a success, not an error. `cwcli axi status` always exits 0, leading with the `overall` aggregate (`offline`/`online`/`running`/`degraded`). `cwcli axi restart` requires `--process`; an unknown/ambiguous process is a usage error listing the valid labels (exit 2). JSON output stays on the human commands (`cwcli ls --json`, `cwcli where --json`).
+`cwcli axi ls`, `cwcli axi where`, `cwcli axi backup`, `cwcli axi unlock`, `cwcli axi stop`, `cwcli axi start`, `cwcli axi status`, `cwcli axi restart`, `cwcli axi benches`, and `cwcli axi label` run on the same logic core as their human counterparts; only the output (always TOON, never JSON) and choice-handling differ. `cwcli axi start` never prompts: an ambiguous multi-bench project is a `--bench` usage error (exit 2), and an unresolved port conflict is a `CONFLICT` error naming `--yes` (exit 1). `cwcli axi unlock` follows `cwcli axi backup`'s conventions exactly: an ambiguous multi-bench project is a `--bench` usage error (exit 2) and a stopped instance is a usage error pointing at `cwcli start` (exit 2). `cwcli axi stop` is idempotent for an agent - stopping an already-stopped project is a success, not an error. `cwcli axi status` always exits 0, leading with the `overall` aggregate (`offline`/`online`/`running`/`degraded`). `cwcli axi restart` requires `--process`; an unknown/ambiguous process is a usage error listing the valid labels (exit 2). `cwcli axi benches` is the discovery verb behind every other verb's `--bench`: when a bench-scoped verb reports "multiple benches; pass `--bench <index|label>`", this is what tells you the valid values, and a project that has never been inspected is a structured error naming `cwcli inspect` rather than an empty list. `cwcli axi label` never starts a stopped project (the label marker lives inside the bench), and listing is deliberately `cwcli axi benches` rather than a mode of the mutation verb. `cwcli axi self-update --check` is read-only and **exits 0 whenever the check succeeds, including when an update is available** - the answer is the `is_outdated` field, not the exit code, because on the agent surface a non-zero exit means an error. This deliberately differs from the human `cwcli self-update --check`, which exits 1 when an update is available so shell scripts can gate on it; the mutating `cwcli axi self-update` is deliberately not offered. JSON output stays on the human commands (`cwcli ls --json`, `cwcli where --json`).
 
 ### Verbose Mode for Debugging
 

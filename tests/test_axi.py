@@ -172,7 +172,10 @@ class TestAxiHome:
         assert "instances[2]{projectName,status,ports}:" in result.stdout
         assert "proj-a,running,8000 8001" in result.stdout
         assert "proj-b,exited,N/A" in result.stdout
-        assert "help[3]:" in result.stdout
+        # The block declares its own count, so this pins the count/entry agreement
+        # rather than a fixed number of suggestions.
+        assert "help[4]:" in result.stdout
+        assert result.stdout.count("  Run `cwcli axi ") == 4
 
     def test_home_definitive_empty_state(self, monkeypatch):
         monkeypatch.setattr(axi_mod.core_list, "list_instances", _instances_ok([]))
