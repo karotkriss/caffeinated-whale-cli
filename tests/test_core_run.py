@@ -11,14 +11,16 @@ import types
 
 import pytest
 import typer
+from typer.testing import CliRunner
 
 from caffeinated_whale_cli.commands import run as run_mod
 from caffeinated_whale_cli.core import docker as core_docker
 from caffeinated_whale_cli.core import exec_stream as es
 from caffeinated_whale_cli.core import resolvers
 from caffeinated_whale_cli.core import run as core_run
-from caffeinated_whale_cli.core.envelope import Status
+from caffeinated_whale_cli.core.envelope import Result, Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
+from caffeinated_whale_cli.main import app as main_app
 from caffeinated_whale_cli.utils import docker_utils
 
 # ------------------------------------------------------------------ fakes
@@ -400,3 +402,78 @@ def test_run_verbose_reports_the_envelope_warnings(monkeypatch, frontend, capsys
     err = capsys.readouterr().err
     assert "No cached bench path found" in err
     assert "bench migrate" in err
+
+
+# ------------------------------------------------------------------ the argv surface
+#
+# These drive the REAL `main.app` through Typer's parser, because the thing under
+# test IS the parser configuration (`ignore_unknown_options` on main.py's `run`
+# registration). Every test above calls `run_mod.run(**kwargs)` directly, which
+# skips parsing entirely - which is exactly how `cwcli run p get-app --branch
+# develop <url>` shipped exiting 2, with click suggesting `--bench` (cwcli's bench
+# SELECTOR) for what the user meant as a git BRANCH.
+
+
+@pytest.fixture
+def parsed(monkeypatch, frontend):
+    """Capture what the parser hands `run_plan`, without execing anything."""
+    calls = {}
+
+    def fake_run_plan(project_name, args, *, bench=None, bench_path=None, auto_start=False):
+        calls.update(project=project_name, args=args, bench=bench, path=bench_path)
+        return Result(
+            status=Status.OK,
+            data=core_run.RunPlan(
+                project=project_name, container_id="cid", bench_path="/b", command="bench x"
+            ),
+        )
+
+    monkeypatch.setattr(run_mod, "run_plan", fake_run_plan)
+    monkeypatch.setattr(run_mod, "run_stream", stream_of(es.ExecDone(exit_code=0)))
+    return calls
+
+
+def cli(parsed, *argv):
+    result = CliRunner().invoke(main_app, ["run", "proj", *argv])
+    assert result.exit_code == 0, result.output
+    return parsed
+
+
+def test_run_passes_an_unknown_flag_through_to_bench(parsed):
+    """The defect: bench's own flags must reach bench, not exit 2."""
+    calls = cli(parsed, "get-app", "--branch", "develop", "https://github.com/x/y.git")
+
+    assert calls["args"] == ["get-app", "--branch", "develop", "https://github.com/x/y.git"]
+    assert calls["bench"] is None  # --branch is NOT cwcli's bench selector
+
+
+def test_run_never_suggests_the_bench_selector_for_an_unknown_flag(frontend):
+    """`--bench` is a bench selector; suggesting it for `--branch` steers the user wrong."""
+    result = CliRunner().invoke(main_app, ["run", "proj", "get-app", "--branch", "develop"])
+
+    assert result.exit_code != 2
+    assert "Did you mean" not in result.output
+    assert "No such option" not in result.output
+
+
+def test_run_still_claims_its_own_flags_after_the_bench_args(parsed):
+    """The documented `cwcli run p migrate --bench staging` form keeps working."""
+    calls = cli(parsed, "migrate", "--bench", "staging")
+
+    assert calls["args"] == ["migrate"]
+    assert calls["bench"] == "staging"
+
+
+def test_run_honors_the_double_dash_separator(parsed):
+    """`--` still hands everything after it to bench, collisions included."""
+    calls = cli(parsed, "--", "--site", "development.localhost", "migrate")
+
+    assert calls["args"] == ["--site", "development.localhost", "migrate"]
+    assert calls["bench"] is None
+
+
+def test_run_double_dash_shields_a_flag_that_collides_with_cwclis_own(parsed):
+    """A bench flag NAMED like one of cwcli's own is what `--` is for."""
+    calls = cli(parsed, "--", "build", "--verbose")
+
+    assert calls["args"] == ["build", "--verbose"]

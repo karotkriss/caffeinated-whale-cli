@@ -43,12 +43,13 @@ def run(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output."),
 ):
     """
-    Execute 'bench <command>' inside the specified project's frappe container.
+    Execute `bench <command>` inside the specified project's frappe container.
 
-    Bench's own flags must follow a '--' separator, otherwise this command's
-    parser claims them first:
-
-        cwcli run my-project -- --site example.com migrate
+    Flags this command does not define are passed through to bench, so
+    `cwcli run my-project --site example.com migrate` works. The options below
+    stay this command's wherever they appear; to send bench a flag that collides
+    with one of them, put it after a `--` separator, as in
+    `cwcli run my-project -- build --verbose`.
     """
     # Interactive prologue: prompts happen HERE, before the core call. The core
     # then re-checks and only returns confirm_start on the (rare) race.
