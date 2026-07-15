@@ -1320,14 +1320,21 @@ cwcli run [OPTIONS] PROJECT_NAME BENCH_ARGS...
 | `-y`, `--yes` | Auto-start stopped containers without prompting |
 | `-v`, `--verbose` | Enable verbose output |
 
+**Passing bench's own flags:** `cwcli run` parses the options above before bench
+sees the command line, so a bench flag such as `--site` or `--branch` must follow
+a `--` separator. Without it, `cwcli` rejects the flag as unknown and exits 2.
+Note that `--branch` is reported as "Did you mean `--bench`?" - `--bench` is
+cwcli's *bench selector*, an unrelated concept. For app management, prefer the
+[`apps`](#apps---manage-frappe-apps) group, which takes these flags directly.
+
 **Examples:**
 
 ```bash
 # Run bench migrate
 cwcli run frappe-one migrate
 
-# Run bench with specific site
-cwcli run frappe-one --site development.localhost migrate
+# Run bench with specific site (bench's own flags go after `--`)
+cwcli run frappe-one -- --site development.localhost migrate
 
 # Execute a custom bench command
 cwcli run frappe-one console
@@ -1338,6 +1345,10 @@ cwcli run frappe-one migrate --bench staging
 # Use custom bench path
 cwcli run frappe-one migrate --path /workspace/custom-bench
 ```
+
+`cwcli run` exits with the bench command's own exit code. If the connection to
+the command's output stream is lost, it reports that and exits non-zero rather
+than claiming success.
 
 ---
 

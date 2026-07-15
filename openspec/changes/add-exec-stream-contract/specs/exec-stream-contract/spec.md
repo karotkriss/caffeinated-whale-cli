@@ -2,7 +2,8 @@
 
 ### Requirement: core.exec_stream is a per-exec UI-pure typed event iterator
 
-The system SHALL provide `core.exec_stream(container_id, cmd, *, workdir=None, environment=None) -> Iterator[ExecEvent]` in a new `core/exec_stream.py`, yielding zero or more `ExecChunk(stream, text)` events followed by exactly one terminal `ExecDone(exit_code)`.
+The system SHALL provide `core.exec_stream(container, cmd, *, workdir=None, environment=None) -> Iterator[ExecEvent]` in a new `core/exec_stream.py`, yielding zero or more `ExecChunk(stream, text)` events followed by exactly one terminal `ExecDone(exit_code)`.
+It SHALL take a LIVE container, as `resolvers.resolve_container_state` and `resolvers.require_bench_dir` already do (the no-live-objects rule governs what a `core.<verb>` RETURNS, not what it accepts), and SHALL NOT construct a Docker client of its own.
 It SHALL be keyed to a SINGLE exec rather than to a verb, because `run` is the only consumer with one exec per resolve while `update` performs 13 and `init` performs 11 downstream of a single resolve, and a verb-shaped iterator cannot express a fan-out with logic between the execs.
 `core.exec_stream` SHALL NOT print, prompt, or call `typer.Exit`, and SHALL NOT import `rich`, `questionary`, or `typer`.
 It SHALL accept an `environment` mapping, so the one consumer that carries live secrets in its exec (`init`) can migrate later without the primitive changing.

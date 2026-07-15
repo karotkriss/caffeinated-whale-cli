@@ -27,17 +27,25 @@ This split SHALL NOT be described or implemented as a plan/apply split: plan/app
 - **WHEN** `core.run_plan` runs against a project with no cached bench data
 - **THEN** it resolves `resolvers.DEFAULT_BENCH_PATH` and carries a `bench.default_used` warning in the envelope rather than printing it, matching `core/unlock.py`'s handling of the identical fork
 
-### Requirement: RunPlan carries no live Docker object
+### Requirement: RunPlan carries no live Docker object, and the id is bridged back inside the core
 
 `RunPlan` SHALL carry `container_id` as a Docker ID string, never a live `Container`, and every field SHALL be a builtin.
 This is the locked "no live Docker objects leak past the core boundary" contract applied at the two-phase seam: a plan crosses a `core.<verb>` return boundary by construction, which is exactly what the contract forbids for live objects.
-Accepting a live container as a parameter remains permitted and unchanged, as `resolvers.resolve_container_state` and `resolvers.require_bench_dir` already do.
-`core.exec_stream` SHALL therefore accept a `container_id` and resolve the container itself, so one signature serves `run` (which passes `plan.container_id`) and `apps`/`update` (which pass the `id` of a container they already hold).
+Accepting a live container as a parameter remains permitted and unchanged, as `resolvers.resolve_container_state` and `resolvers.require_bench_dir` already do; the rule governs returns, not parameters.
+`core.exec_stream` SHALL therefore accept a LIVE container, matching those existing primitives, and SHALL NOT construct a Docker client of its own.
+The system SHALL provide `core.docker.get_container(container_id)` as the id-to-handle bridge and `core.run_stream(plan) -> Iterator[ExecEvent]` as phase 2, so the frontend never touches a container and the exec lands on the container that was PLANNED rather than on whatever a later re-resolution by project name would find.
+
+(This requirement was corrected during implementation. The proposal specified `core.exec_stream(container_id, ...)`, which over-applied the return-boundary rule to a parameter; it forced the primitive to build its own client, discarded the client every caller already held, and broke 24 tests in `tests/test_apps.py` whose fakes supply a live container. The existing suite caught it before it shipped.)
 
 #### Scenario: A plan is fully serializable
 
 - **WHEN** a `RunPlan` returned by `core.run_plan` is inspected or serialized
 - **THEN** it holds only builtins, and no attribute is or transitively holds a Docker SDK object
+
+#### Scenario: The plan execs the container it planned
+
+- **WHEN** `core.run_stream` is given a `RunPlan`
+- **THEN** it resolves `plan.container_id` back to a handle and execs THAT container, rather than re-resolving the project's frappe container afresh
 
 ### Requirement: core.run_plan adds no new resolver primitives and resolves no more than run does today
 

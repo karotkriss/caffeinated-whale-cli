@@ -152,7 +152,7 @@ Current overall coverage at 0.37.0, unreleased (821 tests across 53 test files, 
 
 ### Modules Needing Dedicated Suites
 - ⚠️ `utils/port_utils.py` (~9%, only incidental coverage)
-- ⚠️ `utils/docker_utils.py` (~58%, up from ~51% now that `test_exec_stream_decode.py` dedicated-tests `utf8_stream_decoder`/`decode_exec_stream` on top of `test_core_resolvers`'s `get_frappe_container` CLI wrapper; the rest of the module (`handle_docker_errors`'s error branches, `exec_into_container`) is still only incidentally covered)
+- ⚠️ `utils/docker_utils.py` (`test_exec_stream_decode.py` dedicated-tests `utf8_stream_decoder`, on top of `test_core_resolvers`'s `get_frappe_container` CLI wrapper; the rest of the module (`handle_docker_errors`'s error branches, `exec_into_container`) is still only incidentally covered. `decode_exec_stream` is GONE: `core/exec_stream.py` superseded it and its only three callers were re-pointed at the primitive)
 - ⚠️ `utils/sendme_utils.py` (~9%, only incidental coverage)
 - ⚠️ `utils/vscode_utils.py` (~16%, only incidental coverage)
 - ⚠️ `utils/config_utils.py` (~41%; `cwcli_home()` is covered by `test_cwcli_home`, but `load_config`/`save_config`/the custom-path and auto-inspect-config setters remain untested)
@@ -161,7 +161,7 @@ Current overall coverage at 0.37.0, unreleased (821 tests across 53 test files, 
 - ✅ `commands/label.py` - (`test_bench_label_db_and_command`: the 15 pre-migration tests, re-pointed at the core with their assertions untouched - including the two that pin the clear-path consistency invariant; `tests/e2e/test_label_e2e.py` drives the two-store invariant against a real container, non-interactive only because `label` has no prompt)
 - ⚠️ `commands/unlock.py` (~50%; its logic moved to `core/unlock.py`, which is covered - see above; `test_unlock_command_cli.py` dedicated-tests the `--bench` selector resolution, and `tests/e2e/test_unlock_e2e.py` drives both modes end to end, but the CLI frontend's choice-resolution/verbose-print branches still have no dedicated unit suite)
 - ⚠️ `commands/stop.py` (~68%; its logic moved to `core/stop.py`, which is covered - see above; `test_axi_unlock_stop.py`/`test_yes_flag.py`/`test_exit_codes.py` exercise it incidentally, but the CLI frontend itself - the multi-project loop, `stop_project_best_effort` - has no dedicated unit suite)
-- ⚠️ Command modules at or near 0% dedicated coverage: `backup.py` (0%; its logic moved to `core/backup.py`, which is covered - see above), `run.py` (its only guard is `test_exec_stream_decode.py`, which pins the exec-stream decode across all four streaming consumers; the rest of the command is still untested)
+- ⚠️ Command modules at or near 0% dedicated coverage: `backup.py` (0%; its logic moved to `core/backup.py`, which is covered - see above). **`run.py` is no longer in this bucket**: its logic moved to `core/run.py` + `core/exec_stream.py` (both covered by `test_core_run.py` and `test_core_exec_stream.py`), and `test_core_run.py` also dedicated-tests the CLI frontend itself - the exit-code passthrough, the honest non-zero on an unknown code, the `--bench` plumbing, and the ambiguity rendering. `tests/e2e/test_run_e2e.py` drives both modes end to end. It was previously the one genuinely untested command in cwcli
 
 ## Writing New Tests
 
