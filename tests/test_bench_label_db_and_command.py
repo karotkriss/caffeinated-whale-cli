@@ -9,6 +9,8 @@ import pytest
 import typer
 
 from caffeinated_whale_cli.commands import label as label_mod
+from caffeinated_whale_cli.core import docker as core_docker
+from caffeinated_whale_cli.core import label as core_label
 from caffeinated_whale_cli.utils import db_utils, docker_utils
 from tests.bench_fakes import MarkerFakeContainer
 
@@ -104,7 +106,7 @@ def _run_label(monkeypatch, container, **kwargs):
             return True
 
     monkeypatch.setattr(docker_utils.docker, "from_env", lambda: _Client())
-    monkeypatch.setattr(label_mod, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
 
     params = dict(
         project_name="proj",
@@ -129,7 +131,7 @@ class TestLabelCommand:
         monkeypatch.setattr(
             docker_utils.docker, "from_env", lambda: type("C", (), {"ping": lambda s: True})()
         )
-        monkeypatch.setattr(label_mod, "get_frappe_container", _boom)
+        monkeypatch.setattr(core_docker, "get_frappe_container", _boom)
         label_mod.label(
             project_name="proj",
             bench_selector=None,
@@ -176,7 +178,7 @@ class TestLabelCommand:
         container = MarkerFakeContainer(
             bench_path=BENCH_B, fs={MARKER_B: b'{"schema":1,"label":"staging"}'}
         )
-        monkeypatch.setattr(label_mod.bench_labels, "clear_label_marker", lambda *a, **k: False)
+        monkeypatch.setattr(core_label.bench_labels, "clear_label_marker", lambda *a, **k: False)
         with pytest.raises(typer.Exit) as exc:
             _run_label(monkeypatch, container, bench_selector="staging", clear=True)
         assert exc.value.exit_code == 1
@@ -195,7 +197,7 @@ class TestLabelCommand:
         container = MarkerFakeContainer(
             bench_path=BENCH_B, fs={MARKER_B: b'{"schema":1,"label":"staging"}'}
         )
-        monkeypatch.setattr(label_mod.db_utils, "set_bench_label", lambda *a, **k: False)
+        monkeypatch.setattr(core_label.db_utils, "set_bench_label", lambda *a, **k: False)
         with pytest.raises(typer.Exit) as exc:
             _run_label(monkeypatch, container, bench_selector="staging", clear=True)
         assert exc.value.exit_code == 1

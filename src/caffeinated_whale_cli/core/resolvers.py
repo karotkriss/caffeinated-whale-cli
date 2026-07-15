@@ -35,12 +35,24 @@ class ContainerState:
     start_requested: bool  # auto-start was requested and the container was down
 
 
+def cached_benches(project_name: str) -> list[dict]:
+    """The cached bench list for a project, or ``[]`` when nothing is cached.
+
+    Lives here rather than in ``commands/`` because BOTH layers need it and the
+    core cannot import the frontend: it was previously a private helper in
+    ``commands/utils.py`` that the core had to re-implement inline.
+    """
+    cached_data = db_utils.get_cached_project_data(project_name)
+    return (cached_data or {}).get("bench_instances") or []
+
+
 def resolve_container_state(
     project_name: str,
     frappe_container,
     *,
     auto_start: bool = False,
     offer_choice: bool = True,
+    not_running_hint: str | None = None,
 ) -> Result[ContainerState]:
     """Report a frappe container's run-state without prompting, printing or starting.
 
@@ -49,6 +61,12 @@ def resolve_container_state(
       (the caller performs the actual, UI-coupled start)
     - stopped, no auto-start, ``offer_choice`` -> ``NEEDS_CHOICE`` ``confirm_start``
     - stopped, no auto-start, not ``offer_choice`` -> raises ``CwcliError(NOT_RUNNING)``
+
+    ``not_running_hint`` overrides the hint on that raise. The default names
+    ``--yes``, which is right for the verbs that have one but wrong for a caller
+    like ``label`` that has no such flag and never will - the hint would tell a
+    user (and, via axi's ``help:`` line, an agent) to pass a flag that does not
+    exist. Parameterized rather than hardcoded for that reason.
     """
     # A container rm'd/errored between resolution and here would otherwise leak a
     # raw docker exception past the core boundary; map it to a typed CwcliError.
@@ -85,7 +103,8 @@ def resolve_container_state(
         ErrorKind.NOT_RUNNING,
         "container.not_running",
         f"Frappe container for project '{project_name}' is not running.",
-        hint=f"Pass --yes to auto-start it, or start it first with 'cwcli start {project_name}'.",
+        hint=not_running_hint
+        or (f"Pass --yes to auto-start it, or start it first with 'cwcli start {project_name}'."),
     )
 
 
@@ -124,8 +143,7 @@ def resolve_bench(
     if path_override:
         return Result(status=Status.OK, data=path_override)
 
-    cached_data = db_utils.get_cached_project_data(project_name)
-    benches = (cached_data or {}).get("bench_instances") or []
+    benches = cached_benches(project_name)
 
     if bench_selector is not None:
         chosen = bench_labels.resolve_bench(benches, bench_selector)

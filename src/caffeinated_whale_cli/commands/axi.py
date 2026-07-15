@@ -30,12 +30,14 @@ from pathlib import Path
 import typer
 
 from ..core import backup as core_backup
+from ..core import label as core_label
 from ..core import list as core_list
 from ..core import restart as core_restart
 from ..core import start as core_start
 from ..core import status as core_status
 from ..core import stop as core_stop
 from ..core import unlock as core_unlock
+from ..core import version as core_version
 from ..core import where as core_where
 from ..core.envelope import Choice
 from ..core.envelope import Status as CoreStatus
@@ -476,3 +478,129 @@ def axi_restart(
     assert result.data is not None  # OK/WARNING always carries a ProcessRestartOutcome
     emit_result(result.data, warnings=result.warnings)
     raise typer.Exit(0 if result.status in (CoreStatus.OK, CoreStatus.WARNING) else 1)
+
+
+# ---------------------------------------------------------------------------- benches
+
+
+@app.command("benches")
+def axi_benches(
+    project: str = typer.Argument(..., help="The Docker Compose project name."),
+) -> None:
+    """List a project's benches with their indices and labels; emit them as TOON.
+
+    The discovery verb behind every other verb's ``--bench``: when a bench-scoped
+    verb reports "multiple benches; pass --bench <index|label>", this is what
+    answers it. Nothing else on the agent surface can - ``axi ls`` carries no bench
+    data, and ``axi where`` only yields a bench path from a search you must already
+    know an app or site name to run.
+
+    Read-only; touches no container. A project that has never been inspected is a
+    structured error naming ``cwcli inspect``, NOT an empty list: "not inspected
+    yet" and "has zero benches" are different facts, and only one has a remedy.
+    """
+    try:
+        result = core_label.list_benches(project)
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    assert result.data is not None  # OK always carries a BenchList
+    emit_result(result.data, warnings=result.warnings)
+    raise typer.Exit(0)
+
+
+# ------------------------------------------------------------------------------ label
+
+
+@app.command("label")
+def axi_label(
+    project: str = typer.Argument(..., help="The Docker Compose project name."),
+    bench: str = typer.Option(None, "--bench", help="Which bench: numeric index or label."),
+    set_label: str = typer.Option(None, "--set", help="The user label to assign."),
+    clear: bool = typer.Option(False, "--clear", help="Remove the bench's user label."),
+) -> None:
+    """Set or clear a bench's durable user label; emit the outcome as TOON.
+
+    Exactly one of ``--set`` or ``--clear`` is required. Listing is NOT a mode of
+    this verb: use ``cwcli axi benches``. Never prompts, and never starts a stopped
+    project - the marker lives inside the bench, so a stopped container is a
+    structured error pointing at ``cwcli start``.
+    """
+    if set_label is not None and clear:
+        emit_axi_error(
+            CwcliError(
+                ErrorKind.USAGE,
+                "label.selector_conflict",
+                "Use either --set or --clear, not both.",
+            )
+        )
+        raise typer.Exit(exit_for(ErrorKind.USAGE))
+    if set_label is None and not clear:
+        emit_axi_error(
+            CwcliError(
+                ErrorKind.USAGE,
+                "label.no_operation",
+                "Pass --set <label> to assign a label, or --clear to remove one.",
+                hint="run `cwcli axi benches <project>` to list benches and their labels",
+            )
+        )
+        raise typer.Exit(exit_for(ErrorKind.USAGE))
+
+    try:
+        if clear:
+            result = core_label.clear_label(project, bench=bench)
+        else:
+            assert set_label is not None  # narrowed by the guards above
+            result = core_label.set_label(project, bench=bench, label=set_label)
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    if result.status is CoreStatus.NEEDS_CHOICE:
+        assert result.choice is not None  # NEEDS_CHOICE always carries a Choice
+        emit_axi_choice_as_usage_error(result.choice)
+        raise typer.Exit(2)
+
+    assert result.data is not None  # OK/WARNING always carries a LabelOutcome
+    emit_result(result.data, warnings=result.warnings)
+    raise typer.Exit(0 if result.status in (CoreStatus.OK, CoreStatus.WARNING) else 1)
+
+
+# ------------------------------------------------------------------------ self-update
+
+
+@app.command("self-update")
+def axi_self_update(
+    check: bool = typer.Option(
+        ..., "--check", help="Required. Report current vs latest; never upgrades."
+    ),
+    no_cache: bool = typer.Option(
+        False, "--no-cache", help="Force a fresh PyPI lookup, ignoring the shared version cache."
+    ),
+) -> None:
+    """Report whether a newer cwcli is available; emit the check as TOON. READ-ONLY.
+
+    ``--check`` is REQUIRED: the mutating form is deliberately deferred, so this
+    verb never upgrades anything. An agent upgrading the tool it is currently
+    executing from, mid-session, is a question nobody has answered, and the
+    original deferral's rationale was never recorded.
+
+    Exits 0 on ANY successful read, including when an update IS available, and
+    carries that fact in ``is_outdated``. This deliberately DIVERGES from the human
+    `cwcli self-update --check`, which exits 1 so shell scripts can gate on it: on
+    the agent surface a non-zero exit means an error, and a read verb that
+    successfully answers "you are outdated" has not failed. The precedent is `axi
+    status`, which exits 0 while reporting a fully offline project. A fail-open
+    PyPI lookup is also a success (`latest: null` + a `pypi.unreachable` warning),
+    because a read-only check must not punish a flaky network.
+    """
+    try:
+        result = core_version.check(use_cache=not no_cache)
+    except CwcliError as error:  # pragma: no cover - check is fail-open by contract
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    assert result.data is not None  # check always returns data
+    emit_result(result.data, warnings=result.warnings)
+    raise typer.Exit(0)
