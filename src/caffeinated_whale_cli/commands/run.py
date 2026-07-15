@@ -1,15 +1,20 @@
-import shlex
+"""``cwcli run`` - the thin frontend over ``core.run_plan`` + ``core.exec_stream``.
+
+Typer signature, the auto-start prompt, rendering, and the exit code live here;
+everything else is the core's. See ``core/run.py`` for why the resolve and the
+stream are two calls (generators are lazy), and ``core/exec_stream.py`` for why
+the exit code is polled rather than read once.
+"""
 
 import typer
 from rich.console import Console
 
+from ..core.errors import CwcliError
+from ..core.exec_stream import ExecChunk
+from ..core.run import run_plan, run_stream
 from ..utils.completion_utils import complete_project_names
-from ..utils.docker_utils import (
-    decode_exec_stream,
-    get_project_containers,
-    handle_docker_errors,
-)
-from .utils import ensure_containers_running, resolve_bench_path
+from ..utils.docker_utils import handle_docker_errors
+from .utils import ensure_containers_running
 
 stderr_console = Console(stderr=True)
 
@@ -38,42 +43,55 @@ def run(
 ):
     """
     Execute 'bench <command>' inside the specified project's frappe container.
+
+    Bench's own flags must follow a '--' separator, otherwise this command's
+    parser claims them first:
+
+        cwcli run my-project -- --site example.com migrate
     """
-    # Ensure containers are running, prompt user if not (auto-start with --yes)
+    # Interactive prologue: prompts happen HERE, before the core call. The core
+    # then re-checks and only returns confirm_start on the (rare) race.
     ensure_containers_running(project_name, require_running=True, verbose=verbose, auto_start=yes)
 
-    # Resolve which bench to run against. Falls back to the historical default only
-    # when there is no cached bench data to resolve against.
-    bench_path = (
-        resolve_bench_path(project_name, bench, bench_path, verbose=verbose)
-        or "/workspace/frappe-bench"
-    )
-
-    containers = get_project_containers(project_name)
-    if not containers:
-        stderr_console.print(f"[bold red]Error:[/bold red] Project '{project_name}' not found.")
-        raise typer.Exit(code=1)
-
-    frappe_container = next(
-        (c for c in containers if c.labels.get("com.docker.compose.service") == "frappe"),
-        None,
-    )
-    if not frappe_container:
-        stderr_console.print(
-            f"[bold red]Error:[/bold red] No 'frappe' service found for project '{project_name}'."
+    try:
+        result = run_plan(
+            project_name, bench_args, bench=bench, bench_path=bench_path, auto_start=yes
         )
+    except CwcliError as e:
+        stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
+        if e.hint:
+            stderr_console.print(f"[dim]{e.hint}[/dim]")
+        raise typer.Exit(code=1) from e
+
+    if result.choice is not None:
+        stderr_console.print(f"[bold red]Error:[/bold red] {result.choice.prompt}")
+        for option in result.choice.options or []:
+            stderr_console.print(f"  [dim]{option['value']}[/dim]  {option['label']}")
+        stderr_console.print("[dim]Pass --bench <index|label> to choose one.[/dim]")
         raise typer.Exit(code=1)
 
-    # Build the bench command string
-    cmd = "bench " + " ".join(shlex.quote(arg) for arg in bench_args)
+    plan = result.data
+    assert plan is not None  # OK always carries a RunPlan
 
-    # Create and start a Docker exec instance for real-time streaming
-    api = frappe_container.client.api
-    exec_id = api.exec_create(frappe_container.id, cmd, workdir=bench_path)["Id"]
-    for text in decode_exec_stream(api.exec_start(exec_id, stream=True)):
-        typer.echo(text, nl=False)
+    if verbose:
+        for warning in result.warnings:
+            stderr_console.print(f"[dim]{warning.text}[/dim]")
+        stderr_console.print(f"[dim]$ {plan.command}  (in {plan.bench_path})[/dim]")
 
-    # Inspect exit code
-    result = api.exec_inspect(exec_id)
-    exit_code = result.get("ExitCode", 1)
+    exit_code = 1
+    try:
+        for event in run_stream(plan):
+            if isinstance(event, ExecChunk):
+                # Both tags to stdout, reproducing the combined stream this
+                # command has always shown.
+                typer.echo(event.text, nl=False)
+            else:
+                exit_code = event.exit_code
+    except CwcliError as e:
+        # An unknown exit code lands here rather than being reported as success.
+        stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
+        if e.hint:
+            stderr_console.print(f"[dim]{e.hint}[/dim]")
+        raise typer.Exit(code=1) from e
+
     raise typer.Exit(code=exit_code)

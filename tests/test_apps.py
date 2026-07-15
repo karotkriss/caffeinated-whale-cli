@@ -37,7 +37,7 @@ class _FakeAPI:
         self.container = container
         self._pending = None
 
-    def exec_create(self, cid, cmd, workdir=None, tty=False):
+    def exec_create(self, cid, cmd, workdir=None, tty=False, environment=None):
         self._pending = (cmd, workdir)
         return {"Id": "exec-1"}
 
@@ -45,7 +45,10 @@ class _FakeAPI:
         cmd, workdir = self._pending
         code, out = self.container._run(cmd, workdir)
         self.container._last_code = code
-        yield out.encode() if isinstance(out, str) else out
+        raw = out.encode() if isinstance(out, str) else out
+        # Honour demux the way docker-py does: demuxed streams yield
+        # (stdout, stderr) pairs, non-demuxed ones yield raw bytes.
+        yield (raw, None) if demux else raw
 
     def exec_inspect(self, exec_id):
         return {"ExitCode": self.container._last_code}
