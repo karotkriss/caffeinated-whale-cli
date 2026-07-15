@@ -1219,14 +1219,14 @@ def _stop_after_transient_start(project_name: str, verbose: bool = False) -> Non
     Best-effort: a failure to stop is a warning, not a hard error - the data is
     intact either way and the user can stop it manually.
     """
-    from .stop import _stop_project  # lazy import: avoid a module-load cycle
+    from ..core import stop as core_stop  # lazy import: avoid a module-load cycle
 
     console.print(f"[dim]Returning '{project_name}' to its stopped state...[/dim]")
     try:
         with stderr_console.status(
             f"[bold yellow]Stopping '{project_name}'...[/bold yellow]", spinner="dots"
-        ) as status:
-            _stop_project(project_name, verbose=verbose, status=status)
+        ):
+            core_stop.stop(project_name)
     except Exception as e:
         stderr_console.print(
             f"[yellow]Warning:[/yellow] Could not stop '{project_name}' after aborting; it may "

@@ -21,7 +21,8 @@ import typer
 
 from caffeinated_whale_cli.commands import rm
 from caffeinated_whale_cli.commands import start as start_mod
-from caffeinated_whale_cli.commands import stop as stop_mod
+from caffeinated_whale_cli.core import stop as core_stop
+from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 
 
 def _frappe(status="running"):
@@ -186,9 +187,9 @@ class TestTransientStart:
 
 
 class TestStopAfterTransientStart:
-    def test_calls_stop_project(self, monkeypatch):
+    def test_calls_core_stop(self, monkeypatch):
         called = MagicMock()
-        monkeypatch.setattr(stop_mod, "_stop_project", called)
+        monkeypatch.setattr(core_stop, "stop", called)
         rm._stop_after_transient_start("p")
         called.assert_called_once()
 
@@ -196,7 +197,20 @@ class TestStopAfterTransientStart:
         def _boom(*a, **k):
             raise RuntimeError("nope")
 
-        monkeypatch.setattr(stop_mod, "_stop_project", _boom)
+        monkeypatch.setattr(core_stop, "stop", _boom)
+        rm._stop_after_transient_start("p")  # must not raise
+        assert "could not stop" in capsys.readouterr().err.lower()
+
+    def test_typed_not_found_is_a_warning_not_a_crash(self, monkeypatch, capsys):
+        """`core.stop`'s NOT_FOUND replaced `_stop_project`'s None sentinel. This
+        path is best-effort by design (the data is already kept by the time it
+        runs), so the typed error must degrade to the same warning, never escape
+        as a traceback."""
+
+        def _not_found(*a, **k):
+            raise CwcliError(ErrorKind.NOT_FOUND, "project.not_found", "Project 'p' not found.")
+
+        monkeypatch.setattr(core_stop, "stop", _not_found)
         rm._stop_after_transient_start("p")  # must not raise
         assert "could not stop" in capsys.readouterr().err.lower()
 
@@ -262,6 +276,32 @@ class TestRmOrchestration:
         start.assert_called_once()
         remove.assert_called_once()
         stop_back.assert_not_called()  # a clean removal deletes the containers
+
+    def test_not_found_during_return_to_stopped_still_fails_closed(self, monkeypatch):
+        """The `None` sentinel -> `CwcliError(NOT_FOUND)` re-point must not weaken the gate.
+
+        `rm` is where a wrong assumption costs real data, so this proves the
+        property rather than reasoning about it: when the transient start fails AND
+        the return-to-stopped then hits a typed NOT_FOUND (the project vanished
+        under us), `rm` must STILL delete nothing and STILL exit non-zero. The typed
+        error must not escape, and must not be mistaken for a successful gate.
+        """
+        self._base(monkeypatch)
+        monkeypatch.setattr(rm, "_project_run_state", lambda n: "stopped")
+        monkeypatch.setattr(rm, "_transient_start_for_backup", lambda *a, **k: (False, True))
+        remove = MagicMock(return_value=_clean_result())
+        monkeypatch.setattr(rm, "_remove_project", remove)
+
+        def _not_found(*a, **k):
+            raise CwcliError(ErrorKind.NOT_FOUND, "project.not_found", "Project 'proj' not found.")
+
+        monkeypatch.setattr(core_stop, "stop", _not_found)
+
+        with pytest.raises(typer.Exit) as exc:
+            self._run()
+
+        assert exc.value.exit_code == 1  # honest non-zero
+        remove.assert_not_called()  # NOTHING deleted: the gate still fails closed
 
     def test_failed_start_aborts_and_stops_back(self, monkeypatch):
         self._base(monkeypatch)

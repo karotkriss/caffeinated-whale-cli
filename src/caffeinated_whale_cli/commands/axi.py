@@ -34,6 +34,8 @@ from ..core import list as core_list
 from ..core import restart as core_restart
 from ..core import start as core_start
 from ..core import status as core_status
+from ..core import stop as core_stop
+from ..core import unlock as core_unlock
 from ..core import where as core_where
 from ..core.envelope import Choice
 from ..core.envelope import Status as CoreStatus
@@ -248,6 +250,63 @@ def axi_backup(
     raise typer.Exit(0 if result.status in (CoreStatus.OK, CoreStatus.WARNING) else 1)
 
 
+# ---------------------------------------------------------------------------------- unlock
+
+
+@app.command("unlock")
+def axi_unlock(
+    project: str = typer.Argument(..., help="The Docker Compose project name."),
+    site: str = typer.Option(
+        None, "--site", "-s", help="Site to unlock (default: the default site)."
+    ),
+    bench: str = typer.Option(None, "--bench", help="Which bench: numeric index or label."),
+) -> None:
+    """Remove a site's locks folder; emit the outcome as TOON.
+
+    The removed paths are emitted as a structured ``removed`` list. A site that was
+    not locked is a clean success (``already_unlocked: true``), not an error. A
+    stopped container and a multi-bench project with no ``--bench`` are usage
+    errors, exactly as ``axi backup`` reports them.
+    """
+    try:
+        result = core_unlock.unlock(project, site=site, bench=bench)
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    if result.status is CoreStatus.NEEDS_CHOICE:
+        assert result.choice is not None  # NEEDS_CHOICE always carries a Choice
+        emit_axi_choice_as_usage_error(result.choice)
+        raise typer.Exit(2)
+
+    assert result.data is not None  # OK/WARNING always carries an UnlockOutcome
+    emit_result(result.data, warnings=result.warnings)
+    raise typer.Exit(0 if result.status in (CoreStatus.OK, CoreStatus.WARNING) else 1)
+
+
+# ---------------------------------------------------------------------------------- stop
+
+
+@app.command("stop")
+def axi_stop(
+    project: str = typer.Argument(..., help="The Docker Compose project name."),
+) -> None:
+    """Stop a project's containers; emit the outcome as TOON.
+
+    Idempotent: an already-stopped project is a definitive success
+    (``already_stopped: true``), not an error, so an agent can stop twice safely.
+    """
+    try:
+        result = core_stop.stop(project)
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    assert result.data is not None  # OK always carries a StopOutcome
+    emit_result(result.data, warnings=result.warnings)
+    raise typer.Exit(0)
+
+
 # ----------------------------------------------------------------------------- start
 
 
@@ -328,11 +387,19 @@ def _axi_resolve_port_conflicts(project: str, yes: bool) -> None:
                 )
             )
             raise typer.Exit(exit_for(ErrorKind.CONFLICT))
-        # --yes: stop the conflicting Frappe projects (running -> stdout-silent).
-        from .stop import _stop_project
+        # --yes: stop the conflicting Frappe projects. Via `core.stop`, which cannot
+        # print: the old `_stop_project` emitted rich markup to STDOUT on its
+        # not-found / already-stopped branches, so a teardown race between the
+        # detection above and this call could corrupt the one-TOON-document
+        # contract. A project that vanished or stopped in that window is fine here
+        # (its ports are free either way) - the recheck below is what decides.
 
         for proj in conflicting:
-            _stop_project(proj, verbose=False)
+            try:
+                core_stop.stop(proj)
+            except CwcliError as e:
+                if e.kind is not ErrorKind.NOT_FOUND:
+                    raise
 
         # Re-check ALL ports after stopping (mirrors _check_port_conflicts' post-
         # stop recheck): a teardown race or a non-Frappe process could still hold

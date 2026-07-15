@@ -131,8 +131,10 @@ def _check_port_conflicts(
                     ).unsafe_ask()
 
                 if answer:
-                    # Stop the conflicting project
-                    from .stop import _stop_project
+                    # Stop the conflicting project. A project that vanished between
+                    # detection and here is fine (its ports are free either way):
+                    # the post-stop recheck below is what decides.
+                    from .stop import stop_project_best_effort
 
                     stderr_console.print(
                         f"[yellow]Stopping project '{conflicting_project}'...[/yellow]"
@@ -141,7 +143,7 @@ def _check_port_conflicts(
                         f"[bold yellow]Stopping '{conflicting_project}'...[/bold yellow]",
                         spinner="dots",
                     ):
-                        _stop_project(conflicting_project, verbose=verbose)
+                        stop_project_best_effort(conflicting_project, verbose=verbose)
                     console.print(
                         f"[bold green]✓[/bold green] Stopped project '{conflicting_project}'"
                     )
