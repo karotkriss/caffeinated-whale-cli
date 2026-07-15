@@ -37,6 +37,7 @@ from ..core import start as core_start
 from ..core import status as core_status
 from ..core import stop as core_stop
 from ..core import unlock as core_unlock
+from ..core import update as core_update
 from ..core import version as core_version
 from ..core import where as core_where
 from ..core.envelope import Choice
@@ -568,6 +569,81 @@ def axi_label(
     assert result.data is not None  # OK/WARNING always carries a LabelOutcome
     emit_result(result.data, warnings=result.warnings)
     raise typer.Exit(0 if result.status in (CoreStatus.OK, CoreStatus.WARNING) else 1)
+
+
+# ------------------------------------------------------------------------- apps update
+
+apps_app = typer.Typer(help="Manage Frappe apps: structured, non-interactive.")
+app.add_typer(apps_app, name="apps")
+
+
+@apps_app.command("update")
+def axi_apps_update(
+    project: str = typer.Argument(..., help="The Docker Compose project name."),
+    apps: list[str] = typer.Argument(
+        ..., help="App name(s) to update. Use 'frappe' to update the framework."
+    ),
+    bench: str = typer.Option(None, "--bench", help="Which bench: numeric index or label."),
+    sites: list[str] = typer.Option(
+        None, "--site", help="Narrow migration to the named site(s). Repeatable."
+    ),
+    clear_cache: bool = typer.Option(
+        False, "--clear-cache", help="Clear cache for affected sites after migration."
+    ),
+    clear_website_cache: bool = typer.Option(
+        False, "--clear-website-cache", help="Clear website cache for affected sites."
+    ),
+    build: bool = typer.Option(False, "--build", help="Build assets after updating apps."),
+    skip_maintenance: bool = typer.Option(
+        False, "--skip-maintenance", help="Skip maintenance mode during update."
+    ),
+    no_recache: bool = typer.Option(
+        False, "--no-recache", help="Skip re-caching after app updates."
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Auto-start stopped containers."),
+) -> None:
+    """Update app(s) and migrate affected sites; emit the report as TOON.
+
+    Blocks until the update finishes and emits ONE terminal document, exactly as
+    `axi backup` does for a minutes-long `bench backup`. Progress is deliberately
+    not streamed: N documents on stdout would break the one-TOON-document contract,
+    and an agent needs a verdict it can branch on rather than a progress bar.
+
+    ``failed_*`` and ``unknown_*`` are NOT the same thing and must not be collapsed:
+    a failure can be retried, while an ``unknown_*`` item's stream was lost, so it
+    MAY STILL BE RUNNING and retrying it can do real harm.
+
+    There is no `axi update`: the deprecated `cwcli update` spelling is not worth an
+    agent-facing verb.
+    """
+    try:
+        result = core_update.update(
+            project,
+            list(apps),
+            bench=bench,
+            sites=list(sites) if sites else None,
+            clear_cache=clear_cache,
+            clear_website_cache=clear_website_cache,
+            build=build,
+            skip_maintenance=skip_maintenance,
+            no_recache=no_recache,
+            auto_start=yes,
+        )
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    if result.status is CoreStatus.NEEDS_CHOICE:
+        assert result.choice is not None  # NEEDS_CHOICE always carries a Choice
+        emit_axi_choice_as_usage_error(result.choice)
+        raise typer.Exit(2)
+
+    assert result.data is not None  # OK/WARNING always carries an UpdateReport
+    emit_result(result.data, warnings=result.warnings)
+    # The exit code reads report.ok, NOT result.status: a partial update failure is
+    # a WARNING-shaped envelope, and the shipped `0 if status in (OK, WARNING)`
+    # pattern would report success for an update that half failed.
+    raise typer.Exit(0 if result.data.ok else 1)
 
 
 # ------------------------------------------------------------------------ self-update
