@@ -69,7 +69,7 @@ The real-Docker E2E is Linux-only; Windows/macOS-specific code stays in the unit
 
 ## Test Files
 
-As of 0.37.0 (unreleased), `tests/` holds 52 `test_*.py` suites totaling 815 tests in the
+As of 0.37.0 (unreleased), `tests/` holds 53 `test_*.py` suites totaling 821 tests in the
 `unit` tier (measured with `uv run pytest --cov`). Run `ls tests/` for the
 authoritative current list; see [../docs/testing/README.md](../docs/testing/README.md)
 for the per-area breakdown.
@@ -79,7 +79,7 @@ for the per-area breakdown.
 `test_start_status_new_behavior_e2e.py`, `test_per_process_supervisor_e2e.py`,
 `test_status_unsupervised_e2e.py`, `test_unlock_e2e.py`, `test_label_e2e.py`,
 `test_harness_safety.py`); run `ls tests/e2e/`
-for the current list. They are not part of the 815/52 count above since they need a
+for the current list. They are not part of the 821/53 count above since they need a
 Docker daemon and are excluded from a bare `pytest`. `test_start_status_e2e.py` is the
 lifecycle-command net (`start`/`status`/`logs`/`restart`, both modes) that pins the
 outcome-level invariants the start/status core migration must preserve; it is
@@ -116,7 +116,7 @@ Tests for tab completion functionality.
 
 ## Test Coverage
 
-Current overall coverage at 0.37.0, unreleased (815 tests across 52 test files, ~62% overall).
+Current overall coverage at 0.37.0, unreleased (821 tests across 53 test files, ~63% overall).
 
 ### Covered Modules
 - ✅ `utils/completion_utils.py` - 92% (7 missing lines)
@@ -152,7 +152,7 @@ Current overall coverage at 0.37.0, unreleased (815 tests across 52 test files, 
 
 ### Modules Needing Dedicated Suites
 - ⚠️ `utils/port_utils.py` (~9%, only incidental coverage)
-- ⚠️ `utils/docker_utils.py` (~51%, up from ~37% now that `test_core_resolvers` dedicated-tests the `get_frappe_container` CLI wrapper; the rest of the module is still only incidentally covered)
+- ⚠️ `utils/docker_utils.py` (~58%, up from ~51% now that `test_exec_stream_decode.py` dedicated-tests `utf8_stream_decoder`/`decode_exec_stream` on top of `test_core_resolvers`'s `get_frappe_container` CLI wrapper; the rest of the module (`handle_docker_errors`'s error branches, `exec_into_container`) is still only incidentally covered)
 - ⚠️ `utils/sendme_utils.py` (~9%, only incidental coverage)
 - ⚠️ `utils/vscode_utils.py` (~16%, only incidental coverage)
 - ⚠️ `utils/config_utils.py` (~41%; `cwcli_home()` is covered by `test_cwcli_home`, but `load_config`/`save_config`/the custom-path and auto-inspect-config setters remain untested)
@@ -161,7 +161,7 @@ Current overall coverage at 0.37.0, unreleased (815 tests across 52 test files, 
 - ✅ `commands/label.py` - (`test_bench_label_db_and_command`: the 15 pre-migration tests, re-pointed at the core with their assertions untouched - including the two that pin the clear-path consistency invariant; `tests/e2e/test_label_e2e.py` drives the two-store invariant against a real container, non-interactive only because `label` has no prompt)
 - ⚠️ `commands/unlock.py` (~50%; its logic moved to `core/unlock.py`, which is covered - see above; `test_unlock_command_cli.py` dedicated-tests the `--bench` selector resolution, and `tests/e2e/test_unlock_e2e.py` drives both modes end to end, but the CLI frontend's choice-resolution/verbose-print branches still have no dedicated unit suite)
 - ⚠️ `commands/stop.py` (~68%; its logic moved to `core/stop.py`, which is covered - see above; `test_axi_unlock_stop.py`/`test_yes_flag.py`/`test_exit_codes.py` exercise it incidentally, but the CLI frontend itself - the multi-project loop, `stop_project_best_effort` - has no dedicated unit suite)
-- ⚠️ Command modules at or near 0% dedicated coverage: `backup.py` (0%; its logic moved to `core/backup.py`, which is covered - see above), `run.py`
+- ⚠️ Command modules at or near 0% dedicated coverage: `backup.py` (0%; its logic moved to `core/backup.py`, which is covered - see above), `run.py` (its only guard is `test_exec_stream_decode.py`, which pins the exec-stream decode across all four streaming consumers; the rest of the command is still untested)
 
 ## Writing New Tests
 
@@ -304,12 +304,12 @@ Status as of 0.34.0 (see [../docs/testing/README.md](../docs/testing/README.md) 
 5. **Port conflict detection** (`commands/start.py`) - `test_yes_flag` covers the non-interactive/`--yes` contract; the interactive port-conflict confirmation prompt is driven end to end in `tests/e2e/test_start_status_e2e.py`, and the remaining port-scanning helpers still have no dedicated unit suite (~57%).
 
 ### Still needed
-6. **Docker utilities** (`utils/docker_utils.py`) - foundation for all commands; the `get_frappe_container` CLI wrapper is now covered by `test_core_resolvers`, but the rest of the module is still only incidentally covered (~51%).
+6. **Docker utilities** (`utils/docker_utils.py`) - foundation for all commands; the `get_frappe_container` CLI wrapper is covered by `test_core_resolvers` and the exec-stream decode helpers by `test_exec_stream_decode`, but the rest of the module is still only incidentally covered (~58%).
 7. **Port utilities** (`utils/port_utils.py`) - cross-platform process detection (~9%).
 8. **VS Code integration** (`utils/vscode_utils.py`) - container attachment fallback (~16%).
 9. **Configuration management** (`utils/config_utils.py`) - distinct from `db_utils`'s config validation (~37%).
 10. **Real-Docker E2E for the remaining commands** (`rm`, `restore`, `update`/`apps`, `inspect`) and the P2P (`sendme`) loopback - tracked in `openspec/changes/rebuild-e2e-test-suite`. `unlock` is no longer in this list: `tests/e2e/test_unlock_e2e.py` covers it (see item 4c).
-11. Other command modules at or near 0% dedicated unit coverage: `backup.py` (its logic moved to `core/backup.py`, which is covered), `run.py`. `status.py` and `unlock.py` are no longer in this bucket: `test_status_frontend`/`test_status_watch` dedicated-test `status.py` (~95%, on top of `tests/e2e/test_start_status_e2e.py`, see item 3a), and `unlock.py`'s logic moved to `core/unlock.py` (covered, see item 4c) with `commands/unlock.py` itself now at ~50% via `test_unlock_command_cli`.
+11. Other command modules at or near 0% dedicated unit coverage: `backup.py` (its logic moved to `core/backup.py`, which is covered). `status.py` and `unlock.py` are no longer in this bucket: `test_status_frontend`/`test_status_watch` dedicated-test `status.py` (~95%, on top of `tests/e2e/test_start_status_e2e.py`, see item 3a), and `unlock.py`'s logic moved to `core/unlock.py` (covered, see item 4c) with `commands/unlock.py` itself now at ~50% via `test_unlock_command_cli`. `run.py` is also no longer in this bucket: `test_exec_stream_decode.py` dedicated-tests its exec-stream decode loop, though the rest of the command is still untested.
 
 ## Resources
 

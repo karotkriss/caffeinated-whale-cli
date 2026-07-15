@@ -4,7 +4,11 @@ import typer
 from rich.console import Console
 
 from ..utils.completion_utils import complete_project_names
-from ..utils.docker_utils import get_project_containers, handle_docker_errors
+from ..utils.docker_utils import (
+    decode_exec_stream,
+    get_project_containers,
+    handle_docker_errors,
+)
 from .utils import ensure_containers_running, resolve_bench_path
 
 stderr_console = Console(stderr=True)
@@ -66,11 +70,8 @@ def run(
     # Create and start a Docker exec instance for real-time streaming
     api = frappe_container.client.api
     exec_id = api.exec_create(frappe_container.id, cmd, workdir=bench_path)["Id"]
-    for chunk in api.exec_start(exec_id, stream=True):
-        if isinstance(chunk, (bytes, bytearray)):
-            typer.echo(chunk.decode("utf-8"), nl=False)
-        else:
-            typer.echo(str(chunk), nl=False)
+    for text in decode_exec_stream(api.exec_start(exec_id, stream=True)):
+        typer.echo(text, nl=False)
 
     # Inspect exit code
     result = api.exec_inspect(exec_id)

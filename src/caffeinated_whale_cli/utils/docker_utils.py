@@ -1,6 +1,8 @@
+import codecs
 import functools
 import os
 import shutil
+from collections.abc import Iterable, Iterator
 
 import docker
 import typer
@@ -9,6 +11,47 @@ from rich.console import Console
 
 console = Console()
 stderr_console = Console(stderr=True)
+
+
+def utf8_stream_decoder() -> codecs.IncrementalDecoder:
+    """A UTF-8 decoder that carries a partial character ACROSS exec-stream chunks.
+
+    Docker frames an exec socket at 32KB and ``bench`` (CPython, talking to a pipe)
+    flushes in 8KB blocks, so a chunk boundary lands at an arbitrary BYTE offset -
+    routinely mid-character, since Frappe emits unicode (``✓ ✗ → ─ │ └ ⚠ ✅``)
+    routinely. Decoding a chunk in isolation is therefore wrong: strict decoding
+    raises on the split, and ``errors="replace"`` corrupts the character to U+FFFD.
+    One incremental decoder held across the whole stream buffers those leftover
+    bytes until the next chunk completes the character.
+
+    ``replace`` still applies to input that is genuinely not UTF-8 - streaming
+    another program's output must never kill the CLI - but a mere split is no
+    longer mistaken for invalid input.
+
+    Each stream needs its OWN decoder: a demuxed exec (``init``) must not feed
+    stderr's bytes into stdout's pending character.
+    """
+    return codecs.getincrementaldecoder("utf-8")("replace")
+
+
+def decode_exec_stream(chunks: Iterable[bytes | bytearray | str]) -> Iterator[str]:
+    """Decode a docker exec stream into text, tolerating mid-character chunk splits.
+
+    Wraps a non-demuxed ``exec_start(..., stream=True)`` iterator. A trailing
+    incomplete character (a truncated stream) is flushed as U+FFFD rather than
+    silently dropped, so corruption is visible instead of swallowed.
+    """
+    decoder = utf8_stream_decoder()
+    for chunk in chunks:
+        if isinstance(chunk, (bytes, bytearray)):
+            text = decoder.decode(bytes(chunk))
+        else:
+            text = str(chunk)
+        if text:
+            yield text
+    tail = decoder.decode(b"", final=True)
+    if tail:
+        yield tail
 
 
 def handle_docker_errors(func):

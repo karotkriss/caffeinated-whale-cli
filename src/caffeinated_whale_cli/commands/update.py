@@ -8,7 +8,11 @@ import typer
 from ..utils import cache, db_utils
 from ..utils.completion_utils import complete_app_names, complete_project_names
 from ..utils.console import console, stderr_console
-from ..utils.docker_utils import get_project_containers, handle_docker_errors
+from ..utils.docker_utils import (
+    decode_exec_stream,
+    get_project_containers,
+    handle_docker_errors,
+)
 
 
 def _stream_command(
@@ -34,14 +38,10 @@ def _stream_command(
         api = container.client.api
         exec_id = api.exec_create(container.id, cmd, workdir=workdir, tty=False)["Id"]
 
-        for chunk in api.exec_start(exec_id, stream=True, demux=False):
-            if isinstance(chunk, (bytes, bytearray)):
-                # Write directly to stdout to preserve carriage returns and progress bars
-                sys.stdout.write(chunk.decode("utf-8"))
-                sys.stdout.flush()
-            else:
-                sys.stdout.write(str(chunk))
-                sys.stdout.flush()
+        # Write directly to stdout to preserve carriage returns and progress bars
+        for text in decode_exec_stream(api.exec_start(exec_id, stream=True, demux=False)):
+            sys.stdout.write(text)
+            sys.stdout.flush()
 
         # Wait for the command to fully complete
         result = api.exec_inspect(exec_id)
