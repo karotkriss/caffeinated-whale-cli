@@ -564,6 +564,56 @@ def test_update_frappe_runs_bench_update_reset(monkeypatch):
     assert not any("git pull" in c for c in container.calls)
 
 
+class _NoisyFrappeContainer(FakeFrappeContainer):
+    """A container whose ``bench update --reset`` actually emits output.
+
+    The base fake returns "" for that command, which is exactly why the hardcoded
+    ``verbose=True`` was invisible: with no bytes to stream, streaming and not
+    streaming look identical.
+    """
+
+    RESET_OUTPUT = "Updating apps...\n✓ frappe updated\nMigrating site...\n"
+
+    def _run(self, cmd, workdir=None):
+        cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
+        if "bench update --reset" in cmd_str:
+            self.calls.append(cmd_str)
+            return 0, self.RESET_OUTPUT
+        return super()._run(cmd, workdir)
+
+
+def test_update_frappe_reset_writes_no_bench_output_to_stdout_when_not_verbose(monkeypatch, capsys):
+    # _run_frappe_update_reset used to call _stream_command with verbose HARDCODED
+    # True, so `apps update <proj> --app frappe` wrote bench output to stdout
+    # whatever the caller asked for. That is the concrete blocker for a structured
+    # surface (--json / axi), whose stdout must carry exactly one document - so this
+    # pins the property rather than the implementation.
+    #
+    # All three sibling frappe tests pass verbose=True and therefore cannot see it.
+    container = _NoisyFrappeContainer(available_apps=["frappe"])
+    _wire_update(monkeypatch, container)
+
+    update_mod._update_project("proj", ["frappe"], verbose=False)
+
+    out = capsys.readouterr().out
+    assert "Updating apps" not in out
+    assert "Migrating site" not in out
+    # The reset still ran, and the human still gets the banner.
+    assert any("bench update --reset" in c for c in container.calls)
+    assert "Frappe framework updated" in " ".join(out.split())
+
+
+def test_update_frappe_reset_streams_bench_output_when_verbose(monkeypatch, capsys):
+    # The other half of the contract: verbose still RENDERS. `verbose` decides
+    # whether to render, never how to obtain (the exec-stream contract).
+    container = _NoisyFrappeContainer(available_apps=["frappe"])
+    _wire_update(monkeypatch, container)
+
+    update_mod._update_project("proj", ["frappe"], verbose=True)
+
+    assert "Updating apps" in capsys.readouterr().out
+
+
 def test_update_frappe_reset_failure_exits_nonzero(monkeypatch):
     container = FakeFrappeContainer(available_apps=["frappe"], fail_on=["bench update --reset"])
     _wire_update(monkeypatch, container)

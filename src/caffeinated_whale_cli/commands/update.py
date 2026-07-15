@@ -218,17 +218,36 @@ def _run_frappe_update_reset(
     The framework app is not updated with a per-app ``git pull``; the correct path
     is bench's own ``bench update --reset``, which resets every app's repo, pulls,
     migrates every site, and rebuilds. Named for the ``frappe`` app specifically.
+
+    ``verbose`` decides whether to RENDER the reset's output, exactly as it does for
+    every other phase here; it used to be hardcoded ``True``, so this path wrote
+    bench output to stdout whatever the caller asked for. That is not a cosmetic
+    difference: it is what makes an agent-facing verb impossible, because such a
+    verb's stdout must carry exactly one structured document. The hardcoding
+    predates the verbose/non-verbose fork's collapse onto the exec-stream contract
+    and survived it; the three tests covering this path all pass ``verbose=True``,
+    which is why none of them could see it.
     """
     console.print(
         "[bold cyan]Updating the frappe framework with 'bench update --reset'[/bold cyan]\n"
     )
-    exit_code = _stream_command(
-        frappe_container,
-        "bench update --reset",
-        bench_path,
-        verbose=True,
-        status_msg="Running bench update --reset...",
-    )
+    if verbose:
+        exit_code = _stream_command(
+            frappe_container,
+            "bench update --reset",
+            bench_path,
+            verbose=True,
+            status_msg="Running bench update --reset...",
+        )
+    else:
+        # Mirrors _pull_apps' non-verbose presentation: a spinner instead of a
+        # stream, so a multi-minute reset still shows progress without the output.
+        with console.status(
+            "[bold green]Running bench update --reset...[/bold green]", spinner="dots"
+        ):
+            exit_code = _stream_command(
+                frappe_container, "bench update --reset", bench_path, verbose=False
+            )
     if not no_recache:
         if not cache.recache_project(project_name, verbose=verbose) and verbose:
             stderr_console.print(
