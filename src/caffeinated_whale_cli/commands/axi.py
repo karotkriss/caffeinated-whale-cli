@@ -171,6 +171,9 @@ def home(ctx: typer.Context) -> None:
                 "Run `cwcli axi backup <project> --site <site>` to back up a site's database",
                 "Run `cwcli axi ls` to list instances",
                 "Run `cwcli axi where <term>` to search cached apps and sites",
+                # The verb that answers every other verb's `--bench`. A discovery
+                # verb an agent cannot discover would be half a fix.
+                "Run `cwcli axi benches <project>` to list a project's benches for `--bench`",
             ],
         ),
     ]
