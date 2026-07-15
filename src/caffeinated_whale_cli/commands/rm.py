@@ -1211,7 +1211,7 @@ def _transient_start_for_backup(
     return (True, started)
 
 
-def _stop_after_transient_start(project_name: str, verbose: bool = False) -> None:
+def _stop_after_transient_start(project_name: str) -> None:
     """Return a project to its stopped state after a transient start-for-backup.
 
     Called on the keep-everything abort path (the start failed, or the backup could
@@ -1528,7 +1528,7 @@ def rm(
             except KeyboardInterrupt:
                 console.print("\n[yellow]Operation cancelled.[/yellow]")
                 if started_for_backup:
-                    _stop_after_transient_start(name, verbose=actual_verbose)
+                    _stop_after_transient_start(name)
                 raise typer.Exit(code=1) from None
 
             if not start_ok:
@@ -1537,7 +1537,7 @@ def rm(
                 # return it to its stopped state and record the failure so the
                 # command exits non-zero.
                 if started_for_backup:
-                    _stop_after_transient_start(name, verbose=actual_verbose)
+                    _stop_after_transient_start(name)
                 any_failure = True
                 stderr_console.print(
                     f"[bold red]✗[/bold red] Project '{name}' was not removed: it could not be "
@@ -1570,7 +1570,7 @@ def rm(
         # transiently started this project for the backup, return it to its original
         # stopped state - the early abort leaves the containers running.
         if step_failures and started_for_backup:
-            _stop_after_transient_start(name, verbose=actual_verbose)
+            _stop_after_transient_start(name)
 
         if step_failures:
             any_failure = True
