@@ -51,7 +51,7 @@
 ## 7. Validation
 
 - [x] 7.1 `uv run pytest` (fast unit tier; it already deselects E2E), `uv run black --check src/`, `uv run ruff check src/`, `uv run mypy src/` at zero errors.
-- [ ] 7.2 Real-instance validation on EXACTLY ONE throwaway instance, reused for all real testing, against the worktree's own editable install. Never the captain's instances. NEVER a broad Docker prune: scope every destructive operation to resources this run created.
+- [x] 7.2 Real-instance validation on EXACTLY ONE throwaway instance, reused for all real testing, against the worktree's own editable install. Never the captain's instances. NEVER a broad Docker prune: scope every destructive operation to resources this run created. **DONE:** one throwaway (`cwe2e-d5f44a-main`, frappe v15) built by the E2E harness against the worktree's own editable install; all 6 label E2E tests passed in 378s (the two-store set/clear invariant, no-resurrection-by-inspect, marker-survives-cache-wipe, `axi label`, `axi benches`, numeric-label refusal); torn down via `cwcli_rm` with zero containers or volumes left. No prune was run; the captain's `ners` instance was never started or touched.
 - [ ] 7.3 Re-run the real-instance validation AFTER no-mistakes and after any review fixes, per the captain standard: review fixes frequently alter behavior that only unit tests then re-validate.
 - [x] 7.4 CI owns the E2E suite; do not hand-run it during validation. The gate runs only tests relevant to the change.
 - [x] 7.5 Known box gotcha, NOT a cwcli bug and NOT to be fixed: `/tmp/pytest-of-cmckay` is root-owned on this machine and errors ~150 tests on a bare `pytest`. Work around it with `TMPDIR`.
