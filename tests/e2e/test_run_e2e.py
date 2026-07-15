@@ -174,7 +174,8 @@ def test_run_noninteractive_without_yes_refuses_rather_than_hanging(session_inst
         result = harness.run_cwcli("run", inst.name, "--", "--version", timeout=300)
 
         assert result.returncode != 0, result.stdout + result.stderr
-        assert "not running" in harness.strip_ansi(result.stderr).lower(), result.stderr
+        stderr_text = harness.collapse_ws(harness.strip_ansi(result.stderr)).lower()
+        assert "not running" in stderr_text, result.stderr
     finally:
         harness.run_cwcli("start", inst.name, "--yes")
         harness.wait_for_site_ready(inst.name, inst.site)
