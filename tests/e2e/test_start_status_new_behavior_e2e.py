@@ -172,8 +172,14 @@ def test_multibench_no_selector_refuses_noninteractively(running_instance):
         reg = harness.run_cwcli("config", "add-path", second)
         assert reg.returncode == 0, reg.stdout + reg.stderr
 
-        # Populate the cache with BOTH benches.
-        insp = harness.run_cwcli("inspect", inst.name)
+        # Populate the cache with BOTH benches. Force a full re-scan (--update):
+        # a plain inspect only re-verifies benches ALREADY in the cache (Tier 2
+        # partial refresh) and never re-discovers a brand-new bench unless that
+        # forces drift on a known bench - by the time this test runs, the shared
+        # instance's cache may already hold the original bench from an earlier
+        # test, and that bench hasn't drifted, so a plain inspect would silently
+        # keep serving the stale single-bench cache.
+        insp = harness.run_cwcli("inspect", inst.name, "--update")
         assert insp.returncode == 0, insp.stdout + insp.stderr
 
         # axi start with no --bench: a usage error naming --bench, exit 2, never prompts.
