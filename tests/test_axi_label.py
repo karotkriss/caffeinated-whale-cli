@@ -8,7 +8,6 @@ the deliberate exit-0-on-outdated divergence of `axi self-update --check`.
 
 from __future__ import annotations
 
-import pytest
 from typer.testing import CliRunner
 
 from caffeinated_whale_cli.commands import axi as axi_mod
