@@ -52,7 +52,7 @@ from caffeinated_whale_cli.commands.config import add_path
 from ..utils import config_utils, db_utils
 from ..utils.completion_utils import complete_project_names
 from ..utils.console import console, stderr_console
-from ..utils.docker_utils import get_frappe_container, handle_docker_errors
+from ..utils.docker_utils import get_frappe_container, handle_docker_errors, utf8_stream_decoder
 from ..utils.port_utils import check_ports_in_use, format_port_list
 from ..utils.tips import TipSpinner
 from .utils import ensure_containers_running
@@ -168,14 +168,21 @@ def _exec_in_container(
 
     try:
         if stream_output:
+            # One decoder per demuxed stream: sharing a single one would feed
+            # stderr's bytes into stdout's pending character and mangle both.
+            out_decoder = utf8_stream_decoder()
+            err_decoder = utf8_stream_decoder()
             for stdout, stderr in container.client.api.exec_start(exec_id, stream=True, demux=True):
                 if stdout:
                     # Use raw sys.stdout.write to preserve carriage returns for progress bars
-                    sys.stdout.write(stdout.decode("utf-8", errors="replace"))
+                    sys.stdout.write(out_decoder.decode(stdout))
                     sys.stdout.flush()
                 if stderr:
-                    sys.stderr.write(stderr.decode("utf-8", errors="replace"))
+                    sys.stderr.write(err_decoder.decode(stderr))
                     sys.stderr.flush()
+            # Surface a trailing incomplete character instead of dropping it.
+            sys.stdout.write(out_decoder.decode(b"", final=True))
+            sys.stderr.write(err_decoder.decode(b"", final=True))
         else:
             output = container.client.api.exec_start(exec_id, stream=False)
             # Only print output in verbose mode
