@@ -105,7 +105,7 @@ uv run pytest -x
 
 ### Current Test Coverage
 
-`tests/` holds 52 `test_*.py` suites totaling 814 tests at ~62% overall coverage (measured with `uv run pytest --cov` at 0.37.0, unreleased).
+`tests/` holds 52 `test_*.py` suites totaling 815 tests at ~62% overall coverage (measured with `uv run pytest --cov` at 0.37.0, unreleased).
 See the [Testing Directory Index](./README.md#current-status) for the full per-area breakdown.
 `test_completion_utils.py` remains the most complete single-module suite (tab completion, ~92% coverage): project name completion, app name completion, site name completion, cache functionality, Docker client management.
 
@@ -382,6 +382,7 @@ Status as of 0.37.0 (see the [Testing Directory Index](./README.md#future-test-p
 - [x] Real-Docker E2E for `init` and `backup` (`tests/e2e/test_init_e2e.py`, `tests/e2e/test_backup_e2e.py`) - genuine `bench init`/`bench backup` against throwaway Frappe instances, both interactive and non-interactive
 - [x] Real-Docker E2E for the lifecycle commands `start`/`status`/`logs`/`restart` (`tests/e2e/test_start_status_e2e.py`) - a structure-agnostic outcome net that pinned the invariants the start/status core migration had to preserve, both interactive and non-interactive (`openspec/changes/add-start-status-e2e-net`); `tests/e2e/test_start_status_new_behavior_e2e.py` covers the behavior that migration added (`openspec/changes/migrate-start-status-core`); `tests/e2e/test_status_unsupervised_e2e.py` guards the not-cwcli-supervised fallback regression (a bench relaunched under plain honcho reports real per-process state instead of a false all-down), both interactive and non-interactive
 - [x] `core/unlock.py`, `core/stop.py` - the `unlock`/`stop` logic core (`test_core_unlock`, `test_core_stop`), the foundation's generality proof (`unlock` migrated with zero new primitives); `cwcli axi unlock`/`stop` (`test_axi_unlock_stop`); Real-Docker E2E for `unlock` in both modes (`tests/e2e/test_unlock_e2e.py`), closing a standing both-modes gap (`openspec/changes/migrate-unlock-stop-core`)
+- [x] `core/label.py` - the `label` logic core split into `list_benches`/`set_label`/`clear_label` (`test_core_label`), built with zero new primitives beyond widening `resolvers.resolve_container_state`'s hardcoded hint into a caller-supplied `not_running_hint` parameter; `cwcli axi benches`/`cwcli axi label`/`cwcli axi self-update --check` (`test_axi_label`); Real-Docker E2E for `label` (`tests/e2e/test_label_e2e.py`), the DB/marker two-store consistency invariant against a real container, non-interactive only since `label` has no prompt (`openspec/changes/migrate-label-core`)
 - [ ] Real-Docker E2E for the remaining commands (`rm`, `restore`, `update`/`apps`, `inspect`) and the P2P (`sendme`) loopback - tracked in `openspec/changes/rebuild-e2e-test-suite`
 
 ## Resources

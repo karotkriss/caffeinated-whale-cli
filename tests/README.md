@@ -69,7 +69,7 @@ The real-Docker E2E is Linux-only; Windows/macOS-specific code stays in the unit
 
 ## Test Files
 
-As of 0.37.0 (unreleased), `tests/` holds 52 `test_*.py` suites totaling 814 tests in the
+As of 0.37.0 (unreleased), `tests/` holds 52 `test_*.py` suites totaling 815 tests in the
 `unit` tier (measured with `uv run pytest --cov`). Run `ls tests/` for the
 authoritative current list; see [../docs/testing/README.md](../docs/testing/README.md)
 for the per-area breakdown.
@@ -79,7 +79,7 @@ for the per-area breakdown.
 `test_start_status_new_behavior_e2e.py`, `test_per_process_supervisor_e2e.py`,
 `test_status_unsupervised_e2e.py`, `test_unlock_e2e.py`, `test_label_e2e.py`,
 `test_harness_safety.py`); run `ls tests/e2e/`
-for the current list. They are not part of the 814/52 count above since they need a
+for the current list. They are not part of the 815/52 count above since they need a
 Docker daemon and are excluded from a bare `pytest`. `test_start_status_e2e.py` is the
 lifecycle-command net (`start`/`status`/`logs`/`restart`, both modes) that pins the
 outcome-level invariants the start/status core migration must preserve; it is
@@ -116,7 +116,7 @@ Tests for tab completion functionality.
 
 ## Test Coverage
 
-Current overall coverage at 0.37.0, unreleased (814 tests across 52 test files, ~62% overall).
+Current overall coverage at 0.37.0, unreleased (815 tests across 52 test files, ~62% overall).
 
 ### Covered Modules
 - ✅ `utils/completion_utils.py` - 92% (7 missing lines)
@@ -131,7 +131,7 @@ Current overall coverage at 0.37.0, unreleased (814 tests across 52 test files, 
 - ✅ `core/envelope.py`, `core/errors.py`, `core/docker.py` - 100%, `core/resolvers.py` - ~97% (`test_core_envelope`: DTO/error contract + the AST-scan purity ban; `test_core_resolvers`: split resolvers plus the `commands/utils.py`/`docker_utils.py` CLI-wrapper exit-code preservation; the shared bench-op helpers `resolve_default_site`/`validate_site_name`/`validate_bench_path`/`require_bench_dir`/`require_site_dir`, extracted on `unlock`'s migration, are exercised via `test_core_backup` and `test_core_unlock`)
 - ✅ `core/backup.py` - ~95% (`test_core_backup`: every `core.backup` branch - success, both `NEEDS_CHOICE` forks, each `CwcliError` kind - on a fake container)
 - ✅ `core/unlock.py` - ~98% (`test_core_unlock`: every branch - removal with a parsed `removed` list, already-unlocked, default-site resolution, `select_bench`/`confirm_start` choices, each `CwcliError` kind - built from the same primitives as `core/backup.py` with zero new ones)
-- ✅ `core/label.py` - (`test_core_label`: every branch - list mode without a container, set/clear/rename, BOTH clear-failure modes plus the marker-before-cache ORDER asserted directly, duplicate/numeric rejection before any write, the `offer_choice=False` `NOT_RUNNING` refusal that never offers to start, the caller-supplied hint, `select_bench`/`bench.sole`, and the uninspected-project `NOT_FOUND`)
+- ✅ `core/label.py` - ~98% (`test_core_label`: every branch - list mode without a container, set/clear/rename, BOTH clear-failure modes plus the marker-before-cache ORDER asserted directly, duplicate/numeric rejection before any write, the `offer_choice=False` `NOT_RUNNING` refusal that never offers to start, the caller-supplied hint, `select_bench`/`bench.sole`, and the uninspected-project `NOT_FOUND`)
 - ✅ `core/stop.py` - 100% (`test_core_stop`: stopped count, already-stopped, `NOT_FOUND`, docker-unreachable, names-not-objects, and that it prints nothing at all)
 - ✅ `commands/axi.py` - ~97% (`test_axi`: verb exit-mapping (0/1/2), the content-first home, `axi ls`/`axi where`, the TOON encoder)
 - ✅ `core/list.py`, `core/where.py` - 100% (`test_core_list`: fake docker client, empty/aggregate/DOCKER-raise; `test_core_where`: throwaway sqlite, dedup/scoping/installed-only/USAGE)
@@ -298,6 +298,7 @@ Status as of 0.34.0 (see [../docs/testing/README.md](../docs/testing/README.md) 
 4a. **`self-update`** (`commands/self_update.py`, `core/version.py`) - covered by `test_core_version` (install-method tree, fail-open PyPI lookup, PEP 440 compare, TTL cache - ~90%) and `test_self_update` (dev/uvx no-op, the default upgrade run, `--check`, `--no-cache` - 100%). No `cwcli axi` verb (deferred).
 4b. **Passive update notice** (`update_notice.py` ~95%, wired once into `main.py`'s root Typer callback) - covered by `test_update_notice` (stderr-only, TTY-gated, `CWCLI_NO_UPDATE_CHECK`-suppressible, fail-open) and `test_core_version`'s `TestPassiveNotice` class (the cache-only hot path, the detached background refresh, the `attempted_at` once/day throttle on persistent failure).
 4c. **`unlock`+`stop` onto the logic core** (`core/unlock.py` ~98%, `core/stop.py` 100%, the shared bench-op helpers in `core/resolvers.py` ~97%) - the foundation's generality proof: `unlock` was migrated with zero new primitives. Covered by `test_core_unlock`, `test_core_stop`, `test_unlock` (re-pointed argv-injection guards), `test_unlock_command_cli` (the `--bench` selector resolution), and the `cwcli axi unlock`/`cwcli axi stop` verbs in `test_axi_unlock_stop`. `tests/e2e/test_unlock_e2e.py` closes `unlock`'s standing both-modes E2E gap (pty-driven interactive leg, non-interactive `--yes` leg, real locks-directory removal); `stop` needed no new E2E, already pinned by `test_start_status_e2e.py`/`test_status_unsupervised_e2e.py`. See `openspec/changes/migrate-unlock-stop-core`.
+4d. **`label` onto the logic core, plus `cwcli axi benches`/`cwcli axi label`/`cwcli axi self-update --check`** (`core/label.py` ~98%) - split into `list_benches`/`set_label`/`clear_label` rather than one function, built with zero new core primitives beyond widening `resolvers.resolve_container_state`'s hardcoded `--yes` hint into a caller-supplied `not_running_hint` parameter (every existing caller unchanged). Covered by `test_core_label` (every branch, including the marker-before-cache clear ORDER asserted directly), `test_bench_label_db_and_command` (the 15 pre-migration tests, re-pointed at the core with their assertions untouched), and `test_axi_label` (the new `axi benches`/`axi label`/`axi self-update --check` verbs). `tests/e2e/test_label_e2e.py` covers the DB/marker two-store consistency invariant against a real container, non-interactive only (`label` has no prompt). See `openspec/changes/migrate-label-core`.
 
 ### Partial
 5. **Port conflict detection** (`commands/start.py`) - `test_yes_flag` covers the non-interactive/`--yes` contract; the interactive port-conflict confirmation prompt is driven end to end in `tests/e2e/test_start_status_e2e.py`, and the remaining port-scanning helpers still have no dedicated unit suite (~57%).
