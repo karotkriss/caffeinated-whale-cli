@@ -22,6 +22,7 @@ from caffeinated_whale_cli.commands import apps as apps_mod
 from caffeinated_whale_cli.commands import init as init_mod
 from caffeinated_whale_cli.commands import run as run_mod
 from caffeinated_whale_cli.commands import update as update_mod
+from caffeinated_whale_cli.utils import docker_utils
 
 # ------------------------------------------------------------------ split fixture
 
@@ -75,6 +76,12 @@ class _SplitContainer:
 
 def test_run_streams_split_character_intact(monkeypatch, capsys):
     """``cwcli run <p> migrate`` - crashed with a raw traceback, zero output."""
+    # Defuse the @handle_docker_errors preflight so the command body runs
+    # (no real Docker on the unit tier).
+    monkeypatch.setattr(docker_utils.shutil, "which", lambda _n: "/usr/bin/docker")
+    monkeypatch.setattr(
+        docker_utils.docker, "from_env", lambda: type("C", (), {"ping": lambda s: True})()
+    )
     container = _SplitContainer()
     monkeypatch.setattr(run_mod, "ensure_containers_running", lambda *a, **k: None)
     monkeypatch.setattr(run_mod, "resolve_bench_path", lambda *a, **k: "/workspace/frappe-bench")
