@@ -2,7 +2,6 @@ import codecs
 import functools
 import os
 import shutil
-from collections.abc import Iterable, Iterator
 
 import docker
 import typer
@@ -32,26 +31,6 @@ def utf8_stream_decoder() -> codecs.IncrementalDecoder:
     stderr's bytes into stdout's pending character.
     """
     return codecs.getincrementaldecoder("utf-8")("replace")
-
-
-def decode_exec_stream(chunks: Iterable[bytes | bytearray | str]) -> Iterator[str]:
-    """Decode a docker exec stream into text, tolerating mid-character chunk splits.
-
-    Wraps a non-demuxed ``exec_start(..., stream=True)`` iterator. A trailing
-    incomplete character (a truncated stream) is flushed as U+FFFD rather than
-    silently dropped, so corruption is visible instead of swallowed.
-    """
-    decoder = utf8_stream_decoder()
-    for chunk in chunks:
-        if isinstance(chunk, (bytes, bytearray)):
-            text = decoder.decode(bytes(chunk))
-        else:
-            text = str(chunk)
-        if text:
-            yield text
-    tail = decoder.decode(b"", final=True)
-    if tail:
-        yield tail
 
 
 def handle_docker_errors(func):

@@ -11,6 +11,12 @@ strict ``decode("utf-8")`` raises (``run``/``apps update`` died with a raw trace
 and delivered ZERO output), and ``errors="replace"`` silently corrupts the character
 into U+FFFD (``apps install``/``init``). These tests feed each of the four consumers
 a deliberately mid-character split and assert the text round-trips exactly.
+
+``run``/``apps``/``update`` now reach the decoder through ``core.exec_stream``
+rather than through their own loops, so these cases drive them through the
+primitive. The PROPERTY is what matters and it pins a crash that SHIPPED: the
+helper those three used to call is gone, but this guard is not. ``init`` still
+holds its own decoders (it is not migrated) and its cases are unchanged.
 """
 
 import types
@@ -22,6 +28,8 @@ from caffeinated_whale_cli.commands import apps as apps_mod
 from caffeinated_whale_cli.commands import init as init_mod
 from caffeinated_whale_cli.commands import run as run_mod
 from caffeinated_whale_cli.commands import update as update_mod
+from caffeinated_whale_cli.core import docker as core_docker
+from caffeinated_whale_cli.core import exec_stream as es
 from caffeinated_whale_cli.utils import docker_utils
 
 # ------------------------------------------------------------------ split fixture
@@ -71,10 +79,17 @@ class _SplitContainer:
         pass
 
 
+@pytest.fixture
+def split_stream(monkeypatch):
+    """A container whose exec stream splits the payload mid-character."""
+    monkeypatch.setattr(es, "_EXIT_CODE_POLL_INTERVAL", 0)
+    return _SplitContainer()
+
+
 # ------------------------------------------------------------------ the four sites
 
 
-def test_run_streams_split_character_intact(monkeypatch, capsys):
+def test_run_streams_split_character_intact(monkeypatch, capsys, split_stream):
     """``cwcli run <p> migrate`` - crashed with a raw traceback, zero output."""
     # Defuse the @handle_docker_errors preflight so the command body runs
     # (no real Docker on the unit tier).
@@ -82,10 +97,10 @@ def test_run_streams_split_character_intact(monkeypatch, capsys):
     monkeypatch.setattr(
         docker_utils.docker, "from_env", lambda: type("C", (), {"ping": lambda s: True})()
     )
-    container = _SplitContainer()
     monkeypatch.setattr(run_mod, "ensure_containers_running", lambda *a, **k: None)
-    monkeypatch.setattr(run_mod, "resolve_bench_path", lambda *a, **k: "/workspace/frappe-bench")
-    monkeypatch.setattr(run_mod, "get_project_containers", lambda *a, **k: [container])
+    monkeypatch.setattr(core_docker, "get_project_containers", lambda *a, **k: [split_stream])
+    # run_stream turns the plan's container_id back into a handle; keep it fake.
+    monkeypatch.setattr(core_docker, "get_container", lambda _id: split_stream)
 
     with pytest.raises(typer.Exit) as exc:
         run_mod.run(
@@ -101,20 +116,20 @@ def test_run_streams_split_character_intact(monkeypatch, capsys):
     assert capsys.readouterr().out == TEXT
 
 
-def test_apps_update_streams_split_character_intact(capsys):
+def test_apps_update_streams_split_character_intact(capsys, split_stream):
     """``apps update`` / ``update`` via update._stream_command - same crash."""
     exit_code = update_mod._stream_command(
-        _SplitContainer(), "bench migrate", "/workspace/frappe-bench", verbose=True
+        split_stream, "bench migrate", "/workspace/frappe-bench", verbose=True
     )
 
     assert exit_code == 0
     assert capsys.readouterr().out == TEXT
 
 
-def test_apps_install_streams_split_character_intact(capsys):
+def test_apps_install_streams_split_character_intact(capsys, split_stream):
     """``apps install``/``uninstall`` - errors="replace", so it corrupted silently."""
     exit_code = apps_mod._stream_bench(
-        _SplitContainer(), "bench install-app erpnext", "/workspace/frappe-bench"
+        split_stream, "bench install-app erpnext", "/workspace/frappe-bench"
     )
 
     assert exit_code == 0
