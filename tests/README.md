@@ -69,7 +69,7 @@ The real-Docker E2E is Linux-only; Windows/macOS-specific code stays in the unit
 
 ## Test Files
 
-As of 0.37.0 (unreleased), `tests/` holds 55 `test_*.py` suites totaling 867 tests in the
+As of 0.37.0 (unreleased), `tests/` holds 55 `test_*.py` suites totaling 870 tests in the
 `unit` tier (measured with `uv run pytest --cov`). Run `ls tests/` for the
 authoritative current list; see [../docs/testing/README.md](../docs/testing/README.md)
 for the per-area breakdown.
@@ -116,7 +116,7 @@ Tests for tab completion functionality.
 
 ## Test Coverage
 
-Current overall coverage at 0.37.0, unreleased (867 tests across 55 test files, ~64% overall).
+Current overall coverage at 0.37.0, unreleased (870 tests across 55 test files, ~64% overall).
 
 ### Covered Modules
 - ✅ `utils/completion_utils.py` - 92% (7 missing lines)
@@ -126,7 +126,7 @@ Current overall coverage at 0.37.0, unreleased (867 tests across 55 test files, 
 - ✅ `commands/restore.py` - ~43% (`test_restore_safety`, `test_restore_inspect_fixes`)
 - ✅ `commands/rm.py` - ~84% (`test_rm_safety`, `test_rm_truth`, `test_rm_stopped`, `test_rm_stopped_backup`)
 - ✅ `commands/init.py` - ~49% (`test_init_reuse_bench`, `test_init_mariadb_flag`, `test_init_admin_password`)
-- ✅ `commands/apps.py` + `commands/update.py` app-update path - (`test_apps`: both modes, multi-site fan-out, frappe reset, `update` deprecation)
+- ✅ `commands/apps.py` + `commands/update.py` app-update path - (`test_apps`: both modes, multi-site fan-out, frappe reset, `update` deprecation, the summary reported from the `finally` surviving a mid-fan-out stream loss with both stuck sites' remediation intact, and the `sites_to_migrate`-gated abort not firing on a bare `--site` refusal)
 - ✅ `utils/config_utils.py`'s `cwcli_home()` - (`test_cwcli_home`: mock-free, sets a real `CWCLI_HOME` env var and checks real filesystem/subprocess results)
 - ✅ `core/envelope.py`, `core/errors.py`, `core/docker.py` - 100%, `core/resolvers.py` - ~97% (`test_core_envelope`: DTO/error contract + the AST-scan purity ban; `test_core_resolvers`: split resolvers plus the `commands/utils.py`/`docker_utils.py` CLI-wrapper exit-code preservation; the shared bench-op helpers `resolve_default_site`/`validate_site_name`/`validate_bench_path`/`require_bench_dir`/`require_site_dir`, extracted on `unlock`'s migration, are exercised via `test_core_backup` and `test_core_unlock`)
 - ✅ `core/backup.py` - ~95% (`test_core_backup`: every `core.backup` branch - success, both `NEEDS_CHOICE` forks, each `CwcliError` kind - on a fake container)
