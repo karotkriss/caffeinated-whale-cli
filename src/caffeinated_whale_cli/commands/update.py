@@ -14,6 +14,8 @@ x`` invocation. They share ONE implementation (``run_app_update`` -> ``core.upda
 so they cannot drift, and the alias stays a frontend rather than a second core path.
 """
 
+import dataclasses
+import json
 import sys
 
 import typer
@@ -195,13 +197,15 @@ class _Renderer:
                 console.print(line.format(item=event.item))
 
 
-def _report_summary(report: UpdateReport) -> bool:
-    """Print the summary of every phase; return whether anything failed.
+def _report_summary(report: UpdateReport) -> None:
+    """Print the summary of every phase.
 
-    Print-only, and the caller owns the exit: this is also called from the renderer
-    while an exception is unwinding (``UpdateAborted``), where raising would replace
-    the in-flight error and lose it. Reporting used to sit after a try/finally, where
-    a raise jumped clean over it and a stuck site lost its remediation line.
+    Print-only, and the caller owns the exit (which reads ``report.ok``): this is
+    also called from the renderer while an exception is unwinding
+    (``UpdateAborted``), where raising would replace the in-flight error and lose it.
+    Reporting used to sit after a try/finally, where a raise jumped clean over it and
+    a stuck site lost its remediation line; now the report is a returned value and
+    cannot be skipped at all.
     """
     successful_apps = len(report.apps) - len(report.failed_apps) - len(report.unknown_apps)
 
@@ -209,7 +213,7 @@ def _report_summary(report: UpdateReport) -> bool:
         console.print(f"\n[bold green]✓ Successfully updated {successful_apps} app(s)[/bold green]")
 
     if report.ok:
-        return False
+        return
 
     console.print("\n[bold red]Update completed with errors:[/bold red]")
 
@@ -279,8 +283,6 @@ def _report_summary(report: UpdateReport) -> bool:
                 f"'bench --site {site} set-maintenance-mode off'"
             )
 
-    return True
-
 
 def _report_unknown(report: UpdateReport) -> None:
     """Report every step whose outcome could not be established."""
@@ -313,6 +315,7 @@ def run_app_update(
     no_recache: bool = False,
     yes: bool = False,
     sites: list[str] | None = None,
+    json_output: bool = False,
 ):
     """Shared app-update entry point behind both ``cwcli apps update`` and the
     deprecated ``cwcli update``.
@@ -321,6 +324,9 @@ def run_app_update(
     prologue (auto-start, bench resolution, the auto-inspect fallback) runs here,
     BEFORE any spinner, matching ``commands/backup.py``'s shipped pattern: a prompt
     painted over by a spinner can never receive input.
+
+    ``json_output`` emits the report as ONE JSON document and nothing else on
+    stdout: no banner, no renderer (the core's events are dropped), no summary.
     """
     from .utils import ensure_containers_running
 
@@ -328,19 +334,26 @@ def run_app_update(
         stderr_console.print("[bold red]Error:[/bold red] At least one app must be specified.")
         raise typer.Exit(code=1)
 
-    console.print(f"[bold cyan]Updating project: {project_name}[/bold cyan]\n")
+    if not json_output:
+        console.print(f"[bold cyan]Updating project: {project_name}[/bold cyan]\n")
 
-    # Ensure containers are running, prompting if not (auto-start with --yes).
+    # Ensure containers are running, prompting if not (auto-start with --yes). This
+    # prologue is stderr-only, so it is safe in JSON mode.
     ensure_containers_running(project_name, require_running=True, verbose=verbose, auto_start=yes)
 
-    bench_path = _resolve_bench_path(project_name, bench, bench_path, verbose)
+    bench_path = _resolve_bench_path(
+        project_name, bench, bench_path, verbose, json_output=json_output
+    )
 
-    if verbose:
+    if verbose and not json_output:
         console.print(
             f"[bold cyan]Updating {len(apps)} app(s) for project '{project_name}'[/bold cyan]\n"
         )
 
-    renderer = _Renderer(verbose)
+    # None is the drain-and-discard consumption mode: in JSON mode the core's
+    # events - bench output included - are dropped rather than rendered, so nothing
+    # can corrupt the document.
+    renderer = None if json_output else _Renderer(verbose)
     try:
         result = core_update.update(
             project_name,
@@ -356,7 +369,8 @@ def run_app_update(
             on_event=renderer,
         )
     except CwcliError as e:
-        renderer._stop_spinner()
+        if renderer is not None:
+            renderer._stop_spinner()
         stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
         if e.hint:
             stderr_console.print(f"[dim]{e.hint}[/dim]")
@@ -373,11 +387,18 @@ def run_app_update(
     report = result.data
     assert report is not None  # OK/WARNING always carries a report
 
-    if _report_summary(report):
+    if json_output:
+        typer.echo(json.dumps(dataclasses.asdict(report), indent=2))
+    else:
+        _report_summary(report)
+
+    # The exit code reads report.ok, NOT result.status: a partial failure is a
+    # WARNING-shaped envelope, and every other verb maps WARNING to 0.
+    if not report.ok:
         raise typer.Exit(code=1)
 
 
-def _resolve_bench_path(project_name, bench, bench_path, verbose) -> str:
+def _resolve_bench_path(project_name, bench, bench_path, verbose, *, json_output=False) -> str:
     """Resolve the bench, auto-running ``inspect`` once if nothing is cached.
 
     The auto-inspect stays in the FRONTEND: it drives the ``inspect`` COMMAND, which
@@ -385,6 +406,11 @@ def _resolve_bench_path(project_name, bench, bench_path, verbose) -> str:
     already has to reach back for the mid-fan-out recache, and should not do so
     twice). ``core.update`` still falls back to the default path with a warning when
     it is handed nothing, which is what the agent surface gets.
+
+    In JSON mode the auto-inspect is SKIPPED, because ``inspect``'s own rich output
+    goes to stdout and would corrupt the one-document contract. The fallback is then
+    the same one ``apps``'s other subcommands already take, and the same one `axi`
+    gets: the default path, with the core carrying a warning.
     """
     from .utils import resolve_bench_path as cli_resolve_bench_path
 
@@ -393,6 +419,13 @@ def _resolve_bench_path(project_name, bench, bench_path, verbose) -> str:
         if verbose:
             stderr_console.print(f"[dim]Using bench path: {resolved}[/dim]")
         return resolved
+
+    if json_output:
+        stderr_console.print(
+            f"[yellow]Warning:[/yellow] No cached bench path found. Using default: "
+            f"{core_update.resolvers.DEFAULT_BENCH_PATH}"
+        )
+        return core_update.resolvers.DEFAULT_BENCH_PATH
 
     stderr_console.print("[yellow]No cached bench path found. Running inspect...[/yellow]")
     try:
