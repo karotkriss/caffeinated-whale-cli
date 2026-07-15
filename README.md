@@ -733,7 +733,7 @@ cwcli label [OPTIONS] PROJECT_NAME [SELECTOR] [NEW_LABEL]
 | Option | Description |
 |--------|-------------|
 | `--clear` | Remove the selected bench's user label (revert to its numeric index) |
-| `-v`, `--verbose` | Enable verbose output |
+| `-v`, `--verbose` | Print the resolved marker file path and any operation notes on completion |
 
 **Label rules:**
 
