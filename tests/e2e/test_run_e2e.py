@@ -98,8 +98,7 @@ def test_run_streams_a_large_unicode_payload_intact(bench_shim):
     assert "�" not in result.stdout, "a character was corrupted at a chunk boundary"
     assert "UnicodeDecodeError" not in result.stderr, result.stderr
     assert result.stdout == _expected_output(), (
-        f"expected {len(_expected_output())} bytes of output, "
-        f"got {len(result.stdout)}"
+        f"expected {len(_expected_output())} bytes of output, " f"got {len(result.stdout)}"
     )
     # The payload really did exceed one 32KB socket read - otherwise this leg
     # proves nothing about chunk boundaries.
@@ -117,9 +116,9 @@ def test_run_reports_a_real_nonzero_exit_code(bench_shim):
 
     result = harness.run_cwcli("run", inst.name, "migrate", "--yes")
 
-    assert result.returncode == 42, (
-        f"expected the bench command's real exit code 42, got {result.returncode}"
-    )
+    assert (
+        result.returncode == 42
+    ), f"expected the bench command's real exit code 42, got {result.returncode}"
     assert result.stdout == _expected_output()
 
 
@@ -140,9 +139,7 @@ def test_run_passes_bench_flags_after_a_separator(running_instance):
     """The documented `--` form: this command's parser claims flags otherwise."""
     inst = running_instance
 
-    result = harness.run_cwcli(
-        "run", inst.name, "--yes", "--", "--site", inst.site, "list-apps"
-    )
+    result = harness.run_cwcli("run", inst.name, "--yes", "--", "--site", inst.site, "list-apps")
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "frappe" in result.stdout
@@ -152,7 +149,9 @@ def test_run_reports_a_failing_bench_command_nonzero(running_instance):
     """A real bench failure must not report success."""
     inst = running_instance
 
-    result = harness.run_cwcli("run", inst.name, "--yes", "--", "--site", "no-such-site", "list-apps")
+    result = harness.run_cwcli(
+        "run", inst.name, "--yes", "--", "--site", "no-such-site", "list-apps"
+    )
 
     assert result.returncode != 0, result.stdout + result.stderr
 
