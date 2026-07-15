@@ -9,8 +9,32 @@ implementation and the CLI's message/exit behavior is preserved.
 
 from __future__ import annotations
 
+import docker
+from docker.errors import DockerException
+
 from ..utils.docker_utils import get_project_containers
 from .errors import CwcliError, ErrorKind
+
+
+def get_container(container_id: str):
+    """Resolve a container ID back to an exec-usable handle.
+
+    The id-to-handle half of the two-phase exec seam: ``core.run_plan`` returns a
+    ``RunPlan`` carrying an ID STRING (a plan crosses a ``core.<verb>`` return
+    boundary, where live objects are banned), and this turns it back into
+    something ``core.exec_stream`` can exec into. Keeping it here means the
+    frontend never touches a container, and the plan execs the container it
+    planned rather than whatever a re-resolution by project name would find.
+    """
+    try:
+        return docker.from_env().containers.get(container_id)
+    except DockerException as e:
+        raise CwcliError(
+            ErrorKind.DOCKER,
+            "container.unresolvable",
+            f"Could not resolve container '{container_id}'.",
+            detail={"output": str(e)},
+        ) from e
 
 
 def get_frappe_container(project_name: str):

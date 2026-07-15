@@ -24,11 +24,12 @@ import sys
 
 import typer
 
+from ..core.errors import CwcliError
+from ..core.exec_stream import ExecChunk, exec_stream
 from ..utils import bench_sites, cache
 from ..utils.completion_utils import complete_app_names, complete_project_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import (
-    decode_exec_stream,
     get_frappe_container,
     handle_docker_errors,
 )
@@ -53,29 +54,55 @@ def _resolve_bench(project_name, bench, bench_path, verbose):
     return resolve_bench_path(project_name, bench, bench_path, verbose=verbose) or _DEFAULT_BENCH
 
 
+def _exit_on_exec_error(e: CwcliError):
+    """Render a core exec-stream failure the way ``run.py`` does, then exit non-zero.
+
+    Always to stderr, so ``--json``'s stdout-purity contract holds even on this
+    path.
+    """
+    stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
+    if e.hint:
+        stderr_console.print(f"[dim]{e.hint}[/dim]")
+    raise typer.Exit(code=1) from e
+
+
 def _capture_bench(frappe_container, cmd, workdir):
-    """Run ``cmd`` in the container, capturing output. Returns ``(exit_code, text)``."""
-    exit_code, output = frappe_container.exec_run(cmd, workdir=workdir)
-    if isinstance(output, (bytes, bytearray)):
-        text = output.decode("utf-8", errors="replace")
-    else:
-        text = str(output)
-    return exit_code, text
+    """Run ``cmd`` in the container, capturing output. Returns ``(exit_code, text)``.
+
+    The drain-and-join consumption mode of the exec-stream contract: nothing
+    reaches stdout, so a ``--json`` document stays the only thing there.
+    """
+    text = []
+    exit_code = 1
+    try:
+        for event in exec_stream(frappe_container, cmd, workdir=workdir):
+            if isinstance(event, ExecChunk):
+                text.append(event.text)
+            else:
+                exit_code = event.exit_code
+    except CwcliError as e:
+        _exit_on_exec_error(e)
+    return exit_code, "".join(text)
 
 
 def _stream_bench(frappe_container, cmd, workdir):
     """Run ``cmd`` streaming its output to stdout in real time. Returns the exit code.
 
-    Mirrors ``run.py`` - used in human (non-JSON) mode so the user sees bench's
-    live progress.
+    The render-each-event consumption mode - used in human (non-JSON) mode so the
+    user sees bench's live progress. Both tags go to stdout, reproducing the
+    combined stream this used to get from a non-demuxed exec.
     """
-    api = frappe_container.client.api
-    exec_id = api.exec_create(frappe_container.id, cmd, workdir=workdir)["Id"]
-    for text in decode_exec_stream(api.exec_start(exec_id, stream=True)):
-        sys.stdout.write(text)
-        sys.stdout.flush()
-    result = api.exec_inspect(exec_id)
-    return result.get("ExitCode", 1) or 0
+    exit_code = 1
+    try:
+        for event in exec_stream(frappe_container, cmd, workdir=workdir):
+            if isinstance(event, ExecChunk):
+                sys.stdout.write(event.text)
+                sys.stdout.flush()
+            else:
+                exit_code = event.exit_code
+    except CwcliError as e:
+        _exit_on_exec_error(e)
+    return exit_code
 
 
 def _run_bench(frappe_container, cmd, workdir, *, json_output, verbose):
