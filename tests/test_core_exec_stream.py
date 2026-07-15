@@ -331,3 +331,24 @@ def test_exec_start_failure_is_a_typed_error():
 
     assert excinfo.value.kind is ErrorKind.DOCKER
     assert excinfo.value.code == "exec.start_failed"
+
+
+def test_exit_code_poll_daemon_exception_is_a_typed_error_not_a_guess(install):
+    """The same connection whose loss during streaming is exactly this batch's
+
+    target failure can also drop mid-poll. It must become CwcliError, never a
+    raw SDK exception and never a coerced 0/1.
+    """
+    from docker.errors import DockerException
+
+    class FlakyApi(FakeApi):
+        def exec_inspect(self, exec_id):
+            raise DockerException("connection reset")
+
+    container = install(FlakyApi(frames=out(b"working")))
+
+    with pytest.raises(CwcliError) as excinfo:
+        list(es.exec_stream(container, "bench migrate"))
+
+    assert excinfo.value.kind is ErrorKind.DOCKER
+    assert excinfo.value.code == "exec.stream_lost"

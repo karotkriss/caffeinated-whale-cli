@@ -764,3 +764,50 @@ def test_deprecated_update_warns_and_delegates(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "deprecated" in err.lower()
     assert called == {"apps": ["erpnext"], "sites": ["a.localhost"]}
+
+
+# --------------------------------------------------- exec-stream error handling
+#
+# apps.py/update.py used to let a CwcliError from core.exec_stream (a lost
+# connection, a failed exec start, an unknown exit code) escape as a raw
+# traceback. These pin that it is now caught at the exec-loop choke point and
+# rendered like run.py does, then exits non-zero.
+
+
+class _BoomAPI:
+    """A client.api whose exec_create always raises, like a dropped daemon connection."""
+
+    def exec_create(self, *args, **kwargs):
+        from docker.errors import DockerException
+
+        raise DockerException("daemon gone")
+
+
+def _boom_container():
+    return types.SimpleNamespace(id="cid", client=types.SimpleNamespace(api=_BoomAPI()))
+
+
+def test_capture_bench_reports_cwclierror_cleanly(capsys):
+    with pytest.raises(typer.Exit) as exc:
+        apps_mod._capture_bench(_boom_container(), "bench migrate", "/workspace/frappe-bench")
+
+    assert exc.value.exit_code == 1
+    err = capsys.readouterr().err
+    assert "Error:" in err
+    assert "Could not start the command" in err
+
+
+def test_stream_bench_reports_cwclierror_cleanly(capsys):
+    with pytest.raises(typer.Exit) as exc:
+        apps_mod._stream_bench(_boom_container(), "bench migrate", "/workspace/frappe-bench")
+
+    assert exc.value.exit_code == 1
+    assert "Error:" in capsys.readouterr().err
+
+
+def test_update_stream_command_reports_cwclierror_cleanly(capsys):
+    with pytest.raises(typer.Exit) as exc:
+        update_mod._stream_command(_boom_container(), "bench migrate", "/workspace/frappe-bench")
+
+    assert exc.value.exit_code == 1
+    assert "Error:" in capsys.readouterr().err
