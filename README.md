@@ -1006,11 +1006,12 @@ cwcli unlock [OPTIONS] PROJECT_NAME
 | `--bench TEXT` | Which bench to target: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)) |
 | `-p`, `--path TEXT` | Explicit bench directory inside the container (lower-level alternative to `--bench`; cannot be combined with it) |
 | `-y`, `--yes` | Auto-start stopped containers without prompting |
-| `-v`, `--verbose` | Enable verbose output and stream rm command output |
+| `-v`, `--verbose` | Enable verbose output and print the removed paths on completion |
 
 **What It Does:**
 
 Removes the `{bench_path}/sites/{site_name}/locks` directory, which can help resolve issues when a site is stuck in a locked state due to incomplete migrations or background jobs.
+A site with no locks folder is reported as an honest "already unlocked" success rather than a generic "unlocked" message.
 
 **Smart Defaults:**
 - If `--site` is not specified, automatically uses your bench's default site (from `common_site_config.json`'s `default_site`, or `sites/currentsite.txt` when that key is absent)
