@@ -32,25 +32,26 @@ import typer
 
 from caffeinated_whale_cli.commands import update as update_mod
 
-from .test_apps import FakeFrappeContainer, _count_discovery, _wire_update
+from .test_apps import (
+    FakeFrappeContainer,
+    _count_discovery,
+    _no_sleep,
+    _patch_discovery_per_app,
+    _record_recache,
+    _wire_update,
+)
 
 
 def _wire(monkeypatch, container, *, sites=("a.localhost",)):
     """Wire the update collaborators and return a recache-call recorder.
 
-    ``time.sleep`` is stubbed out: the state machine sleeps 0.5s after every
-    migration to let bench release its locks, which is real behaviour worth keeping
-    in production and pure latency in a unit test.
+    Everything that patches an internal goes through a shared helper in
+    `test_apps.py`, deliberately: this file must not name a module attribute that
+    the migration moves, or it could not stay unchanged across it.
     """
     _wire_update(monkeypatch, container)
-    monkeypatch.setattr(update_mod.time, "sleep", lambda *_a, **_k: None)
-
-    recache_calls = []
-    monkeypatch.setattr(
-        update_mod.cache,
-        "recache_project",
-        lambda project_name, verbose=False: (recache_calls.append(project_name), True)[1],
-    )
+    _no_sleep(monkeypatch)
+    recache_calls = _record_recache(monkeypatch)
     _count_discovery(monkeypatch, list(sites))
     return recache_calls
 
@@ -386,13 +387,9 @@ def test_multi_app_affected_sites_are_the_union_across_apps(monkeypatch):
     # migrated exactly once, never twice.
     container = FakeFrappeContainer(available_apps=["frappe", "payments", "hrms"])
     _wire_update(monkeypatch, container)
-    monkeypatch.setattr(update_mod.time, "sleep", lambda *_a, **_k: None)
-
-    per_app = {"payments": ["a.localhost"], "hrms": ["a.localhost", "b.localhost"]}
-    monkeypatch.setattr(
-        update_mod,
-        "_get_sites_with_app",
-        lambda project, bench_path, app, container=None, verbose=False: list(per_app[app]),
+    _no_sleep(monkeypatch)
+    _patch_discovery_per_app(
+        monkeypatch, {"payments": ["a.localhost"], "hrms": ["a.localhost", "b.localhost"]}
     )
 
     update_mod.run_app_update("proj", ["payments", "hrms"], verbose=True)
