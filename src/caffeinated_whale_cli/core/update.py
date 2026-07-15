@@ -114,6 +114,7 @@ class UpdateStepStart:
     item: str | None = None  # the app or site, when the phase has one
     index: int = 1
     total: int = 1
+    message: str | None = None  # something specific to say HERE, in run order
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -128,11 +129,19 @@ class UpdateOutput:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class UpdateStepEnd:
-    """A step finished. ``status`` is the honest three-way outcome."""
+    """A step finished. ``status`` is the honest three-way outcome.
+
+    ``message`` carries WHY this step ended this way when the reason is not implied
+    by the phase (an app with no directory, a lost stream). The events are the run's
+    narration in order, so the text a frontend must show at that moment rides here;
+    the same facts also ride the envelope's ``warnings`` for structured consumers,
+    which have no use for ordering.
+    """
 
     phase: str
     item: str | None = None
     status: str = "ok"  # "ok" | "failed" | "unknown"
+    message: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -198,11 +207,13 @@ def _stream_step(
     item: str | None,
     emit: OnEvent,
     warnings: list[Message],
-) -> int | None:
-    """Run one streamed exec, emitting its output. Returns the exit code, or None.
+) -> tuple[int | None, str | None]:
+    """Run one streamed exec, emitting its output. Returns ``(exit_code, lost_reason)``.
 
-    ``None`` means the outcome is genuinely UNKNOWABLE (the stream was lost, or the
-    daemon recorded no code), never that it failed. See :mod:`.exec_stream`.
+    An exit code of ``None`` means the outcome is genuinely UNKNOWABLE (the stream
+    was lost, or the daemon recorded no code), never that it failed. See
+    :mod:`.exec_stream`. The reason comes back too, so the frontend can say WHAT was
+    lost at the moment it happened rather than only in the final report.
     """
     exit_code = 1
     try:
@@ -213,17 +224,15 @@ def _stream_step(
                 exit_code = event.exit_code
     except CwcliError as e:
         # Do NOT let this abort the fan-out, and do NOT call it a failure: the
-        # command may still be running in the container.
-        where = f"{phase}" + (f" '{item}'" if item else "")
-        warnings.append(
-            Message(
-                e.code,
-                f"Lost track of {where}: {e.message}",
-                detail={"phase": phase, "item": item},
-            )
-        )
-        return None
-    return exit_code
+        # command may still be running in the container. Every exec-stream error is
+        # treated as unknown, INCLUDING exec.start_failed - claiming "it never ran"
+        # from an API call whose own outcome is uncertain would be a confident guess,
+        # and the safe direction for a retry decision is unknown.
+        where = phase + (f" '{item}'" if item else "")
+        reason = f"Lost track of {where}: {e.message}"
+        warnings.append(Message(e.code, reason, detail={"phase": phase, "item": item}))
+        return None, reason
+    return exit_code, None
 
 
 def _run_step(
@@ -246,7 +255,7 @@ def _run_step(
     makes it the same way.
     """
     emit(UpdateStepStart(phase=phase, item=item, index=index, total=total))
-    code = _stream_step(
+    code, lost = _stream_step(
         container, cmd, workdir=workdir, phase=phase, item=item, emit=emit, warnings=warnings
     )
     key = item if item is not None else phase
@@ -258,7 +267,7 @@ def _run_step(
         status = "failed"
     else:
         status = "ok"
-    emit(UpdateStepEnd(phase=phase, item=item, status=status))
+    emit(UpdateStepEnd(phase=phase, item=item, status=status, message=lost))
     return status
 
 
@@ -407,31 +416,39 @@ def _frappe_reset(
     BEFORE the maintenance-mode state machine is ever entered - it enables no
     maintenance and has no ``finally``; ``bench update --reset`` manages its own.
     """
+    note = None
     if ignored:
+        note = (
+            "updating 'frappe' runs a bench-wide 'bench update --reset'; ignoring "
+            f"{', '.join(ignored)} (not applicable)."
+        )
         warnings.append(
-            Message(
-                "frappe_reset.options_ignored",
-                "updating 'frappe' runs a bench-wide 'bench update --reset'; ignoring "
-                f"{', '.join(ignored)} (not applicable).",
-                detail={"ignored": list(ignored)},
-            )
+            Message("frappe_reset.options_ignored", note, detail={"ignored": list(ignored)})
         )
 
     failed: list[str] = []
     unknown: list[str] = []
-    _run_step(
+    # The note rides the START event so a frontend shows "ignoring X" BEFORE the
+    # reset runs, where it is actionable, rather than after it from the envelope.
+    emit(UpdateStepStart(phase="frappe_reset", item="frappe", message=note))
+    code, lost = _stream_step(
         frappe_container,
         "bench update --reset",
         workdir=bench_path,
         phase="frappe_reset",
         item="frappe",
-        index=1,
-        total=1,
         emit=emit,
         warnings=warnings,
-        failed=failed,
-        unknown=unknown,
     )
+    if code is None:
+        unknown.append("frappe")
+        status = "unknown"
+    elif code != 0:
+        failed.append("frappe")
+        status = "failed"
+    else:
+        status = "ok"
+    emit(UpdateStepEnd(phase="frappe_reset", item="frappe", status=status, message=lost))
 
     # Recache BEFORE the exit code is consulted, exactly as this path always has: a
     # partially-applied reset genuinely changes the cache, so a failed reset still
@@ -606,10 +623,13 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
             app_path = f"{bench_path}/apps/{app}"
             exit_code, _ = frappe_container.exec_run(["test", "-d", app_path])
             if exit_code != 0:
+                # A missing app directory is a DIFFERENT failure from a pull that
+                # ran and failed, and it says so: no pull is attempted.
+                not_found = f"App '{app}' not found at {app_path}"
                 emit(UpdateStepStart(phase="pull", item=app, index=i, total=len(apps)))
                 failed_apps.append(app)
-                warnings.append(Message("app.not_found", f"App '{app}' not found at {app_path}"))
-                emit(UpdateStepEnd(phase="pull", item=app, status="failed"))
+                warnings.append(Message("app.not_found", not_found))
+                emit(UpdateStepEnd(phase="pull", item=app, status="failed", message=not_found))
                 continue
             _run_step(
                 frappe_container,

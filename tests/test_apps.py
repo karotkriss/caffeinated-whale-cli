@@ -27,6 +27,7 @@ from caffeinated_whale_cli.commands import apps as apps_mod
 from caffeinated_whale_cli.commands import update as update_mod
 from caffeinated_whale_cli.commands import utils as cmd_utils
 from caffeinated_whale_cli.core import exec_stream as exec_stream_mod
+from caffeinated_whale_cli.core import update as core_update
 
 # ------------------------------------------------------------------- fake container
 
@@ -544,21 +545,26 @@ def test_apps_update_delegates_to_run_app_update(wired, monkeypatch):
 
 
 def _wire_update(monkeypatch, container):
+    # run_app_update imports ensure_containers_running/resolve_bench_path locally
+    # from .utils: that interactive prologue stays in the frontend (prompts must
+    # happen before any spinner), so it is still patched there...
     monkeypatch.setattr(
         update_mod, "ensure_containers_running", lambda *a, **k: True, raising=False
     )
-    # _update_project imports ensure_containers_running/resolve_bench_path locally from .utils
     monkeypatch.setattr(cmd_utils, "ensure_containers_running", lambda *a, **k: True)
     monkeypatch.setattr(cmd_utils, "resolve_bench_path", lambda *a, **k: "/workspace/frappe-bench")
-    monkeypatch.setattr(update_mod, "get_project_containers", lambda name: [container])
-    monkeypatch.setattr(update_mod.cache, "recache_project", lambda *a, **k: True)
+    # ...while container resolution and the recache moved into core.update. The fake
+    # container already satisfies resolve_container_state (it reloads and reports
+    # "running"), so only the accessor needs replacing.
+    monkeypatch.setattr(core_update.core_docker, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(core_update.cache, "recache_project", lambda *a, **k: True)
 
 
 def test_update_frappe_runs_bench_update_reset(monkeypatch):
     container = FakeFrappeContainer(available_apps=["frappe"])
     _wire_update(monkeypatch, container)
 
-    update_mod._update_project("proj", ["frappe"], verbose=True)
+    update_mod.run_app_update("proj", ["frappe"], verbose=True)
 
     assert any("bench update --reset" in c for c in container.calls)
     assert not any("git pull" in c for c in container.calls)
@@ -593,7 +599,7 @@ def test_update_frappe_reset_writes_no_bench_output_to_stdout_when_not_verbose(m
     container = _NoisyFrappeContainer(available_apps=["frappe"])
     _wire_update(monkeypatch, container)
 
-    update_mod._update_project("proj", ["frappe"], verbose=False)
+    update_mod.run_app_update("proj", ["frappe"], verbose=False)
 
     out = capsys.readouterr().out
     assert "Updating apps" not in out
@@ -609,7 +615,7 @@ def test_update_frappe_reset_streams_bench_output_when_verbose(monkeypatch, caps
     container = _NoisyFrappeContainer(available_apps=["frappe"])
     _wire_update(monkeypatch, container)
 
-    update_mod._update_project("proj", ["frappe"], verbose=True)
+    update_mod.run_app_update("proj", ["frappe"], verbose=True)
 
     assert "Updating apps" in capsys.readouterr().out
 
@@ -619,7 +625,7 @@ def test_update_frappe_reset_failure_exits_nonzero(monkeypatch):
     _wire_update(monkeypatch, container)
 
     with pytest.raises(typer.Exit) as exc:
-        update_mod._update_project("proj", ["frappe"], verbose=True)
+        update_mod.run_app_update("proj", ["frappe"], verbose=True)
     assert exc.value.exit_code == 1
 
 
@@ -629,8 +635,8 @@ def test_update_frappe_announces_ignored_per_app_flags(monkeypatch, capsys):
     container = FakeFrappeContainer(available_apps=["frappe"])
     _wire_update(monkeypatch, container)
 
-    update_mod._update_project(
-        "proj", ["frappe"], verbose=True, clear_cache=True, sites_filter=["a.localhost"]
+    update_mod.run_app_update(
+        "proj", ["frappe"], verbose=True, clear_cache=True, sites=["a.localhost"]
     )
 
     err = capsys.readouterr().err.lower()
@@ -654,7 +660,9 @@ def _wire_update_site_filter(
             }
         ]
     }
-    monkeypatch.setattr(update_mod.db_utils, "get_cached_project_data", lambda project_name: cached)
+    monkeypatch.setattr(
+        core_update.db_utils, "get_cached_project_data", lambda project_name: cached
+    )
 
 
 def test_update_site_filter_matches_no_affected_site_refuses(monkeypatch, capsys):
@@ -662,7 +670,7 @@ def test_update_site_filter_matches_no_affected_site_refuses(monkeypatch, capsys
     _wire_update_site_filter(monkeypatch, container, installed_apps={"a.localhost": ["payments"]})
 
     with pytest.raises(typer.Exit) as exc:
-        update_mod._update_project("proj", ["payments"], verbose=True, sites_filter=["b.localhost"])
+        update_mod.run_app_update("proj", ["payments"], verbose=True, sites=["b.localhost"])
     assert exc.value.exit_code == 1
     err = capsys.readouterr().err
     assert "matched no affected site" in err.lower()
@@ -673,17 +681,18 @@ def test_update_site_filter_matches_affected_site_succeeds(monkeypatch):
     container = FakeFrappeContainer(available_apps=["frappe", "payments"])
     _wire_update_site_filter(monkeypatch, container, installed_apps={"a.localhost": ["payments"]})
 
-    update_mod._update_project("proj", ["payments"], verbose=True, sites_filter=["a.localhost"])
+    update_mod.run_app_update("proj", ["payments"], verbose=True, sites=["a.localhost"])
     assert any("bench --site a.localhost migrate" in c for c in container.calls)
 
 
 # ---------------------------- update.py: verbose/non-verbose restructure (u4 + b8)
 
 
-# The site-discovery / recache / sleep internals live in ONE place today and move
-# with the state machine. Every test patches them through these helpers rather than
-# reaching for the module attribute directly, so when the code moves, only the
-# helpers below are re-pointed - no test's call or assertion has to change.
+# The site-discovery / recache / sleep internals moved from commands/update.py into
+# core/update.py with the state machine (openspec `migrate-update-core`). Every test
+# patches them through these helpers rather than reaching for the module attribute
+# directly, so the move re-pointed ONLY the four helpers below - no test's call or
+# assertion changed.
 
 
 def _count_discovery(monkeypatch, sites):
@@ -694,7 +703,7 @@ def _count_discovery(monkeypatch, sites):
         counter["n"] += 1
         return list(sites)
 
-    monkeypatch.setattr(update_mod, "_get_sites_with_app", counting)
+    monkeypatch.setattr(core_update, "_sites_with_app", counting)
     return counter
 
 
@@ -704,7 +713,7 @@ def _patch_discovery_per_app(monkeypatch, per_app):
     def per_app_sites(_project, _bench_path, app, *a, **k):
         return list(per_app[app])
 
-    monkeypatch.setattr(update_mod, "_get_sites_with_app", per_app_sites)
+    monkeypatch.setattr(core_update, "_sites_with_app", per_app_sites)
 
 
 def _record_recache(monkeypatch):
@@ -715,13 +724,13 @@ def _record_recache(monkeypatch):
         calls.append(project_name)
         return True
 
-    monkeypatch.setattr(update_mod.cache, "recache_project", fake_recache)
+    monkeypatch.setattr(core_update.cache, "recache_project", fake_recache)
     return calls
 
 
 def _no_sleep(monkeypatch):
     """Drop the post-migration lock-settle sleep: real behaviour, pure test latency."""
-    monkeypatch.setattr(update_mod.time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(core_update.time, "sleep", lambda *_a, **_k: None)
 
 
 @pytest.mark.parametrize("verbose", [True, False])
@@ -732,7 +741,7 @@ def test_update_pulls_and_discovers_once(monkeypatch, verbose):
     _wire_update(monkeypatch, container)
     discovery = _count_discovery(monkeypatch, ["a.localhost"])
 
-    update_mod._update_project("proj", ["payments"], verbose=verbose)
+    update_mod.run_app_update("proj", ["payments"], verbose=verbose)
 
     assert sum(1 for c in container.calls if c == "git pull") == 1
     assert discovery["n"] == 1  # one app -> exactly one discovery pass
@@ -747,7 +756,7 @@ def test_update_empty_affected_set_performs_neither_second_pass(monkeypatch, ver
     _wire_update(monkeypatch, container)
     discovery = _count_discovery(monkeypatch, [])  # no site has the app
 
-    update_mod._update_project("proj", ["payments"], verbose=verbose)
+    update_mod.run_app_update("proj", ["payments"], verbose=verbose)
 
     assert sum(1 for c in container.calls if c == "git pull") == 1
     assert discovery["n"] == 1
@@ -766,7 +775,7 @@ def test_update_migrate_skipped_for_site_not_in_maintenance(monkeypatch, capsys)
     _count_discovery(monkeypatch, ["a.localhost", "b.localhost"])
 
     with pytest.raises(typer.Exit) as exc:
-        update_mod._update_project("proj", ["payments"], verbose=True, clear_cache=True)
+        update_mod.run_app_update("proj", ["payments"], verbose=True, clear_cache=True)
     assert exc.value.exit_code == 1
 
     assert any("bench --site a.localhost migrate" in c for c in container.calls)
@@ -788,7 +797,7 @@ def test_update_stuck_site_warns_and_exits_nonzero(monkeypatch, capsys):
     _count_discovery(monkeypatch, ["a.localhost"])
 
     with pytest.raises(typer.Exit) as exc:
-        update_mod._update_project("proj", ["payments"], verbose=True)
+        update_mod.run_app_update("proj", ["payments"], verbose=True)
     assert exc.value.exit_code == 1
     out = capsys.readouterr().out
     assert "a.localhost" in out
@@ -826,50 +835,62 @@ def _lose_stream_on(container, needle):
 def test_update_stream_loss_mid_fanout_still_reports_stuck_site_remediation(
     monkeypatch, capsys, verbose
 ):
-    # REGRESSION (batch 3 / PR #80): reporting used to live AFTER the try/finally,
-    # so exec_stream's CwcliError (which _stream_command turns into typer.Exit)
-    # unwound straight past the seven-way summary. The finally still disabled
-    # maintenance, but a site left genuinely stuck lost the one line telling the
-    # user how to unstick it - the worst part of the gap.
+    # REGRESSION (batch 3 / PR #80): reporting used to live AFTER the try/finally, so
+    # exec_stream's CwcliError (which _stream_command turned into typer.Exit) unwound
+    # straight past the seven-way summary, and a site left genuinely stuck lost the
+    # one line telling the user how to unstick it. PR #81 fixed that by reporting
+    # from the finally; the report is now a RETURNED value, so it cannot be skipped
+    # at all.
     #
-    # Drive the dropped-connection shape into a.localhost's migrate, with the
-    # disable failing too, so the site really is stuck and really needs the line.
-    # Do not spend the real 10s poll bound waiting for a code that never comes.
+    # CHANGED BY DESIGN (openspec migrate-update-core, Decision 2): a lost stream no
+    # longer ABORTS the fan-out. It used to, while a migration that merely returned
+    # non-zero was recorded and the fan-out continued - the same real-world event,
+    # two behaviours, decided by whether Docker happened to record an exit code. Now
+    # both continue, and the lost one is reported as UNKNOWN rather than failed,
+    # because it may still be running and an agent must not retry it blindly.
+    #
+    # Drive the dropped-connection shape into a.localhost's migrate, with the disable
+    # failing too, so the site really is stuck and really needs the line. Do not spend
+    # the real 10s poll bound waiting for a code that never comes.
     monkeypatch.setattr(exec_stream_mod, "_EXIT_CODE_POLL_TIMEOUT", 0.01)
 
     container = FakeFrappeContainer(available_apps=["frappe", "payments"])
     _wire_update(monkeypatch, container)
+    _no_sleep(monkeypatch)
     container.fail_on = ["set-maintenance-mode off"]  # every disable fails -> stuck
     _lose_stream_on(container, "bench --site a.localhost migrate")
     _count_discovery(monkeypatch, ["a.localhost", "b.localhost"])
 
     with pytest.raises(typer.Exit) as exc:
-        update_mod._update_project("proj", ["payments"], verbose=verbose)
+        update_mod.run_app_update("proj", ["payments"], verbose=verbose)
 
-    # The honest exit code survives - the raise still wins.
+    # The honest exit code survives: an unknown outcome is never a success.
     assert exc.value.exit_code == 1
     # rich hard-wraps to the console width, so collapse whitespace before matching
     # any line long enough to be broken (the remediation command is).
     out = " ".join(capsys.readouterr().out.split())
 
-    # The summary is REACHABLE on the raise path.
+    # The summary is reachable, and the stuck site keeps its actionable remediation,
+    # for BOTH sites the finally tried and failed to take back out of maintenance.
     assert "Update completed with errors" in out
-    # ...and the stuck site keeps its actionable remediation, for BOTH sites the
-    # finally tried and failed to take back out of maintenance.
     assert "bench --site a.localhost set-maintenance-mode off" in out
     assert "bench --site b.localhost set-maintenance-mode off" in out
-    # The abandoned fan-out is admitted rather than implied complete: no success
-    # banner over an update that stopped halfway. (The per-app "Successfully updated
-    # 'payments'" pull line is a different, honest claim - the pull did succeed.)
-    assert "stopped before completion" in out
-    assert "Successfully updated 1 app(s)" not in out
 
-    # The invariant that already held must keep holding: maintenance was enabled for
-    # both sites and a disable was ATTEMPTED for both, even though we raised.
+    # The lost site is reported as UNKNOWN, not as a failure: retrying a migration
+    # that may still be running is harmful, so the two must stay distinguishable.
+    assert "Lost track of 1 site(s)" in out
+    assert "a.localhost: its migration may still be running; check before retrying" in out
+    assert "a.localhost: Migration failed" not in out
+
+    # The fan-out CONTINUED: b.localhost was migrated rather than abandoned, which is
+    # the behaviour a non-zero exit code has always produced.
+    assert any("bench --site b.localhost migrate" in c for c in container.calls)
+    assert "stopped before completion" not in out
+
+    # The invariant that already held keeps holding: maintenance was enabled for both
+    # sites and a disable was ATTEMPTED for both.
     assert any("bench --site a.localhost set-maintenance-mode on" in c for c in container.calls)
     assert any("bench --site b.localhost set-maintenance-mode off" in c for c in container.calls)
-    # b.localhost was genuinely abandoned - which is why the report must say so.
-    assert not any("bench --site b.localhost migrate" in c for c in container.calls)
 
 
 def test_update_site_filter_refusal_is_not_reported_as_an_interrupted_update(monkeypatch, capsys):
@@ -881,7 +902,7 @@ def test_update_site_filter_refusal_is_not_reported_as_an_interrupted_update(mon
     _count_discovery(monkeypatch, ["a.localhost"])
 
     with pytest.raises(typer.Exit) as exc:
-        update_mod._update_project("proj", ["payments"], verbose=True, sites_filter=["nope.local"])
+        update_mod.run_app_update("proj", ["payments"], verbose=True, sites=["nope.local"])
 
     assert exc.value.exit_code == 1
     captured = capsys.readouterr()
@@ -897,7 +918,7 @@ def test_update_shell_interpolations_are_shlex_quoted(monkeypatch):
     _wire_update(monkeypatch, container)
     _count_discovery(monkeypatch, ["weird site"])
 
-    update_mod._update_project("proj", ["payments"], verbose=True, clear_cache=True)
+    update_mod.run_app_update("proj", ["payments"], verbose=True, clear_cache=True)
 
     assert any("bench --site 'weird site' set-maintenance-mode on" in c for c in container.calls)
     assert any("bench --site 'weird site' migrate" in c for c in container.calls)
@@ -983,9 +1004,29 @@ def test_stream_bench_reports_cwclierror_cleanly(capsys):
     assert "Error:" in capsys.readouterr().err
 
 
-def test_update_stream_command_reports_cwclierror_cleanly(capsys):
+def test_update_reports_a_dead_daemon_as_unknown_and_still_exits_nonzero(monkeypatch, capsys):
+    # REPLACES test_update_stream_command_reports_cwclierror_cleanly, whose subject
+    # (update.py's _stream_command) moved into core.update with the state machine.
+    #
+    # The property it pinned - an exec-stream CwcliError is reported cleanly and
+    # exits non-zero - survives, but its SHAPE changed by design (Decision 2): the
+    # error no longer raises through as typer.Exit; it is recorded as UNKNOWN, the
+    # fan-out continues, and the exit code comes from the report. Every exec-stream
+    # error is unknown, INCLUDING exec.start_failed (this test's case): claiming "it
+    # never ran" from an API call whose own outcome is uncertain would be a
+    # confident guess, and the safe direction for a retry decision is unknown.
+    container = FakeFrappeContainer(available_apps=["frappe", "payments"])
+    _wire_update(monkeypatch, container)
+    _no_sleep(monkeypatch)
+    _count_discovery(monkeypatch, ["a.localhost"])
+    container.client.api.exec_create = _BoomAPI().exec_create
+
     with pytest.raises(typer.Exit) as exc:
-        update_mod._stream_command(_boom_container(), "bench migrate", "/workspace/frappe-bench")
+        update_mod.run_app_update("proj", ["payments"], verbose=True)
 
     assert exc.value.exit_code == 1
-    assert "Error:" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    out = " ".join(captured.out.split())
+    assert "Could not start the command" in captured.err
+    assert "Lost track of 1 app(s)" in out
+    assert "payments: Git pull failed" not in out
