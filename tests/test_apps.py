@@ -680,6 +680,12 @@ def test_update_site_filter_matches_affected_site_succeeds(monkeypatch):
 # ---------------------------- update.py: verbose/non-verbose restructure (u4 + b8)
 
 
+# The site-discovery / recache / sleep internals live in ONE place today and move
+# with the state machine. Every test patches them through these helpers rather than
+# reaching for the module attribute directly, so when the code moves, only the
+# helpers below are re-pointed - no test's call or assertion has to change.
+
+
 def _count_discovery(monkeypatch, sites):
     """Patch discovery to a counter that returns ``sites``; return the counter dict."""
     counter = {"n": 0}
@@ -690,6 +696,32 @@ def _count_discovery(monkeypatch, sites):
 
     monkeypatch.setattr(update_mod, "_get_sites_with_app", counting)
     return counter
+
+
+def _patch_discovery_per_app(monkeypatch, per_app):
+    """Patch discovery to return a different site list per app name."""
+
+    def per_app_sites(_project, _bench_path, app, *a, **k):
+        return list(per_app[app])
+
+    monkeypatch.setattr(update_mod, "_get_sites_with_app", per_app_sites)
+
+
+def _record_recache(monkeypatch):
+    """Patch the post-pull recache to a recorder; return the list of project names."""
+    calls = []
+
+    def fake_recache(project_name, verbose=False):
+        calls.append(project_name)
+        return True
+
+    monkeypatch.setattr(update_mod.cache, "recache_project", fake_recache)
+    return calls
+
+
+def _no_sleep(monkeypatch):
+    """Drop the post-migration lock-settle sleep: real behaviour, pure test latency."""
+    monkeypatch.setattr(update_mod.time, "sleep", lambda *_a, **_k: None)
 
 
 @pytest.mark.parametrize("verbose", [True, False])
