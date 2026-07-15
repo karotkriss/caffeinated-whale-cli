@@ -86,19 +86,20 @@ The command's flags, messages, and exit codes SHALL be preserved.
 
 ### Requirement: cwcli axi unlock is non-interactive and structured
 
-The system SHALL provide `cwcli axi unlock <project> [--site] [--bench] [--yes]` on the existing `cwcli axi` serializer and exit-code mapper.
-It SHALL NOT prompt: a `NEEDS_CHOICE` result SHALL be rendered as a structured usage error naming the flag that resolves it, with exit code 2.
+The system SHALL provide `cwcli axi unlock <project> [--site] [--bench]` on the existing `cwcli axi` serializer and exit-code mapper.
+It SHALL NOT prompt and SHALL NOT auto-start a stopped container: a `NEEDS_CHOICE` result SHALL be rendered as a structured usage error naming the flag (or, for a stopped container, the `cwcli start` command) that resolves it, with exit code 2.
 It SHALL emit exactly one TOON document on stdout.
+It deliberately carries NO `--yes` flag, matching `cwcli axi backup`'s established convention exactly: adding one would open a new start-from-axi path that diverges from its twin, and a structured error pointing at `cwcli start` already meets the non-interactive, never-starts-anything intent.
 
 #### Scenario: Multi-bench without a selector is a usage error naming the flag
 
 - **WHEN** `cwcli axi unlock` runs on a multi-bench project with no `--bench`
 - **THEN** it emits a structured error naming `--bench`, lists the valid benches, and exits 2 without prompting
 
-#### Scenario: A stopped container without --yes is a structured error
+#### Scenario: A stopped container is a structured error pointing at cwcli start
 
-- **WHEN** `cwcli axi unlock` runs against a project whose container is stopped and no `--yes` is given
-- **THEN** it emits a structured error naming `--yes` and exits non-zero without prompting or starting anything
+- **WHEN** `cwcli axi unlock` runs against a project whose container is stopped
+- **THEN** it emits a structured error with a `help` line directing the agent to run `cwcli start <project>` first, and exits non-zero without prompting or starting anything
 
 ### Requirement: unlock is E2E-verified in both interactive and non-interactive modes
 
