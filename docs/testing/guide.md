@@ -105,7 +105,7 @@ uv run pytest -x
 
 ### Current Test Coverage
 
-`tests/` holds 52 `test_*.py` suites totaling 815 tests at ~62% overall coverage (measured with `uv run pytest --cov` at 0.37.0, unreleased).
+`tests/` holds 53 `test_*.py` suites totaling 821 tests at ~63% overall coverage (measured with `uv run pytest --cov` at 0.37.0, unreleased).
 See the [Testing Directory Index](./README.md#current-status) for the full per-area breakdown.
 `test_completion_utils.py` remains the most complete single-module suite (tab completion, ~92% coverage): project name completion, app name completion, site name completion, cache functionality, Docker client management.
 
@@ -248,7 +248,7 @@ def temp_cache():
 
 - **Minimum**: 80% coverage for new code
 - **Target**: 90%+ coverage for critical paths
-- **Current**: ~62% overall at 0.37.0 (unreleased); `completion_utils.py` is the highest-covered module at ~92% (see the [Testing Directory Index](./README.md#current-status) for the rest)
+- **Current**: ~63% overall at 0.37.0 (unreleased); `completion_utils.py` is the highest-covered module at ~92% (see the [Testing Directory Index](./README.md#current-status) for the rest)
 
 ### Checking Coverage
 
@@ -377,7 +377,7 @@ Status as of 0.37.0 (see the [Testing Directory Index](./README.md#future-test-p
 - [x] `utils/config_utils.py`'s `cwcli_home()` - `CWCLI_HOME` override (`test_cwcli_home`, mock-free)
 - [~] `commands/start.py` - Port conflict detection; `test_yes_flag` covers the non-interactive contract, and the interactive port-conflict confirmation prompt is driven end to end by `tests/e2e/test_start_status_e2e.py`, but the remaining port-scanning helpers still have no dedicated unit suite
 - [ ] `utils/port_utils.py` - Port management
-- [ ] `utils/docker_utils.py` - Docker interactions
+- [~] `utils/docker_utils.py` - Docker interactions; `utf8_stream_decoder`/`decode_exec_stream` (the exec-stream decode helpers) are covered by `test_exec_stream_decode`, but `handle_docker_errors`'s error branches and `exec_into_container` still have no dedicated unit suite
 - [x] `core/start.py`, `core/status.py`, `core/supervision.py` - the start/status logic core (`test_core_start`, `test_core_status`, `test_core_supervision`); `commands/status.py` (`test_status_frontend`, `test_status_watch` for the `--watch` live view); `cwcli axi start`/`status` (`test_axi_start_status`)
 - [x] Real-Docker E2E for `init` and `backup` (`tests/e2e/test_init_e2e.py`, `tests/e2e/test_backup_e2e.py`) - genuine `bench init`/`bench backup` against throwaway Frappe instances, both interactive and non-interactive
 - [x] Real-Docker E2E for the lifecycle commands `start`/`status`/`logs`/`restart` (`tests/e2e/test_start_status_e2e.py`) - a structure-agnostic outcome net that pinned the invariants the start/status core migration had to preserve, both interactive and non-interactive (`openspec/changes/add-start-status-e2e-net`); `tests/e2e/test_start_status_new_behavior_e2e.py` covers the behavior that migration added (`openspec/changes/migrate-start-status-core`); `tests/e2e/test_status_unsupervised_e2e.py` guards the not-cwcli-supervised fallback regression (a bench relaunched under plain honcho reports real per-process state instead of a false all-down), both interactive and non-interactive

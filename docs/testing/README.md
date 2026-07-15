@@ -43,7 +43,7 @@ uv run pytest tests/test_completion_utils.py
 
 ### Test Coverage
 
-Measured with `uv run pytest --cov` at 0.37.0 (unreleased): 815 tests across 52 test files, ~62% overall coverage.
+Measured with `uv run pytest --cov` at 0.37.0 (unreleased): 821 tests across 53 test files, ~63% overall coverage.
 Per-area breakdown (highest-coverage module in each area; see the module list in each test file for what else it exercises):
 
 - **rm safety** (`test_rm_safety`, `test_rm_truth`, `test_rm_stopped`, `test_rm_stopped_backup`) - `commands/rm.py` ~84%
@@ -79,12 +79,12 @@ Per-area breakdown (highest-coverage module in each area; see the module list in
 - **passive update notice** (`test_update_notice`) - `update_notice.py` ~95% (stderr-only rendering, gated on `sys.stderr.isatty()`, `CWCLI_NO_UPDATE_CHECK` suppression, fail-open when the core gate raises; the core `passive_notice` gate itself is faked here and dedicated-tested in `test_core_version`)
 
 **No dedicated suite** (only incidental coverage from other tests' mocking): `utils/port_utils.py` (~9%), `utils/sendme_utils.py` (~9%), `utils/vscode_utils.py` (~16%).
-`utils/docker_utils.py` is now partially covered (~51%, up from ~37%) since `test_core_resolvers` dedicated-tests its `get_frappe_container` CLI wrapper; the rest of the module remains incidental.
+`utils/docker_utils.py` is now partially covered (~58%, up from ~51%) since `test_exec_stream_decode` dedicated-tests its `utf8_stream_decoder`/`decode_exec_stream` helpers on top of `test_core_resolvers`'s `get_frappe_container` CLI wrapper; the rest of the module remains incidental.
 **Target**: add dedicated suites for the remaining three modules next.
 
 ### Test Files
 
-Run `ls tests/` for the authoritative, current list; as of 0.37.0 (unreleased) it holds 52 `test_*.py` suites plus `bench_fakes.py` and `bench_fakes_mb.py` (shared fakes) and `README.md`.
+Run `ls tests/` for the authoritative, current list; as of 0.37.0 (unreleased) it holds 53 `test_*.py` suites plus `bench_fakes.py` and `bench_fakes_mb.py` (shared fakes) and `README.md`.
 
 ## Testing Framework
 
@@ -341,11 +341,11 @@ Status as of 0.37.0 (based on `ls tests/` and the coverage run above):
 7b. **`unlock`/`stop` CLI frontends** (`commands/unlock.py` ~50%, `commands/stop.py` ~68%) - both verbs' core calls are dedicated-tested via `test_core_unlock`/`test_core_stop`/`test_axi_unlock_stop`, and `unlock` is driven end to end in both modes by `tests/e2e/test_unlock_e2e.py`, but the CLI frontends themselves (`unlock`'s choice-resolution/verbose-print branches, `stop`'s multi-project loop and `stop_project_best_effort` adapter) have no dedicated unit suite.
 
 ### Still needed
-8. **Docker Utilities** (`utils/docker_utils.py`) - foundation for all commands; the `get_frappe_container` CLI wrapper is now covered by `test_core_resolvers`, but the rest of the module's error handling is untested by a dedicated suite (~51%, up from ~37%).
+8. **Docker Utilities** (`utils/docker_utils.py`) - foundation for all commands; the `get_frappe_container` CLI wrapper is covered by `test_core_resolvers` and the exec-stream decode helpers by `test_exec_stream_decode`, but the rest of the module's error handling is untested by a dedicated suite (~58%, up from ~51%).
 9. **Port Utilities** (`utils/port_utils.py`) - cross-platform process detection (~9%).
 10. **VS Code Integration** (`utils/vscode_utils.py`) - container attachment fallback logic (~16%).
 11. **Configuration Management** (`utils/config_utils.py`) - distinct from `db_utils`'s config validation, which `test_config_validation` already covers; `cwcli_home()` is now covered by `test_cwcli_home`, but `load_config`/`save_config` and the custom-path/auto-inspect-config setters remain untested (~41%).
-12. Other command modules at or near 0% dedicated unit coverage: `backup.py` (its logic moved to `core/backup.py`, which is covered), `run.py`. `status.py` and `unlock.py` are no longer in this bucket (`status.py` - see item 6a and `test_status_frontend`; `unlock.py` moved its logic to `core/unlock.py` - see item 6d - and is now ~50% via `test_unlock`/`test_unlock_command_cli`).
+12. Other command modules at or near 0% dedicated unit coverage: `backup.py` (its logic moved to `core/backup.py`, which is covered). `status.py` and `unlock.py` are no longer in this bucket (`status.py` - see item 6a and `test_status_frontend`; `unlock.py` moved its logic to `core/unlock.py` - see item 6d - and is now ~50% via `test_unlock`/`test_unlock_command_cli`). `run.py` is also no longer in this bucket: `test_exec_stream_decode` dedicated-tests its exec-stream decode loop, though the rest of the command is still untested.
 
 ## Common Issues
 
