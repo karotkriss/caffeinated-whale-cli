@@ -26,6 +26,7 @@ import typer
 from caffeinated_whale_cli.commands import apps as apps_mod
 from caffeinated_whale_cli.commands import update as update_mod
 from caffeinated_whale_cli.commands import utils as cmd_utils
+from caffeinated_whale_cli.core import exec_stream as exec_stream_mod
 
 # ------------------------------------------------------------------- fake container
 
@@ -710,6 +711,101 @@ def test_update_stuck_site_warns_and_exits_nonzero(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "a.localhost" in out
     assert "set-maintenance-mode off" in out
+
+
+def _lose_stream_on(container, needle):
+    """Make the exec whose command contains ``needle`` look like a dropped connection.
+
+    The exact shape Docker reports while an exec is still running: ``ExitCode`` is
+    present but None, so ``.get("ExitCode", 1)``'s default never fires, and
+    CancellableStream has already turned the dropped socket into a silent
+    StopIteration - so core.exec_stream cannot tell it from a clean EOF, polls, and
+    raises CwcliError rather than guessing an outcome.
+    """
+    api = container.client.api
+    real_create = api.exec_create
+    api._lost = False
+
+    def exec_create(cid, cmd, workdir=None, tty=False, environment=None):
+        cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
+        api._lost = needle in cmd_str
+        return real_create(cid, cmd, workdir=workdir, tty=tty, environment=environment)
+
+    def exec_inspect(exec_id):
+        return (
+            {"ExitCode": None, "Running": True} if api._lost else {"ExitCode": container._last_code}
+        )
+
+    api.exec_create = exec_create
+    api.exec_inspect = exec_inspect
+
+
+@pytest.mark.parametrize("verbose", [True, False])
+def test_update_stream_loss_mid_fanout_still_reports_stuck_site_remediation(
+    monkeypatch, capsys, verbose
+):
+    # REGRESSION (batch 3 / PR #80): reporting used to live AFTER the try/finally,
+    # so exec_stream's CwcliError (which _stream_command turns into typer.Exit)
+    # unwound straight past the seven-way summary. The finally still disabled
+    # maintenance, but a site left genuinely stuck lost the one line telling the
+    # user how to unstick it - the worst part of the gap.
+    #
+    # Drive the dropped-connection shape into a.localhost's migrate, with the
+    # disable failing too, so the site really is stuck and really needs the line.
+    # Do not spend the real 10s poll bound waiting for a code that never comes.
+    monkeypatch.setattr(exec_stream_mod, "_EXIT_CODE_POLL_TIMEOUT", 0.01)
+
+    container = FakeFrappeContainer(available_apps=["frappe", "payments"])
+    _wire_update(monkeypatch, container)
+    container.fail_on = ["set-maintenance-mode off"]  # every disable fails -> stuck
+    _lose_stream_on(container, "bench --site a.localhost migrate")
+    _count_discovery(monkeypatch, ["a.localhost", "b.localhost"])
+
+    with pytest.raises(typer.Exit) as exc:
+        update_mod._update_project("proj", ["payments"], verbose=verbose)
+
+    # The honest exit code survives - the raise still wins.
+    assert exc.value.exit_code == 1
+    # rich hard-wraps to the console width, so collapse whitespace before matching
+    # any line long enough to be broken (the remediation command is).
+    out = " ".join(capsys.readouterr().out.split())
+
+    # The summary is REACHABLE on the raise path.
+    assert "Update completed with errors" in out
+    # ...and the stuck site keeps its actionable remediation, for BOTH sites the
+    # finally tried and failed to take back out of maintenance.
+    assert "bench --site a.localhost set-maintenance-mode off" in out
+    assert "bench --site b.localhost set-maintenance-mode off" in out
+    # The abandoned fan-out is admitted rather than implied complete: no success
+    # banner over an update that stopped halfway. (The per-app "Successfully updated
+    # 'payments'" pull line is a different, honest claim - the pull did succeed.)
+    assert "stopped before completion" in out
+    assert "Successfully updated 1 app(s)" not in out
+
+    # The invariant that already held must keep holding: maintenance was enabled for
+    # both sites and a disable was ATTEMPTED for both, even though we raised.
+    assert any("bench --site a.localhost set-maintenance-mode on" in c for c in container.calls)
+    assert any("bench --site b.localhost set-maintenance-mode off" in c for c in container.calls)
+    # b.localhost was genuinely abandoned - which is why the report must say so.
+    assert not any("bench --site b.localhost migrate" in c for c in container.calls)
+
+
+def test_update_site_filter_refusal_is_not_reported_as_an_interrupted_update(monkeypatch, capsys):
+    # The abort line must only fire once there was a fan-out to abandon. A --site
+    # typo raises before any site is touched, so the refusal's own error stands
+    # alone rather than being dressed up as an update that stopped halfway.
+    container = FakeFrappeContainer(available_apps=["frappe", "payments"])
+    _wire_update(monkeypatch, container)
+    _count_discovery(monkeypatch, ["a.localhost"])
+
+    with pytest.raises(typer.Exit) as exc:
+        update_mod._update_project("proj", ["payments"], verbose=True, sites_filter=["nope.local"])
+
+    assert exc.value.exit_code == 1
+    captured = capsys.readouterr()
+    assert "--site matched no affected site(s)" in captured.err
+    assert "stopped before completion" not in captured.out
+    assert "Update completed with errors" not in captured.out
 
 
 def test_update_shell_interpolations_are_shlex_quoted(monkeypatch):

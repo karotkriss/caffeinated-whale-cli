@@ -475,6 +475,108 @@ def _clear_locks(container, bench_path, sites, verbose):
             console.print(f"[bold green]✓[/bold green] Locks cleared for '{site}'")
 
 
+def _report_summary(
+    apps: list[str],
+    failed_apps: list[str],
+    failed_maintenance_enable: list[str],
+    failed_migrations: list[str],
+    failed_builds: list[str],
+    failed_cache_clears: list[str],
+    failed_website_cache_clears: list[str],
+    failed_maintenance_disable: list[str],
+    aborted: bool,
+) -> bool:
+    """Print the summary of every phase and return whether anything failed.
+
+    Deliberately PRINT-ONLY: it is called from `_update_project`'s `finally`, so
+    raising here would replace whatever exception is already unwinding (losing the
+    real error, and any traceback for an unexpected one). The caller owns the exit.
+    Reporting used to sit *after* the try/finally, where a raise jumped clean over
+    it - a site left stuck in maintenance mode then lost its remediation line and
+    kept only the bare inline warn.
+    """
+    successful_apps = len(apps) - len(failed_apps)
+    has_errors = bool(
+        aborted
+        or failed_apps
+        or failed_migrations
+        or failed_builds
+        or failed_cache_clears
+        or failed_website_cache_clears
+        or failed_maintenance_disable
+        or failed_maintenance_enable
+    )
+
+    if successful_apps > 0 and not aborted:
+        console.print(f"\n[bold green]✓ Successfully updated {successful_apps} app(s)[/bold green]")
+
+    # Detailed error reporting
+    if has_errors:
+        console.print("\n[bold red]Update completed with errors:[/bold red]")
+
+        if aborted:
+            # No per-site record exists for the sites the fan-out never reached, so
+            # say honestly that it stopped early rather than implying it finished.
+            console.print(
+                "[bold red]✗[/bold red] Update stopped before completion - "
+                "any remaining site was not migrated"
+            )
+
+        if failed_apps:
+            console.print(f"[bold red]✗ Failed to update {len(failed_apps)} app(s):[/bold red]")
+            for app in failed_apps:
+                console.print(f"  • {app}: Git pull failed")
+
+        if failed_maintenance_enable:
+            console.print(
+                f"[bold red]✗[/bold red] Could not enable maintenance mode for "
+                f"{len(failed_maintenance_enable)} site(s), so they were not migrated:"
+            )
+            for site in failed_maintenance_enable:
+                console.print(f"  • {site}: could not enter maintenance mode - not migrated")
+
+        if failed_migrations:
+            console.print(
+                f"[bold red]✗ Failed to migrate {len(failed_migrations)} site(s):[/bold red]"
+            )
+            for site in failed_migrations:
+                console.print(f"  • {site}: Migration failed")
+
+        if failed_builds:
+            console.print(
+                f"[bold red]✗ Failed to build assets for {len(failed_builds)} app(s):[/bold red]"
+            )
+            for app in failed_builds:
+                console.print(f"  • {app}: Build failed")
+
+        if failed_cache_clears:
+            console.print(
+                f"[bold red]✗ Failed to clear cache for {len(failed_cache_clears)} site(s):[/bold red]"
+            )
+            for site in failed_cache_clears:
+                console.print(f"  • {site}: Cache clearing failed")
+
+        if failed_website_cache_clears:
+            console.print(
+                f"[bold red]✗ Failed to clear website cache for {len(failed_website_cache_clears)} site(s):[/bold red]"
+            )
+            for site in failed_website_cache_clears:
+                console.print(f"  • {site}: Website cache clearing failed")
+
+        if failed_maintenance_disable:
+            console.print(
+                f"[bold red]✗ Could not disable maintenance mode for "
+                f"{len(failed_maintenance_disable)} site(s):[/bold red]"
+            )
+            for site in failed_maintenance_disable:
+                console.print(
+                    f"  • {site}: still in maintenance mode - run "
+                    f"'bench --site {shlex.quote(site)} set-maintenance-mode off'"
+                )
+
+    return has_errors
+
+
 def _update_project(
     project_name: str,
     apps: list[str],
@@ -615,6 +717,8 @@ def _update_project(
     failed_maintenance_disable: list[str] = []  # Sites left stuck in maintenance mode
     failed_maintenance_enable: list[str] = []  # Sites never in maintenance, so not migrated
     maintenance_sites: set[str] = set()  # Sites we actually turned maintenance ON for
+    sites_to_migrate: list[str] = []  # The fan-out set; empty until we get that far
+    aborted = False  # A step raised, so the fan-out stopped short of the last site
 
     try:
         if verbose:
@@ -704,6 +808,13 @@ def _update_project(
         if sites_to_migrate:
             _clear_locks(frappe_container, bench_path, sites_to_migrate, verbose)
 
+    except BaseException:
+        # Only records that the fan-out stopped early, then re-raises untouched: the
+        # summary below must not claim the update ran to completion. BaseException
+        # (not Exception) so a Ctrl-C is reported the same way - it leaves sites in
+        # maintenance exactly as a stream loss does.
+        aborted = True
+        raise
     finally:
         # CRITICAL: always disable maintenance mode for every site we enabled, even
         # if the update failed - and record any site that cannot be taken back out
@@ -717,78 +828,31 @@ def _update_project(
                 verbose,
             )
 
-    # Summary and error reporting
-    successful_apps = len(apps) - len(failed_apps)
-    has_errors = bool(
-        failed_apps
-        or failed_migrations
-        or failed_builds
-        or failed_cache_clears
-        or failed_website_cache_clears
-        or failed_maintenance_disable
-        or failed_maintenance_enable
-    )
+        # Report from the `finally`, so a raise mid-fan-out (e.g. exec_stream's
+        # CwcliError on a lost stream, which `_stream_command` turns into
+        # typer.Exit) can no longer jump over the summary and strip a stuck site of
+        # its remediation line. Print-only, so the in-flight exception still wins;
+        # it already carries a non-zero exit and its own error message.
+        #
+        # An abort is only worth reporting once there was a fan-out to abandon.
+        # Raising earlier (a --site typo, a failed pull) leaves nothing half-done, so
+        # the raise's own message stands alone instead of being dressed up as an
+        # interrupted update - any failure already accumulated still reports.
+        has_errors = _report_summary(
+            apps,
+            failed_apps,
+            failed_maintenance_enable,
+            failed_migrations,
+            failed_builds,
+            failed_cache_clears,
+            failed_website_cache_clears,
+            failed_maintenance_disable,
+            aborted=aborted and bool(sites_to_migrate),
+        )
 
-    if successful_apps > 0:
-        console.print(f"\n[bold green]✓ Successfully updated {successful_apps} app(s)[/bold green]")
-
-    # Detailed error reporting
+    # Unreachable when aborted - that exception propagates out of the finally above
+    # and already exits non-zero.
     if has_errors:
-        console.print("\n[bold red]Update completed with errors:[/bold red]")
-
-        if failed_apps:
-            console.print(f"[bold red]✗ Failed to update {len(failed_apps)} app(s):[/bold red]")
-            for app in failed_apps:
-                console.print(f"  • {app}: Git pull failed")
-
-        if failed_maintenance_enable:
-            console.print(
-                f"[bold red]✗[/bold red] Could not enable maintenance mode for "
-                f"{len(failed_maintenance_enable)} site(s), so they were not migrated:"
-            )
-            for site in failed_maintenance_enable:
-                console.print(f"  • {site}: could not enter maintenance mode - not migrated")
-
-        if failed_migrations:
-            console.print(
-                f"[bold red]✗ Failed to migrate {len(failed_migrations)} site(s):[/bold red]"
-            )
-            for site in failed_migrations:
-                console.print(f"  • {site}: Migration failed")
-
-        if failed_builds:
-            console.print(
-                f"[bold red]✗ Failed to build assets for {len(failed_builds)} app(s):[/bold red]"
-            )
-            for app in failed_builds:
-                console.print(f"  • {app}: Build failed")
-
-        if failed_cache_clears:
-            console.print(
-                f"[bold red]✗ Failed to clear cache for {len(failed_cache_clears)} site(s):[/bold red]"
-            )
-            for site in failed_cache_clears:
-                console.print(f"  • {site}: Cache clearing failed")
-
-        if failed_website_cache_clears:
-            console.print(
-                f"[bold red]✗ Failed to clear website cache for {len(failed_website_cache_clears)} site(s):[/bold red]"
-            )
-            for site in failed_website_cache_clears:
-                console.print(f"  • {site}: Website cache clearing failed")
-
-        if failed_maintenance_disable:
-            console.print(
-                f"[bold red]✗ Could not disable maintenance mode for "
-                f"{len(failed_maintenance_disable)} site(s):[/bold red]"
-            )
-            for site in failed_maintenance_disable:
-                console.print(
-                    f"  • {site}: still in maintenance mode - run "
-                    f"'bench --site {shlex.quote(site)} set-maintenance-mode off'"
-                )
-
-        # Return failure status
         raise typer.Exit(code=1)
 
 
