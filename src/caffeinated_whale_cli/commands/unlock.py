@@ -69,9 +69,7 @@ def unlock(
             with console.status(
                 f"[bold green]Unlocking site '{site or 'default'}'...[/bold green]", spinner="dots"
             ):
-                result = core_unlock.unlock(
-                    project_name, site=site, bench=bench, bench_path=bench_path
-                )
+                result = core_unlock.unlock(project_name, site=site, bench_path=bench_path)
         except CwcliError as e:
             _handle_unlock_error(e, verbose)
 
