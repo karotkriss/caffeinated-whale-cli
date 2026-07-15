@@ -30,7 +30,7 @@ PAYLOAD = TEXT.encode("utf-8")
 
 # Cut one byte into the first "✓" (U+2713 = E2 9C 93), so chunk 1 ends holding an
 # incomplete character and chunk 2 opens with its continuation bytes.
-SPLIT = PAYLOAD.index("✓".encode("utf-8")) + 1
+SPLIT = PAYLOAD.index("✓".encode()) + 1
 CHUNKS = [PAYLOAD[:SPLIT], PAYLOAD[SPLIT:]]
 
 
@@ -131,7 +131,7 @@ def test_init_decodes_stdout_and_stderr_independently(capsys):
     init's two streams interleave; sharing one decoder between them would feed
     stderr's bytes into stdout's pending character and mangle both.
     """
-    err = "警告\n".encode("utf-8")
+    err = "警告\n".encode()
     container = _SplitContainer(chunks=[])
     container.client.api.chunks = [
         (CHUNKS[0], err[:1]),
