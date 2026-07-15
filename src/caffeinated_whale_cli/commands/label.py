@@ -1,27 +1,64 @@
 """The ``label`` command: assign, clear, or list per-bench user labels.
 
-A user label is a durable, human-friendly handle for a bench in a multi-bench
-project (numeric indices are positional and can shift). Setting a label writes it
-to BOTH the SQLite cache and the per-bench marker file
-``<bench-root>/.cwcli/.bench-label``, so it survives a cache wipe and can be
-rebuilt by ``inspect`` from the live bench. See ``utils/bench_labels.py`` for the
-label model and marker format.
+Thin human-CLI frontend over ``core.label``. It owns only the typer signature,
+the ``rich`` rendering, and the honest exit codes; the bench resolution, the
+label rules, the container gate, and the two-store write all live in the UI-pure
+core. See ``core/label.py`` for the marker-before-cache ordering that makes
+``--clear`` safe, and ``utils/bench_labels.py`` for the label model and marker
+format.
 """
+
+from typing import NoReturn
 
 import typer
 
-from ..utils import bench_labels, db_utils
+from ..core import label as core_label
+from ..core.envelope import Status
+from ..core.errors import CwcliError
+from ..utils import bench_labels
 from ..utils.completion_utils import complete_project_names
 from ..utils.console import console, stderr_console
-from ..utils.docker_utils import get_frappe_container, handle_docker_errors
+from ..utils.docker_utils import handle_docker_errors
 
 
-def _print_bench_list(project_name: str, benches: list[dict]) -> None:
+def _print_bench_list(project_name: str, benches: list) -> None:
     console.print(f"Benches in project [bold cyan]{project_name}[/bold cyan]:")
-    for index, bench in enumerate(benches):
-        label = bench.get("label")
-        label_part = f" [magenta]'{label}'[/magenta]" if label else " [dim](no label)[/dim]"
-        console.print(f"  [cyan]\\[{index}][/cyan]{label_part}  {bench['path']}")
+    for bench in benches:
+        label_part = (
+            f" [magenta]'{bench.label}'[/magenta]" if bench.label else " [dim](no label)[/dim]"
+        )
+        console.print(f"  [cyan]\\[{bench.index}][/cyan]{label_part}  {bench.path}")
+
+
+def _handle_label_error(e: CwcliError, project_name: str) -> NoReturn:
+    """Render a core label failure with the historical CLI messages, then Exit(1).
+
+    Message and hint render on ONE line, which is what reproduces the pre-migration
+    text verbatim (e.g. "No cached benches for project 'x'. Run 'cwcli inspect x'
+    first.") now that the remedy half travels as the error's ``hint``.
+    """
+    text = f"[bold red]Error:[/bold red] {e.message}"
+    if e.hint:
+        text += f" {e.hint}"
+    stderr_console.print(text)
+
+    if e.code == "bench.not_found":
+        # The available-benches list is presentation, so the core does not carry it
+        # on the error; fetch it here. A project with no cached benches raises
+        # before this point, so the list is non-empty.
+        try:
+            listing = core_label.list_benches(project_name)
+        except CwcliError:  # pragma: no cover - cache vanished mid-command
+            raise typer.Exit(code=1) from None
+        assert listing.data is not None
+        stderr_console.print("Available benches (address by index or label):")
+        stderr_console.print(
+            bench_labels.format_bench_list(
+                [{"path": b.path, "label": b.label} for b in listing.data.benches]
+            )
+        )
+
+    raise typer.Exit(code=1)
 
 
 @handle_docker_errors
@@ -55,96 +92,57 @@ def label(
 
         cwcli label my-project 1 --clear       # remove bench 1's label
     """
-    cached_data = db_utils.get_cached_project_data(project_name)
-    benches = (cached_data or {}).get("bench_instances") or []
-
-    if not benches:
-        stderr_console.print(
-            f"[bold red]Error:[/bold red] No cached benches for project '{project_name}'. "
-            f"Run 'cwcli inspect {project_name}' first."
-        )
-        raise typer.Exit(code=1)
-
-    # No selector -> list mode (read-only, no container needed).
+    # No selector -> list mode (read-only, no container needed). Not a NEEDS_CHOICE:
+    # omitting the selector is a legitimate request, not an ambiguity.
     if bench_selector is None:
-        _print_bench_list(project_name, benches)
+        try:
+            listing = core_label.list_benches(project_name)
+        except CwcliError as e:
+            _handle_label_error(e, project_name)
+        assert listing.data is not None
+        _print_bench_list(project_name, listing.data.benches)
         return
 
-    chosen = bench_labels.resolve_bench(benches, bench_selector)
-    if chosen is None:
+    if not clear and new_label is None:
         stderr_console.print(
-            f"[bold red]Error:[/bold red] No bench '{bench_selector}' in project '{project_name}'."
-        )
-        stderr_console.print("Available benches (address by index or label):")
-        stderr_console.print(bench_labels.format_bench_list(benches))
-        raise typer.Exit(code=1)
-
-    if not clear:
-        if new_label is None:
-            stderr_console.print(
-                "[bold red]Error:[/bold red] Provide a new label, or pass --clear to remove one."
-            )
-            raise typer.Exit(code=1)
-        new_label = new_label.strip()
-        error = bench_labels.validate_user_label(new_label)
-        if error is None:
-            duplicate = any(
-                other is not chosen and other.get("label") == new_label for other in benches
-            )
-            if duplicate:
-                error = f"Label '{new_label}' is already used by another bench in this project."
-        if error:
-            stderr_console.print(f"[bold red]Error:[/bold red] {error}")
-            raise typer.Exit(code=1)
-
-    # Both set and clear must write the marker inside the container, so the bench
-    # must be reachable. Do NOT auto-start; a label change should not spin up a
-    # stopped project.
-    frappe_container = get_frappe_container(project_name)
-    frappe_container.reload()
-    if frappe_container.status != "running":
-        stderr_console.print(
-            f"[bold red]Error:[/bold red] Frappe container for '{project_name}' is not running. "
-            "Start the project first - the label marker is stored inside the bench."
+            "[bold red]Error:[/bold red] Provide a new label, or pass --clear to remove one."
         )
         raise typer.Exit(code=1)
 
-    bench_path = chosen["path"]
+    try:
+        if clear:
+            result = core_label.clear_label(project_name, bench=bench_selector)
+        else:
+            result = core_label.set_label(project_name, bench=bench_selector, label=new_label)
+    except CwcliError as e:
+        _handle_label_error(e, project_name)
 
-    if clear:
-        # Clear the marker FIRST and only touch the DB on success. The marker is
-        # the source of truth for label recovery, so clearing the DB while the
-        # marker survives would let a later full inspect resurrect the old label.
-        marker_ok = bench_labels.clear_label_marker(frappe_container, bench_path, verbose)
-        if not marker_ok:
-            stderr_console.print(
-                "[bold red]Error:[/bold red] could not remove the marker file inside the "
-                "container; label left unchanged to avoid the marker resurrecting it later."
-            )
-            raise typer.Exit(code=1)
-        if not db_utils.set_bench_label(project_name, bench_path, None):
-            stderr_console.print(
-                "[bold red]Error:[/bold red] Removed the marker file but could not clear the "
-                "label in the cache database. Run 'cwcli inspect --update' to reconcile."
-            )
-            raise typer.Exit(code=1)
-        console.print(f"[bold green]✓[/bold green] Cleared label for bench at {bench_path}.")
-    else:
-        marker_ok = bench_labels.write_label_marker(
-            frappe_container, bench_path, new_label, verbose
-        )
-        if not marker_ok:
-            stderr_console.print(
-                "[bold red]Error:[/bold red] Failed to write the marker file inside the "
-                "container; label not saved."
-            )
-            raise typer.Exit(code=1)
-        db_utils.set_bench_label(project_name, bench_path, new_label)
+    if result.status is Status.NEEDS_CHOICE and result.choice is not None:
+        # select_bench: unreachable from this frontend (an explicit selector is
+        # required to get here), so reaching it means the cache changed under us.
+        # Report rather than guess a bench.
+        stderr_console.print(f"[bold red]Error:[/bold red] {result.choice.prompt}")
+        raise typer.Exit(code=1)
+
+    outcome = result.data
+    assert outcome is not None  # OK/WARNING always carries a LabelOutcome
+
+    if verbose:
+        for warning in result.warnings:
+            stderr_console.print(f"[dim]{warning.text}[/dim]")
+        stderr_console.print(f"[dim]Marker file: {outcome.marker_path}[/dim]")
+
+    if outcome.cleared:
         console.print(
-            f"[bold green]✓[/bold green] Labeled bench at {bench_path} as "
-            f"[magenta]'{new_label}'[/magenta]."
+            f"[bold green]✓[/bold green] Cleared label for bench at {outcome.bench_path}."
+        )
+    else:
+        console.print(
+            f"[bold green]✓[/bold green] Labeled bench at {outcome.bench_path} as "
+            f"[magenta]'{outcome.label}'[/magenta]."
         )
 
     # Show the refreshed list so the user sees the result.
-    refreshed = db_utils.get_cached_project_data(project_name)
-    _print_bench_list(project_name, (refreshed or {}).get("bench_instances") or [])
+    refreshed = core_label.list_benches(project_name)
+    assert refreshed.data is not None
+    _print_bench_list(project_name, refreshed.data.benches)

@@ -130,7 +130,7 @@ def _marker_path(bench_path: str) -> str:
     return f"{bench_path.rstrip('/')}/{MARKER_REL_PATH}"
 
 
-def read_label_marker(container, bench_path: str, verbose: bool = False) -> str | None:
+def read_label_marker(container, bench_path: str) -> str | None:
     """Read the user label from a bench's marker file inside the container.
 
     Returns the label string, or None when the marker is absent, unreadable, or
@@ -165,7 +165,7 @@ def read_label_marker(container, bench_path: str, verbose: bool = False) -> str 
     return None
 
 
-def write_label_marker(container, bench_path: str, label: str, verbose: bool = False) -> bool:
+def write_label_marker(container, bench_path: str, label: str) -> bool:
     """Write ``{"schema": 1, "label": <label>}`` to the bench's marker file.
 
     The JSON is base64-encoded on the host and decoded in the container, so no
@@ -187,7 +187,7 @@ def write_label_marker(container, bench_path: str, label: str, verbose: bool = F
     return bool(exit_code == 0)
 
 
-def clear_label_marker(container, bench_path: str, verbose: bool = False) -> bool:
+def clear_label_marker(container, bench_path: str) -> bool:
     """Remove a bench's marker file. Returns True on a zero-exit ``rm -f``.
 
     ``rm -f`` is a no-op (still zero exit) when the marker is already absent.

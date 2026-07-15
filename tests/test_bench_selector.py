@@ -10,6 +10,7 @@ import pytest
 import typer
 
 from caffeinated_whale_cli.commands import utils as cmd_utils
+from caffeinated_whale_cli.core import resolvers
 
 
 @pytest.fixture()
@@ -23,7 +24,7 @@ def cache(monkeypatch):
             return None
         return {"project_name": project_name, "bench_instances": benches}
 
-    monkeypatch.setattr(cmd_utils.db_utils, "get_cached_project_data", fake_get)
+    monkeypatch.setattr(resolvers.db_utils, "get_cached_project_data", fake_get)
     return store
 
 
