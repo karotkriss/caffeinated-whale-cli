@@ -1320,12 +1320,21 @@ cwcli run [OPTIONS] PROJECT_NAME BENCH_ARGS...
 | `-y`, `--yes` | Auto-start stopped containers without prompting |
 | `-v`, `--verbose` | Enable verbose output |
 
-**Passing bench's own flags:** `cwcli run` parses the options above before bench
-sees the command line, so a bench flag such as `--site` or `--branch` must follow
-a `--` separator. Without it, `cwcli` rejects the flag as unknown and exits 2.
-Note that `--branch` is reported as "Did you mean `--bench`?" - `--bench` is
-cwcli's *bench selector*, an unrelated concept. For app management, prefer the
-[`apps`](#apps---manage-frappe-apps) group, which takes these flags directly.
+**Passing bench's own flags:** a flag `cwcli run` does not define itself, such as
+`--site`, `--branch`, or `--force`, is passed straight through to bench.
+The options in the table above are the exception: they stay `cwcli`'s wherever
+they appear, so `cwcli run frappe-one migrate --bench staging` targets the
+`staging` bench rather than passing `--bench staging` to bench.
+To send a flag that collides with one of those names, put it after a `--`
+separator, which hands everything following it to bench verbatim:
+
+```bash
+# `--verbose` reaches bench instead of turning on cwcli's verbose output
+cwcli run frappe-one -- build --verbose
+```
+
+For app management, prefer the [`apps`](#apps---manage-frappe-apps) group, which
+takes these flags directly.
 
 **Examples:**
 
@@ -1333,8 +1342,11 @@ cwcli's *bench selector*, an unrelated concept. For app management, prefer the
 # Run bench migrate
 cwcli run frappe-one migrate
 
-# Run bench with specific site (bench's own flags go after `--`)
-cwcli run frappe-one -- --site development.localhost migrate
+# Run bench with specific site (bench's own flags pass straight through)
+cwcli run frappe-one --site development.localhost migrate
+
+# Install an app from a branch
+cwcli run frappe-one get-app --branch develop https://github.com/user/app.git
 
 # Execute a custom bench command
 cwcli run frappe-one console

@@ -78,7 +78,12 @@ app.add_typer(axi_cmd.app, name="axi")
 
 app.command("where")(_where_cmd)
 
-app.command("run")(_run_cmd)
+# `run` passes its argv through to bench, so an option cwcli does not define
+# (`--branch`, `--force`, ...) belongs to bench and must reach it as an argument
+# rather than exiting 2. Options cwcli DOES define stay cwcli's wherever they
+# appear, keeping `cwcli run p migrate --bench staging` working; `--` remains the
+# escape hatch for a bench flag that collides with one of cwcli's own names.
+app.command("run", context_settings={"ignore_unknown_options": True})(_run_cmd)
 app.command("update")(_update_cmd)
 app.command("self-update")(_self_update_cmd)
 app.command("status")(_status_cmd)
