@@ -19,6 +19,13 @@ from .errors import CwcliError, ErrorKind
 
 DEFAULT_BENCH_PATH = "/workspace/frappe-bench"
 
+# Shell metacharacters rejected in site names and bench paths. Defense in depth:
+# every container command is issued as an argv list (no shell), so these can never
+# be interpolated as syntax regardless - this rejects them early with a clear error
+# rather than letting a nonsense name reach a probe. Kept in ONE place so the
+# bench-op verbs (backup, unlock) cannot drift apart on what they reject.
+_INVALID_CHARS = [";", "&", "|", "$", "`", "(", ")", "<", ">", "\n", "\r", "\\"]
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ContainerState:
@@ -152,3 +159,82 @@ def resolve_bench(
             options=options,
         ),
     )
+
+
+# --------------------------------------------------------------- shared bench-op steps
+#
+# The steps every bench-scoped verb performs between "which bench" and "do the
+# thing": resolve the default site, validate the site/path, and probe that both
+# exist. Extracted here when `unlock` became `backup`'s second caller - one caller
+# is not evidence of a shared concern, two identical ones are.
+
+
+def resolve_default_site(project_name: str, bench_path: str) -> str:
+    """The bench's default site, for a verb called without an explicit ``--site``.
+
+    Raises ``NOT_FOUND`` when the bench has no default site and ``INTERNAL`` when
+    the lookup itself fails. The caller records the "using default site" note as
+    an envelope warning; this never prints.
+    """
+    try:
+        default_site = db_utils.get_default_site(project_name, bench_path)
+    except Exception as e:  # noqa: BLE001 - surface as a typed error, never print
+        raise CwcliError(
+            ErrorKind.INTERNAL,
+            "default_site.error",
+            f"Failed to retrieve default site: {e}",
+        ) from e
+
+    if not default_site:
+        raise CwcliError(
+            ErrorKind.NOT_FOUND,
+            "site.no_default",
+            "No site specified and no default site found in config.",
+        )
+    return default_site
+
+
+def validate_site_name(site: str) -> None:
+    """Raise ``USAGE`` if a site name is empty or carries shell metacharacters."""
+    if not site or not site.strip():
+        raise CwcliError(ErrorKind.USAGE, "site.empty", "Site name cannot be empty.")
+    if any(char in site for char in _INVALID_CHARS):
+        raise CwcliError(
+            ErrorKind.USAGE,
+            "site.invalid_chars",
+            f"Invalid site name '{site}'. Site names cannot contain special shell characters.",
+        )
+
+
+def validate_bench_path(bench_path: str) -> None:
+    """Raise ``USAGE`` if a bench path carries shell metacharacters."""
+    if any(char in bench_path for char in _INVALID_CHARS):
+        raise CwcliError(
+            ErrorKind.USAGE,
+            "bench_path.invalid_chars",
+            f"Invalid bench path '{bench_path}'. Paths cannot contain special shell characters.",
+        )
+
+
+def require_bench_dir(frappe_container, bench_path: str) -> None:
+    """Raise ``NOT_FOUND`` unless ``{bench_path}/sites`` exists in the container."""
+    exit_code, _ = frappe_container.exec_run(["test", "-d", f"{bench_path}/sites"])
+    if exit_code != 0:
+        raise CwcliError(
+            ErrorKind.NOT_FOUND,
+            "bench.dir_missing",
+            f"Bench directory not found at {bench_path}",
+        )
+
+
+def require_site_dir(frappe_container, bench_path: str, site: str) -> str:
+    """Return ``{bench_path}/sites/{site}``, raising ``NOT_FOUND`` unless it exists."""
+    site_path = f"{bench_path}/sites/{site}"
+    exit_code, _ = frappe_container.exec_run(["test", "-d", site_path])
+    if exit_code != 0:
+        raise CwcliError(
+            ErrorKind.NOT_FOUND,
+            "site.not_found",
+            f"Site '{site}' not found at {site_path}",
+        )
+    return site_path

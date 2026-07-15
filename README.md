@@ -1747,6 +1747,14 @@ cwcli axi backup frappe-one --site development.localhost
 # Include files too
 cwcli axi backup frappe-one --with-files
 
+# Remove a site's locks folder; the removed paths print as a structured TOON list.
+# A site that was not locked is a clean success (already_unlocked: true).
+cwcli axi unlock frappe-one --site development.localhost
+
+# Stop a project's containers; the outcome prints as TOON. Idempotent: an
+# already-stopped project is a definitive success (already_stopped: true).
+cwcli axi stop frappe-one
+
 # Start a project's containers + bench; the outcome (including already_running)
 # prints as TOON. --bench selects a bench on a multi-bench project; --yes
 # auto-resolves a port conflict by stopping the conflicting Frappe project.
@@ -1760,7 +1768,7 @@ cwcli axi status frappe-one
 cwcli axi restart frappe-one --process web
 ```
 
-`cwcli axi ls`, `cwcli axi where`, `cwcli axi backup`, `cwcli axi start`, `cwcli axi status`, and `cwcli axi restart` run on the same logic core as their human counterparts; only the output (always TOON, never JSON) and choice-handling differ. `cwcli axi start` never prompts: an ambiguous multi-bench project is a `--bench` usage error (exit 2), and an unresolved port conflict is a `CONFLICT` error naming `--yes` (exit 1). `cwcli axi status` always exits 0, leading with the `overall` aggregate (`offline`/`online`/`running`/`degraded`). `cwcli axi restart` requires `--process`; an unknown/ambiguous process is a usage error listing the valid labels (exit 2). JSON output stays on the human commands (`cwcli ls --json`, `cwcli where --json`).
+`cwcli axi ls`, `cwcli axi where`, `cwcli axi backup`, `cwcli axi unlock`, `cwcli axi stop`, `cwcli axi start`, `cwcli axi status`, and `cwcli axi restart` run on the same logic core as their human counterparts; only the output (always TOON, never JSON) and choice-handling differ. `cwcli axi start` never prompts: an ambiguous multi-bench project is a `--bench` usage error (exit 2), and an unresolved port conflict is a `CONFLICT` error naming `--yes` (exit 1). `cwcli axi unlock` follows `cwcli axi backup`'s conventions exactly: an ambiguous multi-bench project is a `--bench` usage error (exit 2) and a stopped instance is a usage error pointing at `cwcli start` (exit 2). `cwcli axi stop` is idempotent for an agent - stopping an already-stopped project is a success, not an error. `cwcli axi status` always exits 0, leading with the `overall` aggregate (`offline`/`online`/`running`/`degraded`). `cwcli axi restart` requires `--process`; an unknown/ambiguous process is a usage error listing the valid labels (exit 2). JSON output stays on the human commands (`cwcli ls --json`, `cwcli where --json`).
 
 ### Verbose Mode for Debugging
 

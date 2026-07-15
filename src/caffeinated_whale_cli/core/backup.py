@@ -14,14 +14,10 @@ from __future__ import annotations
 import shlex
 from dataclasses import dataclass
 
-from ..utils import db_utils
 from . import docker as core_docker
 from . import resolvers
 from .envelope import Message, Result, Status
 from .errors import CwcliError, ErrorKind
-
-# Shell metacharacters rejected in site names and bench paths (command-injection guard).
-_INVALID_CHARS = [";", "&", "|", "$", "`", "(", ")", "<", ">", "\n", "\r", "\\"]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -79,61 +75,17 @@ def backup(
 
     # 4. Resolve the default site when --site was not given.
     if not site:
-        try:
-            default_site = db_utils.get_default_site(project_name, bench_path)
-        except Exception as e:  # noqa: BLE001 - surface as a typed error, never print
-            raise CwcliError(
-                ErrorKind.INTERNAL,
-                "default_site.error",
-                f"Failed to retrieve default site: {e}",
-            ) from e
-        if default_site:
-            site = default_site
-            warnings.append(Message("default_site.resolved", f"Using default site: {site}"))
-        else:
-            raise CwcliError(
-                ErrorKind.NOT_FOUND,
-                "site.no_default",
-                "No site specified and no default site found in config.",
-            )
+        site = resolvers.resolve_default_site(project_name, bench_path)
+        warnings.append(Message("default_site.resolved", f"Using default site: {site}"))
 
-    # 5. Validate the site name (empty / shell metacharacters).
-    if not site or not site.strip():
-        raise CwcliError(ErrorKind.USAGE, "site.empty", "Site name cannot be empty.")
-    if any(char in site for char in _INVALID_CHARS):
-        raise CwcliError(
-            ErrorKind.USAGE,
-            "site.invalid_chars",
-            f"Invalid site name '{site}'. Site names cannot contain special shell characters.",
-        )
+    # 5-6. Validate the site name and bench path (empty / shell metacharacters).
+    resolvers.validate_site_name(site)
+    resolvers.validate_bench_path(bench_path)
 
-    # 6. Validate the bench path.
-    if any(char in bench_path for char in _INVALID_CHARS):
-        raise CwcliError(
-            ErrorKind.USAGE,
-            "bench_path.invalid_chars",
-            f"Invalid bench path '{bench_path}'. Paths cannot contain special shell characters.",
-        )
-
-    # 7. Verify the bench directory exists. (argv list: no shell, no quoting to reason about.)
-    bench_sites_path = f"{bench_path}/sites"
-    exit_code, _ = frappe_container.exec_run(["test", "-d", bench_sites_path])
-    if exit_code != 0:
-        raise CwcliError(
-            ErrorKind.NOT_FOUND,
-            "bench.dir_missing",
-            f"Bench directory not found at {bench_path}",
-        )
-
-    # 8. Verify the site exists.
-    site_path = f"{bench_path}/sites/{site}"
-    exit_code, _ = frappe_container.exec_run(["test", "-d", site_path])
-    if exit_code != 0:
-        raise CwcliError(
-            ErrorKind.NOT_FOUND,
-            "site.not_found",
-            f"Site '{site}' not found at {site_path}",
-        )
+    # 7-8. Verify the bench directory and the site exist. (argv lists: no shell,
+    # no quoting to reason about.)
+    resolvers.require_bench_dir(frappe_container, bench_path)
+    site_path = resolvers.require_site_dir(frappe_container, bench_path, site)
 
     # 9. Ensure the backup directory exists (create if missing).
     backup_dir = f"{site_path}/private/backups"
