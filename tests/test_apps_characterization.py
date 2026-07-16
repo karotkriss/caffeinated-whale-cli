@@ -36,6 +36,7 @@ import pytest
 import typer
 
 from caffeinated_whale_cli.commands import apps as apps_mod
+from caffeinated_whale_cli.core import apps as core_apps
 
 from .test_apps import FakeFrappeContainer, _set_tty, wired  # noqa: F401
 
@@ -43,7 +44,7 @@ _BENCH = "/workspace/frappe-bench"
 
 
 def _wire_container(monkeypatch, container):
-    monkeypatch.setattr(apps_mod, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(core_apps.core_docker, "get_frappe_container", lambda name: container)
     return container
 
 

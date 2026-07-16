@@ -28,6 +28,7 @@ from caffeinated_whale_cli.commands import apps as apps_mod
 from caffeinated_whale_cli.commands import init as init_mod
 from caffeinated_whale_cli.commands import run as run_mod
 from caffeinated_whale_cli.commands import update as update_mod
+from caffeinated_whale_cli.core import apps as core_apps
 from caffeinated_whale_cli.core import docker as core_docker
 from caffeinated_whale_cli.core import exec_stream as es
 from caffeinated_whale_cli.core import update as core_update
@@ -142,9 +143,23 @@ def test_apps_update_streams_split_character_intact(capsys, split_stream):
 
 
 def test_apps_install_streams_split_character_intact(capsys, split_stream):
-    """``apps install``/``uninstall`` - errors="replace", so it corrupted silently."""
-    exit_code = apps_mod._stream_bench(
-        split_stream, "bench install-app erpnext", "/workspace/frappe-bench"
+    """``apps install``/``uninstall`` - errors="replace", so it corrupted silently.
+
+    Re-pointed at ``core.apps`` (openspec `migrate-apps-core`), exactly as the
+    ``update`` case above was by batch 4 and for the same reason: the fan-out and
+    its streaming moved there, so ``apps._stream_bench`` is gone. The PROPERTY is
+    what this file guards and it pins a crash that SHIPPED, so it is driven through
+    the real rendering path - the core's stream step feeding the CLI's own
+    renderer, which is what actually writes bench output to stdout.
+    """
+    exit_code = core_apps._run_step(
+        split_stream,
+        "bench install-app erpnext",
+        "/workspace/frappe-bench",
+        emit=apps_mod._make_renderer(json_output=False, verbose=False),
+        phase="install-app",
+        app="erpnext",
+        site="a.localhost",
     )
 
     assert exit_code == 0
