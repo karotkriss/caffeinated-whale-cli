@@ -15,7 +15,7 @@ The suite is split into two tiers by pytest marker (registered in `pyproject.tom
   These drive the real `cwcli` binary against genuine throwaway Frappe instances (real `cwcli init` up, real side-effect assertions, `cwcli rm` down), are excluded by default, and run on GitHub-hosted `ubuntu-latest` in a v14/v15/v16 matrix (`e2e.yml`).
 
 The migration off the legacy container-mock suite is parallel-run: those tests are carried in the `unit` tier and retired per command as each command's real E2E lands (see [`../../openspec/changes/rebuild-e2e-test-suite`](../../openspec/changes/rebuild-e2e-test-suite)); the mock-free pure-logic tests are kept permanently.
-See [`../../tests/README.md`](../../tests/README.md) for the E2E harness (isolation rails, `cwe2e-` backstop, `CWCLI_HOME` seam, `pexpect`/`ESC[?2004h`) and for how to read the run's output (per-test time + description on each `-v` line, and the single two-faced end-of-run summary - Cockpit in colour, Ledger in plain - with its highlighted E2E init-pole callout).
+See [`../../tests/README.md`](../../tests/README.md) for the E2E harness (isolation rails, `cwe2e-` backstop, `CWCLI_HOME` seam, `pexpect`/`ESC[?2004h`) and for how to read the run's output (one line per test file plus one total coverage % when green; the failing test's name and traceback when red).
 
 ## Quick Start
 
@@ -107,9 +107,11 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+# No `[ 42%]` progress indicator: the fast tier prints its own per-file progress.
+console_output_style = "classic"
 # The default `-m` deselects the real-Docker tiers, so a bare `pytest` is the
 # fast unit tier; `-m e2e` on the CLI overrides it (the last `-m` wins).
-addopts = ["-v", "--strict-markers", "--tb=short", "--cov-report=term-missing", "--durations=15", "-m", "not e2e and not e2e_p2p"]
+addopts = ["-q", "--strict-markers", "--tb=short", "--cov-report=", "-m", "not e2e and not e2e_p2p"]
 markers = [
     "unit: fast tests that need no Docker daemon (the default tier)",
     "e2e: real-Docker end-to-end tests driving the real cwcli binary",
@@ -218,6 +220,10 @@ uv run pytest -k TestCompleteProjectNames
 
 ### Terminal Report
 
+A run prints one total coverage %. To opt back into the per-file table and the
+uncovered line numbers, pass `--cov-report` on the CLI (it overrides the addopts
+default):
+
 ```bash
 uv run pytest --cov --cov-report=term-missing
 ```
@@ -314,7 +320,7 @@ CI is two-tiered. The fast `unit` tier runs on every push and PR via `.github/wo
 
 ```yaml
 - name: Run unit tests with coverage
-  run: uv run pytest -m unit --cov=caffeinated_whale_cli --cov-report=term-missing
+  run: uv run pytest -m unit --cov=caffeinated_whale_cli
 ```
 
 The real-Docker `e2e` tier runs via `.github/workflows/e2e.yml` on a v14/v15/v16 Frappe matrix, on PRs into `develop`/`master` and on-demand via the `e2e` PR label.

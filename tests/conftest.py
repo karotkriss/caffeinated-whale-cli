@@ -15,103 +15,132 @@ pure-logic tests; they are retired per command as each command's real E2E lands
 (see ``openspec/changes/rebuild-e2e-test-suite``). The end state is a ``unit``
 tier of only mock-free pure-logic tests.
 
-Timing & description reporting (test-tooling only, no behaviour change)
-----------------------------------------------------------------------
-The suite's raw ``file::test_name`` output is opaque to a newcomer and hides how
-long the slow bits take, so this file also layers pure-observability reporting on
-top (nothing here changes what a test asserts):
+Quiet per-file reporting (test-tooling only, no behaviour change)
+-----------------------------------------------------------------
+Nearly every run is green, so a green run says as little as it can: one line per
+test FILE (path, verdict, wall seconds) plus one total coverage %. A red run
+additionally gets pytest's own stock FAILURES section - the failing test's name
+and its traceback - because a red run that does not say what broke just costs a
+second run.
 
-- **Per-test time + a human-readable description, inline** in the ``-v`` line
-  (``pytest_report_teststatus``). The description is the test's docstring first
-  line when it has one, else its function name humanised (``test_stopped_container
-  _returns_false`` -> "stopped container returns false"). So every test explains
-  itself alongside its name, no filename-decoding needed. Docstring-first is the
-  convention now; the reworded-name fallback is the FLOOR so nothing regresses.
-- **A single "two-faced" end-of-run summary** (``pytest_terminal_summary`` ->
-  ``tests/_reporting.py``): one report, two faces from one code path. Cockpit
-  (colour) when stdout is a colour-capable terminal, Ledger (plain aligned
-  columns) otherwise, chosen from the reporter's own markup capability. Colour is
-  forced only on the reporter's own ``rich.Console``, never via ``FORCE_COLOR``
-  (which leaks ANSI into the app-under-test's stdout). Its sections: a header
-  verdict line, the E2E ``cwcli init`` / bench-build pole (highlighted, and only
-  shown when ``config._cwcli_e2e_init_seconds`` was recorded - the fast tier has
-  no bench build, so it is absent there), the slowest tests with descriptions,
-  a per-file rollup, and honest setup/call/teardown phase totals.
-- The init pole times itself in ``e2e/conftest.py`` and stashes the result on
-  ``config``; a session-scoped fixture's setup is dispatched above the ``tests/``
-  conftest, so a generic per-test timer here cannot observe it.
+The mechanics are subtractive:
 
-``--durations`` (set in ``pyproject.toml`` addopts) gives the built-in
-slowest-N view on top. All of this surfaces in CI logs, where the E2E matrix runs.
+- ``pytest_report_teststatus`` returns an empty letter AND word, which makes
+  pytest's terminal reporter return before writing any per-test progress - but
+  only after it has counted the report, so every total and the FAILURES /
+  ERRORS sections stay intact. The category must still be the one pytest would
+  have picked, or the report lands in the wrong bucket.
+- ``-q`` (in ``pyproject.toml`` addopts) drops the session header and the
+  per-file path prefix that pytest writes at verbosity 0.
+- The per-file line goes through pytest's own terminal writer, so colour appears
+  only when it genuinely owns a TTY. Never set ``FORCE_COLOR`` to get colour into
+  CI logs: it leaks ANSI into the app-under-test's own stdout and breaks
+  string-match assertions (e.g. ``test_where.py::...::test_no_match_plain_message``).
+
+Only the fast tier is trimmed. Anything at verbosity >= 0 (``-v``) is handed back
+to pytest's stock reporting untouched, which is how the minutes-long E2E tier
+keeps its per-test liveness - ``e2e.yml`` runs it with ``-o addopts="" -v``, so a
+long silence there would read the same as a hang.
 """
 
 from __future__ import annotations
 
-import inspect
+import io
 
 import pytest
 
-from ._reporting import build_report, render
+# Set once in pytest_configure; everything below is a no-op unless it is True.
+_quiet = False
+_reporter = None
+# test file -> [total seconds, passed count, failed count]
+_files: dict[str, list[float]] = {}
+# test file -> nodeid of its last selected test, i.e. when to print its line.
+_last_nodeid: dict[str, str] = {}
 
-# nodeid -> one-line human description, built at collection time.
-_descriptions: dict[str, str] = {}
-# nodeid -> total measured seconds (setup + call + teardown), for the summary.
-_test_durations: dict[str, float] = {}
-# Wall-honest phase totals (each test's phase duration is measured once by pytest).
-_phase_totals: dict[str, float] = {"setup": 0.0, "call": 0.0, "teardown": 0.0}
 
-
-def _describe(item) -> str:
-    """A one-line human description of a test: its docstring's first line, else
-    its function name humanised."""
-    try:
-        doc = inspect.getdoc(item.obj)
-    except Exception:  # noqa: BLE001 - non-function items (doctests etc.); fall back to name
-        doc = None
-    if doc:
-        return doc.strip().splitlines()[0].strip()
-    name: str = getattr(item, "originalname", None) or item.name
-    stem = name[5:] if name.startswith("test_") else name
-    return stem.replace("_", " ").strip()
+@pytest.hookimpl(trylast=True)
+def pytest_configure(config):
+    # trylast: a conftest is registered after the core plugins, so it is called
+    # FIRST by default - before _pytest.terminal has registered its reporter.
+    global _quiet, _reporter
+    _quiet = config.option.verbose < 0
+    _reporter = config.pluginmanager.get_plugin("terminalreporter")
 
 
 def pytest_collection_modifyitems(config, items):
     for item in items:
         if not (item.get_closest_marker("e2e") or item.get_closest_marker("e2e_p2p")):
             item.add_marker(pytest.mark.unit)
-        _descriptions[item.nodeid] = _describe(item)
+
+
+def pytest_collection_finish(session):
+    # session.items is post-deselection, so the last nodeid per file is one that
+    # will actually run.
+    for item in session.items:
+        _last_nodeid[item.nodeid.split("::")[0]] = item.nodeid
 
 
 def pytest_report_teststatus(report, config):
-    """Append per-test time + description to the ``-v`` PASSED line, so the
-    duration and a plain-English summary sit right alongside the test name.
+    """Drop pytest's per-test progress output; the per-file line replaces it.
 
-    Only the passed call-phase line is augmented; failures, skips, and
-    xfail/xpass keep pytest's default rendering (and its counters) untouched.
+    Returns exactly what ``_pytest.runner`` / ``_pytest.terminal`` would have,
+    with only the LETTER - the per-test progress character - blanked. The other
+    two fields are load-bearing and must not be trimmed:
+
+    - the category feeds the run totals, and a passing setup/teardown MUST stay
+      uncategorised, or every test is counted once per phase and 994 passed
+      reads as 2982;
+    - the word is what ``short_test_summary`` prints as each failure's
+      ``FAILED`` / ``ERROR`` prefix, so blanking it makes a red run unable to
+      tell a failure from an error.
     """
-    if report.when != "call" or not report.passed or hasattr(report, "wasxfail"):
+    if not _quiet or hasattr(report, "wasxfail"):
         return None
-    word = f"PASSED {report.duration:6.3f}s"
-    desc = _descriptions.get(report.nodeid)
-    if desc:
-        word += f"  · {desc}"
-    return "passed", ".", (word, {"green": True})
+    if report.when != "call":
+        if report.failed:
+            return "error", "", "ERROR"
+        if report.skipped:
+            return "skipped", "", "SKIPPED"
+        return "", "", ""
+    return report.outcome, "", report.outcome.upper()
 
 
 def pytest_runtest_logreport(report):
-    _phase_totals[report.when] = _phase_totals.get(report.when, 0.0) + report.duration
-    # Per-test total across all three phases, for the slowest-tests table.
-    _test_durations[report.nodeid] = _test_durations.get(report.nodeid, 0.0) + report.duration
+    if not _quiet:
+        return
+    stat = _files.setdefault(report.nodeid.split("::")[0], [0.0, 0, 0])
+    stat[0] += report.duration
+    if report.failed:
+        stat[2] += 1
+    elif report.when == "call" and report.passed:
+        stat[1] += 1
+
+
+def pytest_runtest_logfinish(nodeid):
+    if not _quiet or _reporter is None:
+        return
+    path = nodeid.split("::")[0]
+    if _last_nodeid.get(path) != nodeid:
+        return
+    seconds, passed, failed = _files.get(path, [0.0, 0, 0])
+    if failed:
+        verdict, markup = "FAIL", {"red": True}
+    elif passed:
+        verdict, markup = "PASS", {"green": True}
+    else:
+        verdict, markup = "SKIP", {"yellow": True}
+    _reporter.write_line(f"{path:<58}{verdict:<6}{seconds:6.2f}s", **markup)
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
-    """Render the single two-faced summary (see tests/_reporting.py).
+    """One total coverage % for the run, in place of pytest-cov's per-file table.
 
-    Colour vs plain is decided from the reporter's own markup capability, so
-    colour is confined to our own rich Console and never leaks via FORCE_COLOR.
+    ``--cov-report=`` (empty, in addopts) silences the plugin's own report; the
+    total is read back off the same coverage data it already collected, which
+    ``cov_controller.finish()`` has written by the time summaries run.
     """
-    report = build_report(terminalreporter, config, _phase_totals, _test_durations, _descriptions)
-    tw = terminalreporter._tw
-    block = render(report, color=tw.hasmarkup, width=tw.fullwidth)
-    terminalreporter.write("\n")
-    terminalreporter.write(block)
+    controller = getattr(config.pluginmanager.get_plugin("_cov"), "cov_controller", None)
+    if controller is None:
+        return  # no --cov on this run
+    total = controller.cov.report(ignore_errors=True, file=io.StringIO())
+    terminalreporter.write_line(f"coverage: {total:.2f}%")

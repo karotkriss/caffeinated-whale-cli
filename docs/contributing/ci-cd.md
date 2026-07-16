@@ -42,13 +42,13 @@ See [Code Quality Guide](./code-quality.md) for details.
 
 Runs on every push and PR. Has three jobs:
 
-- **Pytest** - runs the fast `unit` tier with coverage (`uv run pytest -m unit --cov=caffeinated_whale_cli --cov-report=term-missing`). This is the always-required gate; it needs no Docker daemon and runs inside the uv container. Because `develop` has no branch protection, an admin must tick `Pytest` as a required status check in the `develop` branch-protection settings for it to actually block merges.
+- **Pytest** - runs the fast `unit` tier with coverage (`uv run pytest -m unit --cov=caffeinated_whale_cli`). This is the always-required gate; it needs no Docker daemon and runs inside the uv container. Because `develop` has no branch protection, an admin must tick `Pytest` as a required status check in the `develop` branch-protection settings for it to actually block merges.
 - **Mypy** - runs `uv run mypy src/` as a zero-error gate. The historical ~50 errors across ~14 files were burned down to zero and `continue-on-error` was dropped from the step, so any new type error fails the job's status check. To make it *required to merge*, an admin must also tick `Mypy` as a required status check in the `develop` branch-protection settings (same outstanding step as `Pytest`).
 - **Pytest (Windows, auto-inspect)** - runs only `tests/test_auto_inspect.py` on `windows-latest`, the one non-Linux runner in this repo. It exists because every other job runs `ubuntu-latest`, and that is exactly how a Windows-only defect in `utils/auto_inspect.py` went unnoticed (`os.kill(pid, 0)` is not a genuine liveness probe on Windows). Deliberately narrow rather than `-m unit`: the other jobs run inside a Linux uv container this runner can't use, and the rest of the unit tier has never been exercised on Windows. See [Testing Guide](../testing/guide.md#the-windows-job-why-it-exists-and-why-it-is-narrow).
 
 **Run locally:**
 ```bash
-uv run pytest -m unit --cov=caffeinated_whale_cli --cov-report=term-missing
+uv run pytest -m unit --cov=caffeinated_whale_cli
 uv run mypy src/
 ```
 
