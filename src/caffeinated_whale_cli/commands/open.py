@@ -131,20 +131,11 @@ def open_bench(
         stderr_console.print("[yellow]No cached bench path found. Running inspect...[/yellow]")
 
         try:
-            # Run inspect to populate cache (it has its own spinner)
-            from .inspect import inspect as inspect_cmd_func
+            # Populate the cache via the core inspect slice (it owns the cache
+            # write; nothing renders here - open only needs the side effect).
+            from ..core import inspect as core_inspect
 
-            # Call inspect directly with just the parameters it needs
-            inspect_cmd_func(
-                project_name=project_name,
-                verbose=verbose,
-                json_output=False,
-                update=False,
-                no_refresh=False,
-                show_apps=False,
-                interactive=False,
-                yes=False,
-            )
+            core_inspect.inspect(project_name, refresh="auto")
 
             # Re-resolve now that inspect has populated the cache. This applies the
             # same --bench/single/multi rules (so a freshly-inspected multi-bench
@@ -214,13 +205,13 @@ def open_bench(
         # lets the next plain `cwcli inspect` self-heal via escalate-on-drift (refreshing
         # the deep per-site installed lists too). Degrade to the cached list on any error
         # so a transient failure never blocks opening the app.
-        from .inspect import partial_inspect_known_benches
+        from ..core import inspect as core_inspect
 
         try:
-            refreshed, _drift = partial_inspect_known_benches(
-                frappe_container, cached_data["bench_instances"], verbose=verbose
+            refreshed, _drift = core_inspect.partial_refresh(
+                frappe_container, cached_data["bench_instances"]
             )
-            # partial_inspect_known_benches drops any vanished bench, so `refreshed`
+            # partial_refresh drops any vanished bench, so `refreshed`
             # may be index-shifted relative to the cached list; match by path to the
             # SAME bench the membership check is about rather than indexing [0].
             match = next(

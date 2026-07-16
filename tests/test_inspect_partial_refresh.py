@@ -37,6 +37,8 @@ import typer
 
 from caffeinated_whale_cli.commands import inspect as inspect_mod
 from caffeinated_whale_cli.commands import open as open_mod
+from caffeinated_whale_cli.core import docker as core_docker
+from caffeinated_whale_cli.core import inspect as core_inspect
 
 BENCH = "/home/frappe/frappe-bench"
 
@@ -64,6 +66,11 @@ class FakeFrappeContainer:
         self.calls: list[str] = []
         self.labels = {"com.docker.compose.service": "frappe"}
         self.status = "running"
+
+    def reload(self):
+        # The core's resolve_container_state refreshes the handle before reading
+        # .status; a fake's state is already current.
+        pass
 
     def exec_run(self, cmd, workdir=None):
         self.calls.append(cmd)
@@ -156,7 +163,12 @@ def patched_inspect(monkeypatch):
 
     def install_container(container):
         holder["c"] = container
-        monkeypatch.setattr(inspect_mod, "get_project_containers", lambda name: [container])
+        # The tier machine resolves the container through core.docker now; the
+        # command module binding is patched too while it exists (raising=False).
+        monkeypatch.setattr(core_docker, "get_project_containers", lambda name: [container])
+        monkeypatch.setattr(
+            inspect_mod, "get_project_containers", lambda name: [container], raising=False
+        )
 
     return store, install_container, writes
 
@@ -262,19 +274,24 @@ class TestPartialPassStaysCheapWhenNothingChanged:
 class TestTier2StaysPassiveUnderYes:
     """CodeRabbit finding: the T2 cache-hit freshness pass must stay READ-ONLY.
 
-    ``prompt=False`` only skips the "start the containers?" question; it does NOT
-    stop ``auto_start=yes`` from starting a stopped project. So T2 must pass
-    ``auto_start=False`` even under ``--yes``; auto-start belongs only to the T3
-    full-inspect path that persists fresh data.
+    Auto-start belongs only to the T3 full-inspect path that persists fresh data;
+    T2's run-state check must stay passive even under ``--yes``.
+
+    Changed BY DESIGN in the ``migrate-inspect-core`` migration: T2's run-state
+    check moved from the frontend's ``ensure_containers_running(prompt=False,
+    auto_start=False)`` onto the core's ``resolve_container_state(auto_start=False,
+    offer_choice=False)``, so the recording seam moved with the subject. The
+    assertion's meaning is identical: exactly one passive run-state check, never
+    an auto-start, even under ``--yes``.
     """
 
-    def test_tier2_ensure_running_gets_auto_start_false_even_with_yes(
+    def test_tier2_run_state_check_stays_passive_even_with_yes(
         self, patched_inspect, monkeypatch
     ):
         store, install_container, writes = patched_inspect
         _seed_cache(store, available_apps=["frappe"], installed_apps=["frappe 15.0.0 version-15"])
-        # Disk matches the cache exactly -> no drift -> only the T2 ensure call fires
-        # (no escalation to the T3 call, which is the one allowed to auto-start).
+        # Disk matches the cache exactly -> no drift -> only the T2 run-state check
+        # fires (no escalation to the T3 call, which is the one allowed to auto-start).
         container = FakeFrappeContainer(
             apps=["frappe"],
             sites={"dev.local": ["frappe 15.0.0 version-15"]},
@@ -282,19 +299,20 @@ class TestTier2StaysPassiveUnderYes:
         install_container(container)
 
         calls: list[dict] = []
+        real_resolve = core_inspect.resolvers.resolve_container_state
 
-        def rec_ensure(*args, **kwargs):
+        def rec_resolve(project_name, frappe_container, **kwargs):
             calls.append(kwargs)
-            return True
+            return real_resolve(project_name, frappe_container, **kwargs)
 
-        monkeypatch.setattr(inspect_mod, "ensure_containers_running", rec_ensure)
+        monkeypatch.setattr(core_inspect.resolvers, "resolve_container_state", rec_resolve)
 
         _run_inspect(yes=True)  # --yes must NOT enable auto-start on the T2 path.
 
         assert not container.ran_find(), "no drift -> no escalation to the T3 auto-start path"
-        assert len(calls) == 1, "a no-drift cache hit issues exactly one ensure call (T2)"
+        assert len(calls) == 1, "a no-drift cache hit issues exactly one run-state check (T2)"
         assert calls[0].get("auto_start") is False, "T2 must never auto-start, even under --yes"
-        assert calls[0].get("prompt") is False, "T2 stays non-interactive"
+        assert calls[0].get("offer_choice") is False, "T2 stays non-interactive"
         assert writes == [], "T2 no-drift must never write the cache"
 
 
@@ -339,7 +357,7 @@ class TestPartialInspectHelper:
             }
         ]
 
-        refreshed, drift = inspect_mod.partial_inspect_known_benches(container, cached_benches)
+        refreshed, drift = core_inspect.partial_refresh(container, cached_benches)
 
         assert drift is True
         assert refreshed[0]["available_apps"] == ["frappe", "newapp"]
@@ -361,13 +379,13 @@ class TestPartialInspectHelper:
             }
         ]
 
-        _refreshed, drift = inspect_mod.partial_inspect_known_benches(container, cached_benches)
+        _refreshed, drift = core_inspect.partial_refresh(container, cached_benches)
 
         assert drift is False
 
 
 class TestOpenAppInMemoryRefresh:
-    """``open --app`` reuses ``partial_inspect_known_benches`` IN-MEMORY: it
+    """``open --app`` reuses ``core.inspect.partial_refresh`` IN-MEMORY: it
     surfaces a just-installed app for the membership check WITHOUT writing the
     cache, so the next plain ``inspect`` can still self-heal via escalate-on-drift
     (refreshing the deep per-site installed lists too)."""
@@ -399,7 +417,7 @@ class TestOpenAppInMemoryRefresh:
             apps=["frappe", "newapp"], sites={"dev.local": ["frappe 15.0.0 version-15"]}
         )
 
-        refreshed, drift = inspect_mod.partial_inspect_known_benches(container, cached_benches)
+        refreshed, drift = core_inspect.partial_refresh(container, cached_benches)
 
         assert drift is True
         # The membership check `open --app` performs now sees the new app, in-memory.
@@ -467,7 +485,7 @@ class TestPartialPassDropsVanishedBench:
             present_sites={"two.local": ["frappe 15.0.0 version-15"]},
         )
 
-        refreshed, drift = inspect_mod.partial_inspect_known_benches(container, cached_benches)
+        refreshed, drift = core_inspect.partial_refresh(container, cached_benches)
 
         # The vanished bench trips drift and is dropped -> refreshed is index-shifted.
         assert drift is True
@@ -561,9 +579,9 @@ class TestOpenAppMatchesSelectedBench:
         # Isolate the bench-SELECTION logic: the in-memory refresh returns the cache
         # unchanged (no drift), so available_apps come from the path-matched bench.
         monkeypatch.setattr(
-            inspect_mod,
-            "partial_inspect_known_benches",
-            lambda c, benches, verbose=False: (benches, False),
+            core_inspect,
+            "partial_refresh",
+            lambda c, benches, on_event=None: (benches, False),
         )
         exec_mock = MagicMock()
         monkeypatch.setattr(open_mod, "exec_into_container", exec_mock)

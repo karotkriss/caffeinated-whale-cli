@@ -719,20 +719,11 @@ def restore_send_mode(
             stderr_console.print("[yellow]No cached bench path found. Running inspect...[/yellow]")
 
             try:
-                # Run inspect to populate cache (it has its own spinner)
-                from .inspect import inspect as inspect_cmd_func
+                # Populate the cache via the core inspect slice (it owns the
+                # cache write; restore only needs the side effect).
+                from ..core import inspect as core_inspect
 
-                # Call inspect directly with just the parameters it needs
-                inspect_cmd_func(
-                    project_name=project_name,
-                    verbose=verbose,
-                    json_output=False,
-                    update=False,
-                    no_refresh=False,
-                    show_apps=False,
-                    interactive=False,
-                    yes=False,
-                )
+                core_inspect.inspect(project_name, refresh="auto")
 
                 # Re-resolve now that the cache is populated (same --bench/single/multi
                 # rules, so a multi-bench project still errors instead of guessing).
@@ -996,20 +987,11 @@ def restore_receive_mode(
             stderr_console.print("[yellow]No cached bench path found. Running inspect...[/yellow]")
 
             try:
-                # Run inspect to populate cache (it has its own spinner)
-                from .inspect import inspect as inspect_cmd_func
+                # Populate the cache via the core inspect slice (it owns the
+                # cache write; restore only needs the side effect).
+                from ..core import inspect as core_inspect
 
-                # Call inspect directly with just the parameters it needs
-                inspect_cmd_func(
-                    project_name=project_name,
-                    verbose=verbose,
-                    json_output=False,
-                    update=False,
-                    no_refresh=False,
-                    show_apps=False,
-                    interactive=False,
-                    yes=False,
-                )
+                core_inspect.inspect(project_name, refresh="auto")
 
                 # Re-resolve now that the cache is populated (same --bench/single/multi
                 # rules, so a multi-bench project still errors instead of guessing).
@@ -1671,20 +1653,11 @@ def restore(
             stderr_console.print("[yellow]No cached bench path found. Running inspect...[/yellow]")
 
             try:
-                # Run inspect to populate cache (it has its own spinner)
-                from .inspect import inspect as inspect_cmd_func
+                # Populate the cache via the core inspect slice (it owns the
+                # cache write; restore only needs the side effect).
+                from ..core import inspect as core_inspect
 
-                # Call inspect directly with just the parameters it needs
-                inspect_cmd_func(
-                    project_name=project_name,
-                    verbose=verbose,
-                    json_output=False,
-                    update=False,
-                    no_refresh=False,
-                    show_apps=False,
-                    interactive=False,
-                    yes=False,
-                )
+                core_inspect.inspect(project_name, refresh="auto")
 
                 # Re-resolve now that the cache is populated (same --bench/single/multi
                 # rules, so a multi-bench project still errors instead of guessing).

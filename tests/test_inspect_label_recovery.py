@@ -14,6 +14,7 @@ import json
 import pytest
 
 from caffeinated_whale_cli.commands import inspect as inspect_mod
+from caffeinated_whale_cli.core import docker as core_docker
 
 BENCH_A = "/workspace/frappe-bench"
 BENCH_B = "/workspace/frappe-bench-2"
@@ -42,6 +43,11 @@ class TwoBenchContainer:
         self.labels = {"com.docker.compose.service": "frappe"}
         self.status = "running"
         self.name = "fake-frappe"
+
+    def reload(self):
+        # The core's resolve_container_state refreshes the handle before reading
+        # .status; a fake's state is already current.
+        pass
 
     def exec_run(self, cmd, workdir=None, environment=None):
         self.calls.append(cmd)
@@ -98,7 +104,12 @@ def wired(monkeypatch):
     monkeypatch.setattr("docker.from_env", lambda: _StubDockerClient())
 
     def install(container):
-        monkeypatch.setattr(inspect_mod, "get_project_containers", lambda name: [container])
+        # The tier machine resolves the container through core.docker now; the
+        # command module binding is patched too while it exists (raising=False).
+        monkeypatch.setattr(core_docker, "get_project_containers", lambda name: [container])
+        monkeypatch.setattr(
+            inspect_mod, "get_project_containers", lambda name: [container], raising=False
+        )
 
     return store, writes, install
 
