@@ -171,20 +171,11 @@ def _inspect_project(project_name: str) -> bool:
     """Inspect a single project and update its cache."""
     try:
         # Import here to avoid circular imports
-        from ..commands.inspect import inspect as inspect_cmd
+        from ..core import inspect as core_inspect
 
-        # Run inspect command for this project
-        inspect_cmd(
-            project_name=project_name,
-            verbose=False,
-            json_output=False,
-            update=True,
-            no_refresh=False,
-            show_apps=False,
-            interactive=False,
-            yes=False,
-            prompt_to_start=False,
-        )
+        # A full core inspect owns the cache write; offer_choice=False keeps the
+        # daemon non-interactive (a stopped project raises instead of prompting).
+        core_inspect.inspect(project_name, refresh="full", offer_choice=False)
         return True
     except Exception as e:
         _log(f"Error inspecting project {project_name}: {e!r}", exc_info=True)

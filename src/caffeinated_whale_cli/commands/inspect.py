@@ -1,19 +1,40 @@
-import json
-import time
+"""The human ``inspect`` frontend: a renderer over ``core.inspect``.
 
-import docker
+The 3-tier freshness machine, the discovery/gather fan-out, and the cache write
+all live in :mod:`caffeinated_whale_cli.core.inspect` (openspec
+``migrate-inspect-core``). This module keeps only what is genuinely frontend:
+
+- the backup pattern around the ``confirm_start`` fork: the core call runs under
+  the ``TipSpinner``; when it returns ``NEEDS_CHOICE`` the choice is resolved
+  interactively OUTSIDE the spinner (via ``ensure_containers_running``, which
+  owns the prompt/refusal/actual start), then the core is re-invoked - capped at
+  ONE re-invoke, so a start that claims success but leaves the container down
+  fails closed instead of looping;
+- the ``-v`` rendering of the core's typed events (today's ``VERBOSE:`` lines);
+- the ``-i`` interactive labeling loop, operating on the returned cache-shaped
+  dicts with today's write ordering (markers per bench, ONE bulk
+  ``cache_project_data`` at the end);
+- the byte-identical ``--json`` and tree renderers, fed from
+  ``core.inspect.inspect_raw``'s cache-shaped dicts (the typed ``InspectReport``
+  deliberately cannot reproduce those bytes - key order and configs differ).
+
+``--show-apps`` stays declared and dead; its disposition is a separately-held
+captain decision (``cwcli-inspect-recon-i7-decision-show-apps-dead-flag``).
+"""
+
+import json
+
 import questionary
 import typer
 from rich.console import Console
 from rich.tree import Tree
 
-from ..utils import bench_labels, bench_sites, config_utils, db_utils
+from ..core import inspect as core_inspect
+from ..core.envelope import Status
+from ..core.errors import CwcliError, ErrorKind
+from ..utils import bench_labels, config_utils, db_utils
 from ..utils.completion_utils import complete_project_names
-from ..utils.docker_utils import (
-    get_frappe_container,
-    get_project_containers,
-    handle_docker_errors,
-)
+from ..utils.docker_utils import get_frappe_container, handle_docker_errors
 from ..utils.tips import TipSpinner
 from .utils import ensure_containers_running
 
@@ -21,328 +42,42 @@ console_out = Console()
 console_err = Console(stderr=True)
 
 
-def _run_command(
-    container: docker.models.containers.Container,
-    cmd: str,
-    verbose: bool = False,
-    workdir: str | None = None,
-) -> tuple[int, str]:
-    if verbose:
-        console_err.print(f"[dim]$ {cmd}[/dim]")
-    exit_code, output = container.exec_run(cmd, workdir=workdir)
-    stdout_bytes = output[0] if isinstance(output, tuple) else output
-    decoded_output = stdout_bytes.decode("utf-8").strip()
-    if verbose:
-        console_err.print(f"[bold yellow]VERBOSE: Exit Code:[/bold yellow] {exit_code}")
-        console_err.print(
-            f"[bold yellow]VERBOSE: Output:[/bold yellow]\n---\n{decoded_output}\n---"
-        )
-    return exit_code, decoded_output
+def _render_event(event: core_inspect.InspectEvent, verbose: bool) -> None:
+    """Render a core inspect event as today's stderr diagnostics.
 
-
-def _is_bench_directory(
-    container: docker.models.containers.Container, path: str, verbose: bool = False
-) -> bool:
-    check_command = f'sh -c "test -d {path}/sites && test -d {path}/apps && test -f {path}/sites/common_site_config.json"'
-    exit_code, _ = _run_command(container, check_command, verbose)
-    return exit_code == 0
-
-
-def _get_sites(
-    container: docker.models.containers.Container, bench_dir: str, verbose: bool = False
-) -> list[str]:
-    # A real Frappe site is a DIRECTORY containing site_config.json. Detect sites
-    # by that shape via the canonical shared helper, never by denylisting known
-    # non-site names - a denylist can never be complete, so a stray entry like
-    # currentsite.txt (a plain file written by `bench use`) was being reported as
-    # a site and then failed `bench list-apps`. See utils/bench_sites.py.
-    if verbose:
-        console_err.print(f"[dim]$ ls -1 {bench_dir}/sites (site detection)[/dim]")
-    sites = bench_sites.list_sites(container, bench_dir, verbose)
-    return sites if sites is not None else []
-
-
-def _get_installed_apps(
-    container: docker.models.containers.Container, bench_dir: str, site: str, verbose: bool = False
-) -> list[str]:
-    cmd = f"bench --site {site} list-apps"
-    exit_code, output = _run_command(container, cmd, verbose, workdir=bench_dir)
-    if exit_code != 0:
-        # Surface the failure to stderr, never into the returned/cached data. A
-        # site with genuinely no apps and a site whose list-apps failed both cache
-        # as [] (the honest "nothing to record / unknown" state) - never a poisoned
-        # sentinel string that would be persisted and re-emitted forever by the
-        # partial-refresh path and rendered as a fake app in the tree.
-        console_err.print(f"[yellow]Warning:[/yellow] Failed to list apps for site '{site}'.")
-        return []
-    return [app for app in output.split("\n") if app]
-
-
-def _get_available_apps(
-    container: docker.models.containers.Container, bench_dir: str, verbose: bool = False
-) -> list[str]:
-    exit_code, output = _run_command(container, f"ls -1 {bench_dir}/apps", verbose)
-    if exit_code != 0:
-        return []
-    return [app for app in output.split("\n") if app]
-
-
-def _find_bench_instances(
-    container: docker.models.containers.Container, verbose: bool = False
-) -> list[str]:
-    """Finds all potential bench directories using default and custom TOML config paths."""
-    benches_found = []
-
-    default_search_roots = [
-        "/home/frappe",
-        "/home/frappe/workspace/development",
-        "/workspace/development",
-    ]
-    config = config_utils.load_config()
-    custom_search_roots = config.get("search_paths", {}).get("custom_bench_paths", [])
-
-    all_search_roots = list(set(default_search_roots + custom_search_roots))
-
-    for root in all_search_roots:
-        if verbose:
-            console_err.print(f"VERBOSE: Searching for benches in '{root}'...")
-        # Find directories named 'apps' which are a reliable indicator of a bench's parent.
-        find_cmd = f"find {root} -maxdepth 2 -type d -name 'apps'"
-        exit_code, output = _run_command(container, find_cmd, verbose)
-        if exit_code == 0:
-            for path in output.strip().split("\n"):
-                if path:
-                    # The bench dir is the parent of the 'apps' dir
-                    bench_dir = path.removesuffix("/apps")
-                    if _is_bench_directory(container, bench_dir, verbose):
-                        benches_found.append(bench_dir)
-
-    # Sort for a STABLE discovery order. Each bench's position in this list is its
-    # numeric label / index (0, 1, 2, ...), so the ordering must be deterministic
-    # across runs - a bare ``set`` iteration order is not. Sorting by path is stable
-    # for a fixed set of benches (see utils/bench_labels.py for the label model).
-    return sorted(set(benches_found))
-
-
-def _get_common_site_config(
-    frappe_container: docker.models.containers.Container, bench_dir: str, verbose: bool
-) -> dict | None:
-    """Fetches common_site_config.json from the bench directory."""
-    config_path = f"{bench_dir}/sites/common_site_config.json"
-    cmd = f"cat {config_path}"
-
-    exit_code, output = _run_command(frappe_container, cmd, verbose)
-
-    if exit_code == 0 and output:
-        try:
-            config: dict = json.loads(output)
-            if verbose:
-                console_err.print(
-                    f"[dim]VERBOSE: Found common_site_config with {len(config)} keys[/dim]"
-                )
-            return config
-        except json.JSONDecodeError:
-            if verbose:
-                console_err.print(
-                    "[dim yellow]VERBOSE: Failed to parse common_site_config.json[/dim yellow]"
-                )
-            return None
-    else:
-        if verbose:
-            console_err.print(
-                "[dim yellow]VERBOSE: common_site_config.json not found or not readable[/dim yellow]"
-            )
-        return None
-
-
-def _get_site_config(
-    frappe_container: docker.models.containers.Container,
-    bench_dir: str,
-    site_name: str,
-    verbose: bool,
-) -> dict | None:
-    """Fetches site_config.json for a specific site."""
-    config_path = f"{bench_dir}/sites/{site_name}/site_config.json"
-    cmd = f"cat {config_path}"
-
-    exit_code, output = _run_command(frappe_container, cmd, verbose)
-
-    if exit_code == 0 and output:
-        try:
-            config: dict = json.loads(output)
-            if verbose:
-                console_err.print(
-                    f"[dim]VERBOSE: Found site_config for {site_name} with {len(config)} keys[/dim]"
-                )
-            return config
-        except json.JSONDecodeError:
-            if verbose:
-                console_err.print(
-                    f"[dim yellow]VERBOSE: Failed to parse site_config.json for {site_name}[/dim yellow]"
-                )
-            return None
-    else:
-        if verbose:
-            console_err.print(
-                f"[dim yellow]VERBOSE: site_config.json not found for {site_name}[/dim yellow]"
-            )
-        return None
-
-
-def _gather_bench_data(
-    frappe_container: docker.models.containers.Container, bench_dir: str, verbose: bool
-) -> dict:
-    """Gathers sites, apps, and configs for a single bench instance."""
-    if verbose:
-        console_err.print(f"VERBOSE: Inspecting Bench Instance: {bench_dir}")
-
-    available_apps = _get_available_apps(frappe_container, bench_dir, verbose)
-
-    # Fetch common site config
-    common_site_config = _get_common_site_config(frappe_container, bench_dir, verbose)
-
-    sites = _get_sites(frappe_container, bench_dir, verbose)
-    sites_info = []
-    for site in sites:
-        if verbose:
-            console_err.print(f"VERBOSE:   - Found Site: {site}")
-
-        installed_apps = _get_installed_apps(frappe_container, bench_dir, site, verbose)
-
-        # Fetch site-specific config
-        site_config = _get_site_config(frappe_container, bench_dir, site, verbose)
-
-        site_data: dict = {"name": site, "installed_apps": installed_apps}
-        if site_config is not None:
-            site_data["site_config"] = site_config
-
-        sites_info.append(site_data)
-
-    bench_data: dict = {"path": bench_dir, "sites": sites_info, "available_apps": available_apps}
-
-    # Record the default site pointer from currentsite.txt (written by `bench use`).
-    # A bench records its default site in TWO places: common_site_config.json's
-    # `default_site` OR sites/currentsite.txt. Persisting currentsite.txt lets the
-    # cache-served default-site resolution (restore/backup/unlock and the inspect
-    # "(default)" marker) work even when common_site_config has no default_site
-    # key - the exact shape a plain `bench use`d dev bench has.
-    current_site = bench_sites.read_current_site(frappe_container, bench_dir, verbose)
-    if current_site:
-        bench_data["current_site"] = current_site
-        if verbose:
-            console_err.print(
-                f"[dim]VERBOSE: Default site from currentsite.txt: {current_site}[/dim]"
-            )
-
-    # Recover the user label from the per-bench marker file. This is what lets a
-    # full inspect rebuild labels after the SQLite cache is lost: the marker lives
-    # inside the bench, so it survives a cache wipe. The marker is the source of
-    # truth for labels; the rest of the bench config is re-derived live as above.
-    marker_label = bench_labels.read_label_marker(frappe_container, bench_dir)
-    if marker_label:
-        bench_data["label"] = marker_label
-        if verbose:
-            console_err.print(f"[dim]VERBOSE: Recovered label '{marker_label}' from marker[/dim]")
-
-    if common_site_config is not None:
-        bench_data["common_site_config"] = common_site_config
-
-    return bench_data
-
-
-def partial_inspect_known_benches(
-    frappe_container: docker.models.containers.Container,
-    cached_bench_instances: list[dict],
-    verbose: bool = False,
-) -> tuple[list[dict], bool]:
-    """Read-only freshness pass (the "T2 partial inspect") over KNOWN bench paths.
-
-    This is a pure drift detector: for each bench path already in the cache it
-    cheaply re-reads only the inexpensive, filesystem-level facts via
-    ``test``/``ls`` (the bench check, the available-apps list, and the site list).
-    It deliberately does NOT:
-
-    - re-discover bench instances (no ``find`` over the search roots); a brand-new
-      bench is only picked up by the full inspect,
-    - run the deep per-site ``bench list-apps`` (which boots Frappe); the cached
-      per-site ``installed_apps`` are carried forward instead, and
-    - re-read any config files (``common_site_config.json`` /
-      ``site_config.json``); the cached configs are carried forward, so a
-      transient unreadable or half-written config can never silently drop the
-      cached ``common_site_config`` / ``default_site`` label.
-
-    It never writes the cache. A freshly installed app shows up in ``apps/``
-    immediately, so the cheap ``ls apps`` here catches it - which is exactly what
-    fixes ``open --app`` and inspect's "Available Apps" without a manual
-    ``inspect -u``.
-
-    Returns ``(refreshed_bench_instances, drift)`` where ``drift`` is True when the
-    on-disk available-apps or site set diverged from the cache (or a known bench
-    vanished). The caller escalates to a full inspect on drift so the per-site
-    installed lists (and any brand-new bench) are also brought up to date; on no
-    drift the caller serves the cache unchanged without persisting.
+    ``InspectWarning`` renders unconditionally (e.g. a failed ``bench list-apps``);
+    everything else is ``-v``-gated, matching the pre-migration output.
     """
-    refreshed: list[dict] = []
-    drift = False
+    if isinstance(event, core_inspect.InspectWarning):
+        console_err.print(f"[yellow]Warning:[/yellow] {event.text}")
+    elif not verbose:
+        return
+    elif isinstance(event, core_inspect.InspectCommand):
+        console_err.print(f"[dim]$ {event.command}[/dim]")
+    elif isinstance(event, core_inspect.InspectCommandDone):
+        console_err.print(f"[bold yellow]VERBOSE: Exit Code:[/bold yellow] {event.exit_code}")
+        console_err.print(f"[bold yellow]VERBOSE: Output:[/bold yellow]\n---\n{event.output}\n---")
+    elif isinstance(event, core_inspect.InspectTrace):
+        console_err.print(f"VERBOSE: {event.text}")
 
-    for cached_bench in cached_bench_instances:
-        bench_dir = cached_bench["path"]
 
-        # Known bench vanished -> stale cache, force a full re-inspect.
-        if not _is_bench_directory(frappe_container, bench_dir, verbose):
-            if verbose:
-                console_err.print(
-                    f"VERBOSE: Cached bench '{bench_dir}' no longer present; marking drift."
-                )
-            drift = True
-            continue
+def render_error_exit(project_name: str, error: CwcliError) -> typer.Exit:
+    """Map a core inspect error to today's exact stderr line, returning the Exit to raise.
 
-        fresh_available = _get_available_apps(frappe_container, bench_dir, verbose)
-        fresh_sites = _get_sites(frappe_container, bench_dir, verbose)
-
-        cached_site_names = {s["name"] for s in cached_bench.get("sites", [])}
-        if (
-            set(fresh_available) != set(cached_bench.get("available_apps", []))
-            or set(fresh_sites) != cached_site_names
-        ):
-            drift = True
-
-        cached_sites_by_name = {s["name"]: s for s in cached_bench.get("sites", [])}
-        sites_info: list[dict] = []
-        for site in fresh_sites:
-            previous = cached_sites_by_name.get(site)
-            # Carry the cached per-site installed apps and config forward; a
-            # brand-new site has no cached entry, so it stays empty until a full
-            # inspect (triggered by the drift this new site causes) populates it.
-            site_data: dict = {
-                "name": site,
-                "installed_apps": list(previous["installed_apps"]) if previous else [],
-            }
-            if previous is not None and "site_config" in previous:
-                site_data["site_config"] = previous["site_config"]
-            sites_info.append(site_data)
-
-        bench_data: dict = {
-            "path": bench_dir,
-            "sites": sites_info,
-            "available_apps": fresh_available,
-        }
-        # Carry the cached user label forward. T2 is a cheap freshness pass and does
-        # not re-read the marker; the label is preserved so a partial refresh never
-        # drops it (a real label change goes through `label`/`inspect -i`, which
-        # updates the cache directly).
-        if cached_bench.get("label"):
-            bench_data["label"] = cached_bench["label"]
-        # Carry the cached default-site pointer forward too. T2 is a cheap
-        # freshness pass and does not re-read currentsite.txt; a change to the
-        # default site is picked up by the full inspect (Tier 3).
-        if cached_bench.get("current_site"):
-            bench_data["current_site"] = cached_bench["current_site"]
-        if "common_site_config" in cached_bench:
-            bench_data["common_site_config"] = cached_bench["common_site_config"]
-        refreshed.append(bench_data)
-
-    return refreshed, drift
+    Shared (not module-private) because every no-cache fallback populate that
+    calls ``core_inspect.inspect`` directly (open/update/restore) needs the same
+    pre-migration abort-on-hard-failure rendering, not just this command.
+    """
+    if error.kind is ErrorKind.NOT_RUNNING:
+        console_err.print(
+            f"Error: Containers for project '{project_name}' are not running; "
+            "cannot inspect a stopped project."
+        )
+    elif error.code == "bench.none_found":
+        console_err.print(f"Error: {error.message}")
+    else:
+        console_err.print(f"[bold red]Error:[/bold red] {error.message}")
+    return typer.Exit(code=1)
 
 
 @handle_docker_errors
@@ -396,104 +131,34 @@ def inspect(
     if verbose:
         console_err.print(f"VERBOSE: --- Inspecting Project: {project_name} ---")
 
-    # Set only when a T2 drift-escalation forces a full inspect while a valid cache
-    # exists; if that full inspect then can't discover any bench (e.g. a custom
-    # search path was removed), we degrade to this cached data instead of failing.
-    drift_fallback_benches = None
+    refresh = "full" if update else ("cache_only" if no_refresh else "auto")
 
-    if not update:
-        cached_data = db_utils.get_cached_project_data(project_name)
-        if cached_data:
-            cached_benches = cached_data["bench_instances"]
-            if verbose:
-                console_err.print(
-                    f"VERBOSE: Found cached data for this project from {cached_data['last_updated']}."
+    def on_event(event: core_inspect.InspectEvent) -> None:
+        _render_event(event, verbose)
+
+    show_tips = config_utils.get_show_tips()
+    started = False
+    while True:
+        try:
+            with TipSpinner(f"Inspecting '{project_name}'", console=console_err, enabled=show_tips):
+                result = core_inspect.inspect_raw(
+                    project_name,
+                    refresh=refresh,
+                    offer_choice=prompt_to_start,
+                    on_event=on_event,
                 )
-            if no_refresh:
-                # Tier 1: serve the cache verbatim, no container calls (fastest path).
-                if verbose:
-                    console_err.print("VERBOSE: --no-refresh set; serving cached data as-is.")
-                bench_instances_data = cached_benches
-            else:
-                # Tier 2: a lightweight, read-only freshness pass over the known
-                # benches. This only runs when the containers are already up; the
-                # running check never prompts (prompt=False) AND never starts
-                # anything (auto_start=False, even under --yes), so a cache hit can
-                # never block on a "start the containers?" question or disturb a
-                # stopped project. Auto-start belongs only to the Tier 3 full inspect
-                # below, which persists fully-fresh data. The pass never writes the
-                # cache: on no drift we serve the cached data unchanged; on drift we
-                # fall through to the full inspect (Tier 3). If anything goes wrong we
-                # degrade to the cached data rather than failing a previously-working
-                # read.
-                bench_instances_data = cached_benches
-                try:
-                    if ensure_containers_running(
-                        project_name,
-                        require_running=True,
-                        verbose=verbose,
-                        prompt=False,
-                        auto_start=False,
-                    ):
-                        all_containers = get_project_containers(project_name)
-                        frappe_container = next(
-                            (
-                                c
-                                for c in (all_containers or [])
-                                if c.labels.get("com.docker.compose.service") == "frappe"
-                            ),
-                            None,
-                        )
-                        if frappe_container is not None:
-                            _refreshed, drift = partial_inspect_known_benches(
-                                frappe_container, cached_benches, verbose
-                            )
-                            if drift:
-                                # Escalate-on-drift: a full inspect (Tier 3) also refreshes
-                                # the deep per-site installed-app lists and any new bench.
-                                # Remember the cached benches so the full inspect can
-                                # degrade to them rather than hard-failing if the bench is
-                                # no longer discoverable (e.g. its search path was removed).
-                                if verbose:
-                                    console_err.print(
-                                        "VERBOSE: Partial inspect detected drift; "
-                                        "escalating to a full inspect."
-                                    )
-                                bench_instances_data = None
-                                drift_fallback_benches = cached_benches
-                            elif verbose:
-                                console_err.print(
-                                    "VERBOSE: Partial inspect found no drift; "
-                                    "serving cached data unchanged."
-                                )
-                    elif verbose:
-                        console_err.print(
-                            "VERBOSE: Containers not running; serving cached data as-is."
-                        )
-                except typer.Exit:
-                    raise
-                except Exception as e:
-                    if verbose:
-                        console_err.print(
-                            f"VERBOSE: Partial inspect failed ({e}); serving cached data."
-                        )
-                    bench_instances_data = cached_benches
-        else:
-            if verbose:
-                console_err.print("VERBOSE: No cached data found, proceeding with inspect.")
-            bench_instances_data = None
-    else:
-        if verbose:
-            console_err.print("VERBOSE: Update option is true, ignoring cache.")
-        bench_instances_data = None
+        except CwcliError as e:
+            raise render_error_exit(project_name, e) from None
 
-    if bench_instances_data is None:
-        # Ensure containers are running. With prompt_to_start (the default) the user
-        # is offered to start stopped containers; with --no-prompt-start (used by the
-        # rm recache path, which runs under a spinner) we never prompt and instead
-        # bail cleanly when nothing is running - inspecting a stopped bench is
-        # impossible because every probe runs `exec_run` inside the container.
-        if not ensure_containers_running(
+        if result.status is not Status.NEEDS_CHOICE:
+            break
+
+        # confirm_start (the only fork inspect can return): resolve it OUTSIDE the
+        # spinner - ensure_containers_running owns the prompt, the non-TTY refusal,
+        # --yes auto-start, and the actual UI-coupled container start. Capped at ONE
+        # re-invoke: a second confirm_start after a claimed start means the start
+        # did not take (crash loop / teardown race), so fail closed.
+        if started or not ensure_containers_running(
             project_name,
             require_running=True,
             verbose=verbose,
@@ -505,53 +170,10 @@ def inspect(
                 "cannot inspect a stopped project."
             )
             raise typer.Exit(code=1)
+        started = True
 
-        all_containers = get_project_containers(project_name)
-        if not all_containers:
-            console_err.print(f"Error: No containers found for project '{project_name}'.")
-            raise typer.Exit(code=1)
-
-        frappe_container = next(
-            (c for c in all_containers if c.labels.get("com.docker.compose.service") == "frappe"),
-            None,
-        )
-        if not frappe_container:
-            console_err.print(
-                f"Error: No 'frappe' service container found for project '{project_name}'."
-            )
-            raise typer.Exit(code=1)
-
-        bench_instances_data = []
-        show_tips = config_utils.get_show_tips()
-        no_benches = False
-
-        with TipSpinner(f"Inspecting '{project_name}'", console=console_err, enabled=show_tips):
-            time.sleep(0.1)
-            bench_paths = _find_bench_instances(frappe_container, verbose)
-            if not bench_paths:
-                no_benches = True
-            else:
-                for bench_path in bench_paths:
-                    bench_data = _gather_bench_data(frappe_container, bench_path, verbose)
-                    bench_instances_data.append(bench_data)
-
-        if no_benches:
-            # A drift-escalation that can't rediscover the bench has a valid cache to
-            # fall back on; degrade to it (without persisting) instead of failing a
-            # previously-working read. A --update / cache-miss run has no such fallback,
-            # so it keeps the original hard error.
-            if drift_fallback_benches is not None:
-                if verbose:
-                    console_err.print(
-                        "VERBOSE: Drift escalation found no discoverable benches; "
-                        "serving cached data."
-                    )
-                bench_instances_data = drift_fallback_benches
-            else:
-                console_err.print(f"Error: No Bench Instances found for project '{project_name}'.")
-                raise typer.Exit(code=1)
-        else:
-            db_utils.cache_project_data(project_name, bench_instances_data)
+    assert result.data is not None  # OK/WARNING always carries a RawInspect
+    bench_instances_data = result.data.benches
 
     # Interactive naming: ask for a user label per bench before output. Labels are
     # validated (no purely-numeric labels, no duplicates within the project, safe
@@ -624,8 +246,8 @@ def inspect(
             {"index": index, **bench_instance}
             for index, bench_instance in enumerate(bench_instances_data)
         ]
-        result = {"project_name": project_name, "bench_instances": benches_out}
-        print(json.dumps(result, indent=2))
+        result_doc = {"project_name": project_name, "bench_instances": benches_out}
+        print(json.dumps(result_doc, indent=2))
     else:
         tree = Tree(f"Project [bold cyan]{project_name}[/bold cyan]", guide_style="bright_blue")
         for index, bench_instance in enumerate(bench_instances_data):

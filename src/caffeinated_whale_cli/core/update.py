@@ -43,13 +43,12 @@ one behaviour here. Unknown is kept apart from failed because a lost stream mean
 the command MAY STILL BE RUNNING: an agent branching on this report will retry a
 failure, and retrying a live migration is harmful.
 
-**Known layering signal, reported not absorbed:** ``_recache_after_pull`` calls
-``utils.cache.recache_project``, which lazily imports the ``inspect`` COMMAND. This
-is the first core module to do so. It cannot be hoisted into the frontend (it runs
-mid-state-machine, between the pull and the discovery that depends on it), and
-``inspect`` is un-migrated. The clean fix is a ``core.inspect``/``core.recache``,
-which arrives with ``inspect``'s own migration; until then the core reaches back
-into the CLI layer at runtime here, and only here.
+**The layering signal is SETTLED** (openspec ``migrate-inspect-core``): the
+mid-fan-out recache still calls ``utils.cache.recache_project`` (it runs
+mid-state-machine, between the pull and the discovery that depends on it, so it
+cannot be hoisted into the frontend), but that seam now re-points at
+``core.inspect`` - no module under ``core/`` imports the CLI layer at runtime
+any more.
 """
 
 from __future__ import annotations

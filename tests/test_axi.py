@@ -155,28 +155,84 @@ class TestAxiBackup:
 
 
 def assert_is_one_toon_document(stdout: str) -> None:
-    """Every line is TOON: a `key: value`, or a `name[N]:` header with N rows.
+    """Every line is TOON: key lines, counted table/block rows, nested dicts,
+    and ``- ``-marked record items - nothing else.
 
     The home is the one verb that emits guidance rather than a DTO, so it is the
     one place a stray prose line could reach stdout and corrupt the one-TOON-
-    document contract. This walks the shape instead of trusting it: a top-level
-    line must be a key line, an indented line must be accounted for by the
-    preceding header's declared count, and anything else fails.
+    document contract. This walks the shape recursively instead of trusting it:
+    a top-level line must be a key line, every indented line must be accounted
+    for by an enclosing header (a ``name[N]{fields}:`` table expects exactly N
+    rows; a ``name[N]:`` block expects exactly N raw rows or ``- `` items, each
+    item's fields nesting below it; a bare ``name:`` opens a nested dict), and
+    anything else fails.
     """
-    header = re.compile(r"^[a-zA-Z_][\w-]*(\[(\d+)\](\{[^}]*\})?)?:( .*)?$")
-    expected = 0
-    for line in stdout.splitlines():
-        if not line:
-            continue
-        if line.startswith("  "):
-            assert expected > 0, f"unaccounted indented line: {line!r}"
-            expected -= 1
-            continue
-        match = header.match(line)
-        assert match, f"not a TOON line: {line!r}"
-        assert expected == 0, f"{expected} row(s) missing before {line!r}"
-        expected = int(match.group(2)) if match.group(2) else 0
-    assert expected == 0, f"{expected} declared row(s) never emitted"
+    header = re.compile(r"^[a-zA-Z_][\w-]*(\[(\d+)\](\{[^}]*\})?)?:( .+)?$")
+    lines = [line for line in stdout.splitlines() if line]
+
+    def indent_of(line: str) -> int:
+        return len(line) - len(line.lstrip(" "))
+
+    def consume_children(i: int, indent: int, m: re.Match, text: str) -> int:
+        count, fields, rest = m.group(2), m.group(3), m.group(4)
+        if rest is not None:
+            return i  # `key: value` / inline scalar list - a leaf
+        if count is None:
+            # bare `key:` - a nested dict; its key lines sit two spaces deeper
+            while i < len(lines) and indent_of(lines[i]) >= indent + 2:
+                i = parse_keyline(i, indent + 2)
+            return i
+        n = int(count)
+        if fields is not None:
+            # tabular block: exactly n rows, scalar cells only
+            for _ in range(n):
+                assert (
+                    i < len(lines) and indent_of(lines[i]) == indent + 2
+                ), f"row(s) missing under {text!r}"
+                i += 1
+        else:
+            # counted block: n children, each a `- ` record item or a raw row
+            for _ in range(n):
+                assert (
+                    i < len(lines) and indent_of(lines[i]) == indent + 2
+                ), f"item(s) missing under {text!r}"
+                if lines[i][indent + 2 :].startswith("- "):
+                    i = parse_item(i, indent + 2)
+                else:
+                    i += 1  # raw block row (help/options text)
+        assert (
+            i >= len(lines) or indent_of(lines[i]) <= indent
+        ), f"unaccounted indented line: {lines[i]!r}"
+        return i
+
+    def parse_keyline(i: int, indent: int) -> int:
+        line = lines[i]
+        assert indent_of(line) == indent, f"misindented line: {line!r}"
+        text = line[indent:]
+        assert not text.startswith("- "), f"item outside a counted block: {line!r}"
+        m = header.match(text)
+        assert m, f"not a TOON line: {line!r}"
+        return consume_children(i + 1, indent, m, text)
+
+    def parse_item(i: int, dash_indent: int) -> int:
+        # `- key: ...`: the first field rides the dash line; the item's remaining
+        # fields sit at the same column as that first field.
+        line = lines[i]
+        first = line[dash_indent + 2 :]
+        m = header.match(first)
+        assert m, f"not a TOON item line: {line!r}"
+        i = consume_children(i + 1, dash_indent + 2, m, first)
+        while (
+            i < len(lines)
+            and indent_of(lines[i]) == dash_indent + 2
+            and not lines[i][dash_indent + 2 :].startswith("- ")
+        ):
+            i = parse_keyline(i, dash_indent + 2)
+        return i
+
+    i = 0
+    while i < len(lines):
+        i = parse_keyline(i, 0)
 
 
 class TestAxiHome:

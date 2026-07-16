@@ -801,9 +801,9 @@ def _remove_project(
                     f"[dim]VERBOSE: Could not read cache for '{project_name}': " f"{e}[/dim]"
                 )
             try:
-                from .inspect import _find_bench_instances
+                from ..core import inspect as core_inspect
 
-                discovered = _find_bench_instances(frappe_container, verbose)
+                discovered = core_inspect.discover_benches(frappe_container)
                 if discovered:
                     bench_paths = discovered
             except Exception as discover_err:
