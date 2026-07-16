@@ -648,15 +648,28 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
         # An app whose outcome is unknown is not known to have updated, so it is not
         # discovered against - the same treatment a failed pull gets.
         skipped = set(failed_apps) | set(unknown_apps)
-        if not no_recache and len(skipped) < len(apps):
+        if no_recache:
+            emit(UpdateStepStart(phase="recache_skipped"))
+        elif len(skipped) < len(apps):
             _recache(project_name, warnings, emit)
 
-        emit(UpdateStepStart(phase="discover", total=len(apps)))
         for app in apps:
             if app in skipped:
                 continue
-            affected.update(_sites_with_app(project_name, bench_path, app, frappe_container))
-        emit(UpdateStepEnd(phase="discover"))
+            emit(UpdateStepStart(phase="discover", item=app))
+            sites = _sites_with_app(project_name, bench_path, app, frappe_container)
+            affected.update(sites)
+            emit(
+                UpdateStepEnd(
+                    phase="discover",
+                    item=app,
+                    message=(
+                        f"Found {len(sites)} site(s) with '{app}' installed"
+                        if sites
+                        else f"No sites found with '{app}' installed"
+                    ),
+                )
+            )
 
         # Narrow to the sites named with --site (if any); no --site keeps them all.
         unfiltered = set(affected)
@@ -693,12 +706,25 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
                     )
                 )
             failed_maintenance_enable = sorted(affected - maintenance_sites)
+            # A phase-level End (item=None) distinct from the per-site ones above:
+            # this is the unconditional (non-verbose-gated) confirmation that live
+            # sites actually went down before migrations start.
+            emit(
+                UpdateStepEnd(
+                    phase="maintenance_enable",
+                    message=f"Maintenance mode enabled for {len(maintenance_sites)} site(s)",
+                )
+            )
 
         # THE LOAD-BEARING GATE: migrate only the sites actually in maintenance mode
         # (or every affected site when maintenance is skipped). Never migrate, and
         # never clear caches/locks for, a site we could not put into maintenance.
         sites_to_migrate = sorted(affected) if skip_maintenance else sorted(maintenance_sites)
 
+        # A phase-level Start/End pair wrapping the loop below, so the renderer sees
+        # the batch boundary (and its total, including 0) even when the loop body
+        # never runs - inferring it from index==total cannot cover the empty case.
+        emit(UpdateStepStart(phase="migrate_batch", total=len(sites_to_migrate)))
         for i, site in enumerate(sites_to_migrate, 1):
             _run_step(
                 frappe_container,
@@ -714,6 +740,7 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
                 unknown=unknown_migrations,
             )
             time.sleep(_POST_MIGRATE_SETTLE)
+        emit(UpdateStepEnd(phase="migrate_batch"))
 
         if build:
             buildable = [a for a in apps if a not in skipped]
