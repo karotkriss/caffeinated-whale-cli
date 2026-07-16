@@ -52,6 +52,7 @@ Per-area breakdown (highest-coverage module in each area; see the module list in
 - **bench labels/selectors** (`test_bench_labels`, `test_bench_selector`, `test_bench_label_db_and_command`) - `utils/bench_labels.py` ~94%
 - **yes-flag contract** (`test_yes_flag`) - covers the `confirm_or_exit`/`ensure_containers_running` non-interactive contract across `start`, `config`, `logs`
 - **db security** (`test_db_security`) - `utils/db_utils.py` ~68%
+- **auto-inspect daemon** (`test_auto_inspect`) - `utils/auto_inspect.py`'s first-ever dedicated suite: the Windows `WaitForSingleObject`-based `_pid_alive` probe (immune to the `os.kill(pid, 0)`/`CTRL_C_EVENT` false-alive bug), the fork-unavailable subprocess fallback and its Windows-path bootstrap source, `_spawn_detached` routing the child's stderr to the log file instead of `DEVNULL`, `_log(exc_info=True)` recording the traceback, and stale-PID-file cleanup
 - **init reuse + secrets** (`test_init_reuse_bench`, `test_init_mariadb_flag`, `test_init_admin_password`) - `commands/init.py` ~49% (the reuse-bench resolver, the container-readiness poll, the MariaDB-flag branches, and the admin-password/env-secret handling are covered)
 - **completion** (`test_completion_utils`) - `utils/completion_utils.py` ~92%
 - **tips** (`test_tips`) - `utils/tips.py` ~91%
