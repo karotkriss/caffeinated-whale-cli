@@ -42,14 +42,22 @@ caffeinated-whale-cli/
 │   │   ├── resolvers.py        # Pure container-state/bench resolvers
 │   │   ├── docker.py           # Core frappe-container accessor
 │   │   ├── backup.py           # core.backup - the reference migrated command
+│   │   ├── unlock.py           # core.unlock - backup's near-twin, zero new primitives
+│   │   ├── stop.py             # core.stop - stop containers
+│   │   ├── label.py            # core.list_benches/set_label/clear_label - bench-label read/set/clear
 │   │   ├── list.py             # core.list_instances - the read-only instance listing
 │   │   ├── where.py            # core.where - the read-only cached-instance search
+│   │   ├── exec_stream.py      # core.exec_stream - the ONE way to exec-and-stream (typed ExecChunk/ExecDone events)
+│   │   ├── run.py              # core.run_plan/run_stream - the exec-stream contract's reference slice
+│   │   ├── apps.py             # core.list_apps/install_apps/uninstall_apps - per-bench and multi-site app management
+│   │   ├── update.py           # core.update - the app-update state machine (fan-out, maintenance mode, migrations)
 │   │   ├── supervision.py      # Shared tracked-state contract for start+status+restart (supervisord discovery, config/launcher generation, marker, per-process logs)
 │   │   ├── start.py            # core.start - idempotent bench start under supervisord (discovered-PID no-op, --autorestart)
 │   │   ├── status.py           # core.status - per-process health + pre-computed overall
 │   │   ├── restart.py          # core.restart_process - restart ONE supervised program, siblings untouched
 │   │   ├── logs.py             # core.logs_plan - resolves container/bench/program selection; the tail stays in the frontend
 │   │   ├── inspect.py          # core.inspect/inspect_raw - the T1/T2/T3 freshness tiers AND the cache write, one contract
+│   │   ├── open.py             # core.open_plan - resolves container/bench/app/editor for `cwcli open`; the handover stays in the frontend
 │   │   └── version.py          # core.version - install-method detection + PyPI lookup, shared by self-update and the passive notice
 │   └── utils/                  # Utility modules
 │       ├── docker_utils.py    # Docker client management
@@ -125,10 +133,10 @@ See [Testing Guide](../testing/guide.md) for test coverage details.
 
 #### 5. VS Code Integration
 
-**Module:** `utils/vscode_utils.py`
+**Modules:** `core/open.py`, `utils/vscode_utils.py`
 
 Development container integration:
-- Auto-detects VS Code/Insiders
+- Auto-detects VS Code/Insiders/Cursor (`core/open.py`, stdlib `shutil.which`, run once)
 - Extension installation
 - Container attachment
 - Fallback to docker exec
