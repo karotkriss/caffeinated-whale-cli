@@ -40,6 +40,27 @@ Every `axi` output was validated against `tests/test_axi.py:assert_is_one_toon_d
 
 One capture detail worth keeping: rich soft-wraps the `-i` rejection sentence at pty width, so a pexpect expect for the full phrase `Keeping the previous label` can straddle a line break - match a fragment (`cannot be purely numeric`) instead.
 
+## Post-review-fix re-run (head 1ed5e06)
+
+Re-run at head `1ed5e06` (includes review-fix commit `3b3cd57`, "abort fallback populate on `CwcliError`, not degrade to default"), on the same throwaway instance (`cwe2e-inspm9-main`), both modes again.
+
+| Leg | Command | Evidence | Result |
+| --- | --- | --- | --- |
+| Fallback-populate abort (`open`) | config remove-path + cache clear, then `open <project> --docker` | `Error: No Bench Instances found for project '<project>'.`; zero `Using default` lines (no degrade to a default bench) | exit 1 |
+| Fallback-populate abort (`apps update`) | same undiscoverable-bench setup, then `apps update <project> frappe` | same abort message; zero `Using default` lines | exit 1 |
+| T3 cold (re-check after config add-path restore) | `config cache clear` then `inspect -v` | `No cached data found, proceeding with inspect.` trace unchanged | exit 0 |
+| T2 no-drift | `inspect -v` | `Partial inspect found no drift; serving cached data unchanged.` unchanged | exit 0 |
+| T1 | `inspect --no-refresh -v` | `Cache-only refresh; serving cached data as-is.` unchanged | exit 0 |
+| `--json` shape + label recovery | `config cache clear` then `inspect --json` | user label recovered from the in-bench marker through the fresh full inspect; shape unchanged | exit 0 |
+| `axi inspect` on running | | `served_from: partial`, exit 0 unchanged |
+| `axi inspect --update` non-TTY on stopped | | refusal unchanged, naming `--yes` | exit 1 |
+| `axi inspect --update` on stopped | | usage error naming `cwcli start` unchanged | exit 2 |
+| Start prompt declined (pty) | stopped project, `inspect --update`, `n` + Enter | exit 1, nothing started (unchanged) |
+| Start prompt accepted (pty) | stopped project, `inspect --update`, `y` + Enter | containers started, full inspect rendered (unchanged) | exit 0 |
+| `-i` blank-keep (pty) | `inspect -i`, bare Enter | label unchanged in BOTH the cache and the marker | exit 0 |
+
+The two changed fallback-populate call sites (`open`, `apps update`) now abort cleanly instead of silently degrading to a default bench when the target bench is undiscoverable; every other leg from the original run above is unaffected by the review fix and re-passed unchanged.
+
 ## Teardown
 
 `cwcli rm cwe2e-inspm9-main --yes --volumes --no-backup` after the post-pipeline re-run (captain standard: the E2E is re-run after no-mistakes and after any review fixes before final teardown). No broad Docker cleanup; only this run's own `cwe2e-inspm9-*` resources.
