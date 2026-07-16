@@ -5,10 +5,12 @@ description: >
   imports NO rich/questionary/typer, returns a typed Result envelope or raises CwcliError, never
   prompts or exits), no live Docker object crossing a core.<verb> return boundary, the thin CLI
   wrappers over core resolvers, the backup pre-resolve-then-spinner pattern, axi's TOON-only
-  structured output and exit-code mapping, and the migrated read-only ls/list + where slices. Use
-  this whenever you edit or debug src/caffeinated_whale_cli/core/, commands/axi.py, utils/toon.py,
-  commands/list.py, commands/where.py, or migrate another command onto the logic core. Each note
-  guards a locked design decision or a real shipped bug - do not silently re-break it.
+  structured output and exit-code mapping, the migrated read-only ls/list + where slices, and the
+  AXI cross-cutting shell (the `cwcli axi setup` SessionStart-hook installer and the generated
+  installable skill). Use this whenever you edit or debug src/caffeinated_whale_cli/core/,
+  commands/axi.py, utils/toon.py, commands/list.py, commands/where.py, utils/agent_hooks.py,
+  scripts/build_skill.py, skills/cwcli/SKILL.md, or migrate another command onto the logic core.
+  Each note guards a locked design decision or a real shipped bug - do not silently re-break it.
 ---
 
 # cwcli logic core + `cwcli axi` boundary (sharp edges)
