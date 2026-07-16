@@ -58,7 +58,7 @@
 - [x] 8.1 One throwaway isolated instance (default frappe v16, `cwe2e-` prefix, `CWCLI_HOME` isolation per skill `cwcli-e2e-testing`), against the worktree's own editable install, reused throughout and torn down at the end. Never touch existing real instances; no broad Docker cleanups ever.
 - [x] 8.2 Non-interactive: `inspect` (T3 cold), `inspect` again (T2 cache hit), `--no-refresh` (T1), `--update` (forced T3), `--json` byte-shape, install an app then plain `inspect` (drift escalation picks it up), stopped project + `--yes` (auto-start), stopped project non-TTY without `--yes` (refuses, exit 1), `axi inspect` (one TOON doc; stopped -> exit 2).
 - [x] 8.3 Interactive via pty (awaiting `ESC[?2004h` before keystrokes): the T3 start prompt both accepted and declined; `inspect -i` labeling (set, blank-keep, invalid rejected) and label persistence to marker + cache.
-- [ ] 8.4 Re-run AFTER no-mistakes and after any review fixes (the standard: review fixes are a trigger, not an exemption). (Instance kept alive for this; teardown after the re-run.)
+- [x] 8.4 Re-run AFTER no-mistakes and after any review fixes (the standard: review fixes are a trigger, not an exemption). (Re-run done at 1ed5e06 after the review fix; see docs/e2e/inspect-core-migration-m9.md.)
 
 ## 9. Docs and memory
 
