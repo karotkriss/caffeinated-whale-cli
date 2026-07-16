@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`cwcli logs`** - Now reads supervisord's per-process log files under `<bench>/logs/<program>.supervisor.log` (with built-in rotation) on the workspace volume, replacing the single honcho combined stream. `cwcli logs <project>` synthesizes a combined, label-attributed view; `cwcli logs <project> --process <label>` tails one program's log; it also gains a `--bench` selector for multi-bench projects
 - **Test suite** - Reorganized into two tiers selected by pytest marker: a fast `unit` tier (the default; needs no Docker) and a real-Docker `e2e`/`e2e_p2p` tier under `tests/e2e/` that drives the real `cwcli` binary against genuine throwaway Frappe instances. A bare `pytest` runs only the fast tier; `pytest -m e2e` runs the real-Docker tier (add `pexpect` via the new `e2e` extra: `uv sync --all-extras`). The E2E harness isolates every run under a temporary `HOME` + `CWCLI_HOME` with `cwe2e-`-prefixed names, hard safety rails, and an unconditional leaked-resource backstop, and CI runs it on a v14/v15/v16 matrix on GitHub-hosted runners
 
+### Removed
+- **`cwcli inspect --show-apps` / `-a`** - Removed the dead flag: it was declared but never read, and the tree output has always shown available apps regardless. Passing it now fails as an unknown option (exit 2); the output it advertised is what `cwcli inspect` already prints
+
 ## [0.37.0] - 2026-07-12
 
 ### Added

@@ -121,7 +121,6 @@ def _run_full_inspect():
         json_output=True,
         update=True,  # force a full inspect (the DB-loss / cache-miss path)
         no_refresh=False,
-        show_apps=False,
         interactive=False,
         yes=False,
         prompt_to_start=True,
