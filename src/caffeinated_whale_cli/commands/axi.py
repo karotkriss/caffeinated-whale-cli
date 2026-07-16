@@ -600,7 +600,6 @@ def axi_apps_update(
     no_recache: bool = typer.Option(
         False, "--no-recache", help="Skip re-caching after app updates."
     ),
-    yes: bool = typer.Option(False, "--yes", "-y", help="Auto-start stopped containers."),
 ) -> None:
     """Update app(s) and migrate affected sites; emit the report as TOON.
 
@@ -612,6 +611,11 @@ def axi_apps_update(
     ``failed_*`` and ``unknown_*`` are NOT the same thing and must not be collapsed:
     a failure can be retried, while an ``unknown_*`` item's stream was lost, so it
     MAY STILL BE RUNNING and retrying it can do real harm.
+
+    A stopped project is a usage error (exit 2) naming `cwcli start`, exactly as
+    `axi backup`/`axi unlock` already document. There is deliberately no --yes:
+    starting a container is UI-coupled and the core stays UI-pure about it, so
+    an agent composes `cwcli axi start` then this verb.
 
     There is no `axi update`: the deprecated `cwcli update` spelling is not worth an
     agent-facing verb.
@@ -627,7 +631,6 @@ def axi_apps_update(
             build=build,
             skip_maintenance=skip_maintenance,
             no_recache=no_recache,
-            auto_start=yes,
         )
     except CwcliError as error:
         emit_axi_error(error)

@@ -150,7 +150,6 @@ def _axi_update(**kwargs):
         build=False,
         skip_maintenance=False,
         no_recache=True,
-        yes=True,
     )
 
 
@@ -252,3 +251,17 @@ class TestAxiVerb:
             update_mod.run_app_update("proj", ["payments"], sites=["nope.localhost"], yes=True)
 
         assert exc.value.exit_code == 1
+
+    def test_a_stopped_container_is_a_toon_usage_error_naming_cwcli_start(self, wired, capsys):
+        # There is deliberately no --yes on this verb: starting a container is
+        # UI-coupled, so a stopped project is a usage error naming `cwcli start`
+        # rather than an auto-start, matching axi backup/axi unlock.
+        wired.status = "exited"
+
+        with pytest.raises(typer.Exit) as exc:
+            _axi_update()
+
+        assert exc.value.exit_code == 2
+        out = capsys.readouterr().out
+        assert "help:" in out
+        assert "start it first with 'cwcli start <project>'" in out

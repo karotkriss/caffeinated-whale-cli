@@ -44,6 +44,7 @@ Progress events SHALL NOT be emitted on stdout: multiple documents would violate
 They SHALL NOT copy the shipped `axi backup` pattern of exiting on `result.status`, because that pattern maps `WARNING` to exit 0 and a partial `update` failure is a `WARNING`-shaped envelope carrying `ok=False`; copying it verbatim would report success for an update that partly failed.
 A `NEEDS_CHOICE` result SHALL be rendered as a TOON usage error and exit 2.
 `UpdateReport.ok` SHALL be pre-computed by the core rather than re-derived by each frontend, matching the existing `"ok"` key on `apps`'s other subcommands.
+`cwcli axi apps update` SHALL NOT offer an auto-start flag: starting a container is UI-coupled, so a stopped project is a `NEEDS_CHOICE`/`confirm_start` fork rendered as a TOON usage error naming `cwcli start`, matching `cwcli axi backup`/`cwcli axi unlock`'s shipped convention.
 
 #### Scenario: A partial failure exits non-zero on the agent surface
 
@@ -54,6 +55,11 @@ A `NEEDS_CHOICE` result SHALL be rendered as a TOON usage error and exit 2.
 
 - **WHEN** `cwcli axi apps update` runs against a multi-bench project with no `--bench`
 - **THEN** it emits a TOON usage error naming the flag to pass, lists the available benches, and exits 2
+
+#### Scenario: A stopped project is a usage error naming cwcli start
+
+- **WHEN** `cwcli axi apps update` runs against a stopped project
+- **THEN** it emits a TOON usage error whose help line names `cwcli start` and exits 2, rather than auto-starting the container
 
 #### Scenario: An unknown outcome is distinguishable from a failure by an agent
 
