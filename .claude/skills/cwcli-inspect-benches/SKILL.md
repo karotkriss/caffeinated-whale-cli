@@ -6,10 +6,10 @@ description: >
   multi-bench addressing model (numeric vs durable user labels, the --bench selector, marker-file
   recovery), the shared --yes / auto-start / honest-exit-code contract, the cache secret-redaction
   whitelist that keeps secrets out of the SQLite cache, and the CWCLI_HOME on-disk footprint
-  override. Use this whenever you edit or debug commands/inspect.py, commands/label.py,
-  utils/bench_labels.py, utils/db_utils.py, utils/config_utils.py, the SQLite cache, or anything
-  touching multi-bench selection / labels. Each note guards a real shipped bug - keep the
-  root-cause "why".
+  override. Use this whenever you edit or debug core/inspect.py, commands/inspect.py,
+  commands/label.py, utils/bench_labels.py, utils/db_utils.py, utils/config_utils.py, the SQLite
+  cache, or anything touching multi-bench selection / labels. Each note guards a real shipped bug -
+  keep the root-cause "why".
 metadata:
   internal: true
 ---
@@ -79,7 +79,7 @@ Nothing ever reads secret values back from the cache: every credential consumer 
 The single enforcement point is `_redact_config_for_cache` in `utils/db_utils.py`, applied at the ONLY write chokepoint (`cache_project_data`) before `_validate_config_json` and `json.dumps`, for BOTH `common_site_config` and per-site `site_config`.
 It is a whitelist, not a blacklist: only `_COMMON_CONFIG_CACHE_KEYS` / `_SITE_CONFIG_CACHE_KEYS` are kept, everything else is dropped, so a future unknown Frappe secret key fails closed.
 `default_site` MUST stay in the common whitelist or `restore`/`backup`/`unlock` lose default-site resolution (`get_default_site`).
-Redact ONLY here, never in `inspect.py` (redacting at the inspect layer would strip in-memory dicts the same run may use and leave the write path fail-open).
+Redact ONLY here, never in `core/inspect.py` (redacting at the inspect layer would strip in-memory dicts the same run may use and leave the write path fail-open).
 
 Old caches written before this shipped still hold secrets, so `initialize_database()` runs a one-shot `_scrub_cached_config_secrets()` (idempotent, warn-and-continue, never raises) that re-filters every config row through the same whitelist, rewrites only rows that change, touches only `config_json` (never bumps `last_updated`), and replaces unparseable JSON with `"{}"`.
 
@@ -99,7 +99,7 @@ Regression coverage: `tests/test_cwcli_home.py` is deliberately mock-free - it s
 
 `commands/label.py` is now a thin frontend over `core/label.py` (`list_benches` / `set_label` / `clear_label`). The behavior below is unchanged by that migration - it is restated here because the migration is exactly the kind of change that could silently break it.
 
-- **The clear path writes the MARKER first, the cache second, and fails closed on both.** This ordering is load-bearing and must never be "tidied". The marker inside the bench is the source of truth for label recovery (`inspect.py:241` reads it to rebuild labels after a cache wipe), so clearing the cache while the marker survives would let a later full `inspect` **resurrect a label the user just deleted**. A failed marker removal therefore raises and leaves the cache label intact; a failed cache update after a successful marker removal raises rather than reporting success. CLAUDE.md's captain standard names this incident class directly ("`label --clear` DB/marker consistency").
+- **The clear path writes the MARKER first, the cache second, and fails closed on both.** This ordering is load-bearing and must never be "tidied". The marker inside the bench is the source of truth for label recovery (`core/inspect.py`'s `_gather_bench_data` reads it to rebuild labels after a cache wipe), so clearing the cache while the marker survives would let a later full `inspect` **resurrect a label the user just deleted**. A failed marker removal therefore raises and leaves the cache label intact; a failed cache update after a successful marker removal raises rather than reporting success. CLAUDE.md's captain standard names this incident class directly ("`label --clear` DB/marker consistency").
   Pinned by `tests/test_core_label.py` (including a test that asserts the call ORDER directly, not just its failure modes), by the two pre-migration tests in `tests/test_bench_label_db_and_command.py:171,190` whose assertions survived the migration unchanged, and by `tests/e2e/test_label_e2e.py` against a real container - a two-store property is precisely what unit fakes cannot prove, because the fakes can only agree with themselves.
 - **The SET path deliberately does NOT check its cache write, and this asymmetry is CORRECT. Do not fix it.** `core.set_label` ignores `db_utils.set_bench_label`'s return value while `clear_label` checks it. The reason is the recovery direction: on CLEAR, marker-survives-cache-cleared is a *resurrection* (silent data restoration), so it must fail closed. On SET, marker-written-cache-missed is *self-healing* in the same direction - the marker is the source of truth, so the next `inspect` recovers exactly the label the user asked for - and it is immediately visible, because the command prints the refreshed list straight from the cache.
   **This rationale is INFERRED from the code's recovery semantics, not recorded anywhere.** The clear path documents its own why; the set path documents nothing. The question is tracked as its own backlog item, `cwcli-label-setpath-db-check-a3`. Do not act on the inference inside an unrelated change, and do not make the two paths symmetric "for consistency" - that would either turn a self-healing case into a hard failure or weaken the clear-path guard to match the set path.

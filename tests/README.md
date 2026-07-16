@@ -127,7 +127,7 @@ Tests for tab completion functionality.
 
 ## Test Coverage
 
-Current overall coverage at 0.37.0, unreleased (1147 tests across 68 test files, ~67% overall).
+Current overall coverage at 0.37.0, unreleased (1148 tests across 69 test files, ~67% overall).
 
 ### Covered Modules
 - ✅ `utils/completion_utils.py` - 92% (7 missing lines)
