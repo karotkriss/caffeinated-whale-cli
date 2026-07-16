@@ -790,6 +790,7 @@ cwcli open [OPTIONS] PROJECT_NAME
 | `-a`, `--app TEXT` | App name to open (opens the app's directory within the bench) |
 | `--code` | Open with VS Code directly (skips interactive prompt) |
 | `--code-insiders` | Open with VS Code Insiders directly (skips interactive prompt) |
+| `--cursor` | Open with Cursor directly (skips interactive prompt) |
 | `--docker` | Open with Docker exec directly (skips interactive prompt) |
 | `-y`, `--yes` | Auto-start stopped containers without prompting |
 | `-v`, `--verbose` | Enable verbose diagnostic output |
