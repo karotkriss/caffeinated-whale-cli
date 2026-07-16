@@ -621,6 +621,12 @@ cwcli logs frappe-one -n 200 --follow
 
 **Note:** Per-process logs are stored at `<bench>/logs/<program>.supervisor.log` on the workspace volume inside the container.
 
+`cwcli logs` propagates `tail`'s own exit code rather than always reporting
+success (a killed `tail` exits 137, and so does `cwcli logs`). Stopping with
+Ctrl-C is not a failure: `tail` exiting 130 (docker forwards `^C` into the
+container on the interactive path) and a direct `KeyboardInterrupt` (the
+non-TTY path) both print `Stopped viewing logs.` and exit 0.
+
 ---
 
 ### `inspect` - Inspect Project Structure

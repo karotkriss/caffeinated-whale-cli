@@ -43,7 +43,7 @@ uv run pytest tests/test_completion_utils.py
 
 ### Test Coverage
 
-Measured with `uv run pytest --cov` at 0.37.0 (unreleased): 875 tests across 55 test files, ~64% overall coverage.
+Measured with `uv run pytest --cov` at 0.37.0 (unreleased): 880 tests across 55 test files, ~64% overall coverage.
 Per-area breakdown (highest-coverage module in each area; see the module list in each test file for what else it exercises):
 
 - **rm safety** (`test_rm_safety`, `test_rm_truth`, `test_rm_stopped`, `test_rm_stopped_backup`) - `commands/rm.py` ~84%
@@ -58,7 +58,7 @@ Per-area breakdown (highest-coverage module in each area; see the module list in
 - **config validation** (`test_config_validation`) - config validation helpers in `utils/db_utils.py`
 - **exit codes** (`test_exit_codes`) - cross-command honest-exit-code contract
 - **app management** (`test_apps`) - `commands/apps.py` ~91%, `commands/update.py` ~71% (multi-site fan-out, frappe reset, `update` deprecation, the summary reported from the `finally` surviving a mid-fan-out stream loss with remediation intact)
-- **logs** (`test_logs`) - `commands/logs.py` ~80% (the `--follow` default flip to `False`, gating `docker exec -it` on `sys.stdin.isatty()` so a non-TTY/piped invocation never requests a TTY, and the not-cwcli-supervised fallback - discovering and tailing a honcho/`bench start` bench's real log files, `--process` file-stem filtering, the honest "running but has not written those logs yet" vs "may not be running" hints, and that the supervised path never calls the fallback)
+- **logs** (`test_logs`) - `commands/logs.py` ~80% (the `--follow` default flip to `False`, gating `docker exec -it` on `sys.stdin.isatty()` so a non-TTY/piped invocation never requests a TTY, the not-cwcli-supervised fallback - discovering and tailing a honcho/`bench start` bench's real log files, `--process` file-stem filtering, the honest "running but has not written those logs yet" vs "may not be running" hints, and that the supervised path never calls the fallback - and the honest-exit-code contract: a failing `tail` propagates its own returncode instead of exiting 0, while `tail` exiting 130 or a direct `KeyboardInterrupt` (the two arrival paths for the user's own Ctrl+C) both exit 0)
 - **unlock** (`test_unlock`, `test_unlock_command_cli`) - `commands/unlock.py` ~50% (the `test -d` probes and locks removal run as argv lists, not `sh -c` string interpolation; its logic moved to `core/unlock.py` - see the core unlock/stop slice below)
 - **`CWCLI_HOME` override** (`test_cwcli_home`) - `utils/config_utils.py`'s `cwcli_home()` ~41% file-wide; mock-free, sets a real `CWCLI_HOME` env var and resolves the import-time footprint constants in a fresh subprocess
 - **logic core purity + contract** (`test_core_envelope`) - AST-scans `core/*.py` for the `rich`/`questionary`/`typer` import ban and `typer.Exit`/`confirm_or_exit` references, and pins the `Result`/`CwcliError` DTO shapes - `core/envelope.py`, `core/errors.py` 100%
