@@ -11,51 +11,54 @@
 - [x] 1.5 Cover `list`'s partial-failure exit: a site whose `list-apps` fails is `installed[site] = None` and exits 1, and in `--json` mode the document is emitted BEFORE the non-zero exit (`apps.py:265-272`).
 - [x] 1.6 Cover `uninstall`'s destructive gate in both modes: `--json` without `--yes` refuses (exit 1, no prompt), and the human path routes through `confirm_or_exit` (`apps.py:435-449`).
 - [x] 1.7 Cover the `install` banner honesty branch: "App(s) fetched." vs "App(s) installed." depends on an `install-app` step actually having run (`apps.py:381-388`), so `--fetch-only` and a bench with no sites both say "fetched".
-- [ ] 1.8 These tests MUST pass **before** the migration and **after** it, **unchanged**. Green-before is committed as `affdda5`, its own point in history, so the claim is auditable rather than asserted.
-  Design Decision 6 has been CORRECTED: it claimed no test edit was expected by design, and that was falsified before implementation. Exactly two are: `tests/test_apps.py:1151`/`:1161` bind to `_capture_bench`/`_stream_bench`, which task 4.2 deletes. Their subject moves, their behaviour does not; they are replaced by equivalents bound to the new subject (batch 4's own precedent at `tests/test_apps.py:1169`). Nothing in `tests/test_apps_characterization.py` may change.
+- [x] 1.8 These tests MUST pass **before** the migration and **after** it, **unchanged**. Green-before is committed as `affdda5`, its own point in history, so the claim is auditable rather than asserted.
+  Design Decision 6 has been CORRECTED TWICE: it first claimed NO test edit was expected by design (falsified before implementation), then "exactly two" (falsified BY implementation - there are THREE; see Decision 6 for the list and why the third was missed). Every one is a subject that moved, not a behaviour that changed, and each is replaced by an equivalent with its assertions intact. No test in `tests/test_apps_characterization.py` changed its call or assertion; only its shared `_wire_container` helper re-pointed, which is the technique batch 4 used to keep its own characterization diff empty.
 - [ ] 1.9 Note for whoever runs the suite: `/tmp/pytest-of-cmckay` is owned by `root` on this host, so `tmp_path` tests error in setup unless `TMPDIR` is redirected. Environmental, not a real failure.
 
 ## 2. `core/apps.py` - `list_apps` first (the pure read)
 
-- [ ] 2.1 `list_apps(project, *, bench=None, bench_path=None, sites=None, installed=False) -> Result[AppsListing]`. Resolve container + bench ONLY (design Decision 7 - no default-site, no site-name validation, no bench-dir probe).
+- [x] 2.1 `list_apps(project, *, bench=None, bench_path=None, sites=None, installed=False) -> Result[AppsListing]`. Resolve container + bench ONLY (design Decision 7 - no default-site, no site-name validation, no bench-dir probe).
   The draft signature omitted `sites`/`installed`; both are load-bearing, because the per-site read only happens `if installed or sites` (`apps.py:258`) and that same condition decides whether the human JSON carries an `installed` key at all (`apps.py:267-268`). The core returns `AppsListing.installed` (empty dict when not requested); the FRONTEND decides whether to emit the key, so the historical JSON shape is preserved without the core knowing about JSON.
-- [ ] 2.2 Preserve `_resolve_bench`'s `or _DEFAULT_BENCH` fallback (`apps.py:47-54`) - it is behaviour that matches `run`, not an accident.
-- [ ] 2.3 Move `_list_available_apps` (`apps.py:125-135`) into the core. Keep the `workdir=bench_path` form rather than interpolating the path into the command - that is a deliberate quoting-hazard guard.
-- [ ] 2.4 Move `_list_installed_apps` (`apps.py:138-151`) into the core; keep `shlex.quote(site)` and the first-token-per-line parse.
-- [ ] 2.5 `AppsListing.ok` is False iff ANY site read failed. The frontend's exit code reads `.ok`, NOT `result.status` (design Decision 5).
-- [ ] 2.6 The core writes to stdout NEVER. `verbose` diagnostics become warnings or events; the frontend renders them to stderr.
+- [x] 2.2 Preserve `_resolve_bench`'s `or _DEFAULT_BENCH` fallback (`apps.py:47-54`) - it is behaviour that matches `run`, not an accident.
+- [x] 2.3 Move `_list_available_apps` (`apps.py:125-135`) into the core. Keep the `workdir=bench_path` form rather than interpolating the path into the command - that is a deliberate quoting-hazard guard.
+- [x] 2.4 Move `_list_installed_apps` (`apps.py:138-151`) into the core; keep `shlex.quote(site)` and the first-token-per-line parse.
+- [x] 2.5 `AppsListing.ok` is False iff ANY site read failed. The frontend's exit code reads `.ok`, NOT `result.status` (design Decision 5).
+- [x] 2.6 The core writes to stdout NEVER. `verbose` diagnostics become warnings or events; the frontend renders them to stderr.
 
 ## 3. `core/apps.py` - `install_apps` / `uninstall_apps` (the fan-outs)
 
-- [ ] 3.1 Plain functions with an optional `on_event` callback (design Decision 2). NOT generators. Do not cite batch 4's maintenance-mode GC hazard as the reason - it does not apply here; shape-consistency with `core.update` does.
-- [ ] 3.2 Move `_resolve_target_sites` (`apps.py:154-164`), `_derive_app_name` (`:167-178`), and the get-app/install-app fan-out (`:331-373`) into the core.
-- [ ] 3.3 `uninstall_apps` returns `NEEDS_CHOICE`/`confirm_uninstall` for the destructive gate, taking `auto_start` and destructive-consent as SEPARATE params (design Decision 4). The core never prompts.
-- [ ] 3.4 `AppsReport.ok` is False iff ANY result failed. Preserve `_report_and_exit`'s aggregation exactly (`apps.py:197`).
-- [ ] 3.5 Do NOT call `cache.recache_project` from the core (design Decision 3). It stays a frontend epilogue gated on `any(r.ok)`.
-- [ ] 3.6 Preserve the empty-site-set behaviours: `install` notes "app(s) fetched only" and continues; `uninstall` notes and exits **0** (`apps.py:352-355`, `:429-431`).
+- [x] 3.1 Plain functions with an optional `on_event` callback (design Decision 2). NOT generators. Do not cite batch 4's maintenance-mode GC hazard as the reason - it does not apply here; shape-consistency with `core.update` does.
+- [x] 3.2 Move `_resolve_target_sites` (`apps.py:154-164`), `_derive_app_name` (`:167-178`), and the get-app/install-app fan-out (`:331-373`) into the core.
+- [x] 3.3 `uninstall_apps` returns `NEEDS_CHOICE`/`confirm_uninstall` for the destructive gate, taking `auto_start` and destructive-consent as SEPARATE params (design Decision 4). The core never prompts.
+- [x] 3.4 `AppsReport.ok` is False iff ANY result failed. Preserve `_report_and_exit`'s aggregation exactly (`apps.py:197`).
+- [x] 3.5 Do NOT call `cache.recache_project` from the core (design Decision 3). It stays a frontend epilogue gated on `any(r.ok)`.
+- [x] 3.6 Preserve the empty-site-set behaviours: `install` notes "app(s) fetched only" and continues; `uninstall` notes and exits **0** (`apps.py:352-355`, `:429-431`).
 
 ## 4. Re-seat `commands/apps.py` as a renderer
 
-- [ ] 4.1 Every flag, message, and exit code preserved byte-for-byte. `--json` stdout purity holds: the document is the only thing on stdout, everything else is stderr.
-- [ ] 4.2 Delete `_report_and_exit`, `_run_bench`, `_capture_bench`, `_stream_bench` once nothing calls them. Do not leave them behind "for later" - a replaced helper left lying around is what a later reader mistakes for live.
-- [ ] 4.3 Keep the `ensure_containers_running(auto_start=yes)` prologue - it performs the real start the core only reports as `start_requested` (design Decision 4).
-- [ ] 4.4 The recache epilogue and its failure warning live here (design Decision 3).
-- [ ] 4.5 `apps update` (the batch-4 shim, `apps.py:476-534`) is untouched.
+- [x] 4.1 Every flag, message, and exit code preserved byte-for-byte. `--json` stdout purity holds: the document is the only thing on stdout, everything else is stderr.
+- [x] 4.2 Delete `_report_and_exit`, `_run_bench`, `_capture_bench`, `_stream_bench` once nothing calls them. Do not leave them behind "for later" - a replaced helper left lying around is what a later reader mistakes for live.
+- [x] 4.3 Keep the `ensure_containers_running(auto_start=yes)` prologue - it performs the real start the core only reports as `start_requested` (design Decision 4).
+- [x] 4.4 The recache epilogue and its failure warning live here (design Decision 3).
+- [x] 4.5 `apps update` (the batch-4 shim, `apps.py:476-534`) is untouched.
 
 ## 5. `cwcli axi apps list`
 
-- [ ] 5.1 ~20-25 lines over `core.list_apps`: one TOON document, exit 0/1/2, no business logic.
-- [ ] 5.2 Multi-bench with no `--bench` renders through `emit_axi_choice_as_usage_error` (exit 2), naming `cwcli axi benches` as the discovery verb.
-- [ ] 5.3 A stopped container is `NEEDS_CHOICE`/`confirm_start` rendered as a usage error naming `cwcli start` - NOT an auto-start, and NO `--yes` on the verb (matches `axi backup`/`axi unlock`/`axi apps update`).
-- [ ] 5.4 Exit 1 iff `AppsListing.ok` is False (a site read failed), NOT off `result.status`.
-- [ ] 5.5 TOON only. No `--json` on any axi verb.
+- [x] 5.1 ~20-25 lines over `core.list_apps`: one TOON document, exit 0/1/2, no business logic.
+- [x] 5.2 Multi-bench with no `--bench` renders through `emit_axi_choice_as_usage_error` (exit 2), naming `cwcli axi benches` as the discovery verb.
+- [x] 5.3 A stopped container is `NEEDS_CHOICE`/`confirm_start` rendered as a usage error naming `cwcli start` - NOT an auto-start, and NO `--yes` on the verb (matches `axi backup`/`axi unlock`/`axi apps update`).
+- [x] 5.4 Exit 1 iff `AppsListing.ok` is False (a site read failed), NOT off `result.status`.
+- [x] 5.5 TOON only. No `--json` on any axi verb.
 
 ## 6. Docs + memory
 
-- [ ] 6.1 `README.md` gains `cwcli axi apps list`.
-- [ ] 6.2 `AGENTS.md`: update the un-migrated list (remove `apps`'s three subcommands), and record Decision 3's result - the core-to-CLI reach is STILL one place, and why an epilogue hoists where a mid-fan-out call cannot.
-- [ ] 6.3 `AGENTS.md` + the `cwcli-core-axi` skill record the Decision 1 deferral and point at §7 below, so "deliberately not built" is never mistaken for "forgotten".
-- [ ] 6.4 Report whether any primitive needed bending (the batch-1 falsifiable claim). A batch that quietly widens something and reports "zero primitives touched" destroys the signal the standard exists to produce.
+- [x] 6.1 `README.md` gains `cwcli axi apps list`, including the null-vs-empty rule and the Decision 1 deferral.
+- [x] 6.2 `AGENTS.md`: un-migrated list updated (`apps` is now FULLY migrated), Decision 3's result recorded, Decision 8's verdict recorded, and the `core/update.py:291` finding carried as a REPORTED-not-fixed note pointing at §8.
+- [x] 6.3 `AGENTS.md` + the `cwcli-core-axi` skill record the Decision 1 deferral and point at §7; `tests/test_axi_apps_list.py::test_the_destructive_mutations_are_deliberately_not_verbs` asserts it, so the deferral cannot be misread as an oversight OR silently undone.
+- [x] 6.4 **VERDICT: zero new primitives, zero bends, zero flat spots. VERIFIED against the diff, not asserted.**
+  `git diff origin/develop...HEAD -- src/` touches exactly THREE files: the new `core/apps.py`, the re-seated `commands/apps.py`, and `commands/axi.py` (the new verb). `core/resolvers.py`, `core/docker.py`, `core/exec_stream.py`, `core/envelope.py`, `core/errors.py`, `utils/bench_sites.py` and `core/update.py` are **byte-for-byte unchanged**.
+  So the foundation absorbed a three-verb batch with nothing widened - the cleanest result since batch 1. Batch 2 had to parameterize `not_running_hint`; batch 4 reported a `require_bench_dir` near-miss and refused to bend it; this batch hit neither, because Decision 7 kept it from reaching for resolvers `apps` does not use.
+  The ONE amendment is to this batch's OWN proposal, not to a primitive: Decision 2 said `list_apps` takes no callback, and implementation falsified the premise (see design Decision 2's amendment note). Recorded rather than quietly re-specced, because a batch that reports "zero" while having bent something destroys the signal the standard exists to produce.
 
 ## 7. DEFERRED - explicitly NOT this batch (captain-locked 2026-07-15)
 

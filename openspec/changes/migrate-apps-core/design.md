@@ -35,7 +35,11 @@ None of them returns an iterator.
   `update`'s `try/finally` disables maintenance mode; a generator abandoned in a reference cycle strands a site in maintenance.
   `install`/`uninstall` have no such cleanup block, so an abandoned generator would leak a socket, not corrupt state - the `run_stream` situation, which is fine.
   The decision therefore rests on shape-consistency with `core.update`, not on the safety argument. Do not cite the maintenance-mode hazard as if it applied here.
-- **`list_apps` takes no callback at all.** It is a read with two cheap execs and nothing to report progress about.
+- **~~`list_apps` takes no callback at all.~~ AMENDED during implementation: it takes one.**
+  The original reasoning ("a read with two cheap execs and nothing to report progress about") was right about PROGRESS and wrong about the command TRACE. `list_apps` still has to surface the `--verbose` echoes (`$ ls -1 apps (in ...)`, `$ bench --site x list-apps -> exit 0`) that the pre-migration code printed, and with no callback the only channel left was `Result.warnings`.
+  That was actively wrong, not merely inelegant: `warnings` carries notes a consumer should ACT on (`bench.default_used`, `bench.sole`), and `axi apps list` emits them into its structured document - so a debug echo of every shell read would land in the agent surface's output as noise.
+  A trace is not a note. It rides the event channel across this whole module, exactly as it already does in `core.update` (whose `axi` verb passes no callback and discards it for free). `list_apps(..., on_event=None)` costs three lines, deletes the frontend's `_echo_commands`, and keeps ONE channel per concern.
+  Recorded as an amendment rather than silently re-specced: the decision was wrong on its own evidence, and a design doc that quietly matches whatever shipped is worth nothing.
 
 ### 3. The recache stays in the FRONTEND; this batch adds ZERO new core-to-CLI reaches
 
@@ -76,11 +80,14 @@ The frontend calls it after the core returns, gated on `any(r.ok for r in report
 `tests/test_apps.py` is the net. It must pass before and after, unchanged.
 
 - **Where "unchanged" is expected to hold:** every existing assertion about flags, messages, exit codes, and the JSON shapes.
-- **Where test edits are expected BY DESIGN: exactly two, identified before implementation and named here.**
-  The draft of this decision claimed "none currently identified". That was **wrong**, and re-reading the suite falsified it: `tests/test_apps.py:1151` (`test_capture_bench_reports_cwclierror_cleanly`) and `:1161` (`test_stream_bench_reports_cwclierror_cleanly`) bind directly to `apps_mod._capture_bench` / `apps_mod._stream_bench` - the exact helpers task 4.2 deletes.
+- **Where test edits are expected BY DESIGN: THREE. This decision has now been wrong twice, and both corrections are kept visible on purpose.**
+  It first claimed "none currently identified" - falsified BEFORE implementation by re-reading the suite. It then claimed "exactly two" - falsified BY implementation, which found a third in a file the audit never opened.
+  The three: `tests/test_apps.py:1151` (`test_capture_bench_reports_cwclierror_cleanly`), `:1161` (`test_stream_bench_reports_cwclierror_cleanly`), and `tests/test_exec_stream_decode.py::test_apps_install_streams_split_character_intact`. All three bind directly to `apps_mod._capture_bench` / `apps_mod._stream_bench` - the exact helpers task 4.2 deletes.
+  **Why the third was missed, since that is the reusable lesson:** the audit grepped `tests/test_apps.py`, the file this batch's net lives in, and stopped there. The helpers had a consumer one file over. Batch 4 had ALREADY hit this exact pair of files for `_stream_command` (`tests/test_apps.py:1169`'s comment, and `test_exec_stream_decode.py:121`'s re-point to `core_update._stream_step`) - the precedent was sitting in the diff. **Grep the whole suite for the symbol you are deleting, not the file you are working in.**
   Their SUBJECT moves; their BEHAVIOUR does not. Both pin "a `CwcliError` out of `exec_stream` renders `Error:` to stderr and exits 1", and that must still hold - relocated from inside the helper to the frontend's `try/except CwcliError` around the `core.<verb>` call, because the core cannot exit.
   They are therefore REPLACED by equivalents bound to the new subject, with their assertions intact.
   **Precedent, exactly:** batch 4 hit this and did the same thing - `tests/test_apps.py:1169`'s own comment reads "REPLACES test_update_stream_command_reports_cwclierror_cleanly, whose subject (update.py's `_stream_command`) moved into core.update with the state machine."
+  **Distinct from these, and NOT "by design": 15 container patches + one `bench_sites` patch merely re-point to the module the subject now lives on** (`core_apps.core_docker.get_frappe_container`, mirroring the `core_update.core_docker` patch batch 4 already left at `tests/test_apps.py:559`). No call and no assertion changed. That is "moved with its subject", and conflating it with a by-design change would inflate the second number and hide the first.
   Everything else in `tests/test_apps.py` passes untouched.
 - **Why the streaming still works once the exec is in the core.** `_stream_bench` wrote to stdout, which the core may never do. The live output rides Decision 2's `on_event` callback: the core emits each `ExecChunk`'s text as an event, and the frontend's callback writes it to stdout (human) or buffers it (JSON). Both of the exec-stream contract's consumption modes are preserved, and the choice of which one moves to where it belongs - the renderer.
 - **Coverage baseline must be re-measured first-hand, not inherited.** Batch 4's tasks.md records the recon's numbers being stale by a PR; assume the same here. Done in task 1.1.
