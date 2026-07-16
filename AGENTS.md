@@ -120,6 +120,7 @@ These are load-bearing and apply regardless of which command you touch; they sta
 ## Deep-dive skills
 
 Per-command incident detail and the E2E protocol live in project-level skills under `.claude/skills/`, loaded on demand when you work on that area. Read the relevant skill BEFORE touching that command - each carries the root-cause "why" that guards a real shipped bug.
+Every skill here MUST carry `metadata: internal: true` in its frontmatter - the agentskills.io `skills` CLI scans `.claude/skills/` too, and without the marker `skills add` publishes these internal notes to every user (a test in `tests/test_axi_skill.py` enforces it; the full evidence is in `cwcli-core-axi`).
 
 - **`cwcli-e2e-testing`** - the E2E protocol + `tests/e2e/harness.py` contract (isolation recipe, genuine v14/v15/v16 benches, pty-driven prompts, non-interactive flag driving, teardown). Load when writing/running/extending E2E tests or hand-validating on a real instance.
 - **`cwcli-lifecycle`** - init / rm / restore internals (version gating, secret env-transport, existing-bench reuse, rm deletion + the C1/H5/M11 backup gates + multi-bench per-bench backup, restore receive/normal-path safety, shared site detection, default-site resolution, post-restore migrate/restart). Load when editing `commands/init.py`, `rm.py`, `restore.py`, or `utils/bench_sites.py`.

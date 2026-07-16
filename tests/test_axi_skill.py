@@ -139,3 +139,34 @@ class TestSkillContent:
         from caffeinated_whale_cli.commands import axi
 
         assert axi._DESCRIPTION in SKILL_PATH.read_text(encoding="utf-8")
+
+
+class TestInternalSkillsAreNotPublished:
+    """`skills add karotkriss/caffeinated-whale-cli` scans BOTH `skills/` and
+    `.claude/skills/` and installs every SKILL.md it finds. The `.claude/skills/`
+    deep-dives are internal source-debugging notes for agents working ON cwcli,
+    not FOR users of it; without `metadata.internal: true` in their frontmatter
+    the installer shipped all six to every user (verified against skills CLI
+    1.5.18, which drops a skill from discovery when that key is true, while
+    project-local loading inside this repo ignores it entirely).
+    """
+
+    INTERNAL_SKILLS_DIR = REPO_ROOT / ".claude" / "skills"
+
+    def _frontmatter(self, skill_md: Path) -> str:
+        text = skill_md.read_text(encoding="utf-8")
+        assert text.startswith("---\n"), f"{skill_md} has no frontmatter"
+        return text[4:].split("\n---\n", 1)[0]
+
+    def test_every_internal_skill_carries_the_marker(self):
+        skill_mds = sorted(self.INTERNAL_SKILLS_DIR.glob("*/SKILL.md"))
+        assert skill_mds, "expected internal skills under .claude/skills/"
+        for skill_md in skill_mds:
+            fm = self._frontmatter(skill_md)
+            assert "metadata:" in fm and "\n  internal: true" in fm, (
+                f"{skill_md.parent.name} lacks 'metadata:\\n  internal: true'; "
+                "without it, `skills add` publishes this internal skill to every user"
+            )
+
+    def test_the_public_skill_is_not_marked_internal(self):
+        assert "internal: true" not in self._frontmatter(SKILL_PATH)

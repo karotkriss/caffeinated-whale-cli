@@ -15,6 +15,8 @@ description: >
   commands/restart.py, commands/logs.py, core/supervision.py, core/start.py, core/status.py,
   core/restart.py, or utils/bench_sites.py - each note guards a real shipped bug, so keep the
   root-cause "why" so a later change does not silently re-break the fix.
+metadata:
+  internal: true
 ---
 
 # cwcli lifecycle commands: init / rm / restore (sharp edges)
