@@ -88,19 +88,22 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+# No `[ 42%]` progress indicator: this suite prints its own per-file progress
+# (tests/conftest.py). The E2E tier keeps its live per-test `... PASSED` lines.
+console_output_style = "classic"
 # A bare `pytest` runs only the fast tier: the default `-m` deselects the
 # real-Docker E2E markers, so no Docker daemon is needed for local dev / the
 # unit CI job. Override on the CLI (`-m e2e`) to run the E2E tier - the last
 # `-m` on the command line wins over this default.
+# `-q` drops the session header and the per-test progress prefix; tests/conftest.py
+# replaces the per-test lines with one line per test file. `--cov-report=` silences
+# pytest-cov's per-file table so conftest can print one total % instead (the total
+# only appears when a run passes `--cov`).
 addopts = [
-    "-v",
+    "-q",
     "--strict-markers",
     "--tb=short",
-    "--cov-report=term-missing",
-    # Built-in slowest-N view (setup/call/teardown), on top of the per-test time
-    # + description that tests/conftest.py prints inline on each -v line and the
-    # E2E init-pole callout in its two-faced Cockpit/Ledger summary. Surfaces in CI logs.
-    "--durations=15",
+    "--cov-report=",
     "-m",
     "not e2e and not e2e_p2p",
 ]
@@ -129,7 +132,6 @@ exclude_lines = [
     "@(abc\\.)?abstractmethod",
 ]
 precision = 2
-show_missing = true
 
 
 [project.urls]

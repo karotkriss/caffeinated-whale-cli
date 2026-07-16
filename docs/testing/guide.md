@@ -77,9 +77,11 @@ uv run pytest -v
 
 ```bash
 # Coverage for all code
-uv run pytest --cov=caffeinated_whale_cli --cov-report=term-missing
+uv run pytest --cov=caffeinated_whale_cli
 
-# Coverage for specific module
+# Coverage for specific module, with the per-file table and uncovered line
+# numbers. A `--cov-report` on the CLI overrides the addopts default (one total
+# %), so this is how you opt back into the detail when you actually want it.
 uv run pytest tests/test_completion_utils.py \
   --cov=caffeinated_whale_cli.utils.completion_utils \
   --cov-report=term-missing
@@ -141,7 +143,7 @@ def test_caches_results(self):
     # Test implementation
 ```
 
-`tests/conftest.py` also surfaces a test's docstring first line as its human-readable description on the `-v` output line (falling back to the humanised function name when there's no docstring), so a good one-line docstring doubles as documentation for anyone reading the test run. See [tests/README.md](../../tests/README.md#reading-the-output-timing--descriptions).
+The docstring documents the test for whoever reads the file next; the run itself stays quiet about it. See [tests/README.md](../../tests/README.md#reading-the-output) for what a run actually prints.
 
 ### Fixtures
 
@@ -340,7 +342,7 @@ CI is two-tiered. The fast `unit` tier runs on every push and PR via `.github/wo
 ```yaml
 # .github/workflows/test.yml
 - name: Run unit tests with coverage
-  run: uv run pytest -m unit --cov=caffeinated_whale_cli --cov-report=term-missing
+  run: uv run pytest -m unit --cov=caffeinated_whale_cli
 ```
 
 The real-Docker `e2e` tier runs via `.github/workflows/e2e.yml` on a v14/v15/v16 Frappe matrix, on PRs into `develop`/`master` and on-demand via the `e2e` PR label.
