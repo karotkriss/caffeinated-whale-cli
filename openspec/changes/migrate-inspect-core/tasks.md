@@ -62,7 +62,7 @@
 
 ## 9. Docs and memory
 
-- [ ] 9.1 CLAUDE.md ledger: `inspect` moves to the migrated list; `core/update.py`'s reach-back note settled (the one core-imports-CLI site is gone); `open`'s entry updated from "deferred on inspect" to unblocked/next.
-- [ ] 9.2 `cwcli-inspect-benches` skill: the migration incident recorded; the stale `start`-as-caller line corrected (greps to zero); the Typer-default trap note updated (the trap class is gone for inspect's callers).
-- [ ] 9.3 `cwcli-core-axi` skill: `core/inspect.py` added to the migrated-slice list; the `axi inspect` verb and the `axi benches` hint re-point recorded.
-- [ ] 9.4 Hazards board: the strict-decode and raw-escape entries resolved by this batch are pruned; `cache_project_data` non-transactionality stays reported as its own follow-up.
+- [x] 9.1 CLAUDE.md ledger: `inspect` moves to the migrated list; `core/update.py`'s reach-back note settled (the one core-imports-CLI site is gone); `open`'s entry updated from "deferred on inspect" to unblocked/next.
+- [x] 9.2 `cwcli-inspect-benches` skill: the migration incident recorded; the stale `start`-as-caller line corrected (greps to zero); the Typer-default trap note updated (the trap class is gone for inspect's callers).
+- [x] 9.3 `cwcli-core-axi` skill: `core/inspect.py` added to the migrated-slice list; the `axi inspect` verb and the `axi benches` hint re-point recorded.
+- [x] 9.4 Hazards board: the strict-decode and raw-escape entries resolved by this batch are pruned; `cache_project_data` non-transactionality stays reported as its own follow-up.
