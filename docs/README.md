@@ -154,33 +154,6 @@ caffeinated-whale-cli/
 
 See [Technical Directory](./technical/) for complete documentation.
 
-## Project Statistics
-
-### Commit Analysis (79 commits)
-
-| Type | Count | % | Most Common Use |
-|------|-------|---|-----------------|
-| `chore:` | 29 | 36.7% | Version bumps, CHANGELOG |
-| `fix:` | 24 | 30.4% | Bug fixes |
-| `feat:` | 16 | 20.3% | New features |
-| Other | 10 | 12.6% | Merges, refactors |
-
-### Active Branches
-
-```
-develop              # Main development branch
-feat-tab-completion  # Tab completion feature
-init                 # Initialization commands
-ports                # Port conflict detection
-```
-
-### Test Coverage
-
-- **Test Files**: 50
-- **Total Tests**: 780
-- **Overall Coverage**: ~62% at 0.37.0 (unreleased)
-- See the [Testing Directory](./testing/) for the per-module breakdown.
-
 ## Common Tasks
 
 ### For Contributors
