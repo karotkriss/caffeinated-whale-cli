@@ -107,6 +107,8 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+# No `[ 42%]` progress indicator: the fast tier prints its own per-file progress.
+console_output_style = "classic"
 # The default `-m` deselects the real-Docker tiers, so a bare `pytest` is the
 # fast unit tier; `-m e2e` on the CLI overrides it (the last `-m` wins).
 addopts = ["-q", "--strict-markers", "--tb=short", "--cov-report=", "-m", "not e2e and not e2e_p2p"]
