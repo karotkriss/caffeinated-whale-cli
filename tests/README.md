@@ -80,7 +80,7 @@ The real-Docker E2E is Linux-only; Windows/macOS-specific code stays in the unit
 
 ## Test Files
 
-As of 0.37.0 (unreleased), `tests/` holds 62 `test_*.py` suites totaling 1035 tests in the
+As of 0.37.0 (unreleased), `tests/` holds 63 `test_*.py` suites totaling 1053 tests in the
 `unit` tier (measured with `uv run pytest --cov`). Run `ls tests/` for the
 authoritative current list; see [../docs/testing/README.md](../docs/testing/README.md)
 for the per-area breakdown.
@@ -127,7 +127,7 @@ Tests for tab completion functionality.
 
 ## Test Coverage
 
-Current overall coverage at 0.37.0, unreleased (1035 tests across 62 test files, ~67% overall).
+Current overall coverage at 0.37.0, unreleased (1053 tests across 63 test files, ~67% overall).
 
 ### Covered Modules
 - ✅ `utils/completion_utils.py` - 92% (7 missing lines)
@@ -148,7 +148,7 @@ Current overall coverage at 0.37.0, unreleased (1035 tests across 62 test files,
 - ✅ `core/stop.py` - 100% (`test_core_stop`: stopped count, already-stopped, `NOT_FOUND`, docker-unreachable, names-not-objects, and that it prints nothing at all)
 - ✅ `core/exec_stream.py` - ~97% (`test_core_exec_stream`: tagged chunks in order, the terminal `ExecDone`, a mid-character split round-tripping per stream, `ExitCode: None` polled through to a real code, an unknowable code raising `CwcliError(DOCKER)`, a `DockerException` mid-poll raising the same, the stream closed on early `break` and on an exception)
 - ✅ `core/run.py` - 100% (`test_core_run`: every `run_plan` branch - success, `select_bench`, the `bench.default_used` warning, each `CwcliError` kind, `RunPlan` holding no live Docker object - plus the reseated `commands/run.py` frontend: exit-code passthrough, honest non-zero on an unknown code, `--bench`/`--path` plumbing, and the `confirm_start` retry-once-then-fail-closed race - and the argv surface, which drives the real `main.app` through Typer's parser because the parser config is what is under test: an unknown flag reaching bench, no `--bench` suggestion for `--branch`, `--bench` still claimed after the bench args, and `--` still shielding a colliding flag)
-- ✅ `commands/axi.py` - ~97% (`test_axi`: verb exit-mapping (0/1/2), the content-first home, `axi ls`/`axi where`, the TOON encoder)
+- ✅ `core/logs.py` - 100% (`test_core_logs`: the two moved reads (`_existing_files`/`_discover_bench_log_files`) against a container fake - now `container.exec_run`, not a `docker exec` shell-out, so covered instead of monkeypatched away wholesale; every `logs_plan` branch - the combined/`--process` log selection, the `select_bench`/`confirm_start`/`select_process` `NEEDS_CHOICE` forks, the two distinct no-logs errors (`logs.none_yet` NOT_FOUND vs `logs.no_manager` NOT_RUNNING), the not-cwcli-supervised fallback firing and NOT firing, the `bench.default_used` fallback, and the no-live-object/no-argv plan invariant; plus the `subprocess`-ban purity check. `commands/logs.py` keeps its `docker exec -it ... tail` and PR #83's exit-code fix, pinned through the public surface by `test_logs` (the five exit-code regressions + the fallback rendering + the `-it`-on-TTY gating))
 - ✅ `core/list.py`, `core/where.py` - 100% (`test_core_list`: fake docker client, empty/aggregate/DOCKER-raise; `test_core_where`: throwaway sqlite, dedup/scoping/installed-only/USAGE)
 - ✅ `commands/list.py` - ~80% (`test_list`: the `ls --json` empty-`[]` fix, quiet/table rendering, port-range condensing)
 - ✅ `commands/where.py` - 100% (`test_where`: table/JSON rendering, the `--apps`/`--sites` conflict, the definitive `[]` empty state)
