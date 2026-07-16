@@ -26,7 +26,9 @@ import typer
 from typer.testing import CliRunner
 
 from caffeinated_whale_cli.commands import logs as logs_mod
-from caffeinated_whale_cli.core import supervision
+from caffeinated_whale_cli.core import docker as core_docker
+from caffeinated_whale_cli.core import logs as core_logs
+from caffeinated_whale_cli.core import resolvers, supervision
 from caffeinated_whale_cli.utils import docker_utils
 
 runner = CliRunner()
@@ -35,10 +37,20 @@ runner = CliRunner()
 class _FakeFrappe:
     labels = {"com.docker.compose.service": "frappe"}
     name = "proj-frappe-1"
+    status = "running"
+
+    def reload(self):
+        pass
 
 
 def _wire(monkeypatch, *, isatty: bool, returncode: int = 0):
-    """Neutralize the Docker preflight/collaborators and capture every subprocess.run.
+    """Neutralize the Docker preflight and wire the ``core.logs_plan`` seam.
+
+    The resolve now lives in ``core/logs.py``, so the collaborators are patched
+    THERE (``get_project_containers``, ``cached_benches``, ``procfile_programs``,
+    ``_existing_files``), not on the command module. The frontend's own bits
+    (``ensure_containers_running``, ``sys.stdin``, ``subprocess.run``) stay patched
+    on ``logs_mod``.
 
     ``returncode`` is what the faked ``tail`` exits with. The fake models
     ``subprocess.run``'s REAL ``check=`` semantics - it raises
@@ -53,13 +65,13 @@ def _wire(monkeypatch, *, isatty: bool, returncode: int = 0):
         docker_utils.docker, "from_env", lambda: type("C", (), {"ping": lambda s: True})()
     )
     monkeypatch.setattr(logs_mod, "ensure_containers_running", lambda *a, **k: True)
-    monkeypatch.setattr(logs_mod, "get_project_containers", lambda name: [_FakeFrappe()])
-    monkeypatch.setattr(logs_mod, "resolve_bench_path", lambda *a, **k: "/w/bench")
+    monkeypatch.setattr(core_docker, "get_project_containers", lambda name: [_FakeFrappe()])
     monkeypatch.setattr(
-        logs_mod.supervision, "procfile_programs", lambda c, b: ["web", "worker_default"]
+        resolvers, "cached_benches", lambda _p: [{"path": "/w/bench", "label": None}]
     )
+    monkeypatch.setattr(supervision, "procfile_programs", lambda c, b: ["web", "worker_default"])
     # Every candidate log "exists" (echo the list back), so the tail targets them.
-    monkeypatch.setattr(logs_mod, "_existing_files", lambda name, files: files)
+    monkeypatch.setattr(core_logs, "_existing_files", lambda container, files: files)
     monkeypatch.setattr(logs_mod.sys, "stdin", types.SimpleNamespace(isatty=lambda: isatty))
 
     calls: list[list[str]] = []
@@ -157,7 +169,7 @@ def test_supervised_path_never_calls_fallback(monkeypatch):
     def _boom(*a, **k):
         raise AssertionError("fallback discover_unsupervised_stack called on supervised path")
 
-    monkeypatch.setattr(logs_mod.supervision, "discover_unsupervised_stack", _boom)
+    monkeypatch.setattr(supervision, "discover_unsupervised_stack", _boom)
     result = runner.invoke(_app(), ["proj"])
     assert result.exit_code == 0
     assert "/w/bench/logs/web.supervisor.log" in _tail_cmd(calls)
@@ -167,12 +179,14 @@ def test_supervised_path_never_calls_fallback(monkeypatch):
 # `logs` called `subprocess.run(tail_cmd)` with no check=, discarded the result,
 # and caught `subprocess.CalledProcessError` beneath it - which `subprocess.run`
 # raises ONLY when check=True. So the returncode was thrown away and the handler
-# was unreachable dead code: `cwcli logs` exited 0 no matter what tail did.
+# was unreachable dead code: `cwcli logs` exited 0 no matter what tail did (PR #83).
 #
-# This is the same fail-open class `core/exec_stream.py` was built to kill
-# (`run`/`apps` leaked it through `ExitCode: None`), but `logs` is NOT re-pointed
-# onto that primitive: exec_stream is a non-TTY docker-py exec, while `logs` is a
-# `docker exec -it` passthrough whose whole job is an interactive `tail -F`.
+# The tail stays in the frontend and is NOT re-pointed onto `core.exec_stream`;
+# see `core/logs.py`'s module docstring and
+# `openspec/changes/migrate-logs-core/design.md` (Decision 1) for the measured
+# reasons (an orphan `tail -F` per Ctrl+C, `exec.stream_lost` on a routine stop,
+# the tty/demux conflict). These five pin PR #83's fix through the public surface,
+# and the migration must keep them green in substance.
 
 
 def test_failing_tail_exits_non_zero(monkeypatch):
@@ -224,25 +238,32 @@ def test_successful_tail_exits_zero(monkeypatch):
 
 
 def _wire_unsupervised(monkeypatch, *, manager_up, real_files, isatty=False):
-    """No supervisord logs; a honcho manager may (manager_up) be running the bench."""
+    """No supervisord logs; a honcho manager may (manager_up) be running the bench.
+
+    Same seam as ``_wire``, but the existence probe finds nothing (forcing the
+    fallback) and ``discover_unsupervised_stack`` / ``_discover_bench_log_files``
+    are wired on ``core_logs``.
+    """
     monkeypatch.setattr(docker_utils.shutil, "which", lambda _n: "/usr/bin/docker")
     monkeypatch.setattr(
         docker_utils.docker, "from_env", lambda: type("C", (), {"ping": lambda s: True})()
     )
     monkeypatch.setattr(logs_mod, "ensure_containers_running", lambda *a, **k: True)
-    monkeypatch.setattr(logs_mod, "get_project_containers", lambda name: [_FakeFrappe()])
-    monkeypatch.setattr(logs_mod, "resolve_bench_path", lambda *a, **k: "/w/bench")
+    monkeypatch.setattr(core_docker, "get_project_containers", lambda name: [_FakeFrappe()])
     monkeypatch.setattr(
-        logs_mod.supervision, "procfile_programs", lambda c, b: ["web", "worker_default"]
+        resolvers, "cached_benches", lambda _p: [{"path": "/w/bench", "label": None}]
     )
+    monkeypatch.setattr(supervision, "procfile_programs", lambda c, b: ["web", "worker_default"])
     # No supervisord per-process logs exist -> forces the fallback branch.
-    monkeypatch.setattr(logs_mod, "_existing_files", lambda name, files: [])
+    monkeypatch.setattr(core_logs, "_existing_files", lambda container, files: [])
     monkeypatch.setattr(
-        logs_mod.supervision,
+        supervision,
         "discover_unsupervised_stack",
         lambda c, b: supervision.UnsupervisedStack(manager_up=manager_up, processes=[]),
     )
-    monkeypatch.setattr(logs_mod, "_discover_bench_log_files", lambda name, b: list(real_files))
+    monkeypatch.setattr(
+        core_logs, "_discover_bench_log_files", lambda container, b: list(real_files)
+    )
     monkeypatch.setattr(logs_mod.sys, "stdin", types.SimpleNamespace(isatty=lambda: isatty))
 
     calls: list[list[str]] = []
@@ -302,15 +323,3 @@ def test_running_but_no_matching_log_is_not_reported_as_down(monkeypatch):
     assert result.exit_code == 1
     assert calls == []
     assert "may not be running" not in result.output.lower()
-
-
-def test_program_log_matches():
-    m = logs_mod._program_log_matches
-    assert m("/w/logs/web.log", "web")
-    assert m("/w/logs/web.error.log", "web")
-    assert not m("/w/logs/worker.log", "web")
-    assert m("/w/logs/worker.log", "worker_default")
-    assert m("/w/logs/worker.error.log", "worker_short")
-    assert m("/w/logs/scheduler.log", "schedule")
-    assert m("/w/logs/redis-cache.log", "redis_cache")
-    assert not m("/w/logs/bench.log", "web")

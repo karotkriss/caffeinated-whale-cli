@@ -43,7 +43,7 @@ uv run pytest tests/test_completion_utils.py
 
 ### Test Coverage
 
-Measured with `uv run pytest --cov` at 0.37.0 (unreleased): 1084 tests across 64 test files, ~67% overall coverage.
+Measured with `uv run pytest --cov` at 0.37.0 (unreleased): 1110 tests across 65 test files, ~67% overall coverage.
 Per-area breakdown (highest-coverage module in each area; see the module list in each test file for what else it exercises):
 
 - **rm safety** (`test_rm_safety`, `test_rm_truth`, `test_rm_stopped`, `test_rm_stopped_backup`) - `commands/rm.py` ~84%
@@ -61,7 +61,7 @@ Per-area breakdown (highest-coverage module in each area; see the module list in
 - **app management** (`test_apps`) - `commands/apps.py` ~98% (multi-site fan-out, frappe reset, `update` deprecation)
 - **`update` onto the logic core, plus `apps update --json`/`axi apps update`** (`test_core_update`, `test_axi_apps_update`, `test_update_characterization`) - `core/update.py` ~90%, the reseated `commands/update.py` renderer ~88% (the maintenance-mode `finally` surviving a mid-fan-out stream loss with remediation intact, unknown-vs-failed reporting for a lost output stream, the `UpdateAborted` callback on a Ctrl-C, both structured surfaces incl. frappe-path stdout purity, and the seven-way aggregation across every flag)
 - **`apps`'s remaining subcommands onto the logic core, plus `cwcli axi apps list`** (`test_apps_characterization`, `test_core_apps`, `test_axi_apps_list`) - `core/apps.py` ~98%, the reseated `commands/apps.py` renderer ~98% (`list`/`install`/`uninstall` joined `update` on the core, so the module no longer carries two contracts; the green-before characterization net taking `commands/apps.py` from 91.28% to 99.49% before anything moved; the forks only `axi`/a future GUI can reach - `confirm_start`, `select_bench`, `confirm_uninstall`, the no-cache default; the new `axi apps list` verb's null-vs-empty-list distinction on a failed site read; and a dedicated assertion that `axi apps install`/`uninstall` are deliberately NOT registered)
-- **logs** (`test_logs`) - `commands/logs.py` ~80% (the `--follow` default flip to `False`, gating `docker exec -it` on `sys.stdin.isatty()` so a non-TTY/piped invocation never requests a TTY, and the not-cwcli-supervised fallback - discovering and tailing a honcho/`bench start` bench's real log files, `--process` file-stem filtering, the honest "running but has not written those logs yet" vs "may not be running" hints, and that the supervised path never calls the fallback)
+- **`logs` onto the logic core** (`test_core_logs`, `test_logs`) - `core/logs.py` 100% (the resolve migrated off `commands/logs.py`: the combined/`--process` log selection, the `select_bench`/`confirm_start`/`select_process` `NEEDS_CHOICE` forks, the two distinct no-logs errors - `logs.none_yet` NOT_FOUND when a manager is up vs `logs.no_manager` NOT_RUNNING with the start hint - the not-cwcli-supervised fallback firing and not firing, and the `subprocess`-ban purity check), the reseated `commands/logs.py` renderer ~80% (the `--follow` default flip to `False`, gating `docker exec -it` on `sys.stdin.isatty()` so a non-TTY/piped invocation never requests a TTY, and PR #83's exit-code fix pinned through the public surface)
 - **unlock** (`test_unlock`, `test_unlock_command_cli`) - `commands/unlock.py` ~50% (the `test -d` probes and locks removal run as argv lists, not `sh -c` string interpolation; its logic moved to `core/unlock.py` - see the core unlock/stop slice below)
 - **`CWCLI_HOME` override** (`test_cwcli_home`) - `utils/config_utils.py`'s `cwcli_home()` ~41% file-wide; mock-free, sets a real `CWCLI_HOME` env var and resolves the import-time footprint constants in a fresh subprocess
 - **logic core purity + contract** (`test_core_envelope`) - AST-scans `core/*.py` for the `rich`/`questionary`/`typer` import ban and `typer.Exit`/`confirm_or_exit` references, and pins the `Result`/`CwcliError` DTO shapes - `core/envelope.py`, `core/errors.py` 100%
@@ -89,7 +89,7 @@ Per-area breakdown (highest-coverage module in each area; see the module list in
 
 ### Test Files
 
-Run `ls tests/` for the authoritative, current list; as of 0.37.0 (unreleased) it holds 64 `test_*.py` suites plus `bench_fakes.py` and `bench_fakes_mb.py` (shared fakes) and `README.md`.
+Run `ls tests/` for the authoritative, current list; as of 0.37.0 (unreleased) it holds 65 `test_*.py` suites plus `bench_fakes.py` and `bench_fakes_mb.py` (shared fakes) and `README.md`.
 
 ## Testing Framework
 

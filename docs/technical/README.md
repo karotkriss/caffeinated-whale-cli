@@ -26,7 +26,7 @@ caffeinated-whale-cli/
 │   │   ├── start.py           # Thin frontend over core.start (idempotent) + port detection
 │   │   ├── status.py          # Thin frontend over core.status (per-process health)
 │   │   ├── restart.py         # Whole-stack restart, or one program via core.restart_process
-│   │   ├── logs.py            # Per-process supervisord log files (combined view or --process); falls back to raw bench logs when not cwcli-supervised
+│   │   ├── logs.py            # Renderer over core.logs_plan; performs the `docker exec -it ... tail` itself
 │   │   ├── stop.py            # Stop containers
 │   │   ├── inspect.py         # Project inspection
 │   │   ├── update.py          # App updates + migrations
@@ -48,6 +48,7 @@ caffeinated-whale-cli/
 │   │   ├── start.py            # core.start - idempotent bench start under supervisord (discovered-PID no-op, --autorestart)
 │   │   ├── status.py           # core.status - per-process health + pre-computed overall
 │   │   ├── restart.py          # core.restart_process - restart ONE supervised program, siblings untouched
+│   │   ├── logs.py             # core.logs_plan - resolves container/bench/program selection; the tail stays in the frontend
 │   │   └── version.py          # core.version - install-method detection + PyPI lookup, shared by self-update and the passive notice
 │   └── utils/                  # Utility modules
 │       ├── docker_utils.py    # Docker client management
