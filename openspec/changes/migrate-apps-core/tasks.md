@@ -1,6 +1,10 @@
 ## 1. Characterization tests FIRST (green before anything moves)
 
-- [ ] 1.1 Re-measure the baseline first-hand against current `develop` (`3ff07ca`) and record it here: `apps.py` stmts/miss/%, and the suite total. Do NOT inherit a recon's or a prior batch's numbers - batch 4 recorded its recon being stale by a whole PR.
+- [x] 1.1 Baseline re-measured first-hand at `30cf57c` (current `develop`; PR #86 has since merged, so the `3ff07ca` this proposal was drafted against is stale - the numbers are unchanged by it):
+  `commands/apps.py` **195 stmts, 17 miss, 91.28%**; `tests/test_apps.py` **49 tests, green**.
+  Missing lines: `65, 99-100, 116, 128, 133, 147, 176-177, 189, 216, 278, 342-343, 353, 430-431`.
+  Adjacent, measured in the same run because Decision 8 turns on it: `core/update.py` **268 stmts, 87.69%**, with `296-322` (`_sites_with_app`'s live fallback) **entirely uncovered**.
+  Command: `uv run pytest tests/test_apps.py --cov=caffeinated_whale_cli.commands.apps --cov-report=term`.
 - [ ] 1.2 Audit `tests/test_apps.py` for which of the three verbs' branches are actually covered, per verb, and write down the gaps BEFORE filling them. The claim "apps is well covered" is exactly the kind of inherited belief batch 4's tasks.md warns about.
 - [ ] 1.3 Cover `install`'s name derivation on BOTH paths: the `apps/` before/after diff yielding exactly one new dir (`apps.py:346-347`), and every fallback into `_derive_app_name` (zero new dirs / more than one new dir). This is the batch's risk concentration (design Risks).
 - [ ] 1.4 Cover `_derive_app_name`'s four input shapes (`apps.py:167-178`): plain name, git URL, `.git` suffix, `user@host:path`.
@@ -12,7 +16,8 @@
 
 ## 2. `core/apps.py` - `list_apps` first (the pure read)
 
-- [ ] 2.1 `list_apps(project, *, bench=None, bench_path=None) -> Result[AppsListing]`. Resolve container + bench ONLY (design Decision 7 - no default-site, no site-name validation, no bench-dir probe).
+- [ ] 2.1 `list_apps(project, *, bench=None, bench_path=None, sites=None, installed=False) -> Result[AppsListing]`. Resolve container + bench ONLY (design Decision 7 - no default-site, no site-name validation, no bench-dir probe).
+  The draft signature omitted `sites`/`installed`; both are load-bearing, because the per-site read only happens `if installed or sites` (`apps.py:258`) and that same condition decides whether the human JSON carries an `installed` key at all (`apps.py:267-268`). The core returns `AppsListing.installed` (empty dict when not requested); the FRONTEND decides whether to emit the key, so the historical JSON shape is preserved without the core knowing about JSON.
 - [ ] 2.2 Preserve `_resolve_bench`'s `or _DEFAULT_BENCH` fallback (`apps.py:47-54`) - it is behaviour that matches `run`, not an accident.
 - [ ] 2.3 Move `_list_available_apps` (`apps.py:125-135`) into the core. Keep the `workdir=bench_path` form rather than interpolating the path into the command - that is a deliberate quoting-hazard guard.
 - [ ] 2.4 Move `_list_installed_apps` (`apps.py:138-151`) into the core; keep `shlex.quote(site)` and the first-token-per-line parse.
@@ -59,3 +64,12 @@ They are NOT blockers for this change and must NOT be checked off by it.
 - [ ] 7.1 **`cwcli axi apps uninstall`** - deferred. Needs its own decision, on its own evidence: it would let an agent destroy site data (`bench uninstall-app` drops the app's tables). Design Decision 1. Prerequisite already satisfied by this batch: `core.uninstall_apps` exposes destructive-consent separately from `auto_start` (Decision 4), so the verb wires the one it means rather than re-opening a fused flag.
 - [ ] 7.2 **`cwcli axi apps install`** - deferred with 7.1. It mutates a real site but does not delete data, so it may well be decided differently; it was held only because there was no reason to settle half the question inside a refactor.
 - [ ] 7.3 When 7.1/7.2 are taken up, the open question from design ("does `axi apps list` need `--fields`") should be revisited alongside them, since a mutation verb's report is larger than `AppsListing`.
+
+## 8. REPORTED, not fixed - `core/update.py`'s dead cache branch (found while judging Decision 8)
+
+Surfaced by this batch's assigned duplication question, verified first-hand, and deliberately left alone. Recorded as a task so it is not mistaken for forgotten. NOT a blocker for this change and must NOT be checked off by it.
+
+- [ ] 8.1 **`core/update.py:291`'s cache branch never hits on a real bench.** It tests `if app in site.get("installed_apps", [])` (exact list membership), but `get_cached_project_data` returns the raw `bench list-apps` LINES (`db_utils.py:443`), which on v16 are `frappe 16.26.3` (`docs/e2e/init-admin-password-secrets-s5.md:59`). `"frappe" in ["frappe 16.26.3"]` is False, so `_sites_with_app` always falls through to its live query.
+  **Fail-safe** (the live path returns the correct site set); the cost is a dead optimization plus a live fan-out on every `update`.
+  Fixing it is a BEHAVIOUR change - it would start serving cached site sets as the input to a migration fan-out, which is a real staleness risk and wants its own evidence. Candidate fix if taken up: compare on the first token, or read the already-parsed `InstalledAppDetail.name` the cache writer produces (`db_utils.py:404-417`) instead of re-parsing `Site.installed_apps`.
+- [ ] 8.2 **The suite exercises the opposite branch from production.** `tests/test_apps.py:658` seeds the cache with bare names, so tests take the cache branch and never reach the live fallback - which measures 0% covered (`core/update.py:296-322`, task 1.1). Whoever takes 8.1 should cover the live fallback FIRST; it is the only branch production actually runs.

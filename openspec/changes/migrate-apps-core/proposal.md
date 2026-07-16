@@ -55,12 +55,22 @@ Three facts shape the work:
 - **plan/apply.** `uninstall` is destructive, but its confirm is a yes/no over a known site list - that is `NEEDS_CHOICE`, not a non-trivial preview. plan/apply still arrives with `restore`/`rm` (foundation Decision 5).
 - **Fixing anything `apps` does today.** Not the `install` name-derivation fallback, not `list`'s partial-failure exit code. A migration does not get to change behaviour (batch 4, Decision 4).
 - **Migrating `inspect`.** `cache.recache_project` still routes through the `inspect` command; this batch deliberately does NOT add a second core-to-CLI reach (Decision 3).
+- **Unifying `core/update.py:_sites_with_app` with `apps.py:_list_installed_apps`.** Judged and declined on the real code (Decision 8), not deferred again.
+- **Fixing `core/update.py`'s dead cache branch.** Surfaced while judging the above (Decision 8). It is `update`'s code, it is fail-safe, and making the cache hit is a behaviour change to a migration fan-out's input. Its own decision; recorded in `tasks.md` §8.
 - **A docstring/test-coverage campaign** beyond the characterization tests this batch needs.
 
 ## Corrections to the record
 
 - **`AGENTS.md` says `apps`'s other three subcommands "already have `--json`, block nothing, and the seam runs through the middle of `apps.py`".**
-  All three are accurate and re-verified first-hand at `3ff07ca`.
+  All three are accurate and re-verified first-hand at `30cf57c`.
+- **The honest framing, stated rather than buried.**
+  All three subcommands already have `--json` and honest exit codes (`apps.py:244`, `:316`, `:413`).
+  This batch buys architectural conformance and a TOON spelling of output agents can already get from `--json`.
+  That is genuine but **not urgent**, and it is exactly why it was deferred behind `update`.
+  The one thing it buys that did not exist before is `axi apps list`; everything else is the seam, not a capability.
+- **`update.py:_get_sites_with_app` does not exist; the symbol is `core/update.py:_sites_with_app` (`:282`).**
+  Batch 4 moved it into the core. The deferred "unify it with `apps.py:_list_installed_apps`" item is judged in design Decision 8 and **declined**, on evidence: they are inverse questions with deliberately opposite failure semantics, parsing different data shapes.
+  Investigating it surfaced a real (fail-safe) defect in `core/update.py`'s cache branch, reported in Decision 8 and `tasks.md` §8 and deliberately NOT fixed here.
 - **The recon framing that this batch would add a second core-to-CLI reach is WRONG, and the difference is load-bearing.**
   `core/update.py` reaches into the `inspect` command mid-fan-out, between the pull and the discovery that depends on it, which is why it could not be hoisted.
   `install`/`uninstall` recache AFTER every mutation (`apps.py:377-378`, `:465-466`), as an epilogue.
