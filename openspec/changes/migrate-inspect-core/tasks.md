@@ -1,8 +1,8 @@
 ## 1. Characterization first: the tier state machine pinned green BEFORE anything moves
 
-- [ ] 1.1 Run the existing inspect suites at the batch's base commit and record the baseline: `test_inspect_partial_refresh.py` (the tier contract: T2 cheapness, T2 passivity under `--yes`, `--no-refresh` verbatim + zero container calls, drift/carry-forward, vanished-bench index shift, drift-escalation degrade-without-write), `test_inspect_label_recovery.py`, `test_inspect_apps_error.py`, `test_db_security.py`, `test_restore_inspect_fixes.py`, `test_rm_safety.py`, `test_rm_stopped.py`, `test_auto_inspect.py`.
-- [ ] 1.2 Where a tier behavior is exercised only through the command surface, add characterization tests that pin it through a surface that will survive the migration, green against the UNMIGRATED code, committed separately (batch 4's discipline).
-- [ ] 1.3 Byte-capture the human `--json` output shape and the cache dict shape for a representative multi-bench fixture; these are the before/after comparison anchors.
+- [x] 1.1 Run the existing inspect suites at the batch's base commit and record the baseline: `test_inspect_partial_refresh.py` (the tier contract: T2 cheapness, T2 passivity under `--yes`, `--no-refresh` verbatim + zero container calls, drift/carry-forward, vanished-bench index shift, drift-escalation degrade-without-write), `test_inspect_label_recovery.py`, `test_inspect_apps_error.py`, `test_db_security.py`, `test_restore_inspect_fixes.py`, `test_rm_safety.py`, `test_rm_stopped.py`, `test_auto_inspect.py`. (Baseline: 153 passed at `bd89d8c`.)
+- [x] 1.2 Where a tier behavior is exercised only through the command surface, add characterization tests that pin it through a surface that will survive the migration, green against the UNMIGRATED code, committed separately (batch 4's discipline). (`tests/test_inspect_characterization.py`, committed as its own commit.)
+- [x] 1.3 Byte-capture the human `--json` output shape and the cache dict shape for a representative multi-bench fixture; these are the before/after comparison anchors. (Same file: exact `--json` bytes per tier incl. the gathered-vs-cache-read key-order swap, and the persisted dict shape/key order.)
 
 ## 2. `core/inspect.py`: the helpers and the T2 pass move with their tests
 
