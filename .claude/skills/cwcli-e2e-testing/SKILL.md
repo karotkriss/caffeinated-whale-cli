@@ -9,6 +9,8 @@ description: >
   extend E2E tests (anything under tests/e2e/), touch tests/e2e/harness.py, or hand-validate a
   cwcli behavior change on a real instance - even if the task just says "test it on a real
   instance" without naming E2E.
+metadata:
+  internal: true
 ---
 
 # cwcli end-to-end testing
