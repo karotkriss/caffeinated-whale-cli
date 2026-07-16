@@ -88,15 +88,6 @@ def _exit_on_exec_error(e: CwcliError):
     raise typer.Exit(code=1) from e
 
 
-def _echo_commands(warnings, verbose):
-    """Echo a read-only core call's command trace, ``--verbose`` only, to stderr."""
-    if not verbose:
-        return
-    for warning in warnings:
-        if warning.code == "exec.command":
-            stderr_console.print(f"[dim]$ {warning.text}[/dim]")
-
-
 def _make_renderer(*, json_output, verbose):
     """Build the ``on_event`` callback: the core's events, rendered.
 
@@ -212,12 +203,15 @@ def list_apps(
 
     try:
         result = core_apps.list_apps(
-            project_name, bench_path=resolved, sites=sites, installed=installed
+            project_name,
+            bench_path=resolved,
+            sites=sites,
+            installed=installed,
+            on_event=_make_renderer(json_output=json_output, verbose=verbose),
         )
     except CwcliError as e:
         _exit_on_exec_error(e)
 
-    _echo_commands(result.warnings, verbose)
     listing = result.data
     assert listing is not None  # OK/WARNING always carries a listing
 

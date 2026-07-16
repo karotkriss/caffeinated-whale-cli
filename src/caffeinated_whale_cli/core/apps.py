@@ -303,25 +303,34 @@ def list_apps(
     sites: list[str] | None = None,
     installed: bool = False,
     auto_start: bool = False,
+    on_event: OnEvent | None = None,
 ) -> Result[AppsListing]:
     """List apps available in a bench, and (with ``sites``/``installed``) per site.
 
-    A pure read, so it takes no event callback: two cheap execs with no progress to
-    narrate. The ``--verbose`` command echoes ride the returned warnings instead.
+    A pure read: it emits no progress and no output, only the :class:`AppsCommand`
+    trace of the reads it performs, so a ``--verbose`` frontend can echo them. The
+    proposal specified NO callback here ("nothing to report progress about"), which
+    was right about progress and wrong about the trace: routing it through
+    ``warnings`` instead put a debug echo in the agent surface's structured
+    document, where it is noise. Traces ride the event channel across this whole
+    module (as they do in ``core.update``); ``warnings`` stays for genuine notes an
+    agent should act on, and a caller that wants neither passes nothing.
     """
+    emit: OnEvent = on_event or _noop
+
     resolved = _resolve(project_name, bench, bench_path, auto_start=auto_start)
     if isinstance(resolved, Result):
         return resolved
     frappe_container, path, warnings = resolved
 
     command, available = _available_apps(frappe_container, path)
-    warnings.append(Message("exec.command", command))
+    emit(AppsCommand(command=command))
 
     installed_by_site: dict[str, list[str] | None] = {}
     if installed or sites:
         for site in _target_sites(frappe_container, path, sites):
             command, ok, site_apps = _installed_apps(frappe_container, path, site)
-            warnings.append(Message("exec.command", command))
+            emit(AppsCommand(command=command))
             installed_by_site[site] = site_apps if ok else None
 
     any_fail = any(v is None for v in installed_by_site.values())
