@@ -658,7 +658,6 @@ cwcli inspect [OPTIONS] PROJECT_NAME
 | `-j`, `--json` | Output the result as a JSON object |
 | `-u`, `--update` | Update the cache by re-inspecting the project |
 | `--no-refresh` | Return cached data as-is, skipping the lightweight freshness pass (fastest; may be stale) |
-| `-a`, `--show-apps` | Show available apps in the output tree |
 | `-i`, `--interactive` | Prompt for a durable [label](#working-with-multiple-benches) for each bench (persisted to the cache and a marker file inside the bench). Requires a running container to write the marker |
 | `-y`, `--yes` | Auto-start stopped containers without prompting (non-interactive) |
 
@@ -705,9 +704,6 @@ cwcli inspect frappe-one --update
 
 # Return cached data as-is, skipping the freshness pass (fastest)
 cwcli inspect frappe-one --no-refresh
-
-# Show available apps
-cwcli inspect frappe-one --show-apps
 
 # Get JSON output
 cwcli inspect frappe-one --json
