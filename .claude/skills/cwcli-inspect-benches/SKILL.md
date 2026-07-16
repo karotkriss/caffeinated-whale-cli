@@ -10,6 +10,8 @@ description: >
   utils/bench_labels.py, utils/db_utils.py, utils/config_utils.py, the SQLite cache, or anything
   touching multi-bench selection / labels. Each note guards a real shipped bug - keep the
   root-cause "why".
+metadata:
+  internal: true
 ---
 
 # cwcli inspect / cache / multi-bench internals (sharp edges)
