@@ -8,6 +8,7 @@ import questionary
 import typer
 from questionary import Style
 
+from ..core.errors import CwcliError
 from ..utils import bench_sites, config_utils, db_utils
 from ..utils.completion_utils import complete_project_names, complete_site_names
 from ..utils.console import console, stderr_console
@@ -722,6 +723,7 @@ def restore_send_mode(
                 # Populate the cache via the core inspect slice (it owns the
                 # cache write; restore only needs the side effect).
                 from ..core import inspect as core_inspect
+                from .inspect import render_error_exit
 
                 core_inspect.inspect(project_name, refresh="auto")
 
@@ -741,6 +743,8 @@ def restore_send_mode(
                     )
             except typer.Exit:
                 raise
+            except CwcliError as e:
+                raise render_error_exit(project_name, e) from None
             except Exception as e:
                 # Inspect failed, use default
                 bench_path = "/workspace/frappe-bench"
@@ -990,6 +994,7 @@ def restore_receive_mode(
                 # Populate the cache via the core inspect slice (it owns the
                 # cache write; restore only needs the side effect).
                 from ..core import inspect as core_inspect
+                from .inspect import render_error_exit
 
                 core_inspect.inspect(project_name, refresh="auto")
 
@@ -1009,6 +1014,8 @@ def restore_receive_mode(
                     )
             except typer.Exit:
                 raise
+            except CwcliError as e:
+                raise render_error_exit(project_name, e) from None
             except Exception as e:
                 # Inspect failed, use default
                 bench_path = "/workspace/frappe-bench"
@@ -1656,6 +1663,7 @@ def restore(
                 # Populate the cache via the core inspect slice (it owns the
                 # cache write; restore only needs the side effect).
                 from ..core import inspect as core_inspect
+                from .inspect import render_error_exit
 
                 core_inspect.inspect(project_name, refresh="auto")
 
@@ -1675,6 +1683,8 @@ def restore(
                     )
             except typer.Exit:
                 raise
+            except CwcliError as e:
+                raise render_error_exit(project_name, e) from None
             except Exception as e:
                 # Inspect failed, use default
                 bench_path = "/workspace/frappe-bench"
