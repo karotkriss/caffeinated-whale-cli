@@ -11,7 +11,8 @@
 - [x] 1.5 Cover `list`'s partial-failure exit: a site whose `list-apps` fails is `installed[site] = None` and exits 1, and in `--json` mode the document is emitted BEFORE the non-zero exit (`apps.py:265-272`).
 - [x] 1.6 Cover `uninstall`'s destructive gate in both modes: `--json` without `--yes` refuses (exit 1, no prompt), and the human path routes through `confirm_or_exit` (`apps.py:435-449`).
 - [x] 1.7 Cover the `install` banner honesty branch: "App(s) fetched." vs "App(s) installed." depends on an `install-app` step actually having run (`apps.py:381-388`), so `--fetch-only` and a bench with no sites both say "fetched".
-- [ ] 1.8 These tests MUST pass **before** the migration and **after** it, **unchanged**. Per design Decision 6, no test edit is currently expected by design; if one becomes necessary, state which changed BY DESIGN and which merely moved with its subject.
+- [ ] 1.8 These tests MUST pass **before** the migration and **after** it, **unchanged**. Green-before is committed as `affdda5`, its own point in history, so the claim is auditable rather than asserted.
+  Design Decision 6 has been CORRECTED: it claimed no test edit was expected by design, and that was falsified before implementation. Exactly two are: `tests/test_apps.py:1151`/`:1161` bind to `_capture_bench`/`_stream_bench`, which task 4.2 deletes. Their subject moves, their behaviour does not; they are replaced by equivalents bound to the new subject (batch 4's own precedent at `tests/test_apps.py:1169`). Nothing in `tests/test_apps_characterization.py` may change.
 - [ ] 1.9 Note for whoever runs the suite: `/tmp/pytest-of-cmckay` is owned by `root` on this host, so `tmp_path` tests error in setup unless `TMPDIR` is redirected. Environmental, not a real failure.
 
 ## 2. `core/apps.py` - `list_apps` first (the pure read)

@@ -1,4 +1,4 @@
-"""``cwcli apps`` - first-class Frappe app management.
+"""``cwcli apps`` - first-class Frappe app management (the renderer).
 
 A cohesive command group for listing, installing, uninstalling, and updating
 Frappe apps per bench and (multi-site by default) per site. It replaces the raw
@@ -7,38 +7,55 @@ Frappe apps per bench and (multi-site by default) per site. It replaces the raw
 contract (non-TTY-without-flag refuses; auto-start gated by ``--yes``; destructive
 uninstall gated by ``confirm_or_exit``/``--yes``).
 
-Everything here is built from existing primitives - ``resolve_bench_path``,
-``confirm_or_exit``, ``ensure_containers_running`` (commands/utils.py),
-``bench_sites.list_sites`` for the canonical site set, and ``cache.recache_project``
-for the post-mutation refresh (which routes through ``_redact_config_for_cache`` so
-no secret is ever written). Nothing new is cached and no new dependency is added.
+Since batch 5 (openspec `migrate-apps-core`) this module is a THIN RENDERER: the
+resolution, container I/O and fan-out live in :mod:`core.apps`, which returns a
+typed report. What stays here is exactly what a renderer owns - the ``rich``/JSON
+output, the interactive prompt, the exit codes, and two epilogues that are
+frontend concerns by design:
+
+- **the ``ensure_containers_running`` prologue**, which performs the real start
+  the core only ever REPORTS as ``start_requested``, and
+- **the post-mutation ``cache.recache_project``**, which is deliberately NOT in the
+  core: ``core/update.py`` reaches back into the ``inspect`` command only because
+  its recache runs mid-fan-out; these recache as an epilogue gated on a condition
+  already in the returned report, so hoisting it here keeps that reach the ONE
+  place it is.
 
 Output discipline for ``--json``: stdout carries ONLY the final JSON document. All
-progress/errors go to stderr, and bench command output is captured (not streamed)
-in JSON mode so it can never corrupt the JSON on stdout.
+progress/errors go to stderr, and bench command output is buffered (not streamed)
+in JSON mode so it can never corrupt the JSON on stdout. The core emits both as
+events and this module picks the consumption mode - that choice is rendering.
 """
 
 import json
-import shlex
 import sys
 
 import typer
 
+from ..core import apps as core_apps
+from ..core.apps import AppsAnnounce, AppsCommand, AppsOutput, AppsStepEnd
+from ..core.envelope import Status
 from ..core.errors import CwcliError
-from ..core.exec_stream import ExecChunk, exec_stream
-from ..utils import bench_sites, cache
+from ..utils import cache
 from ..utils.completion_utils import complete_app_names, complete_project_names
 from ..utils.console import console, stderr_console
-from ..utils.docker_utils import (
-    get_frappe_container,
-    handle_docker_errors,
-)
+from ..utils.docker_utils import handle_docker_errors
 from .update import run_app_update
 from .utils import confirm_or_exit, ensure_containers_running, resolve_bench_path
 
 app = typer.Typer(help="Manage Frappe apps: list, install, uninstall, update.")
 
 _DEFAULT_BENCH = "/workspace/frappe-bench"
+
+_ANNOUNCE = {
+    "get-app": lambda app_name, site: f"[bold cyan]Fetching[/bold cyan] {app_name}...",
+    "install-app": lambda app_name, site: (
+        f"[bold cyan]Installing[/bold cyan] {app_name} on [magenta]{site}[/magenta]..."
+    ),
+    "uninstall-app": lambda app_name, site: (
+        f"[bold cyan]Uninstalling[/bold cyan] {app_name} from [magenta]{site}[/magenta]..."
+    ),
+}
 
 
 # --------------------------------------------------------------------------- helpers
@@ -50,12 +67,17 @@ def _resolve_bench(project_name, bench, bench_path, verbose):
     Falls back to the historical default only when there is no cache to resolve
     against (matching ``run``). A multi-bench project with no selector raises
     ``Exit(1)`` inside ``resolve_bench_path`` (``on_ambiguous="error"``).
+
+    Kept as a frontend PRE-RESOLVE (the `backup`/`update` pattern) rather than
+    letting the core resolve it: the CLI wrapper renders the bench list and today's
+    exact exit codes for the ambiguous and not-found forks. The core still resolves
+    on its own for `axi`, which renders those forks its own way.
     """
     return resolve_bench_path(project_name, bench, bench_path, verbose=verbose) or _DEFAULT_BENCH
 
 
 def _exit_on_exec_error(e: CwcliError):
-    """Render a core exec-stream failure the way ``run.py`` does, then exit non-zero.
+    """Render a core failure the way ``run.py`` does, then exit non-zero.
 
     Always to stderr, so ``--json``'s stdout-purity contract holds even on this
     path.
@@ -66,116 +88,45 @@ def _exit_on_exec_error(e: CwcliError):
     raise typer.Exit(code=1) from e
 
 
-def _capture_bench(frappe_container, cmd, workdir):
-    """Run ``cmd`` in the container, capturing output. Returns ``(exit_code, text)``.
-
-    The drain-and-join consumption mode of the exec-stream contract: nothing
-    reaches stdout, so a ``--json`` document stays the only thing there.
-    """
-    text = []
-    exit_code = 1
-    try:
-        for event in exec_stream(frappe_container, cmd, workdir=workdir):
-            if isinstance(event, ExecChunk):
-                text.append(event.text)
-            else:
-                exit_code = event.exit_code
-    except CwcliError as e:
-        _exit_on_exec_error(e)
-    return exit_code, "".join(text)
+def _echo_commands(warnings, verbose):
+    """Echo a read-only core call's command trace, ``--verbose`` only, to stderr."""
+    if not verbose:
+        return
+    for warning in warnings:
+        if warning.code == "exec.command":
+            stderr_console.print(f"[dim]$ {warning.text}[/dim]")
 
 
-def _stream_bench(frappe_container, cmd, workdir):
-    """Run ``cmd`` streaming its output to stdout in real time. Returns the exit code.
+def _make_renderer(*, json_output, verbose):
+    """Build the ``on_event`` callback: the core's events, rendered.
 
-    The render-each-event consumption mode - used in human (non-JSON) mode so the
-    user sees bench's live progress. Both tags go to stdout, reproducing the
-    combined stream this used to get from a non-demuxed exec.
-    """
-    exit_code = 1
-    try:
-        for event in exec_stream(frappe_container, cmd, workdir=workdir):
-            if isinstance(event, ExecChunk):
-                sys.stdout.write(event.text)
-                sys.stdout.flush()
-            else:
-                exit_code = event.exit_code
-    except CwcliError as e:
-        _exit_on_exec_error(e)
-    return exit_code
-
-
-def _run_bench(frappe_container, cmd, workdir, *, json_output, verbose):
-    """Run a bench command, streaming in human mode and capturing in JSON mode.
-
-    Returns the exit code. In JSON mode nothing is written to stdout (so the JSON
-    document stays the only thing there); a failure's captured output is echoed to
+    This is the exec-stream contract's consumption-mode choice, and it belongs
+    here: human mode renders each chunk to stdout live, ``--json`` mode buffers so
+    stdout stays the document alone and echoes only a FAILED step's output to
     stderr for debuggability.
     """
-    if verbose:
-        stderr_console.print(f"[dim]$ {cmd}[/dim]")
-    if json_output:
-        exit_code, text = _capture_bench(frappe_container, cmd, workdir)
-        if exit_code != 0 and text.strip():
-            stderr_console.print(text.rstrip())
-        return exit_code
-    return _stream_bench(frappe_container, cmd, workdir)
+    buffered: list[str] = []
 
+    def on_event(event):
+        if isinstance(event, AppsAnnounce):
+            stderr_console.print(_ANNOUNCE[event.phase](event.app, event.site))
+        elif isinstance(event, AppsCommand):
+            if verbose:
+                stderr_console.print(f"[dim]$ {event.command}[/dim]")
+            buffered.clear()
+        elif isinstance(event, AppsOutput):
+            if json_output:
+                buffered.append(event.text)
+            else:
+                # Both tags go to stdout, reproducing the combined stream this used
+                # to get from a non-demuxed exec.
+                sys.stdout.write(event.text)
+                sys.stdout.flush()
+        elif isinstance(event, AppsStepEnd):
+            if json_output and not event.ok and "".join(buffered).strip():
+                stderr_console.print("".join(buffered).rstrip())
 
-def _list_available_apps(frappe_container, bench_path, verbose):
-    """Available apps in the bench = the directories under ``apps/`` (live read)."""
-    if verbose:
-        stderr_console.print(f"[dim]$ ls -1 apps (in {bench_path})[/dim]")
-    # Run via workdir rather than interpolating bench_path into the command, matching
-    # _capture_bench/_stream_bench and avoiding any quoting hazard from a --path value.
-    exit_code, output = frappe_container.exec_run("ls -1 apps", workdir=bench_path)
-    if exit_code != 0:
-        return []
-    text = output.decode("utf-8", errors="replace") if isinstance(output, bytes) else str(output)
-    return [a for a in text.split("\n") if a.strip()]
-
-
-def _list_installed_apps(frappe_container, bench_path, site, verbose):
-    """Apps installed on ``site`` (live ``bench --site <site> list-apps``).
-
-    Returns ``(ok, [app_names])``. ``ok`` is False if the bench command failed;
-    only the first token of each line (the app name) is kept.
-    """
-    cmd = f"bench --site {shlex.quote(site)} list-apps"
-    exit_code, text = _capture_bench(frappe_container, cmd, bench_path)
-    if verbose:
-        stderr_console.print(f"[dim]$ {cmd} -> exit {exit_code}[/dim]")
-    if exit_code != 0:
-        return False, []
-    apps = [line.split()[0] for line in text.split("\n") if line.strip()]
-    return True, apps
-
-
-def _resolve_target_sites(frappe_container, bench_path, sites, verbose):
-    """Resolve the target site set: explicit ``--site`` values, else ALL sites.
-
-    Multi-site is the default: with no ``--site`` the target set is every real
-    Frappe site on the bench (the canonical ``bench_sites.list_sites``). Returns a
-    sorted list (deterministic fan-out order).
-    """
-    if sites:
-        return list(dict.fromkeys(sites))  # de-dup, preserve order
-    found = bench_sites.list_sites(frappe_container, bench_path, verbose)
-    return sorted(found) if found else []
-
-
-def _derive_app_name(target):
-    """Fallback app name when the ``apps/`` before/after diff can't tell us.
-
-    Used only when ``bench get-app`` added zero or more than one new ``apps/``
-    entry (already-present app, or an ambiguous multi-dir fetch). A plain name is
-    itself; a git URL clones into ``apps/<repo-basename>`` (minus a trailing
-    ``.git``) by convention, which is the name ``install-app`` expects.
-    """
-    if "://" in target or target.endswith(".git") or "@" in target or "/" in target:
-        base = target.rstrip("/").split("/")[-1]
-        return base[:-4] if base.endswith(".git") else base
-    return target
+    return on_event
 
 
 def _refresh_cache(project_name, verbose):
@@ -192,17 +143,25 @@ def _refresh_cache(project_name, verbose):
         )
 
 
-def _report_and_exit(results, project_name, bench_path, json_output, *, success_msg):
-    """Emit per-(app, site) results and exit non-zero if ANY step failed."""
-    any_fail = any(not r["ok"] for r in results)
+def _report_and_exit(report, json_output, *, success_msg):
+    """Emit per-(app, site) results and exit non-zero if ANY step failed.
+
+    The exit code reads ``report.ok``, NOT the envelope's status: a partial fan-out
+    failure is a ``WARNING``-shaped envelope, and every other verb maps ``WARNING``
+    to exit 0. Copying that pattern here would report success for an uninstall that
+    half failed - on the exact surface this command exists to make honest.
+    """
+    results = [
+        {"app": r.app, "site": r.site, "action": r.action, "ok": r.ok} for r in report.results
+    ]
     if json_output:
         typer.echo(
             json.dumps(
                 {
-                    "project": project_name,
-                    "bench": bench_path,
+                    "project": report.project,
+                    "bench": report.bench_path,
                     "results": results,
-                    "ok": not any_fail,
+                    "ok": report.ok,
                 },
                 indent=2,
             )
@@ -212,11 +171,11 @@ def _report_and_exit(results, project_name, bench_path, json_output, *, success_
             mark = "[green]✓[/green]" if r["ok"] else "[red]✗[/red]"
             where = f" on [magenta]{r['site']}[/magenta]" if r.get("site") else ""
             stderr_console.print(f"  {mark} {r['action']} [cyan]{r['app']}[/cyan]{where}")
-        if any_fail:
+        if not report.ok:
             stderr_console.print("[bold red]Completed with errors.[/bold red]")
         else:
             console.print(f"[bold green]✓[/bold green] {success_msg}")
-    if any_fail:
+    if not report.ok:
         raise typer.Exit(code=1)
 
 
@@ -249,42 +208,48 @@ def list_apps(
 ):
     """List apps available in a bench, and (with --site/--installed) installed per site."""
     ensure_containers_running(project_name, require_running=True, verbose=verbose, auto_start=yes)
-    frappe_container = get_frappe_container(project_name)
     resolved = _resolve_bench(project_name, bench, bench_path, verbose)
 
-    available = _list_available_apps(frappe_container, resolved, verbose)
+    try:
+        result = core_apps.list_apps(
+            project_name, bench_path=resolved, sites=sites, installed=installed
+        )
+    except CwcliError as e:
+        _exit_on_exec_error(e)
 
-    installed_by_site = {}
-    if installed or sites:
-        for site in _resolve_target_sites(frappe_container, resolved, sites, verbose):
-            ok, site_apps = _list_installed_apps(frappe_container, resolved, site, verbose)
-            installed_by_site[site] = site_apps if ok else None
-
-    any_fail = any(v is None for v in installed_by_site.values())
+    _echo_commands(result.warnings, verbose)
+    listing = result.data
+    assert listing is not None  # OK/WARNING always carries a listing
 
     if json_output:
-        doc = {"project": project_name, "bench": resolved, "available_apps": available}
+        # The historical shape: `installed` appears ONLY when it was asked for, so
+        # its absence stays distinguishable from an empty result.
+        doc: dict[str, object] = {
+            "project": listing.project,
+            "bench": listing.bench_path,
+            "available_apps": listing.available,
+        }
         if installed or sites:
-            doc["installed"] = installed_by_site
+            doc["installed"] = listing.installed
         typer.echo(json.dumps(doc, indent=2))
-        if any_fail:
+        if not listing.ok:
             raise typer.Exit(code=1)
         return
 
-    console.print(f"[bold]Available apps[/bold] ([dim]{resolved}[/dim]):")
-    for a in available:
+    console.print(f"[bold]Available apps[/bold] ([dim]{listing.bench_path}[/dim]):")
+    for a in listing.available:
         console.print(f"  • [cyan]{a}[/cyan]")
-    if not available:
+    if not listing.available:
         console.print("  [dim](none)[/dim]")
     if installed or sites:
-        for site, site_apps in installed_by_site.items():
+        for site, site_apps in listing.installed.items():
             console.print(f"\n[bold]Installed on[/bold] [magenta]{site}[/magenta]:")
             if site_apps is None:
                 stderr_console.print("  [red]could not read installed apps[/red]")
             else:
                 for a in site_apps:
                     console.print(f"  • [cyan]{a}[/cyan]")
-    if any_fail:
+    if not listing.ok:
         raise typer.Exit(code=1)
 
 
@@ -325,65 +290,37 @@ def install_apps(
     Multi-site by default: with no --site the app is installed on every site.
     """
     ensure_containers_running(project_name, require_running=True, verbose=verbose, auto_start=yes)
-    frappe_container = get_frappe_container(project_name)
     resolved = _resolve_bench(project_name, bench, bench_path, verbose)
 
-    results = []
-    fetched = []  # (original_target, installed_app_name)
-    branch_arg = f"--branch {shlex.quote(branch)} " if branch else ""
-    for target in apps:
-        get_cmd = f"bench get-app {branch_arg}{shlex.quote(target)}"
-        stderr_console.print(f"[bold cyan]Fetching[/bold cyan] {target}...")
-        before = set(_list_available_apps(frappe_container, resolved, verbose))
-        code = _run_bench(
-            frappe_container, get_cmd, resolved, json_output=json_output, verbose=verbose
+    try:
+        result = core_apps.install_apps(
+            project_name,
+            apps,
+            bench_path=resolved,
+            sites=sites,
+            branch=branch,
+            fetch_only=fetch_only,
+            on_event=_make_renderer(json_output=json_output, verbose=verbose),
         )
-        if code != 0:
-            results.append({"app": target, "site": None, "action": "get-app", "ok": False})
-            continue
-        results.append({"app": target, "site": None, "action": "get-app", "ok": True})
-        after = set(_list_available_apps(frappe_container, resolved, verbose))
-        new_dirs = after - before
-        app_name = new_dirs.pop() if len(new_dirs) == 1 else _derive_app_name(target)
-        fetched.append((target, app_name))
+    except CwcliError as e:
+        _exit_on_exec_error(e)
 
-    if not fetch_only:
-        target_sites = _resolve_target_sites(frappe_container, resolved, sites, verbose)
-        if not target_sites:
-            stderr_console.print(
-                "[yellow]Note:[/yellow] no sites on the bench to install on; app(s) fetched only."
-            )
-        for _target, app_name in fetched:
-            for site in target_sites:
-                install_cmd = (
-                    f"bench --site {shlex.quote(site)} install-app {shlex.quote(app_name)}"
-                )
-                stderr_console.print(
-                    f"[bold cyan]Installing[/bold cyan] {app_name} on [magenta]{site}[/magenta]..."
-                )
-                code = _run_bench(
-                    frappe_container,
-                    install_cmd,
-                    resolved,
-                    json_output=json_output,
-                    verbose=verbose,
-                )
-                results.append(
-                    {"app": app_name, "site": site, "action": "install-app", "ok": code == 0}
-                )
+    report = result.data
+    assert report is not None  # OK/WARNING always carries a report
+    for warning in result.warnings:
+        if warning.code == "sites.none":
+            stderr_console.print(f"[yellow]Note:[/yellow] {warning.text}")
 
     # Refresh the cache if any step succeeded: a fetch changes available apps, an
     # install changes a site's installed apps - both make the cache stale.
-    if any(r["ok"] for r in results):
+    if any(r.ok for r in report.results):
         _refresh_cache(project_name, verbose)
 
     # The banner must match what actually happened: only claim "installed" when an
     # install-app step ran (not for --fetch-only or a bench with no sites).
-    installed = any(r["action"] == "install-app" for r in results)
+    installed = any(r.action == "install-app" for r in report.results)
     _report_and_exit(
-        results,
-        project_name,
-        resolved,
+        report,
         json_output,
         success_msg="App(s) installed." if installed else "App(s) fetched.",
     )
@@ -422,52 +359,58 @@ def uninstall_apps(
     destroys site data, so it is gated by --yes / an interactive confirmation.
     """
     ensure_containers_running(project_name, require_running=True, verbose=verbose, auto_start=yes)
-    frappe_container = get_frappe_container(project_name)
     resolved = _resolve_bench(project_name, bench, bench_path, verbose)
-    target_sites = _resolve_target_sites(frappe_container, resolved, sites, verbose)
+    on_event = _make_renderer(json_output=json_output, verbose=verbose)
 
-    if not target_sites:
-        stderr_console.print("[yellow]Note:[/yellow] no sites on the bench to uninstall from.")
-        raise typer.Exit(code=0)
+    def _uninstall(consent):
+        try:
+            return core_apps.uninstall_apps(
+                project_name,
+                apps,
+                bench_path=resolved,
+                sites=sites,
+                consent=consent,
+                on_event=on_event,
+            )
+        except CwcliError as e:
+            _exit_on_exec_error(e)
 
-    # Destructive gate. --json implies non-interactive: without --yes it refuses,
-    # never prompts (a prompt would fight the JSON-only-on-stdout contract).
-    if json_output:
-        if not yes:
+    # `--yes` is two consents fused into one flag ("skip the destructive
+    # confirmation AND auto-start containers"); the core models them separately, so
+    # the destructive half is passed here and the auto-start half rode the
+    # ensure_containers_running prologue above. The CLI flag keeps its exact
+    # historical meaning - a migration does not change the contract.
+    result = _uninstall(yes)
+
+    # Nothing to uninstall from is a clean no-op, decided before the gate.
+    for warning in result.warnings:
+        if warning.code == "sites.none":
+            stderr_console.print(f"[yellow]Note:[/yellow] {warning.text}")
+            raise typer.Exit(code=0)
+
+    if result.status is Status.NEEDS_CHOICE:
+        # Destructive gate. --json implies non-interactive: without --yes it refuses,
+        # never prompts (a prompt would fight the JSON-only-on-stdout contract).
+        if json_output:
             stderr_console.print(
                 "[bold red]Error:[/bold red] 'apps uninstall --json' is destructive; pass --yes."
             )
             raise typer.Exit(code=1)
-    else:
         confirm_or_exit(
-            f"Uninstall {', '.join(apps)} from {len(target_sites)} site(s) "
-            f"({', '.join(target_sites)})? This deletes their data.",
+            result.choice.prompt,
             assume_yes=yes,
             refuse_message=(
                 "Uninstall is destructive and no confirmation was given. Pass --yes to proceed."
             ),
         )
+        result = _uninstall(True)
 
-    results = []
-    for app_name in apps:
-        for site in target_sites:
-            cmd = f"bench --site {shlex.quote(site)} uninstall-app {shlex.quote(app_name)} --yes"
-            stderr_console.print(
-                f"[bold cyan]Uninstalling[/bold cyan] {app_name} from [magenta]{site}[/magenta]..."
-            )
-            code = _run_bench(
-                frappe_container, cmd, resolved, json_output=json_output, verbose=verbose
-            )
-            results.append(
-                {"app": app_name, "site": site, "action": "uninstall-app", "ok": code == 0}
-            )
-
-    if any(r["ok"] for r in results):
+    report = result.data
+    assert report is not None  # OK/WARNING always carries a report
+    if any(r.ok for r in report.results):
         _refresh_cache(project_name, verbose)
 
-    _report_and_exit(
-        results, project_name, resolved, json_output, success_msg="App(s) uninstalled."
-    )
+    _report_and_exit(report, json_output, success_msg="App(s) uninstalled.")
 
 
 # ----------------------------------------------------------------------------- update
