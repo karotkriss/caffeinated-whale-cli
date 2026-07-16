@@ -50,6 +50,18 @@ def wired(monkeypatch):
     _wire_update(monkeypatch, container)
     _no_sleep(monkeypatch)
     _count_discovery(monkeypatch, ["a.localhost"])
+
+    # Bypass the @handle_docker_errors docker preflight on the apps commands
+    # (mirrors test_apps.py's `wired` fixture; a CI runner has no `docker` binary).
+    from caffeinated_whale_cli.utils import docker_utils
+
+    monkeypatch.setattr(docker_utils.shutil, "which", lambda name: "/usr/bin/docker")
+
+    class _Client:
+        def ping(self):
+            return True
+
+    monkeypatch.setattr(docker_utils.docker, "from_env", lambda: _Client())
     return container
 
 
