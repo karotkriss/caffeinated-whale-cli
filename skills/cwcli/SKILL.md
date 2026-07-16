@@ -66,6 +66,7 @@ Exit codes: **0** success (a completed operation, including one with warnings, a
   start        Start a project's containers + bench; emit the outcome as TOON (never prompts).
   status       Report a project's per-process health; emit the report as TOON (`overall` first).
   restart      Restart ONE supervised process; emit the outcome as TOON (never prompts, no --watch).
+  inspect      Inspect a project's benches, sites, and apps; emit the report as TOON.
   benches      List a project's benches with their indices and labels; emit them as TOON.
   label        Set or clear a bench's durable user label; emit the outcome as TOON.
   self-update  Report whether a newer cwcli is available; emit the check as TOON. READ-ONLY.

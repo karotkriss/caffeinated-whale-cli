@@ -164,7 +164,7 @@ def test_list_keeps_only_the_app_name_from_a_real_list_apps_line(monkeypatch, co
 
 
 def test_list_reports_a_failed_site_read_as_none_not_empty(monkeypatch, container):
-    """"no apps" and "could not tell" are different facts, and only one exits 1."""
+    """ "no apps" and "could not tell" are different facts, and only one exits 1."""
     container.fail_on = ["list-apps"]
     _cache(monkeypatch, [{"path": BENCH}])
 

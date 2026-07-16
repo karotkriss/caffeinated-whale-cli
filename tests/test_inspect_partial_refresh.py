@@ -285,9 +285,7 @@ class TestTier2StaysPassiveUnderYes:
     an auto-start, even under ``--yes``.
     """
 
-    def test_tier2_run_state_check_stays_passive_even_with_yes(
-        self, patched_inspect, monkeypatch
-    ):
+    def test_tier2_run_state_check_stays_passive_even_with_yes(self, patched_inspect, monkeypatch):
         store, install_container, writes = patched_inspect
         _seed_cache(store, available_apps=["frappe"], installed_apps=["frappe 15.0.0 version-15"])
         # Disk matches the cache exactly -> no drift -> only the T2 run-state check
