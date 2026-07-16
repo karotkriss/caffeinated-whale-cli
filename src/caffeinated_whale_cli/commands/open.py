@@ -134,6 +134,8 @@ def open_bench(
             # Populate the cache via the core inspect slice (it owns the cache
             # write; nothing renders here - open only needs the side effect).
             from ..core import inspect as core_inspect
+            from ..core.errors import CwcliError
+            from .inspect import render_error_exit
 
             core_inspect.inspect(project_name, refresh="auto")
 
@@ -154,6 +156,8 @@ def open_bench(
                 )
         except typer.Exit:
             raise
+        except CwcliError as e:
+            raise render_error_exit(project_name, e) from None
         except Exception as e:
             # Inspect failed, use default
             bench_path = "/workspace/frappe-bench"

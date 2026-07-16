@@ -61,8 +61,13 @@ def _render_event(event: core_inspect.InspectEvent, verbose: bool) -> None:
         console_err.print(f"VERBOSE: {event.text}")
 
 
-def _exit_on_error(project_name: str, error: CwcliError) -> typer.Exit:
-    """Map a core error to today's exact stderr line, returning the Exit to raise."""
+def render_error_exit(project_name: str, error: CwcliError) -> typer.Exit:
+    """Map a core inspect error to today's exact stderr line, returning the Exit to raise.
+
+    Shared (not module-private) because every no-cache fallback populate that
+    calls ``core_inspect.inspect`` directly (open/update/restore) needs the same
+    pre-migration abort-on-hard-failure rendering, not just this command.
+    """
     if error.kind is ErrorKind.NOT_RUNNING:
         console_err.print(
             f"Error: Containers for project '{project_name}' are not running; "
@@ -143,7 +148,7 @@ def inspect(
                     on_event=on_event,
                 )
         except CwcliError as e:
-            raise _exit_on_error(project_name, e) from None
+            raise render_error_exit(project_name, e) from None
 
         if result.status is not Status.NEEDS_CHOICE:
             break

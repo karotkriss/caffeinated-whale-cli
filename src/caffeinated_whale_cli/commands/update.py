@@ -474,6 +474,7 @@ def _resolve_bench_path(project_name, bench, bench_path, verbose, *, json_output
     stderr_console.print("[yellow]No cached bench path found. Running inspect...[/yellow]")
     try:
         from ..core import inspect as core_inspect
+        from .inspect import render_error_exit
 
         core_inspect.inspect(project_name, refresh="auto")
         resolved = cli_resolve_bench_path(project_name, bench, None, verbose=verbose)
@@ -487,6 +488,8 @@ def _resolve_bench_path(project_name, bench, bench_path, verbose, *, json_output
         )
     except typer.Exit:
         raise
+    except CwcliError as e:
+        raise render_error_exit(project_name, e) from None
     except Exception as e:
         stderr_console.print(
             f"[yellow]Warning:[/yellow] Inspect failed. Using default bench path: "
