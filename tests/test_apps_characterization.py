@@ -254,6 +254,45 @@ def test_install_warns_when_the_post_mutation_recache_fails(
 # ------------------------------------------------------------------------- uninstall
 
 
+def test_uninstall_proceeds_after_an_interactive_confirmation(
+    wired, monkeypatch, capsys  # noqa: F811
+):
+    """A human answering "yes" at the TTY must actually perform the uninstall.
+
+    The single riskiest path in the core migration: the pre-migration code
+    confirmed and then fell straight through to the fan-out, whereas the destructive
+    gate is now a returned NEEDS_CHOICE that the frontend resolves and RE-INVOKES on.
+    Nothing else exercises that re-invoke - `--yes` short-circuits it by consenting
+    on the first call, and the non-TTY tests refuse before reaching it - so without
+    this, "user typed y" would be untested.
+    """
+    container = _wire_container(
+        monkeypatch, FakeFrappeContainer(available_apps=["frappe", "payments"])
+    )
+    asked = []
+
+    def _confirm(prompt, **kwargs):
+        asked.append(prompt)  # returning normally == the user said yes
+
+    monkeypatch.setattr(apps_mod, "confirm_or_exit", _confirm)
+
+    apps_mod.uninstall_apps(
+        "proj",
+        ["payments"],
+        bench=None,
+        bench_path=None,
+        sites=["a.localhost"],
+        json_output=False,
+        yes=False,
+        verbose=False,
+    )
+
+    # The prompt names what is about to be destroyed, and the uninstall then ran.
+    assert asked and "payments" in asked[0] and "a.localhost" in asked[0]
+    assert any("uninstall-app payments --yes" in c for c in container.calls)
+    assert "App(s) uninstalled." in capsys.readouterr().out
+
+
 def test_uninstall_with_no_sites_notes_and_exits_zero(wired, monkeypatch, capsys):  # noqa: F811
     """Nothing to uninstall from is a clean success, not an error - and never prompts."""
     wired.sites = []
