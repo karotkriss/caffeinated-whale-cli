@@ -39,13 +39,36 @@ are now the whole point. Each note below guards a real bug.
   combined-stream capper and the prefix-parse are RETIRED. `commands/logs.py` resolves per-process paths from
   the substrate: `--process <label>` tails one file, otherwise it tails every program's file for a combined
   view (the multi-file `tail`, which also supports `--follow`). A program that
-  has produced no output has no file yet - `logs.py:_existing_files` filters to existing paths so `tail`
+  has produced no output has no file yet - `core.logs._existing_files` filters to existing paths so `tail`
   does not error.
+- **`logs` MIGRATED onto the core (batch 6, `core/logs.py`), and the tail deliberately did NOT.** The
+  resolve (container/bench/program selection, the existence probe, the fallback discovery, `_existing_files`
+  and `_discover_bench_log_files`) moved to `core.logs_plan(...) -> Result[LogsPlan]`, and the two reads
+  re-pointed from a `docker exec` shell-out to `container.exec_run` (so they are now covered, not
+  monkeypatched away). `commands/logs.py` is a renderer that performs the `docker exec -it ... tail` ITSELF.
+  The tail is NOT re-pointed onto `core.exec_stream`, and this is measured not asserted
+  (`openspec/changes/migrate-logs-core/design.md` Decision 1): `logs --follow` is streamed by `tail`,
+  relayed by docker's TTY, and merely awaited by cwcli, so locked decision 4 (streaming ops return typed
+  event iterators) does not reach it - the bytes never enter the Python process. Probed against real Docker:
+  `exec_stream` + Ctrl+C leaks an orphan `tail -F` per invocation (accumulating; Docker has no kill-exec API,
+  closing the socket does not kill the exec'd process), `_poll_exit_code` then raises `exec.stream_lost`
+  after ~10s (it sees `Running: True`), and `tty=True` is mutually exclusive with the locked `demux=True`
+  stream tag. The `-it` path it keeps is verified clean (exit 130, zero orphans under a pty). An unknown
+  `--process` is now a `select_process` `NEEDS_CHOICE` (mirrors `core.restart_process`), rendered by the CLI
+  as the identical error + valid-label list, exit 1. **PR #83's exit-code fix is preserved in the frontend**
+  where its mechanism lives (the propagated `returncode`, the `130`-is-a-clean-Ctrl+C branch, the
+  `except KeyboardInterrupt`); do NOT move it into the core - `subprocess` is banned there, and moving it
+  means moving the tail. A bounded `core.read_logs` (`tail -n N`, no follow) IS a legitimate future
+  `exec_stream` consumer - that is `axi logs`'s function, deferred with that verb. **Separately filed
+  (`cwcli-logs-orphan-tail-o5`, NOT fixed here):** today's non-TTY `logs -f` already leaks the same orphan on
+  every Ctrl+C (no `-it` -> nothing forwards `^C` to `tail`); pre-existing, its own batch.
 - **`cwcli logs` not-cwcli-supervised FALLBACK (regression fix - same class as the status one).** The
   supervisord path builds its file list purely from `supervision.process_log_path` (`<program>.supervisor.log`).
   A bench running under honcho / `bench start` (pre-v3, or a plain `bench start`) has NONE of those files, so
-  `_existing_files` came back empty and `logs.py` falsely errored `No process logs found ... The bench may not
-  be running` on a bench that WAS up with real logs. Fix: when the supervisord log files are absent, ask
+  `_existing_files` came back empty and `logs` falsely errored `No process logs found ... The bench may not
+  be running` on a bench that WAS up with real logs (now `core.logs`; the two distinct outcomes are typed
+  errors: `logs.none_yet` NOT_FOUND when a manager is up, `logs.no_manager` NOT_RUNNING with the start hint).
+  Fix: when the supervisord log files are absent, ask
   `discover_unsupervised_stack` if a honcho/bench-start manager is live for the bench; if so, DISCOVER the real
   `{bench}/logs/*.log` files (`_discover_bench_log_files` globs the dir - honcho log names differ from
   supervisord's, so NEVER assume `<program>.supervisor.log`; excludes `.supervisor.log`, and the `*.log` glob
