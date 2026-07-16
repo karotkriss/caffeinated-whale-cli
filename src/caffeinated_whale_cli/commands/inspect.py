@@ -17,9 +17,6 @@ all live in :mod:`caffeinated_whale_cli.core.inspect` (openspec
 - the byte-identical ``--json`` and tree renderers, fed from
   ``core.inspect.inspect_raw``'s cache-shaped dicts (the typed ``InspectReport``
   deliberately cannot reproduce those bytes - key order and configs differ).
-
-``--show-apps`` stays declared and dead; its disposition is a separately-held
-captain decision (``cwcli-inspect-recon-i7-decision-show-apps-dead-flag``).
 """
 
 import json
@@ -101,9 +98,6 @@ def inspect(
             "Return cached data as-is, skipping the lightweight freshness pass. "
             "Fastest, but the result may be stale (e.g. miss a just-installed app)."
         ),
-    ),
-    show_apps: bool = typer.Option(
-        False, "--show-apps", "-a", help="Show available apps in the output tree."
     ),
     interactive: bool = typer.Option(
         False, "--interactive", "-i", help="Prompt to name each bench instance interactively."

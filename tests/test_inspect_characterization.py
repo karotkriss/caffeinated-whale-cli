@@ -22,7 +22,7 @@ What it pins, byte-for-byte where the spec demands bytes:
 - T2 passivity: a stopped project on a cache hit serves the cache and starts
   NOTHING, even under ``--yes`` (zero container calls);
 - T3 auto-start under ``--yes`` and the non-TTY-without-``--yes`` refusal (exit 1);
-- the ``--show-apps`` dead flag: identical output with and without it;
+- the removed ``--show-apps`` flag: rejected as an unknown option (exit 2);
 - the tree renderer's "(default)" resolution order (common_site_config first,
   current_site fallback).
 """
@@ -30,6 +30,7 @@ What it pins, byte-for-byte where the spec demands bytes:
 import json
 import shlex
 
+import click
 import pytest
 import typer
 
@@ -236,7 +237,6 @@ def _run_inspect(**overrides):
         json_output=True,
         update=False,
         no_refresh=False,
-        show_apps=False,
         interactive=False,
         yes=False,
         prompt_to_start=True,
@@ -314,20 +314,30 @@ class TestJsonBytesAreByteIdentical:
         assert writes == [[GATHERED_A, GATHERED_B]]
 
 
-class TestShowAppsStaysDead:
-    """--show-apps is declared and dead; its disposition is a captain hold."""
+class TestShowAppsRemoved:
+    """--show-apps was declared-and-dead and is REMOVED (captain decision
+    2026-07-16): Typer rejects it as an unknown option, and the tree output is
+    what the flag always produced anyway (apps were always shown)."""
 
-    def test_output_identical_with_and_without_show_apps(self, wired, capsys):
-        store, _writes, install = wired
-        _seed_cache(store)
-        install(MultiBenchContainer())
-        _run_inspect(no_refresh=True, json_output=False)
-        without_flag = capsys.readouterr().out
+    def test_show_apps_is_rejected_as_unknown_option(self):
+        from typer.testing import CliRunner
 
-        _run_inspect(no_refresh=True, json_output=False, show_apps=True)
-        with_flag = capsys.readouterr().out
+        from caffeinated_whale_cli.main import app
 
-        assert with_flag == without_flag
+        result = CliRunner().invoke(app, ["inspect", "proj", "--show-apps"])
+        assert result.exit_code == 2
+        # Typer force-enables rich's terminal styling under GITHUB_ACTIONS, which
+        # splits "--show-apps" across several ANSI-styled spans; unstyle first so
+        # the substring check is stable both locally and in CI.
+        assert "--show-apps" in click.unstyle(result.output)
+
+    def test_short_a_is_rejected_as_unknown_option(self):
+        from typer.testing import CliRunner
+
+        from caffeinated_whale_cli.main import app
+
+        result = CliRunner().invoke(app, ["inspect", "proj", "-a"])
+        assert result.exit_code == 2
 
 
 class TestTreeDefaultMarker:

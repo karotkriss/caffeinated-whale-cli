@@ -188,7 +188,6 @@ def _run_inspect(**overrides):
         json_output=True,
         update=False,
         no_refresh=False,
-        show_apps=False,
         interactive=False,
         yes=False,
         prompt_to_start=True,
