@@ -98,8 +98,16 @@ jobs:
       - name: Run E2E (frappe v${{ matrix.frappe }})
         # Version-sensitive tests run on every leg; version-agnostic tests skip
         # themselves off the non-v16 legs (see tests/e2e). Empty addopts drops
-        # the default `-m "not e2e"` and the coverage machinery - the E2E tier
-        # drives the real binary out of process, so per-line coverage is moot.
+        # the default `-m "not e2e"` and the coverage machinery.
+        #
+        # Cross-tier coverage IS obtainable, and "out of process" is no barrier:
+        # the harness drives the real `cwcli` console script, which is a Python
+        # process, so coverage.py attaches via COVERAGE_PROCESS_START with no
+        # harness change (both run_cwcli and spawn_cwcli already pass the env
+        # through). It is deliberately NOT wired, on cost: the 3-leg matrix runs
+        # on separate runners, so combining needs a cross-runner artifact dance,
+        # and a red or flaky E2E leg would then move the coverage number for
+        # reasons unrelated to any code change - a worse signal, for ~6-12 points.
         run: uv run pytest tests/e2e -m e2e -o addopts="" -v --tb=short
 
       - name: Teardown backstop - sweep leaked cwe2e- resources
