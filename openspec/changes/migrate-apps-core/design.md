@@ -88,6 +88,34 @@ No `resolve_default_site`, no `validate_site_name`, no `validate_bench_path`, no
 - **Specifically preserve `_resolve_bench`'s fallback** (`apps.py:47-54`): `resolve_bench_path(...) or _DEFAULT_BENCH`, falling back to the historical default only when there is no cache to resolve against. That matches `run` and it is behaviour, not an accident.
 - **`--site` is a FILTER here, not a site to resolve.** `_resolve_target_sites` de-dups explicit values or fans out over `bench_sites.list_sites` (`apps.py:154-164`). There is no default-site concept in `apps` and adding one would invent behaviour.
 
+### 8. The `update`/`apps` "duplication" is NOT unified - they answer different questions, and the evidence says unifying would import a bug
+
+The batch-4 recon flagged `update.py:_get_sites_with_app` (cache-first, live fallback) vs `apps.py:_list_installed_apps` (always live) as "two implementations of adjacent questions", and called unifying them a legitimate item "once `apps` migrates".
+Judged on the real code: **do not unify.** Keep both.
+
+- **First, a correction to the record.** There is no `update.py:_get_sites_with_app`. Batch 4 moved it into the core; the symbol is `core/update.py:_sites_with_app` (`:282`). The name in the recon is stale.
+- **They are not adjacent questions, they are inverse ones.** `_sites_with_app` answers *app -> which sites*; `_list_installed_apps` answers *site -> which apps*. Neither is expressible as the other without a fan-out the caller does not want.
+- **Their failure semantics are deliberately opposite, and unification destroys one.**
+  `_sites_with_app` silently drops a site whose `list-apps` fails (`continue`, `:316`) - correct for a filter feeding a migration fan-out.
+  `_list_installed_apps` returns `(ok, apps)` precisely so `list` can set `installed[site] = None` and exit 1 (Decision 5).
+  Merging forces one of them to lose the semantics it was built for: either `list` stops distinguishing "no apps" from "read failed", or `update` grows an error path it does not have.
+- **They parse different representations of different things - and this is the load-bearing evidence.**
+  `_list_installed_apps` reads a LIVE `bench list-apps` and takes the first token per line (`apps.py:150`).
+  `_sites_with_app`'s cache branch reads `installed_apps` out of `get_cached_project_data`, which returns the **raw, unparsed `bench list-apps` lines** (`db_utils.py:443`, `json.loads(site.installed_apps)`) - because `inspect._get_installed_apps` deliberately caches whole lines (`inspect.py:78`) and `db_utils.cache_project_data` is the thing that splits them into name/version/branch for `InstalledAppDetail` (`db_utils.py:404-417`, `split(maxsplit=2)` handling 1, 2 or 3 tokens).
+  So the two functions are matching against different data shapes by design. A shared helper would have to know which shape it was handed, which is the abstraction earning nothing.
+
+**The finding this turned up, reported and NOT fixed here (it is `update`'s code, not this batch's):**
+
+`core/update.py:291` tests `if app in site.get("installed_apps", [])` - exact list membership against those raw lines.
+Real captured v16 output is `frappe 16.26.3` (`docs/e2e/init-admin-password-secrets-s5.md:59`), so the cached entry is `"frappe 16.26.3"` and `"frappe" in ["frappe 16.26.3"]` is **False**.
+The cache branch therefore misses whenever `bench list-apps` emits a version column, and `_sites_with_app` falls through to its live query.
+`db_utils.py:405` handling `len(parts)` of 1, 2 or 3 shows the repo already expects both shapes; the cache branch only hits on the bare-name (1-token) form.
+
+- **Severity: fail-SAFE, not a data-loss bug.** The live fallback returns the correct site set. The cost is a dead optimization and a live fan-out on every `update`.
+- **Why it survived: the tests exercise the opposite branch from production.** `tests/test_apps.py:658` seeds the cache with bare names (`installed_apps={"a.localhost": ["payments"]}`), so `"payments" in ["payments"]` hits and returns early - and the live fallback (`core/update.py:296-322`) is **0% covered**, confirmed by first-hand measurement. Production takes the branch the tests never run; the tests take the branch production never reaches.
+- **Why this batch does NOT fix it.** Making the cache branch hit is a behaviour change to `update`: it would start serving cached site sets where it currently performs a live read, which is a real staleness risk on the input to a migration fan-out. That is a decision on its own evidence, not a slot in a migration batch (Non-Goals; batch 4 Decision 4). Recorded in `tasks.md` §8 so it is not mistaken for forgotten.
+- **The one genuinely shared line is left duplicated, deliberately.** Both take the first token per line (`apps.py:150`; `core/update.py:318`, whose `.strip()` before a no-arg `.split()` is redundant). Extracting a one-line comprehension into a shared primitive would add an import edge between two core modules to save nothing, and would be a NEW primitive this batch has claimed it does not need. Two callers at different layers parsing from different sources is not a shared concern.
+
 ## The DTOs, concretely
 
 ```python
