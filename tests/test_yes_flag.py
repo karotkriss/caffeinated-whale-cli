@@ -218,6 +218,7 @@ class TestLogsYes:
 
     def test_yes_threads_auto_start(self, monkeypatch):
         from caffeinated_whale_cli.commands import logs as logs_mod
+        from caffeinated_whale_cli.core import docker as core_docker
 
         recorded = {}
 
@@ -227,8 +228,10 @@ class TestLogsYes:
             return True
 
         monkeypatch.setattr(logs_mod, "ensure_containers_running", rec_ensure)
-        # Stop right after the gate: an empty container list exits 1 (not found).
-        monkeypatch.setattr(logs_mod, "get_project_containers", lambda name: [])
+        # Stop right after the gate: an empty container list makes core.logs_plan
+        # raise NOT_FOUND, which the frontend renders and exits 1. The resolve moved
+        # to the core, so get_project_containers is patched THERE, not on logs_mod.
+        monkeypatch.setattr(core_docker, "get_project_containers", lambda name: [])
         # Neutralize the @handle_docker_errors docker preflight.
         monkeypatch.setattr(docker_utils.shutil, "which", lambda _n: "/usr/bin/docker")
         monkeypatch.setattr(
@@ -236,7 +239,15 @@ class TestLogsYes:
         )
 
         with pytest.raises(typer.Exit):
-            logs_mod.logs(project_name="proj", follow=True, lines=100, yes=True, verbose=False)
+            logs_mod.logs(
+                project_name="proj",
+                follow=True,
+                lines=100,
+                bench=None,
+                process=None,
+                yes=True,
+                verbose=False,
+            )
 
         assert recorded["auto_start"] is True
         assert recorded["require_running"] is True
