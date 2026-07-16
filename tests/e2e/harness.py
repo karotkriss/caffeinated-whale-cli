@@ -230,7 +230,19 @@ def docker_cp_out(project: str, container_path: str, host_path: Path) -> bool:
 # Teardown backstop (unconditional; sweeps by cwe2e- label)
 # --------------------------------------------------------------------------- #
 def cwe2e_projects() -> list[str]:
-    """Every distinct ``cwe2e-`` compose project with a live container or volume."""
+    """Every distinct ``cwe2e-`` compose project with a live container, volume, or network.
+
+    NETWORKS are discovered too, and that is not symmetry for its own sake: a
+    project's network OUTLIVES its containers and volumes. The session teardown
+    runs `cwcli rm --yes --volumes` first, so by the time the backstop sweep
+    runs, a cleanly-torn-down project has no container and no volume left to be
+    discovered by - the project vanished from this list, `sweep_cwe2e`'s
+    network-removal loop never ran for it, and its network was orphaned. Every
+    SUCCESSFUL e2e run leaked exactly one network that way (20 had accumulated
+    when this was found), and Docker's default address pool is finite, so the
+    eventual symptom is `could not find an available, non-overlapping IPv4
+    address pool` on an unrelated run.
+    """
     projs: set[str] = set()
     for cid in _docker("ps", "-aq", "--filter", "label=com.docker.compose.project").stdout.split():
         name = _docker(
@@ -243,6 +255,14 @@ def cwe2e_projects() -> list[str]:
     ).stdout.split():
         name = _docker(
             "volume", "inspect", "-f", '{{index .Labels "com.docker.compose.project"}}', vol
+        ).stdout.strip()
+        if name.startswith(CWE2E_PREFIX):
+            projs.add(name)
+    for net in _docker(
+        "network", "ls", "-q", "--filter", "label=com.docker.compose.project"
+    ).stdout.split():
+        name = _docker(
+            "network", "inspect", "-f", '{{index .Labels "com.docker.compose.project"}}', net
         ).stdout.strip()
         if name.startswith(CWE2E_PREFIX):
             projs.add(name)
