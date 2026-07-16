@@ -17,7 +17,9 @@ Every write here lands in a file the USER owns, which drives three rules:
   to as TEXT when it needs ``[features] hooks = true``, because ``toml.dump``
   drops the comments and section ordering out of a hand-maintained file. When a
   ``[features]`` section already exists but does not enable hooks, this reports
-  ``manual`` and tells the user the one line to add rather than rewriting it.
+  ``manual`` and tells the user the one line to add rather than rewriting it. A
+  ``settings.json``/``hooks.json`` this cannot parse gets the same treatment:
+  ``manual``, file untouched, never silently replaced.
 * **Explicit opt-in.** Nothing here runs off an ordinary command; it is reached
   only from the user-invoked ``cwcli axi setup``.
 """
@@ -91,11 +93,16 @@ def _is_cwcli_hook(command: str) -> bool:
 
     Matched on shape rather than an exact string so a hook installed when cwcli
     lived elsewhere is still recognised as ours and repaired, not duplicated.
+    Splits on the LAST space, not ``.split()``: a Windows install path (or any
+    path containing a space) is one token, not several.
     """
-    parts = command.split()
-    if len(parts) != 2 or parts[1] != _SUBCOMMAND:
+    binary, sep, subcommand = command.rpartition(" ")
+    if not sep or subcommand != _SUBCOMMAND:
         return False
-    return Path(parts[0]).name in _BIN_NAMES
+    name = Path(binary).name
+    if name.lower().endswith(".exe"):
+        name = name[: -len(".exe")]
+    return name in _BIN_NAMES
 
 
 def _sync_session_start(config: dict, command: str) -> str:
@@ -121,18 +128,34 @@ def _sync_session_start(config: dict, command: str) -> str:
     return "installed"
 
 
+class _ConfigUnreadableError(Exception):
+    """An existing JSON hook config could not be safely parsed as an object."""
+
+
 def _read_json(path: Path) -> dict:
+    """Read an existing JSON config, distinguishing ABSENT (install fresh) from
+    UNREADABLE (raise, so the caller refuses rather than overwrites)."""
     if not path.exists():
         return {}
     try:
         loaded = json.loads(path.read_text(encoding="utf-8") or "{}")
-    except (json.JSONDecodeError, OSError):
-        return {}
-    return loaded if isinstance(loaded, dict) else {}
+    except (json.JSONDecodeError, OSError) as exc:
+        raise _ConfigUnreadableError(str(path)) from exc
+    if not isinstance(loaded, dict):
+        raise _ConfigUnreadableError(str(path))
+    return loaded
 
 
 def _install_json_hook(agent: str, path: Path, command: str) -> HookOutcome:
-    config = _read_json(path)
+    try:
+        config = _read_json(path)
+    except _ConfigUnreadableError:
+        # This file can hold the user's model settings, permissions, MCP config,
+        # or another tool's hooks - never overwrite it blind. Mirrors the codex
+        # TOML path below: report `manual` and leave it byte-for-byte untouched.
+        return HookOutcome(
+            agent, str(path), "manual", f"{path} is not valid JSON - fix or remove it by hand"
+        )
     status = _sync_session_start(config, command)
     if status != "unchanged":
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -145,6 +168,8 @@ def _enable_codex_hooks(config_path: Path) -> str:
 
     Codex ignores ``hooks.json`` entirely unless this flag is on, so installing
     the hook without it would report success for a hook that never fires.
+    Returns ``unchanged`` (already set), ``enabled`` (just written - a real
+    mutation the caller must not report as a no-op), or ``manual``.
     """
     try:
         config = toml.load(config_path) if config_path.exists() else {}
@@ -153,7 +178,7 @@ def _enable_codex_hooks(config_path: Path) -> str:
 
     features = config.get("features")
     if isinstance(features, dict) and features.get("hooks") is True:
-        return "ok"
+        return "unchanged"
     if features is not None:
         # A [features] section exists but does not enable hooks. Rewriting the
         # file would strip the user's comments, so ask rather than clobber.
@@ -164,7 +189,7 @@ def _enable_codex_hooks(config_path: Path) -> str:
     prefix = "" if not existing or existing.endswith("\n") else "\n"
     with config_path.open("a", encoding="utf-8") as handle:
         handle.write(f"{prefix}\n[features]\nhooks = true\n")
-    return "ok"
+    return "enabled"
 
 
 def _opencode_plugin(command: str) -> str:
@@ -246,12 +271,22 @@ def install(command: str | None = None, *, home: Path | None = None) -> list[Hoo
     codex_dir = root / ".codex"
     if codex_dir.is_dir():
         outcome = _install_json_hook("codex", codex_dir / "hooks.json", command)
-        if _enable_codex_hooks(codex_dir / "config.toml") == "manual":
+        toml_status = _enable_codex_hooks(codex_dir / "config.toml")
+        if toml_status == "manual" and outcome.status != "manual":
             outcome = HookOutcome(
                 outcome.agent,
                 outcome.path,
                 "manual",
                 "add 'hooks = true' under [features] in ~/.codex/config.toml",
+            )
+        elif toml_status == "enabled" and outcome.status == "unchanged":
+            # hooks.json needed no change, but config.toml just got its first
+            # write - a real mutation, so this must not read as a no-op.
+            outcome = HookOutcome(
+                outcome.agent,
+                outcome.path,
+                "updated",
+                "enabled 'hooks = true' in ~/.codex/config.toml",
             )
         outcomes.append(outcome)
     else:

@@ -123,14 +123,50 @@ class TestInstall:
         commands = [h["command"] for g in config["hooks"]["SessionStart"] for h in g["hooks"]]
         assert commands == ["gh-axi", CMD]
 
-    def test_a_corrupt_config_is_replaced_rather_than_crashing(self, tmp_path):
+    def test_a_corrupt_config_is_refused_not_overwritten(self, tmp_path):
+        """Mirrors the codex TOML path: a file we cannot parse is never replaced."""
         home = _home(tmp_path)
-        (home / ".claude" / "settings.json").write_text("{ not json")
+        settings = home / ".claude" / "settings.json"
+        original = "{ not json"
+        settings.write_text(original)
+
+        outcomes = agent_hooks.install(CMD, home=home)  # must not raise
+
+        assert _status(outcomes, "claude-code") == "manual"
+        assert settings.read_text() == original
+        claude = next(o for o in outcomes if o.agent == "claude-code")
+        assert "not valid JSON" in claude.detail
+
+    def test_a_non_object_json_config_is_refused_not_overwritten(self, tmp_path):
+        """Valid JSON but the wrong shape (e.g. a top-level array) is just as unusable."""
+        home = _home(tmp_path)
+        settings = home / ".claude" / "settings.json"
+        settings.write_text("[]")
+
+        outcomes = agent_hooks.install(CMD, home=home)
+
+        assert _status(outcomes, "claude-code") == "manual"
+        assert settings.read_text() == "[]"
+
+    def test_a_missing_config_still_installs_normally(self, tmp_path):
+        """Absent is not the same failure mode as unreadable."""
+        home = _home(tmp_path)
 
         outcomes = agent_hooks.install(CMD, home=home)
 
         assert _status(outcomes, "claude-code") == "installed"
         assert _session_start(home / ".claude" / "settings.json")[0]["hooks"][0]["command"] == CMD
+
+    def test_a_spaced_executable_path_is_repaired_not_duplicated(self, tmp_path):
+        """The advertised idempotent/repair-in-place contract must hold on a spaced path."""
+        home = _home(tmp_path, codex=False, opencode=False)
+        spaced_cmd = "/home/John Doe/.local/bin/cwcli axi"
+        agent_hooks.install(spaced_cmd, home=home)
+
+        outcomes = agent_hooks.install(spaced_cmd, home=home)
+
+        assert _status(outcomes, "claude-code") == "unchanged"
+        assert len(_session_start(home / ".claude" / "settings.json")) == 1
 
 
 class TestCodexFeatureFlag:
@@ -200,6 +236,34 @@ class TestCodexFeatureFlag:
         agent_hooks.install(CMD, home=home)
 
         assert toml.loads(config.read_text())["features"]["hooks"] is True
+
+    def test_a_first_time_toml_write_is_not_masked_as_unchanged(self, tmp_path):
+        """hooks.json already correct but config.toml needs its first write: a
+        real mutation, so the reported status must not read as a no-op."""
+        home = _home(tmp_path)
+        hooks_path = home / ".codex" / "hooks.json"
+        hooks_path.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "SessionStart": [
+                            {
+                                "matcher": "",
+                                "hooks": [{"type": "command", "command": CMD, "timeout": 10}],
+                            }
+                        ]
+                    }
+                }
+            )
+        )
+
+        outcomes = agent_hooks.install(CMD, home=home)
+
+        codex = next(o for o in outcomes if o.agent == "codex")
+        assert codex.status != "unchanged"
+        assert (
+            toml.loads((home / ".codex" / "config.toml").read_text())["features"]["hooks"] is True
+        )
 
 
 class TestOpenCodePlugin:
@@ -277,14 +341,29 @@ class TestHookCommand:
 class TestIsCwcliHook:
     @pytest.mark.parametrize(
         "command",
-        ["cwcli axi", "/opt/bin/cwcli axi", "caffeinated-whale-cli axi"],
+        [
+            "cwcli axi",
+            "/opt/bin/cwcli axi",
+            "caffeinated-whale-cli axi",
+            "/home/John Doe/.local/bin/cwcli axi",
+            "cwcli.exe axi",
+            "cwcli.EXE axi",
+        ],
     )
     def test_recognises_our_own_entry_at_any_path(self, command):
         assert agent_hooks._is_cwcli_hook(command)
 
     @pytest.mark.parametrize(
         "command",
-        ["gh-axi", "cwcli", "cwcli ls", "cwcli axi ls", "bash script.sh", ""],
+        [
+            "gh-axi",
+            "cwcli",
+            "cwcli ls",
+            "cwcli axi ls",
+            "bash script.sh",
+            "",
+            "cwcli.backup axi",
+        ],
     )
     def test_rejects_everything_else(self, command):
         """A false positive here would silently rewrite another tool's hook."""
