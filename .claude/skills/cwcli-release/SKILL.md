@@ -8,6 +8,8 @@ description: >
   the old pypa action was replaced), and the one-time PyPI trusted-publisher prerequisite. Use this
   whenever you bump the cwcli version, edit CHANGELOG.md for a release, publish to PyPI, or touch
   .github/workflows/release.yml or build.yml.
+metadata:
+  internal: true
 ---
 
 # Cutting a cwcli release (sharp edges)
