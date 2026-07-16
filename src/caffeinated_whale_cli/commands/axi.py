@@ -31,6 +31,7 @@ import typer
 
 from ..core import apps as core_apps
 from ..core import backup as core_backup
+from ..core import inspect as core_inspect
 from ..core import label as core_label
 from ..core import list as core_list
 from ..core import restart as core_restart
@@ -490,6 +491,55 @@ def axi_restart(
     raise typer.Exit(0 if result.status in (CoreStatus.OK, CoreStatus.WARNING) else 1)
 
 
+# ---------------------------------------------------------------------------- inspect
+
+
+@app.command("inspect")
+def axi_inspect(
+    project: str = typer.Argument(..., help="The Docker Compose project name."),
+    update: bool = typer.Option(
+        False, "--update", help="Force a full re-inspect and refresh the cache."
+    ),
+    no_refresh: bool = typer.Option(
+        False,
+        "--no-refresh",
+        help="Serve the cached data verbatim; zero container calls (may be stale).",
+    ),
+) -> None:
+    """Inspect a project's benches, sites, and apps; emit the report as TOON.
+
+    ONE tiered read, not a read/refresh verb pair: by default it serves the cache
+    when fresh, runs the cheap read-only drift check when the containers are up,
+    and escalates to a full re-inspect (persisted to the cache) only on real
+    drift or a cache miss - orchestrating those tiers by hand is exactly the
+    complexity the tiers exist to hide. ``--update`` forces the full re-inspect;
+    ``--no-refresh`` serves the cache verbatim.
+
+    ``served_from`` names the tier that answered (cache/partial/full); a drift
+    escalation that can no longer discover the bench serves the cached data with
+    ``degraded: true`` and a warning, exit 0 (WARNING is a completed read).
+
+    Deliberately NO ``--yes``: an axi verb must never open a start-from-axi path.
+    A stopped project on the refresh path is a usage error (exit 2) naming
+    ``cwcli start``, matching every other stopped-project fork on this surface.
+    """
+    refresh = "full" if update else ("cache_only" if no_refresh else "auto")
+    try:
+        result = core_inspect.inspect(project, refresh=refresh)
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    if result.status is CoreStatus.NEEDS_CHOICE:
+        assert result.choice is not None  # NEEDS_CHOICE always carries a Choice
+        emit_axi_choice_as_usage_error(result.choice)
+        raise typer.Exit(2)
+
+    assert result.data is not None  # OK/WARNING always carries an InspectReport
+    emit_result(result.data, warnings=result.warnings)
+    raise typer.Exit(0)
+
+
 # ---------------------------------------------------------------------------- benches
 
 
@@ -506,12 +556,23 @@ def axi_benches(
     know an app or site name to run.
 
     Read-only; touches no container. A project that has never been inspected is a
-    structured error naming ``cwcli inspect``, NOT an empty list: "not inspected
-    yet" and "has zero benches" are different facts, and only one has a remedy.
+    structured error naming ``cwcli axi inspect``, NOT an empty list: "not
+    inspected yet" and "has zero benches" are different facts, and only one has a
+    remedy - and since this batch the remedy is agent-native, not the human
+    command.
     """
     try:
         result = core_label.list_benches(project)
     except CwcliError as error:
+        if error.code == "benches.none_cached":
+            # The core's hint names the human `cwcli inspect`; on the agent
+            # surface the remedy is the axi verb (the dead end this batch closed).
+            error = CwcliError(
+                error.kind,
+                error.code,
+                error.message,
+                hint=f"Run 'cwcli axi inspect {project}' first.",
+            )
         emit_axi_error(error)
         raise typer.Exit(exit_for(error.kind)) from None
 
