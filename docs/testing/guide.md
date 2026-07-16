@@ -107,7 +107,7 @@ uv run pytest -x
 
 ### Current Test Coverage
 
-`tests/` holds 65 `test_*.py` suites totaling 1110 tests at ~67% overall coverage (measured with `uv run pytest --cov` at 0.37.0, unreleased).
+`tests/` holds 69 `test_*.py` suites totaling 1148 tests at ~67% overall coverage (measured with `uv run pytest --cov` at 0.37.0, unreleased).
 See the [Testing Directory Index](./README.md#current-status) for the full per-area breakdown.
 `test_completion_utils.py` remains the most complete single-module suite (tab completion, ~92% coverage): project name completion, app name completion, site name completion, cache functionality, Docker client management.
 
@@ -388,7 +388,7 @@ uv run pytest -l  # Show local variables
 
 Status as of 0.37.0 (see the [Testing Directory Index](./README.md#future-test-priorities) for the full list):
 
-- [x] `commands/inspect.py` - Project inspection logic (`test_inspect_partial_refresh`, `test_inspect_label_recovery`)
+- [x] `core/inspect.py` - the `inspect` logic core: the T1/T2/T3 freshness tier machine, the discovery/gather fan-out, AND the cache write, one contract (`test_core_inspect`); `commands/inspect.py` is now a renderer over it (`test_inspect_partial_refresh`, `test_inspect_label_recovery`); `test_inspect_characterization` is the byte-identical green-before net pinned against the unmigrated command; `cwcli axi inspect` (`test_axi_inspect`) (`openspec/changes/migrate-inspect-core`)
 - [x] `utils/db_utils.py` - Cache database operations (`test_db_security`, `test_config_validation`)
 - [x] `commands/apps.py`, `commands/update.py` - App management and update-migration logic (`test_apps`); `list`/`install`/`uninstall` moved onto `core/apps.py` and `update` onto `core/update.py` (`test_apps_characterization`, `test_core_apps`, `test_axi_apps_list`, `test_core_update`, `test_axi_apps_update`, `test_update_characterization`), see the Testing Directory Index for the full breakdown
 - [x] `utils/config_utils.py`'s `cwcli_home()` - `CWCLI_HOME` override (`test_cwcli_home`, mock-free)
