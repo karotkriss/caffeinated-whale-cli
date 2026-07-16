@@ -107,7 +107,7 @@ uv run pytest -x
 
 ### Current Test Coverage
 
-`tests/` holds 58 `test_*.py` suites totaling 951 tests at ~65% overall coverage (measured with `uv run pytest --cov` at 0.37.0, unreleased).
+`tests/` holds 62 `test_*.py` suites totaling 1035 tests at ~67% overall coverage (measured with `uv run pytest --cov` at 0.37.0, unreleased).
 See the [Testing Directory Index](./README.md#current-status) for the full per-area breakdown.
 `test_completion_utils.py` remains the most complete single-module suite (tab completion, ~92% coverage): project name completion, app name completion, site name completion, cache functionality, Docker client management.
 
@@ -390,7 +390,7 @@ Status as of 0.37.0 (see the [Testing Directory Index](./README.md#future-test-p
 
 - [x] `commands/inspect.py` - Project inspection logic (`test_inspect_partial_refresh`, `test_inspect_label_recovery`)
 - [x] `utils/db_utils.py` - Cache database operations (`test_db_security`, `test_config_validation`)
-- [x] `commands/apps.py`, `commands/update.py` - App management and update-migration logic (`test_apps`)
+- [x] `commands/apps.py`, `commands/update.py` - App management and update-migration logic (`test_apps`); `list`/`install`/`uninstall` moved onto `core/apps.py` and `update` onto `core/update.py` (`test_apps_characterization`, `test_core_apps`, `test_axi_apps_list`, `test_core_update`, `test_axi_apps_update`, `test_update_characterization`), see the Testing Directory Index for the full breakdown
 - [x] `utils/config_utils.py`'s `cwcli_home()` - `CWCLI_HOME` override (`test_cwcli_home`, mock-free)
 - [~] `commands/start.py` - Port conflict detection; `test_yes_flag` covers the non-interactive contract, and the interactive port-conflict confirmation prompt is driven end to end by `tests/e2e/test_start_status_e2e.py`, but the remaining port-scanning helpers still have no dedicated unit suite
 - [ ] `utils/port_utils.py` - Port management
@@ -401,7 +401,7 @@ Status as of 0.37.0 (see the [Testing Directory Index](./README.md#future-test-p
 - [x] `core/unlock.py`, `core/stop.py` - the `unlock`/`stop` logic core (`test_core_unlock`, `test_core_stop`), the foundation's generality proof (`unlock` migrated with zero new primitives); `cwcli axi unlock`/`stop` (`test_axi_unlock_stop`); Real-Docker E2E for `unlock` in both modes (`tests/e2e/test_unlock_e2e.py`), closing a standing both-modes gap (`openspec/changes/migrate-unlock-stop-core`)
 - [x] `core/label.py` - the `label` logic core split into `list_benches`/`set_label`/`clear_label` (`test_core_label`), built with zero new primitives beyond widening `resolvers.resolve_container_state`'s hardcoded hint into a caller-supplied `not_running_hint` parameter; `cwcli axi benches`/`cwcli axi label`/`cwcli axi self-update --check` (`test_axi_label`); Real-Docker E2E for `label` (`tests/e2e/test_label_e2e.py`), the DB/marker two-store consistency invariant against a real container, non-interactive only since `label` has no prompt (`openspec/changes/migrate-label-core`)
 - [x] `core/exec_stream.py`, `core/run.py` - the per-exec exec-stream contract (`test_core_exec_stream`) and `run`'s core slice built on it (`test_core_run`), replacing the fail-open that let a bench command with an unknown exit code report success; `apps`/`update` re-pointed at the same primitive rather than migrated as commands (`test_apps` unchanged, plus new coverage for a `CwcliError` from the primitive being caught and rendered instead of escaping raw); Real-Docker E2E for `run` in both modes including a >32KB unicode leg (`tests/e2e/test_run_e2e.py`) (`openspec/changes/add-exec-stream-contract`)
-- [ ] Real-Docker E2E for the remaining commands (`rm`, `restore`, `update`/`apps`, `inspect`) and the P2P (`sendme`) loopback - tracked in `openspec/changes/rebuild-e2e-test-suite`
+- [ ] Real-Docker E2E for the remaining commands (`rm`, `restore`, `apps list`/`install`/`uninstall`, `inspect`) and the P2P (`sendme`) loopback - tracked in `openspec/changes/rebuild-e2e-test-suite`. `update`/`apps update` already closed its own E2E gap (`tests/e2e/test_apps_update_e2e.py`)
 
 ## Resources
 
