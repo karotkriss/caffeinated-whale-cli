@@ -6,6 +6,8 @@ typed-error rendering + exit codes, needs-choice -> flag-naming usage error exit
 2, and the ls-DTO home populated + empty. Plus the shared TOON encoder's shape.
 """
 
+import re
+
 import pytest
 from typer.testing import CliRunner
 
@@ -152,7 +154,56 @@ class TestAxiBackup:
 # ------------------------------------------------------------------------------ axi home
 
 
+def assert_is_one_toon_document(stdout: str) -> None:
+    """Every line is TOON: a `key: value`, or a `name[N]:` header with N rows.
+
+    The home is the one verb that emits guidance rather than a DTO, so it is the
+    one place a stray prose line could reach stdout and corrupt the one-TOON-
+    document contract. This walks the shape instead of trusting it: a top-level
+    line must be a key line, an indented line must be accounted for by the
+    preceding header's declared count, and anything else fails.
+    """
+    header = re.compile(r"^[a-zA-Z_][\w-]*(\[(\d+)\](\{[^}]*\})?)?:( .*)?$")
+    expected = 0
+    for line in stdout.splitlines():
+        if not line:
+            continue
+        if line.startswith("  "):
+            assert expected > 0, f"unaccounted indented line: {line!r}"
+            expected -= 1
+            continue
+        match = header.match(line)
+        assert match, f"not a TOON line: {line!r}"
+        assert expected == 0, f"{expected} row(s) missing before {line!r}"
+        expected = int(match.group(2)) if match.group(2) else 0
+    assert expected == 0, f"{expected} declared row(s) never emitted"
+
+
 class TestAxiHome:
+    def test_home_is_one_toon_document_not_prose(self, monkeypatch):
+        """The content-first home teaches, but it does so in TOON, not prose."""
+        monkeypatch.setattr(
+            axi_mod.core_list,
+            "list_instances",
+            _instances_ok([InstanceDTO(project_name="p", status="running", ports=["8000"])]),
+        )
+        result = runner.invoke(axi_mod.app, [])
+        assert result.exit_code == 0
+        assert_is_one_toon_document(result.stdout)
+
+    def test_home_empty_state_is_also_one_toon_document(self, monkeypatch):
+        monkeypatch.setattr(axi_mod.core_list, "list_instances", _instances_ok([]))
+        result = runner.invoke(axi_mod.app, [])
+        assert_is_one_toon_document(result.stdout)
+
+    def test_home_docker_error_is_also_one_toon_document(self, monkeypatch):
+        def _raise(**k):
+            raise CwcliError(ErrorKind.DOCKER, "docker.unreachable", "Could not connect: down.")
+
+        monkeypatch.setattr(axi_mod.core_list, "list_instances", _raise)
+        result = runner.invoke(axi_mod.app, [])
+        assert_is_one_toon_document(result.stdout)
+
     def test_home_shows_instances(self, monkeypatch):
         """Bare `axi` renders the instance list as a TOON table."""
         monkeypatch.setattr(
@@ -174,8 +225,11 @@ class TestAxiHome:
         assert "proj-b,exited,N/A" in result.stdout
         # The block declares its own count, so this pins the count/entry agreement
         # rather than a fixed number of suggestions.
-        assert "help[4]:" in result.stdout
-        assert result.stdout.count("  Run `cwcli axi ") == 4
+        assert "help[5]:" in result.stdout
+        assert result.stdout.count("  Run `cwcli axi ") == 5
+        # The home curates a FEW verbs (it is the per-session hook payload), so
+        # this is the only route from it to the rest of the surface.
+        assert "Run `cwcli axi --help` to see every verb" in result.stdout
 
     def test_home_definitive_empty_state(self, monkeypatch):
         monkeypatch.setattr(axi_mod.core_list, "list_instances", _instances_ok([]))

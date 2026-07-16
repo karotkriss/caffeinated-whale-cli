@@ -43,7 +43,7 @@ uv run pytest tests/test_completion_utils.py
 
 ### Test Coverage
 
-Measured with `uv run pytest --cov` at 0.37.0 (unreleased): 1035 tests across 62 test files, ~67% overall coverage.
+Measured with `uv run pytest --cov` at 0.37.0 (unreleased): 1084 tests across 64 test files, ~67% overall coverage.
 Per-area breakdown (highest-coverage module in each area; see the module list in each test file for what else it exercises):
 
 - **rm safety** (`test_rm_safety`, `test_rm_truth`, `test_rm_stopped`, `test_rm_stopped_backup`) - `commands/rm.py` ~84%
@@ -70,6 +70,7 @@ Per-area breakdown (highest-coverage module in each area; see the module list in
 - **core unlock/stop slices** (`test_core_unlock`, `test_core_stop`) - `core/unlock.py` ~98% (built from the same primitives as `core/backup.py` with zero new ones - the foundation's generality proof; the locks removal is a single buffered `exec_run` parsed into a structured `removed` list, never streamed), `core/stop.py` 100% (stopped count, already-stopped, `NOT_FOUND`, docker-unreachable, names-not-objects, prints nothing at all)
 - **exec-stream contract + core run slice** (`test_core_exec_stream`, `test_core_run`) - `core/exec_stream.py` ~97% (tagged chunks, per-stream mid-character splits, the bounded exit-code poll settling vs. expiring, a dropped connection - whether mid-stream or mid-poll - raised as `CwcliError(DOCKER)` rather than guessed), `core/run.py` 100% (every `run_plan` branch plus the reseated `commands/run.py` frontend: exit-code passthrough, honest non-zero on an unknown code, `--bench`/`--path` plumbing, the `confirm_start` retry-once-then-fail-closed race). `apps`/`update` are re-pointed at the same primitive (not migrated as commands); `test_apps` pins that a `CwcliError` from it is caught and rendered rather than escaping as a raw traceback
 - **`cwcli axi` surface** (`test_axi`) - `commands/axi.py` ~97% (TOON serializer round-trip, verb exit-mapping 0/1/2, the content-first home, `axi ls`/`axi where`)
+- **AXI cross-cutting shell** (`test_agent_hooks`, `test_axi_skill`) - `utils/agent_hooks.py` 100% (the `cwcli axi setup` installer against a throwaway `tmp_path` home: install into all three detected harnesses, an undetected one skipped rather than bootstrapped, the idempotent re-install, a moved executable repaired in place, foreign hooks/settings surviving, a corrupt config replaced, the Codex `[features] hooks = true` append preserving comments), `scripts/build_skill.py` 100% (the `--check` staleness gate driven as a unit test, every registered `axi` verb appearing in the generated skill, and `test_a_new_verb_makes_the_committed_skill_stale` proving the gate has teeth)
 - **core read-only slices** (`test_core_list`, `test_core_where`) - `core/list.py`, `core/where.py` 100% (fake docker client / throwaway sqlite - empty/aggregate/DOCKER-raise, dedup/scoping/installed-only/USAGE)
 - **`ls`/`where` human frontends** (`test_list`, `test_where`) - `commands/list.py` ~80%, `commands/where.py` 100% (the `--json` empty-`[]` fix, quiet/table rendering, the `--apps`/`--sites` conflict)
 - **supervision substrate** (`test_core_supervision`) - `core/supervision.py` ~82% (supervisord discovery + label-mapping + bench-keying against faked `ps`/Procfile/exec I/O, config/launcher generation, the `pip install supervisor` fail-closed bootstrap, the supervisor marker present/absent, the web probe, per-process log-path resolution, `discover_unsupervised_stack`'s honcho/`bench start` fallback, the real `frappe <cmd>` bench-helper cmdline forms)
@@ -88,7 +89,7 @@ Per-area breakdown (highest-coverage module in each area; see the module list in
 
 ### Test Files
 
-Run `ls tests/` for the authoritative, current list; as of 0.37.0 (unreleased) it holds 62 `test_*.py` suites plus `bench_fakes.py` and `bench_fakes_mb.py` (shared fakes) and `README.md`.
+Run `ls tests/` for the authoritative, current list; as of 0.37.0 (unreleased) it holds 64 `test_*.py` suites plus `bench_fakes.py` and `bench_fakes_mb.py` (shared fakes) and `README.md`.
 
 ## Testing Framework
 

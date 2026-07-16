@@ -44,7 +44,7 @@ from ..core import where as core_where
 from ..core.envelope import Choice
 from ..core.envelope import Status as CoreStatus
 from ..core.errors import CwcliError, ErrorKind
-from ..utils import toon
+from ..utils import agent_hooks, toon
 
 app = typer.Typer(
     help="Agent-facing surface: structured TOON output on stdout, no interactive prompts."
@@ -176,6 +176,11 @@ def home(ctx: typer.Context) -> None:
                 # The verb that answers every other verb's `--bench`. A discovery
                 # verb an agent cannot discover would be half a fix.
                 "Run `cwcli axi benches <project>` to list a project's benches for `--bench`",
+                # This block is a curated FEW next steps, not the surface: the
+                # home is the per-session hook payload, so it stays small. That
+                # leaves the other verbs (start/status/restart/stop/label/apps/
+                # self-update) unreachable without a route to them - this is it.
+                "Run `cwcli axi --help` to see every verb",
             ],
         ),
     ]
@@ -742,4 +747,45 @@ def axi_self_update(
 
     assert result.data is not None  # check always returns data
     emit_result(result.data, warnings=result.warnings)
+    raise typer.Exit(0)
+
+
+# ----------------------------------------------------------------------------------- setup
+
+
+@app.command("setup")
+def axi_setup() -> None:
+    """Install the SessionStart hook into every detected agent harness; emit TOON.
+
+    The ambient-context half of the AXI surface: without it, an agent only finds
+    `cwcli axi` if a human names it. The hook runs the home view once per session,
+    so the verb list and the live instances are already in the agent's opening
+    context.
+
+    Explicit opt-in by design - nothing installs a hook off an ordinary command,
+    so this is the ONLY thing here that writes to the user's agent config. It is
+    idempotent (an already-correct hook reports `unchanged` and is not rewritten)
+    and repairs a stale executable path in place, so re-running it after a
+    reinstall or a move is the fix rather than a duplicate entry.
+    """
+    outcomes = agent_hooks.install()
+    rows = [
+        {"agent": o.agent, "status": o.status, "path": _collapse_home(o.path)} for o in outcomes
+    ]
+    lines = [toon.table("agents", rows, ["agent", "status", "path"])]
+
+    notes = [f"{o.agent}: {o.detail}" for o in outcomes if o.detail]
+    if notes:
+        lines.append(toon.block("notes", notes))
+
+    lines.append(
+        toon.block(
+            "help",
+            [
+                "Restart the agent session to pick up the hook",
+                "Run `cwcli axi` to see the same context the hook injects",
+            ],
+        )
+    )
+    typer.echo("\n".join(lines))
     raise typer.Exit(0)

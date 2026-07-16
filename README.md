@@ -1831,6 +1831,32 @@ cwcli axi self-update --check
 
 `cwcli axi apps list` is the read that answers what is *on* the bench `cwcli axi benches` names: the bench's available apps, and with `--installed`/`--site` which apps are installed on which site (only the app name, never the version column `bench list-apps` prints). A site whose read FAILED is reported as `null` and exits `1`, never as an empty list - "has no apps" and "could not tell" are different facts, and only one of them is safe to act on. Like every other bench-scoped verb it takes `--bench`, has no `--yes`, and reports a stopped project as a usage error naming `cwcli start` (exit 2). **`cwcli axi apps install` and `cwcli axi apps uninstall` deliberately do not exist:** letting an agent install into - or drop the tables of - a real site is a product decision that deserves its own evidence, not something settled as a side effect of moving code onto the logic core. Use the human `cwcli apps install`/`cwcli apps uninstall` (both have `--json` and honest exit codes) until that decision is taken.
 
+#### Making agents aware of the surface
+
+An agent cannot use a surface it does not know exists.
+There are two ways to tell it, and **you only need one**:
+
+**1. The SessionStart hook** (recommended - ambient, plus live state):
+
+```bash
+cwcli axi setup
+```
+
+This installs a session-start hook into every agent harness it detects - Claude Code (`~/.claude/settings.json`), Codex (`~/.codex/hooks.json`, plus `[features] hooks = true` in `config.toml`), and OpenCode (a managed plugin in `~/.config/opencode/plugins/`).
+The hook runs `cwcli axi` once per session and feeds the home view - the verb list *and* the live instance list - into the agent's opening context, so it can act without a discovery call.
+It is idempotent (re-running it reports `unchanged`), it repairs the recorded path in place after a reinstall or a move, and it skips any harness that is not installed rather than creating config directories for it.
+Restart the agent session to pick it up.
+
+**2. The installable skill** (no per-session token cost, works in any agent):
+
+```bash
+npx skills add karotkriss/caffeinated-whale-cli --skill cwcli
+```
+
+The skill ([`skills/cwcli/SKILL.md`](./skills/cwcli/SKILL.md)) loads on demand when the agent recognises a Frappe/ERPNext task, and costs nothing on sessions that never touch one.
+It is static, so it teaches the surface but cannot show live state - that is the hook's advantage.
+It is generated from the CLI's own verb registry (`uv run python scripts/build_skill.py`) and a test fails if the committed copy goes stale, so it cannot drift from the real surface.
+
 ### Verbose Mode for Debugging
 
 Use `-v` flag on any command to see detailed diagnostic output:
