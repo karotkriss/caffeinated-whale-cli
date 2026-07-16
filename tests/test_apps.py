@@ -926,6 +926,168 @@ def test_update_shell_interpolations_are_shlex_quoted(monkeypatch):
     assert any("'/workspace/frappe-bench/sites/weird site/locks'" in c for c in container.calls)
 
 
+def test_stuck_site_remediation_line_is_shlex_quoted(monkeypatch, capsys):
+    # The above test only asserts on container.calls (the exec), which is why it
+    # stayed green while the PRINTED remediation line lost its shlex.quote and
+    # became a broken, unquotable copy-paste command - exactly the message whose
+    # whole purpose is to let a human rescue a site left stuck in maintenance mode.
+    container = FakeFrappeContainer(available_apps=["frappe", "payments"])
+    _wire_update(monkeypatch, container)
+    _count_discovery(monkeypatch, ["weird site"])
+    container.fail_on = ["set-maintenance-mode off"]
+
+    with pytest.raises(typer.Exit):
+        update_mod.run_app_update("proj", ["payments"], verbose=True)
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert "bench --site 'weird site' set-maintenance-mode off" in out
+
+
+# ------------------------------------------- narration lines the table-driven
+# ------------------------------------ renderer rewrite silently dropped
+#
+# The characterization tests above only ever asserted on failure/summary text and
+# exec calls, never on this narration - which is exactly why they stayed green
+# while it vanished. These pin it back, with its original gating: item (1) is
+# UNCONDITIONAL, the rest are VERBOSE-ONLY (and asserted absent when not verbose).
+
+
+def test_maintenance_enabled_count_prints_unconditionally_and_counts_successes(monkeypatch, capsys):
+    # Not verbose-gated: the default path must still show that live sites went
+    # down before migrations start. N is who SUCCEEDED, not who was attempted.
+    container = FakeFrappeContainer(available_apps=["frappe", "payments"])
+    _wire_update(monkeypatch, container)
+    _no_sleep(monkeypatch)
+    _count_discovery(monkeypatch, ["a.localhost", "b.localhost"])
+    container.fail_on = ["--site b.localhost set-maintenance-mode on"]
+
+    with pytest.raises(typer.Exit):
+        update_mod.run_app_update("proj", ["payments"], verbose=False)
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert "Maintenance mode enabled for 1 site(s)" in out
+
+
+def test_migrate_batch_narration_verbose(monkeypatch, capsys):
+    container = FakeFrappeContainer(available_apps=["frappe", "payments"])
+    _wire_update(monkeypatch, container)
+    _no_sleep(monkeypatch)
+    _count_discovery(monkeypatch, ["a.localhost", "b.localhost"])
+
+    update_mod.run_app_update("proj", ["payments"], verbose=True)
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert "Migrating 2 affected site(s)" in out
+    assert "Migration complete for all affected sites" in out
+
+
+def test_migrate_batch_narration_when_nothing_to_migrate_verbose(monkeypatch, capsys):
+    container = FakeFrappeContainer(available_apps=["frappe", "payments"])
+    _wire_update(monkeypatch, container)
+    _no_sleep(monkeypatch)
+    _count_discovery(monkeypatch, [])  # no site has the app
+
+    update_mod.run_app_update("proj", ["payments"], verbose=True)
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert "No sites require migration" in out
+
+
+def test_migrate_batch_narration_is_verbose_only(monkeypatch, capsys):
+    container = FakeFrappeContainer(available_apps=["frappe", "payments"])
+    _wire_update(monkeypatch, container)
+    _no_sleep(monkeypatch)
+    _count_discovery(monkeypatch, ["a.localhost", "b.localhost"])
+
+    update_mod.run_app_update("proj", ["payments"], verbose=False)
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert "Migrating 2 affected site(s)" not in out
+    assert "Migration complete for all affected sites" not in out
+    assert "No sites require migration" not in out
+
+
+def test_build_intro_counts_only_apps_that_pulled_cleanly(monkeypatch, capsys):
+    container = FakeFrappeContainer(available_apps=["frappe", "payments", "hrms"])
+    _wire_update(monkeypatch, container)
+    _no_sleep(monkeypatch)
+    _count_discovery(monkeypatch, ["a.localhost"])
+    container.fail_on = ["apps/hrms"]  # hrms' pull fails, so it is not buildable
+
+    with pytest.raises(typer.Exit):
+        update_mod.run_app_update("proj", ["payments", "hrms"], verbose=True, build=True)
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert "Building assets for 1 app(s)" in out
+
+
+def test_build_intro_is_verbose_only(monkeypatch, capsys):
+    container = FakeFrappeContainer(available_apps=["frappe", "payments"])
+    _wire_update(monkeypatch, container)
+    _no_sleep(monkeypatch)
+    _count_discovery(monkeypatch, ["a.localhost"])
+
+    update_mod.run_app_update("proj", ["payments"], verbose=False, build=True)
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert "Building assets for" not in out
+
+
+def test_no_recache_skip_message_is_verbose_only(monkeypatch, capsys):
+    container = FakeFrappeContainer(available_apps=["frappe", "payments"])
+    _wire_update(monkeypatch, container)
+    _no_sleep(monkeypatch)
+    _count_discovery(monkeypatch, ["a.localhost"])
+
+    update_mod.run_app_update("proj", ["payments"], verbose=True, no_recache=True)
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert "Skipping recache (--no-recache flag set)" in out
+
+
+def test_no_recache_skip_message_does_not_print_when_not_verbose(monkeypatch, capsys):
+    container = FakeFrappeContainer(available_apps=["frappe", "payments"])
+    _wire_update(monkeypatch, container)
+    _no_sleep(monkeypatch)
+    _count_discovery(monkeypatch, ["a.localhost"])
+
+    update_mod.run_app_update("proj", ["payments"], verbose=False, no_recache=True)
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert "Skipping recache" not in out
+
+
+def test_discover_narration_is_verbose_only_and_skips_failed_apps(monkeypatch, capsys):
+    # A failed pull means the app is skipped BEFORE discovery, so it must produce
+    # no discovery narration at all - not even "no sites found".
+    container = FakeFrappeContainer(available_apps=["frappe", "payments", "hrms"])
+    _wire_update(monkeypatch, container)
+    _no_sleep(monkeypatch)
+    _patch_discovery_per_app(monkeypatch, {"payments": ["a.localhost"]})
+    container.fail_on = ["apps/hrms"]  # hrms' pull fails -> skipped before discovery
+
+    with pytest.raises(typer.Exit):
+        update_mod.run_app_update("proj", ["payments", "hrms"], verbose=True)
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert "Finding sites with 'payments' installed" in out
+    assert "Found 1 site(s) with 'payments' installed" in out
+    assert "Finding sites with 'hrms' installed" not in out
+
+
+def test_discover_narration_does_not_print_when_not_verbose(monkeypatch, capsys):
+    container = FakeFrappeContainer(available_apps=["frappe", "payments"])
+    _wire_update(monkeypatch, container)
+    _no_sleep(monkeypatch)
+    _count_discovery(monkeypatch, ["a.localhost"])
+
+    update_mod.run_app_update("proj", ["payments"], verbose=False)
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert "Finding sites with" not in out
+    assert "Found 1 site(s)" not in out
+
+
 def test_deprecated_update_warns_and_delegates(monkeypatch, capsys):
     called = {}
 

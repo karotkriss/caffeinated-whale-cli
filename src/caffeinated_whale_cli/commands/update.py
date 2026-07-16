@@ -16,6 +16,7 @@ so they cannot drift, and the alias stays a frontend rather than a second core p
 
 import dataclasses
 import json
+import shlex
 import sys
 
 import typer
@@ -85,10 +86,11 @@ _PHASE_INTROS = {
     "clear_locks": "\n[bold cyan]Clearing locks for {total} site(s)[/bold cyan]",
     "recache": "\n[dim]Re-caching project to ensure accurate site data...[/dim]",
     "maintenance_disable": "\n[bold cyan]Disabling maintenance mode...[/bold cyan]",
+    "build": "[bold cyan]Building assets for {total} app(s)[/bold cyan]",
 }
 
 # Phases whose intro only makes sense when the user asked to see the detail.
-_VERBOSE_ONLY_INTROS = {"maintenance_disable"}
+_VERBOSE_ONLY_INTROS = {"maintenance_disable", "build"}
 
 
 class _Renderer:
@@ -104,6 +106,7 @@ class _Renderer:
         self.verbose = verbose
         self._spinner: RichStatus | None = None
         self._intro_done: set[str] = set()
+        self._migrate_total = 0
 
     def __call__(self, event) -> None:
         if isinstance(event, UpdateStepStart):
@@ -134,6 +137,29 @@ class _Renderer:
 
     def _on_start(self, event) -> None:
         self._stop_spinner()
+
+        # Batch-boundary phases: their message depends on a count/condition rather
+        # than a fixed template, so they are rendered directly instead of through
+        # the generic _PHASES/_PHASE_INTROS tables below.
+        if event.phase == "migrate_batch":
+            self._migrate_total = event.total
+            if self.verbose:
+                if event.total == 0:
+                    console.print("[dim]No sites require migration[/dim]\n")
+                else:
+                    console.print(
+                        f"[bold cyan]Migrating {event.total} affected site(s)[/bold cyan]\n"
+                    )
+            return
+        if event.phase == "discover":
+            if self.verbose:
+                console.print(f"\n[dim]Finding sites with '{event.item}' installed...[/dim]")
+            return
+        if event.phase == "recache_skipped":
+            if self.verbose:
+                console.print("\n[dim]Skipping recache (--no-recache flag set)...[/dim]")
+            return
+
         spec = _PHASES.get(event.phase, {})
         fields = {"item": event.item, "index": event.index, "total": event.total}
 
@@ -166,6 +192,23 @@ class _Renderer:
 
     def _on_end(self, event) -> None:
         self._stop_spinner()
+
+        if event.phase == "migrate_batch":
+            if self.verbose and self._migrate_total:
+                console.print(
+                    "[bold green]✓[/bold green] Migration complete for all affected sites\n"
+                )
+            return
+        if event.phase == "discover":
+            if self.verbose and event.message:
+                console.print(f"  [dim]{event.message}[/dim]")
+            return
+        if event.phase == "maintenance_enable" and event.item is None:
+            # Unconditional (not verbose-gated): the default path must still show
+            # that live sites went down before migrations start.
+            console.print(f"[bold green]✓[/bold green] {event.message}\n")
+            return
+
         spec = _PHASES.get(event.phase, {})
 
         if event.status == "unknown":
@@ -280,7 +323,7 @@ def _report_summary(report: UpdateReport) -> None:
         for site in report.failed_maintenance_disable:
             console.print(
                 f"  • {site}: still in maintenance mode - run "
-                f"'bench --site {site} set-maintenance-mode off'"
+                f"'bench --site {shlex.quote(site)} set-maintenance-mode off'"
             )
 
 
