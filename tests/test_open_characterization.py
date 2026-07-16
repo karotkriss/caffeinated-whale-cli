@@ -225,9 +225,7 @@ class TestFallbackPopulateDegrade:
 
 class TestDockerHandover:
     def test_exec_into_container_receives_name_and_bench_dir(self, monkeypatch):
-        exec_mock = _patch_common(
-            monkeypatch, cached={"bench_instances": [{"path": BENCH_B}]}
-        )
+        exec_mock = _patch_common(monkeypatch, cached={"bench_instances": [{"path": BENCH_B}]})
 
         _run_open(docker=True)
 

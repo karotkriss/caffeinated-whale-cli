@@ -151,9 +151,7 @@ class TestFallbackPopulate:
             and e.text == "No cached bench path found. Running inspect..."
             for e in events
         )
-        assert calls == [
-            ("proj", {"refresh": "auto", "auto_start": True, "offer_choice": False})
-        ]
+        assert calls == [("proj", {"refresh": "auto", "auto_start": True, "offer_choice": False})]
         assert result.status is Status.OK
         assert result.data.working_dir == BENCH_B
         # The freshly-populated resolve is not the default-path degrade.
@@ -204,9 +202,7 @@ class TestFallbackPopulate:
         assert [w.text for w in result.warnings if w.code == "bench.default_used"] == [
             f"Inspect failed. Using default bench path: {DEFAULT}"
         ]
-        assert any(
-            isinstance(e, core_open.OpenTrace) and "Inspect error" in e.text for e in events
-        )
+        assert any(isinstance(e, core_open.OpenTrace) and "Inspect error" in e.text for e in events)
 
     def test_populate_succeeds_but_still_nothing_degrades_to_default(self, monkeypatch):
         self._no_cache(monkeypatch)
