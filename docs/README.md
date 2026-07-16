@@ -150,6 +150,7 @@ caffeinated-whale-cli/
 - Tab completion
 - VS Code integration
 - UI-pure logic core + `cwcli axi` agent surface
+- AXI cross-cutting shell (SessionStart hook + installable skill)
 
 See [Technical Directory](./technical/) for complete documentation.
 
