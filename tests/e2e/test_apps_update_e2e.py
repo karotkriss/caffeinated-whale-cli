@@ -102,9 +102,7 @@ def test_axi_apps_update_emits_one_toon_document(bench_shim):
     """`cwcli axi apps update` - one TOON document, exactly like `axi backup`."""
     inst = bench_shim(exit_code=0)
 
-    result = harness.run_cwcli(
-        "axi", "apps", "update", inst.name, "frappe", "--no-recache", "--yes"
-    )
+    result = harness.run_cwcli("axi", "apps", "update", inst.name, "frappe", "--no-recache")
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert _NOISE not in result.stdout, "bench output corrupted the TOON document"
@@ -228,7 +226,11 @@ def test_apps_update_noninteractive_without_yes_refuses_rather_than_hanging(sess
 
 
 def test_axi_apps_update_never_prompts_on_a_stopped_project(session_instance):
-    """The agent surface must refuse structurally, never wait for a human."""
+    """The agent surface must refuse structurally, never wait for a human.
+
+    There is deliberately no --yes on this verb (starting is UI-coupled), so a
+    stopped project is a documented usage error, exit 2, naming `cwcli start`.
+    """
     inst = session_instance
 
     stop = harness.run_cwcli("stop", inst.name)
@@ -237,9 +239,10 @@ def test_axi_apps_update_never_prompts_on_a_stopped_project(session_instance):
     try:
         result = harness.run_cwcli("axi", "apps", "update", inst.name, "frappe", timeout=300)
 
-        assert result.returncode != 0, result.stdout + result.stderr
+        assert result.returncode == 2, result.stdout + result.stderr
         # Still TOON on stdout, even refusing.
         assert result.stdout.startswith("error:"), result.stdout
+        assert "cwcli start" in result.stdout
     finally:
         harness.run_cwcli("start", inst.name, "--yes")
         harness.wait_for_site_ready(inst.name, inst.site)
