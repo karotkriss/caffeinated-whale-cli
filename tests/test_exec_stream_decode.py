@@ -30,6 +30,7 @@ from caffeinated_whale_cli.commands import run as run_mod
 from caffeinated_whale_cli.commands import update as update_mod
 from caffeinated_whale_cli.core import docker as core_docker
 from caffeinated_whale_cli.core import exec_stream as es
+from caffeinated_whale_cli.core import update as core_update
 from caffeinated_whale_cli.utils import docker_utils
 
 # ------------------------------------------------------------------ split fixture
@@ -117,12 +118,26 @@ def test_run_streams_split_character_intact(monkeypatch, capsys, split_stream):
 
 
 def test_apps_update_streams_split_character_intact(capsys, split_stream):
-    """``apps update`` / ``update`` via update._stream_command - same crash."""
-    exit_code = update_mod._stream_command(
-        split_stream, "bench migrate", "/workspace/frappe-bench", verbose=True
+    """``apps update`` / ``update`` - same crash.
+
+    Re-pointed at ``core.update`` (openspec `migrate-update-core`): the state machine
+    and its streaming moved there, so ``update._stream_command`` is gone. The PROPERTY
+    is what this file guards and it pins a crash that SHIPPED, so it is driven through
+    the real rendering path - the core's stream step feeding the CLI's own renderer,
+    which is what actually writes bench output to stdout.
+    """
+    code, lost = core_update._stream_step(
+        split_stream,
+        "bench migrate",
+        workdir="/workspace/frappe-bench",
+        phase="migrate",
+        item="a.localhost",
+        emit=update_mod._Renderer(verbose=True),
+        warnings=[],
     )
 
-    assert exit_code == 0
+    assert code == 0
+    assert lost is None
     assert capsys.readouterr().out == TEXT
 
 

@@ -506,6 +506,7 @@ def update_apps(
     no_recache: bool = typer.Option(
         False, "--no-recache", help="Skip re-caching after app updates."
     ),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Auto-start stopped containers without prompting."
     ),
@@ -529,4 +530,5 @@ def update_apps(
         no_recache=no_recache,
         yes=yes,
         sites=sites,
+        json_output=json_output,
     )

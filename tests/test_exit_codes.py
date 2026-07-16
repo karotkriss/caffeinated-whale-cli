@@ -23,6 +23,7 @@ from caffeinated_whale_cli.commands import stop as stop_mod
 from caffeinated_whale_cli.commands import update as update_mod
 from caffeinated_whale_cli.commands import utils as cmd_utils
 from caffeinated_whale_cli.core import stop as core_stop
+from caffeinated_whale_cli.core import update as core_update
 from caffeinated_whale_cli.utils import docker_utils
 
 
@@ -235,6 +236,10 @@ class _MaintFailContainer:
     while every other exec succeeds - the exact stuck-in-maintenance scenario."""
 
     labels = {"com.docker.compose.service": "frappe"}
+    status = "running"
+
+    def reload(self):
+        pass
 
     def exec_run(self, cmd, workdir=None, **kwargs):
         if "set-maintenance-mode off" in cmd:
@@ -244,21 +249,24 @@ class _MaintFailContainer:
 
 class TestUpdateMaintenanceDisableFailure:
     def test_disable_failure_alone_exits_one_and_names_site(self, monkeypatch, capsys):
+        # The state machine moved into core.update (openspec `migrate-update-core`),
+        # so the collaborators are patched there; the property - a stuck site is named
+        # with its recovery command and forces exit 1 - is unchanged.
         container = _MaintFailContainer()
         monkeypatch.setattr(cmd_utils, "ensure_containers_running", lambda *a, **k: True)
         monkeypatch.setattr(
             cmd_utils, "resolve_bench_path", lambda *a, **k: "/workspace/frappe-bench"
         )
-        monkeypatch.setattr(update_mod, "get_project_containers", lambda name: [container])
+        monkeypatch.setattr(core_update.core_docker, "get_frappe_container", lambda name: container)
         # Everything except the maintenance-off exec succeeds.
-        monkeypatch.setattr(update_mod, "_stream_command", lambda *a, **k: 0)
-        monkeypatch.setattr(update_mod, "_get_sites_with_app", lambda *a, **k: ["site1"])
-        monkeypatch.setattr(update_mod.time, "sleep", lambda *a, **k: None)
+        monkeypatch.setattr(core_update, "_stream_step", lambda *a, **k: (0, None))
+        monkeypatch.setattr(core_update, "_sites_with_app", lambda *a, **k: ["site1"])
+        monkeypatch.setattr(core_update.time, "sleep", lambda *a, **k: None)
 
         with pytest.raises(typer.Exit) as exc:
-            update_mod._update_project(
+            update_mod.run_app_update(
                 "proj",
-                apps=["myapp"],
+                ["myapp"],
                 verbose=True,
                 no_recache=True,
             )
