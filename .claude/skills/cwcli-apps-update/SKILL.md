@@ -12,6 +12,8 @@ description: >
   commands/update.py, core/update.py, or `axi apps list`/`axi apps update`, or touch app
   install/uninstall/update or bench migration behavior. Each note guards a real shipped bug - keep the
   root-cause "why".
+metadata:
+  internal: true
 ---
 
 # cwcli apps command group + update.py (sharp edges)
