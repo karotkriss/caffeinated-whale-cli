@@ -109,6 +109,18 @@ def test_status_degraded_when_supervisor_down(running_instance):
         interval=3,
         desc=f"{inst.name} supervisord down",
     )
+    # `web` unreachable only means ITS child died; supervisord's own master
+    # process (what `supervisor_up` actually reads via `ps`) keeps running while
+    # it drains the other Procfile programs, and its control socket can already be
+    # gone by then too (the `state` reads null above). Wait for the master itself
+    # to actually exit, or the status assertions below race a mid-shutdown
+    # supervisord that still shows up in `ps`.
+    harness.wait_until(
+        lambda: _supervisord_count(inst.name) == 0,
+        timeout=60,
+        interval=2,
+        desc=f"{inst.name} supervisord master process exited",
+    )
 
     res = harness.run_cwcli("status", inst.name)
     assert res.returncode == 0, res.stdout + res.stderr
