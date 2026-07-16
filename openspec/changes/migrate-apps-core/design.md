@@ -76,8 +76,14 @@ The frontend calls it after the core returns, gated on `any(r.ok for r in report
 `tests/test_apps.py` is the net. It must pass before and after, unchanged.
 
 - **Where "unchanged" is expected to hold:** every existing assertion about flags, messages, exit codes, and the JSON shapes.
-- **Where test edits are expected BY DESIGN:** none currently identified. If the implementation forces one, say which changed by design and which merely moved with its subject - do not silently rewrite a test to match new behaviour and call it characterization.
-- **Coverage baseline must be re-measured first-hand, not inherited.** Batch 4's tasks.md records the recon's numbers being stale by a PR; assume the same here.
+- **Where test edits are expected BY DESIGN: exactly two, identified before implementation and named here.**
+  The draft of this decision claimed "none currently identified". That was **wrong**, and re-reading the suite falsified it: `tests/test_apps.py:1151` (`test_capture_bench_reports_cwclierror_cleanly`) and `:1161` (`test_stream_bench_reports_cwclierror_cleanly`) bind directly to `apps_mod._capture_bench` / `apps_mod._stream_bench` - the exact helpers task 4.2 deletes.
+  Their SUBJECT moves; their BEHAVIOUR does not. Both pin "a `CwcliError` out of `exec_stream` renders `Error:` to stderr and exits 1", and that must still hold - relocated from inside the helper to the frontend's `try/except CwcliError` around the `core.<verb>` call, because the core cannot exit.
+  They are therefore REPLACED by equivalents bound to the new subject, with their assertions intact.
+  **Precedent, exactly:** batch 4 hit this and did the same thing - `tests/test_apps.py:1169`'s own comment reads "REPLACES test_update_stream_command_reports_cwclierror_cleanly, whose subject (update.py's `_stream_command`) moved into core.update with the state machine."
+  Everything else in `tests/test_apps.py` passes untouched.
+- **Why the streaming still works once the exec is in the core.** `_stream_bench` wrote to stdout, which the core may never do. The live output rides Decision 2's `on_event` callback: the core emits each `ExecChunk`'s text as an event, and the frontend's callback writes it to stdout (human) or buffers it (JSON). Both of the exec-stream contract's consumption modes are preserved, and the choice of which one moves to where it belongs - the renderer.
+- **Coverage baseline must be re-measured first-hand, not inherited.** Batch 4's tasks.md records the recon's numbers being stale by a PR; assume the same here. Done in task 1.1.
 
 ### 7. Do NOT add resolvers `apps` does not use today
 

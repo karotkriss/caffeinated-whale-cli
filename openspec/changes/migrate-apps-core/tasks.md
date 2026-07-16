@@ -5,12 +5,12 @@
   Missing lines: `65, 99-100, 116, 128, 133, 147, 176-177, 189, 216, 278, 342-343, 353, 430-431`.
   Adjacent, measured in the same run because Decision 8 turns on it: `core/update.py` **268 stmts, 87.69%**, with `296-322` (`_sites_with_app`'s live fallback) **entirely uncovered**.
   Command: `uv run pytest tests/test_apps.py --cov=caffeinated_whale_cli.commands.apps --cov-report=term`.
-- [ ] 1.2 Audit `tests/test_apps.py` for which of the three verbs' branches are actually covered, per verb, and write down the gaps BEFORE filling them. The claim "apps is well covered" is exactly the kind of inherited belief batch 4's tasks.md warns about.
-- [ ] 1.3 Cover `install`'s name derivation on BOTH paths: the `apps/` before/after diff yielding exactly one new dir (`apps.py:346-347`), and every fallback into `_derive_app_name` (zero new dirs / more than one new dir). This is the batch's risk concentration (design Risks).
-- [ ] 1.4 Cover `_derive_app_name`'s four input shapes (`apps.py:167-178`): plain name, git URL, `.git` suffix, `user@host:path`.
-- [ ] 1.5 Cover `list`'s partial-failure exit: a site whose `list-apps` fails is `installed[site] = None` and exits 1, and in `--json` mode the document is emitted BEFORE the non-zero exit (`apps.py:265-272`).
-- [ ] 1.6 Cover `uninstall`'s destructive gate in both modes: `--json` without `--yes` refuses (exit 1, no prompt), and the human path routes through `confirm_or_exit` (`apps.py:435-449`).
-- [ ] 1.7 Cover the `install` banner honesty branch: "App(s) fetched." vs "App(s) installed." depends on an `install-app` step actually having run (`apps.py:381-388`), so `--fetch-only` and a bench with no sites both say "fetched".
+- [x] 1.2 Audit `tests/test_apps.py` for which of the three verbs' branches are actually covered, per verb, and write down the gaps BEFORE filling them. The claim "apps is well covered" is exactly the kind of inherited belief batch 4's tasks.md warns about.
+- [x] 1.3 Cover `install`'s name derivation on BOTH paths: the `apps/` before/after diff yielding exactly one new dir (`apps.py:346-347`), and every fallback into `_derive_app_name` (zero new dirs / more than one new dir). This is the batch's risk concentration (design Risks).
+- [x] 1.4 Cover `_derive_app_name`'s four input shapes (`apps.py:167-178`): plain name, git URL, `.git` suffix, `user@host:path`.
+- [x] 1.5 Cover `list`'s partial-failure exit: a site whose `list-apps` fails is `installed[site] = None` and exits 1, and in `--json` mode the document is emitted BEFORE the non-zero exit (`apps.py:265-272`).
+- [x] 1.6 Cover `uninstall`'s destructive gate in both modes: `--json` without `--yes` refuses (exit 1, no prompt), and the human path routes through `confirm_or_exit` (`apps.py:435-449`).
+- [x] 1.7 Cover the `install` banner honesty branch: "App(s) fetched." vs "App(s) installed." depends on an `install-app` step actually having run (`apps.py:381-388`), so `--fetch-only` and a bench with no sites both say "fetched".
 - [ ] 1.8 These tests MUST pass **before** the migration and **after** it, **unchanged**. Per design Decision 6, no test edit is currently expected by design; if one becomes necessary, state which changed BY DESIGN and which merely moved with its subject.
 - [ ] 1.9 Note for whoever runs the suite: `/tmp/pytest-of-cmckay` is owned by `root` on this host, so `tmp_path` tests error in setup unless `TMPDIR` is redirected. Environmental, not a real failure.
 
