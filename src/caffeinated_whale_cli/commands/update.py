@@ -442,16 +442,17 @@ def run_app_update(
 
 
 def _resolve_bench_path(project_name, bench, bench_path, verbose, *, json_output=False) -> str:
-    """Resolve the bench, auto-running ``inspect`` once if nothing is cached.
+    """Resolve the bench, auto-running a core inspect once if nothing is cached.
 
-    The auto-inspect stays in the FRONTEND: it drives the ``inspect`` COMMAND, which
-    is un-migrated, and hoisting it here keeps that dependency out of the core (which
-    already has to reach back for the mid-fan-out recache, and should not do so
-    twice). ``core.update`` still falls back to the default path with a warning when
-    it is handed nothing, which is what the agent surface gets.
+    The auto-inspect stays in the FRONTEND (now over ``core.inspect``, which owns
+    the cache write): the flow around it - the "Running inspect..." notes and the
+    JSON-mode skip - is presentation. ``core.update`` still falls back to the
+    default path with a warning when it is handed nothing, which is what the agent
+    surface gets.
 
-    In JSON mode the auto-inspect is SKIPPED, because ``inspect``'s own rich output
-    goes to stdout and would corrupt the one-document contract. The fallback is then
+    The JSON-mode SKIP predates the migration (the old inspect COMMAND rendered its
+    tree to stdout, corrupting the one-document contract; the core populate renders
+    nothing) and is kept so ``--json`` behavior is unchanged: the fallback is then
     the same one ``apps``'s other subcommands already take, and the same one `axi`
     gets: the default path, with the core carrying a warning.
     """
@@ -472,18 +473,10 @@ def _resolve_bench_path(project_name, bench, bench_path, verbose, *, json_output
 
     stderr_console.print("[yellow]No cached bench path found. Running inspect...[/yellow]")
     try:
-        from .inspect import inspect as inspect_cmd_func
+        from ..core import inspect as core_inspect
+        from .inspect import render_error_exit
 
-        inspect_cmd_func(
-            project_name=project_name,
-            verbose=verbose,
-            json_output=False,
-            update=False,
-            no_refresh=False,
-            show_apps=False,
-            interactive=False,
-            yes=False,
-        )
+        core_inspect.inspect(project_name, refresh="auto")
         resolved = cli_resolve_bench_path(project_name, bench, None, verbose=verbose)
         if resolved:
             if verbose:
@@ -495,6 +488,8 @@ def _resolve_bench_path(project_name, bench, bench_path, verbose, *, json_output
         )
     except typer.Exit:
         raise
+    except CwcliError as e:
+        raise render_error_exit(project_name, e) from None
     except Exception as e:
         stderr_console.print(
             f"[yellow]Warning:[/yellow] Inspect failed. Using default bench path: "

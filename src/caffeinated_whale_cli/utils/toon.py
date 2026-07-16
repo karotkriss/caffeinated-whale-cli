@@ -77,6 +77,10 @@ def block(name: str, items: list[str]) -> str:
     return "\n".join(lines)
 
 
+def _is_scalar_value(value) -> bool:
+    return value is None or isinstance(value, (bool, int, float, str, Enum, Path))
+
+
 def _encode_value(key: str, value, indent: int) -> list[str]:
     pad = "  " * indent
     if isinstance(value, dict):
@@ -85,9 +89,22 @@ def _encode_value(key: str, value, indent: int) -> list[str]:
         return out
     if isinstance(value, list):
         if value and all(isinstance(v, dict) for v in value):
-            fields = list(value[0].keys())
-            tbl = table(key, value, fields).split("\n")
-            return [pad + tbl[0]] + [pad + line for line in tbl[1:]]
+            if all(_is_scalar_value(cell) for v in value for cell in v.values()):
+                # Uniform scalar records -> the compact tabular block.
+                fields = list(value[0].keys())
+                tbl = table(key, value, fields).split("\n")
+                return [pad + tbl[0]] + [pad + line for line in tbl[1:]]
+            # Records carrying nested collections (e.g. a bench's sites list)
+            # cannot be table cells - a cell is a scalar token, and stringifying
+            # a nested list would emit a Python repr, not TOON. Use TOON's list
+            # form instead: one "- "-marked item per record, fields nested.
+            out = [f"{pad}{key}[{len(value)}]:"]
+            item_pad = "  " * (indent + 2)
+            for item in value:
+                item_lines = _encode_dict(item, indent + 2)
+                out.append("  " * (indent + 1) + "- " + item_lines[0][len(item_pad) :])
+                out.extend(item_lines[1:])
+            return out
         # list of scalars -> inline
         rendered = ",".join(_scalar(v) for v in value)
         return [f"{pad}{key}[{len(value)}]: {rendered}" if value else f"{pad}{key}[0]:"]
@@ -151,6 +168,29 @@ def _self_check() -> None:
     b = block("help", ["Run `cwcli axi backup <project>`", "Run `cwcli ls`"])
     assert b.splitlines()[0] == "help[2]:"
     assert b.splitlines()[1] == "  Run `cwcli axi backup <project>`"
+
+    # Records carrying nested collections encode as TOON list items, not a table
+    # (a table cell is a scalar token; a nested list has no scalar form).
+    nested = encode(
+        {
+            "project": "proj",
+            "benches": [
+                {
+                    "index": 0,
+                    "path": "/workspace/frappe-bench",
+                    "available_apps": ["frappe", "erpnext"],
+                    "sites": [{"name": "dev.localhost", "installed_apps": ["frappe"]}],
+                }
+            ],
+        }
+    )
+    lines = nested.splitlines()
+    assert "benches[1]:" in lines, nested
+    assert "  - index: 0" in lines, nested
+    assert "    available_apps[2]: frappe,erpnext" in lines, nested
+    assert "    sites[1]:" in lines, nested
+    assert "      - name: dev.localhost" in lines, nested
+    assert "'" not in nested and "{" not in nested, nested  # no Python reprs leak
 
     print("toon self-check OK")
 

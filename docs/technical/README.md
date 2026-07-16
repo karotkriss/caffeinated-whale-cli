@@ -28,7 +28,7 @@ caffeinated-whale-cli/
 │   │   ├── restart.py         # Whole-stack restart, or one program via core.restart_process
 │   │   ├── logs.py            # Renderer over core.logs_plan; performs the `docker exec -it ... tail` itself
 │   │   ├── stop.py            # Stop containers
-│   │   ├── inspect.py         # Project inspection
+│   │   ├── inspect.py         # Renderer over core.inspect (tree/JSON, the -i labeling loop)
 │   │   ├── update.py          # App updates + migrations
 │   │   ├── backup.py          # Thin frontend over core.backup
 │   │   ├── list.py            # Thin frontend over core.list_instances (`cwcli ls`)
@@ -49,6 +49,7 @@ caffeinated-whale-cli/
 │   │   ├── status.py           # core.status - per-process health + pre-computed overall
 │   │   ├── restart.py          # core.restart_process - restart ONE supervised program, siblings untouched
 │   │   ├── logs.py             # core.logs_plan - resolves container/bench/program selection; the tail stays in the frontend
+│   │   ├── inspect.py          # core.inspect/inspect_raw - the T1/T2/T3 freshness tiers AND the cache write, one contract
 │   │   └── version.py          # core.version - install-method detection + PyPI lookup, shared by self-update and the passive notice
 │   └── utils/                  # Utility modules
 │       ├── docker_utils.py    # Docker client management
@@ -99,12 +100,12 @@ Intelligent port conflict detection:
 
 #### 3. Project Inspection & Caching
 
-**Modules:** `commands/inspect.py`, `utils/db_utils.py`
+**Modules:** `core/inspect.py`, `commands/inspect.py`, `utils/db_utils.py`
 
-Project structure discovery and caching:
+Project structure discovery and caching, on the UI-pure core (`core/inspect.py`); `commands/inspect.py` is a renderer over it:
 - Finds bench instances
 - Discovers sites and apps
-- SQLite-based caching
+- SQLite-based caching - the cache write lives in the core, not the renderer
 - Read-only freshness pass on cached reads, escalating to a full re-inspect on drift
 - Cache invalidation
 
@@ -141,7 +142,7 @@ Business logic and I/O live in `core/`, which imports no `rich`/`questionary`/`t
 - A decision the core can't make from its params comes back as `NEEDS_CHOICE`, never a prompt; each frontend resolves it its own way
 - No live Docker object crosses a `core.<verb>` return boundary - DTOs carry only serializable data
 - `cwcli axi` is a thin agent-facing frontend over the same core: it never prompts, emits [TOON](https://toonformat.dev) on stdout via the dependency-free `utils/toon.py` encoder, and maps outcomes to exit codes 0/1/2
-- `backup` was the first command migrated onto this pattern (`core/backup.py`), followed by the read-only `ls`/`list` (`core/list.py`) and `where` (`core/where.py`), and `start`+`status`+`restart` (`core/start.py`, `core/status.py`, `core/restart.py`, sharing the tracked-state contract in `core/supervision.py`, which runs the bench under supervisord); the shared bench-op resolvers were split into `core/resolvers.py`/`core/docker.py` (pure) plus thin CLI wrappers in `commands/utils.py`/`utils/docker_utils.py`
+- `backup` was the first command migrated onto this pattern (`core/backup.py`), followed by `unlock` (`core/unlock.py`), `stop` (`core/stop.py`), `label` (`core/label.py`), `run` (`core/run.py`, sharing the `core/exec_stream.py` exec contract), the read-only `ls`/`list` (`core/list.py`) and `where` (`core/where.py`), `start`+`status`+`restart` (`core/start.py`, `core/status.py`, `core/restart.py`, sharing the tracked-state contract in `core/supervision.py`, which runs the bench under supervisord), `logs` (`core/logs.py`), `apps`+`update` (`core/apps.py`, `core/update.py`), and `inspect` (`core/inspect.py` - the T1/T2/T3 freshness tiers AND the cache write); `restore`, `rm`, `config`, and `init` are not yet migrated. The shared bench-op resolvers were split into `core/resolvers.py`/`core/docker.py` (pure) plus thin CLI wrappers in `commands/utils.py`/`utils/docker_utils.py`
 
 See `openspec/changes/core-logic-foundation/design.md` for the seven locked architecture decisions.
 

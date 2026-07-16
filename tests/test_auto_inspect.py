@@ -149,12 +149,12 @@ def test_log_omits_the_traceback_by_default(isolated_run_dir):
 
 def test_inspect_failure_logs_the_exception_type_and_traceback(isolated_run_dir, monkeypatch):
     """A failing inspect records what actually went wrong, not a bare message."""
-    import caffeinated_whale_cli.commands.inspect as inspect_module
+    import caffeinated_whale_cli.core.inspect as core_inspect_module
 
-    def boom(**kwargs):
+    def boom(*args, **kwargs):
         raise RuntimeError("docker exploded")
 
-    monkeypatch.setattr(inspect_module, "inspect", boom)
+    monkeypatch.setattr(core_inspect_module, "inspect", boom)
 
     assert auto_inspect._inspect_project("some-project") is False
 
