@@ -114,7 +114,7 @@ CWE2E_FRAPPE_MAJOR=16 uv run pytest tests/e2e -m e2e
 
 ### Current Status
 
-- **Overall project**: ~67% coverage at 0.37.0, unreleased (1035 tests across 62 test files; see the [Testing Directory](./testing/) for the per-module breakdown).
+- **Overall project**: ~67% coverage at 0.37.0, unreleased (1084 tests across 64 test files; see the [Testing Directory](./testing/) for the per-module breakdown).
 - **Target**: Expand coverage on the modules that still have none (`port_utils.py`, `sendme_utils.py`, `vscode_utils.py`).
 
 See [Testing Directory](./testing/) for complete documentation.
@@ -150,6 +150,7 @@ caffeinated-whale-cli/
 - Tab completion
 - VS Code integration
 - UI-pure logic core + `cwcli axi` agent surface
+- AXI cross-cutting shell (SessionStart hook + installable skill)
 
 See [Technical Directory](./technical/) for complete documentation.
 
