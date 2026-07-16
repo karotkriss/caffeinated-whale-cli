@@ -29,6 +29,7 @@ from pathlib import Path
 
 import typer
 
+from ..core import apps as core_apps
 from ..core import backup as core_backup
 from ..core import label as core_label
 from ..core import list as core_list
@@ -571,10 +572,66 @@ def axi_label(
     raise typer.Exit(0 if result.status in (CoreStatus.OK, CoreStatus.WARNING) else 1)
 
 
-# ------------------------------------------------------------------------- apps update
+# --------------------------------------------------------------------------- apps list
 
 apps_app = typer.Typer(help="Manage Frappe apps: structured, non-interactive.")
 app.add_typer(apps_app, name="apps")
+
+
+@apps_app.command("list")
+def axi_apps_list(
+    project: str = typer.Argument(..., help="The Docker Compose project name."),
+    bench: str = typer.Option(None, "--bench", help="Which bench: numeric index or label."),
+    sites: list[str] = typer.Option(
+        None, "--site", help="List installed apps for the named site(s). Repeatable."
+    ),
+    installed: bool = typer.Option(
+        False, "--installed", help="Also report apps installed per site (all sites by default)."
+    ),
+) -> None:
+    """List a bench's available apps, and (with --installed/--site) installed per site.
+
+    The read an agent could not do before: which apps exist on a bench, and which
+    are installed on which site. `axi benches` answers `--bench`; this answers what
+    is on the bench it names.
+
+    A site whose read FAILED is reported as null and exits 1, never as an empty
+    list: "no apps" and "could not tell" are different facts, and only one of them
+    is honest to act on. The exit code reads `ok`, NOT the envelope status - a
+    partial read failure is a WARNING-shaped envelope, and WARNING maps to 0
+    everywhere else.
+
+    A stopped project is a usage error (exit 2) naming `cwcli start`, matching
+    `axi backup`/`axi unlock`/`axi apps update`. There is deliberately no --yes:
+    starting a container is UI-coupled, so an agent composes `cwcli axi start`
+    then this verb.
+
+    `axi apps install`/`axi apps uninstall` deliberately do NOT exist yet
+    (captain-locked, 2026-07-15): letting an agent destroy site data is a product
+    decision on its own evidence, not a side effect of a refactor.
+    """
+    try:
+        result = core_apps.list_apps(
+            project,
+            bench=bench,
+            sites=list(sites) if sites else None,
+            installed=installed,
+        )
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    if result.status is CoreStatus.NEEDS_CHOICE:
+        assert result.choice is not None  # NEEDS_CHOICE always carries a Choice
+        emit_axi_choice_as_usage_error(result.choice)
+        raise typer.Exit(2)
+
+    assert result.data is not None  # OK/WARNING always carries an AppsListing
+    emit_result(result.data, warnings=result.warnings)
+    raise typer.Exit(0 if result.data.ok else 1)
+
+
+# ------------------------------------------------------------------------- apps update
 
 
 @apps_app.command("update")
