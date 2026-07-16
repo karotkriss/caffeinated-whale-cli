@@ -30,6 +30,7 @@ What it pins, byte-for-byte where the spec demands bytes:
 import json
 import shlex
 
+import click
 import pytest
 import typer
 
@@ -325,7 +326,10 @@ class TestShowAppsRemoved:
 
         result = CliRunner().invoke(app, ["inspect", "proj", "--show-apps"])
         assert result.exit_code == 2
-        assert "--show-apps" in result.output
+        # Typer force-enables rich's terminal styling under GITHUB_ACTIONS, which
+        # splits "--show-apps" across several ANSI-styled spans; unstyle first so
+        # the substring check is stable both locally and in CI.
+        assert "--show-apps" in click.unstyle(result.output)
 
     def test_short_a_is_rejected_as_unknown_option(self):
         from typer.testing import CliRunner
