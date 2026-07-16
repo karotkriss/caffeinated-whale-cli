@@ -105,7 +105,7 @@ uv run pytest -x
 
 ### Current Test Coverage
 
-`tests/` holds 55 `test_*.py` suites totaling 880 tests at ~64% overall coverage (measured with `uv run pytest --cov` at 0.37.0, unreleased).
+`tests/` holds 56 `test_*.py` suites totaling 901 tests at ~64% overall coverage (measured with `uv run pytest --cov` at 0.37.0, unreleased).
 See the [Testing Directory Index](./README.md#current-status) for the full per-area breakdown.
 `test_completion_utils.py` remains the most complete single-module suite (tab completion, ~92% coverage): project name completion, app name completion, site name completion, cache functionality, Docker client management.
 
@@ -346,6 +346,21 @@ CI is two-tiered. The fast `unit` tier runs on every push and PR via `.github/wo
 The real-Docker `e2e` tier runs via `.github/workflows/e2e.yml` on a v14/v15/v16 Frappe matrix, on PRs into `develop`/`master` and on-demand via the `e2e` PR label.
 
 The `Pytest` (unit) job is the always-required gate; a second `Mypy` job runs `uv run mypy src/` as a zero-error gate (it fails on any type error). See the [CI/CD Workflows guide](../contributing/ci-cd.md) for details.
+
+### The Windows job: why it exists and why it is narrow
+
+A third job, `Pytest (Windows, auto-inspect)`, runs `tests/test_auto_inspect.py` on `windows-latest`.
+
+It exists because every other job runs `ubuntu-latest`, and that is exactly how a Windows-only defect survived in `utils/auto_inspect.py`: `os.kill(pid, 0)` is an inert liveness probe on POSIX, but on Windows `signal.CTRL_C_EVENT == 0` routes it to `GenerateConsoleCtrlEvent`, which *succeeds for an already-dead pid*.
+The daemon therefore reported itself running off a stale PID file and `auto-inspect start` refused with "already running" from then on.
+No amount of mocking `sys.platform` finds that; only a real Windows kernel does.
+The repo is public, so `windows-latest` minutes are free - there is no cost argument for leaving this class of bug uncovered.
+
+The job is **deliberately narrow**, and the honest reason is that widening it is unproven work rather than a line of YAML.
+The Linux jobs run inside a `ghcr.io/astral-sh/uv` container that a Windows runner cannot use, so this job stands alone with `astral-sh/setup-uv`; and the rest of the unit tier has never been exercised on Windows, so pointing `-m unit` at this runner would be a guess.
+Running the full unit tier on Windows is worth doing and is tracked as its own task.
+
+When you touch platform-dependent process, path, or signal handling, add the test here rather than assuming the Linux jobs cover it.
 
 ## Debugging Tests
 

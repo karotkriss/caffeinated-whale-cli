@@ -34,6 +34,39 @@ jobs:
       - name: Run unit tests with coverage
         run: uv run pytest -m unit --cov=caffeinated_whale_cli --cov-report=term-missing
 
+  # Every other job here runs ubuntu-latest, which is precisely how a Windows-only
+  # defect lived in utils/auto_inspect.py unnoticed: os.kill(pid, 0) is an inert
+  # liveness probe on POSIX, but on Windows signal.CTRL_C_EVENT == 0 routes it to
+  # GenerateConsoleCtrlEvent, which SUCCEEDS for an already-dead pid - so the
+  # daemon reported itself running off a stale PID file and `auto-inspect start`
+  # refused forever. A mocked platform cannot catch that class of bug (a static
+  # scan of this same code guessed the wrong mechanism for ten days) - only a real
+  # Windows kernel can - and this repo is public, so windows-latest is free.
+  #
+  # Deliberately NARROW: this runs tests/test_auto_inspect.py, not the full unit
+  # tier. The other jobs run inside a Linux uv container that a Windows runner
+  # cannot use, and the rest of the suite has never been exercised on Windows, so
+  # widening this to `-m unit` is its own piece of work rather than something to
+  # bolt on here. See docs/testing/guide.md.
+  windows-auto-inspect:
+    name: Pytest (Windows, auto-inspect)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
+
+      - name: Install dependencies
+        run: uv sync --frozen --all-extras
+
+      - name: Run auto-inspect tests on real Windows
+        run: uv run pytest tests/test_auto_inspect.py -v
+
   typecheck:
     name: Mypy
     runs-on: ubuntu-latest
