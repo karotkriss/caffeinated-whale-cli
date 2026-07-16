@@ -114,7 +114,7 @@ CWE2E_FRAPPE_MAJOR=16 uv run pytest tests/e2e -m e2e
 
 ### Current Status
 
-- **Overall project**: ~67% coverage at 0.37.0, unreleased (1110 tests across 65 test files; see the [Testing Directory](./testing/) for the per-module breakdown).
+- **Overall project**: ~70% coverage at 0.37.0, unreleased (1183 tests across 71 test files; see the [Testing Directory](./testing/) for the per-module breakdown).
 - **Target**: Expand coverage on the modules that still have none (`port_utils.py`, `sendme_utils.py`, `vscode_utils.py`).
 
 See [Testing Directory](./testing/) for complete documentation.
@@ -153,33 +153,6 @@ caffeinated-whale-cli/
 - AXI cross-cutting shell (SessionStart hook + installable skill)
 
 See [Technical Directory](./technical/) for complete documentation.
-
-## Project Statistics
-
-### Commit Analysis (79 commits)
-
-| Type | Count | % | Most Common Use |
-|------|-------|---|-----------------|
-| `chore:` | 29 | 36.7% | Version bumps, CHANGELOG |
-| `fix:` | 24 | 30.4% | Bug fixes |
-| `feat:` | 16 | 20.3% | New features |
-| Other | 10 | 12.6% | Merges, refactors |
-
-### Active Branches
-
-```
-develop              # Main development branch
-feat-tab-completion  # Tab completion feature
-init                 # Initialization commands
-ports                # Port conflict detection
-```
-
-### Test Coverage
-
-- **Test Files**: 50
-- **Total Tests**: 780
-- **Overall Coverage**: ~62% at 0.37.0 (unreleased)
-- See the [Testing Directory](./testing/) for the per-module breakdown.
 
 ## Common Tasks
 

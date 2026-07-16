@@ -39,6 +39,7 @@ from caffeinated_whale_cli.commands import inspect as inspect_mod
 from caffeinated_whale_cli.commands import open as open_mod
 from caffeinated_whale_cli.core import docker as core_docker
 from caffeinated_whale_cli.core import inspect as core_inspect
+from caffeinated_whale_cli.utils import db_utils
 
 BENCH = "/home/frappe/frappe-bench"
 
@@ -557,12 +558,11 @@ class TestOpenAppMatchesSelectedBench:
         frappe = MagicMock()
         frappe.labels = {"com.docker.compose.service": "frappe"}
         frappe.name = "proj-frappe-1"
+        frappe.status = "running"  # the plan's run-state re-check must see it running
         monkeypatch.setattr(open_mod, "ensure_containers_running", lambda *a, **k: True)
-        monkeypatch.setattr(open_mod, "get_project_containers", lambda name: [frappe])
-        # No editors installed -> the only thing that matters is the --app check.
-        monkeypatch.setattr(open_mod.vscode_utils, "is_vscode_installed", lambda: False)
-        monkeypatch.setattr(open_mod.vscode_utils, "is_vscode_insiders_installed", lambda: False)
-        monkeypatch.setattr(open_mod.vscode_utils, "is_cursor_installed", lambda: False)
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.core.docker.get_project_containers", lambda name: [frappe]
+        )
         # Two benches: appA only in bench-a, appB only in bench-b.
         cached = {
             "project_name": "proj",
@@ -572,7 +572,7 @@ class TestOpenAppMatchesSelectedBench:
             ],
             "last_updated": "now",
         }
-        monkeypatch.setattr(open_mod.db_utils, "get_cached_project_data", lambda name: cached)
+        monkeypatch.setattr(db_utils, "get_cached_project_data", lambda name: cached)
         # Isolate the bench-SELECTION logic: the in-memory refresh returns the cache
         # unchanged (no drift), so available_apps come from the path-matched bench.
         monkeypatch.setattr(

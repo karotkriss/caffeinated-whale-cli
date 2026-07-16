@@ -767,9 +767,9 @@ cwcli label my-project 1 --clear
 
 ---
 
-### `open` - Open in VS Code or Docker Exec
+### `open` - Open in VS Code, Cursor, or Docker Exec
 
-Opens a project's frappe container in VS Code (with Dev Containers) or executes into it.
+Opens a project's frappe container in VS Code/Cursor (with Dev Containers) or executes into it.
 
 ```bash
 cwcli open [OPTIONS] PROJECT_NAME
@@ -790,15 +790,16 @@ cwcli open [OPTIONS] PROJECT_NAME
 | `-a`, `--app TEXT` | App name to open (opens the app's directory within the bench) |
 | `--code` | Open with VS Code directly (skips interactive prompt) |
 | `--code-insiders` | Open with VS Code Insiders directly (skips interactive prompt) |
+| `--cursor` | Open with Cursor directly (skips interactive prompt) |
 | `--docker` | Open with Docker exec directly (skips interactive prompt) |
 | `-y`, `--yes` | Auto-start stopped containers without prompting |
 | `-v`, `--verbose` | Enable verbose diagnostic output |
 
 **Features:**
 
-- Auto-detects VS Code and VS Code Insiders installations
+- Auto-detects VS Code, VS Code Insiders, and Cursor installations
 - Interactive editor selection menu (when no editor flag specified)
-- Direct editor selection via `--code`, `--code-insiders`, or `--docker` flags
+- Direct editor selection via `--code`, `--code-insiders`, `--cursor`, or `--docker` flags
 - Automatically installs required VS Code extensions (Docker and Dev Containers)
 - Uses cached bench paths from `inspect` command
 - Docker exec opens in bench directory (respects working directory)
