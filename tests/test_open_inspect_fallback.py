@@ -12,6 +12,11 @@ with the guessed default path (``/workspace/frappe-bench``) instead of aborting.
 The fix adds an explicit ``except CwcliError`` branch (shared via
 ``commands.inspect.render_error_exit``) that re-raises as ``typer.Exit(1)``,
 restoring the pre-migration abort semantics.
+
+Since the ``migrate-open-core`` batch the mechanism lives in
+``core.open._fallback_populate`` (``except CwcliError: raise``; the frontend
+renders it as exit 1) - the patch targets moved with their subject, the
+assertions are untouched.
 """
 
 from unittest.mock import MagicMock
@@ -21,6 +26,7 @@ import typer
 
 from caffeinated_whale_cli.commands import open as open_mod
 from caffeinated_whale_cli.core import inspect as core_inspect
+from caffeinated_whale_cli.core import resolvers
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 
 
@@ -35,14 +41,14 @@ def _patch_common(monkeypatch):
     frappe = MagicMock()
     frappe.labels = {"com.docker.compose.service": "frappe"}
     frappe.name = "proj-frappe-1"
+    frappe.status = "running"  # the plan's run-state re-check must see it running
     monkeypatch.setattr(open_mod, "ensure_containers_running", lambda *a, **k: True)
-    monkeypatch.setattr(open_mod, "get_project_containers", lambda name: [frappe])
-    monkeypatch.setattr(open_mod.vscode_utils, "is_vscode_installed", lambda: False)
-    monkeypatch.setattr(open_mod.vscode_utils, "is_vscode_insiders_installed", lambda: False)
-    monkeypatch.setattr(open_mod.vscode_utils, "is_cursor_installed", lambda: False)
-    # No cache: the first resolve_bench_path call (before the spinner) returns
-    # None, which is what triggers the fallback populate under test.
-    monkeypatch.setattr(open_mod, "resolve_bench_path", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "caffeinated_whale_cli.core.docker.get_project_containers", lambda name: [frappe]
+    )
+    # No cache: resolve_bench finds no cached benches and returns None, which is
+    # what triggers the fallback populate under test.
+    monkeypatch.setattr(resolvers, "cached_benches", lambda _p: [])
 
 
 def _run_open(**overrides):
@@ -68,7 +74,7 @@ class TestOpenFallbackAbortsOnHardInspectFailure:
         exec_mock = MagicMock()
         monkeypatch.setattr(open_mod, "exec_into_container", exec_mock)
 
-        def raise_not_found(project_name, refresh="auto"):
+        def raise_not_found(project_name, **kwargs):
             raise CwcliError(
                 ErrorKind.NOT_FOUND,
                 "bench.none_found",
