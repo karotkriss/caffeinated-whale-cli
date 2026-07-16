@@ -69,7 +69,7 @@ The real-Docker E2E is Linux-only; Windows/macOS-specific code stays in the unit
 
 ## Test Files
 
-As of 0.37.0 (unreleased), `tests/` holds 55 `test_*.py` suites totaling 880 tests in the
+As of 0.37.0 (unreleased), `tests/` holds 56 `test_*.py` suites totaling 901 tests in the
 `unit` tier (measured with `uv run pytest --cov`). Run `ls tests/` for the
 authoritative current list; see [../docs/testing/README.md](../docs/testing/README.md)
 for the per-area breakdown.
@@ -116,12 +116,13 @@ Tests for tab completion functionality.
 
 ## Test Coverage
 
-Current overall coverage at 0.37.0, unreleased (880 tests across 55 test files, ~64% overall).
+Current overall coverage at 0.37.0, unreleased (901 tests across 56 test files, ~64% overall).
 
 ### Covered Modules
 - ✅ `utils/completion_utils.py` - 92% (7 missing lines)
 - ✅ `utils/bench_labels.py` - ~94% (`test_bench_labels`, `test_bench_selector`, `test_bench_label_db_and_command`)
 - ✅ `utils/db_utils.py` - ~68% (`test_db_security`, `test_config_validation`)
+- ✅ `utils/auto_inspect.py` - first-ever dedicated suite (`test_auto_inspect`: the Windows `WaitForSingleObject`-based `_pid_alive` probe, the fork-unavailable subprocess fallback and its Windows-path bootstrap source, `_spawn_detached` routing the child's stderr to the log file instead of `DEVNULL`, `_log(exc_info=True)` recording the traceback, the `int(config.get("interval"))` coercion, and stale-PID-file cleanup)
 - ✅ `commands/inspect.py` - ~62% (`test_inspect_partial_refresh`, `test_inspect_label_recovery`)
 - ✅ `commands/restore.py` - ~43% (`test_restore_safety`, `test_restore_inspect_fixes`)
 - ✅ `commands/rm.py` - ~84% (`test_rm_safety`, `test_rm_truth`, `test_rm_stopped`, `test_rm_stopped_backup`)
