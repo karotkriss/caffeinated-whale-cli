@@ -1,9 +1,6 @@
 import platform
-import shutil
 import subprocess
-from typing import Literal
 
-import questionary
 import typer
 from rich.console import Console
 
@@ -14,62 +11,6 @@ console_err = Console(stderr=True)
 
 # Use shell=True on Windows to resolve .cmd files in PATH
 IS_WINDOWS = platform.system() == "Windows"
-
-
-def is_vscode_installed() -> bool:
-    """Check if VS Code (stable) is installed."""
-    return shutil.which("code") is not None
-
-
-def is_vscode_insiders_installed() -> bool:
-    """Check if VS Code Insiders is installed."""
-    return shutil.which("code-insiders") is not None
-
-
-def is_cursor_installed() -> bool:
-    """Check if Cursor is installed."""
-    return shutil.which("cursor") is not None
-
-
-def select_vscode_editor() -> Literal["code", "code-insiders", "cursor", "docker"]:
-    """
-    Detect available VS Code installations and prompt user to choose.
-    Always includes Docker exec as an option.
-
-    Returns:
-        str: The selected command ('code', 'code-insiders', 'cursor', or 'docker')
-    """
-    vscode_stable = is_vscode_installed()
-    vscode_insiders = is_vscode_insiders_installed()
-    cursor = is_cursor_installed()
-
-    # Build choices based on what's available
-    choices = []
-    if vscode_stable:
-        choices.append("VS Code")
-    if vscode_insiders:
-        choices.append("VS Code Insiders")
-    if cursor:
-        choices.append("Cursor")
-
-    # Always include Docker as an option
-    choices.append("Docker (exec into container)")
-
-    # If only Docker is available, use it directly
-    if len(choices) == 1:
-        return "docker"
-
-    # Let user choose
-    choice = questionary.select("Select editor:", choices=choices).ask()
-
-    if choice == "VS Code":
-        return "code"
-    elif choice == "VS Code Insiders":
-        return "code-insiders"
-    elif choice == "Cursor":
-        return "cursor"
-    else:
-        return "docker"
 
 
 def is_dev_containers_installed(vscode_command: str, verbose: bool = False) -> bool:
