@@ -134,7 +134,18 @@ def _run_normal(
     no_migrate=True,
     start_stub=None,
 ):
-    """Drive the real ``restore`` command's normal path (selector-driven, --yes)."""
+    """Drive the real ``restore`` command's normal path (selector-driven, --yes).
+
+    Re-pointed BY DESIGN at the migrated seams: container discovery, run-state, and
+    bench resolution moved into ``core.restore`` (so they are patched there), the
+    frontend keeps only the ``ensure_containers_running`` / ``resolve_bench_path``
+    prologue, and the post-restore restart is ``core.start.start``.
+    """
+    from types import SimpleNamespace
+
+    from caffeinated_whale_cli.core import restore as core_restore
+    from caffeinated_whale_cli.core.envelope import Result, Status
+
     mono = MagicMock()
     mono.isatty.return_value = False
     monkeypatch.setattr(restore_mod.sys, "stdin", mono)
@@ -144,23 +155,40 @@ def _run_normal(
     monkeypatch.setattr(docker_utils_mod, "shutil", MagicMock())
     monkeypatch.setattr(docker_utils_mod, "docker", MagicMock(from_env=lambda: fake_docker))
 
+    # Frontend prologue seams.
     monkeypatch.setattr(restore_mod, "ensure_containers_running", lambda *a, **k: True)
-    monkeypatch.setattr(restore_mod, "get_project_containers", lambda name: [container])
     monkeypatch.setattr(
         restore_mod,
         "resolve_bench_path",
         lambda project, bench, path, *, on_ambiguous="error", verbose=False: BENCH_PATH,
     )
-    monkeypatch.setattr(restore_mod.db_utils, "get_cached_project_data", lambda name: None)
     monkeypatch.setattr(restore_mod, "TipSpinner", _NullSpinner)
     monkeypatch.setattr(restore_mod.config_utils, "get_show_tips", lambda: False)
     monkeypatch.setattr(restore_mod.questionary, "select", lambda *a, **k: _stub_question(None))
     monkeypatch.setattr(restore_mod.questionary, "confirm", lambda *a, **k: _stub_question(True))
 
-    if start_stub is not None:
-        import caffeinated_whale_cli.commands.start as start_mod
+    # Core seams (container discovery + run-state + bench moved here).
+    monkeypatch.setattr(core_restore.core_docker, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(
+        core_restore.resolvers,
+        "resolve_container_state",
+        lambda *a, **k: SimpleNamespace(status=Status.OK, choice=None),
+    )
+    monkeypatch.setattr(
+        core_restore.resolvers,
+        "resolve_bench",
+        lambda *a, **k: Result(status=Status.OK, data=BENCH_PATH, warnings=[]),
+    )
 
-        monkeypatch.setattr(start_mod, "_start_project", start_stub)
+    import caffeinated_whale_cli.core.start as core_start
+
+    if start_stub is not None:
+        # Adapt the old _start_project(**kwargs)->log_path stub to core.start.start.
+        def core_start_stub(project_name, *, bench_path=None, restart=False, **k):
+            log = start_stub(project_name, bench_path_override=bench_path, restart=restart)
+            return Result(status=Status.OK, data=SimpleNamespace(log_path=log))
+
+        monkeypatch.setattr(core_start, "start", core_start_stub)
 
     def record(*args, **kwargs):
         container.printed.append(" ".join(str(a) for a in args))

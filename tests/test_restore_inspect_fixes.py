@@ -25,6 +25,8 @@ import pytest
 import typer
 
 from caffeinated_whale_cli.commands import restore as restore_mod
+from caffeinated_whale_cli.core import restore as core_restore
+from caffeinated_whale_cli.core.envelope import Result, Status
 from caffeinated_whale_cli.utils import bench_sites, db_utils
 
 BENCH_PATH = "/workspace/frappe-bench"
@@ -135,8 +137,13 @@ class TestReceiveUsesFullDbPath:
     and mirror the normal path's arg order."""
 
     def _run(self, monkeypatch, db_filename, files=None, private=None):
+        # Re-pointed BY DESIGN: receive became the frontend _run_receive over
+        # core.receive_plan + core.restore_apply. The full-container-path + arg
+        # order are built in core.restore_apply; the sendme download stays frontend.
         import subprocess
         from pathlib import Path
+
+        from caffeinated_whale_cli.core.envelope import Result, Status
 
         container = RecordingContainer(sites={SITE: ["frappe 15.0.0 version-15"]})
 
@@ -146,10 +153,7 @@ class TestReceiveUsesFullDbPath:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(subprocess, "run", fake_sendme_run)
-        monkeypatch.setattr(restore_mod, "ensure_containers_running", lambda *a, **k: True)
-        monkeypatch.setattr(restore_mod, "get_project_containers", lambda name: [container])
         monkeypatch.setattr(restore_mod, "get_sendme_command", lambda: "sendme")
-        monkeypatch.setattr(restore_mod, "check_missing_apps", lambda *a, **k: [])
         monkeypatch.setattr(restore_mod, "TipSpinner", _NullSpinner)
         monkeypatch.setattr(restore_mod.config_utils, "get_show_tips", lambda: False)
         monkeypatch.setattr(
@@ -160,17 +164,31 @@ class TestReceiveUsesFullDbPath:
         monkeypatch.setattr(restore_mod.console, "print", lambda *a, **k: None)
         monkeypatch.setattr(restore_mod.stderr_console, "print", lambda *a, **k: None)
 
-        restore_mod.restore_receive_mode(
-            project_name="proj",
+        monkeypatch.setattr(
+            core_restore.core_docker, "get_frappe_container", lambda name: container
+        )
+        monkeypatch.setattr(
+            core_restore.resolvers,
+            "resolve_container_state",
+            lambda *a, **k: SimpleNamespace(status=Status.OK, choice=None),
+        )
+        monkeypatch.setattr(
+            core_restore.resolvers,
+            "resolve_bench",
+            lambda *a, **k: Result(status=Status.OK, data=BENCH_PATH, warnings=[]),
+        )
+        monkeypatch.setattr(core_restore, "check_missing_apps", lambda *a, **k: [])
+
+        restore_mod._run_receive(
+            "proj",
             site=SITE,
             bench_path=BENCH_PATH,
             mariadb_root_username="root",
             mariadb_root_password="pw",
             admin_password=None,
-            no_recache=True,
-            verbose=False,
             yes=True,
             no_migrate=True,
+            verbose=False,
         )
         return container
 
@@ -310,11 +328,14 @@ class TestMariadbCredentialModes:
         # Root fix: every questionary.confirm in the restore flow must pass
         # auto_enter=False so it consumes its own trailing Enter and cannot leave a
         # stray keystroke for the following password prompt to swallow as empty.
+        # After the core migration the four confirms collapse into ONE shared
+        # ``_gate`` helper, so there is exactly one confirm and it keeps
+        # auto_enter=False (BY DESIGN - the four call sites became one).
         import inspect
 
         src = inspect.getsource(restore_mod)
-        assert src.count("questionary.confirm(") == 4
-        assert src.count("auto_enter=False") == 4
+        assert src.count("questionary.confirm(") == 1
+        assert src.count("auto_enter=False") == 1
 
 
 # ===================================================== #3 site detection (inspect)
@@ -419,8 +440,10 @@ class TestDefaultSiteFromCurrentSite:
 
     def test_resolve_default_site_live_fallback(self, temp_db, monkeypatch):
         # No cache entry -> get_default_site returns None -> live currentsite read.
+        # Moved to the core with the batch-11 migration (the reported flat spot:
+        # restore keeps its own live-fallback default-site resolver).
         container = RecordingContainer(currentsite="live.localhost")
-        site = restore_mod._resolve_default_site("proj", BENCH_PATH, container)
+        site = core_restore._resolve_default_site("proj", BENCH_PATH, container)
         assert site == "live.localhost"
 
 
@@ -476,39 +499,54 @@ class TestMissingAppsCheck:
 
     def test_reads_backup_apps_from_dump_helper(self):
         c = _AppsContainer(available=[], dump_apps=["frappe", "widgets"])
-        assert restore_mod._read_backup_installed_apps(c, DB_PATH) == {"frappe", "widgets"}
+        assert core_restore._read_backup_installed_apps(c, DB_PATH) == {"frappe", "widgets"}
 
 
 # ==================================================== #6 post-restore migrate/restart
 
 
 class TestPostRestoreMigrateAndRestart:
-    """#6: a successful restore is followed by bench migrate then an instance restart."""
+    """#6: a successful restore is followed by bench migrate then an instance restart.
 
-    def _patch(self, monkeypatch):
+    Re-pointed BY DESIGN: the migrate + restart moved into ``core.restore_apply``
+    (migrate is a buffered exec; the restart is ``core.start(restart=True)``). A
+    failed migrate is a WARNING carrying ``migrate_ok=False`` (was a False return).
+    """
+
+    def _plan(self, bench_path=BENCH_PATH):
+        return core_restore.RestorePlan(
+            project_name="proj",
+            site=SITE,
+            bench_path=bench_path,
+            database_path=f"{bench_path}/sites/{SITE}/private/backups/x-database.sql.gz",
+            files_path=None,
+            private_files_path=None,
+            site_config_backup_path=None,
+            backup_filename="x-database.sql.gz",
+            backup_timestamp="2026-01-01 00:00:00",
+            restore_items=["Database"],
+        )
+
+    def _patch(self, monkeypatch, container):
         calls = {"start": [], "start_kwargs": []}
-        monkeypatch.setattr(restore_mod, "TipSpinner", _NullSpinner)
-        monkeypatch.setattr(restore_mod.config_utils, "get_show_tips", lambda: False)
-        monkeypatch.setattr(restore_mod.console, "print", lambda *a, **k: None)
-        monkeypatch.setattr(restore_mod.stderr_console, "print", lambda *a, **k: None)
-        import caffeinated_whale_cli.commands.start as start_mod
+        monkeypatch.setattr(core_restore.core_docker, "get_frappe_container", lambda name: container)
+        import caffeinated_whale_cli.core.start as core_start
 
-        def fake_start(project_name, verbose=False, **k):
+        def fake_start(project_name, *, bench_path=None, restart=False, **k):
             calls["start"].append(project_name)
-            calls["start_kwargs"].append(k)
-            return "/tmp/bench-proj.log"
+            calls["start_kwargs"].append({"bench_path": bench_path, "restart": restart})
+            return Result(status=Status.OK, data=SimpleNamespace(log_path="/tmp/bench-proj.log"))
 
-        monkeypatch.setattr(start_mod, "_start_project", fake_start)
+        monkeypatch.setattr(core_start, "start", fake_start)
         return calls
 
     def test_runs_migrate_then_restart_on_success(self, monkeypatch):
-        calls = self._patch(monkeypatch)
         container = RecordingContainer(sites={SITE: ["frappe"]}, migrate_exit=0)
-        ok = restore_mod._post_restore_migrate_and_restart(
-            container, "proj", BENCH_PATH, SITE, verbose=False
+        calls = self._patch(monkeypatch, container)
+        result = core_restore.restore_apply(
+            self._plan(), mariadb_root_username="root", mariadb_root_password="pw", consent=True
         )
-        assert ok is True
-        # bench migrate ran at the bench path...
+        assert result.data.migrate_ok is True and result.data.migrate_ran is True
         migrates = [
             c
             for c in container.exec_calls
@@ -517,38 +555,38 @@ class TestPostRestoreMigrateAndRestart:
         ]
         assert len(migrates) == 1
         assert migrates[0]["workdir"] == BENCH_PATH
-        # ...then the instance was restarted.
         assert calls["start"] == ["proj"]
 
     def test_restart_targets_the_restored_bench_not_the_first(self, monkeypatch):
-        # A multi-bench restore into a NON-first bench must restart THAT bench: the
-        # restored bench_path is threaded through as an explicit override so
-        # _start_project never falls back to resolve_bench_path's first-bench guess.
-        calls = self._patch(monkeypatch)
+        # A multi-bench restore into a NON-first bench restarts THAT bench: the
+        # restored bench_path is passed to core.start(bench_path=...), never guessed.
         other_bench = "/workspace/second-bench"
         container = RecordingContainer(sites={SITE: ["frappe"]}, migrate_exit=0)
-        restore_mod._post_restore_migrate_and_restart(
-            container, "proj", other_bench, SITE, verbose=False
+        calls = self._patch(monkeypatch, container)
+        core_restore.restore_apply(
+            self._plan(other_bench),
+            mariadb_root_username="root",
+            mariadb_root_password="pw",
+            consent=True,
         )
         assert calls["start"] == ["proj"]
-        assert calls["start_kwargs"][0].get("bench_path_override") == other_bench
+        assert calls["start_kwargs"][0]["bench_path"] == other_bench
 
     def test_migrate_failure_still_restarts_and_returns_false(self, monkeypatch):
-        calls = self._patch(monkeypatch)
         container = RecordingContainer(sites={SITE: ["frappe"]}, migrate_exit=1)
-        ok = restore_mod._post_restore_migrate_and_restart(
-            container, "proj", BENCH_PATH, SITE, verbose=False
+        calls = self._patch(monkeypatch, container)
+        result = core_restore.restore_apply(
+            self._plan(), mariadb_root_username="root", mariadb_root_password="pw", consent=True
         )
-        # A failed migrate does not abort the restart, but is reported as False so
-        # the caller can exit non-zero.
-        assert ok is False
+        # A failed migrate does not abort the restart, but is reported (migrate_ok
+        # False, a WARNING) so the caller exits non-zero.
+        assert result.status is Status.WARNING
+        assert result.data.migrate_ok is False
         assert calls["start"] == ["proj"]
 
     def test_migrate_exec_exception_still_restarts_and_returns_false(self, monkeypatch):
         # A Docker/API EXCEPTION from exec_run (not just a non-zero exit) must be
         # treated as a failed-but-reported migrate and MUST still restart.
-        calls = self._patch(monkeypatch)
-
         class RaisingMigrate(RecordingContainer):
             def exec_run(self, cmd, workdir=None, environment=None):
                 s = " ".join(cmd) if isinstance(cmd, (list, tuple)) else str(cmd)
@@ -557,8 +595,9 @@ class TestPostRestoreMigrateAndRestart:
                 return super().exec_run(cmd, workdir=workdir, environment=environment)
 
         container = RaisingMigrate(sites={SITE: ["frappe"]})
-        ok = restore_mod._post_restore_migrate_and_restart(
-            container, "proj", BENCH_PATH, SITE, verbose=False
+        calls = self._patch(monkeypatch, container)
+        result = core_restore.restore_apply(
+            self._plan(), mariadb_root_username="root", mariadb_root_password="pw", consent=True
         )
-        assert ok is False
+        assert result.data.migrate_ok is False
         assert calls["start"] == ["proj"]
