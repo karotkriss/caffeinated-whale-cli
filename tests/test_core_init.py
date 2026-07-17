@@ -484,15 +484,16 @@ class TestInitBenchChoicesAndErrors:
             "No space left on device inside the container. " "Free up disk space and try again."
         )
 
-    def test_enospc_stays_dead_on_streamed_execs(self, monkeypatch, patched):
-        # stream_output=True is the rendered-live consumption mode; the joined-
-        # output check is dead there, exactly as today (the recorded non-item).
+    def test_enospc_on_streamed_exec_is_disk_full(self, monkeypatch, patched):
+        # stream_output=True renders chunks live (nothing fully buffered), but a
+        # bounded tail still feeds the ENOSPC scan - disk exhaustion is most
+        # likely during a long streaming bench build, so the hint must fire here.
         api = FakeApi(fail_command="bench init", fail_output=b"fatal: ENOSPC")
         container = FakeContainer(api=api)
         use_container(monkeypatch, container)
         with pytest.raises(CwcliError) as exc:
             core_init.init_bench(PROJECT, **bench_kwargs(stream_output=True))
-        assert exc.value.code == "init.exec_failed"
+        assert exc.value.code == "init.disk_full"
 
     def test_lost_stream_is_typed_docker_never_exit_code_none(self, monkeypatch, patched):
         # The batch's disclosed error-path hardening: a dropped connection used
