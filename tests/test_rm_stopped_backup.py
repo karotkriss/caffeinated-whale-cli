@@ -21,7 +21,9 @@ import typer
 
 from caffeinated_whale_cli.commands import rm
 from caffeinated_whale_cli.commands import start as start_mod
+from caffeinated_whale_cli.core import rm as core_rm
 from caffeinated_whale_cli.core import stop as core_stop
+from caffeinated_whale_cli.core.envelope import Result, Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 
 
@@ -221,25 +223,37 @@ class TestStopAfterTransientStart:
 
 
 def _clean_result():
-    return {
-        "found": True,
-        "orphan": False,
-        "containers": 1,
-        "volumes": 1,
-        "dir_removed": True,
-        "backup_ok": True,
-        "failures": [],
-    }
+    # core.remove now returns a typed Result[RemovalOutcome]; the orchestration
+    # tests patch rm.core_rm.remove to return these.
+    return Result(
+        status=Status.OK,
+        data=core_rm.RemovalOutcome(
+            project="proj",
+            found=True,
+            orphan=False,
+            containers_removed=1,
+            volumes_removed=1,
+            dir_removed=True,
+            backup_ok=True,
+            failures=[],
+        ),
+    )
 
 
 def _failed_result():
-    r = _clean_result()
-    r["containers"] = 0
-    r["volumes"] = 0
-    r["dir_removed"] = False
-    r["backup_ok"] = False
-    r["failures"] = ["a verified database backup could not be created for 'proj'"]
-    return r
+    return Result(
+        status=Status.WARNING,
+        data=core_rm.RemovalOutcome(
+            project="proj",
+            found=True,
+            orphan=False,
+            containers_removed=0,
+            volumes_removed=0,
+            dir_removed=False,
+            backup_ok=False,
+            failures=["a verified database backup could not be created for 'proj'"],
+        ),
+    )
 
 
 class TestRmOrchestration:
@@ -268,7 +282,7 @@ class TestRmOrchestration:
         remove = MagicMock(return_value=_clean_result())
         stop_back = MagicMock()
         monkeypatch.setattr(rm, "_transient_start_for_backup", start)
-        monkeypatch.setattr(rm, "_remove_project", remove)
+        monkeypatch.setattr(rm.core_rm, "remove", remove)
         monkeypatch.setattr(rm, "_stop_after_transient_start", stop_back)
 
         self._run()  # no exception -> success
@@ -290,7 +304,7 @@ class TestRmOrchestration:
         monkeypatch.setattr(rm, "_project_run_state", lambda n: "stopped")
         monkeypatch.setattr(rm, "_transient_start_for_backup", lambda *a, **k: (False, True))
         remove = MagicMock(return_value=_clean_result())
-        monkeypatch.setattr(rm, "_remove_project", remove)
+        monkeypatch.setattr(rm.core_rm, "remove", remove)
 
         def _not_found(*a, **k):
             raise CwcliError(ErrorKind.NOT_FOUND, "project.not_found", "Project 'proj' not found.")
@@ -310,7 +324,7 @@ class TestRmOrchestration:
         remove = MagicMock(return_value=_clean_result())
         stop_back = MagicMock()
         monkeypatch.setattr(rm, "_transient_start_for_backup", start)
-        monkeypatch.setattr(rm, "_remove_project", remove)
+        monkeypatch.setattr(rm.core_rm, "remove", remove)
         monkeypatch.setattr(rm, "_stop_after_transient_start", stop_back)
 
         with pytest.raises(typer.Exit) as exc:
@@ -328,7 +342,7 @@ class TestRmOrchestration:
         remove = MagicMock(return_value=_failed_result())
         stop_back = MagicMock()
         monkeypatch.setattr(rm, "_transient_start_for_backup", start)
-        monkeypatch.setattr(rm, "_remove_project", remove)
+        monkeypatch.setattr(rm.core_rm, "remove", remove)
         monkeypatch.setattr(rm, "_stop_after_transient_start", stop_back)
 
         with pytest.raises(typer.Exit) as exc:
@@ -344,7 +358,7 @@ class TestRmOrchestration:
         start = MagicMock()
         remove = MagicMock(return_value=_clean_result())
         monkeypatch.setattr(rm, "_transient_start_for_backup", start)
-        monkeypatch.setattr(rm, "_remove_project", remove)
+        monkeypatch.setattr(rm.core_rm, "remove", remove)
         monkeypatch.setattr(rm, "_stop_after_transient_start", MagicMock())
 
         self._run()
@@ -358,7 +372,7 @@ class TestRmOrchestration:
         start = MagicMock()
         remove = MagicMock(return_value=_clean_result())
         monkeypatch.setattr(rm, "_transient_start_for_backup", start)
-        monkeypatch.setattr(rm, "_remove_project", remove)
+        monkeypatch.setattr(rm.core_rm, "remove", remove)
         monkeypatch.setattr(rm, "_stop_after_transient_start", MagicMock())
 
         self._run(no_backup=True)
@@ -372,7 +386,7 @@ class TestRmOrchestration:
         start = MagicMock()
         remove = MagicMock(return_value=_clean_result())
         monkeypatch.setattr(rm, "_transient_start_for_backup", start)
-        monkeypatch.setattr(rm, "_remove_project", remove)
+        monkeypatch.setattr(rm.core_rm, "remove", remove)
         monkeypatch.setattr(rm, "_stop_after_transient_start", MagicMock())
 
         self._run(volumes=False)
@@ -388,7 +402,7 @@ class TestRmOrchestration:
         monkeypatch.setattr(rm.cache, "recache_project", MagicMock())
         monkeypatch.setattr(rm, "_project_run_state", lambda n: "stopped")
         remove = MagicMock(return_value=_clean_result())
-        monkeypatch.setattr(rm, "_remove_project", remove)
+        monkeypatch.setattr(rm.core_rm, "remove", remove)
         monkeypatch.setattr(rm, "_transient_start_for_backup", MagicMock())
 
         # Decline the confirm.
