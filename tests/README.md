@@ -80,7 +80,7 @@ The real-Docker E2E is Linux-only; Windows/macOS-specific code stays in the unit
 
 ## Test Files
 
-As of 0.37.0 (unreleased), `tests/` holds 84 `test_*.py` suites totaling 1474 tests in the
+As of 0.37.0 (unreleased), `tests/` holds 85 `test_*.py` suites totaling 1507 tests in the
 `unit` tier (measured with `uv run pytest --cov`). Run `ls tests/` for the
 authoritative current list; see [../docs/testing/README.md](../docs/testing/README.md)
 for the per-area breakdown.
@@ -142,12 +142,12 @@ Tests for tab completion functionality.
 
 ## Test Coverage
 
-Current overall coverage at 0.37.0, unreleased (1474 tests across 84 test files, ~79% overall).
+Current overall coverage at 0.37.0, unreleased (1507 tests across 85 test files, ~79% overall).
 
 ### Covered Modules
 - ✅ `utils/completion_utils.py` - 92% (7 missing lines)
 - ✅ `utils/bench_labels.py` - ~94% (`test_bench_labels`, `test_bench_selector`, `test_bench_label_db_and_command`)
-- ✅ `utils/db_utils.py` - ~68% (`test_db_security`, `test_config_validation`)
+- ✅ `utils/db_utils.py` - ~73% (`test_db_security`, `test_config_validation`)
 - ✅ `utils/auto_inspect.py` - first-ever dedicated suite (`test_auto_inspect`: the Windows `WaitForSingleObject`-based `_pid_alive` probe, the fork-unavailable subprocess fallback and its Windows-path bootstrap source, `_spawn_detached` routing the child's stderr to the log file instead of `DEVNULL`, `_log(exc_info=True)` recording the traceback, the `int(config.get("interval"))` coercion, and stale-PID-file cleanup)
 - ✅ `commands/inspect.py` (renderer) + `core/inspect.py` (the tier machine + cache write) - `test_inspect_characterization` is the green-before net (committed against unmigrated code: byte-identical `--json` per tier incl. the gathered-vs-cache-read key-order swap, the persisted cache dict shape, T2 passivity on a stopped project even under `--yes`, the T3 `--yes` auto-start and non-TTY refusal, the removed `--show-apps` flag (rejected as unknown), the tree's "(default)" order); `test_core_inspect` pins the envelope AT THE CORE (every tier branch, `confirm_start` at call time, `offer_choice=False` -> `NOT_RUNNING`, drift-degrade without persisting, the `errors="replace"` decode and `CwcliError(DOCKER)` fan-out wrap, core silence, asdict-is-plain-data, config content never in the typed report); `test_inspect_partial_refresh`/`test_inspect_label_recovery` re-pointed with their subject. See `openspec/changes/migrate-inspect-core`.
 - ✅ `core/restore.py` + the reseated `commands/restore.py` renderer - the plan/apply split (batch 11, `migrate-restore-core`): `test_core_restore` pins the envelope AT THE CORE (both choice surfaces - `select_backup` and `confirm_restore`; the tri-mode selection; secret-in-`environment=` and the exec arg order on both paths; the migrate-failure `WARNING`/`migrate_ok=False`; the encryption-key merge; the streamed `put_archive`/`get_archive` copies; `receive_plan`'s copy-in + no-database refusal; the hard-failure `PRECONDITION`; invalid-username `USAGE`; core silence; asdict-is-plain-data; origin mismatch; and the deliberately ABSENT `axi restore` verb asserted against the registry - DEFERRED, Decision 9); `test_restore_characterization` is the green-before net (normal-path exec arg order + secret in `environment=`, the encryption-key merge, the migrate-then-restart order + migrate-failure exit, the flag mutual exclusions), re-pointed at the migrated seams; `test_restore_safety` (the receive confirm/origin/password-off-argv/missing-apps + the normal-path selectors/exit-codes) and `test_restore_inspect_fixes` (the six restore+inspect bugs) re-pointed with their subjects, the confirm-count assertion now 1 BY DESIGN (the four confirms collapsed into one shared `_gate`). See `openspec/changes/migrate-restore-core`.
@@ -332,7 +332,7 @@ Status as of 0.34.0 (see [../docs/testing/README.md](../docs/testing/README.md) 
 
 ### Done
 1. **Project inspection** (`commands/inspect.py`, now a renderer over `core/inspect.py` - see 4h) - covered by `test_inspect_characterization`, `test_core_inspect`, `test_inspect_partial_refresh`, `test_inspect_label_recovery`.
-2. **Database operations** (`utils/db_utils.py`) - covered by `test_db_security`, `test_config_validation` (~68%).
+2. **Database operations** (`utils/db_utils.py`) - covered by `test_db_security`, `test_config_validation` (~73%).
 3. **Real-Docker E2E for `init` and `backup`** - covered by `tests/e2e/test_init_e2e.py`, `tests/e2e/test_backup_e2e.py` (both interactive and non-interactive, on the v14/v15/v16 matrix).
 3a. **Real-Docker E2E for the lifecycle commands** (`start`, `status`, `logs`, `restart`) - covered by `tests/e2e/test_start_status_e2e.py` (both modes; structure-agnostic outcome invariants that the start/status core migration preserved unchanged - see `openspec/changes/add-start-status-e2e-net`) plus `tests/e2e/test_start_status_new_behavior_e2e.py` (the migration's own net for the NEW behavior: idempotency, `degraded`, real per-process health, the relocated log, multi-bench refuse - see `openspec/changes/migrate-start-status-core`).
 4. **Logic core + `cwcli axi`** (`core/`, `commands/axi.py`) - covered by `test_core_envelope`, `test_core_resolvers`, `test_core_backup`, `test_axi` (envelope/resolvers/docker wrapper at 100%, `core/backup.py` ~95%, `commands/axi.py` ~96%). `start`/`status` followed the same pattern onto `core/start.py`/`core/status.py`/`core/supervision.py` (~98%/~93%/~82%), covered by `test_core_start`, `test_core_status`, `test_core_supervision`, plus the frontends `test_status_frontend` and `test_status_watch` (the `--watch` live view's zero-web-probe/non-TTY-degrade/interval-floor/clean-`KeyboardInterrupt` contract) and `axi start`/`axi status` in `test_axi_start_status`. `add-per-process-supervisor` re-pointed `core/supervision.py` from honcho to supervisord and added `core/restart.py` (~95%, `core.restart_process` restarting one program leaving siblings running), covered by `test_core_restart` and the `cwcli axi restart` verb in `test_axi_restart`.
