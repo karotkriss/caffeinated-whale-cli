@@ -20,7 +20,7 @@ from ..core.errors import CwcliError
 from ..utils import cache
 from ..utils.completion_utils import complete_project_names
 from ..utils.console import console, stderr_console
-from ..utils.docker_utils import get_project_containers
+from ..utils.docker_utils import get_project_containers, handle_docker_errors
 
 app = typer.Typer(help="Remove a Frappe project and its containers.")
 
@@ -272,6 +272,7 @@ def _recover_trailing_flags(
 
 
 @app.callback(invoke_without_command=True)
+@handle_docker_errors
 def rm(
     ctx: typer.Context,
     verbose: bool = typer.Option(

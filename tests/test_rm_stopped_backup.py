@@ -25,6 +25,13 @@ from caffeinated_whale_cli.core import rm as core_rm
 from caffeinated_whale_cli.core import stop as core_stop
 from caffeinated_whale_cli.core.envelope import Result, Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
+from caffeinated_whale_cli.utils import docker_utils
+
+
+def _patch_docker(monkeypatch):
+    """Neutralize the @handle_docker_errors daemon check on rm.rm()."""
+    monkeypatch.setattr(docker_utils.shutil, "which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(docker_utils.docker, "from_env", lambda: MagicMock())
 
 
 def _frappe(status="running"):
@@ -259,6 +266,7 @@ def _failed_result():
 class TestRmOrchestration:
     def _base(self, monkeypatch):
         # No recache, non-piped stdin, and a stable "stopped" classification.
+        _patch_docker(monkeypatch)
         monkeypatch.setattr(rm.sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr(rm, "_frappe_container_running", lambda n: False)
         monkeypatch.setattr(rm.cache, "recache_project", MagicMock())
@@ -397,6 +405,7 @@ class TestRmOrchestration:
     def test_pre_confirm_discloses_stopped_start(self, monkeypatch, capsys):
         """Interactive: the confirm prompt discloses the stopped -> start-to-backup
         plan BEFORE the confirm, and declining deletes nothing."""
+        _patch_docker(monkeypatch)
         monkeypatch.setattr(rm.sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr(rm, "_frappe_container_running", lambda n: False)
         monkeypatch.setattr(rm.cache, "recache_project", MagicMock())

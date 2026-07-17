@@ -161,6 +161,11 @@ class TestRmStoppedProjectSkipsRecache:
     """End-to-end: rm of a stopped project skips recache and never prompts there."""
 
     def test_stopped_project_skips_recache_and_does_not_prompt(self, monkeypatch):
+        # Neutralize the @handle_docker_errors daemon check on rm.rm() so this
+        # test stays independent of whether Docker is actually installed/running.
+        monkeypatch.setattr(docker_utils.shutil, "which", lambda _name: "/usr/bin/docker")
+        monkeypatch.setattr(docker_utils.docker, "from_env", lambda: MagicMock())
+
         # Frappe container exists but is stopped.
         monkeypatch.setattr(rm, "_frappe_container_running", lambda name: False)
 
