@@ -54,7 +54,7 @@ TIPS = [
     "💡 Check auto-inspect status with 'cwcli config auto-inspect status'",
     # Configuration
     "💡 View config location with 'cwcli config path'",
-    "💡 Add custom bench search paths with 'cwcli config add-path <path>'",
+    "💡 Add custom bench search paths with 'cwcli config paths add <path>'",
     # General Productivity
     "💡 Use 'cwcli status <project>' to check if your project is healthy",
     "💡 Run bench commands directly with 'cwcli run <project> <bench-args>'",
