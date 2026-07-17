@@ -1133,6 +1133,7 @@ cwcli restore [OPTIONS] PROJECT_NAME
 | `--admin-password TEXT` | Set administrator password after restore |
 | `--send` | **P2P Mode:** Share backup with another machine via peer-to-peer transfer |
 | `--receive` | **P2P Mode:** Receive backup from another machine via peer-to-peer transfer |
+| `--ticket TEXT` | The sendme ticket for `--receive`. When supplied, the ticket prompt is skipped; a non-TTY without `--ticket` refuses with a non-zero exit |
 | `--no-recache` | **Deprecated no-op:** the missing-apps check now reads app availability live from the bench, so it never re-caches. Kept for backward compatibility |
 | `--no-migrate` | Skip the post-restore `bench migrate` and instance restart. By default a successful restore runs `bench migrate` (bringing the restored DB to the code's schema) then restarts the instance |
 | `-y`, `--yes` | Skip the interactive confirmation prompts on both the normal and `--receive` restore paths (the destructive-restore confirmation and the missing-apps prompt). A non-TTY without `--yes` refuses these and exits non-zero. Does not remove the sendme-ticket or MariaDB-credential prompts |
@@ -1253,6 +1254,10 @@ cwcli restore my-project --receive
 
 # Paste the ticket from sender
 ? Enter the sendme ticket: blob...
+
+# Or pass the ticket non-interactively (required on a non-TTY):
+cwcli restore my-project --receive --ticket blob... \
+  --mariadb-root-password secret --yes
 
 # Files download with hash verification
 ✓ Files downloaded successfully
