@@ -191,7 +191,21 @@ def set_label(project_name: str, *, bench: str | None = None, label: str) -> Res
             "Failed to write the marker file inside the container; label not saved.",
         )
     # The DB write's return value is deliberately NOT checked here, unlike the
-    # clear path below. See cwcli-label-setpath-db-check-a3.
+    # clear path below - and this asymmetry is CORRECT, not an oversight.
+    #
+    # The marker (written and verified just above) is the source of truth for
+    # labels: `core.inspect` re-reads it and writes the recovered label back into
+    # the cache (`core/inspect.py`, "Recover the user label from the per-bench
+    # marker file"). So if this cache write silently misses (the bench row is not
+    # cached, `set_bench_label` returns False), the next inspect converges the
+    # cache to EXACTLY the label the user just asked for. A missed set self-heals
+    # toward the user's intent, so failing loud here would only turn a
+    # self-correcting case into a hard error.
+    #
+    # `clear_label` cannot do this: there, a missed cache clear leaves a label the
+    # user DELETED lingering as a live `--bench` handle - a silent resurrection of
+    # removed data, in the WRONG direction - so it must fail closed. The two paths
+    # are asymmetric because their recovery directions are.
     db_utils.set_bench_label(project_name, bench_path, label)
 
     return Result(
