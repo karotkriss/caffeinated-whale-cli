@@ -696,26 +696,21 @@ class TestVersionGating:
         assert any(w.code == "setuptools.pin_failed" for w in result.warnings)
 
 
-class TestNoAxiInitVerb:
-    """There is deliberately NO ``axi init`` verb in this batch, and it is
-    DEFERRED, not refused (design Decision 9 of ``migrate-init-core``): unlike
-    ``axi open`` (structurally impossible - execvp destroys the process) this
-    verb is buildable and the two-call core shape makes it thin, but whether an
-    agent may create instances (gigabytes of images, host state, a required
-    secret on the agent's argv, a 10-20 minute single-document wait) is a
-    product decision the captain owns on its own evidence, decoupled from the
-    migration. This test keeps the deferral legible so "deferred" can never
-    read as "forgotten" (the ``axi apps install``/``uninstall`` precedent)."""
+class TestAxiInitVerbIsRegistered:
+    """The ``axi init`` verb SHIPPED (``add-axi-init-verb``, captain-approved
+    2026-07-16 in principle, go 2026-07-17). It was DEFERRED, never refused, by
+    ``migrate-init-core`` design Decision 9: unlike ``axi open`` (structurally
+    impossible - execvp destroys the process) this verb is buildable, and the
+    two-call core shape made it thin. It is a thin TOON-rendering frontend over
+    the UNCHANGED ``core.init_instance`` then ``core.init_bench``. This test
+    replaces the former deferral assertion so the shipped verb cannot silently
+    regress out of the registry."""
 
-    def test_axi_registry_has_no_init_command(self):
+    def test_axi_registry_has_an_init_command(self):
         from caffeinated_whale_cli.commands import axi as axi_mod
 
         registered = {c.name for c in axi_mod.app.registered_commands}
-        assert "init" not in registered
-        # Nor under any axi subapp (e.g. `axi apps ...`).
-        for group in axi_mod.app.registered_groups:
-            sub = {c.name for c in group.typer_instance.registered_commands}
-            assert "init" not in sub
+        assert "init" in registered
 
 
 class TestCorePurity:
