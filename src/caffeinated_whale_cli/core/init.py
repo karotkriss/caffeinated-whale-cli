@@ -467,18 +467,22 @@ def init_instance(
     emit = on_event or _noop
     project_name = validate_project_slug(project_name)
 
-    # Port conflicts, ahead of any filesystem work (as today).
-    web_ports = list(range(port, port + 6))
-    socketio_ports = list(range(port + 1000, port + 1006))
-    port_status = check_ports_in_use(web_ports + socketio_ports)
-    ports_in_use = [p for p, in_use in port_status.items() if in_use]
-    if ports_in_use:
-        raise CwcliError(
-            ErrorKind.CONFLICT,
-            "ports.in_use",
-            f"The following ports are already in use: {format_port_list(ports_in_use)}",
-            hint="Use the --port flag to select a different starting port.",
-        )
+    # Port conflicts, ahead of any filesystem work (as today). Skipped on the
+    # auto_start=True retry: that call shape is the frontend's stage-1 re-invoke
+    # after ensure_containers_running has already started this project's own
+    # containers, which bind exactly these ports - a self-conflict, not a real one.
+    if not auto_start:
+        web_ports = list(range(port, port + 6))
+        socketio_ports = list(range(port + 1000, port + 1006))
+        port_status = check_ports_in_use(web_ports + socketio_ports)
+        ports_in_use = [p for p, in_use in port_status.items() if in_use]
+        if ports_in_use:
+            raise CwcliError(
+                ErrorKind.CONFLICT,
+                "ports.in_use",
+                f"The following ports are already in use: {format_port_list(ports_in_use)}",
+                hint="Use the --port flag to select a different starting port.",
+            )
 
     emit(InitStepStart(phase="project_dir", message="Creating project directory"))
     project_dir = config_utils.PROJECTS_DIR / project_name
