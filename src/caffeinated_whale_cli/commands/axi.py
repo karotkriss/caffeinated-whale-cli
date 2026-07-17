@@ -1112,6 +1112,14 @@ def axi_init(
     erpnext_branch: str = typer.Option(
         "version-16", "--erpnext-branch", help="ERPNext branch (used with --install-erpnext)."
     ),
+    start_services: bool = typer.Option(
+        True,
+        "--start/--no-start",
+        help="After creating the bench+site, start its dev services (supervisord over "
+        "'bench start') so init leaves a running bench. --no-start creates without "
+        "starting, for automation/CI. Distinct from container startup, which stage 1 "
+        "always brings up regardless of this flag.",
+    ),
 ) -> None:
     """Provision a new instance, bench, and site; emit the report as TOON (never prompts).
 
@@ -1121,6 +1129,11 @@ def axi_init(
     one-TOON-document contract. Coarse phase progress goes to STDERR; for live or
     deeper progress, run `cwcli logs <project>` / `cwcli status <project>` from a
     second shell.
+
+    After the bench+site is created, dev services start by default (reusing the
+    same `core.start` behind `cwcli start`/`axi start`), so this leaves a running
+    bench; `--no-start` skips it. A start failure degrades to a stderr warning and
+    does NOT fail the verb or change its exit code - the bench was already created.
 
     The site admin password comes from the CWCLI_ADMIN_PASSWORD env var
     (recommended) or --admin-password (the flag lands on the argv - see its help);
@@ -1229,6 +1242,20 @@ def axi_init(
         raise typer.Exit(2)
 
     assert bench_result.data is not None  # OK/WARNING always carries an InitReport
+    report = bench_result.data
+
+    if start_services:
+        print("Starting dev services...", file=sys.stderr, flush=True)
+        try:
+            core_start.start(project, bench_path=report.bench_path)
+        except Exception as e:
+            print(
+                f"Warning: bench created, but its dev services could not be started: "
+                f"{getattr(e, 'message', str(e))}",
+                file=sys.stderr,
+                flush=True,
+            )
+
     emit_result(bench_result.data, warnings=bench_result.warnings)
     raise typer.Exit(0 if bench_result.status in (CoreStatus.OK, CoreStatus.WARNING) else 1)
 

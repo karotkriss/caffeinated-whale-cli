@@ -461,7 +461,7 @@ class TestAutoStartServices:
 
         assert calls == []  # never called
         out = capsys.readouterr().out
-        assert "Dev services are not running" in out
+        assert "Dev services were not started (--no-start)" in out
         assert f"cwcli start {PROJECT}" in out
 
     def test_start_failure_degrades_to_warning_not_exit(self, monkeypatch, tmp_path, capsys):
