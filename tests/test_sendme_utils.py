@@ -195,8 +195,9 @@ def _release_json(url: str) -> dict:
     return {"assets": [{"browser_download_url": url}]}
 
 
-def test_install_no_matching_asset_returns_false(monkeypatch):
+def test_install_no_matching_asset_returns_false(monkeypatch, tmp_path):
     monkeypatch.setattr(sendme_utils, "get_platform_target", lambda: "linux-x86_64")
+    monkeypatch.setattr(sendme_utils, "get_sendme_install_dir", lambda: tmp_path / "bin")
     monkeypatch.setattr(
         sendme_utils.requests,
         "get",
@@ -207,8 +208,9 @@ def test_install_no_matching_asset_returns_false(monkeypatch):
     assert sendme_utils.install_sendme() is False
 
 
-def test_install_network_error_returns_false(monkeypatch):
+def test_install_network_error_returns_false(monkeypatch, tmp_path):
     monkeypatch.setattr(sendme_utils, "get_platform_target", lambda: "linux-x86_64")
+    monkeypatch.setattr(sendme_utils, "get_sendme_install_dir", lambda: tmp_path / "bin")
 
     def boom(*a, **k):
         raise requests.RequestException("no route")
