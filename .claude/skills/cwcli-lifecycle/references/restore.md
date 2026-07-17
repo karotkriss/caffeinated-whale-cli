@@ -49,7 +49,7 @@ The authoritative repros and the real-instance E2E evidence are in `docs/e2e/res
 
 #### Site detection is shared (`utils/bench_sites.py`)
 
-`bench_sites.list_sites(container, bench_path)` is the single canonical "what are the real sites" implementation, used by BOTH `commands/rm.py:_list_sites` (which delegates) and `core/inspect.py:_get_sites` (moved off `commands/inspect.py` by `migrate-inspect-core`).
+`bench_sites.list_sites(container, bench_path)` is the single canonical "what are the real sites" implementation, used by BOTH `core/rm.py:_list_sites` (which delegates; moved off `commands/rm.py` by `migrate-rm-core`) and `core/inspect.py:_get_sites` (moved off `commands/inspect.py` by `migrate-inspect-core`).
 A real Frappe site is a DIRECTORY containing `site_config.json`; detection probes for that per entry rather than denylisting known non-site names.
 It is fail-safe: an entry is excluded only on a positive NOTASITE (a non-directory, or a readable dir with no `site_config.json`); anything ambiguous (probe error, unreadable dir) is treated as a site.
 This replaced `inspect._get_sites`' old denylist, which did NOT list `currentsite.txt` (a plain file written by `bench use`), so inspect reported it as a site and then errored `bench --site currentsite.txt list-apps -> "Site currentsite.txt does not exist!"`.
