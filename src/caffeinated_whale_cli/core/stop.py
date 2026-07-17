@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..utils.docker_utils import get_project_containers
+from .docker import get_project_containers
 from .envelope import Result, Status
 from .errors import CwcliError, ErrorKind
 

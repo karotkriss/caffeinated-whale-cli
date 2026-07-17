@@ -27,6 +27,7 @@ import typer
 from questionary import Style
 
 from ..core import restore as core_restore
+from ..core.docker import get_project_containers
 from ..core.envelope import Message, Status
 from ..core.errors import CwcliError
 
@@ -44,7 +45,7 @@ from ..core.restore import (  # noqa: E402,F401  (public re-exports)
 from ..utils import config_utils
 from ..utils.completion_utils import complete_project_names, complete_site_names
 from ..utils.console import console, stderr_console
-from ..utils.docker_utils import get_project_containers, handle_docker_errors
+from ..utils.docker_utils import handle_docker_errors
 from ..utils.sendme_utils import (
     copy_to_clipboard,
     ensure_sendme_installed,

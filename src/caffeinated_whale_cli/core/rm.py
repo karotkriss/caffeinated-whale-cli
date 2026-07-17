@@ -43,7 +43,7 @@ from pathlib import Path
 
 from ..utils import bench_sites, db_utils
 from ..utils.config_utils import PROJECTS_DIR, cwcli_home
-from ..utils.docker_utils import get_project_containers, get_project_volumes
+from .docker import get_project_containers, get_project_volumes
 from .envelope import Result, Status
 from .errors import CwcliError, ErrorKind
 from .resolvers import DEFAULT_BENCH_PATH

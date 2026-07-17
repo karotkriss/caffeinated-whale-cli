@@ -5,12 +5,13 @@ import questionary
 import typer
 
 from ..core import restart as core_restart
+from ..core.docker import get_project_containers
 from ..core.envelope import Status
 from ..core.errors import CwcliError
 from ..core.restart import ProcessRestartOutcome
 from ..utils.completion_utils import complete_project_names
 from ..utils.console import console, stderr_console
-from ..utils.docker_utils import get_project_containers, handle_docker_errors
+from ..utils.docker_utils import handle_docker_errors
 from .start import _start_project
 from .stop import stop_project_best_effort
 from .utils import resolve_bench_path
