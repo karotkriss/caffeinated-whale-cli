@@ -457,6 +457,21 @@ class TestSetLabels:
         cached = db_utils.get_cached_project_data("proj")["bench_instances"]
         assert cached[0]["label"] == "web"
 
+    def test_require_benches_not_found_still_propagates_before_container_fetch(
+        self, temp_db, monkeypatch
+    ):
+        # The broadened degrade must NOT swallow `_require_benches`'s own NOT_FOUND
+        # ("never inspected"): it runs before the container fetch, so an
+        # uninspected project still raises rather than silently degrading.
+        def _boom(name):
+            raise AssertionError("container must not be fetched for an uninspected project")
+
+        monkeypatch.setattr(core_docker, "get_frappe_container", _boom)
+        with pytest.raises(CwcliError) as exc:
+            core_label.set_labels("never-inspected", [(BENCH_A, "web")])
+        assert exc.value.kind is ErrorKind.NOT_FOUND
+        assert exc.value.code == "benches.none_cached"
+
     def test_unknown_bench_path_is_reported_not_raised(self, temp_db, monkeypatch):
         _seed(_two_benches())
         _wire(monkeypatch, MarkerFakeContainer(bench_path=BENCH_A))
