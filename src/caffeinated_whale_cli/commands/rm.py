@@ -16,11 +16,12 @@ import questionary
 import typer
 
 from ..core import rm as core_rm
+from ..core.docker import get_project_containers
 from ..core.errors import CwcliError
 from ..utils import cache
 from ..utils.completion_utils import complete_project_names
 from ..utils.console import console, stderr_console
-from ..utils.docker_utils import get_project_containers, handle_docker_errors
+from ..utils.docker_utils import handle_docker_errors
 
 app = typer.Typer(help="Remove a Frappe project and its containers.")
 

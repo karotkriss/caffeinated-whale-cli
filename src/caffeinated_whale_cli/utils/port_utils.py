@@ -12,7 +12,10 @@ import platform
 import socket
 import subprocess
 
-from .console import stderr_console
+# ``stderr_console`` (rich) is imported LAZILY inside the verbose/reporting
+# branches below, not at module load, so importing this module pulls no UI
+# package. That keeps the UI-pure core (which imports this module for its
+# pure port helpers) free of a transitive ``rich`` import.
 
 
 def format_port_list(ports: list[int]) -> str:
@@ -72,7 +75,7 @@ def get_project_ports(project_name: str) -> list[int]:
     Returns:
         List of port numbers (as integers) used by the project.
     """
-    from .docker_utils import get_project_containers
+    from ..core.docker import get_project_containers
 
     containers = get_project_containers(project_name)
     if not containers:
@@ -121,7 +124,7 @@ def find_project_using_ports(
     """
     import docker
 
-    from .docker_utils import get_project_containers
+    from ..core.docker import get_project_containers
 
     # Normalize input to list
     port_list = [ports] if isinstance(ports, int) else ports
@@ -212,6 +215,8 @@ def check_ports_in_use(
         results[port] = in_use
 
         if verbose:
+            from .console import stderr_console
+
             status = "[red]IN USE[/red]" if in_use else "[green]AVAILABLE[/green]"
             stderr_console.print(f"[dim]Port {port}: {status}[/dim]")
 
@@ -242,6 +247,8 @@ def get_ports_in_use_with_processes(
         if not is_port_in_use(port):
             results[port] = None
             if verbose:
+                from .console import stderr_console
+
                 stderr_console.print(f"[dim]Port {port}: [green]AVAILABLE[/green][/dim]")
             continue
 
@@ -313,6 +320,8 @@ def get_ports_in_use_with_processes(
         results[port] = process_info
 
         if verbose:
+            from .console import stderr_console
+
             stderr_console.print(f"[dim]Port {port}: [red]IN USE[/red] by {process_info}[/dim]")
 
     return results
@@ -336,6 +345,8 @@ def report_port_conflicts(
     ports_in_use = [port for port, process in ports_with_processes.items() if process is not None]
 
     if ports_in_use:
+        from .console import stderr_console
+
         stderr_console.print("\n[yellow]Warning:[/yellow] The following ports are already in use:")
         for port in ports_in_use:
             process = ports_with_processes[port]
