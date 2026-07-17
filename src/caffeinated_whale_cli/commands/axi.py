@@ -40,6 +40,7 @@ from ..core import init as core_init
 from ..core import inspect as core_inspect
 from ..core import label as core_label
 from ..core import list as core_list
+from ..core import logs as core_logs
 from ..core import restart as core_restart
 from ..core import start as core_start
 from ..core import status as core_status
@@ -603,6 +604,77 @@ def axi_status(
     assert result.data is not None  # OK/WARNING always carries a StatusReport
     emit_result(result.data, warnings=result.warnings)
     raise typer.Exit(0)
+
+
+# ------------------------------------------------------------------------------- logs
+
+
+@app.command("logs")
+def axi_logs(
+    project: str = typer.Argument(..., help="The Docker Compose project name."),
+    lines: int = typer.Option(
+        100, "--lines", "-n", help="Number of lines to read from the end of each log."
+    ),
+    bench: str = typer.Option(None, "--bench", help="Which bench: numeric index or label."),
+    process: str = typer.Option(
+        None,
+        "--process",
+        "-p",
+        help="Read ONE process's log (e.g. web, worker). Omit for every process.",
+    ),
+) -> None:
+    """Read a bounded tail of a bench's per-process logs; emit them as ONE TOON document.
+
+    A bounded ``tail -n N``, NOT a follow: this verb reads and returns, it never streams
+    (a follow cannot terminate into one document). Output is a metadata head (``project``,
+    ``bench_path``, ``container``, ``not_cwcli_supervised``, ``lines_requested``) then one
+    raw-line block per process, so log lines carrying colons/commas cannot corrupt the
+    document. With ``--process`` only that one process's block appears.
+
+    A running-but-quiet bench (up, but nothing written yet) is a SUCCESSFUL empty read
+    (exit 0) - the ``axi self-update --check``/``axi status`` precedent, diverging from the
+    human ``cwcli logs`` which errors. A stopped project is a usage error (exit 2) naming
+    ``cwcli start``, matching every bench-scoped verb; a multi-bench project with no
+    ``--bench`` and an unknown ``--process`` are usage errors naming the flag. A running
+    container whose bench has no live manager is an operational error (exit 1). There is
+    deliberately no ``--follow`` (use ``cwcli logs`` for an interactive tail) and no ``--yes``.
+    """
+    try:
+        result = core_logs.read_logs(project, bench=bench, lines=lines, process=process)
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    if result.status is CoreStatus.NEEDS_CHOICE:
+        assert result.choice is not None  # NEEDS_CHOICE always carries a Choice
+        emit_axi_choice_as_usage_error(result.choice)
+        raise typer.Exit(2)
+
+    assert result.data is not None  # OK always carries a LogsRead
+    _emit_logs_read(result.data, warnings=result.warnings)
+    raise typer.Exit(0)
+
+
+def _emit_logs_read(read, *, warnings=None) -> None:
+    """Render a ``LogsRead`` as one TOON document: metadata head + one raw-line block per
+    process. Not ``emit_result``: ``toon.encode`` would fold each process's lines into an
+    inline comma-joined scalar list, mangling multi-line logs. ``toon.block`` emits one raw
+    line per indented row (the ``help``/``notes`` shape), which log lines never re-parse as.
+    """
+    head = [
+        toon.kv("project", read.project),
+        toon.kv("bench_path", read.bench_path),
+        toon.kv("container", read.container_name),
+        toon.kv("not_cwcli_supervised", read.not_cwcli_supervised),
+        toon.kv("lines_requested", read.lines_requested),
+    ]
+    if read.logs:
+        head.extend(toon.block(group.process, group.lines) for group in read.logs)
+    else:
+        head.append(toon.kv("logs", "0 log lines"))
+    if warnings:
+        head.append(toon.block("warnings", [w.text for w in warnings]))
+    typer.echo("\n".join(head))
 
 
 # --------------------------------------------------------------------------- restart
