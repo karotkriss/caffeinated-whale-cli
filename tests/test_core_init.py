@@ -328,6 +328,15 @@ class TestInitInstance:
         assert "The following ports are already in use: 18000" in exc.value.message
         assert "--port" in (exc.value.hint or "")
 
+    def test_auto_start_retry_skips_self_port_conflict(self, monkeypatch, tmp_path, patched):
+        # The auto_start=True call is the frontend's stage-1 retry AFTER
+        # ensure_containers_running already started this project's own
+        # containers, which bind exactly these ports - not a real conflict.
+        instance_setup(monkeypatch, tmp_path)
+        monkeypatch.setattr(core_init, "check_ports_in_use", lambda ports: {p: True for p in ports})
+        result = core_init.init_instance(PROJECT, port=18000, auto_start=True)
+        assert result.status is Status.OK
+
     def test_poll_timeout_offers_confirm_start(self, monkeypatch, tmp_path, patched):
         stopped = FakeContainer(status="exited")
         instance_setup(monkeypatch, tmp_path, container=stopped)
