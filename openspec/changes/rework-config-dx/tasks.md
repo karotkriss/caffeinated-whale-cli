@@ -36,7 +36,8 @@
 - [x] 6.2 Host-side E2E under an isolated `CWCLI_HOME` (no Docker needed): the show/paths/cache/tips surface end to end, both modes for the prompting path, alias stdout byte-checks, `$(cwcli config path)` substitution-safety at width 40.
 - [x] 6.3 One throwaway real instance (`cwe2e-` prefix, per skill `cwcli-e2e-testing`) ONLY for the auto-inspect daemon cycle, since it genuinely touches instances: `enable` -> daemon inspects the running project -> cache populated -> `stop`/`disable` teardown honesty; against the worktree's editable install; torn down at the end.
   NOTE (2026-07-16): both legs recorded in `docs/e2e/config-dx-rework.md` (44 host-side checks + pty both-modes + 30 daemon-cycle checks, all green). The daemon leg caught a real fork-child fd leak that hung `$(... enable)` in shells - fixed in `utils/auto_inspect.py` and pinned by a mock-free test; disclosed as this batch's hardening.
-- [ ] 6.4 Re-run the E2E after the no-mistakes pipeline and any review fixes (captain standard).
+- [x] 6.4 Re-run the E2E after the no-mistakes pipeline and any review fixes (captain standard).
+  NOTE (2026-07-17): re-run against the pipeline head (0d3bd77, whose one fix commit was the docs-only test-count sync): host-side 44/44, pty accept/decline both green, and the full 30-check auto-inspect daemon cycle against a fresh throwaway cwe2e-cfgdx v16 instance (port 14000), torn down cleanly. Two environmental retries disclosed: a Docker Desktop port-forward clash and an OOM (exit 137) from a sibling e2e session's concurrent bench init on the 11GB VM - neither a cwcli defect; the re-run also live-confirmed init's paths-add fix (no deprecation warning in init output).
 
 ## 7. Explicitly deferred, so it cannot be misread as forgotten
 
