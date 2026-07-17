@@ -308,22 +308,28 @@ def _run_exec(
 
     Emits the command-echo trace (the ``$``-refs, never a secret value), then
     forwards each chunk as an :class:`InitOutput` event. ``collect`` mirrors the
-    pre-migration consumption split: True means the exec is drained (its joined
-    output feeds the ENOSPC check, exactly as alive as today); False means a
-    renderer is consuming the chunks live (the check stays dead there, as today
-    - restoring it is the batch-3 audit's recorded non-item, not a migration's
-    to change). A lost stream or unknowable exit code raises the contract's
-    typed ``DOCKER`` errors instead of the old ``exit code None`` message.
+    pre-migration consumption split: True means the exec is drained and its full
+    joined output feeds the failure ``detail``; False means a renderer is
+    consuming the chunks live so nothing is fully buffered. Either way a bounded
+    tail of output is always retained so the ENOSPC disk-full hint fires whether
+    or not output is streamed (disk exhaustion is *most* likely during a long
+    streaming bench build). A lost stream or unknowable exit code raises the
+    contract's typed ``DOCKER`` errors instead of the old ``exit code None``.
     """
     emit(InitTrace(text=command, code="exec.command"))
 
     chunks: list[str] = []
+    tail = ""  # bounded window of recent output for the ENOSPC scan (streaming path)
     done: ExecDone | None = None
     for event in exec_stream(container, ["bash", "-lc", command], environment=environment):
         if isinstance(event, ExecChunk):
             emit(InitOutput(phase=phase, stream=event.stream, text=event.text))
             if collect:
                 chunks.append(event.text)
+            else:
+                # ponytail: last 8KB holds any ENOSPC marker even across chunk
+                # boundaries, without unbounded buffering of a streamed build.
+                tail = (tail + event.text)[-8192:]
         else:
             done = event
     assert done is not None  # exec_stream always terminates with ExecDone
@@ -332,12 +338,13 @@ def _run_exec(
         return
 
     joined = "".join(chunks)
-    if collect and ("ENOSPC" in joined or "no space left on device" in joined.lower()):
+    scanned = joined if collect else tail
+    if "ENOSPC" in scanned or "no space left on device" in scanned.lower():
         raise CwcliError(
             ErrorKind.PRECONDITION,
             "init.disk_full",
             "No space left on device inside the container. " "Free up disk space and try again.",
-            detail={"output": joined},
+            detail={"output": joined} if joined else None,
         )
     raise CwcliError(
         ErrorKind.PRECONDITION,
