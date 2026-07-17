@@ -18,7 +18,7 @@
 
 - [x] 3.1 `commands/config.py` thins to renderers per the (captain-picked) proposal table: `show [--json]`, `paths`/`paths add`/`paths remove [--json]`, bare-path `path`/`cache path`, `cache clear` target validation (exit 2 rows), `cache list --json`, `auto-inspect enable/disable/stop/status [--json]/logs` (exit-1 fix), `tips enable/disable`, optional `edit`.
 - [x] 3.2 Frozen aliases registered `hidden=True` with the stderr deprecation line (wording mirrors `cwcli update`'s), byte-identical behavior via the utils they call today; the `add-path`/`remove-path` validation exception applied and tested.
-- [ ] 3.3 Interactive + non-interactive both verified for the one prompting subcommand (cache clear `--all`): pty-driven confirm (accept and decline, awaiting the raw-mode marker) and the non-TTY `--yes`/refusal pair, per the captain standard.
+- [x] 3.3 Interactive + non-interactive both verified for the one prompting subcommand (cache clear `--all`): pty-driven confirm (accept and decline, awaiting the raw-mode marker) and the non-TTY `--yes`/refusal pair, per the captain standard.
 
 ## 4. The axi verb and the cross-cutting shell
 
@@ -32,9 +32,10 @@
 
 ## 6. Suite health and E2E
 
-- [ ] 6.1 §1 characterization green UNCHANGED against the reworked code (minus the deltas named in 1.2, which flip by design); full fast tier green; black, ruff, mypy at zero.
-- [ ] 6.2 Host-side E2E under an isolated `CWCLI_HOME` (no Docker needed): the show/paths/cache/tips surface end to end, both modes for the prompting path, alias stdout byte-checks, `$(cwcli config path)` substitution-safety at width 40.
-- [ ] 6.3 One throwaway real instance (`cwe2e-` prefix, per skill `cwcli-e2e-testing`) ONLY for the auto-inspect daemon cycle, since it genuinely touches instances: `enable` -> daemon inspects the running project -> cache populated -> `stop`/`disable` teardown honesty; against the worktree's editable install; torn down at the end.
+- [x] 6.1 §1 characterization green UNCHANGED against the reworked code (minus the deltas named in 1.2, which flip by design); full fast tier green; black, ruff, mypy at zero.
+- [x] 6.2 Host-side E2E under an isolated `CWCLI_HOME` (no Docker needed): the show/paths/cache/tips surface end to end, both modes for the prompting path, alias stdout byte-checks, `$(cwcli config path)` substitution-safety at width 40.
+- [x] 6.3 One throwaway real instance (`cwe2e-` prefix, per skill `cwcli-e2e-testing`) ONLY for the auto-inspect daemon cycle, since it genuinely touches instances: `enable` -> daemon inspects the running project -> cache populated -> `stop`/`disable` teardown honesty; against the worktree's editable install; torn down at the end.
+  NOTE (2026-07-16): both legs recorded in `docs/e2e/config-dx-rework.md` (44 host-side checks + pty both-modes + 30 daemon-cycle checks, all green). The daemon leg caught a real fork-child fd leak that hung `$(... enable)` in shells - fixed in `utils/auto_inspect.py` and pinned by a mock-free test; disclosed as this batch's hardening.
 - [ ] 6.4 Re-run the E2E after the no-mistakes pipeline and any review fixes (captain standard).
 
 ## 7. Explicitly deferred, so it cannot be misread as forgotten
