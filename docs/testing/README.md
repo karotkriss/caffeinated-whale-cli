@@ -11,7 +11,7 @@ The suite is split into two tiers by pytest marker (registered in `pyproject.tom
 - **`unit`** - fast, needs no Docker daemon, and is the default tier a bare `pytest` runs.
   It verifies pure logic and command wiring against fakes and runs inside the uv container in CI (`test.yml`, `-m unit`, the always-required gate).
   It stays green even with a dead Docker endpoint - that is the proof it is mock-free (`DOCKER_HOST=tcp://127.0.0.1:1 uv run pytest -m unit`).
-- **`e2e` / `e2e_p2p`** - real Docker, under `tests/e2e/`.
+- **`e2e` / `e2e_p2p` / `e2e_pkg`** - real Docker, under `tests/e2e/`.
   These drive the real `cwcli` binary against genuine throwaway Frappe instances (real `cwcli init` up, real side-effect assertions, `cwcli rm` down), are excluded by default, and run on GitHub-hosted `ubuntu-latest` in a v14/v15/v16 matrix (`e2e.yml`).
 
 The migration off the legacy container-mock suite is parallel-run: those tests are carried in the `unit` tier and retired per command as each command's real E2E lands (see [`../../openspec/changes/rebuild-e2e-test-suite`](../../openspec/changes/rebuild-e2e-test-suite)); the mock-free pure-logic tests are kept permanently.
