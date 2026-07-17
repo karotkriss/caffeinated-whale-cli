@@ -337,6 +337,18 @@ class TestInitInstance:
         assert result.choice.kind == "confirm_start"
         assert result.choice.param == "auto_start"
 
+    def test_readiness_poll_is_bounded(self, monkeypatch, tmp_path, patched):
+        # The old _wait_for_containers_running's bound, now the core poll's:
+        # ~10 silent attempts, then the choice - never an unbounded spin (and
+        # structurally never a prompt: the core cannot prompt at all).
+        stopped = FakeContainer(status="exited")
+        reloads: list[int] = []
+        stopped.reload = lambda: reloads.append(1)  # type: ignore[method-assign]
+        instance_setup(monkeypatch, tmp_path, container=stopped)
+        result = core_init.init_instance(PROJECT, port=18000)
+        assert result.status is Status.NEEDS_CHOICE
+        assert len(reloads) == 10
+
     def test_poll_timeout_with_auto_start_fails_closed(self, monkeypatch, tmp_path, patched):
         # The structural cap: the caller claimed the start was handled and the
         # containers are still down -> typed NOT_RUNNING, never a loop.
@@ -673,6 +685,28 @@ class TestVersionGating:
         result = core_init.init_bench(PROJECT, **bench_kwargs(frappe_ref="version-13"))
         assert any("setuptools<82" in s for s in container.exec_run_calls)
         assert any(w.code == "setuptools.pin_failed" for w in result.warnings)
+
+
+class TestNoAxiInitVerb:
+    """There is deliberately NO ``axi init`` verb in this batch, and it is
+    DEFERRED, not refused (design Decision 9 of ``migrate-init-core``): unlike
+    ``axi open`` (structurally impossible - execvp destroys the process) this
+    verb is buildable and the two-call core shape makes it thin, but whether an
+    agent may create instances (gigabytes of images, host state, a required
+    secret on the agent's argv, a 10-20 minute single-document wait) is a
+    product decision the captain owns on its own evidence, decoupled from the
+    migration. This test keeps the deferral legible so "deferred" can never
+    read as "forgotten" (the ``axi apps install``/``uninstall`` precedent)."""
+
+    def test_axi_registry_has_no_init_command(self):
+        from caffeinated_whale_cli.commands import axi as axi_mod
+
+        registered = {c.name for c in axi_mod.app.registered_commands}
+        assert "init" not in registered
+        # Nor under any axi subapp (e.g. `axi apps ...`).
+        for group in axi_mod.app.registered_groups:
+            sub = {c.name for c in group.typer_instance.registered_commands}
+            assert "init" not in sub
 
 
 class TestCorePurity:
