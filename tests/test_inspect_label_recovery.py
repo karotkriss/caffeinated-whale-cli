@@ -15,6 +15,7 @@ import pytest
 
 from caffeinated_whale_cli.commands import inspect as inspect_mod
 from caffeinated_whale_cli.core import docker as core_docker
+from caffeinated_whale_cli.utils import db_utils
 
 BENCH_A = "/workspace/frappe-bench"
 BENCH_B = "/workspace/frappe-bench-2"
@@ -92,8 +93,8 @@ def wired(monkeypatch):
         writes.append([dict(b) for b in benches])
         store[name] = {"project_name": name, "bench_instances": benches, "last_updated": "now"}
 
-    monkeypatch.setattr(inspect_mod.db_utils, "get_cached_project_data", fake_get)
-    monkeypatch.setattr(inspect_mod.db_utils, "cache_project_data", fake_cache)
+    monkeypatch.setattr(db_utils, "get_cached_project_data", fake_get)
+    monkeypatch.setattr(db_utils, "cache_project_data", fake_cache)
     monkeypatch.setattr(inspect_mod, "ensure_containers_running", lambda *a, **k: True)
     monkeypatch.setattr(inspect_mod.config_utils, "get_show_tips", lambda: False)
     # `inspect` is wrapped by ``@handle_docker_errors``, which probes the real
