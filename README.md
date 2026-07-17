@@ -840,6 +840,7 @@ How would you like to open this instance?
 
 First-class app management: list, install, uninstall, and update Frappe apps per bench and per site.
 This replaces dropping to the raw `cwcli run <project> bench get-app ...` escape hatch: every subcommand resolves the target bench (`--bench <index|label>`/`--path`), returns honest non-zero exit codes, and honors the non-interactive contract (a non-TTY without the required flag refuses non-zero; auto-start gated by `-y`/`--yes`). Every subcommand, `update` included, supports `--json` machine-readable output.
+There is deliberately **no `cwcli axi run`/`axi exec` verb**: an arbitrary-command passthrough would re-open the exact raw-`cwcli run` escape hatch this `apps` group was built to close, so agents drive `apps` (and the other structured axi verbs) instead.
 
 **Multi-site by default:** `install`, `uninstall`, and `apps update` apply to **all** sites on the resolved bench when no `--site` is given; `--site` is repeatable and narrows to the named site(s).
 The fan-out runs per site, aggregates the results, and exits non-zero if any site fails (printing a per-site report) - a partial failure is never hidden behind a success banner.
