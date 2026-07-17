@@ -294,10 +294,22 @@ def start_daemon():
     try:
         os.setsid()
 
-        # Redirect standard file descriptors
-        sys.stdin = open(os.devnull)
-        sys.stdout = open(os.devnull, "a+")
-        sys.stderr = open(os.devnull, "a+")
+        # Redirect the REAL file descriptors, not just the sys.* objects. The
+        # child inherits the parent's stdout/stderr fds, and a shell capturing
+        # the parent's output (`$(cwcli config auto-inspect enable)`, any pipe)
+        # waits for EOF on that pipe - which never comes while the daemon holds
+        # fd 1 open. Rebinding sys.stdout alone left the fd open, so every
+        # script that captured the enabling command's output hung forever.
+        # stdin/stdout go to devnull; stderr goes to the LOG FILE (mirroring
+        # _spawn_detached) so a crash below _log's reach still leaves a trace.
+        _ensure_pid_dir()
+        devnull_fd = os.open(os.devnull, os.O_RDWR)
+        log_fd = os.open(LOG_FILE, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        os.dup2(devnull_fd, 0)
+        os.dup2(devnull_fd, 1)
+        os.dup2(log_fd, 2)
+        os.close(devnull_fd)
+        os.close(log_fd)
 
         # Write PID file
         _write_pid_file()

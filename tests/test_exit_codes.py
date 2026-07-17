@@ -200,11 +200,12 @@ class TestConfigExitCodes:
         assert exc.value.exit_code == 1
 
     def test_enable_invalid_interval_exits_one(self, monkeypatch):
-        # Enabling with a sub-minimum interval still exits 1 (the enable write is a
-        # pre-existing side effect; neutralize it so the test never touches config).
-        monkeypatch.setattr(config_mod.config_utils, "set_auto_inspect_enabled", lambda v: None)
+        # Enabling with a sub-minimum interval still exits 1. Since the
+        # rework-config-dx migration the validation runs in core.auto_inspect
+        # BEFORE anything persists (the F3 fix), so no write needs neutralizing;
+        # the signature changed by design (--startup/--no-startup tri-state).
         with pytest.raises(typer.Exit) as exc:
-            config_mod.enable_auto_inspect(interval=30, enable_startup=False)
+            config_mod.enable_auto_inspect(interval=30, startup=None)
         assert exc.value.exit_code == 1
 
     def test_handler_exception_exits_one(self, monkeypatch):
@@ -216,10 +217,12 @@ class TestConfigExitCodes:
             config_mod.enable_tips()
         assert exc.value.exit_code == 1
 
-    def test_clear_cache_no_target_exits_one(self):
+    def test_clear_cache_no_target_exits_two(self):
+        # Changed BY DESIGN by rework-config-dx (F10): a missing target is a
+        # usage error, and usage errors exit 2 everywhere else in the CLI.
         with pytest.raises(typer.Exit) as exc:
             config_mod.clear_cache(project_name=None, all=False, yes=False)
-        assert exc.value.exit_code == 1
+        assert exc.value.exit_code == 2
 
     def test_stop_when_not_running_is_idempotent_success(self, monkeypatch):
         # The deliberate carve-out: asking to stop something already stopped is a
