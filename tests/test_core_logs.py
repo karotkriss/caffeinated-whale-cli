@@ -37,9 +37,11 @@ class LogFsContainer:
     it survives ``resolve_container_state``.
     """
 
-    def __init__(self, existing=(), listing=()):
+    def __init__(self, existing=(), listing=(), contents=None):
         self.existing = list(existing)
         self.listing = list(listing)
+        # contents: {path: [line, ...]} - what a `tail -v` read of that file yields.
+        self.contents = dict(contents or {})
         self.name = "proj-frappe-1"
         self.status = "running"
         self.labels = {"com.docker.compose.service": "frappe"}
@@ -50,6 +52,20 @@ class LogFsContainer:
 
     def exec_run(self, cmd, workdir=None, environment=None):
         self.calls.append(cmd)
+        # `read_logs`' bounded tail: `tail -v -n N <paths...>`. Reproduce GNU tail's
+        # multi-file framing - a `==> <path> <==` header per file, one blank line
+        # between file blocks, no trailing blank after the last.
+        if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "tail":
+            argv = list(cmd)
+            n = int(argv[argv.index("-n") + 1]) if "-n" in argv else 10
+            paths = [a for a in argv if isinstance(a, str) and a.startswith("/")]
+            out: list[str] = []
+            for i, p in enumerate(paths):
+                if i > 0:
+                    out.append("")  # blank separator before subsequent headers
+                out.append(f"==> {p} <==")
+                out.extend(self.contents.get(p, [])[-n:])
+            return (0, ("\n".join(out) + ("\n" if out else "")).encode())
         if not (isinstance(cmd, (list, tuple)) and list(cmd[:2]) == ["sh", "-c"]):
             return (1, b"")
         script = cmd[2]
@@ -301,3 +317,159 @@ def test_core_logs_imports_no_subprocess():
 
     source = inspect.getsource(core_logs)
     assert "import subprocess" not in source
+
+
+# ============================================================ read_logs (bounded)
+#
+# `read_logs` shares `_resolve_log_files` with `logs_plan` (every NEEDS_CHOICE fork
+# and the fallback are already pinned above), then runs one buffered `tail -v` and
+# returns the lines as data. These pin what read_logs adds: the tail parse into
+# per-process groups, the running-but-quiet empty-OK divergence, and the no-manager
+# error.
+
+
+def test_read_groups_lines_by_process(wire):
+    c = LogFsContainer(
+        existing=[
+            "/w/bench/logs/web.supervisor.log",
+            "/w/bench/logs/worker_default.supervisor.log",
+        ],
+        contents={
+            "/w/bench/logs/web.supervisor.log": ["web line 1", "web line 2"],
+            "/w/bench/logs/worker_default.supervisor.log": ["worker line 1"],
+        },
+    )
+    wire(c)
+    result = core_logs.read_logs("proj", lines=50)
+    assert result.status is Status.OK
+    groups = {g.process: g for g in result.data.logs}
+    assert set(groups) == {"web", "worker_default"}
+    assert groups["web"].lines == ["web line 1", "web line 2"]
+    assert groups["web"].file == "/w/bench/logs/web.supervisor.log"
+    assert groups["worker_default"].lines == ["worker line 1"]
+    assert result.data.lines_requested == 50
+    assert result.data.container_name == "proj-frappe-1"
+
+
+def test_read_single_process_returns_only_that_group(wire):
+    c = LogFsContainer(
+        existing=["/w/bench/logs/worker_default.supervisor.log"],
+        contents={"/w/bench/logs/worker_default.supervisor.log": ["only worker"]},
+    )
+    wire(c)
+    result = core_logs.read_logs("proj", process="worker:default")
+    assert result.status is Status.OK
+    assert [g.process for g in result.data.logs] == ["worker_default"]
+    assert result.data.logs[0].lines == ["only worker"]
+
+
+def test_read_honours_the_lines_bound(wire):
+    c = LogFsContainer(
+        existing=["/w/bench/logs/web.supervisor.log"],
+        contents={"/w/bench/logs/web.supervisor.log": [f"line {i}" for i in range(20)]},
+    )
+    wire(c, programs=["web"])
+    result = core_logs.read_logs("proj", lines=3)
+    assert result.data.logs[0].lines == ["line 17", "line 18", "line 19"]
+
+
+def test_read_line_with_special_chars_survives_the_tail_parse(wire):
+    # A log line carrying `:` `,` `"` must come back verbatim - the frontend emits
+    # it as a raw TOON block line, so the parse must not split or mangle it.
+    line = 'ERROR: {"key": "value", "n": 42} -> failed'
+    c = LogFsContainer(
+        existing=["/w/bench/logs/web.supervisor.log"],
+        contents={"/w/bench/logs/web.supervisor.log": [line]},
+    )
+    wire(c, programs=["web"])
+    result = core_logs.read_logs("proj")
+    assert result.data.logs[0].lines == [line]
+
+
+def test_read_empty_file_is_a_group_with_no_lines(wire):
+    c = LogFsContainer(existing=["/w/bench/logs/web.supervisor.log"], contents={})
+    wire(c, programs=["web"])
+    result = core_logs.read_logs("proj")
+    assert result.status is Status.OK
+    assert result.data.logs[0].process == "web"
+    assert result.data.logs[0].lines == []
+
+
+def test_read_running_but_quiet_is_empty_success_not_error(wire):
+    # Manager up, but no supervisord log files exist yet and the fallback finds no
+    # real logs: a bounded read returns OK with empty logs + logs.none_yet, NOT the
+    # error logs_plan raises. Exit-0 empty read is the agent-surface contract.
+    c = LogFsContainer(existing=[], listing=[])
+    wire(c, manager_up=True)
+    result = core_logs.read_logs("proj")
+    assert result.status is Status.OK
+    assert result.data.logs == []
+    assert any(w.code == "logs.none_yet" for w in result.warnings)
+
+
+def test_read_no_manager_is_the_honest_error(wire):
+    # Container up but nothing supervising the bench: read_logs RAISES the same
+    # NOT_RUNNING/logs.no_manager error logs_plan does, with the start hint.
+    c = LogFsContainer(existing=[], listing=[])
+    wire(c, manager_up=False)
+    with pytest.raises(CwcliError) as excinfo:
+        core_logs.read_logs("proj")
+    assert excinfo.value.kind is ErrorKind.NOT_RUNNING
+    assert excinfo.value.code == "logs.no_manager"
+
+
+def test_read_stopped_container_is_confirm_start(wire):
+    c = LogFsContainer(existing=[])
+    c.status = "exited"
+    wire(c)
+    result = core_logs.read_logs("proj")
+    assert result.status is Status.NEEDS_CHOICE
+    assert result.choice.kind == "confirm_start"
+
+
+def test_read_multi_bench_without_selector_is_select_bench(wire):
+    c = LogFsContainer()
+    wire(c, benches=[{"path": "/w/a", "label": None}, {"path": "/w/b", "label": None}])
+    result = core_logs.read_logs("proj")
+    assert result.status is Status.NEEDS_CHOICE
+    assert result.choice.kind == "select_bench"
+
+
+def test_read_unknown_process_is_select_process(wire):
+    c = LogFsContainer(existing=["/w/bench/logs/web.supervisor.log"])
+    wire(c, programs=["web", "worker_default"])
+    result = core_logs.read_logs("proj", process="nope")
+    assert result.status is Status.NEEDS_CHOICE
+    assert result.choice.kind == "select_process"
+
+
+def test_read_fallback_labels_raw_logs_by_stem(wire):
+    # A honcho / `bench start` bench: no supervisord files, real *.log discovered.
+    # not_cwcli_supervised is set and the process label is the file stem.
+    real = ["/w/bench/logs/web.log", "/w/bench/logs/worker.log"]
+    c = LogFsContainer(
+        existing=[],
+        listing=real,
+        contents={"/w/bench/logs/web.log": ["w"], "/w/bench/logs/worker.log": ["k"]},
+    )
+    wire(c, manager_up=True)
+    result = core_logs.read_logs("proj")
+    assert result.status is Status.OK
+    assert result.data.not_cwcli_supervised is True
+    assert {g.process for g in result.data.logs} == {"web", "worker"}
+
+
+def test_read_carries_no_live_object_and_is_plain_data(wire):
+    from dataclasses import asdict
+
+    c = LogFsContainer(
+        existing=["/w/bench/logs/web.supervisor.log"],
+        contents={"/w/bench/logs/web.supervisor.log": ["x"]},
+    )
+    wire(c, programs=["web"])
+    data = core_logs.read_logs("proj").data
+    # asdict must yield plain data: no live container, no argv anywhere.
+    dumped = asdict(data)
+    assert isinstance(dumped, dict)
+    assert "docker" not in repr(dumped)
+    assert all(isinstance(g["file"], str) for g in dumped["logs"])
