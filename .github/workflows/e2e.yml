@@ -55,6 +55,12 @@ jobs:
       # True only when a repo admin configured Docker Hub creds; gates the login
       # step so CI still works (anonymous pulls) when they are absent.
       HAS_DOCKERHUB: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+      # The P2P E2E leg installs the real sendme binary, which queries
+      # api.github.com for the latest release; unauthenticated calls share a
+      # 60/hour-per-IP limit across the whole runner pool and 403 under load.
+      # The automatic job token authenticates that call (5000/hour) without
+      # widening `permissions:` above (contents:read is already sufficient).
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - name: Checkout code
