@@ -565,6 +565,7 @@ def _run_normal(
                 project_name,
                 site=site,
                 bench_path=bench_path,
+                ticket=None,
                 mariadb_root_username=mariadb_root_username,
                 mariadb_root_password=mariadb_root_password,
                 admin_password=admin_password,
@@ -595,6 +596,7 @@ def _run_receive(
     *,
     site: str | None,
     bench_path: str,
+    ticket: str | None,
     mariadb_root_username: str | None,
     mariadb_root_password: str | None,
     admin_password: str | None,
@@ -607,13 +609,22 @@ def _run_receive(
     console.print()
     console.print("[bold cyan]Receive backup via sendme[/bold cyan]")
     console.print()
-    ticket = questionary.text(
-        "Enter the sendme ticket:",
-        validate=lambda text: len(text.strip()) > 0 or "Ticket cannot be empty",
-    ).ask()
-    if not ticket:
-        console.print("[yellow]Receive cancelled.[/yellow]")
-        return
+    if ticket is None:
+        if isatty:
+            ticket = questionary.text(
+                "Enter the sendme ticket:",
+                validate=lambda text: len(text.strip()) > 0 or "Ticket cannot be empty",
+            ).ask()
+            if not ticket:
+                stderr_console.print("[bold red]Error:[/bold red] Receive cancelled: no ticket.")
+                raise typer.Exit(code=1)
+        else:
+            stderr_console.print(
+                "[bold red]Error:[/bold red] No sendme ticket provided and not running "
+                "interactively.\n[dim]Pass --ticket <sendme-ticket> to receive "
+                "non-interactively.[/dim]"
+            )
+            raise typer.Exit(code=1)
     ticket = "".join(ticket.split())
     if not ticket:
         stderr_console.print("[bold red]Error:[/bold red] Ticket cannot be empty after cleanup")
@@ -861,6 +872,12 @@ def restore(
         "--receive",
         help="Receive and restore a backup from a remote location via sendme (P2P transfer).",
     ),
+    ticket: str | None = typer.Option(
+        None,
+        "--ticket",
+        help="The sendme ticket for --receive. When supplied, the ticket prompt is "
+        "skipped; a non-TTY without --ticket refuses with a non-zero exit.",
+    ),
     no_recache: bool = typer.Option(
         False,
         "--no-recache",
@@ -924,6 +941,9 @@ def restore(
             "restore path, not --send or --receive."
         )
         raise typer.Exit(code=1)
+    if ticket is not None and not receive:
+        stderr_console.print("[bold red]Error:[/bold red] --ticket only applies to --receive.")
+        raise typer.Exit(code=1)
 
     if send or receive:
         if not ensure_sendme_installed(verbose=verbose):
@@ -943,6 +963,7 @@ def restore(
             project_name,
             site=site,
             bench_path=resolved_bench,
+            ticket=ticket,
             mariadb_root_username=mariadb_root_username,
             mariadb_root_password=mariadb_root_password,
             admin_password=admin_password,

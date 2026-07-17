@@ -183,6 +183,7 @@ class TestReceiveUsesFullDbPath:
             "proj",
             site=SITE,
             bench_path=BENCH_PATH,
+            ticket="ticket-abc",
             mariadb_root_username="root",
             mariadb_root_password="pw",
             admin_password=None,
