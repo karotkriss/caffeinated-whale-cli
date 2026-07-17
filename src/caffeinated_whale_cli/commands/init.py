@@ -169,7 +169,7 @@ class _InitRenderer:
         stderr_console.print(f"[dim]{event.text}[/dim]")
 
 
-def _render_error_exit(e: CwcliError, project_name: str) -> typer.Exit:
+def _render_error_exit(e: CwcliError, project_name: str, *, verbose: bool = False) -> typer.Exit:
     """Map a typed core error to this CLI's historical stderr lines + exit 1."""
     stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
     if e.code == "ports.in_use":
@@ -179,9 +179,14 @@ def _render_error_exit(e: CwcliError, project_name: str) -> typer.Exit:
         )
         stderr_console.print(f"[dim]Example: cwcli init {project_name} --port 10000[/dim]")
     elif e.code == "compose.failed":
-        output = (e.detail or {}).get("output")
-        if output:
-            stderr_console.print(output)
+        # Verbose mode already streamed this stderr live via InitOutput events
+        # (_InitRenderer._on_output); printing e.detail["output"] here too would
+        # duplicate it. Only non-verbose mode (which drops InitOutput events)
+        # needs it printed here.
+        if not verbose:
+            output = (e.detail or {}).get("output")
+            if output:
+                stderr_console.print(output)
     elif e.code in ("exec.stream_lost", "exec.exit_code_unknown") and e.hint:
         # The contract's honest lost-stream errors are new on this surface;
         # their hint says what the user should actually do.
@@ -504,7 +509,7 @@ def init(
             finally:
                 renderer.close()
     except CwcliError as e:
-        raise _render_error_exit(e, project) from None
+        raise _render_error_exit(e, project, verbose=verbose) from None
 
     # ---- Stage 2: the bench + site, re-invoked per resolved choice.
     renderer.bench_name = bench
@@ -532,7 +537,7 @@ def init(
             finally:
                 renderer.close()
         except CwcliError as e:
-            raise _render_error_exit(e, project) from None
+            raise _render_error_exit(e, project, verbose=verbose) from None
 
         if bench_result.status is not Status.NEEDS_CHOICE:
             break
