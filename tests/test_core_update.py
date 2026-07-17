@@ -565,7 +565,10 @@ class TestSitesWithAppLiveFallback:
                     {
                         "path": BENCH,
                         "sites": [
-                            {"name": "a.localhost", "installed_apps": ["frappe 16.26.3", "payments 16.1.0"]},
+                            {
+                                "name": "a.localhost",
+                                "installed_apps": ["frappe 16.26.3", "payments 16.1.0"],
+                            },
                             {"name": "b.localhost", "installed_apps": ["frappe 16.26.3"]},
                         ],
                     }
@@ -599,7 +602,11 @@ class TestSitesWithAppLiveFallback:
         # Versioned cache misses AND no container to query -> honestly empty.
         _seed_cache(
             monkeypatch,
-            {"bench_instances": [{"path": BENCH, "sites": [{"name": "a", "installed_apps": ["frappe 16.26.3"]}]}]},
+            {
+                "bench_instances": [
+                    {"path": BENCH, "sites": [{"name": "a", "installed_apps": ["frappe 16.26.3"]}]}
+                ]
+            },
         )
         assert core_update._sites_with_app("proj", BENCH, "frappe", None) == []
 
