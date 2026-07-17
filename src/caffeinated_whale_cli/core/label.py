@@ -178,6 +178,24 @@ def _running_container(project_name: str):
     return frappe_container
 
 
+def container_available(project_name: str) -> bool:
+    """Whether the project's frappe container is resolvable and running.
+
+    A serializable pre-check ``inspect -i`` calls BEFORE prompting, so it can warn
+    the user up front that labels will be cache-only - rather than only finding
+    out from :func:`set_labels`'s own degrade after the whole prompt loop has run.
+    Returns False for exactly the errors :func:`set_labels` degrades on (a stopped
+    project, a gone container, or an unreachable daemon); anything else propagates.
+    """
+    try:
+        _running_container(project_name)
+    except CwcliError as exc:
+        if exc.kind in (ErrorKind.NOT_RUNNING, ErrorKind.NOT_FOUND, ErrorKind.DOCKER):
+            return False
+        raise
+    return True
+
+
 def _label_of(benches: list[dict], bench_path: str) -> str | None:
     for bench in benches:
         if bench["path"] == bench_path:
