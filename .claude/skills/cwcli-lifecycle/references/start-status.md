@@ -58,8 +58,11 @@ are now the whole point. Each note below guards a real bug.
   as the identical error + valid-label list, exit 1. **PR #83's exit-code fix is preserved in the frontend**
   where its mechanism lives (the propagated `returncode`, the `130`-is-a-clean-Ctrl+C branch, the
   `except KeyboardInterrupt`); do NOT move it into the core - `subprocess` is banned there, and moving it
-  means moving the tail. A bounded `core.read_logs` (`tail -n N`, no follow) IS a legitimate future
-  `exec_stream` consumer - that is `axi logs`'s function, deferred with that verb. **Separately filed
+  means moving the tail. The bounded `core.read_logs` (`tail -n N`, no follow) SHIPPED (`add-axi-logs-verb`)
+  behind `cwcli axi logs`, sharing this module's resolve via `_resolve_log_files` - and it is deliberately
+  NOT an `exec_stream` consumer: a bounded read blocks to completion and returns finite output, so it is one
+  buffered `container.exec_run` (the `core.backup` shape), not an event stream. See the exec-stream contract
+  entry in `AGENTS.md`. **Separately filed
   (`cwcli-logs-orphan-tail-o5`, NOT fixed here):** today's non-TTY `logs -f` already leaks the same orphan on
   every Ctrl+C (no `-it` -> nothing forwards `^C` to `tail`); pre-existing, its own batch.
 - **`cwcli logs` not-cwcli-supervised FALLBACK (regression fix - same class as the status one).** The
