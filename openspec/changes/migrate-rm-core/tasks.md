@@ -32,8 +32,8 @@
 
 ## 6. E2E on a real instance, BOTH modes (captain dangerous-delete standard)
 
-- [ ] 6.1 MEMORY-SERIALIZE first: `docker ps --format '{{.Names}}' | grep cwe2e` - if any non-mine `cwe2e-` container exists, WAIT (paused) until it clears. One throwaway isolated instance (`cwe2e-` prefix, `CWCLI_HOME` isolation per skill `cwcli-e2e-testing`), against the worktree's own editable install, torn down immediately after; no broad Docker cleanups; disk pressure means stop and report blocked.
-- [ ] 6.2 Real full lifecycle: real `cwcli init` -> seed real data -> `cwcli rm` with backup, verifying the host backup is genuinely present/restorable AND the deletion is honest (named volumes + project dir actually gone); the stopped-project start -> back up -> delete leg; a forced-failure abort keeps all data and returns to stopped; `--no-backup` deletes honestly. BOTH modes (interactive confirm via pty awaiting `ESC[?2004h`; non-interactive `--yes`).
+- [x] 6.1 MEMORY-SERIALIZE first: `docker ps --format '{{.Names}}' | grep cwe2e` - if any non-mine `cwe2e-` container exists, WAIT (paused) until it clears. One throwaway isolated instance (`cwe2e-` prefix, `CWCLI_HOME` isolation per skill `cwcli-e2e-testing`), against the worktree's own editable install, torn down immediately after; no broad Docker cleanups; disk pressure means stop and report blocked.
+- [x] 6.2 Real full lifecycle: real `cwcli init` -> seed real data -> `cwcli rm` with backup, verifying the host backup is genuinely present/restorable AND the deletion is honest (named volumes + project dir actually gone); the stopped-project start -> back up -> delete leg; a forced-failure abort keeps all data and returns to stopped; `--no-backup` deletes honestly. BOTH modes (interactive confirm via pty awaiting `ESC[?2004h`; non-interactive `--yes`).
 - [ ] 6.3 Re-run AFTER the no-mistakes pipeline and after any review fixes (the standard: review fixes are a trigger, not an exemption).
 
 ## 7. Docs and memory
