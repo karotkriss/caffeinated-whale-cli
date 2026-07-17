@@ -941,6 +941,9 @@ def restore(
             "restore path, not --send or --receive."
         )
         raise typer.Exit(code=1)
+    if ticket is not None and not receive:
+        stderr_console.print("[bold red]Error:[/bold red] --ticket only applies to --receive.")
+        raise typer.Exit(code=1)
 
     if send or receive:
         if not ensure_sendme_installed(verbose=verbose):
