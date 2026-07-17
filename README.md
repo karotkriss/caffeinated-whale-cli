@@ -1749,6 +1749,16 @@ cwcli axi start frappe-one --yes
 # Report per-process health as TOON, with the "overall" aggregate up front
 cwcli axi status frappe-one
 
+# Read a bounded tail of a bench's per-process logs; prints as ONE TOON document -
+# a metadata head then one raw-line block per process. A bounded `tail -n N`, NOT a
+# follow (an agent needs a terminating document, not a stream): use `cwcli logs` for
+# an interactive tail. --lines/-n sets how many lines (default 100); --process/-p
+# reads one process; --bench selects a bench. A running-but-quiet bench is a
+# successful empty read (exit 0); a stopped project is a usage error naming
+# `cwcli start` (exit 2).
+cwcli axi logs frappe-one
+cwcli axi logs frappe-one --process web --lines 50
+
 # Restart ONE supervised process (siblings keep running); the outcome prints as
 # TOON. --process is required; --bench selects a bench on a multi-bench project.
 cwcli axi restart frappe-one --process web
