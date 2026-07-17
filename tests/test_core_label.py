@@ -152,6 +152,26 @@ class TestSetLabel:
 
         assert exc.value.kind is ErrorKind.PRECONDITION
 
+    def test_cache_write_failure_is_tolerated_because_marker_is_source_of_truth(
+        self, temp_db, monkeypatch
+    ):
+        # The documented asymmetry with clear_label (cwcli-label-setpath-db-check-a3):
+        # a missed cache write on SET must NOT raise. The marker is written and
+        # verified, and `inspect` recovers the label from the marker, so the cache
+        # self-heals toward the user's intent. Compare the clear path's
+        # test_cache_failure_after_marker_removal_is_surfaced, which DOES raise.
+        _seed(_two_benches())
+        container = MarkerFakeContainer(bench_path=BENCH_B)
+        _wire(monkeypatch, container)
+        monkeypatch.setattr(core_label.db_utils, "set_bench_label", lambda *a, **k: False)
+
+        result = core_label.set_label("proj", bench="1", label="staging")
+
+        assert result.status is Status.OK
+        assert result.data is not None
+        assert result.data.label == "staging"
+        assert MARKER_B in container.fs  # the marker really was written
+
 
 class TestClearLabel:
     def test_clears_marker_and_cache(self, temp_db, monkeypatch):
