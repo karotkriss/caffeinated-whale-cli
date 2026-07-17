@@ -26,6 +26,11 @@ classifiers = [
 dependencies = [
     "docker>=7.1.0",
     "typer>=0.16.0",
+    # cwcli imports click directly (commands/config.py: `config edit` -> click.edit).
+    # typer used to pull it in transitively, but typer 0.27 no longer guarantees
+    # that, so it must be declared. Floor matches typer's own click>=8.0.0 range and
+    # covers click.edit (present since click 2.0).
+    "click>=8.0.0",
     "rich>=14.0.0",
     "questionary>=2.1.0",
     "toml>=0.10.2",
