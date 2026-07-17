@@ -51,7 +51,7 @@ Per-area breakdown (highest-coverage module in each area; see the module list in
 - **inspect freshness** (`test_inspect_characterization`, `test_core_inspect`, `test_inspect_partial_refresh`, `test_inspect_label_recovery`, `test_inspect_apps_error`) - the T1/T2/T3 tier machine and cache write now live in `core/inspect.py`; `commands/inspect.py` is a renderer (includes the `_get_installed_apps` failure path: a non-zero `list-apps` exit warns to stderr and caches `[]`, never the old poisoned sentinel string)
 - **bench labels/selectors** (`test_bench_labels`, `test_bench_selector`, `test_bench_label_db_and_command`) - `utils/bench_labels.py` ~94%
 - **yes-flag contract** (`test_yes_flag`) - covers the `confirm_or_exit`/`ensure_containers_running` non-interactive contract across `start`, `config`, `logs`
-- **db security** (`test_db_security`) - `utils/db_utils.py` ~68%
+- **db security** (`test_db_security`) - `utils/db_utils.py` ~73%
 - **auto-inspect daemon** (`test_auto_inspect`) - `utils/auto_inspect.py`'s first-ever dedicated suite: the Windows `WaitForSingleObject`-based `_pid_alive` probe (immune to the `os.kill(pid, 0)`/`CTRL_C_EVENT` false-alive bug), the fork-unavailable subprocess fallback and its Windows-path bootstrap source, `_spawn_detached` routing the child's stderr to the log file instead of `DEVNULL`, `_log(exc_info=True)` recording the traceback, and stale-PID-file cleanup
 - **`init` onto the logic core** (`test_core_init`, `test_init_characterization`, `test_init_reuse_bench`, `test_init_admin_password`, `test_init_frappe_version`, `test_init_mariadb_flag`) - `core/init.py` (the two-call `init_instance`/`init_bench` provisioning slice), the reseated `commands/init.py` renderer; see `tests/README.md` for the full per-suite breakdown
 - **completion** (`test_completion_utils`) - `utils/completion_utils.py` ~92%
@@ -336,7 +336,7 @@ Status as of 0.37.0 (based on `ls tests/` and the coverage run above):
 
 ### Done
 1. **Project Inspection** (`commands/inspect.py`, now a renderer over `core/inspect.py`) - covered by `test_inspect_partial_refresh`, `test_inspect_label_recovery`; the core migration itself is item 6g.
-2. **Database Operations** (`utils/db_utils.py`) - covered by `test_db_security`, `test_config_validation` (~68%).
+2. **Database Operations** (`utils/db_utils.py`) - covered by `test_db_security`, `test_config_validation` (~73%).
 3. **App Management** (`commands/apps.py`, `commands/update.py`) - `commands/apps.py`'s `list`/`install`/`uninstall` moved to `core/apps.py` (~98%), the reseated renderer is ~98%, see item 6f; `commands/update.py`'s state machine moved to `core/update.py` (~90%), the reseated renderer is ~88%, see item 6e.
 4. **`CWCLI_HOME` override** (`utils/config_utils.py`'s `cwcli_home()`) - covered by `test_cwcli_home`, mock-free (real env var, real filesystem, real subprocess).
 5. **Real-Docker E2E for `init` and `backup`** (`tests/e2e/test_init_e2e.py`, `tests/e2e/test_backup_e2e.py`) - genuine `bench init`/`bench backup` against throwaway Frappe instances on the v14/v15/v16 matrix, both interactive and non-interactive. The remaining commands (`rm`, `inspect`, `apps list`/`install`/`uninstall`) are deferred to follow-up PRs (`openspec/changes/rebuild-e2e-test-suite`); `unlock` closed its own gap (item 6d), `update`/`apps update` closed theirs (item 6e), `restore` closed its own gap (item 6i), and the P2P loopback closed its own gap (item 5b) - `apps`'s other three subcommands moving onto the core (item 6f) is unit-tier only and does not close this gap, by design.
