@@ -23,6 +23,7 @@ stderr; stdout carries only TOON.
 
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -35,6 +36,7 @@ from typer import rich_utils as _rich_utils
 from ..core import apps as core_apps
 from ..core import backup as core_backup
 from ..core import config as core_config
+from ..core import init as core_init
 from ..core import inspect as core_inspect
 from ..core import label as core_label
 from ..core import list as core_list
@@ -218,6 +220,12 @@ def _choice_error_message(choice: Choice) -> str:
         # so a trailing "?" reads as a question nobody will answer. The actionable
         # remedy rides the `help:` line below.
         return "the project's Frappe container is not running"
+    if choice.kind == "confirm_reuse_bench":
+        # `axi init` only. The bench directory already exists and neither
+        # --reuse-bench nor --no-reuse-bench was passed, so the agent must say
+        # what to do; the flag names ride the `help:` line below.
+        path = (choice.options or [{}])[0].get("label") or "the target bench"
+        return f"bench '{path}' already exists; pass --reuse-bench or --no-reuse-bench"
     return f"a decision is required: {choice.prompt}"
 
 
@@ -238,6 +246,14 @@ def emit_axi_choice_as_usage_error(choice: Choice) -> None:
         typer.echo(toon.kv("help", "re-run with --process <label>"))
     elif choice.kind == "confirm_start":
         typer.echo(toon.kv("help", "start it first with 'cwcli start <project>'"))
+    elif choice.kind == "confirm_reuse_bench":
+        typer.echo(
+            toon.kv(
+                "help",
+                "re-run with --reuse-bench to reuse it, or --no-reuse-bench and a "
+                "different --bench name to create a fresh bench",
+            )
+        )
 
 
 def _collapse_home(path: str) -> str:
@@ -933,6 +949,202 @@ def axi_config() -> None:
     assert result.data is not None  # show_config always returns a ConfigReport
     emit_result(result.data, warnings=result.warnings)
     raise typer.Exit(0)
+
+
+# ------------------------------------------------------------------------------- init
+
+
+def _init_narrate(event) -> None:
+    """Coarse phase-level progress to STDERR (design question 1).
+
+    Writes only ``InitStepStart.message`` and ``InitNotice.text`` - never
+    ``InitOutput`` (raw bench exec bytes, noise an agent does not parse; that is
+    what ``cwcli logs`` is for) and never ``InitTrace`` (verbose diagnostics).
+    The core guarantees no event field carries a secret value, and neither of
+    the two fields emitted here is ever a secret.
+    """
+    if isinstance(event, core_init.InitStepStart):
+        if event.message:
+            print(event.message, file=sys.stderr, flush=True)
+    elif isinstance(event, core_init.InitNotice):
+        print(event.text, file=sys.stderr, flush=True)
+
+
+@app.command("init")
+def axi_init(
+    project: str = typer.Argument(..., help="The Docker Compose project name to create."),
+    port: int = typer.Option(
+        8000, "--port", help="Starting port; creates {port}-{port+5} (web) and +1000 (socketio)."
+    ),
+    bench: str = typer.Option(
+        "frappe-bench",
+        "--bench",
+        help="NAME of the new bench to create (NOT the --bench <index|label> selector other "
+        "verbs use; init creates a bench, it does not select one).",
+    ),
+    site: str = typer.Option(
+        "development.localhost", "--site", help="Primary site to create (must end with .localhost)."
+    ),
+    bench_parent: str = typer.Option(
+        "/workspace",
+        "--bench-parent",
+        help="Directory inside the container to create the bench in.",
+    ),
+    frappe_branch: str = typer.Option(
+        None,
+        "--frappe-branch",
+        help="Frappe branch/tag for bench init (e.g. version-16 or v16.26.3). "
+        "Mutually exclusive with --version.",
+    ),
+    version: str = typer.Option(
+        None,
+        "--version",
+        help="Frappe version resolved by shape: a bare major (16 -> version-16) or a full "
+        "semantic version (16.26.3 -> v16.26.3). Mutually exclusive with --frappe-branch.",
+    ),
+    db_root_password: str = typer.Option(
+        None,
+        "--db-root-password",
+        help="MariaDB root password. Falls back to the CWCLI_DB_ROOT_PASSWORD env var, then '123'.",
+    ),
+    admin_password: str = typer.Option(
+        None,
+        "--admin-password",
+        help="Site administrator password (used verbatim). RECOMMENDED: set the "
+        "CWCLI_ADMIN_PASSWORD env var instead (the flag lands on the argv, visible in "
+        "process listings and shell history). Required: this surface never generates one.",
+    ),
+    reuse_bench: bool = typer.Option(
+        None,
+        "--reuse-bench/--no-reuse-bench",
+        help="When the bench directory already exists: --reuse-bench reuses it, --no-reuse-bench "
+        "requires a fresh --bench name. Omit both and an existing bench is a usage error.",
+    ),
+    install_erpnext: bool = typer.Option(
+        False, "--install-erpnext", help="Install ERPNext onto the created site."
+    ),
+    erpnext_branch: str = typer.Option(
+        "version-16", "--erpnext-branch", help="ERPNext branch (used with --install-erpnext)."
+    ),
+) -> None:
+    """Provision a new instance, bench, and site; emit the report as TOON (never prompts).
+
+    BLOCKS for the full 10-20 minute provisioning run and emits ONE terminal
+    `InitReport` TOON document on stdout when it finishes, exactly as `axi apps
+    update` blocks on a long update - streaming N documents would break the
+    one-TOON-document contract. Coarse phase progress goes to STDERR; for live or
+    deeper progress, run `cwcli logs <project>` / `cwcli status <project>` from a
+    second shell.
+
+    The site admin password comes from the CWCLI_ADMIN_PASSWORD env var
+    (recommended) or --admin-password (the flag lands on the argv - see its help);
+    the flag wins if both are set. With NEITHER set the verb refuses (exit 2)
+    naming both - it never generates a password and never prompts. The MariaDB
+    root password takes the same shape via CWCLI_DB_ROOT_PASSWORD / --db-root-password
+    (default '123').
+
+    The interactive decisions the human `cwcli init` prompts for become
+    non-prompting errors: an existing bench with neither --reuse-bench nor
+    --no-reuse-bench is a usage error (exit 2) naming both; a port conflict names
+    --port (exit 1); containers that do not come up point at `cwcli status` /
+    `cwcli logs` (exit 1). There is no --auto-start (compose `cwcli axi start`
+    then re-run) and no --verbose (stdout is always TOON).
+    """
+    resolved_admin = admin_password or os.environ.get("CWCLI_ADMIN_PASSWORD")
+    if not resolved_admin:
+        emit_axi_error(
+            CwcliError(
+                ErrorKind.USAGE,
+                "init.admin_password_required",
+                "No administrator password supplied. Set the CWCLI_ADMIN_PASSWORD environment "
+                "variable or pass --admin-password.",
+                hint="the agent surface never generates or prompts for a password",
+            )
+        )
+        raise typer.Exit(exit_for(ErrorKind.USAGE))
+    db_root = db_root_password or os.environ.get("CWCLI_DB_ROOT_PASSWORD") or "123"
+
+    # Resolve the Frappe ref (flag fusion is frontend UX, the human-init precedent).
+    if frappe_branch is not None and version is not None:
+        emit_axi_error(
+            CwcliError(
+                ErrorKind.USAGE,
+                "init.flag_conflict",
+                "--frappe-branch and --version are mutually exclusive; pass only one.",
+            )
+        )
+        raise typer.Exit(exit_for(ErrorKind.USAGE))
+    try:
+        if version is not None:
+            frappe_ref = core_init.resolve_frappe_ref(version)
+        elif frappe_branch is not None:
+            frappe_ref = frappe_branch
+        else:
+            frappe_ref = core_init.DEFAULT_FRAPPE_BRANCH
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    # Stage 1: the instance. A NEEDS_CHOICE here is the readiness-poll timeout;
+    # the containers are init's OWN, so it is an operational error (exit 1)
+    # pointing at status/logs, not the generic "start it first" usage error.
+    try:
+        instance_result = core_init.init_instance(project, port=port, on_event=_init_narrate)
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+    if instance_result.status is CoreStatus.NEEDS_CHOICE:
+        emit_axi_error(
+            CwcliError(
+                ErrorKind.NOT_RUNNING,
+                "init.not_ready",
+                f"Containers for '{project}' did not become ready.",
+                hint=f"check 'cwcli status {project}' and 'cwcli logs {project}'",
+            )
+        )
+        raise typer.Exit(1)
+
+    # Stage 2: the bench + site. No re-invoke loop - an unresolved choice is an
+    # error and the process exits; an agent re-runs with the missing flag.
+    try:
+        bench_result = core_init.init_bench(
+            project,
+            bench_name=bench,
+            site_name=site,
+            bench_parent=bench_parent,
+            frappe_ref=frappe_ref,
+            db_root_password=db_root,
+            admin_password=resolved_admin,
+            reuse_bench=reuse_bench,
+            install_erpnext=install_erpnext,
+            erpnext_branch=erpnext_branch,
+            on_event=_init_narrate,
+        )
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    if bench_result.status is CoreStatus.NEEDS_CHOICE:
+        choice = bench_result.choice
+        assert choice is not None  # NEEDS_CHOICE always carries a Choice
+        if choice.kind == "confirm_start":
+            # A stage-2 race: the container stopped between the two stages.
+            emit_axi_error(
+                CwcliError(
+                    ErrorKind.NOT_RUNNING,
+                    "init.container_stopped",
+                    f"The Frappe container for '{project}' is not running.",
+                    hint=f"check 'cwcli status {project}' and 'cwcli logs {project}'",
+                )
+            )
+            raise typer.Exit(1)
+        # confirm_reuse_bench: a usage error naming --reuse-bench / --no-reuse-bench.
+        emit_axi_choice_as_usage_error(choice)
+        raise typer.Exit(2)
+
+    assert bench_result.data is not None  # OK/WARNING always carries an InitReport
+    emit_result(bench_result.data, warnings=bench_result.warnings)
+    raise typer.Exit(0 if bench_result.status in (CoreStatus.OK, CoreStatus.WARNING) else 1)
 
 
 # ------------------------------------------------------------------------ self-update

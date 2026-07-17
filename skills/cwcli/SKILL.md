@@ -70,6 +70,7 @@ Exit codes: **0** success (a completed operation, including one with warnings, a
   benches      List a project's benches with their indices and labels; emit them as TOON.
   label        Set or clear a bench's durable user label; emit the outcome as TOON.
   config       Report the effective cwcli configuration; emit it as one TOON document. READ-ONLY.
+  init         Provision a new instance, bench, and site; emit the report as TOON (never prompts).
   self-update  Report whether a newer cwcli is available; emit the check as TOON. READ-ONLY.
   setup        Install the SessionStart hook into every detected agent harness; emit TOON.
   apps list    List a bench's available apps, and (with --installed/--site) installed per site.
