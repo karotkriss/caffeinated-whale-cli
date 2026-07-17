@@ -20,8 +20,8 @@ from dataclasses import dataclass
 
 from docker.errors import APIError, NotFound
 
-from ..utils.docker_utils import get_project_containers
 from . import resolvers, supervision
+from .docker import get_project_containers
 from .envelope import Choice, Message, Result, Status
 from .errors import CwcliError, ErrorKind
 
