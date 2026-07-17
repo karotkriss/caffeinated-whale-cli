@@ -33,9 +33,9 @@
 
 ## 6. E2E on a real instance, BOTH modes (captain standard)
 
-- [ ] 6.1 One throwaway isolated instance (`cwe2e-` prefix, `CWCLI_HOME` isolation per skill `cwcli-e2e-testing`), against the worktree's own editable install, reused throughout and torn down at the end; no broad Docker cleanups; disk pressure means stop and report blocked.
-- [ ] 6.2 `tests/e2e/test_init_e2e.py` green UNCHANGED against the migrated code (it drives the real binary in both modes: non-interactive flag-driven init, the interactive generated-password pty leg, version gating on the leg's major).
-- [ ] 6.3 Targeted legs the suite does not cover, on the same instance: the interactive reuse-bench flow via pty (`ESC[?2004h` awaited) - reuse-Yes, decline-and-rename continuing on a fresh bench, cancel exit 0; the non-TTY existing-bench refusal without a flag (exit 1); `--reuse-bench` and `--no-reuse-bench` non-interactive; an idempotent re-run printing no password.
+- [x] 6.1 One throwaway isolated instance (`cwe2e-` prefix, `CWCLI_HOME` isolation per skill `cwcli-e2e-testing`), against the worktree's own editable install, reused throughout and torn down at the end; no broad Docker cleanups; disk pressure means stop and report blocked.
+- [x] 6.2 `tests/e2e/test_init_e2e.py` green UNCHANGED against the migrated code (it drives the real binary in both modes: non-interactive flag-driven init, the interactive generated-password pty leg, version gating on the leg's major).
+- [x] 6.3 Targeted legs the suite does not cover, on the same instance: the interactive reuse-bench flow via pty (`ESC[?2004h` awaited) - reuse-Yes, decline-and-rename continuing on a fresh bench, cancel exit 0; the non-TTY existing-bench refusal without a flag (exit 1); `--reuse-bench` and `--no-reuse-bench` non-interactive; an idempotent re-run printing no password.
 - [ ] 6.4 Re-run AFTER the no-mistakes pipeline and after any review fixes (the standard: review fixes are a trigger, not an exemption).
 
 ## 7. Docs and memory
