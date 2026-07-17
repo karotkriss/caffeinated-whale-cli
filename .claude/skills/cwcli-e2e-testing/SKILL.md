@@ -36,3 +36,22 @@ When validating a behavior change by hand, follow the same procedure and point b
    Use `--yes`/`-y`, `--mariadb-root-username`/`--mariadb-root-password`, `--site`, and the backup selectors (`--latest`/`--backup-file`).
    A non-TTY without the needed flag must refuse with a non-zero exit, not hang or silently proceed.
 5. **Tear down all throwaway instances afterward** (containers, volumes, network, temp `HOME`), and confirm the captain's real instances are untouched.
+6. **Add a runtime-deps-only clean-install smoke leg whenever the change touches imports or dependencies** (a new `import`, a new module wired into `main.py`'s command chain, or any `pyproject.toml` dependency edit).
+   This is IN ADDITION to the editable-install behavior legs above, not a replacement - keep validating real behavior against the worktree's own editable install (`uv run cwcli`), never mocks and never a PyPI build.
+   The reason it is its own leg: `uv run cwcli` runs in the dev env (`uv sync --all-extras`), where every dev/transitive dep is present, so it CANNOT catch a runtime dependency that is imported but not declared in `[project.dependencies]`. "In the user's shoes" is `uv tool install`, not `uv run`. cwcli shipped SHIPPED-BROKEN on develop exactly here: `commands/config.py` imported `click` directly while only `typer` was declared; typer 0.27 stopped supplying click transitively, so a real `uv tool install` had no click and EVERY command died at import with `ModuleNotFoundError`. Unit tests, no-mistakes, CI, and the 74-check `docs/e2e/config-dx-rework.md` E2E all ran in the dev env and stayed green.
+   The leg (no Docker needed - purely an import/parse smoke):
+
+   ```bash
+   # Isolated tool dir so the install resolves ONLY from [project.dependencies]
+   export UV_TOOL_DIR=$(mktemp -d) UV_TOOL_BIN_DIR=$(mktemp -d)
+   uv tool install .                                   # the shipped shape: runtime deps only, no --all-extras
+   uv pip list --python "$UV_TOOL_DIR"/caffeinated-whale-cli | grep -i pytest \
+     && { echo "dev deps leaked - not a runtime-only install"; exit 1; } || true
+   BIN="$UV_TOOL_BIN_DIR/cwcli"
+   "$BIN" --help >/dev/null                            # exercises main.py's full `from .commands import ...` chain
+   "$BIN" config --help >/dev/null                     # and the specific group you touched
+   CWCLI_HOME=$(mktemp -d) "$BIN" config path >/dev/null   # one trivial no-Docker command that fully loads the tree
+   ```
+
+   Any undeclared runtime import surfaces here as a `ModuleNotFoundError` at import time.
+   This is the per-feature discipline; `.github/workflows/test.yml`'s `Clean install smoke` job enforces the same leg mechanically on every push/PR (see `AGENTS.md` CI-gates).
