@@ -113,7 +113,7 @@ python_functions = ["test_*"]
 console_output_style = "classic"
 # The default `-m` deselects the real-Docker tiers, so a bare `pytest` is the
 # fast unit tier; `-m e2e` on the CLI overrides it (the last `-m` wins).
-addopts = ["-q", "--strict-markers", "--tb=short", "--cov-report=", "-m", "not e2e and not e2e_p2p"]
+addopts = ["-q", "--strict-markers", "--tb=short", "--cov-report=", "-m", "not e2e and not e2e_p2p and not e2e_pkg"]
 markers = [
     "unit: fast tests that need no Docker daemon (the default tier)",
     "e2e: real-Docker end-to-end tests driving the real cwcli binary",
@@ -277,7 +277,7 @@ Run `ls tests/` for the current, authoritative list.
 
 ### By Type
 
-Three markers are registered in `pyproject.toml`: `unit`, `e2e`, `e2e_p2p`. `tests/conftest.py` auto-applies `unit` to any collected test not already marked `e2e`/`e2e_p2p`, so unit tests need no hand-added marker; only the real-Docker tests under `tests/e2e/` mark themselves explicitly:
+Four markers are registered in `pyproject.toml`: `unit`, `e2e`, `e2e_p2p`, `e2e_pkg`. `tests/conftest.py` auto-applies `unit` to any collected test not already marked `e2e`/`e2e_p2p`/`e2e_pkg`, so unit tests need no hand-added marker; only the real-Docker tests under `tests/e2e/` mark themselves explicitly (`e2e_pkg` is the runtime-deps-only packaging leg, off the `-m e2e` matrix):
 
 ```python
 import pytest
@@ -291,7 +291,7 @@ def test_real_docker_behavior(session_instance):
 
 Run by type:
 ```bash
-pytest                # Default -m "not e2e and not e2e_p2p": only the fast unit tier
+pytest                # Default -m "not e2e and not e2e_p2p and not e2e_pkg": only the fast unit tier
 pytest -m unit         # Explicitly the unit tier
 pytest tests/e2e -m e2e  # The real-Docker tier (needs a Docker daemon)
 ```

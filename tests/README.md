@@ -15,7 +15,7 @@ The suite is split into two tiers by pytest marker.
   They require a reachable Docker daemon and are excluded by default; run them explicitly with `-m e2e`.
   See [E2E harness](#e2e-harness-real-docker) below.
 
-The `unit`, `e2e`, and `e2e_p2p` markers are registered in `pyproject.toml`; `tests/conftest.py` auto-applies `unit` to any test not marked `e2e`/`e2e_p2p`, so there is nothing to hand-mark.
+The `unit`, `e2e`, `e2e_p2p`, and `e2e_pkg` markers are registered in `pyproject.toml`; `tests/conftest.py` auto-applies `unit` to any test not marked `e2e`/`e2e_p2p`/`e2e_pkg`, so there is nothing to hand-mark. `e2e_pkg` is the runtime-deps-only packaging leg (one full lifecycle driven against a `uv tool install .` binary via `CWCLI_BIN`); it is excluded from `-m e2e` so it does not double the version matrix's init cost.
 
 ## Quick Reference
 
@@ -254,11 +254,12 @@ python_functions = ["test_*"]
 console_output_style = "classic"
 # The default `-m` deselects the real-Docker tiers, so a bare `pytest` runs only
 # the fast unit tier; override with `-m e2e` on the CLI (the last `-m` wins).
-addopts = ["-q", "--strict-markers", "--tb=short", "--cov-report=", "-m", "not e2e and not e2e_p2p"]
+addopts = ["-q", "--strict-markers", "--tb=short", "--cov-report=", "-m", "not e2e and not e2e_p2p and not e2e_pkg"]
 markers = [
     "unit: fast tests that need no Docker daemon (the default tier)",
     "e2e: real-Docker end-to-end tests driving the real cwcli binary",
     "e2e_p2p: real-Docker P2P (sendme loopback) end-to-end tests",
+    "e2e_pkg: real-Docker full-lifecycle test against a runtime-deps-only uv-tool-install binary (CWCLI_BIN)",
 ]
 ```
 

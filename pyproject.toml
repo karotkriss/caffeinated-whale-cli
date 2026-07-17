@@ -110,12 +110,13 @@ addopts = [
     "--tb=short",
     "--cov-report=",
     "-m",
-    "not e2e and not e2e_p2p",
+    "not e2e and not e2e_p2p and not e2e_pkg",
 ]
 markers = [
     "unit: fast, mock-free/mock-based tests that need no Docker daemon (the default tier). During the parallel-run migration this also carries the legacy container-mock tests until each command's real E2E lands; see tests/conftest.py.",
     "e2e: real-Docker end-to-end tests that drive the real `cwcli` binary against genuine throwaway instances (requires a Docker daemon).",
     "e2e_p2p: real-Docker P2P (sendme loopback) end-to-end tests; gated, off the per-version matrix.",
+    "e2e_pkg: real-Docker full-lifecycle test driven against a runtime-deps-only `uv tool install .` binary via CWCLI_BIN (the packaging-realism leg). Deliberately OFF the `-m e2e` matrix so it does not double the init cost there; selected only by the dedicated e2e.yml runtime-only job.",
 ]
 
 [tool.coverage.run]
