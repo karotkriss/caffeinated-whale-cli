@@ -1714,7 +1714,7 @@ cwcli inspect frappe-one --json | jq '.bench_instances[0].sites'
 It sits on the same logic core as the human commands but renders differently:
 
 - **Structured output on stdout** in [TOON](https://toonformat.dev) (a token-efficient, agent-readable format); progress and diagnostics go to stderr, so stdout is always clean, parseable data.
-- **No prompts, ever.** Every operation completes from flags alone; a decision it cannot make (an ambiguous multi-bench project, a stopped instance) is reported as a structured usage error naming the exact flag to pass, not an interactive question.
+- **No prompts, ever.** Every operation completes from flags alone; a decision it cannot make (an ambiguous multi-bench project, a stopped instance) is reported as a structured usage error naming the exact flag to pass, not an interactive question. An unrecognized flag or a missing required argument is likewise a structured `error:`+`help:` usage error on stdout - never a leaked stack trace or empty output - with the `help:` line naming the command's valid flags.
 - **Conventional exit codes:** `0` success (including no-ops), `1` error, `2` usage error.
 
 ```bash
