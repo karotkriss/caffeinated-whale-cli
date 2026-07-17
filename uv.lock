@@ -41,6 +41,7 @@ name = "caffeinated-whale-cli"
 version = "0.37.0"
 source = { editable = "." }
 dependencies = [
+    { name = "click" },
     { name = "docker" },
     { name = "packaging" },
     { name = "peewee" },
@@ -67,6 +68,7 @@ e2e = [
 [package.metadata]
 requires-dist = [
     { name = "black", marker = "extra == 'dev'", specifier = ">=25.1.0" },
+    { name = "click", specifier = ">=8.0.0" },
     { name = "docker", specifier = ">=7.1.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13.0" },
     { name = "packaging", specifier = ">=24.0" },

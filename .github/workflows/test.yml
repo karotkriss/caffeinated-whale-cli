@@ -69,6 +69,66 @@ jobs:
       - name: Run auto-inspect tests on real Windows
         run: uv run pytest tests/test_auto_inspect.py
 
+  # Clean runtime-only install smoke test. This job exists because cwcli once
+  # shipped SHIPPED-BROKEN on develop: commands/config.py imported `click`
+  # directly but `click` was never declared in [project.dependencies] - it only
+  # arrived transitively via typer. typer 0.27 stopped pulling it in, so a real
+  # `uv tool install` (which installs ONLY runtime deps) had no click and every
+  # command died at import with `ModuleNotFoundError: No module named 'click'`.
+  # Nothing caught it: every other CI job and the local dev loop use
+  # `uv sync --all-extras`, where click is present as a transitive/dev dep, so
+  # `import click` always succeeded. This job is the ONLY thing that exercises a
+  # runtime-deps-only install. `uv tool install .` resolves exactly the
+  # [project.dependencies] set - no dev, no extras - mirroring what a user runs
+  # (docs/e2e/uv-tool-distribution.md), so an undeclared runtime import fails here.
+  clean-install:
+    name: Clean install smoke
+    runs-on: ubuntu-latest
+    # Isolated tool dir/bin so this install resolves purely from
+    # [project.dependencies] and never leaks onto the runner's PATH.
+    env:
+      UV_TOOL_DIR: ${{ runner.temp }}/tooldir
+      UV_TOOL_BIN_DIR: ${{ runner.temp }}/toolbin
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
+
+      - name: Install cwcli as a uv tool (runtime deps only)
+        run: uv tool install .
+
+      # A runtime-only environment must NOT contain dev/transitive-only extras.
+      # click IS a declared runtime dep now, so it is expected; pytest is NOT and
+      # its presence would mean the install pulled dev deps and this guard is blind.
+      - name: Assert env is runtime-only (dev deps absent)
+        run: |
+          uv pip list --python "$UV_TOOL_DIR/caffeinated-whale-cli" > pkgs.txt
+          cat pkgs.txt
+          grep -qi '^click ' pkgs.txt || { echo "FAIL: click not installed (undeclared runtime dep?)"; exit 1; }
+          if grep -qi '^pytest ' pkgs.txt; then echo "FAIL: pytest present - install pulled dev deps, smoke test is not runtime-only"; exit 1; fi
+
+      # The smoke checks. Any undeclared runtime import surfaces as a
+      # ModuleNotFoundError at import time and fails the step.
+      - name: Smoke - import, --help, and a no-Docker command
+        env:
+          CWCLI_HOME: ${{ runner.temp }}/cwhome
+          EDITOR: "true"   # config edit launches $EDITOR; `true` is a no-op that exits 0
+          VISUAL: "true"
+        run: |
+          BIN="$UV_TOOL_BIN_DIR/cwcli"
+          "$BIN" --help > /dev/null
+          "$BIN" config --help > /dev/null
+          # `config edit` is the exact command whose `click.edit` import shipped broken.
+          "$BIN" config edit
+          # A trivial no-Docker read that fully loads the command tree.
+          "$BIN" config path > /dev/null
+          echo "Clean-install smoke passed: no ModuleNotFoundError."
+
   typecheck:
     name: Mypy
     runs-on: ubuntu-latest

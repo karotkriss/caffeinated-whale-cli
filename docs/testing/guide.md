@@ -346,11 +346,11 @@ CI is two-tiered. The fast `unit` tier runs on every push and PR via `.github/wo
 
 The real-Docker `e2e` tier runs via `.github/workflows/e2e.yml` on a v14/v15/v16 Frappe matrix, on PRs into `develop`/`master` and on-demand via the `e2e` PR label.
 
-The `Pytest` (unit) job is the always-required gate; a second `Mypy` job runs `uv run mypy src/` as a zero-error gate (it fails on any type error). See the [CI/CD Workflows guide](../contributing/ci-cd.md) for details.
+The `Pytest` (unit) job is the always-required gate; a `Mypy` job runs `uv run mypy src/` as a zero-error gate (it fails on any type error), and a `Clean install smoke` job guards against undeclared runtime dependencies. See the [CI/CD Workflows guide](../contributing/ci-cd.md) for the full job list.
 
 ### The Windows job: why it exists and why it is narrow
 
-A third job, `Pytest (Windows, auto-inspect)`, runs `tests/test_auto_inspect.py` on `windows-latest`.
+Another job, `Pytest (Windows, auto-inspect)`, runs `tests/test_auto_inspect.py` on `windows-latest`.
 
 It exists because every other job runs `ubuntu-latest`, and that is exactly how a Windows-only defect survived in `utils/auto_inspect.py`: `os.kill(pid, 0)` is an inert liveness probe on POSIX, but on Windows `signal.CTRL_C_EVENT == 0` routes it to `GenerateConsoleCtrlEvent`, which *succeeds for an already-dead pid*.
 The daemon therefore reported itself running off a stale PID file and `auto-inspect start` refused with "already running" from then on.
