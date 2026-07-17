@@ -12,6 +12,11 @@ retired from; ``db_utils.set_bench_label`` keeps the ``None``-clears convention 
 the storage layer, where it is a storage detail, and the core does not propagate it
 into an API a CLI, an agent surface, and a future GUI all consume.
 
+``set_labels`` is the batched sibling of ``set_label`` - the ``inspect -i`` verb -
+owning the same validate/uniqueness/marker/cache rule for several benches at once,
+with a stopped-project degrade and per-assignment (never batch-aborting) outcomes.
+It exists so ``inspect -i`` calls that rule instead of re-implementing it.
+
 Built entirely from existing primitives (``core.docker.get_frappe_container``,
 ``resolvers.resolve_container_state`` / ``resolve_bench`` / ``cached_benches``,
 ``utils.bench_labels``, ``db_utils.set_bench_label``, the envelope). The one
@@ -61,6 +66,23 @@ class BenchList:
 
     project: str
     benches: list[BenchInfo]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LabelResult:
+    """One bench's outcome from the batched :func:`set_labels` apply.
+
+    ``applied`` is False for a rejected assignment (``error`` carries why);
+    ``marker_written`` is False when the marker could not be written - either the
+    project is stopped (batch-wide, see the ``label.marker_skipped`` warning) or
+    the per-bench write failed - and the label lives in the cache only.
+    """
+
+    bench_path: str
+    label: str
+    applied: bool
+    marker_written: bool
+    error: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -220,6 +242,105 @@ def set_label(project_name: str, *, bench: str | None = None, label: str) -> Res
         ),
         warnings=warnings,
     )
+
+
+def set_labels(project_name: str, assignments: list[tuple[str, str]]) -> Result[list[LabelResult]]:
+    """Apply several bench labels in one pass - the interactive-``inspect`` verb.
+
+    Owns the SAME validate + cross-bench-uniqueness rule as :func:`set_label` and
+    the SAME marker-then-cache persistence, so that rule has one owner rather than
+    a copy re-implemented in ``inspect -i``. Three things differ, each a real need
+    of the interactive path:
+
+    - a running container is OPTIONAL. ``inspect -i`` against a STOPPED project
+      still records labels to the cache (markers skipped, one batch-wide
+      ``label.marker_skipped`` warning), rather than the hard ``NOT_RUNNING``
+      :func:`set_label` raises;
+    - each assignment reports its own outcome (a rejected label does not abort the
+      batch - the loop keeps the previous label for that bench and moves on);
+    - uniqueness is resolved first-wins WITHIN the batch (an accepted label is
+      reflected before the next assignment's duplicate check), matching the old
+      in-memory cross-bench check.
+
+    Persistence reads the cached benches and writes them back (one
+    ``cache_project_data``), so it never re-persists a T2 read-only refresh the way
+    the old ``inspect -i`` inadvertently could.
+    """
+    benches = _require_benches(project_name)
+    by_path = {b["path"]: b for b in benches}
+
+    # A running container lets us write markers; a stopped one degrades to
+    # cache-only rather than refusing (the interactive-inspect affordance).
+    frappe_container = None
+    warnings: list[Message] = []
+    try:
+        frappe_container = _running_container(project_name)
+    except CwcliError as exc:
+        if exc.kind is not ErrorKind.NOT_RUNNING:
+            raise
+        warnings.append(
+            Message(
+                code="label.marker_skipped",
+                text=(
+                    "Containers are not running; labels saved to the cache only "
+                    "(marker files not written)."
+                ),
+            )
+        )
+
+    results: list[LabelResult] = []
+    for bench_path, raw_label in assignments:
+        label = raw_label.strip()
+        target = by_path.get(bench_path)
+        if target is None:
+            results.append(
+                LabelResult(
+                    bench_path=bench_path,
+                    label=label,
+                    applied=False,
+                    marker_written=False,
+                    error=f"No cached bench at path '{bench_path}'.",
+                )
+            )
+            continue
+
+        error = bench_labels.validate_user_label(label)
+        if error is None:
+            # First-wins across the batch: an accepted label is already on its
+            # bench dict by the time a later assignment checks for a duplicate.
+            duplicate = any(
+                other["path"] != bench_path and other.get("label") == label for other in benches
+            )
+            if duplicate:
+                error = f"Label '{label}' is already used by another bench in this project."
+        if error:
+            results.append(
+                LabelResult(
+                    bench_path=bench_path,
+                    label=label,
+                    applied=False,
+                    marker_written=False,
+                    error=error,
+                )
+            )
+            continue
+
+        marker_written = False
+        if frappe_container is not None:
+            marker_written = bench_labels.write_label_marker(frappe_container, bench_path, label)
+        target["label"] = label
+        results.append(
+            LabelResult(
+                bench_path=bench_path,
+                label=label,
+                applied=True,
+                marker_written=marker_written,
+                error=None,
+            )
+        )
+
+    db_utils.cache_project_data(project_name, benches)
+    return Result(status=Status.OK, data=results, warnings=warnings)
 
 
 def clear_label(project_name: str, *, bench: str | None = None) -> Result[LabelOutcome]:

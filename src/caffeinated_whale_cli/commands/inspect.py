@@ -11,9 +11,9 @@ all live in :mod:`caffeinated_whale_cli.core.inspect` (openspec
   ONE re-invoke, so a start that claims success but leaves the container down
   fails closed instead of looping;
 - the ``-v`` rendering of the core's typed events (today's ``VERBOSE:`` lines);
-- the ``-i`` interactive labeling loop, operating on the returned cache-shaped
-  dicts with today's write ordering (markers per bench, ONE bulk
-  ``cache_project_data`` at the end);
+- the ``-i`` interactive labeling loop: it PROMPTS (frontend) and hands the
+  collected answers to ``core.label.set_labels``, which owns the shared
+  validate/uniqueness/marker/cache rule (one owner, no live Docker object here);
 - the byte-identical ``--json`` and tree renderers, fed from
   ``core.inspect.inspect_raw``'s cache-shaped dicts (the typed ``InspectReport``
   deliberately cannot reproduce those bytes - key order and configs differ).
@@ -27,11 +27,12 @@ from rich.console import Console
 from rich.tree import Tree
 
 from ..core import inspect as core_inspect
+from ..core import label as core_label
 from ..core.envelope import Status
 from ..core.errors import CwcliError, ErrorKind
-from ..utils import bench_labels, config_utils, db_utils
+from ..utils import config_utils
 from ..utils.completion_utils import complete_project_names
-from ..utils.docker_utils import get_frappe_container, handle_docker_errors
+from ..utils.docker_utils import handle_docker_errors
 from ..utils.tips import TipSpinner
 from .utils import ensure_containers_running
 
@@ -169,22 +170,14 @@ def inspect(
     assert result.data is not None  # OK/WARNING always carries a RawInspect
     bench_instances_data = result.data.benches
 
-    # Interactive naming: ask for a user label per bench before output. Labels are
-    # validated (no purely-numeric labels, no duplicates within the project, safe
-    # charset) and persisted to BOTH the SQLite cache and the per-bench marker file
-    # so they survive a cache wipe (see utils/bench_labels.py). Writing the marker
-    # needs the running frappe container, so we fetch it here (a cache-served
-    # inspect may not have one in scope yet).
+    # Interactive naming: ask for a user label per bench before output. The
+    # prompting is frontend; the validate/uniqueness/marker/cache RULE belongs to
+    # core.label.set_labels (the batched sibling of `set_label`), so a future rule
+    # change applies here too. We collect the raw answers, then apply them in one
+    # call; core owns the running-container fetch (degrading to cache-only when the
+    # project is stopped), so no live Docker object crosses the core boundary.
     if interactive:
-        interactive_container = None
-        try:
-            interactive_container = get_frappe_container(project_name)
-        except typer.Exit:
-            console_err.print(
-                "[yellow]Warning:[/yellow] containers are not available; labels will be saved "
-                "to the cache only (marker files not written)."
-            )
-
+        assignments: list[tuple[str, str]] = []
         for index, bench in enumerate(bench_instances_data):
             existing = bench.get("label")
             existing_hint = f" [current: '{existing}']" if existing else ""
@@ -203,35 +196,26 @@ def inspect(
                 console_err.print(f"\n[red]Error during interactive input: {e}[/red]")
                 continue
 
-            new_label = answer.strip()
-            if not new_label:
-                # Blank keeps the existing label (numeric-index-only if none).
-                continue
+            if answer.strip():  # Blank keeps the existing label.
+                assignments.append((bench["path"], answer))
 
-            error = bench_labels.validate_user_label(new_label)
-            if error is None:
-                # Duplicate check against the labels already chosen for other benches.
-                duplicate = any(
-                    other is not bench and other.get("label") == new_label
-                    for other in bench_instances_data
-                )
-                if duplicate:
-                    error = f"Label '{new_label}' is already used by another bench in this project."
-            if error:
-                console_err.print(f"[red]{error}[/red] Keeping the previous label.")
+        label_result = core_label.set_labels(project_name, assignments)
+        for warning in label_result.warnings:
+            console_err.print(f"[yellow]Warning:[/yellow] {warning.text}")
+        # Reflect outcomes into the dicts the tree/JSON renderer below reads, and
+        # report each rejection with today's wording.
+        applied_by_path = {b["path"]: b for b in bench_instances_data}
+        for outcome in label_result.data or []:
+            if outcome.error:
+                console_err.print(f"[red]{outcome.error}[/red] Keeping the previous label.")
                 continue
-
-            bench["label"] = new_label
-            if interactive_container is not None:
-                if not bench_labels.write_label_marker(
-                    interactive_container, bench["path"], new_label
-                ):
+            if outcome.applied:
+                applied_by_path[outcome.bench_path]["label"] = outcome.label
+                if not outcome.marker_written and not label_result.warnings:
                     console_err.print(
                         f"[yellow]Warning:[/yellow] could not write marker file for "
-                        f"{bench['path']}; label saved to cache only."
+                        f"{outcome.bench_path}; label saved to cache only."
                     )
-
-        db_utils.cache_project_data(project_name, bench_instances_data)
 
     if json_output:
         # Surface the positional numeric index alongside any user label so scripts
