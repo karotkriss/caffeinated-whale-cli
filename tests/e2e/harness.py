@@ -87,9 +87,13 @@ RAW_MODE_MARKER = r"\x1b\[\?2004h"
 # repointed at the temp dir.
 _REAL_HOME = os.path.realpath(os.environ.get("HOME", "") or str(Path.home()))
 
-# Resolve the console script once. Under `uv run pytest` the venv bin dir is on
-# PATH, so `cwcli` resolves; fall back to the bare name otherwise.
-CWCLI = shutil.which("cwcli") or "cwcli"
+# Resolve the console script once. ``CWCLI_BIN`` wins when set, so the SAME
+# harness can be aimed at any cwcli binary - notably a runtime-deps-only
+# ``uv tool install .`` build (the packaging-realism leg), which catches an
+# undeclared runtime dependency that the all-extras dev venv masks. Otherwise,
+# under ``uv run pytest`` the venv bin dir is on PATH so ``cwcli`` resolves;
+# fall back to the bare name otherwise.
+CWCLI = os.environ.get("CWCLI_BIN") or shutil.which("cwcli") or "cwcli"
 
 
 # --------------------------------------------------------------------------- #
@@ -159,6 +163,14 @@ def project_name(suffix: str) -> str:
 # --------------------------------------------------------------------------- #
 # Port allocator
 # --------------------------------------------------------------------------- #
+# Where the port allocator starts. The default (11000) is clean on an ephemeral
+# CI runner, but this harness also runs on operators' own machines, where a real
+# instance may already hold that range (its web OR socketio ports). ``CWE2E_PORT_BASE``
+# relocates the whole allocation so a local validation run never collides with a
+# live instance.
+PORT_BASE = int(os.environ.get("CWE2E_PORT_BASE", "11000"))
+
+
 class PortAllocator:
     """Hand out non-overlapping port bases (>= 1006 apart).
 
@@ -166,7 +178,7 @@ class PortAllocator:
     a step of 1100 keeps every instance's web AND socketio ranges disjoint.
     """
 
-    def __init__(self, base: int = 11000, step: int = 1100) -> None:
+    def __init__(self, base: int = PORT_BASE, step: int = 1100) -> None:
         self._base = base
         self._step = step
         self._n = 0

@@ -10,7 +10,7 @@ We use five GitHub Actions workflows:
 |----------|----------|---------|
 | **Lint** | All branches, all PRs | Code quality checks (Black, Ruff) |
 | **Test** | All branches, all PRs | Run the fast `unit` pytest tier (required gate) + mypy (zero-error gate), a narrow `tests/test_auto_inspect.py` leg on `windows-latest`, and a runtime-deps-only clean-install smoke test |
-| **E2E** | PRs into `develop`/`master`, `e2e`-labeled PRs, manual dispatch | Run the real-Docker `e2e` tier on a v14/v15/v16 Frappe matrix |
+| **E2E** | PRs into `develop`/`master`, `e2e`-labeled PRs, manual dispatch | Run the real-Docker `e2e` tier on a v14/v15/v16 Frappe matrix, plus a runtime-deps-only full-lifecycle leg (`e2e_pkg`) that drives a `uv tool install .` binary via `CWCLI_BIN` |
 | **Build** | Push to `master`, manual dispatch | Build package, verify version consistency |
 | **Release** | Tags `v*.*.*`, push to `master`, published releases, manual dispatch | Publish to PyPI, create GitHub release |
 
@@ -45,7 +45,7 @@ Runs on every push and PR. Has four jobs:
 - **Pytest** - runs the fast `unit` tier with coverage (`uv run pytest -m unit --cov=caffeinated_whale_cli`). This is the always-required gate; it needs no Docker daemon and runs inside the uv container. Because `develop` has no branch protection, an admin must tick `Pytest` as a required status check in the `develop` branch-protection settings for it to actually block merges.
 - **Mypy** - runs `uv run mypy src/` as a zero-error gate. The historical ~50 errors across ~14 files were burned down to zero and `continue-on-error` was dropped from the step, so any new type error fails the job's status check. To make it *required to merge*, an admin must also tick `Mypy` as a required status check in the `develop` branch-protection settings (same outstanding step as `Pytest`).
 - **Pytest (Windows, auto-inspect)** - runs only `tests/test_auto_inspect.py` on `windows-latest`, the one non-Linux runner in this repo. It exists because every other job runs `ubuntu-latest`, and that is exactly how a Windows-only defect in `utils/auto_inspect.py` went unnoticed (`os.kill(pid, 0)` is not a genuine liveness probe on Windows). Deliberately narrow rather than `-m unit`: the other jobs run inside a Linux uv container this runner can't use, and the rest of the unit tier has never been exercised on Windows. See [Testing Guide](../testing/guide.md#the-windows-job-why-it-exists-and-why-it-is-narrow).
-- **Clean install smoke** - does a runtime-deps-only `uv tool install .` into an isolated tool dir (`UV_TOOL_DIR`/`UV_TOOL_BIN_DIR`), asserts the resulting env is runtime-only (`click` present, `pytest` absent), then runs `cwcli --help`, `config --help`, `config edit` (`EDITOR=true`), and `config path`. It is the only job that exercises a runtime-deps-only install - every other job and the local dev loop use `uv sync --all-extras`, where transitive/dev deps mask an undeclared runtime import. This is exactly how cwcli once shipped broken: `commands/config.py` imported `click` directly, but only `typer` was declared, and typer 0.27 stopped supplying `click` transitively, so a real `uv tool install` had no `click` and every command died at import with `ModuleNotFoundError`.
+- **Clean install smoke** - does a runtime-deps-only `uv tool install .` into an isolated tool dir (`UV_TOOL_DIR`/`UV_TOOL_BIN_DIR`), asserts the resulting env is runtime-only (`click` present, `pytest` absent), then runs `cwcli --help`, `config --help`, `config edit` (`EDITOR=true`), and `config path`. Every other job and the local dev loop use `uv sync --all-extras`, where transitive/dev deps mask an undeclared runtime import; this job (and E2E's `e2e-runtime-only` job below) are the only two that exercise a runtime-deps-only install - this one over `--help`/`config` reads only, the other over a full real-Docker lifecycle. This is exactly how cwcli once shipped broken: `commands/config.py` imported `click` directly, but only `typer` was declared, and typer 0.27 stopped supplying `click` transitively, so a real `uv tool install` had no `click` and every command died at import with `ModuleNotFoundError`.
 
 **Run locally:**
 ```bash
@@ -71,10 +71,21 @@ Runs the real-Docker `e2e` tier (`tests/e2e/`) against genuine throwaway Frappe 
 - **Steps:** authenticate to Docker Hub when creds are configured (dodges the anonymous-pull rate limit on the multi-GB `frappe/bench` image), a preflight upstream-reachability check (annotates an upstream/infra break distinctly from a real assertion failure), `uv sync --frozen --all-extras`, `uv run pytest tests/e2e -m e2e -o addopts=""`, then an unconditional `always()` teardown step that sweeps any leaked `cwe2e-` resources and prunes the runner's Docker state.
 - **Per-job `timeout-minutes`:** ~45 (a full `cwcli init` - image pull + bench init + new-site - is the dominant cost).
 
+The workflow also runs a separate **`E2E (runtime-only install)`** job (same trigger gate) that exercises **packaging realism** - a different axis from the version matrix:
+
+- Every leg above (and the whole local dev loop) drives the `cwcli` console script out of a `uv sync --all-extras` dev venv, where dev/transitive deps are present. That masks a runtime `import` of a package not declared in `[project.dependencies]`: it succeeds in the dev venv and ships broken to a real `uv tool install` - exactly how the missing `click` runtime dependency reached 0.37.0 while every test passed.
+- The `Clean install smoke` job (Test workflow) guards *import-time* deps, but only over `--help`/`config` reads; it never runs a real Docker command path, so a dep imported lazily inside a command body stays invisible to it.
+- This job installs cwcli with `uv tool install .` (runtime deps only - no dev, no extras), asserts the install is runtime-only, then points the harness at that binary via the **`CWCLI_BIN`** env override (honored by `tests/e2e/harness.py`) and runs one genuine full lifecycle - init -> apps list -> inspect -> backup -> rm - marked `e2e_pkg`. Any undeclared runtime dependency surfaces here as a `ModuleNotFoundError` on a real command, which no other gate catches. The pytest harness itself still runs from the dev venv (it needs `pexpect`/`pytest`); only the binary it *drives* is the runtime-only tool.
+- It is a single **v16** leg (packaging realism is version-agnostic) and deliberately **off** the `-m e2e` matrix (`e2e_pkg` is excluded from `-m e2e`), so the dominant init cost is paid once rather than added to all three version legs.
+
 **Run locally** (needs a reachable Docker daemon; installs `pexpect` via the `e2e` extra):
 ```bash
 uv sync --all-extras
 CWE2E_FRAPPE_MAJOR=16 uv run pytest tests/e2e -m e2e
+
+# The runtime-only packaging leg (drives whatever CWCLI_BIN points at; omit
+# CWCLI_BIN to run the same lifecycle against the dev binary):
+CWCLI_BIN=/path/to/runtime-only/cwcli uv run pytest tests/e2e -m e2e_pkg -o addopts=""
 ```
 
 ---

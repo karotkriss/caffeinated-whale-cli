@@ -11,7 +11,7 @@ The suite is split into two tiers by pytest marker (registered in `pyproject.tom
 - **`unit`** - fast, needs no Docker daemon, and is the default tier a bare `pytest` runs.
   It verifies pure logic and command wiring against fakes and runs inside the uv container in CI (`test.yml`, `-m unit`, the always-required gate).
   It stays green even with a dead Docker endpoint - that is the proof it is mock-free (`DOCKER_HOST=tcp://127.0.0.1:1 uv run pytest -m unit`).
-- **`e2e` / `e2e_p2p`** - real Docker, under `tests/e2e/`.
+- **`e2e` / `e2e_p2p` / `e2e_pkg`** - real Docker, under `tests/e2e/`.
   These drive the real `cwcli` binary against genuine throwaway Frappe instances (real `cwcli init` up, real side-effect assertions, `cwcli rm` down), are excluded by default, and run on GitHub-hosted `ubuntu-latest` in a v14/v15/v16 matrix (`e2e.yml`).
 
 The migration off the legacy container-mock suite is parallel-run: those tests are carried in the `unit` tier and retired per command as each command's real E2E lands (see [`../../openspec/changes/rebuild-e2e-test-suite`](../../openspec/changes/rebuild-e2e-test-suite)); the mock-free pure-logic tests are kept permanently.
@@ -113,7 +113,7 @@ python_functions = ["test_*"]
 console_output_style = "classic"
 # The default `-m` deselects the real-Docker tiers, so a bare `pytest` is the
 # fast unit tier; `-m e2e` on the CLI overrides it (the last `-m` wins).
-addopts = ["-q", "--strict-markers", "--tb=short", "--cov-report=", "-m", "not e2e and not e2e_p2p"]
+addopts = ["-q", "--strict-markers", "--tb=short", "--cov-report=", "-m", "not e2e and not e2e_p2p and not e2e_pkg"]
 markers = [
     "unit: fast tests that need no Docker daemon (the default tier)",
     "e2e: real-Docker end-to-end tests driving the real cwcli binary",
@@ -277,7 +277,7 @@ Run `ls tests/` for the current, authoritative list.
 
 ### By Type
 
-Three markers are registered in `pyproject.toml`: `unit`, `e2e`, `e2e_p2p`. `tests/conftest.py` auto-applies `unit` to any collected test not already marked `e2e`/`e2e_p2p`, so unit tests need no hand-added marker; only the real-Docker tests under `tests/e2e/` mark themselves explicitly:
+Four markers are registered in `pyproject.toml`: `unit`, `e2e`, `e2e_p2p`, `e2e_pkg`. `tests/conftest.py` auto-applies `unit` to any collected test not already marked `e2e`/`e2e_p2p`/`e2e_pkg`, so unit tests need no hand-added marker; only the real-Docker tests under `tests/e2e/` mark themselves explicitly (`e2e_pkg` is the runtime-deps-only packaging leg, off the `-m e2e` matrix):
 
 ```python
 import pytest
@@ -291,7 +291,7 @@ def test_real_docker_behavior(session_instance):
 
 Run by type:
 ```bash
-pytest                # Default -m "not e2e and not e2e_p2p": only the fast unit tier
+pytest                # Default -m "not e2e and not e2e_p2p and not e2e_pkg": only the fast unit tier
 pytest -m unit         # Explicitly the unit tier
 pytest tests/e2e -m e2e  # The real-Docker tier (needs a Docker daemon)
 ```

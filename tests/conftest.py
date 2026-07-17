@@ -5,7 +5,7 @@ The suite is split into a fast ``unit`` tier (no Docker) and a real-Docker
 test, this hook auto-applies the ``unit`` marker to any collected test that is
 not already marked ``e2e`` / ``e2e_p2p``. That way:
 
-- a bare ``pytest`` (default ``-m "not e2e and not e2e_p2p"``) runs the unit tier,
+- a bare ``pytest`` (default ``-m "not e2e and not e2e_p2p and not e2e_pkg"``) runs the unit tier,
 - the unit CI job (``-m unit``) selects the same set, and
 - ``-m e2e`` selects only the real-Docker tier.
 
@@ -69,7 +69,11 @@ def pytest_configure(config):
 
 def pytest_collection_modifyitems(config, items):
     for item in items:
-        if not (item.get_closest_marker("e2e") or item.get_closest_marker("e2e_p2p")):
+        if not (
+            item.get_closest_marker("e2e")
+            or item.get_closest_marker("e2e_p2p")
+            or item.get_closest_marker("e2e_pkg")
+        ):
             item.add_marker(pytest.mark.unit)
 
 
