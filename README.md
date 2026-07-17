@@ -98,7 +98,7 @@ cwcli apps update my-project erpnext
 
 ### `init` - Initialize New Project
 
-Creates a complete Frappe development environment in a single step. Downloads compose files, starts containers, initializes bench, and creates a site.
+Creates a complete Frappe development environment in a single step. Downloads compose files, starts containers, initializes bench, creates a site, and starts the bench's dev services.
 
 ```bash
 cwcli init [OPTIONS] [PROJECT_NAME]
@@ -125,6 +125,7 @@ cwcli init [OPTIONS] [PROJECT_NAME]
 | `--install-erpnext` | Install ERPNext application after initialization |
 | `--erpnext-branch TEXT` | ERPNext branch to use (default: version-16) |
 | `--auto-start` | Automatically start containers if not running |
+| `--start` / `--no-start` | After creating the bench+site, start its dev services (supervisord over `bench start`) so init leaves a running dev environment (default: `--start`). `--no-start` creates without starting, for automation/CI. Distinct from `--auto-start`, which only controls Docker container startup |
 | `--reuse-bench` / `--no-reuse-bench` | Pre-answer the existing-bench question non-interactively: `--reuse-bench` reuses the bench and skips `bench init`; `--no-reuse-bench` requires a fresh `--bench` name and errors if it already exists. Default: ask interactively (a non-TTY without either flag refuses). Distinct from `--auto-start`, which controls container startup |
 | `-v`, `--verbose` | Show verbose output with streaming command execution |
 
@@ -144,6 +145,7 @@ cwcli init [OPTIONS] [PROJECT_NAME]
 12. Creates site with admin credentials (admin password generated and printed once when `--admin-password` is omitted in an interactive run; required as a flag non-interactively)
 13. Enables developer mode and server scripts
 14. Optionally installs ERPNext
+15. Starts the bench's dev services (supervisord over `bench start`), unless `--no-start` is given; a start failure degrades to a warning rather than a non-zero exit, since the bench was already created successfully
 
 **Branch-Specific Runtime Setup:**
 
@@ -198,6 +200,9 @@ cwcli init my-project \
 
 # Verbose mode for debugging
 cwcli init my-project -v
+
+# Create without starting dev services (automation/CI)
+cwcli init my-project --no-start
 ```
 
 **Example Output:**
@@ -205,13 +210,31 @@ cwcli init my-project -v
 ```
 ✓ Successfully initialized bench 'frappe-bench' in 8m 32s
 Bench path: /workspace/frappe-bench
-Next steps: Run `cwcli open my-project` to open the project in vscode or exec with docker.
+
+✓ Dev services are running for 'my-project'.
+Open:    http://development.localhost:8000  (or `cwcli open my-project`)
+Logs:    cwcli logs my-project
+Stop:    cwcli stop my-project
+Restart: cwcli restart my-project
 
 Administrator password (generated): 3sK9nQx7Lm-2pT4vWbY6Za
 Shown once and not stored anywhere. To change it later, run `bench --site development.localhost set-admin-password <new-password>`.
 ```
 
 The generated administrator password prints only when `--admin-password` is omitted in an interactive run; supply `--admin-password` to set it yourself (and to run non-interactively).
+
+With `--no-start`, the bench is created but its dev services are left down:
+
+```
+✓ Successfully initialized bench 'frappe-bench' in 8m 32s
+Bench path: /workspace/frappe-bench
+
+Dev services are not running for 'my-project'.
+Start them: cwcli start my-project
+Then open http://development.localhost:8000 (or `cwcli open my-project`).
+```
+
+If the dev services fail to start, init still exits successfully (the bench was already created) and prints a warning telling you to run `cwcli start` yourself.
 
 **Port Conflict Handling:**
 
