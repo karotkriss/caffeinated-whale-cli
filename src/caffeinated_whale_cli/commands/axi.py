@@ -954,18 +954,32 @@ def axi_config() -> None:
 # ------------------------------------------------------------------------------- init
 
 
+_INIT_PHASE_LABELS = {
+    "bench_init": "Initializing bench",
+    "new_site": "Creating site",
+}
+
+
 def _init_narrate(event) -> None:
     """Coarse phase-level progress to STDERR (design question 1).
 
-    Writes only ``InitStepStart.message`` and ``InitNotice.text`` - never
-    ``InitOutput`` (raw bench exec bytes, noise an agent does not parse; that is
-    what ``cwcli logs`` is for) and never ``InitTrace`` (verbose diagnostics).
-    The core guarantees no event field carries a secret value, and neither of
-    the two fields emitted here is ever a secret.
+    Writes only a label derived from ``InitStepStart`` and ``InitNotice.text``
+    - never ``InitOutput`` (raw bench exec bytes, noise an agent does not
+    parse; that is what ``cwcli logs`` is for) and never ``InitTrace``
+    (verbose diagnostics). The core guarantees no event field carries a secret
+    value, and neither of the fields used here is ever a secret.
+
+    Some of the longest-running phases (``bench_init``, ``new_site``) carry
+    only ``item`` and no ``message``; those must still narrate so an agent
+    watching stderr for liveness doesn't see a silent gap during the bulk of
+    init's wall-clock time.
     """
     if isinstance(event, core_init.InitStepStart):
         if event.message:
             print(event.message, file=sys.stderr, flush=True)
+        elif event.item:
+            label = _INIT_PHASE_LABELS.get(event.phase, event.phase)
+            print(f"{label}: {event.item}", file=sys.stderr, flush=True)
     elif isinstance(event, core_init.InitNotice):
         print(event.text, file=sys.stderr, flush=True)
 
