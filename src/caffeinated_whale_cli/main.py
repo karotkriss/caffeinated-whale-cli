@@ -27,6 +27,10 @@ from .commands.where import where as _where_cmd
 __version__ = importlib.metadata.version("caffeinated-whale-cli")
 
 app = typer.Typer(
+    # The axi-aware group so `cwcli axi <verb>` parse failures (mounted under this
+    # top-level command) render as TOON on stdout; non-axi commands keep Typer's
+    # default rich rendering. See commands/axi.py:ToonGroup.
+    cls=axi_cmd.ToonGroup,
     help="""
     A command-line tool to help you create, manage, and back up
     your Frappe and ERPNext Docker instances.

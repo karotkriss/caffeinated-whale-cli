@@ -8,6 +8,7 @@ typed-error rendering + exit codes, needs-choice -> flag-naming usage error exit
 
 import re
 
+import click
 import pytest
 from typer.testing import CliRunner
 
@@ -149,6 +150,13 @@ class TestAxiBackup:
         result = runner.invoke(axi_mod.app, ["backup", "proj"])
         assert result.exit_code == 2
         assert "error:" in result.stdout
+        # The never-prompts surface must state the problem, not pose a question:
+        # no "?" and not the raw interactive prompt.
+        first = result.stdout.splitlines()[0]
+        assert first.endswith("?") is False
+        assert "Start it?" not in result.stdout
+        assert "not running" in result.stdout
+        assert "cwcli start" in result.stdout  # the actionable remedy on help:
 
 
 # ------------------------------------------------------------------------------ axi home
@@ -438,6 +446,74 @@ class TestToonEncoder:
     def test_self_check_runs(self):
         """The toon module's internal self-check passes."""
         toon._self_check()  # asserts internally; must not raise
+
+
+# ------------------------------------------------------------------- parse-error -> TOON
+
+
+class TestAxiParseErrorsAreToon:
+    """Typer/click parse failures (unknown flag / missing arg / missing option) must
+    render as `error:`+`help:` TOON on STDOUT and exit 2, never Typer's rich panel on
+    STDERR with empty stdout. The behavior is inherited from the shared ToonGroup, so
+    one representative verb per class proves the surface-wide fix, plus a mounted-path
+    check that it survives being nested under the human `cwcli` command.
+    """
+
+    def test_unknown_flag_is_toon_on_stdout_exit_2(self):
+        result = runner.invoke(axi_mod.app, ["ls", "--bogus"])
+        assert result.exit_code == 2
+        assert result.stdout.startswith("error:")
+        assert "--bogus" in result.stdout
+        assert "help[1]:" in result.stdout
+        assert "usage:" in result.stdout
+        assert "Traceback" not in result.stdout
+
+    def test_missing_argument_names_valid_flags(self):
+        result = runner.invoke(axi_mod.app, ["backup"])
+        assert result.exit_code == 2
+        assert result.stdout.startswith("error:")
+        assert "PROJECT" in result.stdout
+        # The usage line names the command's real flags so an agent self-corrects.
+        assert "--site/-s" in result.stdout
+        assert "--with-files" in result.stdout
+
+    def test_missing_required_option_names_the_option(self):
+        result = runner.invoke(axi_mod.app, ["self-update"])
+        assert result.exit_code == 2
+        assert result.stdout.startswith("error:")
+        assert "--check" in result.stdout
+        # Typer's noisy empty-envvar suffix is stripped.
+        assert "env var" not in result.stdout
+
+    def test_mounted_under_cwcli_still_toon(self):
+        """The fix must survive `cwcli axi <verb>` (axi nested under the human app),
+        not only the axi app invoked directly."""
+        from caffeinated_whale_cli.main import app as root_app
+
+        result = runner.invoke(root_app, ["axi", "ls", "--bogus"])
+        assert result.exit_code == 2
+        assert result.stdout.startswith("error:")
+        assert "usage: " in result.stdout
+        # `cwcli axi ls` chain named in the usage line.
+        assert "axi ls" in result.stdout
+
+    def test_human_cli_usage_error_is_untouched(self):
+        """A non-axi parse error keeps Typer's default rendering (stderr, no TOON),
+        so the emitter is strictly additive to the agent surface."""
+        from caffeinated_whale_cli.main import app as root_app
+
+        result = runner.invoke(root_app, ["ls", "--bogus"])
+        assert result.exit_code == 2
+        assert not result.stdout.startswith("error:")
+
+    def test_emit_usage_error_stdout_is_ansi_free(self, capsys):
+        """The emitter writes clean, ANSI-free TOON just like the core-error path."""
+        error = click.NoSuchOption("--bogus")
+        error.ctx = None  # no ctx: still emits the error line, no help block
+        axi_mod.emit_usage_error_as_toon(error)
+        out = capsys.readouterr().out
+        assert out.startswith("error:")
+        assert "\x1b[" not in out  # no ANSI escapes
 
 
 if __name__ == "__main__":  # pragma: no cover

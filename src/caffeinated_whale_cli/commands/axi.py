@@ -27,7 +27,10 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
+import click
 import typer
+from typer import core as _typer_core
+from typer import rich_utils as _rich_utils
 
 from ..core import apps as core_apps
 from ..core import backup as core_backup
@@ -48,8 +51,132 @@ from ..core.envelope import Status as CoreStatus
 from ..core.errors import CwcliError, ErrorKind
 from ..utils import agent_hooks, toon
 
+# --------------------------------------------------------------- parse-error -> TOON layer
+#
+# Typer/click reject an unknown flag / missing argument / missing required option
+# BEFORE any verb body runs, so the TOON emitters below never see them: the default
+# is a rich panel on STDERR with empty STDOUT, exit 2, and no list of the command's
+# valid flags. On an agent surface that is an AXI section-6 violation (structured
+# errors belong on stdout; unrecognized input must fail loud, list the valid flags,
+# and let the agent self-correct in one turn). This group class closes that gap by
+# rendering axi-surface parse failures as the same `error:`+`help:` TOON the core
+# errors already use, while leaving the human CLI's rich rendering untouched.
+
+
+def _usage_error_message(error: click.UsageError) -> str:
+    """The click message, minus typer's noisy empty-envvar suffix."""
+    return error.format_message().replace(" (env var: 'None')", "")
+
+
+def _param_metavar(param, ctx) -> str:
+    try:
+        return str(param.make_metavar(ctx))
+    except TypeError:  # click < 8.2 signature
+        return str(param.make_metavar())
+    except Exception:  # pragma: no cover - defensive
+        return str(param.name).upper()
+
+
+def _usage_help_lines(error: click.UsageError) -> list[str]:
+    """A one-line ``usage:`` string naming the command's arguments and valid flags,
+    so an agent can self-correct in a single turn."""
+    ctx = getattr(error, "ctx", None)
+    if ctx is None:  # pragma: no cover - axi usage errors always carry a ctx
+        return []
+    args: list[str] = []
+    opts: list[str] = []
+    for param in ctx.command.get_params(ctx):
+        if isinstance(param, click.Argument):
+            args.append(_param_metavar(param, ctx))
+        elif isinstance(param, click.Option):
+            opts.append("[" + "/".join(param.opts + param.secondary_opts) + "]")
+    return ["usage: " + " ".join([ctx.command_path, *args, *opts])]
+
+
+def emit_usage_error_as_toon(error: click.UsageError) -> None:
+    """Render a click parse failure as TOON on STDOUT: an ``error:`` line plus a
+    ``help:`` usage line naming the command's valid flags.
+
+    Mirrors :func:`emit_axi_error`'s stdout purity, so the axi surface stays
+    uniformly TOON even when Typer's own parser rejects the input.
+    """
+    typer.echo(toon.kv("error", _usage_error_message(error)))
+    lines = _usage_help_lines(error)
+    if lines:
+        typer.echo(toon.block("help", lines))
+
+
+def _ctx_under_axi(ctx) -> bool:
+    """True when the failing command lives on the axi surface - mounted under the
+    human CLI (``cwcli axi ...``) or invoked as the axi app directly (tests)."""
+    while ctx is not None:
+        if isinstance(ctx.command, AxiToonGroup):
+            return True
+        ctx = ctx.parent
+    return False
+
+
+class ToonGroup(_typer_core.TyperGroup):
+    """A Typer group that renders axi-surface parse failures as TOON on stdout.
+
+    It reproduces Typer's own standalone exit handling (calling ``super().main``
+    with ``standalone_mode=False`` and re-driving the exits) but intercepts the
+    ``ClickException`` branch: an axi-surface :class:`click.UsageError` becomes an
+    ``error:``+``help:`` TOON document on stdout (exit 2 preserved), while every
+    non-axi error keeps Typer's default rich rendering on stderr.
+    """
+
+    def main(
+        self,
+        args=None,
+        prog_name=None,
+        complete_var=None,
+        standalone_mode: bool = True,
+        windows_expand_args: bool = True,
+        **extra,
+    ):
+        try:
+            rv = super().main(
+                args=args,
+                prog_name=prog_name,
+                complete_var=complete_var,
+                standalone_mode=False,
+                windows_expand_args=windows_expand_args,
+                **extra,
+            )
+        except click.ClickException as error:
+            if not standalone_mode:
+                raise
+            if isinstance(error, click.UsageError) and _ctx_under_axi(getattr(error, "ctx", None)):
+                emit_usage_error_as_toon(error)
+            elif self.rich_markup_mode is not None:
+                _rich_utils.rich_format_error(error)
+            else:
+                error.show()
+            sys.exit(error.exit_code)
+        except click.exceptions.Abort:
+            if not standalone_mode:
+                raise
+            if self.rich_markup_mode is not None:
+                _rich_utils.rich_abort_error()
+            else:
+                typer.echo("Aborted!", err=True)
+            sys.exit(1)
+        if not standalone_mode:
+            return rv
+        # A subcommand that raised typer.Exit(n) surfaces here as rv=n; a plain
+        # return surfaces as None (a clean exit 0), matching standalone Typer.
+        sys.exit(rv if isinstance(rv, int) else 0)
+
+
+class AxiToonGroup(ToonGroup):
+    """Marker subclass tagging the axi app's group, so a parse failure anywhere in
+    its subtree is detected as axi-surface regardless of mount depth."""
+
+
 app = typer.Typer(
-    help="Agent-facing surface: structured TOON output on stdout, no interactive prompts."
+    cls=AxiToonGroup,
+    help="Agent-facing surface: structured TOON output on stdout, no interactive prompts.",
 )
 
 _DESCRIPTION = "Manage Frappe and ERPNext Docker instances - structured and non-interactive."
@@ -86,7 +213,11 @@ def _choice_error_message(choice: Choice) -> str:
     if choice.kind == "select_process":
         return "unknown or ambiguous process; pass --process <label>"
     if choice.kind == "confirm_start":
-        return choice.prompt
+        # A statement, never the raw prompt: the prompt is phrased as an
+        # interactive question ("... Start it?"), but this surface never prompts,
+        # so a trailing "?" reads as a question nobody will answer. The actionable
+        # remedy rides the `help:` line below.
+        return "the project's Frappe container is not running"
     return f"a decision is required: {choice.prompt}"
 
 
