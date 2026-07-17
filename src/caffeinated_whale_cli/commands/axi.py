@@ -31,6 +31,7 @@ import typer
 
 from ..core import apps as core_apps
 from ..core import backup as core_backup
+from ..core import config as core_config
 from ..core import inspect as core_inspect
 from ..core import label as core_label
 from ..core import list as core_list
@@ -770,6 +771,37 @@ def axi_apps_update(
     # a WARNING-shaped envelope, and the shipped `0 if status in (OK, WARNING)`
     # pattern would report success for an update that half failed.
     raise typer.Exit(0 if result.data.ok else 1)
+
+
+# ---------------------------------------------------------------------------- config
+
+
+@app.command("config")
+def axi_config() -> None:
+    """Report the effective cwcli configuration; emit it as one TOON document. READ-ONLY.
+
+    The aggregate the AXI standard asks a read verb to be: search paths,
+    auto-inspect state (config, live daemon, boot hook - three stores,
+    reported separately), tips, and the config-file/cache-DB locations in ONE
+    call, because the follow-up call is the expensive token cost.
+
+    Deliberately carries NO mutating flags, and no config-mutating axi verb
+    exists (paths add/remove, cache clear, auto-inspect enable/disable): an
+    agent rewriting the user's search paths or wiping the cache is a product
+    decision on its own evidence, not a consequence of the config migration -
+    the `axi apps install`/`uninstall` deferral discipline. A test asserts the
+    registry absence so "deliberately not built" cannot be misread as
+    "forgotten".
+    """
+    try:
+        result = core_config.show_config()
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    assert result.data is not None  # show_config always returns a ConfigReport
+    emit_result(result.data, warnings=result.warnings)
+    raise typer.Exit(0)
 
 
 # ------------------------------------------------------------------------ self-update
