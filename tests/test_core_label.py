@@ -416,6 +416,47 @@ class TestSetLabels:
         cached = db_utils.get_cached_project_data("proj")["bench_instances"]
         assert cached[0]["label"] == "web"
 
+    def test_container_not_found_degrades_to_cache_only(self, temp_db, monkeypatch):
+        # A project whose containers were removed since the last inspect must
+        # degrade like a stopped project, not raise - the pre-migration frontend
+        # caught ANY container-resolution failure this broadly.
+        _seed(_two_benches())
+
+        def _boom(name):
+            raise CwcliError(ErrorKind.NOT_FOUND, "project.not_found", "gone")
+
+        monkeypatch.setattr(core_docker, "get_frappe_container", _boom)
+
+        result = core_label.set_labels("proj", [(BENCH_A, "web")])
+
+        assert result.status is Status.OK
+        assert [w.code for w in result.warnings] == ["label.marker_skipped"]
+        assert result.data is not None
+        assert result.data[0].applied is True
+        assert result.data[0].marker_written is False
+        cached = db_utils.get_cached_project_data("proj")["bench_instances"]
+        assert cached[0]["label"] == "web"
+
+    def test_docker_unreachable_degrades_to_cache_only(self, temp_db, monkeypatch):
+        # A daemon hiccup mid-session must degrade the same way, not crash the
+        # interactive session with a raw CwcliError.
+        _seed(_two_benches())
+
+        def _boom(name):
+            raise CwcliError(ErrorKind.DOCKER, "docker.unreachable", "Could not connect")
+
+        monkeypatch.setattr(core_docker, "get_frappe_container", _boom)
+
+        result = core_label.set_labels("proj", [(BENCH_A, "web")])
+
+        assert result.status is Status.OK
+        assert [w.code for w in result.warnings] == ["label.marker_skipped"]
+        assert result.data is not None
+        assert result.data[0].applied is True
+        assert result.data[0].marker_written is False
+        cached = db_utils.get_cached_project_data("proj")["bench_instances"]
+        assert cached[0]["label"] == "web"
+
     def test_unknown_bench_path_is_reported_not_raised(self, temp_db, monkeypatch):
         _seed(_two_benches())
         _wire(monkeypatch, MarkerFakeContainer(bench_path=BENCH_A))

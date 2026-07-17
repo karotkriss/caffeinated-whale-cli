@@ -14,8 +14,9 @@ into an API a CLI, an agent surface, and a future GUI all consume.
 
 ``set_labels`` is the batched sibling of ``set_label`` - the ``inspect -i`` verb -
 owning the same validate/uniqueness/marker/cache rule for several benches at once,
-with a stopped-project degrade and per-assignment (never batch-aborting) outcomes.
-It exists so ``inspect -i`` calls that rule instead of re-implementing it.
+with a container-unavailable degrade (stopped, gone, or the daemon unreachable) and
+per-assignment (never batch-aborting) outcomes. It exists so ``inspect -i`` calls
+that rule instead of re-implementing it.
 
 Built entirely from existing primitives (``core.docker.get_frappe_container``,
 ``resolvers.resolve_container_state`` / ``resolve_bench`` / ``cached_benches``,
@@ -74,8 +75,9 @@ class LabelResult:
 
     ``applied`` is False for a rejected assignment (``error`` carries why);
     ``marker_written`` is False when the marker could not be written - either the
-    project is stopped (batch-wide, see the ``label.marker_skipped`` warning) or
-    the per-bench write failed - and the label lives in the cache only.
+    container is unavailable (stopped, gone, or the daemon unreachable; batch-wide,
+    see the ``label.marker_skipped`` warning) or the per-bench write failed - and
+    the label lives in the cache only.
     """
 
     bench_path: str
@@ -252,10 +254,11 @@ def set_labels(project_name: str, assignments: list[tuple[str, str]]) -> Result[
     a copy re-implemented in ``inspect -i``. Three things differ, each a real need
     of the interactive path:
 
-    - a running container is OPTIONAL. ``inspect -i`` against a STOPPED project
-      still records labels to the cache (markers skipped, one batch-wide
-      ``label.marker_skipped`` warning), rather than the hard ``NOT_RUNNING``
-      :func:`set_label` raises;
+    - a running, reachable container is OPTIONAL. ``inspect -i`` against a
+      STOPPED project, a project whose containers are gone, or a Docker daemon
+      that is momentarily unreachable still records labels to the cache
+      (markers skipped, one batch-wide ``label.marker_skipped`` warning),
+      rather than the hard error :func:`set_label` raises for the same cases;
     - each assignment reports its own outcome (a rejected label does not abort the
       batch - the loop keeps the previous label for that bench and moves on);
     - uniqueness is resolved first-wins WITHIN the batch (an accepted label is
@@ -269,20 +272,21 @@ def set_labels(project_name: str, assignments: list[tuple[str, str]]) -> Result[
     benches = _require_benches(project_name)
     by_path = {b["path"]: b for b in benches}
 
-    # A running container lets us write markers; a stopped one degrades to
+    # A running, reachable container lets us write markers; any container
+    # unavailability (stopped, gone, or the daemon unreachable) degrades to
     # cache-only rather than refusing (the interactive-inspect affordance).
     frappe_container = None
     warnings: list[Message] = []
     try:
         frappe_container = _running_container(project_name)
     except CwcliError as exc:
-        if exc.kind is not ErrorKind.NOT_RUNNING:
+        if exc.kind not in (ErrorKind.NOT_RUNNING, ErrorKind.NOT_FOUND, ErrorKind.DOCKER):
             raise
         warnings.append(
             Message(
                 code="label.marker_skipped",
                 text=(
-                    "Containers are not running; labels saved to the cache only "
+                    "Containers are not available; labels saved to the cache only "
                     "(marker files not written)."
                 ),
             )
