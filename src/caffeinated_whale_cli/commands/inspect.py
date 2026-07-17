@@ -177,6 +177,13 @@ def inspect(
     # call; core owns the running-container fetch (degrading to cache-only when the
     # project is stopped), so no live Docker object crosses the core boundary.
     if interactive:
+        container_missing = not core_label.container_available(project_name)
+        if container_missing:
+            console_err.print(
+                "[yellow]Warning:[/yellow] Containers are not available; labels saved "
+                "to the cache only (marker files not written)."
+            )
+
         assignments: list[tuple[str, str]] = []
         for index, bench in enumerate(bench_instances_data):
             existing = bench.get("label")
@@ -201,6 +208,10 @@ def inspect(
 
         label_result = core_label.set_labels(project_name, assignments)
         for warning in label_result.warnings:
+            # Already shown up front; re-printing it here would just be an echo
+            # unless availability changed mid-prompt (the backstop for that race).
+            if container_missing and warning.code == "label.marker_skipped":
+                continue
             console_err.print(f"[yellow]Warning:[/yellow] {warning.text}")
         # Reflect outcomes into the dicts the tree/JSON renderer below reads, and
         # report each rejection with today's wording.

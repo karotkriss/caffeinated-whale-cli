@@ -488,3 +488,39 @@ class TestInteractiveLabeling:
         out = json.loads(capsys.readouterr().out)
         assert out["bench_instances"][0].get("label") is None
         assert out["bench_instances"][1].get("label") == "staging"
+
+    def test_marker_skipped_warning_shown_before_prompt_loop_not_after(
+        self, wired, monkeypatch, capsys
+    ):
+        """The cache-only warning must land BEFORE the user answers any prompt (the
+        pre-migration ordering), not only after ``set_labels`` returns - a user
+        against a stopped project should learn markers won't be written before
+        typing anything, not after answering every prompt."""
+        store, writes, install = wired
+        _seed_cache(store)
+        install(MultiBenchContainer(status="exited"))
+        _stub_questionary(monkeypatch, ["web", ""])
+
+        order: list[str] = []
+        real_text = inspect_mod.questionary.text
+
+        def spying_text(*a, **k):
+            order.append("prompt")
+            return real_text(*a, **k)
+
+        monkeypatch.setattr(inspect_mod.questionary, "text", spying_text)
+
+        real_print = inspect_mod.console_err.print
+
+        def spying_print(msg, *a, **k):
+            if "cache only" in str(msg):
+                order.append("warning")
+            return real_print(msg, *a, **k)
+
+        monkeypatch.setattr(inspect_mod.console_err, "print", spying_print)
+
+        _run_inspect(interactive=True, no_refresh=True)
+
+        assert order[0] == "warning"
+        assert order.count("warning") == 1  # not echoed again after set_labels
+        assert order.count("prompt") == 2
