@@ -11,10 +11,11 @@ call - never ``commands.config`` internals, so no test names an attribute that
 moves.
 
 The behavior DELTAS the proposal disclosed (F3 partial mutation, F4 conflicting
-clear, F9 garbage add-path, F10 exit codes) ride at the bottom as
-``xfail(strict=True)`` assertions of the NEW behavior: they XFAIL against
-today's code (recording the driven evidence) and turn XPASS - a hard failure -
-the moment the fix lands, forcing the marker's removal in the rework commit.
+clear, F9 garbage add-path, F10 exit codes) ride at the bottom asserting the
+NEW behavior. They were committed as ``xfail(strict=True)`` against the
+unmigrated monolith (each XFAILed, recording the driven evidence) and flipped
+XPASS when the rework landed, so the markers came off in the rework commit -
+the auditable flip.
 """
 
 import time
@@ -401,39 +402,29 @@ class TestPathAliasesFrozen:
 
 
 # --------------------------------------------------------- the disclosed deltas
-# Driven evidence for the proposal's behavior deltas, asserted as the NEW
-# behavior and xfail(strict=True) against today's code: each one XFAILs now and
-# XPASSes (a hard failure) the moment its fix lands, forcing the marker's
-# removal in the rework commit - the auditable flip tasks §1.2 asks for.
+# Driven evidence for the proposal's behavior deltas (F3/F4/F9/F10), asserting
+# the NEW behavior. These were committed as xfail(strict=True) against the
+# unmigrated monolith (each XFAILed, recording the driven evidence) and flipped
+# XPASS when the rework landed, so the markers came off in the rework commit -
+# the auditable flip tasks §1.2 asked for.
 
 
 class TestDisclosedDeltas:
-    @pytest.mark.xfail(
-        strict=True,
-        reason="F3: `enable --interval 30` persists enabled=true BEFORE validating; "
-        "the rework validates everything first, so a failed enable mutates nothing.",
-    )
     def test_f3_failed_enable_does_not_mutate_the_config(self, cfg):
         result = runner.invoke(app, ["config", "auto-inspect", "enable", "--interval", "30"])
         assert result.exit_code != 0
-        assert _saved_config()["auto_inspect"]["enabled"] is False
+        # Unmutated: either never created, or created with enabled still false.
+        assert not config_utils.CONFIG_FILE.exists() or (
+            _saved_config()["auto_inspect"]["enabled"] is False
+        )
+        assert cfg.calls["start"] == 0
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="F4: `cache clear NAME --all --yes` silently ignores NAME and wipes "
-        "everything; the rework makes contradictory targets a usage error (exit 2).",
-    )
     def test_f4_project_plus_all_is_a_usage_error_clearing_nothing(self, cfg):
         result = runner.invoke(app, ["config", "cache", "clear", "proj", "--all", "--yes"])
         assert result.exit_code == 2
         assert cfg.calls["clear_all"] == 0
         assert cfg.cleared_projects == []
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="F9: add-path accepts a non-absolute path despite its help text; "
-        "the rework refuses with exit 2 and stores nothing.",
-    )
     def test_f9_relative_path_is_refused(self, cfg):
         result = runner.invoke(app, ["config", "add-path", "not/absolute/../weird"])
         assert result.exit_code == 2
@@ -441,30 +432,15 @@ class TestDisclosedDeltas:
             _saved_config()["search_paths"]["custom_bench_paths"] == []
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="F9: '/a/b' and '/a/b/' are stored as two distinct entries (exact-string "
-        "dedup); the rework normalizes before dedup.",
-    )
     def test_f9_trailing_slash_dedupes_to_one_entry(self, cfg):
         runner.invoke(app, ["config", "add-path", "/a/b"])
         runner.invoke(app, ["config", "add-path", "/a/b/"])
         assert _saved_config()["search_paths"]["custom_bench_paths"] == ["/a/b"]
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="F10: `cache clear` with no target exits 1 where Typer usage errors "
-        "exit 2 everywhere else; the rework makes it exit 2.",
-    )
     def test_f10_no_clear_target_is_a_usage_error(self, cfg):
         result = runner.invoke(app, ["config", "cache", "clear"])
         assert result.exit_code == 2
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="F10: `auto-inspect logs` prints a red error but exits 0 on a read "
-        "failure; the rework exits 1.",
-    )
     def test_f10_logs_read_failure_exits_nonzero(self, cfg, monkeypatch):
         def _boom(lines):
             raise OSError("permission denied")
