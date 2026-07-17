@@ -1457,53 +1457,45 @@ cwcli config [SUBCOMMAND]
 
 #### Subcommands
 
+##### `config show` - Show the Effective Configuration
+
+The one read for everything: the custom search paths, the auto-inspect settings together with live daemon state and boot-hook state, the tips setting, and the config-file and cache-DB locations.
+
+```bash
+cwcli config show
+cwcli config show --json    # stable machine-readable object on stdout
+```
+
 ##### `config path` - Show Config Path
 
-Displays the path to the configuration file.
+Prints the configuration file's path - bare, unwrapped at any terminal width, safe for command substitution.
 
 ```bash
 cwcli config path
+$EDITOR "$(cwcli config path)"
 ```
 
-##### `config add-path` - Add Custom Bench Path
+##### `config edit` - Edit the Config File
 
-Adds a custom bench search path to the configuration.
+Opens the configuration file in `$EDITOR`.
 
 ```bash
-cwcli config add-path PATH
+cwcli config edit
 ```
 
-**Arguments:**
+##### `config paths` - Manage Bench Search Paths
 
-| Argument | Description |
-|----------|-------------|
-| `PATH` | The absolute path to add to the custom search paths (required) |
-
-**Example:**
+Lists and edits the custom directories the `inspect` command searches for benches.
 
 ```bash
-cwcli config add-path /home/user/custom-bench
+cwcli config paths                          # list, one path per line
+cwcli config paths --json                   # the same list as JSON
+cwcli config paths add /home/user/benches   # absolute paths only
+cwcli config paths remove /home/user/benches
 ```
 
-##### `config remove-path` - Remove Custom Bench Path
-
-Removes a custom bench search path from the configuration.
-
-```bash
-cwcli config remove-path PATH
-```
-
-**Arguments:**
-
-| Argument | Description |
-|----------|-------------|
-| `PATH` | The path to remove from the custom search paths (required) |
-
-**Example:**
-
-```bash
-cwcli config remove-path /home/user/custom-bench
-```
+`add` refuses a non-absolute path with a usage error (exit 2) after `~` expansion, and normalizes before duplicate detection, so `/a/b` and `/a/b/` are one entry, not two.
+Adding an already-present path and removing an absent one are both no-op successes (exit 0, saying which no-op occurred).
 
 ##### `config cache` - Manage Cache
 
@@ -1519,121 +1511,83 @@ cwcli config cache [SUBCOMMAND]
   - Options:
     - `-a`, `--all` - Clear the entire cache
     - `-y`, `--yes` - Skip the confirmation prompt (required to clear `--all` non-interactively; a non-TTY without `--yes` refuses rather than wiping the cache silently)
+  - A project name combined with `--all` is a usage error (exit 2, nothing cleared) - contradictory targets are never resolved toward the more destructive reading. No target at all is likewise exit 2.
   - Example: `cwcli config cache clear frappe-one`
-  - Example: `cwcli config cache clear --all`
   - Example: `cwcli config cache clear --all --yes`
 
-- **`path`** - Display the path to the cache file
+- **`path`** - Print the cache file's path (bare, substitution-safe)
   - Example: `cwcli config cache path`
 
-- **`list`** - List all projects currently in the cache
-  - Example: `cwcli config cache list`
+- **`list [--json]`** - List all projects currently in the cache
+  - Example: `cwcli config cache list --json`
 
 ##### `config auto-inspect` - Automatic Project Inspection
 
-Manages automatic background inspection of running Frappe projects to keep cached data fresh.
+Manages automatic background inspection of running Frappe projects to keep cached data fresh (tab completion, project status queries, and other commands that rely on cached data).
 
 ```bash
 cwcli config auto-inspect [SUBCOMMAND]
 ```
 
+Auto-inspect has three state stores - the config flag, the live daemon process, and the OS boot hook - and the verbs are desired-state: one `enable` reaches "enabled and running", one `disable` tears all three down.
+
 **Auto-Inspect Subcommands:**
 
-- **`enable`** - Enable automatic project inspection
+- **`enable`** - Enable auto-inspect AND start the background process, in one verb
   - Options:
-    - `--interval INTEGER` - Inspection interval in seconds (minimum 60, default 3600)
-    - `--startup` - Also enable automatic startup on system boot/login
+    - `-i`, `--interval INTEGER` - Inspection interval in seconds (minimum 60, default 3600)
+    - `--startup` / `--no-startup` - Also install (or remove) the automatic start on system boot/login; omit both to leave the boot hook untouched
+  - Validates every input BEFORE persisting anything: a failing `enable` leaves the config file untouched.
+  - Idempotent: re-running applies changed settings (restarting the running daemon when the interval changed) and reports already-satisfied state as a no-op.
   - Example: `cwcli config auto-inspect enable --interval 1800 --startup`
 
-- **`disable`** - Disable automatic inspection and stop background process
+- **`disable`** - Stop the background process, set enabled = false, AND remove the boot hook, reporting each action taken
   - Example: `cwcli config auto-inspect disable`
 
-- **`start`** - Start the auto-inspect background process
-  - Options:
-    - `--startup` - Also enable automatic startup on system boot
-  - Example: `cwcli config auto-inspect start --startup`
-
-- **`stop`** - Stop the auto-inspect background process
+- **`stop`** - Stop the background process only (stays enabled; a boot-hooked daemon returns at the next boot)
   - Example: `cwcli config auto-inspect stop`
 
-- **`restart`** - Restart the auto-inspect background process
-  - Example: `cwcli config auto-inspect restart`
+- **`status [--json]`** - Show all three stores separately: enabled + interval (config), process state + PID (daemon), start-on-boot (OS hook)
+  - Example: `cwcli config auto-inspect status --json`
 
-- **`status`** - Show detailed status (enabled, interval, process state, PID, startup)
-  - Example: `cwcli config auto-inspect status`
-
-- **`logs`** - View recent background process logs
-  - Options: `--lines INTEGER` - Number of log lines to show (default 20)
+- **`logs`** - View recent background process logs (a failed read exits 1)
+  - Options: `-n`, `--lines INTEGER` - Number of log lines to show (default 20)
   - Example: `cwcli config auto-inspect logs --lines 50`
 
-- **`set-interval`** - Change the inspection interval
-  - Example: `cwcli config auto-inspect set-interval 7200`
-
-- **`install-startup`** - Install platform-specific startup configuration
-  - Creates LaunchAgent (macOS), systemd service (Linux), or Task Scheduler task (Windows)
-  - Example: `cwcli config auto-inspect install-startup`
-
-- **`uninstall-startup`** - Remove startup configuration
-  - Example: `cwcli config auto-inspect uninstall-startup`
-
-**What it does:**
-
-The auto-inspect feature runs a background daemon process that periodically inspects all running Frappe projects. This keeps your project cache fresh for:
-- Tab completion (project names, apps, sites)
+**Notes:**
+- Background process survives terminal closure
+- Process stops on system restart unless the boot hook is installed (`enable --startup`; LaunchAgent on macOS, systemd user service on Linux, Task Scheduler on Windows)
+- Logs stored in `~/.cwcli/run/auto-inspect.log`
+- PID file stored in `~/.cwcli/run/auto-inspect.pid`
 
 ##### `config tips` - Manage Contextual Tips
 
 Control the display of helpful tips during long-running operations.
 
 ```bash
-cwcli config tips [enable|disable|status]
+cwcli config tips [enable|disable]
 ```
 
-**Subcommands:**
+When enabled (default), cwcli displays rotating helpful tips alongside spinners during long-running operations like `inspect`, `update`, and `open`. The current setting shows in `cwcli config show`.
 
-- **`enable`** - Enable contextual tips during long operations
-  - Example: `cwcli config tips enable`
+#### Deprecated `config` spellings
 
-- **`disable`** - Disable contextual tips
-  - Example: `cwcli config tips disable`
+These verbs remain as hidden aliases with byte-identical behavior plus a one-line stderr deprecation warning. They will not be removed before 1.0, and no earlier than two minor releases after the rework shipped - whichever is later.
 
-- **`status`** - Show whether contextual tips are enabled
-  - Example: `cwcli config tips status`
+| Deprecated | Use instead |
+|------------|-------------|
+| `config add-path P` | `config paths add P` (both now refuse non-absolute paths, exit 2) |
+| `config remove-path P` | `config paths remove P` |
+| `config auto-inspect start` | `config auto-inspect enable` |
+| `config auto-inspect restart` | `config auto-inspect enable` (idempotent; restarts on interval change) |
+| `config auto-inspect set-interval N` | `config auto-inspect enable --interval N` |
+| `config auto-inspect install-startup` | `config auto-inspect enable --startup` |
+| `config auto-inspect uninstall-startup` | `config auto-inspect enable --no-startup` (keep running, drop the hook) or `disable` |
+| `config tips status` | `config show` |
 
-**What it does:**
-
-When enabled (default), cwcli displays rotating helpful tips alongside spinners during long-running operations like `inspect`, `update`, and `open`. Tips help you discover features and best practices while waiting for operations to complete.
-
-**Examples of tips shown:**
-
-- 💡 Add VS Code to PATH via Command Palette: 'Shell Command: Install code command in PATH'
-- 💡 Install tab completion with 'cwcli --install-completion' for faster workflows
-- 💡 Use 'cwcli inspect <project>' to cache project structure for faster commands
-- 💡 cwcli automatically detects and resolves port conflicts when starting projects
-- Project status queries
-- Other commands that rely on cached data
-
-**Quick Setup:**
-
-```bash
-# Enable with 1-hour interval and auto-start on boot
-cwcli config auto-inspect enable --interval 3600 --startup
-
-# Start the background process
-cwcli config auto-inspect start
-
-# Check status
-cwcli config auto-inspect status
-
-# View logs
-cwcli config auto-inspect logs
-```
-
-**Notes:**
-- Background process survives terminal closure
-- Process stops on system restart unless startup is enabled
-- Logs stored in `~/.cwcli/run/auto-inspect.log`
-- PID file stored in `~/.cwcli/run/auto-inspect.pid`
+**Boot-unit note:** startup units installed before this change (systemd/LaunchAgent/schtasks) exec `cwcli config auto-inspect start` verbatim.
+The `start` alias keeps BOTH that argv and its refuse-when-disabled guard, so an existing unit keeps working and a stale hook left behind after `disable` stays inert.
+Re-running `cwcli config auto-inspect enable --startup` rewrites the unit against the current executable path.
 
 ### `self-update` - Upgrade cwcli Itself
 
@@ -1827,9 +1781,14 @@ cwcli axi apps update frappe-one frappe          # runs 'bench update --reset'
 # this verb never upgrades. Exits 0 on any successful read - the answer is the
 # is_outdated field, not the exit code.
 cwcli axi self-update --check
+
+# The effective cwcli configuration in one call. READ-ONLY: search paths,
+# auto-inspect state (config, live daemon, boot hook - reported separately),
+# tips, and the config-file/cache-DB locations.
+cwcli axi config
 ```
 
-`cwcli axi ls`, `cwcli axi where`, `cwcli axi backup`, `cwcli axi unlock`, `cwcli axi stop`, `cwcli axi start`, `cwcli axi status`, `cwcli axi restart`, `cwcli axi inspect`, `cwcli axi benches`, and `cwcli axi label` run on the same logic core as their human counterparts; only the output (always TOON, never JSON) and choice-handling differ. `cwcli axi start` never prompts: an ambiguous multi-bench project is a `--bench` usage error (exit 2), and an unresolved port conflict is a `CONFLICT` error naming `--yes` (exit 1). `cwcli axi unlock` follows `cwcli axi backup`'s conventions exactly: an ambiguous multi-bench project is a `--bench` usage error (exit 2) and a stopped instance is a usage error pointing at `cwcli start` (exit 2). `cwcli axi stop` is idempotent for an agent - stopping an already-stopped project is a success, not an error. `cwcli axi status` always exits 0, leading with the `overall` aggregate (`offline`/`online`/`running`/`degraded`). `cwcli axi restart` requires `--process`; an unknown/ambiguous process is a usage error listing the valid labels (exit 2). `cwcli axi inspect` serves whichever freshness tier answers the request (`served_from` names it) and, unlike every other bench-scoped verb, has deliberately NO `--yes` - a stopped project on the refresh path is a usage error (exit 2) naming `cwcli start`, and a drift escalation that can no longer discover the bench serves the cached data with `degraded: true` and a warning (exit 0). `cwcli axi benches` is the discovery verb behind every other verb's `--bench`: when a bench-scoped verb reports "multiple benches; pass `--bench <index|label>`", this is what tells you the valid values, and a project that has never been inspected is a structured error naming `cwcli axi inspect` rather than an empty list. `cwcli axi label` never starts a stopped project (the label marker lives inside the bench), and listing is deliberately `cwcli axi benches` rather than a mode of the mutation verb. `cwcli axi self-update --check` is read-only and **exits 0 whenever the check succeeds, including when an update is available** - the answer is the `is_outdated` field, not the exit code, because on the agent surface a non-zero exit means an error. This deliberately differs from the human `cwcli self-update --check`, which exits 1 when an update is available so shell scripts can gate on it; the mutating `cwcli axi self-update` is deliberately not offered.
+`cwcli axi ls`, `cwcli axi where`, `cwcli axi backup`, `cwcli axi unlock`, `cwcli axi stop`, `cwcli axi start`, `cwcli axi status`, `cwcli axi restart`, `cwcli axi inspect`, `cwcli axi benches`, and `cwcli axi label` run on the same logic core as their human counterparts; only the output (always TOON, never JSON) and choice-handling differ. `cwcli axi start` never prompts: an ambiguous multi-bench project is a `--bench` usage error (exit 2), and an unresolved port conflict is a `CONFLICT` error naming `--yes` (exit 1). `cwcli axi unlock` follows `cwcli axi backup`'s conventions exactly: an ambiguous multi-bench project is a `--bench` usage error (exit 2) and a stopped instance is a usage error pointing at `cwcli start` (exit 2). `cwcli axi stop` is idempotent for an agent - stopping an already-stopped project is a success, not an error. `cwcli axi status` always exits 0, leading with the `overall` aggregate (`offline`/`online`/`running`/`degraded`). `cwcli axi restart` requires `--process`; an unknown/ambiguous process is a usage error listing the valid labels (exit 2). `cwcli axi inspect` serves whichever freshness tier answers the request (`served_from` names it) and, unlike every other bench-scoped verb, has deliberately NO `--yes` - a stopped project on the refresh path is a usage error (exit 2) naming `cwcli start`, and a drift escalation that can no longer discover the bench serves the cached data with `degraded: true` and a warning (exit 0). `cwcli axi benches` is the discovery verb behind every other verb's `--bench`: when a bench-scoped verb reports "multiple benches; pass `--bench <index|label>`", this is what tells you the valid values, and a project that has never been inspected is a structured error naming `cwcli axi inspect` rather than an empty list. `cwcli axi label` never starts a stopped project (the label marker lives inside the bench), and listing is deliberately `cwcli axi benches` rather than a mode of the mutation verb. `cwcli axi self-update --check` is read-only and **exits 0 whenever the check succeeds, including when an update is available** - the answer is the `is_outdated` field, not the exit code, because on the agent surface a non-zero exit means an error. This deliberately differs from the human `cwcli self-update --check`, which exits 1 when an update is available so shell scripts can gate on it; the mutating `cwcli axi self-update` is deliberately not offered. `cwcli axi config` is the read-only counterpart of `cwcli config show`: one TOON document carrying the search paths, all three auto-inspect state stores, the tips setting, and the file locations. **No config-mutating axi verbs exist** (no `paths add`/`remove`, no `cache clear`, no `auto-inspect enable`/`disable`): an agent rewriting the user's search paths or wiping the cache is a product decision that deserves its own evidence, so mutations stay on the human `cwcli config` surface (whose reads all have `--json`).
 
 `cwcli axi apps update` blocks until the update finishes and emits ONE terminal document, exactly as `cwcli axi backup` does for a minutes-long `bench backup`: progress is deliberately not streamed, because N documents on stdout would break the one-TOON-document contract and an agent needs a verdict it can branch on rather than a progress bar (use `cwcli logs`/`cwcli status --watch` if you want live progress). Its exit code is `0` only when the report's `ok` is true; any failed phase, any stuck site, or any unknown outcome exits `1`, and an ambiguous multi-bench project is a `--bench` usage error (exit 2). A stopped project is likewise a usage error pointing at `cwcli start` (exit 2) - there is deliberately no `--yes` on this verb, because starting a container is UI-coupled and the core stays UI-pure about it, so an agent composes `cwcli axi start` then this verb, exactly as `cwcli axi unlock`/`cwcli axi backup` already document. **`failed_*` and `unknown_*` are not the same thing and must not be collapsed:** a `failed_*` item ran and failed, so retrying it is safe, while an `unknown_*` item's output stream was lost - its exit code is unknowable and **it may still be running**, so retrying it (a migration above all) can do real harm. Check before retrying. There is deliberately no `cwcli axi update`: the deprecated `cwcli update` spelling does not get an agent-facing verb. JSON output stays on the human commands (`cwcli ls --json`, `cwcli where --json`, `cwcli apps update --json`).
 
