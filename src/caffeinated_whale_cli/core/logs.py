@@ -28,9 +28,16 @@ on every axis that matters:
 The mechanism it would replace is verified clean on the interactive path:
 ``docker exec -it`` under a real pty forwards ``^C`` into the container, ``tail``
 exits 130, zero orphans. ``exec_stream`` remains the ONE way to exec-and-stream for
-every consumer that streams in Python, and it remains the right primitive for a
-future bounded ``core.read_logs`` (``tail -n N``, no follow) that an ``axi logs``
-verb would need - a different function, verified fit, deferred with that verb.
+every consumer that streams in Python.
+
+``read_logs`` (below) is the bounded ``tail -n N`` (no follow) behind the ``cwcli axi
+logs`` verb - the reader deferred WITH that verb. It is NOT on ``exec_stream``: a
+bounded read blocks to completion and returns finite output, so it is one buffered
+``container.exec_run`` (the ``core.backup`` shape), not an event stream. It shares its
+entire resolve with ``logs_plan`` via ``_resolve_log_files`` and returns the lines as
+serializable data (``LogsRead``) - no live Docker object crosses its return boundary.
+``exec_stream`` would be the primitive for a future STREAMING ``tail -n N`` if one were
+ever wanted; a one-shot buffered read needs no event iterator.
 
 ``logs_plan`` deliberately resolves NO MORE than ``cwcli logs`` does today: no
 default site, no bench-path metacharacter validation, no bench-dir probe, though
@@ -43,6 +50,7 @@ from __future__ import annotations
 
 import shlex
 from dataclasses import dataclass
+from typing import Any
 
 from . import docker as core_docker
 from . import resolvers, supervision
@@ -69,6 +77,48 @@ class LogsPlan:
     follow: bool
     lines: int
     not_cwcli_supervised: bool  # the fallback fired: these are raw bench logs
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ProcessLog:
+    """One process's tail. Serializable: a plain label, path, and lines - no Docker object."""
+
+    process: str  # raw Procfile program key (TOON-safe), e.g. "web", "worker_default"
+    file: str  # absolute path tailed
+    lines: list[str]  # the tail, oldest-first, one string per line
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LogsRead:
+    """A bounded read of a bench's logs. Every field serializable: no live Docker object.
+
+    ``read_logs`` returns this INSTEAD of a ``LogsPlan``: where ``LogsPlan`` describes a tail
+    for the frontend to perform (``--follow`` is an interactive TTY stream), ``LogsRead``
+    carries the already-tailed lines as data, because an ``axi`` agent needs a value it can
+    branch on, not a stream it must relay.
+    """
+
+    project: str
+    container_name: str
+    bench_path: str
+    lines_requested: int
+    not_cwcli_supervised: bool  # the fallback fired: these are raw bench logs
+    logs: list[ProcessLog]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _ResolvedLogs:
+    """The shared resolve's success payload. PRIVATE: it carries a live ``container``, so it
+    must never cross a public ``core.<verb>`` return boundary - only ``logs_plan``/``read_logs``
+    consume it, and each builds its own serializable DTO from it.
+    """
+
+    container: Any  # live Container, internal only (both callers exec against it)
+    container_name: str
+    bench_path: str
+    log_files: list[str]  # existence-checked, tail order; empty means "no logs found"
+    not_cwcli_supervised: bool
+    manager_up: bool  # only meaningful when log_files is empty (see _raise_no_logs)
 
 
 def _existing_files(container, files: list[str]) -> list[str]:
@@ -122,20 +172,22 @@ def _program_log_matches(file_path: str, program: str) -> bool:
     return _norm(stem).startswith(_norm(base))
 
 
-def logs_plan(
+def _resolve_log_files(
     project_name: str,
     *,
-    bench: str | None = None,
-    bench_path: str | None = None,
-    process: str | None = None,
-    follow: bool = False,
-    lines: int = 100,
-    auto_start: bool = False,
-) -> Result[LogsPlan]:
-    """Resolve which bench log files ``cwcli logs`` should tail. See the module docstring.
+    bench: str | None,
+    bench_path: str | None,
+    process: str | None,
+    auto_start: bool,
+) -> Result[_ResolvedLogs]:
+    """The resolve shared by ``logs_plan`` and ``read_logs``: WHICH log files to read.
 
-    A PURE READ: it never launches, installs, or restarts supervisord or the bench,
-    on any path including the not-cwcli-supervised fallback.
+    Everything both callers need between their arguments and the tail - the container lookup,
+    the run-state fork, bench resolution, ``--process`` selection, the existence probe, and the
+    not-cwcli-supervised fallback - lives here ONCE. It returns the resolved files (possibly
+    empty) plus ``manager_up``, so each caller decides what an empty result means: for a plan a
+    tail of nothing is an error, for a bounded read a running-but-quiet bench is an empty
+    success. A PURE READ; launches nothing on any path.
     """
     warnings: list[Message] = []
 
@@ -195,11 +247,13 @@ def logs_plan(
     # 5. Keep only the log files that actually exist (a program that has produced no
     #    output yet has no file). When none exist, the bench may instead be running
     #    under honcho / `bench start`, whose real logs are named differently: ask the
-    #    fallback discoverer and tail those. Never launches anything - a pure read.
+    #    fallback discoverer and use those. Never launches anything - a pure read.
     existing = _existing_files(frappe_container, candidate_files)
     not_cwcli_supervised = False
+    manager_up = True  # supervisord files present => a manager is up; only read when empty
     if not existing:
         fallback = supervision.discover_unsupervised_stack(frappe_container, resolved_path)
+        manager_up = fallback.manager_up
         if fallback.manager_up:
             real = _discover_bench_log_files(frappe_container, resolved_path)
             if program is not None:
@@ -207,22 +261,194 @@ def logs_plan(
             if real:
                 existing = real
                 not_cwcli_supervised = True
-        if not existing:
-            _raise_no_logs(project_name, resolved_path, process, manager_up=fallback.manager_up)
+
+    return Result(
+        status=Status.OK,
+        data=_ResolvedLogs(
+            container=frappe_container,
+            container_name=frappe_container.name,
+            bench_path=resolved_path,
+            log_files=existing,
+            not_cwcli_supervised=not_cwcli_supervised,
+            manager_up=manager_up,
+        ),
+        warnings=warnings,
+    )
+
+
+def logs_plan(
+    project_name: str,
+    *,
+    bench: str | None = None,
+    bench_path: str | None = None,
+    process: str | None = None,
+    follow: bool = False,
+    lines: int = 100,
+    auto_start: bool = False,
+) -> Result[LogsPlan]:
+    """Resolve which bench log files ``cwcli logs`` should tail. See the module docstring.
+
+    A PURE READ: it never launches, installs, or restarts supervisord or the bench,
+    on any path including the not-cwcli-supervised fallback.
+    """
+    resolved = _resolve_log_files(
+        project_name, bench=bench, bench_path=bench_path, process=process, auto_start=auto_start
+    )
+    if resolved.status is Status.NEEDS_CHOICE:
+        return Result(
+            status=Status.NEEDS_CHOICE, choice=resolved.choice, warnings=resolved.warnings
+        )
+    r = resolved.data
+    assert r is not None  # OK always carries a _ResolvedLogs
+
+    # A plan of nothing is an error: there is nothing to tail. Keep the two no-logs outcomes
+    # distinct exactly as before (manager up -> a wait; no manager -> may be down).
+    if not r.log_files:
+        _raise_no_logs(project_name, r.bench_path, process, manager_up=r.manager_up)
 
     return Result(
         status=Status.OK,
         data=LogsPlan(
             project=project_name,
-            container_name=frappe_container.name,
-            bench_path=resolved_path,
-            log_files=existing,
+            container_name=r.container_name,
+            bench_path=r.bench_path,
+            log_files=r.log_files,
             follow=follow,
             lines=lines,
-            not_cwcli_supervised=not_cwcli_supervised,
+            not_cwcli_supervised=r.not_cwcli_supervised,
+        ),
+        warnings=resolved.warnings,
+    )
+
+
+def read_logs(
+    project_name: str,
+    *,
+    bench: str | None = None,
+    bench_path: str | None = None,
+    process: str | None = None,
+    lines: int = 100,
+    auto_start: bool = False,
+) -> Result[LogsRead]:
+    """Bounded ``tail -n N`` (NO follow) of a bench's per-process logs; the reader behind
+    ``cwcli axi logs``.
+
+    Where ``logs_plan`` returns a declarative ``LogsPlan`` for the frontend's interactive
+    ``docker exec -it ... tail -F`` (see the module docstring for why that follow stays in the
+    frontend), ``read_logs`` runs the tail ITSELF as one buffered ``container.exec_run`` (the
+    ``core.backup`` shape, NOT ``exec_stream``: a bounded read blocks and returns finite output)
+    and returns the lines as serializable data, because an agent needs a value to branch on, not
+    a stream to relay. No live Docker object crosses this return boundary.
+
+    A PURE READ: launches nothing on any path, including the not-cwcli-supervised fallback.
+    """
+    resolved = _resolve_log_files(
+        project_name, bench=bench, bench_path=bench_path, process=process, auto_start=auto_start
+    )
+    if resolved.status is Status.NEEDS_CHOICE:
+        return Result(
+            status=Status.NEEDS_CHOICE, choice=resolved.choice, warnings=resolved.warnings
+        )
+    r = resolved.data
+    assert r is not None  # OK always carries a _ResolvedLogs
+    warnings = list(resolved.warnings)
+
+    if not r.log_files:
+        # A running-but-quiet bench (manager up, nothing written yet) is a successful EMPTY
+        # read on the agent surface, NOT the error logs_plan raises: a read that determines
+        # "there is nothing yet" has not failed (the axi self-update --check / axi status
+        # precedent). Only a bench with NO live manager is the honest error.
+        if r.manager_up:
+            warnings.append(
+                Message("logs.none_yet", f"No logs written yet under '{r.bench_path}/logs'.")
+            )
+            return Result(
+                status=Status.OK,
+                data=LogsRead(
+                    project=project_name,
+                    container_name=r.container_name,
+                    bench_path=r.bench_path,
+                    lines_requested=lines,
+                    not_cwcli_supervised=r.not_cwcli_supervised,
+                    logs=[],
+                ),
+                warnings=warnings,
+            )
+        _raise_no_logs(project_name, r.bench_path, process, manager_up=False)
+
+    groups = _tail_files(r.container, r.log_files, lines)
+    return Result(
+        status=Status.OK,
+        data=LogsRead(
+            project=project_name,
+            container_name=r.container_name,
+            bench_path=r.bench_path,
+            lines_requested=lines,
+            not_cwcli_supervised=r.not_cwcli_supervised,
+            logs=groups,
         ),
         warnings=warnings,
     )
+
+
+def _tail_header_path(line: str) -> str | None:
+    """The path in a ``tail -v`` ``==> <path> <==`` header line, else None."""
+    if line.startswith("==> ") and line.endswith(" <=="):
+        return line[len("==> ") : -len(" <==")]
+    return None
+
+
+def _process_label_for_file(file_path: str) -> str:
+    """The process label a discovered log file belongs to.
+
+    A supervisord file is ``<program>.supervisor.log`` -> the RAW program key (the inverse of
+    ``supervision.process_log_path``); a raw honcho/``bench start`` file is ``<name>.log`` ->
+    its stem. Deliberately the RAW key (``worker_default``), NOT the colon-normalized display
+    label ``status`` shows (``worker:default``): a colon is unsafe in a TOON block key, and the
+    raw key both matches the log filename and round-trips through ``--process`` (which
+    ``supervision.program_for_label`` accepts in either form).
+    """
+    stem = file_path.rsplit("/", 1)[-1]
+    if stem.endswith(supervision._PROC_LOG_SUFFIX):
+        return stem[: -len(supervision._PROC_LOG_SUFFIX)]
+    if stem.endswith(".log"):
+        return stem[:-4]
+    return stem
+
+
+def _tail_files(container, files: list[str], lines: int) -> list[ProcessLog]:
+    """One buffered ``tail -v -n N`` over ``files``, split back into per-process groups.
+
+    ``tail -v`` forces the ``==> <path> <==`` header even for a single file, so combined and
+    single-process reads parse uniformly; each header's group runs until the next one, minus
+    tail's one-blank-line separator. ``container.exec_run`` (the buffered ``core.backup`` shape),
+    not ``exec_stream``: a bounded read blocks and returns finite output, coverable by the same
+    container fakes the rest of this module uses.
+
+    ``ponytail:`` the ``==> <path> <==`` header is the parse boundary; a log line literally
+    equal to one would mis-split. Upgrade path if it ever bites: one ``exec_run`` per file.
+    """
+    if not files:
+        return []
+    _exit_code, output = container.exec_run(["tail", "-v", "-n", str(lines), *files])
+    text = supervision._decode(output)
+
+    groups: list[tuple[str, list[str]]] = []
+    for line in text.splitlines():
+        header = _tail_header_path(line)
+        if header is not None:
+            if groups and groups[-1][1] and groups[-1][1][-1] == "":
+                groups[-1][1].pop()  # drop tail's one blank line before the next header
+            groups.append((header, []))
+            continue
+        if not groups:
+            groups.append((files[0], []))  # output before any header (defensive; -v emits one)
+        groups[-1][1].append(line)
+
+    return [
+        ProcessLog(process=_process_label_for_file(path), file=path, lines=lns)
+        for path, lns in groups
+    ]
 
 
 def _raise_no_logs(
