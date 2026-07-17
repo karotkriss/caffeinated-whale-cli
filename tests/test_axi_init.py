@@ -153,6 +153,23 @@ class TestProgressNarration:
         assert "Creating site" in result.stderr
         assert "/workspace/frappe-bench" in result.stderr
 
+    def test_item_only_step_start_still_narrates(self, monkeypatch):
+        # bench_init and new_site (the two longest-running phases) carry only
+        # `item`, no `message`; they must still produce a non-empty stderr
+        # line so an agent watching for liveness doesn't see a silent gap.
+        _no_admin_env(monkeypatch)
+        _patch_stages(
+            monkeypatch,
+            bench_events=[InitStepStart(phase="bench_init", item="frappe-bench")],
+        )
+
+        result = runner.invoke(axi_mod.app, ["init", "proj", "--admin-password", "s3cret"])
+
+        assert result.exit_code == 0
+        assert_is_one_toon_document(result.stdout)
+        assert "frappe-bench" in result.stderr
+        assert result.stderr.strip() != ""
+
     def test_narration_carries_no_secret(self, monkeypatch):
         _no_admin_env(monkeypatch)
         # An adversarial event whose text embeds the secret must not be emitted;
