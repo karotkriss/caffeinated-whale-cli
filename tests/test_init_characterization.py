@@ -34,6 +34,7 @@ import typer
 
 import caffeinated_whale_cli.commands.init as init_mod
 from caffeinated_whale_cli.core import docker as core_docker
+from caffeinated_whale_cli.core.envelope import Status
 from caffeinated_whale_cli.utils import config_utils, db_utils, port_utils
 
 PROJECT = "proj"
@@ -196,6 +197,7 @@ def run_init(
         db_root_password="123",
         admin_password="pw-x",
         auto_start=False,
+        start_services=False,
         reuse_bench=None,
         verbose=False,
         install_erpnext=False,
@@ -421,6 +423,59 @@ class TestEnospcMessage:
         err = capsys.readouterr().err
         assert "No space left on device" in err
         assert "Free up disk space" in err
+
+
+class TestAutoStartServices:
+    """After a successful create, init starts the bench dev services by default
+    (reusing ``core.start``) and its completion message reflects the running
+    state; ``--no-start`` skips the start and points at ``cwcli start``."""
+
+    def _patch_start(self, monkeypatch, *, status):
+        calls: list[dict] = []
+
+        def fake_start(project_name, **kwargs):
+            calls.append({"project": project_name, **kwargs})
+            return SimpleNamespace(status=status)
+
+        monkeypatch.setattr(init_mod.core_start, "start", fake_start)
+        return calls
+
+    def test_default_starts_services_and_reports_running(self, monkeypatch, tmp_path, capsys):
+        calls = self._patch_start(monkeypatch, status=Status.OK)
+        run_init(monkeypatch, tmp_path, start_services=True)
+
+        # core.start was reused with the exact created bench path (no re-resolve).
+        assert calls == [{"project": PROJECT, "bench_path": BENCH_PATH}]
+        out = capsys.readouterr().out
+        assert "Dev services are running" in out
+        assert "http://development.localhost:8000" in out
+        assert f"cwcli logs {PROJECT}" in out
+        assert f"cwcli stop {PROJECT}" in out
+        assert f"cwcli restart {PROJECT}" in out
+        # The old "Once services are running" implication is gone.
+        assert "Once services are running" not in out
+
+    def test_no_start_skips_and_points_at_start(self, monkeypatch, tmp_path, capsys):
+        calls = self._patch_start(monkeypatch, status=Status.OK)
+        run_init(monkeypatch, tmp_path, start_services=False)
+
+        assert calls == []  # never called
+        out = capsys.readouterr().out
+        assert "Dev services are not running" in out
+        assert f"cwcli start {PROJECT}" in out
+
+    def test_start_failure_degrades_to_warning_not_exit(self, monkeypatch, tmp_path, capsys):
+        from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
+
+        def boom(project_name, **kwargs):
+            raise CwcliError(ErrorKind.DOCKER, "docker.x", "daemon unreachable")
+
+        monkeypatch.setattr(init_mod.core_start, "start", boom)
+        # Must NOT raise: the bench was created; a start failure only warns.
+        run_init(monkeypatch, tmp_path, start_services=True)
+        captured = capsys.readouterr()
+        assert "could not be" in captured.err
+        assert "Dev services are not running" in captured.out
 
 
 class TestAddPathLine:
