@@ -339,6 +339,14 @@ def clear_all_cache():
 
 def cache_project_data(project_name, bench_instances_data):
     initialize_database()
+    # Clear + rewrite in ONE transaction so a crash mid-write rolls back to the
+    # prior consistent cache instead of leaving a partial one that later reads
+    # would serve as truth.
+    with db.atomic():
+        _cache_project_data(project_name, bench_instances_data)
+
+
+def _cache_project_data(project_name, bench_instances_data):
     clear_cache_for_project(project_name)
 
     project = Project.create(name=project_name, last_updated=datetime.datetime.now())
