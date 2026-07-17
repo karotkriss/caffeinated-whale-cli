@@ -191,6 +191,15 @@ def test_non_tty_without_password_refuses(running_instance):
     assert "password" in (r.stdout + r.stderr).lower()
 
 
+def test_receive_non_tty_without_ticket_refuses(running_instance):
+    inst = running_instance
+    # A non-TTY --receive with no --ticket must refuse (non-zero) naming --ticket,
+    # never the old silent exit-0 no-op that looked like a successful restore.
+    r = harness.run_cwcli("restore", inst.name, "--receive")
+    assert r.returncode != 0
+    assert "--ticket" in r.stderr
+
+
 def test_mutually_exclusive_flags(running_instance):
     inst = running_instance
     assert harness.run_cwcli("restore", inst.name, "--send", "--receive").returncode != 0

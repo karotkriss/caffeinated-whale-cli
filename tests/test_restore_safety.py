@@ -112,6 +112,7 @@ def _run_receive(
     confirm_answer=True,
     admin_password=None,
     missing_apps=None,
+    ticket="ticket-abc",
 ):
     """Drive ``restore_receive_mode`` end-to-end against ``container``.
 
@@ -138,9 +139,6 @@ def _run_receive(
     monkeypatch.setattr(restore_mod, "get_sendme_command", lambda: "sendme")
     monkeypatch.setattr(restore_mod, "TipSpinner", _NullSpinner)
     monkeypatch.setattr(restore_mod.config_utils, "get_show_tips", lambda: False)
-    monkeypatch.setattr(
-        restore_mod.questionary, "text", lambda *a, **k: _stub_question("ticket-abc")
-    )
     monkeypatch.setattr(
         restore_mod.questionary, "confirm", lambda *a, **k: _stub_question(confirm_answer)
     )
@@ -170,6 +168,7 @@ def _run_receive(
         "proj",
         site=site,
         bench_path=BENCH_PATH,
+        ticket=ticket,
         mariadb_root_username="root",
         mariadb_root_password=SECRET_PW,
         admin_password=admin_password,
@@ -346,6 +345,68 @@ class TestReceiveMissingAppsGate:
         assert container.restore_calls() == []
 
 
+class TestReceiveTicket:
+    """P1: --receive must not silently no-op on a non-TTY without --ticket, and
+    an interactive cancel must exit non-zero rather than look like success."""
+
+    def test_non_tty_without_ticket_refuses_and_exits_nonzero(self, monkeypatch):
+        container = FakeReceiveContainer()
+        monkeypatch.setattr(
+            restore_mod.questionary,
+            "text",
+            lambda *a, **k: pytest.fail("ticket prompt must not be reached under a non-TTY"),
+        )
+        with pytest.raises(typer.Exit) as excinfo:
+            _run_receive(
+                monkeypatch,
+                container,
+                site="development.localhost",
+                db_filename="20251109_225726-development_localhost-database.sql.gz",
+                yes=True,
+                isatty=False,
+                ticket=None,
+            )
+
+        assert excinfo.value.exit_code != 0
+        assert container.restore_calls() == []
+
+    def test_ticket_flag_skips_prompt_and_proceeds(self, monkeypatch):
+        container = FakeReceiveContainer()
+        monkeypatch.setattr(
+            restore_mod.questionary,
+            "text",
+            lambda *a, **k: pytest.fail("ticket prompt must not be reached with --ticket"),
+        )
+        _run_receive(
+            monkeypatch,
+            container,
+            site="development.localhost",
+            db_filename="20251109_225726-development_localhost-database.sql.gz",
+            yes=True,
+            isatty=False,
+            ticket="blob-supplied-ticket",
+        )
+
+        assert len(container.restore_calls()) == 1
+
+    def test_interactive_cancel_exits_nonzero_not_silent_success(self, monkeypatch):
+        container = FakeReceiveContainer()
+        monkeypatch.setattr(restore_mod.questionary, "text", lambda *a, **k: _stub_question(None))
+        with pytest.raises(typer.Exit) as excinfo:
+            _run_receive(
+                monkeypatch,
+                container,
+                site="development.localhost",
+                db_filename="20251109_225726-development_localhost-database.sql.gz",
+                yes=True,
+                isatty=True,
+                ticket=None,
+            )
+
+        assert excinfo.value.exit_code != 0
+        assert container.restore_calls() == []
+
+
 # ---------------------------------------------------------------------------
 # Issue #40: non-interactive selectors and honest exit codes for the NORMAL
 # (non --send/--receive) restore path.
@@ -515,7 +576,9 @@ def _run_normal(
         lambda *a, **k: Result(status=Status.OK, data=BENCH_PATH, warnings=[]),
     )
     monkeypatch.setattr(core_restore.resolvers, "require_bench_dir", lambda *a, **k: None)
-    monkeypatch.setattr(core_restore.resolvers, "require_site_dir", lambda *a, **k: f"{BENCH_PATH}/sites/{site}")
+    monkeypatch.setattr(
+        core_restore.resolvers, "require_site_dir", lambda *a, **k: f"{BENCH_PATH}/sites/{site}"
+    )
     monkeypatch.setattr(core_restore, "scan_backups_for_all_sites", lambda *a, **k: [])
     if group_sort_stub is not None:
         monkeypatch.setattr(core_restore, "group_and_sort_backups", group_sort_stub)
@@ -549,6 +612,7 @@ def _run_normal(
         admin_password=None,
         send=False,
         receive=False,
+        ticket=None,
         no_recache=True,
         yes=yes,
         no_migrate=True,
