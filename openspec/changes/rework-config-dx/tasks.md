@@ -1,6 +1,7 @@
 ## 0. Gate: captain decisions before implementation
 
-- [ ] 0.1 Captain picks the auto-inspect verb model (design Decision 2: A1 fused / A2 systemctl / A3 minimal) and the settings access model (Decision 3: B1 bespoke + show / B2 git-style get-set / B3 edit rider in or out), and folds in his own pain points. Update the proposal table to the picked shapes before any code.
+- [x] 0.1 Captain picks the auto-inspect verb model (design Decision 2: A1 fused / A2 systemctl / A3 minimal) and the settings access model (Decision 3: B1 bespoke + show / B2 git-style get-set / B3 edit rider in or out), and folds in his own pain points. Update the proposal table to the picked shapes before any code.
+  NOTE (2026-07-16): captain approved with A1 (fused desired-state verbs), B1 (bespoke verbs + `config show` as the single read), and the `config edit` rider IN, with no additional notes. These are exactly the shapes the committed proposal table already shows, so no table rewrite was needed.
 
 ## 1. Characterization first: surviving behavior pinned green BEFORE anything moves
 
