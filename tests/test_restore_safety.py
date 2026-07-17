@@ -112,6 +112,7 @@ def _run_receive(
     confirm_answer=True,
     admin_password=None,
     missing_apps=None,
+    ticket="ticket-abc",
 ):
     """Drive ``restore_receive_mode`` end-to-end against ``container``.
 
@@ -170,6 +171,7 @@ def _run_receive(
         "proj",
         site=site,
         bench_path=BENCH_PATH,
+        ticket=ticket,
         mariadb_root_username="root",
         mariadb_root_password=SECRET_PW,
         admin_password=admin_password,
@@ -549,6 +551,7 @@ def _run_normal(
         admin_password=None,
         send=False,
         receive=False,
+        ticket=None,
         no_recache=True,
         yes=yes,
         no_migrate=True,
