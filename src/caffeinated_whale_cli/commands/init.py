@@ -310,10 +310,10 @@ def _start_services(project: str, bench_path: str) -> bool:
             f"[bold green]Starting dev services for '{project}'...[/bold green]", spinner="dots"
         ):
             result = core_start.start(project, bench_path=bench_path)
-    except CwcliError as e:
+    except Exception as e:
         stderr_console.print(
             f"[yellow]Warning:[/yellow] Bench created, but its dev services could not be "
-            f"started: {e.message}"
+            f"started: {getattr(e, 'message', str(e))}"
         )
         return False
     return result.status is not Status.NEEDS_CHOICE
@@ -635,7 +635,10 @@ def init(
         if install_erpnext:
             console.print(f"[dim]ERPNext is installed at http://{report.site_name}:8000.[/dim]")
     else:
-        console.print(f"[dim]Dev services are not running for '{project}'.[/dim]")
+        if start_services:
+            console.print(f"[dim]Dev services are not running for '{project}'.[/dim]")
+        else:
+            console.print("[dim]Dev services were not started (--no-start).[/dim]")
         console.print(f"[dim]Start them: cwcli start {project}[/dim]")
         console.print(
             f"[dim]Then open http://{report.site_name}:8000 (or `cwcli open {project}`).[/dim]"

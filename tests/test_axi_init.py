@@ -55,9 +55,11 @@ def _patch_stages(
     bench_raises=None,
     instance_events=(),
     bench_events=(),
+    start_result=None,
+    start_raises=None,
 ):
     """Patch both core seams; record kwargs; optionally emit events / raise."""
-    calls: dict[str, list] = {"instance": [], "bench": []}
+    calls: dict[str, list] = {"instance": [], "bench": [], "start": []}
 
     def fake_instance(project, **kw):
         calls["instance"].append({"project": project, **kw})
@@ -81,8 +83,17 @@ def _patch_stages(
             return bench_result
         return Result(status=Status.OK, data=REPORT)
 
+    def fake_start(project, **kw):
+        calls["start"].append({"project": project, **kw})
+        if start_raises is not None:
+            raise start_raises
+        if start_result is not None:
+            return start_result
+        return Result(status=Status.OK, data=None)
+
     monkeypatch.setattr(axi_mod.core_init, "init_instance", fake_instance)
     monkeypatch.setattr(axi_mod.core_init, "init_bench", fake_bench)
+    monkeypatch.setattr(axi_mod.core_start, "start", fake_start)
     return calls
 
 
@@ -393,6 +404,50 @@ class TestChoiceSurfaces:
         assert result.exit_code == 1
         assert_is_one_toon_document(result.stdout)
         assert "--port" in result.stdout
+
+
+# ------------------------------------------------------------------ auto-start dev services
+
+
+class TestAutoStartServices:
+    """After a successful create, ``axi init`` starts the bench dev services by
+    default (reusing ``core.start``, the same primitive ``cwcli init`` uses);
+    ``--no-start`` skips it and a start failure degrades to a stderr warning
+    without failing the verb or changing its exit code."""
+
+    def test_default_starts_services_with_exact_bench_path(self, monkeypatch):
+        _no_admin_env(monkeypatch)
+        calls = _patch_stages(monkeypatch)
+
+        result = runner.invoke(axi_mod.app, ["init", "proj", "--admin-password", "a"])
+
+        assert result.exit_code == 0
+        assert calls["start"] == [{"project": "proj", "bench_path": "/workspace/frappe-bench"}]
+
+    def test_no_start_skips_the_start_call(self, monkeypatch):
+        _no_admin_env(monkeypatch)
+        calls = _patch_stages(monkeypatch)
+
+        result = runner.invoke(
+            axi_mod.app, ["init", "proj", "--admin-password", "a", "--no-start"]
+        )
+
+        assert result.exit_code == 0
+        assert calls["start"] == []
+
+    def test_start_failure_degrades_to_stderr_warning_not_a_failed_verb(self, monkeypatch):
+        _no_admin_env(monkeypatch)
+        calls = _patch_stages(
+            monkeypatch,
+            start_raises=CwcliError(ErrorKind.DOCKER, "docker.x", "daemon unreachable"),
+        )
+
+        result = runner.invoke(axi_mod.app, ["init", "proj", "--admin-password", "a"])
+
+        assert result.exit_code == 0
+        assert_is_one_toon_document(result.stdout)
+        assert len(calls["start"]) == 1
+        assert "could not be started" in result.stderr
 
 
 # ------------------------------------------------------------------ registration + no prompt
