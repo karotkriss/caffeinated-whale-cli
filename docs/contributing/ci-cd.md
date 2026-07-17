@@ -9,12 +9,12 @@ We use five GitHub Actions workflows:
 | Workflow | Triggers | Purpose |
 |----------|----------|---------|
 | **Lint** | All branches, all PRs | Code quality checks (Black, Ruff) |
-| **Test** | All branches, all PRs | Run the fast `unit` pytest tier (required gate) + mypy (zero-error gate), plus a narrow `tests/test_auto_inspect.py` leg on `windows-latest` |
+| **Test** | All branches, all PRs | Run the fast `unit` pytest tier (required gate) + mypy (zero-error gate), a narrow `tests/test_auto_inspect.py` leg on `windows-latest`, and a runtime-deps-only clean-install smoke test |
 | **E2E** | PRs into `develop`/`master`, `e2e`-labeled PRs, manual dispatch | Run the real-Docker `e2e` tier on a v14/v15/v16 Frappe matrix |
 | **Build** | Push to `master`, manual dispatch | Build package, verify version consistency |
 | **Release** | Tags `v*.*.*`, push to `master`, published releases, manual dispatch | Publish to PyPI, create GitHub release |
 
-Lint, Build, and Release, along with Test's `Pytest`/`Mypy` jobs, run inside the `ghcr.io/astral-sh/uv:python3.12-bookworm` Docker image. E2E runs directly on the `ubuntu-latest` host runner (no `container:`) so `docker`/`docker compose` can reach the runner's own daemon; it installs `uv` via `astral-sh/setup-uv` instead. Test's third job, `Pytest (Windows, auto-inspect)`, runs on `windows-latest` (no Linux container available there) and also installs `uv` via `astral-sh/setup-uv`.
+Lint, Build, and Release, along with Test's `Pytest`/`Mypy` jobs, run inside the `ghcr.io/astral-sh/uv:python3.12-bookworm` Docker image. E2E runs directly on the `ubuntu-latest` host runner (no `container:`) so `docker`/`docker compose` can reach the runner's own daemon; it installs `uv` via `astral-sh/setup-uv` instead. Test's other two jobs also run on host runners rather than the container: `Pytest (Windows, auto-inspect)` runs on `windows-latest` (no Linux container available there), and `Clean install smoke` runs on `ubuntu-latest` so `uv tool install` resolves a real runtime-only environment instead of the container's `--all-extras` sync. Both install `uv` via `astral-sh/setup-uv`.
 
 ---
 
@@ -40,16 +40,24 @@ See [Code Quality Guide](./code-quality.md) for details.
 
 ### Test (`.github/workflows/test.yml`)
 
-Runs on every push and PR. Has three jobs:
+Runs on every push and PR. Has four jobs:
 
 - **Pytest** - runs the fast `unit` tier with coverage (`uv run pytest -m unit --cov=caffeinated_whale_cli`). This is the always-required gate; it needs no Docker daemon and runs inside the uv container. Because `develop` has no branch protection, an admin must tick `Pytest` as a required status check in the `develop` branch-protection settings for it to actually block merges.
 - **Mypy** - runs `uv run mypy src/` as a zero-error gate. The historical ~50 errors across ~14 files were burned down to zero and `continue-on-error` was dropped from the step, so any new type error fails the job's status check. To make it *required to merge*, an admin must also tick `Mypy` as a required status check in the `develop` branch-protection settings (same outstanding step as `Pytest`).
 - **Pytest (Windows, auto-inspect)** - runs only `tests/test_auto_inspect.py` on `windows-latest`, the one non-Linux runner in this repo. It exists because every other job runs `ubuntu-latest`, and that is exactly how a Windows-only defect in `utils/auto_inspect.py` went unnoticed (`os.kill(pid, 0)` is not a genuine liveness probe on Windows). Deliberately narrow rather than `-m unit`: the other jobs run inside a Linux uv container this runner can't use, and the rest of the unit tier has never been exercised on Windows. See [Testing Guide](../testing/guide.md#the-windows-job-why-it-exists-and-why-it-is-narrow).
+- **Clean install smoke** - does a runtime-deps-only `uv tool install .` into an isolated tool dir (`UV_TOOL_DIR`/`UV_TOOL_BIN_DIR`), asserts the resulting env is runtime-only (`click` present, `pytest` absent), then runs `cwcli --help`, `config --help`, `config edit` (`EDITOR=true`), and `config path`. It is the only job that exercises a runtime-deps-only install - every other job and the local dev loop use `uv sync --all-extras`, where transitive/dev deps mask an undeclared runtime import. This is exactly how cwcli once shipped broken: `commands/config.py` imported `click` directly, but only `typer` was declared, and typer 0.27 stopped supplying `click` transitively, so a real `uv tool install` had no `click` and every command died at import with `ModuleNotFoundError`.
 
 **Run locally:**
 ```bash
 uv run pytest -m unit --cov=caffeinated_whale_cli
 uv run mypy src/
+```
+
+Run the clean-install smoke leg locally:
+```bash
+export UV_TOOL_DIR=$(mktemp -d) UV_TOOL_BIN_DIR=$(mktemp -d)
+uv tool install .
+"$UV_TOOL_BIN_DIR/cwcli" --help
 ```
 
 ---
