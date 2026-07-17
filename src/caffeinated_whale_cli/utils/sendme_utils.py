@@ -174,7 +174,14 @@ def install_sendme(verbose: bool = False) -> bool:
         if verbose:
             stderr_console.print(f"[dim]Fetching release info from {release_url}[/dim]")
 
-        response = requests.get(release_url, timeout=10)
+        # Authenticate when a token is available (GITHUB_TOKEN in Actions, GH_TOKEN
+        # from the gh CLI convention): unauthenticated api.github.com calls are
+        # capped at 60/hour per source IP, which a shared CI runner pool exhausts
+        # fast (403 rate limit exceeded); an authenticated call gets 5000/hour.
+        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+
+        response = requests.get(release_url, headers=headers, timeout=10)
         response.raise_for_status()
         release_data = response.json()
 
