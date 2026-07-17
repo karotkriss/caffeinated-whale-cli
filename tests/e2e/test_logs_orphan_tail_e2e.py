@@ -21,6 +21,7 @@ import time
 import pytest
 
 from . import harness
+from .test_start_status_e2e import _ensure_serving
 
 pytestmark = pytest.mark.e2e
 
@@ -36,6 +37,11 @@ def _orphan_tail_count(project: str) -> int:
 
 def test_non_tty_follow_leaves_no_orphan_tail(running_instance):
     inst = running_instance
+    # `running_instance` only guarantees the CONTAINER is up, not the bench's
+    # supervisord: without it there are no `*.supervisor.log` files, `cwcli logs`
+    # errors before ever launching a tail, and the wait below times out with no
+    # orphan ever detected.
+    _ensure_serving(inst.name)
     baseline = _orphan_tail_count(inst.name)
 
     # Non-TTY follow, exactly as an agent/pipe drives it: stdin closed, a real
@@ -72,6 +78,7 @@ def test_non_tty_follow_leaves_no_orphan_tail(running_instance):
 
 def test_tty_follow_leaves_no_orphan_tail(running_instance):
     inst = running_instance
+    _ensure_serving(inst.name)
     baseline = _orphan_tail_count(inst.name)
 
     # Interactive TTY follow on a real pty: docker allocates a TTY and forwards ^C
