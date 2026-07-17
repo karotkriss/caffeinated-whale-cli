@@ -516,5 +516,46 @@ class TestAxiParseErrorsAreToon:
         assert "\x1b[" not in out  # no ANSI escapes
 
 
+class TestNoAxiRunVerb:
+    """There is deliberately NO ``axi run``/``axi exec`` verb. ``README.md`` records
+    that the ``apps`` group exists specifically to replace "dropping to the raw
+    ``cwcli run <project> bench get-app ...`` escape hatch", so giving ``run`` an
+    axi verb would re-open the exact escape hatch ``apps`` was built to close
+    (`openspec/changes/migrate-label-core/proposal.md:63`). This test keeps the
+    absence a decision, not an oversight (the ``axi open`` non-verb precedent)."""
+
+    def test_axi_registry_has_no_run_or_exec_command(self):
+        registered = {c.name for c in axi_mod.app.registered_commands}
+        assert "run" not in registered
+        assert "exec" not in registered
+        # Nor under any axi subapp (e.g. `axi apps ...`).
+        for group in axi_mod.app.registered_groups:
+            sub = {c.name for c in group.typer_instance.registered_commands}
+            assert "run" not in sub
+            assert "exec" not in sub
+
+
+class TestNoMutatingAxiSelfUpdate:
+    """The mutating ``cwcli axi self-update`` is deliberately deferred; only the
+    READ-ONLY ``--check`` form ships. ``--check`` is a REQUIRED option, so the verb
+    can never upgrade the tool an agent is executing from mid-session. This test
+    keeps the mutating path unreachable a decision, not an oversight."""
+
+    def test_axi_self_update_requires_check(self):
+        # `self-update` is registered, but `--check` is a required typer.Option, so
+        # there is no mutating path - the OptionInfo carries the Ellipsis sentinel.
+        import inspect
+
+        cmd = next(c for c in axi_mod.app.registered_commands if c.name == "self-update")
+        check_default = inspect.signature(cmd.callback).parameters["check"].default
+        assert "--check" in check_default.param_decls
+        assert check_default.default is ...
+
+    def test_axi_self_update_without_check_is_usage_error(self):
+        result = runner.invoke(axi_mod.app, ["self-update"])
+        assert result.exit_code == 2
+        assert "--check" in result.stdout
+
+
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))
