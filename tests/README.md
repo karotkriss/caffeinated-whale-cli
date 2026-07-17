@@ -80,7 +80,7 @@ The real-Docker E2E is Linux-only; Windows/macOS-specific code stays in the unit
 
 ## Test Files
 
-As of 0.37.0 (unreleased), `tests/` holds 80 `test_*.py` suites totaling 1389 tests in the
+As of 0.37.0 (unreleased), `tests/` holds 80 `test_*.py` suites totaling 1390 tests in the
 `unit` tier (measured with `uv run pytest --cov`). Run `ls tests/` for the
 authoritative current list; see [../docs/testing/README.md](../docs/testing/README.md)
 for the per-area breakdown.
@@ -104,6 +104,13 @@ features honcho's all-or-nothing model made impossible: supervisord as the live
 supervisor, `cwcli restart --process`/`cwcli axi restart --process` cycling one program
 while its siblings keep their pids, auto-heal after a killed process, `cwcli logs
 --process`, and the unknown-process usage error.
+`test_restore_e2e.py` is batch 11's full-lifecycle proof for cwcli's most destructive
+path (`migrate-restore-core`): a cache-free DB-table marker (seed ORIGINAL ->
+`cwcli backup` -> mutate to MUTATED -> `cwcli restore` -> assert ORIGINAL is back)
+proves the restore genuinely drops-and-recreates the DB, in both the non-interactive
+(`--latest --yes --mariadb-root-password`) and interactive (pty menu + destructive
+confirm + credential prompts) modes, plus `--no-migrate`, the non-TTY refusals, and
+the flag mutual exclusions.
 
 ### `test_completion_utils.py`
 Tests for tab completion functionality.
@@ -127,7 +134,7 @@ Tests for tab completion functionality.
 
 ## Test Coverage
 
-Current overall coverage at 0.37.0, unreleased (1389 tests across 80 test files, ~70% overall).
+Current overall coverage at 0.37.0, unreleased (1390 tests across 80 test files, ~70% overall).
 
 ### Covered Modules
 - ✅ `utils/completion_utils.py` - 92% (7 missing lines)

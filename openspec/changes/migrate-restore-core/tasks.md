@@ -34,10 +34,10 @@
 
 ## 6. E2E on a real instance, BOTH modes (captain destructive-delete standard)
 
-- [ ] 6.1 MEMORY-SERIALIZE first: `docker ps --format '{{.Names}}' | grep cwe2e` - if any non-mine `cwe2e-` container exists, append `paused: holding E2E for sibling cwe2e- instances to clear` and re-check on a slow cadence until gone.
-- [ ] 6.2 One throwaway isolated instance (`cwe2e-` prefix, `CWCLI_HOME` isolation per skill `cwcli-e2e-testing`), against the worktree's OWN editable install, reused throughout and torn down IMMEDIATELY at the end; no broad Docker cleanups; disk pressure means stop and report blocked.
-- [ ] 6.3 Real full lifecycle: `cwcli init` -> seed real data -> `cwcli backup` -> mutate the site -> `cwcli restore` and verify the restore is GENUINE (the seeded data is back, the DB is at the backup's state). Interactive (pty, `ESC[?2004h` awaited: menu select, `y`+Enter destructive confirm, credential prompts) AND non-interactive (`--latest --yes --mariadb-root-password`). Confirm migrate + restart ran and the site serves.
-- [ ] 6.4 Targeted legs: the non-TTY-no-selector refusal (exit 1); the destructive-decline exit 1; `--backup-file` selection; the origin-mismatch warning; `--no-migrate`; the `--send`/`--receive` exclusion and `--latest`/`--backup-file` exclusion (fast, no P2P peer needed).
+- [x] 6.1 MEMORY-SERIALIZE first: `docker ps --format '{{.Names}}' | grep cwe2e` - if any non-mine `cwe2e-` container exists, append `paused: holding E2E for sibling cwe2e- instances to clear` and re-check on a slow cadence until gone.
+- [x] 6.2 One throwaway isolated instance (`cwe2e-` prefix, `CWCLI_HOME` isolation per skill `cwcli-e2e-testing`), against the worktree's OWN editable install, reused throughout and torn down IMMEDIATELY at the end; no broad Docker cleanups; disk pressure means stop and report blocked.
+- [x] 6.3 Real full lifecycle: `cwcli init` -> seed real data -> `cwcli backup` -> mutate the site -> `cwcli restore` and verify the restore is GENUINE (the seeded data is back, the DB is at the backup's state). Interactive (pty, `ESC[?2004h` awaited: menu select, `y`+Enter destructive confirm, credential prompts) AND non-interactive (`--latest --yes --mariadb-root-password`). Confirm migrate + restart ran and the site serves.
+- [x] 6.4 Targeted legs: the non-TTY-no-selector refusal (exit 1); the destructive-decline exit 1; `--backup-file` selection; the origin-mismatch warning; `--no-migrate`; the `--send`/`--receive` exclusion and `--latest`/`--backup-file` exclusion (fast, no P2P peer needed).
 - [ ] 6.5 Re-run AFTER the no-mistakes pipeline and after any review fixes (the standard: review fixes are a trigger, not an exemption).
 
 ## 7. Docs and memory
