@@ -5,30 +5,30 @@
 
 ## 1. Characterization first: surviving behavior pinned green BEFORE anything moves
 
-- [ ] 1.1 Characterization tests, green against UNMIGRATED code, committed separately (the batch 4 discipline), for everything the proposal table marks unchanged or frozen: cache clear single-project semantics, `--all --yes` and the non-TTY refusal (exit 1), `cache list` output, `auto-inspect status` fields, `logs -n` tail, `stop` idempotency, `tips enable/disable`, and each frozen alias's stdout + exit codes (`start` refuse-when-disabled above all, since installed boot units rely on it).
-- [ ] 1.2 Record the driven evidence for the behavior deltas (F3 partial mutation, F4 conflicting clear, F9 garbage add-path, F10 exit codes) as failing-today assertions so the fixes flip them green.
+- [x] 1.1 Characterization tests, green against UNMIGRATED code, committed separately (the batch 4 discipline), for everything the proposal table marks unchanged or frozen: cache clear single-project semantics, `--all --yes` and the non-TTY refusal (exit 1), `cache list` output, `auto-inspect status` fields, `logs -n` tail, `stop` idempotency, `tips enable/disable`, and each frozen alias's stdout + exit codes (`start` refuse-when-disabled above all, since installed boot units rely on it).
+- [x] 1.2 Record the driven evidence for the behavior deltas (F3 partial mutation, F4 conflicting clear, F9 garbage add-path, F10 exit codes) as failing-today assertions so the fixes flip them green.
 
 ## 2. The core slice
 
-- [ ] 2.1 `core/config.py`: `ConfigReport`/`SearchPathChange`/`TipsState`/`CachedProjectDTO`/`CacheClearOutcome` DTOs (frozen, plain data) + `show_config`, `add_search_path` (expanduser, absolute check -> `CwcliError(USAGE)`, normalization before dedup), `remove_search_path`, `set_tips`, `cached_projects`, `clear_cache` (both/neither target -> `USAGE`; all without consent -> `NEEDS_CHOICE` `confirm_clear`).
-- [ ] 2.2 `core/auto_inspect.py`: `AutoInspectState`/`AutoInspectOutcome`/`LogTail` DTOs + `enable` (validate-all-first, single write, start, hook sync - the F3 fix is structural), `disable` (stop + flag + hook removal, actions reported on the DTO), `stop`, `status`, `log_tail`; mechanics stay in `utils/auto_inspect.py`/`utils/startup.py`, failures surface as `CwcliError(INTERNAL)`. The two Known-hazards entries are NOT touched.
-- [ ] 2.3 `tests/test_core_config.py` + `tests/test_core_auto_inspect.py`: every branch, the `NEEDS_CHOICE` fork, asdict-is-plain-data, "the core prints nothing at all"; all against a `tmp_path` `CWCLI_HOME`, never the real one.
+- [x] 2.1 `core/config.py`: `ConfigReport`/`SearchPathChange`/`TipsState`/`CachedProjectDTO`/`CacheClearOutcome` DTOs (frozen, plain data) + `show_config`, `add_search_path` (expanduser, absolute check -> `CwcliError(USAGE)`, normalization before dedup), `remove_search_path`, `set_tips`, `cached_projects`, `clear_cache` (both/neither target -> `USAGE`; all without consent -> `NEEDS_CHOICE` `confirm_clear`).
+- [x] 2.2 `core/auto_inspect.py`: `AutoInspectState`/`AutoInspectOutcome`/`LogTail` DTOs + `enable` (validate-all-first, single write, start, hook sync - the F3 fix is structural), `disable` (stop + flag + hook removal, actions reported on the DTO), `stop`, `status`, `log_tail`; mechanics stay in `utils/auto_inspect.py`/`utils/startup.py`, failures surface as `CwcliError(INTERNAL)`. The two Known-hazards entries are NOT touched.
+- [x] 2.3 `tests/test_core_config.py` + `tests/test_core_auto_inspect.py`: every branch, the `NEEDS_CHOICE` fork, asdict-is-plain-data, "the core prints nothing at all"; all against a `tmp_path` `CWCLI_HOME`, never the real one.
 
 ## 3. The frontend rework
 
-- [ ] 3.1 `commands/config.py` thins to renderers per the (captain-picked) proposal table: `show [--json]`, `paths`/`paths add`/`paths remove [--json]`, bare-path `path`/`cache path`, `cache clear` target validation (exit 2 rows), `cache list --json`, `auto-inspect enable/disable/stop/status [--json]/logs` (exit-1 fix), `tips enable/disable`, optional `edit`.
-- [ ] 3.2 Frozen aliases registered `hidden=True` with the stderr deprecation line (wording mirrors `cwcli update`'s), byte-identical behavior via the utils they call today; the `add-path`/`remove-path` validation exception applied and tested.
+- [x] 3.1 `commands/config.py` thins to renderers per the (captain-picked) proposal table: `show [--json]`, `paths`/`paths add`/`paths remove [--json]`, bare-path `path`/`cache path`, `cache clear` target validation (exit 2 rows), `cache list --json`, `auto-inspect enable/disable/stop/status [--json]/logs` (exit-1 fix), `tips enable/disable`, optional `edit`.
+- [x] 3.2 Frozen aliases registered `hidden=True` with the stderr deprecation line (wording mirrors `cwcli update`'s), byte-identical behavior via the utils they call today; the `add-path`/`remove-path` validation exception applied and tested.
 - [ ] 3.3 Interactive + non-interactive both verified for the one prompting subcommand (cache clear `--all`): pty-driven confirm (accept and decline, awaiting the raw-mode marker) and the non-TTY `--yes`/refusal pair, per the captain standard.
 
 ## 4. The axi verb and the cross-cutting shell
 
-- [ ] 4.1 `cwcli axi config` in `commands/axi.py`: one TOON document from `ConfigReport`, exit 0/1, no `--json`, no mutating flags; `tests/test_axi_config.py` covers the document shape (via `assert_is_one_toon_document`), the exit mapping, and the registry assertion that no config-mutating verb exists.
-- [ ] 4.2 Regenerate `skills/cwcli/SKILL.md` via `scripts/build_skill.py` (never hand-edit); `tests/test_axi_skill.py --check` stays green.
+- [x] 4.1 `cwcli axi config` in `commands/axi.py`: one TOON document from `ConfigReport`, exit 0/1, no `--json`, no mutating flags; `tests/test_axi_config.py` covers the document shape (via `assert_is_one_toon_document`), the exit mapping, and the registry assertion that no config-mutating verb exists.
+- [x] 4.2 Regenerate `skills/cwcli/SKILL.md` via `scripts/build_skill.py` (never hand-edit); `tests/test_axi_skill.py --check` stays green.
 
 ## 5. Docs and ledger
 
-- [ ] 5.1 README: rewrite the `config` sections to the new surface, with the deprecation table (old -> new -> removal horizon) and the boot-unit note; `config show --json` and `axi config` examples.
-- [ ] 5.2 CLAUDE.md ledger entry + `cwcli-core-axi` skill note (new core modules, the aliases-bypass-core decision, the axi deferral); `tests/README.md` coverage map; `docs/technical/README.md` module list.
+- [x] 5.1 README: rewrite the `config` sections to the new surface, with the deprecation table (old -> new -> removal horizon) and the boot-unit note; `config show --json` and `axi config` examples.
+- [x] 5.2 CLAUDE.md ledger entry + `cwcli-core-axi` skill note (new core modules, the aliases-bypass-core decision, the axi deferral); `tests/README.md` coverage map; `docs/technical/README.md` module list.
 
 ## 6. Suite health and E2E
 
@@ -40,5 +40,8 @@
 ## 7. Explicitly deferred, so it cannot be misread as forgotten
 
 - [ ] 7.1 Removal of the frozen aliases: not before 1.0 and no earlier than two minors after this ships; file the follow-up when this merges.
+  NOTE (2026-07-16): horizon recorded in README's "Deprecated `config` spellings" table and the AGENTS.md ledger entry; the follow-up issue is filed at merge time, not as code in this change.
 - [ ] 7.2 Mutating `axi config` verbs and `axi config cache list`: deliberately not built (design Decision 6); revisit only on agent-need evidence.
+  NOTE (2026-07-16): the deferral is asserted by `tests/test_axi_config.py::TestNoMutatingAxiConfigVerbs`, so it cannot be misread as forgotten; no code was written for it.
 - [ ] 7.3 The Known-hazards auto-inspect entries (PID reuse, SIGTERM re-entry): stay on the board, their own review when picked up.
+  NOTE (2026-07-16): confirmed untouched - `utils/auto_inspect.py`'s signal/PID mechanics were not modified by this change; both entries remain on the AGENTS.md Known-hazards board.
