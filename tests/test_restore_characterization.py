@@ -17,7 +17,6 @@ container), the lazily-imported ``commands.start._start_project`` restart, and
 ``questionary`` / ``sys.stdin`` (frontend UX that never moves to the core).
 """
 
-from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
