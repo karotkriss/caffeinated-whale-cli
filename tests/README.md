@@ -80,7 +80,7 @@ The real-Docker E2E is Linux-only; Windows/macOS-specific code stays in the unit
 
 ## Test Files
 
-As of 0.37.0 (unreleased), `tests/` holds 78 `test_*.py` suites totaling 1357 tests in the
+As of 0.37.0 (unreleased), `tests/` holds 80 `test_*.py` suites totaling 1390 tests in the
 `unit` tier (measured with `uv run pytest --cov`). Run `ls tests/` for the
 authoritative current list; see [../docs/testing/README.md](../docs/testing/README.md)
 for the per-area breakdown.
@@ -104,6 +104,13 @@ features honcho's all-or-nothing model made impossible: supervisord as the live
 supervisor, `cwcli restart --process`/`cwcli axi restart --process` cycling one program
 while its siblings keep their pids, auto-heal after a killed process, `cwcli logs
 --process`, and the unknown-process usage error.
+`test_restore_e2e.py` is batch 11's full-lifecycle proof for cwcli's most destructive
+path (`migrate-restore-core`): a cache-free DB-table marker (seed ORIGINAL ->
+`cwcli backup` -> mutate to MUTATED -> `cwcli restore` -> assert ORIGINAL is back)
+proves the restore genuinely drops-and-recreates the DB, in both the non-interactive
+(`--latest --yes --mariadb-root-password`) and interactive (pty menu + destructive
+confirm + credential prompts) modes, plus `--no-migrate`, the non-TTY refusals, and
+the flag mutual exclusions.
 
 ### `test_completion_utils.py`
 Tests for tab completion functionality.
@@ -127,7 +134,7 @@ Tests for tab completion functionality.
 
 ## Test Coverage
 
-Current overall coverage at 0.37.0, unreleased (1357 tests across 78 test files, ~70% overall).
+Current overall coverage at 0.37.0, unreleased (1390 tests across 80 test files, ~70% overall).
 
 ### Covered Modules
 - ✅ `utils/completion_utils.py` - 92% (7 missing lines)
@@ -135,7 +142,7 @@ Current overall coverage at 0.37.0, unreleased (1357 tests across 78 test files,
 - ✅ `utils/db_utils.py` - ~68% (`test_db_security`, `test_config_validation`)
 - ✅ `utils/auto_inspect.py` - first-ever dedicated suite (`test_auto_inspect`: the Windows `WaitForSingleObject`-based `_pid_alive` probe, the fork-unavailable subprocess fallback and its Windows-path bootstrap source, `_spawn_detached` routing the child's stderr to the log file instead of `DEVNULL`, `_log(exc_info=True)` recording the traceback, the `int(config.get("interval"))` coercion, and stale-PID-file cleanup)
 - ✅ `commands/inspect.py` (renderer) + `core/inspect.py` (the tier machine + cache write) - `test_inspect_characterization` is the green-before net (committed against unmigrated code: byte-identical `--json` per tier incl. the gathered-vs-cache-read key-order swap, the persisted cache dict shape, T2 passivity on a stopped project even under `--yes`, the T3 `--yes` auto-start and non-TTY refusal, the removed `--show-apps` flag (rejected as unknown), the tree's "(default)" order); `test_core_inspect` pins the envelope AT THE CORE (every tier branch, `confirm_start` at call time, `offer_choice=False` -> `NOT_RUNNING`, drift-degrade without persisting, the `errors="replace"` decode and `CwcliError(DOCKER)` fan-out wrap, core silence, asdict-is-plain-data, config content never in the typed report); `test_inspect_partial_refresh`/`test_inspect_label_recovery` re-pointed with their subject. See `openspec/changes/migrate-inspect-core`.
-- ✅ `commands/restore.py` - ~43% (`test_restore_safety`, `test_restore_inspect_fixes`)
+- ✅ `core/restore.py` + the reseated `commands/restore.py` renderer - the plan/apply split (batch 11, `migrate-restore-core`): `test_core_restore` pins the envelope AT THE CORE (both choice surfaces - `select_backup` and `confirm_restore`; the tri-mode selection; secret-in-`environment=` and the exec arg order on both paths; the migrate-failure `WARNING`/`migrate_ok=False`; the encryption-key merge; the streamed `put_archive`/`get_archive` copies; `receive_plan`'s copy-in + no-database refusal; the hard-failure `PRECONDITION`; invalid-username `USAGE`; core silence; asdict-is-plain-data; origin mismatch; and the deliberately ABSENT `axi restore` verb asserted against the registry - DEFERRED, Decision 9); `test_restore_characterization` is the green-before net (normal-path exec arg order + secret in `environment=`, the encryption-key merge, the migrate-then-restart order + migrate-failure exit, the flag mutual exclusions), re-pointed at the migrated seams; `test_restore_safety` (the receive confirm/origin/password-off-argv/missing-apps + the normal-path selectors/exit-codes) and `test_restore_inspect_fixes` (the six restore+inspect bugs) re-pointed with their subjects, the confirm-count assertion now 1 BY DESIGN (the four confirms collapsed into one shared `_gate`). See `openspec/changes/migrate-restore-core`.
 - ✅ `commands/rm.py` - ~84% (`test_rm_safety`, `test_rm_truth`, `test_rm_stopped`, `test_rm_stopped_backup`)
 - ✅ `core/init.py` + the reseated `commands/init.py` renderer - (`test_init_characterization` is the green-before net (committed against unmigrated code through migration-surviving seams - `core.docker`, `config_utils`/`db_utils` module attributes, `subprocess`/`urllib`, the SDK exec surface, a genuinely occupied socket - so it passes unchanged on both sides): the 10-exec order and exact command strings, secrets-only-on-new-site `environment=`, skip-on-exists gating, the port-conflict three-line error, the non-interactive refusals, the ENOSPC drained-exec message, the cache clear, the compose customization + Docker Hub fail-open, the add-path stdout line on both outcomes; `test_core_init` pins the envelope AT THE CORE: the three choice surfaces (`confirm_start` on both stages, the NEW `confirm_reuse_bench`), the tri-state `reuse_bench` matrix, the Decision 3 secret audit (no event/DTO/warning/command-echo trace carries a value), exec order, version gating incl. the v13 setuptools pin and soft-fail warnings, the bounded readiness poll, the honest lost-stream `DOCKER` error where `exit code None` used to print, core silence, asdict-is-plain-data, and the deliberately ABSENT `axi init` verb asserted against the registry (DEFERRED, Decision 9); `test_init_reuse_bench` (the frontend prompt loop), `test_init_admin_password` (generation/refusal/print-once + the env-transport re-pointed at the core), `test_init_frappe_version` (resolvers re-pointed; the ref crossing the frontend->core seam), and `test_init_mariadb_flag` re-pointed with their subjects). See `openspec/changes/migrate-init-core`.
 - ✅ `commands/apps.py` + `commands/update.py` app-update path - (`test_apps`: both modes, multi-site fan-out, frappe reset, `update` deprecation, the summary reported from the `finally` surviving a mid-fan-out stream loss with both stuck sites' remediation intact, and the `sites_to_migrate`-gated abort not firing on a bare `--site` refusal)
