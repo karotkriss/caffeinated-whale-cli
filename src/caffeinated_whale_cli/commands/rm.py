@@ -1,1056 +1,58 @@
 """
 Remove (delete) a Frappe project and its containers.
 
-This command stops and removes all containers for a project, and optionally
-removes associated volumes. Before removal:
-1. Re-caches the project to get accurate site information
-2. Creates database backups for all sites
-3. Archives project configuration to ~/.cwcli/archive (or $CWCLI_HOME/archive
-   when the CWCLI_HOME override is set)
+The destructive logic - the verified copy-out backup gate, the container/volume/
+directory removal, and the honest-exit accounting - lives in ``core.remove``
+(``core/rm.py``); this module is the human renderer over it. It keeps the argv
+parsing, the confirm UX, the stopped-project start -> back up -> delete
+orchestration (which prompts, so it stays outside the removal spinner and off the
+prompt-free core), and the run-state reads that drive it.
 """
 
-import hashlib
-import io
-import json
-import re
-import shutil
 import sys
-import tarfile
 import time
-from collections.abc import Iterator
-from datetime import datetime
-from pathlib import Path
 
 import questionary
 import typer
 
-from ..utils import bench_sites, cache, db_utils
+from ..core import rm as core_rm
+from ..core.errors import CwcliError
+from ..utils import cache
 from ..utils.completion_utils import complete_project_names
-from ..utils.config_utils import PROJECTS_DIR, cwcli_home
 from ..utils.console import console, stderr_console
-from ..utils.docker_utils import (
-    get_project_containers,
-    get_project_volumes,
-    handle_docker_errors,
-)
+from ..utils.docker_utils import get_project_containers
 
 app = typer.Typer(help="Remove a Frappe project and its containers.")
 
-# Marker in a Frappe backup filename that identifies the database dump - the one
-# artifact a "backup" cannot be trusted without (Frappe names it
-# ``<timestamp>-<site>-database.sql.gz``). Matched case-insensitively so an
-# uncompressed ``.sql`` variant is still recognised.
-_DB_DUMP_MARKER = "database.sql"
 
+class _RmRenderer:
+    """Renders ``core.remove``'s typed events in this CLI's historical styling.
 
-def _is_safe_project_dir(project_dir: Path) -> bool:
-    """
-    Return True only if ``project_dir`` resolves to a path strictly inside
-    ``PROJECTS_DIR`` (a real child, never ``PROJECTS_DIR`` itself or an ancestor).
-
-    This is the last-line guard against a ``project_name`` that escapes the
-    projects root once joined - ``PROJECTS_DIR / ".."`` resolves to the parent
-    cwcli-state directory (``~/.cwcli`` by default, or ``$CWCLI_HOME`` when
-    that override is set) that holds every project plus the cache and config,
-    and an absolute component resets the join entirely. Any ``rmtree``/archive
-    of an escaped path could wipe unrelated data, so callers must gate on this
-    before touching the filesystem.
-    """
-    try:
-        root = PROJECTS_DIR.resolve()
-        target = project_dir.resolve()
-    except OSError:
-        return False
-    return target != root and root in target.parents
-
-
-def _is_valid_project_name(name: str) -> bool:
-    """
-    Reject project names that are not a single, safe directory entry under
-    ``PROJECTS_DIR``.
-
-    A project name is only ever one directory beneath the projects root. Empty,
-    ``.``, ``..``, absolute, or separator-bearing names let a ``pathlib`` join
-    escape that root (see :func:`_is_safe_project_dir`), so ``cwcli rm ..`` could
-    otherwise archive-and-``rmtree`` the entire cwcli-state tree (``~/.cwcli`` by
-    default, or ``$CWCLI_HOME`` when that override is set). Validate before any
-    filesystem or volume operation.
-    """
-    if not name or name in (".", ".."):
-        return False
-    if "/" in name or "\\" in name or "\0" in name:
-        return False
-    if Path(name).is_absolute():
-        return False
-    return _is_safe_project_dir(PROJECTS_DIR / name)
-
-
-def _list_sites(container, bench_path: str) -> list[str] | None:
-    """
-    Return the real Frappe sites under ``{bench_path}/sites`` (fail-safe).
-
-    Thin wrapper over the canonical :func:`bench_sites.list_sites` so ``rm`` and
-    ``inspect`` share one site-detection implementation. A real site is a
-    directory containing a ``site_config.json``; a stray entry like
-    ``currentsite.txt`` is never a site. Detection is fail-safe (anything
-    ambiguous is treated as a real site) so ``rm`` never deletes a site's volume
-    without first backing it up. See :mod:`..utils.bench_sites`.
-
-    Returns the list of site names (possibly empty), or ``None`` if the sites
-    directory itself could not be listed.
-    """
-    return bench_sites.list_sites(container, bench_path)
-
-
-def _bench_archive_slug(bench_path: str) -> str:
-    """Return a short safe slug for a bench path, for use in archive directory
-    namespacing.
-
-    Two benches in the same instance may share a site name (e.g. both use the
-    frappe-docker default ``development.localhost``), so their backup artifacts
-    must land in distinct archive subdirectories.  This function hashes the full
-    bench path to produce a short deterministic slug that is safe across
-    platforms.
-    """
-    safe_basename = re.sub(
-        r"[^a-zA-Z0-9_-]", "_", bench_path.rstrip("/").rsplit("/", 1)[-1] or "bench"
-    )
-    short_hash = hashlib.sha256(bench_path.encode()).hexdigest()[:8]
-    return f"{safe_basename}_{short_hash}"
-
-
-class _ChunkStreamReader(io.RawIOBase):
-    """Adapt docker-py's ``get_archive`` byte-chunk iterator to a readable
-    binary stream.
-
-    ``get_archive`` yields the artifact's tar wrapper in chunks; wrapping those
-    chunks in this reader lets :mod:`tarfile` consume the tar incrementally
-    (streaming mode) so a multi-GB backup artifact is never buffered whole in
-    host RAM.
+    Wraps the live ``status`` spinner handle so ``RmStep`` events update its
+    label. ``RmNotice`` is a dim stdout line, ``RmWarning`` a yellow stderr
+    warning (with an optional dim hint), ``RmError`` a red stderr error, and
+    ``RmTrace`` a verbose-only dim stderr diagnostic - reproducing exactly what
+    ``_remove_project`` used to print inline.
     """
 
-    def __init__(self, chunks: Iterator[bytes]) -> None:
-        super().__init__()
-        self._chunks = iter(chunks)
-        self._buf = b""
-
-    def readable(self) -> bool:
-        return True
-
-    def readinto(self, b) -> int:
-        if not self._buf:
-            try:
-                self._buf = next(self._chunks)
-            except StopIteration:
-                return 0
-        n = min(len(b), len(self._buf))
-        b[:n] = self._buf[:n]
-        self._buf = self._buf[n:]
-        return n
-
-
-def _stream_container_file(
-    container,
-    source_path: str,
-    dest_file: Path,
-    chunk_size: int = 1024 * 1024,
-) -> bool:
-    """Copy a single file out of ``container`` at ``source_path`` to the host
-    ``dest_file``, streaming in fixed-size chunks.
-
-    Uses ``get_archive`` (a tar stream) and extracts the single member
-    incrementally, so a multi-GB ``bench backup --with-files`` artifact is
-    never materialised in host RAM as one blob (the reason the earlier
-    whole-file ``cat`` copy was replaced).
-
-    Returns True only on a fully-written copy. Any failure - a missing/
-    unreadable file (``get_archive`` raises), a tar/read error, or a truncated
-    stream (bytes written do not match the member size) - returns False, so the
-    caller can keep the "a backup missing any part is not trusted" fail-closed
-    semantics.
-    """
-    try:
-        stream, _stat = container.get_archive(source_path)
-        reader = io.BufferedReader(_ChunkStreamReader(stream))
-        with tarfile.open(fileobj=reader, mode="r|") as tar:
-            for member in tar:
-                if not member.isfile():
-                    continue
-                extracted = tar.extractfile(member)
-                if extracted is None:
-                    return False
-                written = 0
-                with open(dest_file, "wb") as out:
-                    while True:
-                        chunk = extracted.read(chunk_size)
-                        if not chunk:
-                            break
-                        out.write(chunk)
-                        written += len(chunk)
-                # A truncated stream yields fewer bytes than the header
-                # promised: fail closed rather than trust a short copy.
-                return written == member.size
-    except Exception:
-        return False
-    # No regular-file member in the archive - nothing was copied.
-    return False
-
-
-def _backup_sites(
-    project_name: str,
-    container,
-    bench_path: str,
-    archive_dir: Path,
-    verbose: bool = False,
-) -> bool:
-    """
-    Backup all sites in the bench before removal.
-
-    Args:
-        project_name: Name of the project
-        container: Docker container to run backup commands in
-        bench_path: Path to bench directory inside container
-        archive_dir: Directory to save backups to
-        verbose: Enable verbose output
-
-    Returns:
-        True only if EVERY site was fully backed up with its database dump
-        confirmed present and non-empty on the host archive directory; False if
-        any site's backup failed or its dump did not land. A partial success is
-        reported as False so the caller never destroys data for a site whose
-        backup is missing.
-    """
-    try:
-        # Get the list of real sites (directories with a site_config.json).
-        sites = _list_sites(container, bench_path)
-
-        if sites is None:
-            if verbose:
-                stderr_console.print(
-                    f"[dim]VERBOSE: Could not list sites directory: {bench_path}/sites[/dim]"
-                )
-            return False
-
-        if not sites:
-            if verbose:
-                stderr_console.print("[dim]VERBOSE: No sites found to backup[/dim]")
-            return True
-
-        # Create backups directory
-        backups_dir = archive_dir / "backups"
-        backups_dir.mkdir(exist_ok=True)
-
-        backed_up_count = 0
-        failed_sites: list[str] = []
-        for site in sites:
-            if verbose:
-                stderr_console.print(f"[dim]VERBOSE: Backing up site '{site}'...[/dim]")
-
-            # Run bench backup command for the site
-            backup_cmd = f"cd {bench_path} && bench --site {site} backup --with-files"
-            exit_code, output = container.exec_run(f"sh -c '{backup_cmd}'", workdir=bench_path)
-
-            if exit_code != 0:
-                stderr_console.print(f"[yellow]Warning:[/yellow] Could not backup site '{site}'")
-                if verbose:
-                    stderr_console.print(
-                        f"[dim]VERBOSE: Backup command output: {output.decode('utf-8')}[/dim]"
-                    )
-                failed_sites.append(site)
-                continue
-
-            if verbose:
-                stderr_console.print(f"[dim]VERBOSE: Backup created for '{site}'[/dim]")
-
-            # A zero exit from `bench backup` only means the dump was written
-            # INSIDE the container (i.e. inside the volume we are about to
-            # delete). It is not a backup until the bytes are copied out to the
-            # host archive, so verify each expected artifact actually lands here
-            # and, critically, that the database dump is present and non-empty.
-            site_backup_dir = f"{bench_path}/sites/{site}/private/backups"
-            exit_code, ls_output = container.exec_run(f"ls -1t {site_backup_dir}")
-
-            if exit_code != 0:
-                stderr_console.print(
-                    f"[yellow]Warning:[/yellow] Could not list backups for site '{site}'"
-                )
-                failed_sites.append(site)
-                continue
-
-            backup_files = [f.strip() for f in ls_output.decode("utf-8").split("\n") if f.strip()]
-
-            # Select only THIS run's artifacts. `ls -1t` is newest-first and
-            # Frappe names every artifact of one run with a shared leading
-            # timestamp token (`<YYYYMMDD_HHMMSS>-<site>-<part>`), so the newest
-            # file's token identifies the current run. Verifying a fixed top-N
-            # window instead would bleed into prior runs, letting a stale, broken
-            # artifact falsely fail an otherwise complete fresh backup.
-            run_ts = backup_files[0].split("-", 1)[0] if backup_files else ""
-            current_files = [f for f in backup_files if f.split("-", 1)[0] == run_ts]
-
-            # Copy the most recent backups
-            site_archive_backups = backups_dir / site
-            site_archive_backups.mkdir(exist_ok=True)
-
-            db_dump_saved = False
-            copy_failed = False
-            for backup_file in current_files:
-                source_path = f"{site_backup_dir}/{backup_file}"
-                dest_file = site_archive_backups / backup_file
-
-                # Stream the artifact out in fixed-size chunks so a multi-GB
-                # `--with-files` backup is never held in host RAM as one blob.
-                if not _stream_container_file(container, source_path, dest_file):
-                    # An artifact we could not copy out (missing, read error, or
-                    # a truncated stream). Fail closed: a backup missing any of
-                    # its parts is not a trustworthy backup.
-                    copy_failed = True
-                    if verbose:
-                        stderr_console.print(
-                            f"[dim]VERBOSE: Could not copy {backup_file} to archive[/dim]"
-                        )
-                    continue
-
-                # Confirm the artifact actually landed on the host. The database
-                # dump additionally must be non-empty - an empty dump is no backup
-                # at all (other artifacts, e.g. a files tar, may legitimately be
-                # small, so only the dump is size-checked).
-                try:
-                    size = dest_file.stat().st_size
-                except OSError:
-                    size = 0
-
-                if _DB_DUMP_MARKER in backup_file.lower() and size > 0:
-                    db_dump_saved = True
-
-                if verbose:
-                    stderr_console.print(f"[dim]VERBOSE: Copied {backup_file} to archive[/dim]")
-
-            if db_dump_saved and not copy_failed:
-                backed_up_count += 1
-            else:
-                stderr_console.print(
-                    f"[yellow]Warning:[/yellow] Backup for site '{site}' was not fully copied to "
-                    "the host archive (missing or empty database dump)"
-                )
-                failed_sites.append(site)
-
-        if backed_up_count > 0:
-            console.print(f"  [dim]Backed up {backed_up_count} site(s) to {backups_dir}[/dim]")
-
-        # Success requires EVERY site to have a confirmed dump. Any failure means
-        # the caller must not delete data that was not safely captured.
-        return not failed_sites
-
-    except Exception as e:
-        if verbose:
-            stderr_console.print(f"[dim]VERBOSE: Backup failed: {e}[/dim]")
-        stderr_console.print(
-            f"[yellow]Warning:[/yellow] Could not backup sites for '{project_name}'"
-        )
-        return False
-
-
-def _archive_project_config(
-    project_name: str,
-    container,
-    bench_path: str,
-    archive_dir_override: Path | None = None,
-    verbose: bool = False,
-) -> bool:
-    """
-    Archive project configuration files to ~/.cwcli/archive (or
-    $CWCLI_HOME/archive when the CWCLI_HOME override is set) before removal.
-
-    Archives:
-    - docker-compose.yml (from container)
-    - site_config.json files (from all sites in the bench)
-
-    Args:
-        project_name: Name of the project
-        container: Docker container to extract files from
-        bench_path: Path to bench directory inside container
-        archive_dir_override: When set, use this directory directly instead of
-            creating a new timestamped one.  Used by the multi-bench backup loop
-            so config archives land in the same per-bench namespace as the DB
-            backups, preventing same-name collisions and stray archive dirs.
-        verbose: Enable verbose output
-
-    Returns:
-        True if archive successful, False otherwise
-    """
-    try:
-        # Determine archive directory.  When the caller provides one (e.g. from
-        # the multi-bench backup loop) use it directly so the config archive
-        # lands in the same per-bench namespace as the database backups.
-        if archive_dir_override is not None:
-            archive_dir = archive_dir_override
-        else:
-            archive_base = cwcli_home() / "archive"
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            archive_dir = archive_base / f"{project_name}_{timestamp}"
-        archive_dir.mkdir(parents=True, exist_ok=True)
-
-        if verbose:
-            stderr_console.print(f"[dim]VERBOSE: Archiving to {archive_dir}[/dim]")
-
-        # Archive docker-compose.yml from container's working directory
-        # Try common locations
-        compose_locations = [
-            "/workspace/frappe-bench/docker-compose.yml",
-            f"{bench_path}/docker-compose.yml",
-            "/docker-compose.yml",
-        ]
-
-        compose_archived = False
-        for compose_path in compose_locations:
-            exit_code, output = container.exec_run(f"cat {compose_path}")
-            if exit_code == 0:
-                compose_file = archive_dir / "docker-compose.yml"
-                compose_file.write_bytes(output)
-                if verbose:
-                    stderr_console.print(
-                        f"[dim]VERBOSE: Archived {compose_path} to {compose_file}[/dim]"
-                    )
-                compose_archived = True
-                break
-
-        if not compose_archived and verbose:
-            stderr_console.print("[dim]VERBOSE: Could not find docker-compose.yml to archive[/dim]")
-
-        # Archive site_config.json files from all real sites.
-        sites_dir = f"{bench_path}/sites"
-        sites = _list_sites(container, bench_path)
-
-        if sites:
-            configs_archived = 0
-            for site in sites:
-                site_config_path = f"{sites_dir}/{site}/site_config.json"
-                exit_code, output = container.exec_run(f"cat {site_config_path}")
-
-                if exit_code == 0:
-                    # Create site directory in archive
-                    site_archive_dir = archive_dir / site
-                    site_archive_dir.mkdir(exist_ok=True)
-
-                    # Save site_config.json
-                    config_file = site_archive_dir / "site_config.json"
-                    config_file.write_bytes(output)
-                    configs_archived += 1
-
-                    if verbose:
-                        stderr_console.print(
-                            f"[dim]VERBOSE: Archived {site_config_path} to {config_file}[/dim]"
-                        )
-
-            if configs_archived > 0:
-                if verbose:
-                    stderr_console.print(
-                        f"[dim]VERBOSE: Archived {configs_archived} site config(s)[/dim]"
-                    )
-
-        # Create archive metadata
-        metadata = {
-            "project_name": project_name,
-            "archived_at": datetime.now().isoformat(),
-            "bench_path": bench_path,
-        }
-
-        metadata_file = archive_dir / "archive_metadata.json"
-        metadata_file.write_text(json.dumps(metadata, indent=2))
-
-        console.print(f"  [dim]Configuration archived to {archive_dir}[/dim]")
-        return True
-
-    except Exception as e:
-        if verbose:
-            stderr_console.print(f"[dim]VERBOSE: Archive failed: {e}[/dim]")
-        return False
-
-
-def _remove_named_volumes(
-    project_name: str,
-    verbose: bool = False,
-    status=None,
-    failures: list[str] | None = None,
-) -> int:
-    """
-    Remove the named Docker Compose volumes for a project.
-
-    ``Container.remove(v=True)`` only removes a container's *anonymous* volumes.
-    The named volumes that frappe-docker creates (e.g. ``sites``, ``db-data``)
-    are labeled with the compose project and must be removed explicitly, or the
-    databases and sites survive removal despite what the user was told.
-
-    Args:
-        project_name: Name of the project whose volumes should be removed
-        verbose: Enable verbose output
-        status: Status context for spinner
-        failures: Optional list to append human-readable step failures to, so the
-            caller can report an accurate (non-zero) outcome when a volume could
-            not be enumerated or removed.
-
-    Returns:
-        Number of named volumes removed.
-    """
-    volumes = get_project_volumes(project_name)
-
-    if volumes is None:
-        stderr_console.print(
-            f"[yellow]Warning:[/yellow] Could not enumerate volumes for '{project_name}'; "
-            "some named volumes may remain."
-        )
-        if failures is not None:
-            failures.append(f"could not enumerate named volumes for '{project_name}'")
-        return 0
-
-    if not volumes:
-        if verbose:
-            stderr_console.print(f"[dim]VERBOSE: No named volumes found for '{project_name}'[/dim]")
-        return 0
-
-    removed = 0
-    for volume in volumes:
-        try:
-            if status:
-                status.update(f"[bold red]Removing volume '{volume.name}'...[/bold red]")
-            if verbose:
-                stderr_console.print(f"[dim]VERBOSE: Removing volume '{volume.name}'[/dim]")
-            volume.remove(force=True)
-            removed += 1
-        except Exception as e:
-            stderr_console.print(
-                f"[yellow]Warning:[/yellow] Could not remove volume '{volume.name}': {e}"
-            )
-            if failures is not None:
-                failures.append(f"could not remove volume '{volume.name}'")
-            if verbose:
-                stderr_console.print(f"[dim]VERBOSE: Exception: {e}[/dim]")
-
-    if removed > 0:
-        console.print(f"  [dim]Removed {removed} named volume(s) for '{project_name}'[/dim]")
-
-    return removed
-
-
-def _archive_project_directory(
-    project_name: str,
-    archive_dir: Path | None = None,
-    verbose: bool = False,
-) -> bool:
-    """
-    Archive the project's cwcli-managed configuration into ``archive_dir`` before
-    the local project directory is deleted.
-
-    Only the small, reliable ``conf/`` subdirectory of
-    ``PROJECTS_DIR/{project_name}/`` (``~/.cwcli/projects/{project_name}/`` by
-    default, or under ``$CWCLI_HOME`` when that override is set) is archived -
-    it holds the generated ``docker-compose.yml``, which is the cwcli instance
-    config and the one thing not recoverable from elsewhere. The rest of that
-    directory is the
-    frappe-docker devcontainer bind mount: a multi-hundred-MB ``frappe-bench``
-    whose virtualenv and node_modules contain dangling symlinks that do not
-    resolve on the host. Copying the whole tree both wastes space (its databases
-    and files are already captured by the live ``bench backup`` into this same
-    archive directory) and makes ``copytree`` raise on those dangling symlinks,
-    which previously aborted removal and left the named volume and project
-    directory behind - reintroducing issue #19 in real conditions.
-
-    The database/files safety net is therefore the ``bench backup`` output (under
-    ``archive_dir/backups/``); ``conf/`` is the config safety net archived here.
-
-    Args:
-        project_name: Name of the project whose configuration should be archived
-        archive_dir: Destination archive directory for the copy
-        verbose: Enable verbose output
-
-    Returns:
-        True if the copy succeeded or there was nothing to archive, False only
-        if the copy itself failed (so the caller can refuse to delete data that
-        was not safely archived).
-    """
-    project_dir = PROJECTS_DIR / project_name
-
-    # Last-line guard: never read/copy from a path that escapes the projects
-    # root. Refusing (False) makes the caller skip deletion, not proceed.
-    if not _is_safe_project_dir(project_dir):
-        stderr_console.print(
-            f"[bold red]Error:[/bold red] Refusing to archive '{project_dir}': path is outside "
-            f"the projects directory ({PROJECTS_DIR})."
-        )
-        return False
-
-    if not project_dir.exists() or archive_dir is None:
-        if verbose and not project_dir.exists():
-            stderr_console.print(
-                f"[dim]VERBOSE: No project directory to archive at {project_dir}[/dim]"
-            )
-        return True
-
-    conf_dir = project_dir / "conf"
-    if not conf_dir.is_dir():
-        # No cwcli-managed config to preserve (older or partial layout). There is
-        # nothing small and reliable to archive, so report success and let the
-        # caller proceed; the database/files safety net is the bench backup.
-        if verbose:
-            stderr_console.print(f"[dim]VERBOSE: No conf/ directory to archive at {conf_dir}[/dim]")
-        return True
-
-    try:
-        dest = archive_dir / "project_files" / "conf"
-        # symlinks=True + ignore_dangling_symlinks keeps the copy robust even if a
-        # config dir ever contains a (possibly dangling) symlink: links are copied
-        # as links rather than followed, so copytree never raises on them.
-        shutil.copytree(
-            conf_dir,
-            dest,
-            dirs_exist_ok=True,
-            symlinks=True,
-            ignore_dangling_symlinks=True,
-        )
-        if verbose:
-            stderr_console.print(f"[dim]VERBOSE: Archived project config to {dest}[/dim]")
-        return True
-    except Exception as e:
-        stderr_console.print(
-            f"[yellow]Warning:[/yellow] Could not archive project configuration for "
-            f"'{project_name}': {e}"
-        )
-        if verbose:
-            stderr_console.print(f"[dim]VERBOSE: Exception: {e}[/dim]")
-        return False
-
-
-def _delete_project_directory(
-    project_name: str,
-    verbose: bool = False,
-    failures: list[str] | None = None,
-) -> bool:
-    """
-    Delete the project's local directory at ``~/.cwcli/projects/{project_name}/``.
-
-    Must only be called after :func:`_archive_project_directory` has succeeded.
-    Without this step ``cwcli rm`` leaves the project lingering on disk - the
-    bug reported in issue #19.
-
-    Args:
-        project_name: Name of the project to remove the directory for
-        verbose: Enable verbose output
-        failures: Optional list to append a human-readable failure to when the
-            ``rmtree`` itself fails (as opposed to there being nothing to remove),
-            so the caller can report a non-zero outcome.
-
-    Returns:
-        True if a directory was removed, False if there was nothing to remove
-        or removal failed.
-    """
-    project_dir = PROJECTS_DIR / project_name
-
-    # Last-line guard before ``rmtree``: never delete a path that resolves
-    # outside the projects root. ``PROJECTS_DIR / ".."`` would otherwise wipe the
-    # entire cwcli-state tree (every project, the cache, config - ``~/.cwcli`` by
-    # default, or ``$CWCLI_HOME`` when that override is set).
-    if not _is_safe_project_dir(project_dir):
-        stderr_console.print(
-            f"[bold red]Error:[/bold red] Refusing to delete '{project_dir}': path is outside "
-            f"the projects directory ({PROJECTS_DIR})."
-        )
-        if failures is not None:
-            failures.append(
-                f"refused to delete path outside projects directory for '{project_name}'"
-            )
-        return False
-
-    if not project_dir.exists():
-        if verbose:
-            stderr_console.print(
-                f"[dim]VERBOSE: No project directory to remove at {project_dir}[/dim]"
-            )
-        return False
-
-    try:
-        shutil.rmtree(project_dir)
-        console.print(f"  [dim]Removed project directory {project_dir}[/dim]")
-        return True
-    except Exception as e:
-        stderr_console.print(
-            f"[yellow]Warning:[/yellow] Could not remove project directory '{project_dir}': {e}"
-        )
-        if failures is not None:
-            failures.append(f"could not remove project directory for '{project_name}'")
-        if verbose:
-            stderr_console.print(f"[dim]VERBOSE: Exception: {e}[/dim]")
-        return False
-
-
-@handle_docker_errors
-def _remove_project(
-    project_name: str,
-    remove_volumes: bool = False,
-    no_backup: bool = False,
-    verbose: bool = False,
-    status=None,
-):
-    """
-    The core logic for removing a single project's containers.
-
-    Args:
-        project_name: Name of the project to remove
-        remove_volumes: Whether to remove volumes as well
-        no_backup: Skip database backups
-        verbose: Enable verbose output
-        status: Status context for spinner
-
-    Returns:
-        A result dict with keys ``found`` (bool), ``orphan`` (bool, no
-        containers but volumes/dir remained), ``containers`` (int removed),
-        ``volumes`` (int removed), ``dir_removed`` (bool), ``backup_ok`` (bool -
-        True unless a backup was attempted and did not fully succeed), and
-        ``failures`` (list[str] - non-empty means a requested step failed and the
-        caller must exit non-zero).
-    """
-    result: dict = {
-        "found": False,
-        "orphan": False,
-        "containers": 0,
-        "volumes": 0,
-        "dir_removed": False,
-        "backup_ok": True,
-        "failures": [],
-    }
-
-    # Defense-in-depth: never operate on a name that escapes the projects root.
-    # The CLI already filters these, but guard here too so no internal caller can
-    # reach a destructive path with a ``.``/``..``/absolute/separator name.
-    if not _is_valid_project_name(project_name):
-        stderr_console.print(
-            f"[bold red]Error:[/bold red] Refusing to remove invalid project name "
-            f"{project_name!r}."
-        )
-        result["failures"].append(f"invalid project name {project_name!r}")
-        return result
-
-    containers = get_project_containers(project_name)
-
-    # None means a Docker connection error (distinct from an empty list). Do not
-    # attempt destructive cleanup when we cannot even see the project.
-    if containers is None:
-        stderr_console.print(
-            f"[bold red]Error:[/bold red] Could not connect to Docker to inspect "
-            f"'{project_name}'."
-        )
-        result["failures"].append(f"could not connect to Docker to inspect '{project_name}'")
-        return result
-
-    project_dir = PROJECTS_DIR / project_name
-    dir_existed = project_dir.exists()
-
-    is_orphan = not containers
-    if is_orphan:
-        # No containers left. The project may still have orphaned named volumes
-        # and/or a lingering local directory (a prior partial rm, an older
-        # cwcli, or a manual `docker rm`). Clean those up rather than refusing.
-        # If there is genuinely nothing left, treat it as a typo / not found.
-        orphan_volumes = get_project_volumes(project_name)
-        if not dir_existed and not orphan_volumes:
-            stderr_console.print(f"[bold red]Error:[/bold red] Project '{project_name}' not found.")
-            return result
-        result["orphan"] = True
-
-    result["found"] = True
-
-    if verbose:
-        stderr_console.print(
-            f"[dim]VERBOSE: Found {len(containers)} container(s) for '{project_name}'[/dim]"
-        )
-
-    # Create a single archive directory for this removal. Database backups,
-    # config archives, and a copy of the local project directory all land here
-    # so nothing is deleted without a safety copy first.
-    archive_base = cwcli_home() / "archive"
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    archive_dir = archive_base / f"{project_name}_{timestamp}"
-    archive_dir.mkdir(parents=True, exist_ok=True)
-
-    # Find frappe container for archiving and backup
-    frappe_container = None
-    for container in containers:
-        if container.labels.get("com.docker.compose.service") == "frappe":
-            frappe_container = container
-            break
-
-    # A live `bench backup` and the container-side config archive both shell into
-    # the frappe container via exec_run, which only works while it is running. A
-    # stopped frappe container is a normal rm case (the user simply never started
-    # it, or stopped it): do NOT attempt those exec-based steps against it - they
-    # would only emit confusing "could not backup/archive" warnings. The conf/
-    # safety net is copied host-side by _archive_project_directory below.
-    frappe_running = frappe_container is not None and frappe_container.status == "running"
-
-    # Backup and archive before removal
-    if frappe_running:
-        # Try to get bench paths from cache first
-        bench_paths = ["/workspace/frappe-bench"]  # default fallback
-        try:
-            cached_data = db_utils.get_cached_project_data(project_name)
-            if cached_data and cached_data.get("bench_instances"):
-                bench_paths = [b["path"] for b in cached_data["bench_instances"]]
-        except Exception as e:
-            if verbose:
-                stderr_console.print(
-                    f"[dim]VERBOSE: Could not read cache for '{project_name}': " f"{e}[/dim]"
-                )
-            try:
-                from ..core import inspect as core_inspect
-
-                discovered = core_inspect.discover_benches(frappe_container)
-                if discovered:
-                    bench_paths = discovered
-            except Exception as discover_err:
-                if verbose:
-                    stderr_console.print(
-                        f"[dim]VERBOSE: Live bench discovery also failed: " f"{discover_err}[/dim]"
-                    )
-            if bench_paths == ["/workspace/frappe-bench"]:
-                fallback_detail = f"falling back to default bench path '{bench_paths[0]}'"
-            else:
-                fallback_detail = f"discovered {len(bench_paths)} bench(es) live"
-            stderr_console.print(
-                f"[yellow]Warning:[/yellow] Could not read bench paths from cache "
-                f"for '{project_name}'; {fallback_detail}. Multi-bench instances may "
-                "not be fully backed up."
-            )
-
-        # Pre-compute per-bench archive directories.  For a single-bench instance
-        # the archive dir IS ``archive_dir`` (flat layout, easier to discover).
-        # For multi-bench, each bench gets a hash-suffixed namespace so
-        # same-named sites in different benches do not collide.
-        multi_bench = len(bench_paths) > 1
-        bench_archive_dirs: dict[str, Path] = {}
-        for bp in bench_paths:
-            bd = archive_dir
-            if multi_bench:
-                bd = bd / _bench_archive_slug(bp)
-            bench_archive_dirs[bp] = bd
-
-        # Backup ALL benches (not just the first). Each bench's sites are
-        # backed up and verified independently; the result is True only if
-        # EVERY bench fully backed up. Any single bench failure blocks volume
-        # deletion (the backup gate below).
-        if not no_backup:
-            all_backups_ok = True
-            for bp in bench_paths:
-                if status:
-                    status.update(
-                        f"[bold cyan]Backing up databases for bench '{bp}'...[/bold cyan]"
-                    )
-                bench_archive_dir = bench_archive_dirs[bp]
-                bench_archive_dir.mkdir(parents=True, exist_ok=True)
-                bench_ok = _backup_sites(
-                    project_name, frappe_container, bp, bench_archive_dir, verbose=verbose
-                )
-                if not bench_ok:
-                    all_backups_ok = False
-            result["backup_ok"] = all_backups_ok
-
-        # Archive configuration for each bench. A failed config archive is a
-        # warning only -- it does not block cache clearing (unlike backup,
-        # volume, or container failures which mean something was NOT deleted and
-        # should stay visible for retry). The backup gate above already protects
-        # the data.
-        for bp in bench_paths:
-            if status:
-                status.update(f"[bold cyan]Archiving configuration for bench '{bp}'...[/bold cyan]")
-            bench_archive_dir = bench_archive_dirs[bp]
-            bench_archive_dir.mkdir(parents=True, exist_ok=True)
-            config_ok = _archive_project_config(
-                project_name,
-                frappe_container,
-                bp,
-                archive_dir_override=bench_archive_dir,
-                verbose=verbose,
-            )
-            if not config_ok:
-                stderr_console.print(
-                    f"[yellow]Warning:[/yellow] Could not archive configuration "
-                    f"for bench '{bp}' -- the bench config may not be recoverable "
-                    f"from backup artifacts alone."
-                )
-    elif remove_volumes and not no_backup:
-        # No running frappe container, so a live `bench backup` is impossible -
-        # and this is the data-destroying path (--volumes without --no-backup).
-        # Mark the backup not-OK so the EARLY gate below aborts before anything is
-        # removed, keeping every byte intact. The CLI frontend (`rm()`) transiently
-        # starts a stopped project for its backup BEFORE calling this, so reaching
-        # here on the backup path means the project is an orphan (no container to
-        # start) or the transient start did not take - either way, fail closed
-        # rather than delete the databases with no backup. `--no-backup` remains
-        # the explicit escape hatch to delete without one.
-        result["backup_ok"] = False
-        if is_orphan:
-            stderr_console.print(
-                f"[yellow]Warning:[/yellow] '{project_name}' has no containers to start, so a "
-                "fresh database backup could not be taken."
-            )
-        else:
-            stderr_console.print(
-                f"[yellow]Warning:[/yellow] '{project_name}' is not running, so a fresh database "
-                "backup could not be taken."
-            )
-    else:
-        # --no-backup or --no-volumes: nothing data-bearing is destroyed without a
-        # backup, so it is safe to proceed with cleanup. Only the host-side conf/
-        # archive can be preserved (a live DB dump is impossible while stopped).
-        stderr_console.print(
-            f"[yellow]Warning:[/yellow] No container was running for '{project_name}', "
-            "so a fresh database backup could not be taken before cleanup."
-        )
-
-    # A verified live backup is the gate on destroying the named volumes. Evaluate
-    # it BEFORE removing any container so a failed backup aborts while the frappe
-    # container is still alive and a retry can still produce a backup. Removing
-    # containers first and only THEN blocking on the backup would leave an orphan:
-    # on the naive retry (`cwcli rm proj` again) there is no running container, so
-    # no backup is attempted, backup_ok defaults True, the gate passes, and the
-    # database volumes are deleted with NO backup - defeating C1. The gate is
-    # scoped to volume deletion: under --no-volumes no volume data is destroyed, so
-    # a failed backup does not abort; --no-backup opts out of the gate entirely.
-    backup_failed = remove_volumes and not no_backup and not result["backup_ok"]
-    if backup_failed:
-        stderr_console.print(
-            f"[yellow]Warning:[/yellow] Refusing to remove '{project_name}': a verified "
-            "database backup could not be created."
-        )
-        stderr_console.print(
-            "[dim]Resolve the backup failure and retry, or use --no-backup to remove "
-            "without a backup (the databases will be lost).[/dim]"
-        )
-        message = f"a verified database backup could not be created for '{project_name}'"
-        result["failures"].append(message)
-        return result
-
-    # Stop and remove each container
-    removed_count = 0
-    container_removal_failed = False
-    for container in containers:
-        # Bind a fallback name BEFORE reading ``container.name`` so the except
-        # handler can never hit an unbound ``container_name`` (a NameError):
-        # ``container.name`` is a docker-py property that can itself raise (e.g. a
-        # KeyError on missing attrs), and that raise must surface as a recorded
-        # container-removal failure, not a crash.
-        container_name = "<unknown>"
-        try:
-            container_name = container.name
-            container_status = container.status
-
-            if verbose:
-                stderr_console.print(
-                    f"[dim]VERBOSE: Processing container '{container_name}' (status: {container_status})[/dim]"
-                )
-
-            # Stop if running
-            if container_status == "running":
-                if status:
-                    status.update(f"[bold yellow]Stopping '{container_name}'...[/bold yellow]")
-                if verbose:
-                    stderr_console.print(
-                        f"[dim]VERBOSE: Stopping container '{container_name}'[/dim]"
-                    )
-                container.stop()
-
-            # Remove container
-            if status:
-                status.update(f"[bold red]Removing '{container_name}'...[/bold red]")
-            if verbose:
-                stderr_console.print(f"[dim]VERBOSE: Removing container '{container_name}'[/dim]")
-            container.remove(v=remove_volumes, force=True)
-            removed_count += 1
-
-        except Exception as e:
-            container_removal_failed = True
-            result["failures"].append(f"failed to remove container '{container_name}'")
-            stderr_console.print(
-                f"[bold red]Error:[/bold red] Failed to remove container '{container_name}': {e}"
-            )
-            if verbose:
-                stderr_console.print(f"[dim]VERBOSE: Exception: {e}[/dim]")
-
-    result["containers"] = removed_count
-
-    # Archive the local project directory BEFORE deleting anything. If the copy
-    # fails we refuse to delete the named volumes or the directory, so nothing
-    # that was not safely archived is destroyed.
-    if status:
-        status.update(f"[bold cyan]Archiving project directory for '{project_name}'...[/bold cyan]")
-    archived_ok = _archive_project_directory(project_name, archive_dir=archive_dir, verbose=verbose)
-
-    # Destroying data (the named volumes and the local directory) is gated on two
-    # remaining safety conditions here. If either did not hold, skip the
-    # destructive steps so nothing unrecoverable is lost:
-    #   1. every container was removed cleanly (a caught container-removal error
-    #      must not fall through to volume/dir destruction), and
-    #   2. the conf/ config archive succeeded.
-    # The third condition - a verified live database backup - is enforced EARLIER,
-    # as an abort before any container is removed (see above), so a failed backup
-    # never reaches this late gate and never tears down the containers a retry
-    # would need.
-    archive_failed = dir_existed and not archived_ok
-    gate_blocked = container_removal_failed or archive_failed
-
-    if gate_blocked:
-        reasons = []
-        if container_removal_failed:
-            reasons.append("one or more containers could not be removed")
-        if archive_failed:
-            reasons.append("its configuration could not be archived")
-        message = (
-            f"Skipping volume and directory removal for '{project_name}' because "
-            + " and ".join(reasons)
-            + "."
-        )
-        stderr_console.print(f"[yellow]Warning:[/yellow] {message}")
-        result["failures"].append(message)
-    else:
-        # Remove named compose volumes. Anonymous volumes were already handled by
-        # container.remove(v=remove_volumes) above, but the named volumes that
-        # hold the databases and sites must be removed explicitly or the data
-        # survives.
-        if remove_volumes:
-            if status:
-                status.update(f"[bold red]Removing volumes for '{project_name}'...[/bold red]")
-            result["volumes"] = _remove_named_volumes(
-                project_name, verbose=verbose, status=status, failures=result["failures"]
-            )
-
-        # Remove the local project directory (the cwcli instance of the
-        # project). This is deleted regardless of --no-volumes: it is config,
-        # not data, and leaving it behind is the lingering-project bug from
-        # issue #19.
-        if status:
-            status.update(
-                f"[bold red]Removing project directory for '{project_name}'...[/bold red]"
-            )
-        result["dir_removed"] = _delete_project_directory(
-            project_name, verbose=verbose, failures=result["failures"]
-        )
-
-    # Clear the cache only when NO step failed (`result["failures"]` empty). This
-    # covers both the gate-blocked case AND a post-gate failure inside the else
-    # branch - a named-volume removal that raised, a volume enumeration that
-    # errored, or a directory removal that failed all append to `failures`. In any
-    # of those the data-bearing volume or directory may survive, so keep the cache
-    # entry: the half-removed project stays visible in `ls`/`inspect` and can be
-    # retried, rather than vanishing while its data still occupies disk. On a clean
-    # full removal, orphan cleanup, or --no-volumes removal, `failures` is empty
-    # and the cache is cleared as before.
-    if not result["failures"] and (
-        removed_count > 0 or result["volumes"] > 0 or result["dir_removed"]
-    ):
-        if verbose:
-            stderr_console.print(f"[dim]VERBOSE: Clearing cache for '{project_name}'[/dim]")
-        db_utils.clear_cache_for_project(project_name)
-
-    return result
+    def __init__(self, status, *, verbose: bool):
+        self._status = status
+        self.verbose = verbose
+
+    def __call__(self, event) -> None:
+        if isinstance(event, core_rm.RmStep):
+            self._status.update(f"[bold {event.style}]{event.label}[/bold {event.style}]")
+        elif isinstance(event, core_rm.RmNotice):
+            console.print(f"  [dim]{event.text}[/dim]")
+        elif isinstance(event, core_rm.RmWarning):
+            stderr_console.print(f"[yellow]Warning:[/yellow] {event.text}")
+            if event.hint:
+                stderr_console.print(f"[dim]{event.hint}[/dim]")
+        elif isinstance(event, core_rm.RmError):
+            stderr_console.print(f"[bold red]Error:[/bold red] {event.text}")
+        elif isinstance(event, core_rm.RmTrace):
+            if self.verbose:
+                stderr_console.print(f"[dim]VERBOSE: {event.text}[/dim]")
 
 
 def _frappe_container_running(project_name: str) -> bool:
@@ -1380,7 +382,7 @@ def rm(
     valid_names = []
     invalid_names = []
     for name in project_names_to_process:
-        if _is_valid_project_name(name):
+        if core_rm.is_valid_project_name(name):
             valid_names.append(name)
         else:
             invalid_names.append(name)
@@ -1504,10 +506,10 @@ def rm(
     any_failure = names_rejected
     for name in project_names_to_process:
         # For a STOPPED project on the data-destroying path, bring it up just long
-        # enough to take a verified backup, THEN let _remove_project delete it. A
-        # live `bench backup` is impossible while stopped, so without this the
-        # databases would be deleted with no backup. Done OUTSIDE the removal spinner
-        # because port-conflict resolution may prompt (the spinner-over-questionary
+        # enough to take a verified backup, THEN let core.remove delete it. A live
+        # `bench backup` is impossible while stopped, so without this the databases
+        # would be deleted with no backup. Done OUTSIDE the removal spinner because
+        # port-conflict resolution may prompt (the spinner-over-questionary
         # deadlock). If the start/backup cannot happen, abort this project and keep
         # ALL its data; the user can retry, or pass --no-backup to delete without a
         # backup.
@@ -1549,22 +551,40 @@ def rm(
                 )
                 continue
 
+        core_error: CwcliError | None = None
+        result = None
         with stderr_console.status(
             f"[bold red]Removing '{name}'...[/bold red]", spinner="dots"
         ) as status:
-            result = _remove_project(
-                name,
-                remove_volumes=volumes,
-                no_backup=no_backup,
-                verbose=actual_verbose,
-                status=status,
-            )
+            renderer = _RmRenderer(status, verbose=actual_verbose)
+            try:
+                result = core_rm.remove(
+                    name,
+                    remove_volumes=volumes,
+                    no_backup=no_backup,
+                    on_event=renderer,
+                )
+            except CwcliError as e:
+                # A Docker connection error (or an invalid name that slipped the
+                # pre-filter): a hard failure for this project. The core raised
+                # before touching anything data-bearing.
+                core_error = e
+
+        if core_error is not None:
+            stderr_console.print(f"[bold red]Error:[/bold red] {core_error.message}")
+            if started_for_backup:
+                _stop_after_transient_start(name)
+            any_failure = True
+            continue
+
+        assert result is not None and result.data is not None
+        outcome = result.data
 
         # A non-empty ``failures`` list means at least one requested step did not
-        # complete (backup gate, volume/dir removal, container removal, Docker
-        # error). Do not print a green check for a project that did not fully
-        # remove - report the failures and force a non-zero exit.
-        step_failures = result.get("failures") or []
+        # complete (backup gate, volume/dir removal, container removal). Do not
+        # print a green check for a project that did not fully remove - report the
+        # failures and force a non-zero exit.
+        step_failures = outcome.failures
 
         # If the removal was aborted (e.g. a backup could not be verified) and we
         # transiently started this project for the backup, return it to its original
@@ -1576,9 +596,9 @@ def rm(
             any_failure = True
 
         # Print results outside spinner context
-        if result["found"]:
+        if outcome.found:
             total_found += 1
-            containers_removed = result["containers"]
+            containers_removed = outcome.containers_removed
             total_removed += containers_removed
 
             if step_failures:
@@ -1587,11 +607,11 @@ def rm(
                 )
                 for failure in step_failures:
                     stderr_console.print(f"    [yellow]- {failure}[/yellow]")
-            elif result["orphan"]:
+            elif outcome.orphan:
                 cleaned = []
-                if result["volumes"]:
-                    cleaned.append(f"{result['volumes']} orphaned volume(s)")
-                if result["dir_removed"]:
+                if outcome.volumes_removed:
+                    cleaned.append(f"{outcome.volumes_removed} orphaned volume(s)")
+                if outcome.dir_removed:
                     cleaned.append("project directory")
                 detail = ", ".join(cleaned) if cleaned else "no leftover data"
                 console.print(
@@ -1605,7 +625,10 @@ def rm(
                 )
                 if not volumes:
                     console.print(f"  [dim]Volumes preserved for '{name}'[/dim]")
-        # If the project was not found, the error message was already printed.
+        else:
+            # Genuinely not found: the core returned found=False (the old code
+            # printed this from inside _remove_project).
+            stderr_console.print(f"[bold red]Error:[/bold red] Project '{name}' not found.")
 
     console.print()
     if any_failure:

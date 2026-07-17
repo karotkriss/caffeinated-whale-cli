@@ -16,6 +16,7 @@ These tests pin the corrected, non-interactive contract:
   running project), rather than auto-starting containers it is about to delete.
 """
 
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -24,7 +25,48 @@ import pytest
 from caffeinated_whale_cli.commands import inspect as inspect_mod
 from caffeinated_whale_cli.commands import rm
 from caffeinated_whale_cli.commands import utils as cmd_utils
-from caffeinated_whale_cli.utils import cache, docker_utils
+from caffeinated_whale_cli.core import rm as core_rm
+from caffeinated_whale_cli.core.envelope import Result, Status
+from caffeinated_whale_cli.utils import cache, db_utils, docker_utils
+
+# The destructive logic moved to ``core.rm`` (batch 12); the transient-start /
+# run-state reads stay on the frontend. ``_patch_attr`` patches every rm module
+# that defines the attribute; ``_remove_project`` adapts the core's typed Result
+# back to the old dict for the moved fail-closed tests.
+_RM_MODULES = (core_rm, rm)
+
+
+def _patch_attr(monkeypatch, attr, value):
+    for mod in _RM_MODULES:
+        if hasattr(mod, attr):
+            monkeypatch.setattr(mod, attr, value)
+
+
+def _render_event(event):
+    if isinstance(event, core_rm.RmNotice):
+        print(f"  {event.text}")
+    elif isinstance(event, core_rm.RmWarning):
+        print(f"Warning: {event.text}", file=sys.stderr)
+        if event.hint:
+            print(event.hint, file=sys.stderr)
+    elif isinstance(event, core_rm.RmError):
+        print(f"Error: {event.text}", file=sys.stderr)
+
+
+def _remove_project(name, *, remove_volumes, no_backup):
+    result = core_rm.remove(
+        name, remove_volumes=remove_volumes, no_backup=no_backup, on_event=_render_event
+    )
+    d = result.data
+    return {
+        "found": d.found,
+        "orphan": d.orphan,
+        "containers": d.containers_removed,
+        "volumes": d.volumes_removed,
+        "dir_removed": d.dir_removed,
+        "backup_ok": d.backup_ok,
+        "failures": list(d.failures),
+    }
 
 
 def _stopped_frappe_container():
@@ -127,20 +169,25 @@ class TestRmStoppedProjectSkipsRecache:
 
         # Stub out the actual teardown: this test only pins the recache-skip
         # contract, which happens before removal. Stubbing keeps it independent of
-        # whether Docker is installed (``_remove_project`` is Docker-gated, so on a
-        # host without Docker it would raise ``typer.Exit`` - which is NOT a
-        # ``SystemExit`` subclass - and crash the test in CI).
+        # whether Docker is installed (``core.remove`` is Docker-gated, so on a
+        # host without Docker it would raise ``CwcliError`` and crash the test).
         monkeypatch.setattr(
-            rm,
-            "_remove_project",
+            rm.core_rm,
+            "remove",
             MagicMock(
-                return_value={
-                    "found": True,
-                    "containers": 0,
-                    "volumes": 0,
-                    "dir_removed": False,
-                    "orphan": False,
-                }
+                return_value=Result(
+                    status=Status.OK,
+                    data=core_rm.RemovalOutcome(
+                        project="proj",
+                        found=True,
+                        orphan=False,
+                        containers_removed=0,
+                        volumes_removed=0,
+                        dir_removed=False,
+                        backup_ok=True,
+                        failures=[],
+                    ),
+                )
             ),
         )
 
@@ -183,10 +230,10 @@ class TestStoppedRemoveProjectFailsClosed:
         project_dir = cwcli_home / "projects" / "proj"
         (project_dir / "conf").mkdir(parents=True)
         (project_dir / "conf" / "docker-compose.yml").write_text("# fake\n")
-        monkeypatch.setattr(rm, "PROJECTS_DIR", cwcli_home / "projects")
-        monkeypatch.setattr(rm, "get_project_containers", lambda name: [container])
-        monkeypatch.setattr(rm, "get_project_volumes", lambda name: list(volumes))
-        monkeypatch.setattr(rm.db_utils, "clear_cache_for_project", lambda name: None)
+        _patch_attr(monkeypatch, "PROJECTS_DIR", cwcli_home / "projects")
+        _patch_attr(monkeypatch, "get_project_containers", lambda name: [container])
+        _patch_attr(monkeypatch, "get_project_volumes", lambda name: list(volumes))
+        monkeypatch.setattr(db_utils, "clear_cache_for_project", lambda name: None)
         return project_dir
 
     def test_stopped_volumes_backup_is_refused_not_deleted(self, cwcli_home, monkeypatch, capsys):
@@ -201,10 +248,10 @@ class TestStoppedRemoveProjectFailsClosed:
 
         backup = MagicMock()
         archive_cfg = MagicMock()
-        monkeypatch.setattr(rm, "_backup_sites", backup)
-        monkeypatch.setattr(rm, "_archive_project_config", archive_cfg)
+        monkeypatch.setattr(core_rm, "_backup_sites", backup)
+        monkeypatch.setattr(core_rm, "_archive_project_config", archive_cfg)
 
-        result = rm._remove_project("proj", remove_volumes=True, no_backup=False)
+        result = _remove_project("proj", remove_volumes=True, no_backup=False)
 
         # No exec backup attempted (cannot exec into a stopped container)...
         backup.assert_not_called()
@@ -231,7 +278,7 @@ class TestStoppedRemoveProjectFailsClosed:
         volumes[0].name = "proj_db-data"
         project_dir = self._wire(monkeypatch, cwcli_home, container, volumes)
 
-        result = rm._remove_project("proj", remove_volumes=True, no_backup=True)
+        result = _remove_project("proj", remove_volumes=True, no_backup=True)
 
         assert result["backup_ok"] is True
         assert not result["failures"]
@@ -250,7 +297,7 @@ class TestStoppedRemoveProjectFailsClosed:
         volumes[0].name = "proj_db-data"
         project_dir = self._wire(monkeypatch, cwcli_home, container, volumes)
 
-        result = rm._remove_project("proj", remove_volumes=False, no_backup=False)
+        result = _remove_project("proj", remove_volumes=False, no_backup=False)
 
         assert result["backup_ok"] is True
         assert not result["failures"]
@@ -268,12 +315,12 @@ class TestStoppedRemoveProjectFailsClosed:
         volumes[0].name = "proj_db-data"
         project_dir = cwcli_home / "projects" / "proj"
         (project_dir / "conf").mkdir(parents=True)
-        monkeypatch.setattr(rm, "PROJECTS_DIR", cwcli_home / "projects")
-        monkeypatch.setattr(rm, "get_project_containers", lambda name: [])
-        monkeypatch.setattr(rm, "get_project_volumes", lambda name: list(volumes))
-        monkeypatch.setattr(rm.db_utils, "clear_cache_for_project", lambda name: None)
+        _patch_attr(monkeypatch, "PROJECTS_DIR", cwcli_home / "projects")
+        _patch_attr(monkeypatch, "get_project_containers", lambda name: [])
+        _patch_attr(monkeypatch, "get_project_volumes", lambda name: list(volumes))
+        monkeypatch.setattr(db_utils, "clear_cache_for_project", lambda name: None)
 
-        result = rm._remove_project("proj", remove_volumes=True, no_backup=False)
+        result = _remove_project("proj", remove_volumes=True, no_backup=False)
 
         assert result["orphan"] is True
         assert result["backup_ok"] is False
@@ -290,12 +337,12 @@ class TestStoppedRemoveProjectFailsClosed:
         volumes[0].name = "proj_db-data"
         project_dir = cwcli_home / "projects" / "proj"
         (project_dir / "conf").mkdir(parents=True)
-        monkeypatch.setattr(rm, "PROJECTS_DIR", cwcli_home / "projects")
-        monkeypatch.setattr(rm, "get_project_containers", lambda name: [])
-        monkeypatch.setattr(rm, "get_project_volumes", lambda name: list(volumes))
-        monkeypatch.setattr(rm.db_utils, "clear_cache_for_project", lambda name: None)
+        _patch_attr(monkeypatch, "PROJECTS_DIR", cwcli_home / "projects")
+        _patch_attr(monkeypatch, "get_project_containers", lambda name: [])
+        _patch_attr(monkeypatch, "get_project_volumes", lambda name: list(volumes))
+        monkeypatch.setattr(db_utils, "clear_cache_for_project", lambda name: None)
 
-        result = rm._remove_project("proj", remove_volumes=True, no_backup=True)
+        result = _remove_project("proj", remove_volumes=True, no_backup=True)
 
         assert result["orphan"] is True
         assert not result["failures"]
