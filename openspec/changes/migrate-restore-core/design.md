@@ -106,9 +106,11 @@ What moves to the core is the CONTAINER I/O and logic around them:
 
 `receive_plan` and `restore_plan` share a private `_build_plan(container, project, site, bench_path, db_path, files_path, private_path, config_path)` tail (missing-apps + origin + DTO) so the two entry points cannot drift on what the plan carries.
 
-### 7. Bench resolution and the no-cache fallback, once
+### 7. Container/bench/site resolution is a frontend PROLOGUE (the backup precedent)
 
-All three modes' "cached bench? resolve; else populate via inspect, re-resolve; else default" collapses to the `core.open_plan` fallback-populate pattern inside `restore_plan`/`receive_plan`/`scan_backups`: `resolvers.resolve_bench(project, bench, bench_path)` -> `None` -> emit a notice + `core.inspect(refresh="auto", offer_choice=False)` for the cache side effect -> re-resolve -> `DEFAULT_BENCH_PATH` + a `bench.default_used` warning; a `select_bench` from a multi-bench project surfaces as a `NEEDS_CHOICE` the frontend resolves and re-invokes, exactly as `backup`/`open` do.
+Refined during implementation, disclosed here: today BOTH the normal and receive paths resolve the container, the bench, and the default site in a PROLOGUE **before** the scan/download (`restore.py:1624-1726` normal, `:959-1057` receive) - `ensure_containers_running`, then `resolve_bench_path` + the no-cache inspect fallback, then the default site. Byte-exact ordering requires keeping that prologue: "Using default site" and the multi-bench error must print ONCE, before the menu, and a re-invoking core loop (resolving these inside `restore_plan` after the scan spinner starts) would reorder or double-emit them.
+
+So `commands/restore.py` keeps the `cwcli backup` prologue shape: a shared `_resolve_bench_prologue` (which collapses the three old per-mode copies of the no-cache inspect fallback into one helper) plus `ensure_containers_running`, run in a no-spinner prologue, passing a CONCRETE `site` + `bench_path` to the core. `core.restore_plan`/`receive_plan` keep backup-style belt-and-suspenders resolution (`_resolve_bench` over `resolvers.resolve_bench`, `_resolve_default_site`, `resolve_container_state`) so a core call still validates its own inputs, but the inspect-fallback populate stays in the frontend prologue (it needs `resolve_bench_path`'s exact multi-bench rendering and its own ordering). The `select_backup` re-invoke loop (interactive menu only) is the one loop the frontend runs around `restore_plan`; `confirm_start`/`select_bench` are handled by the prologue's `ensure_containers_running`/`resolve_bench_path` exactly as today.
 
 ### 8. Zero new primitives, with two reported items
 
@@ -116,8 +118,7 @@ All three modes' "cached bench? resolve; else populate via inspect, re-resolve; 
 | --- | --- |
 | frappe container | `core/docker.py:get_frappe_container` |
 | run-state / race backstop | `resolvers.resolve_container_state` (both `offer_choice` modes) |
-| bench resolve + default | `resolvers.resolve_bench` + `DEFAULT_BENCH_PATH` |
-| the no-cache populate | `core.inspect(refresh="auto", offer_choice=False)` (the `open_plan` fallback) |
+| bench resolve + default | `resolvers.resolve_bench` + `DEFAULT_BENCH_PATH` (belt-and-suspenders; the frontend prologue owns the inspect fallback, Decision 7) |
 | the destructive exec + secrets | buffered `exec_run(..., environment=)` (the `backup` precedent) |
 | the streamed copies | `container.put_archive` / `get_archive` (docker-py, used directly) |
 | migrate + restart | `core.start(restart=True)` (the `_start_project` -> `core.start` precedent) |
