@@ -336,3 +336,68 @@ class TestCacheRedaction:
 
         after = db_utils.CommonSiteConfig.get(db_utils.CommonSiteConfig.bench == bench).config_json
         assert before == after == json.dumps({"default_site": "a.local"})
+
+
+class TestCacheWriteAtomicity:
+    """The clear+rewrite must be all-or-nothing: a crash mid-write must roll back
+    to the prior consistent cache, never leave a partial one (hazard i7)."""
+
+    def _old_data(self):
+        return [
+            {
+                "path": "/workspace/frappe-bench",
+                "available_apps": ["frappe"],
+                "sites": [{"name": "old.local", "installed_apps": []}],
+            }
+        ]
+
+    def test_crash_mid_rewrite_leaves_prior_cache_intact(self, temp_db, monkeypatch):
+        db_utils.cache_project_data("proj", self._old_data())
+
+        # A re-cache that blows up partway through the rewrite (after the clear and
+        # after the first rows are created). Bench.create raising mimics any crash.
+        real_create = db_utils.Bench.create.__func__
+
+        def boom(cls, *args, **kwargs):
+            raise RuntimeError("simulated crash mid-write")
+
+        monkeypatch.setattr(db_utils.Bench, "create", classmethod(boom))
+
+        new_data = [
+            {
+                "path": "/workspace/frappe-bench",
+                "available_apps": ["frappe", "erpnext"],
+                "sites": [{"name": "new.local", "installed_apps": []}],
+            }
+        ]
+        with pytest.raises(RuntimeError):
+            db_utils.cache_project_data("proj", new_data)
+
+        # Restore create so we can read back.
+        monkeypatch.setattr(db_utils.Bench, "create", classmethod(real_create))
+
+        # The OLD cache must survive untouched - no partial "new" state readable.
+        data = db_utils.get_cached_project_data("proj")
+        assert data is not None
+        benches = data["bench_instances"]
+        assert len(benches) == 1
+        assert [s["name"] for s in benches[0]["sites"]] == ["old.local"]
+        assert benches[0]["available_apps"] == ["frappe"]
+
+    def test_normal_rewrite_replaces_cleanly(self, temp_db):
+        # Behavior-unchanged control: a normal re-cache still fully replaces.
+        db_utils.cache_project_data("proj", self._old_data())
+        db_utils.cache_project_data(
+            "proj",
+            [
+                {
+                    "path": "/workspace/frappe-bench",
+                    "available_apps": ["frappe", "erpnext"],
+                    "sites": [{"name": "new.local", "installed_apps": []}],
+                }
+            ],
+        )
+        data = db_utils.get_cached_project_data("proj")
+        benches = data["bench_instances"]
+        assert [s["name"] for s in benches[0]["sites"]] == ["new.local"]
+        assert benches[0]["available_apps"] == ["frappe", "erpnext"]
