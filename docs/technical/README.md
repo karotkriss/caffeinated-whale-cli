@@ -55,7 +55,7 @@ caffeinated-whale-cli/
 │   │   ├── start.py            # core.start - idempotent bench start under supervisord (discovered-PID no-op, --autorestart)
 │   │   ├── status.py           # core.status - per-process health + pre-computed overall
 │   │   ├── restart.py          # core.restart_process - restart ONE supervised program, siblings untouched
-│   │   ├── logs.py             # core.logs_plan - resolves container/bench/program selection; the tail stays in the frontend
+│   │   ├── logs.py             # core.logs_plan/read_logs - resolves container/bench/program selection; the interactive tail stays in the frontend, the bounded axi read runs in the core
 │   │   ├── inspect.py          # core.inspect/inspect_raw - the T1/T2/T3 freshness tiers AND the cache write, one contract
 │   │   ├── open.py             # core.open_plan - resolves container/bench/app/editor for `cwcli open`; the handover stays in the frontend
 │   │   ├── init.py             # core.init_instance/init_bench - the two-call provisioning slice; the prompts/spinners/secret UX stay in the frontend
