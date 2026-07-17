@@ -10,7 +10,7 @@ The suite is split into two tiers by pytest marker.
   It is the default tier: a bare `pytest` runs only this tier.
   It is the mock-free/mock-based suite that verifies pure logic and command wiring against fakes, and it runs inside the uv container in CI (`test.yml`, `-m unit`).
   During the migration off the legacy mock suite (see [`../openspec/changes/rebuild-e2e-test-suite`](../openspec/changes/rebuild-e2e-test-suite)) this tier also carries the container-mock behavior tests; they are retired per command as each command's real E2E lands, and the mock-free pure-logic tests are kept permanently.
-- **`e2e`** / **`e2e_p2p`** - real Docker.
+- **`e2e`** / **`e2e_p2p`** / **`e2e_pkg`** - real Docker.
   These live under [`tests/e2e/`](e2e/) and drive the real `cwcli` console script against genuine throwaway Frappe instances (real `cwcli init` up, real side-effect assertions, `cwcli rm` down).
   They require a reachable Docker daemon and are excluded by default; run them explicitly with `-m e2e`.
   See [E2E harness](#e2e-harness-real-docker) below.

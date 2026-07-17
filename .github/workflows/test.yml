@@ -77,10 +77,12 @@ jobs:
   # command died at import with `ModuleNotFoundError: No module named 'click'`.
   # Nothing caught it: every other CI job and the local dev loop use
   # `uv sync --all-extras`, where click is present as a transitive/dev dep, so
-  # `import click` always succeeded. This job is the ONLY thing that exercises a
-  # runtime-deps-only install. `uv tool install .` resolves exactly the
-  # [project.dependencies] set - no dev, no extras - mirroring what a user runs
-  # (docs/e2e/uv-tool-distribution.md), so an undeclared runtime import fails here.
+  # `import click` always succeeded. This job (plus e2e.yml's e2e-runtime-only
+  # job) are the only two that exercise a runtime-deps-only install; this one is
+  # the fast --help/config-reads smoke, the other a full real-Docker lifecycle.
+  # `uv tool install .` resolves exactly the [project.dependencies] set - no
+  # dev, no extras - mirroring what a user runs (docs/e2e/uv-tool-distribution.md),
+  # so an undeclared runtime import fails here.
   clean-install:
     name: Clean install smoke
     runs-on: ubuntu-latest
