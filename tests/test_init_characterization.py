@@ -128,6 +128,8 @@ def run_init(
     add_path_result=True,
     base_port=None,
     interactive=None,
+    host_fail_stage=None,
+    host_fail_output=b"",
     **overrides,
 ):
     """Drive the real ``init`` body through migration-surviving seams only.
@@ -150,6 +152,8 @@ def run_init(
 
     def fake_run(cmd, cwd=None, capture_output=False, **kwargs):
         host_calls.append({"cmd": list(cmd), "cwd": cwd})
+        if host_fail_stage is not None and host_fail_stage in cmd:
+            return SimpleNamespace(returncode=1, stdout=b"", stderr=host_fail_output)
         return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
 
     def fake_add_custom_path(path):
@@ -328,6 +332,48 @@ class TestPortConflict:
         assert str(base) in err
         assert "--port" in err
         assert f"Example: cwcli init {PROJECT} --port 10000" in err
+
+
+class TestComposeFailureOutput:
+    """A failed ``docker compose`` host command's captured stderr must print
+    exactly once, in both verbose and non-verbose mode.
+
+    ``core.init``'s ``_run_host_command`` always emits the captured
+    stdout/stderr as ``InitOutput`` events (regardless of verbosity) AND
+    attaches it to the raised ``CwcliError``'s ``detail["output"]``. The
+    verbose renderer (``_InitRenderer._on_output``) prints ``InitOutput``
+    events live for compose's phases; ``_render_error_exit`` must not also
+    print ``detail["output"]`` in that mode, or a compose failure's stderr
+    shows up twice on the same run.
+    """
+
+    def test_verbose_compose_failure_prints_stderr_once(self, monkeypatch, tmp_path, capsys):
+        fail_text = "ERROR: pull access denied for frappe/bench, repository does not exist"
+        with pytest.raises(typer.Exit) as exc:
+            run_init(
+                monkeypatch,
+                tmp_path,
+                host_fail_stage="up",
+                host_fail_output=fail_text.encode(),
+                verbose=True,
+            )
+        assert exc.value.exit_code == 1
+        err = capsys.readouterr().err
+        assert err.count(fail_text) == 1
+
+    def test_non_verbose_compose_failure_prints_stderr_once(self, monkeypatch, tmp_path, capsys):
+        fail_text = "ERROR: pull access denied for frappe/bench, repository does not exist"
+        with pytest.raises(typer.Exit) as exc:
+            run_init(
+                monkeypatch,
+                tmp_path,
+                host_fail_stage="up",
+                host_fail_output=fail_text.encode(),
+                verbose=False,
+            )
+        assert exc.value.exit_code == 1
+        err = capsys.readouterr().err
+        assert err.count(fail_text) == 1
 
 
 class TestRefusals:

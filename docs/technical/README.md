@@ -58,6 +58,7 @@ caffeinated-whale-cli/
 │   │   ├── logs.py             # core.logs_plan - resolves container/bench/program selection; the tail stays in the frontend
 │   │   ├── inspect.py          # core.inspect/inspect_raw - the T1/T2/T3 freshness tiers AND the cache write, one contract
 │   │   ├── open.py             # core.open_plan - resolves container/bench/app/editor for `cwcli open`; the handover stays in the frontend
+│   │   ├── init.py             # core.init_instance/init_bench - the two-call provisioning slice; the prompts/spinners/secret UX stay in the frontend
 │   │   └── version.py          # core.version - install-method detection + PyPI lookup, shared by self-update and the passive notice
 │   └── utils/                  # Utility modules
 │       ├── docker_utils.py    # Docker client management
