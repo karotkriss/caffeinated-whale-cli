@@ -8,10 +8,19 @@ tail`` itself. The tail stays HERE, not on ``core.exec_stream``: see
 -F`` per Ctrl+C, ``exec.stream_lost`` on a routine stop, and the ``tty``/``demux``
 conflict). ``logs`` is a PURE READ; nothing on any path launches or mutates the
 bench.
+
+The non-TTY ``--follow`` path used to leak that same orphan ``tail -F`` on its
+own (the ``docker exec`` client dies on Ctrl+C, but the exec'd tail keeps
+running, and Docker has no kill-exec API): it now wraps the tail so it records
+its own PID and reaps that PID on exit (``_kill_container_tail``). The ``-it``
+path is orphan-free without help - docker forwards ^C into the container.
 """
 
+import os
+import shlex
 import subprocess
 import sys
+import uuid
 from typing import NoReturn
 
 import typer
@@ -136,17 +145,39 @@ def logs(
 
     # Only request an interactive TTY (`docker exec -it`) when we actually have one:
     # under a pipe/agent (non-TTY) `-it` errors "the input device is not a TTY".
-    exec_flags = ["-it"] if sys.stdin.isatty() else []
+    is_tty = sys.stdin.isatty()
+    exec_flags = ["-it"] if is_tty else []
     tail_flags = ["-F", "-n", str(plan.lines)] if plan.follow else ["-n", str(plan.lines)]
-    tail_cmd = [
-        "docker",
-        "exec",
-        *exec_flags,
-        plan.container_name,
-        "tail",
-        *tail_flags,
-        *plan.log_files,
-    ]
+
+    # Orphan-tail leak on the non-TTY `--follow` path: Ctrl+C kills the `docker
+    # exec` client here, but its exec'd `tail -F` keeps running INSIDE the
+    # container (Docker has no kill-exec API), so every Ctrl+C accumulates another
+    # orphan. The `-it` path is verified clean - docker forwards ^C into the
+    # container, tail exits 130, zero orphans (see core/logs.py's docstring) - so
+    # only the non-TTY follow needs help. Wrap the tail so it records its own PID,
+    # then kill that PID on exit. A bounded `tail -n N` (no follow) exits on its
+    # own and cannot orphan, so it stays a plain exec.
+    cleanup_pidfile = None
+    if plan.follow and not is_tty:
+        cleanup_pidfile = f"/tmp/cwcli-logs-{os.getpid()}-{uuid.uuid4().hex}.pid"
+        # `echo $$` records the shell's PID; `exec tail` then REPLACES the shell,
+        # so the exec'd tail inherits that exact PID - the one to kill on cleanup.
+        tail_argv = ["tail", *tail_flags, *plan.log_files]
+        script = "echo $$ > {pf}; exec {t}".format(
+            pf=shlex.quote(cleanup_pidfile),
+            t=" ".join(shlex.quote(a) for a in tail_argv),
+        )
+        tail_cmd = ["docker", "exec", plan.container_name, "sh", "-c", script]
+    else:
+        tail_cmd = [
+            "docker",
+            "exec",
+            *exec_flags,
+            plan.container_name,
+            "tail",
+            *tail_flags,
+            *plan.log_files,
+        ]
 
     if verbose:
         stderr_console.print(f"[dim]VERBOSE: $ {' '.join(tail_cmd)}[/dim]")
@@ -157,6 +188,9 @@ def logs(
         # Ctrl+C on the non-TTY path (no `-it`): SIGINT reaches this process.
         console.print("\n[yellow]Stopped viewing logs.[/yellow]")
         return
+    finally:
+        if cleanup_pidfile is not None:
+            _kill_container_tail(plan.container_name, cleanup_pidfile)
 
     # 130 is `tail` killed by SIGINT, i.e. the user's own Ctrl+C: on the `-it`
     # path docker puts the terminal in raw mode and forwards ^C into the
@@ -176,6 +210,34 @@ def logs(
             f"(tail exited {completed.returncode})."
         )
         raise typer.Exit(code=completed.returncode)
+
+
+def _kill_container_tail(container_name: str, pidfile: str) -> None:
+    """Reap the orphaned container-side ``tail -F`` a non-TTY ``--follow`` leaves.
+
+    The wrapped tail wrote its own PID to ``pidfile`` inside the container. The
+    ``docker exec`` client dies on Ctrl+C, but the exec'd tail keeps running and
+    Docker exposes no kill-exec API, so we reap it by PID with a fresh exec. Uses
+    only ``kill``/``cat``/``rm`` - shell builtins/coreutils present everywhere, no
+    ``procps``/``pkill`` dependency. Best-effort: a missing PID or already-dead
+    tail is a harmless no-op, and any failure here must not mask the real exit.
+    """
+    quoted = shlex.quote(pidfile)
+    try:
+        subprocess.run(
+            [
+                "docker",
+                "exec",
+                container_name,
+                "sh",
+                "-c",
+                f"kill $(cat {quoted} 2>/dev/null) 2>/dev/null; rm -f {quoted}",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
 
 
 def _render_error_and_exit(e: CwcliError) -> NoReturn:
