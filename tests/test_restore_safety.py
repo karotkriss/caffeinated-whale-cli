@@ -123,15 +123,19 @@ def _run_receive(
     directly so no interactive credential prompt fires.
     """
 
+    # Re-pointed BY DESIGN: receive_mode became the frontend _run_receive over
+    # core.receive_plan + core.restore_apply. Container discovery, run-state, and
+    # bench resolution moved into core.restore (patched there); the sendme
+    # subprocess, ticket prompt, and confirms stay frontend.
+    from caffeinated_whale_cli.core import restore as core_restore
+    from caffeinated_whale_cli.core.envelope import Result, Status
+
     def fake_sendme_run(cmd, cwd=None, capture_output=True, text=True):
         Path(cwd).joinpath(db_filename).write_text("SQL DUMP DATA")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_sendme_run)
-    monkeypatch.setattr(restore_mod, "ensure_containers_running", lambda *a, **k: True)
-    monkeypatch.setattr(restore_mod, "get_project_containers", lambda name: [container])
     monkeypatch.setattr(restore_mod, "get_sendme_command", lambda: "sendme")
-    monkeypatch.setattr(restore_mod, "check_missing_apps", lambda *a, **k: missing_apps or [])
     monkeypatch.setattr(restore_mod, "TipSpinner", _NullSpinner)
     monkeypatch.setattr(restore_mod.config_utils, "get_show_tips", lambda: False)
     monkeypatch.setattr(
@@ -142,6 +146,19 @@ def _run_receive(
     )
     monkeypatch.setattr(restore_mod.sys.stdin, "isatty", lambda: isatty)
 
+    monkeypatch.setattr(core_restore.core_docker, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(
+        core_restore.resolvers,
+        "resolve_container_state",
+        lambda *a, **k: SimpleNamespace(status=Status.OK, choice=None),
+    )
+    monkeypatch.setattr(
+        core_restore.resolvers,
+        "resolve_bench",
+        lambda *a, **k: Result(status=Status.OK, data=BENCH_PATH, warnings=[]),
+    )
+    monkeypatch.setattr(core_restore, "check_missing_apps", lambda *a, **k: missing_apps or [])
+
     # Capture printed output (both consoles) so tests can assert on warnings.
     def record(*args, **kwargs):
         container.printed.append(" ".join(str(a) for a in args))
@@ -149,19 +166,18 @@ def _run_receive(
     monkeypatch.setattr(restore_mod.console, "print", record)
     monkeypatch.setattr(restore_mod.stderr_console, "print", record)
 
-    restore_mod.restore_receive_mode(
-        project_name="proj",
+    restore_mod._run_receive(
+        "proj",
         site=site,
         bench_path=BENCH_PATH,
         mariadb_root_username="root",
         mariadb_root_password=SECRET_PW,
         admin_password=admin_password,
-        no_recache=True,
-        verbose=False,
         yes=yes,
         # These tests pin the restore command/confirm behavior only; skip the
         # post-restore migrate + instance restart (covered by its own tests).
         no_migrate=True,
+        verbose=False,
     )
 
 
@@ -451,6 +467,13 @@ def _run_normal(
     so no ``Option`` default object leaks through. The ``@handle_docker_errors``
     decorator is bypassed by patching the docker module names it imports.
     """
+    # Re-pointed BY DESIGN at the migrated seams: the scan/group/missing-apps and
+    # container discovery moved into core.restore (patched there); the frontend
+    # keeps the ensure_containers_running / resolve_bench_path prologue, the menu,
+    # the confirms, and the credential prompts.
+    from caffeinated_whale_cli.core import restore as core_restore
+    from caffeinated_whale_cli.core.envelope import Result, Status
+
     mono = MagicMock()
     mono.isatty.return_value = isatty
     monkeypatch.setattr(restore_mod.sys, "stdin", mono)
@@ -461,27 +484,13 @@ def _run_normal(
     monkeypatch.setattr(docker_utils_mod, "shutil", MagicMock())
     monkeypatch.setattr(docker_utils_mod, "docker", MagicMock(from_env=lambda: fake_docker))
 
+    # Frontend prologue seams.
     monkeypatch.setattr(restore_mod, "ensure_containers_running", lambda *a, **k: True)
-    monkeypatch.setattr(restore_mod, "get_project_containers", lambda name: [container])
     monkeypatch.setattr(
         restore_mod,
         "resolve_bench_path",
         lambda project, bench, path, *, on_ambiguous="error", verbose=False: BENCH_PATH,
     )
-    monkeypatch.setattr(restore_mod.db_utils, "get_cached_project_data", lambda name: None)
-    monkeypatch.setattr(restore_mod, "scan_backups_for_all_sites", lambda *a, **k: [])
-    if group_sort_stub is not None:
-        monkeypatch.setattr(restore_mod, "group_and_sort_backups", group_sort_stub)
-    else:
-        monkeypatch.setattr(
-            restore_mod,
-            "group_and_sort_backups",
-            lambda backups, target: (
-                [_backup_set()] if (latest or backup_file is not None) else [],
-                [],
-            ),
-        )
-    monkeypatch.setattr(restore_mod, "check_missing_apps", lambda *a, **k: missing_apps or [])
     monkeypatch.setattr(restore_mod, "TipSpinner", _NullSpinner)
     monkeypatch.setattr(restore_mod.config_utils, "get_show_tips", lambda: False)
     monkeypatch.setattr(restore_mod, "ensure_sendme_installed", lambda *a, **k: True)
@@ -492,6 +501,34 @@ def _run_normal(
         monkeypatch.setattr(
             restore_mod.questionary, "confirm", lambda *a, **k: _stub_question(confirm_answer)
         )
+
+    # Core seams: container discovery, run-state, bench, scan/group/missing-apps.
+    monkeypatch.setattr(core_restore.core_docker, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(
+        core_restore.resolvers,
+        "resolve_container_state",
+        lambda *a, **k: SimpleNamespace(status=Status.OK, choice=None),
+    )
+    monkeypatch.setattr(
+        core_restore.resolvers,
+        "resolve_bench",
+        lambda *a, **k: Result(status=Status.OK, data=BENCH_PATH, warnings=[]),
+    )
+    monkeypatch.setattr(core_restore.resolvers, "require_bench_dir", lambda *a, **k: None)
+    monkeypatch.setattr(core_restore.resolvers, "require_site_dir", lambda *a, **k: f"{BENCH_PATH}/sites/{site}")
+    monkeypatch.setattr(core_restore, "scan_backups_for_all_sites", lambda *a, **k: [])
+    if group_sort_stub is not None:
+        monkeypatch.setattr(core_restore, "group_and_sort_backups", group_sort_stub)
+    else:
+        monkeypatch.setattr(
+            core_restore,
+            "group_and_sort_backups",
+            lambda backups, target: (
+                [_backup_set()] if (latest or backup_file is not None) else [],
+                [],
+            ),
+        )
+    monkeypatch.setattr(core_restore, "check_missing_apps", lambda *a, **k: missing_apps or [])
 
     # Capture printed output so tests can assert on refusal messages.
     def record(*args, **kwargs):
