@@ -7,7 +7,7 @@ newer flag to bench 14 makes ``bench new-site`` fail.
 
 import pytest
 
-from caffeinated_whale_cli.commands.init import _select_mariadb_flag
+from caffeinated_whale_cli.core.init import _select_mariadb_flag
 
 
 class TestSelectMariadbFlag:

@@ -4,7 +4,7 @@ The rework's locked decision 4 says streaming operations return typed event
 iterators and no live Docker object leaks past the core boundary. This is that
 contract, and it is a PER-EXEC primitive rather than a per-verb one: ``run`` is
 the only consumer with one exec per resolve, while ``update`` performs 13 and
-``init`` 11 downstream of a single resolve, with real logic between them (enable
+``init`` 10 downstream of a single resolve, with real logic between them (enable
 maintenance mode, discover affected sites, disable it again in a ``finally``). A
 verb-shaped ``core.run(...) -> Iterator[RunEvent]`` could not express that.
 
