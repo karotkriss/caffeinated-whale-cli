@@ -34,7 +34,7 @@ way:
    differs only in the per-frame wrapper, so a consumer writing both tags to
    stdout in yield order reproduces the untagged byte stream exactly, carriage
    returns and progress-bar redraws included.
-3. **The decode**, via :func:`~..utils.docker_utils.utf8_stream_decoder`, one
+3. **The decode**, via :func:`~.docker.utf8_stream_decoder`, one
    decoder PER stream (see that function's docstring for the boundary-split root
    cause, and why the two must never be shared).
 4. **Closing the stream.** docker-py states the rule in
@@ -58,7 +58,7 @@ from dataclasses import dataclass
 
 from docker.errors import DockerException
 
-from ..utils.docker_utils import utf8_stream_decoder
+from .docker import utf8_stream_decoder
 from .errors import CwcliError, ErrorKind
 
 # How long to keep asking the daemon for an exit code it has not recorded yet.
