@@ -241,6 +241,43 @@ def test_start_daemon_refuses_when_not_enabled(isolated_run_dir, monkeypatch):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX fork path")
+def test_forked_daemon_releases_the_parents_stdout_pipe(tmp_path):
+    """A shell capturing the enabling command's output must see EOF when the
+    parent exits. The forked child dup2's its REAL fds (devnull for
+    stdin/stdout, the log file for stderr) - rebinding only the sys.* objects
+    left fd 1 open in the daemon, so `$(cwcli config auto-inspect enable)` and
+    every piped invocation hung forever waiting for EOF. Mock-free: a real
+    subprocess with a captured pipe, a real fork, a real daemon (killed in
+    cleanup). Fails as a 30s TimeoutExpired against the unfixed code."""
+    import signal
+
+    script = (
+        "from caffeinated_whale_cli.utils import auto_inspect, config_utils\n"
+        "config_utils.set_auto_inspect_enabled(True)\n"
+        "auto_inspect.start_daemon()\n"
+        "print('PARENT_DONE')\n"
+    )
+    env = {**os.environ, "CWCLI_HOME": str(tmp_path)}
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+    finally:
+        pid_file = tmp_path / "run" / "auto-inspect.pid"
+        if pid_file.exists():
+            try:
+                os.kill(int(pid_file.read_text().strip()), signal.SIGKILL)
+            except (OSError, ValueError):
+                pass
+    assert result.returncode == 0, result.stderr
+    assert "PARENT_DONE" in result.stdout
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX fork path")
 def test_start_daemon_refuses_when_already_running(isolated_run_dir, live_process):
     """Starting a second daemon over a live one is refused."""
     auto_inspect.PID_FILE.write_text(str(live_process.pid))
