@@ -12,11 +12,11 @@ and delivered ZERO output), and ``errors="replace"`` silently corrupts the chara
 into U+FFFD (``apps install``/``init``). These tests feed each of the four consumers
 a deliberately mid-character split and assert the text round-trips exactly.
 
-``run``/``apps``/``update`` now reach the decoder through ``core.exec_stream``
-rather than through their own loops, so these cases drive them through the
-primitive. The PROPERTY is what matters and it pins a crash that SHIPPED: the
-helper those three used to call is gone, but this guard is not. ``init`` still
-holds its own decoders (it is not migrated) and its cases are unchanged.
+All four consumers now reach the decoder through ``core.exec_stream`` rather
+than through their own loops (``init`` was the last, via ``migrate-init-core``),
+so these cases drive them through the primitive. The PROPERTY is what matters
+and it pins a crash that SHIPPED: the helpers the four used to call are gone,
+but this guard is not.
 """
 
 import types
@@ -168,9 +168,30 @@ def test_apps_install_streams_split_character_intact(capsys, split_stream):
     assert out == TEXT
 
 
+def _init_verbose_renderer():
+    """The real rendering path: core events feeding the CLI's own renderer,
+    which is what actually writes bench output raw to stdout/stderr."""
+    return init_mod._InitRenderer(verbose=True, show_tips=False, project="p")
+
+
 def test_init_streams_split_character_intact(capsys):
-    """``init`` - demuxed, so stdout and stderr each need their own decoder."""
-    init_mod._exec_in_container(_SplitContainer(), "bench new-site x", stream_output=True)
+    """``init`` - demuxed, so stdout and stderr each need their own decoder.
+
+    Re-pointed at ``core.init`` (openspec `migrate-init-core`), exactly as the
+    other three consumers were by batches 4/5 and for the same reason: the
+    exec-and-decode loop moved onto ``core.exec_stream``, so
+    ``init._exec_in_container`` is gone. Driven through the core's exec step
+    feeding the CLI's verbose renderer.
+    """
+    from caffeinated_whale_cli.core import init as core_init
+
+    core_init._run_exec(
+        _SplitContainer(),
+        "bench new-site x",
+        phase="new_site",
+        emit=_init_verbose_renderer(),
+        collect=False,
+    )
 
     out = capsys.readouterr().out
     assert "�" not in out
@@ -183,6 +204,8 @@ def test_init_decodes_stdout_and_stderr_independently(capsys):
     init's two streams interleave; sharing one decoder between them would feed
     stderr's bytes into stdout's pending character and mangle both.
     """
+    from caffeinated_whale_cli.core import init as core_init
+
     err = "警告\n".encode()
     container = _SplitContainer(chunks=[])
     container.client.api.chunks = [
@@ -194,7 +217,13 @@ def test_init_decodes_stdout_and_stderr_independently(capsys):
         yield from container.client.api.chunks
 
     container.client.api.exec_start = _demux_start
-    init_mod._exec_in_container(container, "bench new-site x", stream_output=True)
+    core_init._run_exec(
+        container,
+        "bench new-site x",
+        phase="new_site",
+        emit=_init_verbose_renderer(),
+        collect=False,
+    )
 
     captured = capsys.readouterr()
     assert captured.out == TEXT

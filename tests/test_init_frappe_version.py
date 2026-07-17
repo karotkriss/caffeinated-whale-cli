@@ -4,16 +4,30 @@
 ``version-N``, a full semantic version ``X.Y.Z`` becomes the tag ``vX.Y.Z``, and
 anything malformed is rejected with a non-zero exit. ``--frappe-branch`` keeps
 working as a raw ref, and the two flags are mutually exclusive.
+
+Re-pointed with its subjects by ``migrate-init-core``: the pure resolvers
+(``resolve_frappe_ref``, ``_frappe_major_version``, ``DEFAULT_FRAPPE_BRANCH``)
+moved to ``core.init``; the flag fusion (``_resolve_frappe_branch``) stays in
+the frontend. Two changes BY DESIGN: the malformed-shape raise is the typed
+``CwcliError(USAGE)`` (same message) instead of ``ValueError``, and the
+end-to-end capture asserts the resolved ref crossing the frontend->core seam
+(``init_bench(frappe_ref=...)``) - the ref-to-command construction itself is
+pinned at the core by ``tests/test_core_init.py``'s exec-order and gating tests.
 """
 
 import pytest
 import typer
 
 import caffeinated_whale_cli.commands.init as init_mod
-from caffeinated_whale_cli.commands.init import (
+from caffeinated_whale_cli.commands.init import _resolve_frappe_branch
+from caffeinated_whale_cli.core import init as core_init
+from caffeinated_whale_cli.core.envelope import Result, Status
+from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
+from caffeinated_whale_cli.core.init import (
     DEFAULT_FRAPPE_BRANCH,
+    InitReport,
+    InstanceUp,
     _frappe_major_version,
-    _resolve_frappe_branch,
     resolve_frappe_ref,
 )
 
@@ -58,9 +72,11 @@ class TestResolveFrappeRef:
         ],
     )
     def test_malformed_raises(self, value):
-        """`resolve_frappe_ref` raises on a malformed version string."""
-        with pytest.raises(ValueError):
+        """A malformed version string is a typed usage error (was ValueError;
+        retyped BY DESIGN by migrate-init-core, message unchanged)."""
+        with pytest.raises(CwcliError) as exc:
             resolve_frappe_ref(value)
+        assert exc.value.kind is ErrorKind.USAGE
 
 
 class TestResolveFrappeBranch:
@@ -94,41 +110,35 @@ class TestResolveFrappeBranch:
         assert exc.value.exit_code == 1
 
 
-class _StopAfterBenchInitError(Exception):
-    """Sentinel to stop init once the bench init command is captured."""
+def _drive_init_to_bench_ref(monkeypatch, **overrides) -> str:
+    """Run the real ``init`` command body far enough to capture the resolved
+    ref crossing the frontend->core seam, with both core stages stubbed.
 
-
-def _drive_init_to_bench_init(monkeypatch, tmp_path, **overrides):
-    """Run the real ``init`` command body (verbose path) far enough to capture
-    the ``bench init`` command string, stubbing every Docker/host boundary.
-
-    Returns the captured command string.
+    Returns the ``frappe_ref`` the frontend handed to ``core.init_bench``.
     """
-    captured = {}
+    recorded = {}
 
-    class _FakeContainer:
-        def exec_run(self, *a, **k):  # pragma: no cover - not reached for v16
-            return 0, b""
+    def fake_init_instance(project, **kwargs):
+        return Result(status=Status.OK, data=InstanceUp(project=project, conf_dir="/x"))
 
-    def recording_exec(container, command, **kwargs):
-        captured["command"] = command
-        raise _StopAfterBenchInitError
+    def fake_init_bench(project, **kwargs):
+        recorded.update(kwargs)
+        return Result(
+            status=Status.OK,
+            data=InitReport(
+                project=project,
+                bench_name=kwargs["bench_name"],
+                bench_path=f"/workspace/{kwargs['bench_name']}",
+                site_name=kwargs["site_name"],
+                bench_created=True,
+                site_created=True,
+                erpnext_installed=False,
+            ),
+        )
 
-    monkeypatch.setattr(init_mod, "check_ports_in_use", lambda ports: dict.fromkeys(ports, False))
+    monkeypatch.setattr(init_mod.core_init, "init_instance", fake_init_instance)
+    monkeypatch.setattr(init_mod.core_init, "init_bench", fake_init_bench)
     monkeypatch.setattr(init_mod.config_utils, "get_show_tips", lambda: False)
-    monkeypatch.setattr(init_mod, "_setup_project_directory", lambda *a, **k: tmp_path)
-    monkeypatch.setattr(init_mod, "_customize_compose_ports", lambda *a, **k: None)
-    monkeypatch.setattr(init_mod, "_pull_compose_images", lambda *a, **k: None)
-    monkeypatch.setattr(init_mod, "_start_compose_project", lambda *a, **k: None)
-    monkeypatch.setattr(init_mod, "_wait_for_containers_running", lambda *a, **k: True)
-    monkeypatch.setattr(init_mod, "get_frappe_container", lambda *a, **k: _FakeContainer())
-    monkeypatch.setattr(init_mod, "_ensure_directory", lambda *a, **k: None)
-    monkeypatch.setattr(
-        init_mod,
-        "_resolve_bench_target",
-        lambda *a, **k: ("frappe-bench", "/workspace/frappe-bench", False),
-    )
-    monkeypatch.setattr(init_mod, "_exec_in_container", recording_exec)
 
     params = dict(
         project_name="proj",
@@ -148,29 +158,28 @@ def _drive_init_to_bench_init(monkeypatch, tmp_path, **overrides):
     )
     params.update(overrides)
 
-    with pytest.raises(_StopAfterBenchInitError):
-        init_mod.init.__wrapped__(**params)
-    return captured["command"]
+    init_mod.init.__wrapped__(**params)
+    return recorded["frappe_ref"]
 
 
 class TestBenchInitRefEndToEnd:
-    """The resolved ref reaches the actual ``bench init`` command."""
+    """The resolved ref reaches the core call that builds ``bench init``.
 
-    def test_default_uses_version_16(self, monkeypatch, tmp_path):
-        cmd = _drive_init_to_bench_init(monkeypatch, tmp_path)
-        assert "--frappe-branch version-16" in cmd
+    (The ref-to-command-string construction is pinned at the core by
+    ``tests/test_core_init.py``; this covers the frontend's half of the seam.)
+    """
 
-    def test_version_int_reaches_bench_init(self, monkeypatch, tmp_path):
-        cmd = _drive_init_to_bench_init(monkeypatch, tmp_path, version="16")
-        assert "--frappe-branch version-16" in cmd
+    def test_default_uses_version_16(self, monkeypatch):
+        assert _drive_init_to_bench_ref(monkeypatch) == "version-16"
 
-    def test_version_semver_tag_reaches_bench_init(self, monkeypatch, tmp_path):
-        cmd = _drive_init_to_bench_init(monkeypatch, tmp_path, version="16.26.3")
-        assert "--frappe-branch v16.26.3" in cmd
+    def test_version_int_reaches_bench_init(self, monkeypatch):
+        assert _drive_init_to_bench_ref(monkeypatch, version="16") == "version-16"
 
-    def test_frappe_branch_passthrough_reaches_bench_init(self, monkeypatch, tmp_path):
-        cmd = _drive_init_to_bench_init(monkeypatch, tmp_path, frappe_branch="develop")
-        assert "--frappe-branch develop" in cmd
+    def test_version_semver_tag_reaches_bench_init(self, monkeypatch):
+        assert _drive_init_to_bench_ref(monkeypatch, version="16.26.3") == "v16.26.3"
+
+    def test_frappe_branch_passthrough_reaches_bench_init(self, monkeypatch):
+        assert _drive_init_to_bench_ref(monkeypatch, frappe_branch="develop") == "develop"
 
 
 class TestFrappeMajorVersion:
