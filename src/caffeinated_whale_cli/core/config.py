@@ -15,7 +15,7 @@ this batch.
 
 from __future__ import annotations
 
-import os
+import posixpath
 from dataclasses import dataclass
 
 from ..utils import config_utils, db_utils
@@ -68,7 +68,7 @@ class CacheClearOutcome:
 
 def _normalize(path: str) -> str:
     """Expanduser + normpath, so ``/a/b`` and ``/a/b/`` are one entry, not two (F9)."""
-    return os.path.normpath(os.path.expanduser(path))
+    return posixpath.normpath(posixpath.expanduser(path))
 
 
 def show_config() -> Result[ConfigReport]:
@@ -94,15 +94,15 @@ def add_search_path(path: str) -> Result[SearchPathChange]:
     An already-present path is a no-op SUCCESS (``changed=False``), idempotent
     per the AXI standard.
     """
-    expanded = os.path.expanduser(path)
-    if not os.path.isabs(expanded):
+    expanded = posixpath.expanduser(path)
+    if not posixpath.isabs(expanded):
         raise CwcliError(
             ErrorKind.USAGE,
             "path.not_absolute",
             f"'{path}' is not an absolute path.",
             hint="pass an absolute path, e.g. /home/you/benches",
         )
-    normalized = os.path.normpath(expanded)
+    normalized = posixpath.normpath(expanded)
 
     config = config_utils.load_config()
     paths = config["search_paths"]["custom_bench_paths"]

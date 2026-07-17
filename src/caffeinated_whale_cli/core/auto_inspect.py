@@ -146,11 +146,12 @@ def enable(interval: int | None = None, at_boot: bool | None = None) -> Result[A
         config["auto_inspect"]["startup_enabled"] = at_boot
     config_utils.save_config(config)
 
+    interval_changed = interval is not None and interval != previous_interval
+
     actions = ["config.enabled"]
-    if interval is not None and interval != previous_interval:
+    if interval_changed:
         actions.append("interval.set")
 
-    interval_changed = interval is not None and interval != previous_interval
     if daemon.is_running():
         if interval_changed:
             _stop_daemon()
