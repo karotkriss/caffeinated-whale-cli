@@ -235,6 +235,7 @@ def _kill_container_tail(container_name: str, pidfile: str) -> None:
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            timeout=5,
         )
     except Exception:
         pass
