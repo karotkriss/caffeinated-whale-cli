@@ -111,6 +111,14 @@ proves the restore genuinely drops-and-recreates the DB, in both the non-interac
 (`--latest --yes --mariadb-root-password`) and interactive (pty menu + destructive
 confirm + credential prompts) modes, plus `--no-migrate`, the non-TTY refusals, and
 the flag mutual exclusions.
+`test_restore_p2p_e2e.py` is the `e2e_p2p` marker's real transport proof: it moves
+REAL bytes over sendme, loopback on one box - `cwcli restore --send` serves a genuine
+ticket, then the non-interactive `cwcli restore --receive --ticket <t>` pulls-and-
+restores it, and the same ORIGINAL/MUTATED marker proves the data arrived (it FAILS if
+the sendme transport breaks). It uses its OWN dedicated instance (never the shared
+session one, so a receive DB-wipe cannot corrupt another test's fixture), runs the
+generic loopback once on the v16 leg, and keeps the v14-only `--receive` bare-filename
+reproduction as a separate, clearly-labeled, v14-gated test.
 
 ### `test_completion_utils.py`
 Tests for tab completion functionality.
@@ -181,7 +189,7 @@ Current overall coverage at 0.37.0, unreleased (1415 tests across 82 test files,
 ### Modules Needing Dedicated Suites
 - ⚠️ `utils/port_utils.py` (~9%, only incidental coverage)
 - ⚠️ `utils/docker_utils.py` (`test_exec_stream_decode.py` dedicated-tests `utf8_stream_decoder`, on top of `test_core_resolvers`'s `get_frappe_container` CLI wrapper; the rest of the module (`handle_docker_errors`'s error branches, `exec_into_container`) is still only incidentally covered. `decode_exec_stream` is GONE: `core/exec_stream.py` superseded it and its only three callers were re-pointed at the primitive)
-- ⚠️ `utils/sendme_utils.py` (~9%, only incidental coverage)
+- ✅ `utils/sendme_utils.py` - ~89% (`test_sendme_utils`: path/target resolution across every OS/arch branch, `is_sendme_installed`/`get_sendme_command` local-vs-PATH-vs-fallback, the clipboard helper's xclip/xsel/failure paths, `download_file_with_progress` stream-and-error, `install_sendme` over a REAL tar.gz/zip archive plus its no-asset/network/download-failure branches, and `setup_path`'s append/idempotent/create-bashrc paths; only the Windows-PowerShell PATH and macOS-pbcopy lines are unreached on a Linux run). The real bytes-over-sendme transport is proved by `tests/e2e/test_restore_p2p_e2e.py` (the `e2e_p2p` marker)
 - ⚠️ `utils/vscode_utils.py` (~15%, only incidental coverage; editor detection itself moved to `core/open.py`, 100%)
 - ⚠️ `utils/config_utils.py` (~41%; `cwcli_home()` is covered by `test_cwcli_home`, but `load_config`/`save_config`/the custom-path and auto-inspect-config setters remain untested)
 - ⚠️ `commands/start.py` (~57%; `test_yes_flag` covers the non-interactive/`--yes` contract and `tests/e2e/test_start_status_e2e.py` drives it end to end, but the port-scanning/conflict-resolution branches still have no dedicated unit suite)
@@ -258,7 +266,7 @@ addopts = ["-q", "--strict-markers", "--tb=short", "--cov-report=", "-m", "not e
 markers = [
     "unit: fast tests that need no Docker daemon (the default tier)",
     "e2e: real-Docker end-to-end tests driving the real cwcli binary",
-    "e2e_p2p: real-Docker P2P (sendme loopback) end-to-end tests",
+    "e2e_p2p: real-Docker P2P (sendme loopback) end-to-end tests (also carry e2e, so they ride the version matrix version-gated)",
     "e2e_pkg: real-Docker full-lifecycle test against a runtime-deps-only uv-tool-install binary (CWCLI_BIN)",
 ]
 ```
@@ -343,7 +351,7 @@ Status as of 0.34.0 (see [../docs/testing/README.md](../docs/testing/README.md) 
 7. **Port utilities** (`utils/port_utils.py`) - cross-platform process detection (~9%).
 8. **VS Code integration** (`utils/vscode_utils.py`) - container attachment fallback (~15%).
 9. **Configuration management** (`utils/config_utils.py`) - distinct from `db_utils`'s config validation (~37%).
-10. **Real-Docker E2E for the remaining commands** (`rm`, `restore`, `apps list`/`install`/`uninstall`, `inspect`) and the P2P (`sendme`) loopback - tracked in `openspec/changes/rebuild-e2e-test-suite`. `unlock` is no longer in this list: `tests/e2e/test_unlock_e2e.py` covers it (see item 4c). `update`/`apps update` is no longer in this list either: `tests/e2e/test_apps_update_e2e.py` covers it (see item 4f). `apps`'s other three subcommands moving onto the core (item 4g) did not close this gap - it is unit-tier only, by design (see `migrate-apps-core/tasks.md`).
+10. **Real-Docker E2E for the remaining commands** (`rm`, `restore`, `apps list`/`install`/`uninstall`, `inspect`) - tracked in `openspec/changes/rebuild-e2e-test-suite`. The P2P (`sendme`) loopback is no longer in this list: `tests/e2e/test_restore_p2p_e2e.py` fills the `e2e_p2p` marker with a real send->receive transfer (see item 4c's sibling above), and `test_sendme_utils.py` lifts `utils/sendme_utils.py` off its 9% floor. `unlock` is no longer in this list: `tests/e2e/test_unlock_e2e.py` covers it (see item 4c). `update`/`apps update` is no longer in this list either: `tests/e2e/test_apps_update_e2e.py` covers it (see item 4f). `apps`'s other three subcommands moving onto the core (item 4g) did not close this gap - it is unit-tier only, by design (see `migrate-apps-core/tasks.md`).
 11. Other command modules at or near 0% dedicated unit coverage: `backup.py` (its logic moved to `core/backup.py`, which is covered). `status.py` and `unlock.py` are no longer in this bucket: `test_status_frontend`/`test_status_watch` dedicated-test `status.py` (~95%, on top of `tests/e2e/test_start_status_e2e.py`, see item 3a), and `unlock.py`'s logic moved to `core/unlock.py` (covered, see item 4c) with `commands/unlock.py` itself now at ~50% via `test_unlock_command_cli`. `run.py` is also no longer in this bucket: its logic moved to `core/run.py` + `core/exec_stream.py` (see item 4e), and `test_core_run.py` dedicated-tests the reseated CLI frontend itself.
 
 ## Resources
