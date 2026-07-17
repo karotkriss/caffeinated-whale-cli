@@ -123,3 +123,93 @@ jobs:
           print("cwe2e- projects swept by backstop:", harness.sweep_cwe2e())
           PY
           docker system prune -af --volumes || true
+
+  # Packaging-realism leg: run ONE genuine full lifecycle (init -> apps ->
+  # inspect -> backup -> rm) against a RUNTIME-DEPS-ONLY `uv tool install .`
+  # binary, aimed at via CWCLI_BIN. Every other E2E leg drives the all-extras
+  # dev binary, where dev/transitive deps mask an undeclared runtime import - the
+  # exact shape of the `click` bug that shipped to 0.37.0. The `clean-install`
+  # smoke (test.yml) guards import-time deps but only over `--help`/`config`
+  # reads; this exercises real Docker command paths, where a lazily-imported dep
+  # would otherwise stay invisible. Single v16 leg (packaging realism is
+  # version-agnostic) and OFF the `-m e2e` matrix, so init cost is paid once.
+  e2e-runtime-only:
+    name: E2E (runtime-only install)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'e2e') ||
+      github.event.pull_request.base.ref == 'develop' ||
+      github.event.pull_request.base.ref == 'master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CWE2E_FRAPPE_MAJOR: 16
+      CWE2E_RUN_ID: gha${{ github.run_id }}-rtonly
+      HAS_DOCKERHUB: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+
+      # Isolated tool dir/bin so `uv tool install .` resolves purely from
+      # [project.dependencies] and never leaks onto PATH (see the clean-install
+      # job in test.yml for why these are set here, not at job level).
+      - name: Set up isolated tool dirs
+        run: |
+          echo "UV_TOOL_DIR=$RUNNER_TEMP/tooldir" >> "$GITHUB_ENV"
+          echo "UV_TOOL_BIN_DIR=$RUNNER_TEMP/toolbin" >> "$GITHUB_ENV"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
+
+      - name: Log in to Docker Hub
+        if: env.HAS_DOCKERHUB == 'true'
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4.4.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Preflight - upstream reachability (a DISTINCT signal)
+        run: |
+          set -o pipefail
+          if ! curl -fsSL -o /tmp/cwe2e-compose.yml \
+              "https://raw.githubusercontent.com/frappe/frappe_docker/refs/heads/main/devcontainer-example/docker-compose.yml"; then
+            echo "::error title=Upstream fetch failed::frappe_docker compose file unreachable - upstream/infra issue, NOT a cwcli regression"
+            exit 78
+          fi
+          if ! docker pull frappe/bench:latest; then
+            echo "::error title=Upstream pull failed::frappe/bench image pull failed (Docker Hub rate limit or upstream) - NOT a cwcli regression"
+            exit 78
+          fi
+
+      # The binary under test: runtime deps ONLY (no dev, no extras), exactly
+      # what `uv tool install caffeinated-whale-cli` gives a user.
+      - name: Install cwcli as a uv tool (runtime deps only)
+        run: uv tool install .
+
+      - name: Assert install is runtime-only (dev deps absent)
+        run: |
+          uv pip list --python "$UV_TOOL_DIR/caffeinated-whale-cli" > pkgs.txt
+          grep -qi '^click ' pkgs.txt || { echo "FAIL: click not installed (undeclared runtime dep?)"; exit 1; }
+          if grep -qi '^pytest ' pkgs.txt; then echo "FAIL: pytest present - install pulled dev deps, not runtime-only"; exit 1; fi
+
+      # The pytest harness itself (pexpect, pytest) runs from the dev venv; the
+      # binary it DRIVES is the runtime-only tool, selected via CWCLI_BIN.
+      - name: Install test harness dependencies
+        run: uv sync --frozen --all-extras
+
+      - name: Run runtime-only full-lifecycle E2E
+        env:
+          CWCLI_BIN: ${{ runner.temp }}/toolbin/cwcli
+        run: uv run pytest tests/e2e -m e2e_pkg -o addopts="" -v --tb=short
+
+      - name: Teardown backstop - sweep leaked cwe2e- resources
+        if: always()
+        run: |
+          uv run python - <<'PY'
+          from tests.e2e import harness
+          print("cwe2e- projects swept by backstop:", harness.sweep_cwe2e())
+          PY
+          docker system prune -af --volumes || true
