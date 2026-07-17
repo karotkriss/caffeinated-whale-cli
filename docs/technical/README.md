@@ -91,13 +91,13 @@ caffeinated-whale-cli/
 
 #### 1. Docker Container Management
 
-**Module:** `utils/docker_utils.py`
+**Modules:** `core/docker.py`, `utils/docker_utils.py`
 
 Manages Docker container lifecycle:
-- Container discovery via labels
+- Container discovery via labels (`core/docker.py`, UI-pure so the logic core can call it directly)
 - Status checking
 - Start/stop operations
-- Error handling
+- Error handling (`utils/docker_utils.py`'s CLI-only `handle_docker_errors`)
 
 #### 2. Port Conflict Detection
 
@@ -246,10 +246,8 @@ Project
 ### Docker Utilities
 
 ```python
-from caffeinated_whale_cli.utils.docker_utils import (
-    get_project_containers,
-    handle_docker_errors,
-)
+from caffeinated_whale_cli.core.docker import get_project_containers
+from caffeinated_whale_cli.utils.docker_utils import handle_docker_errors
 
 # Get containers for a project
 containers = get_project_containers("frappe-one")
