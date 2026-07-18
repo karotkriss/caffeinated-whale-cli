@@ -2,9 +2,19 @@
 
 Each note guards a real shipped bug. Keep the root-cause "why" so a later change does not silently re-break the fix.
 
-Since `migrate-init-core` (batch 9, 2026-07-16) the logic lives in `core/init.py` as TWO sequential plain functions - `init_instance` (project dir, compose, containers up + the bounded readiness poll) then `init_bench` (bench resolve, version gating, the 10 provisioning execs on `core.exec_stream`, cache clear) - and `commands/init.py` is a renderer over them.
+Since `migrate-init-core` (batch 9, 2026-07-16) the logic lives in `core/init.py` as TWO sequential plain functions - `init_instance` (project dir, compose, the workspace bind mount, containers up + the bounded readiness poll) then `init_bench` (bench resolve, version gating, the 10 provisioning execs on `core.exec_stream`, cache clear) - and `commands/init.py` is a renderer over them.
 The seam sits at init's one mid-flow user decision (the existing-bench question, which needs a running container and fires on the common interactive path), so resolving `confirm_reuse_bench` re-invokes only stage 2's subsecond probes, never the compose orchestration.
 Every note below survived the migration; its enforcement point is named per note.
+
+### `init` command: the workspace bind mount (the ephemeral-bench fix)
+
+`map-bench-workspace-volume` (2026-07-18): the upstream compose only ever bind-mounted the WHOLE project dir at the hardcoded `/workspace` (`- ..:/workspace:cached`), so `bench init` at `{--bench-parent}/{--bench}` persisted on the host only when `--bench-parent` was left at its default `/workspace`; any custom `--bench-parent` landed outside that mount, in the container's ephemeral layer, and evaporated on the next `docker compose up` (a fresh container has a fresh layer). `init_instance` (`core/init.py`) now rewrites the frappe service's workspace mount to `- ../data:{bench_parent}:cached` (host `{project}/data/`, created by `init_instance` so Docker never materializes it root-owned) and sets `working_dir: {bench_parent}` (replacing upstream `/workspace/development`), so the mount covers any `--bench-parent`, not just the default, and `working_dir` always sits inside the mounted subtree instead of a root-owned dir outside it.
+
+This is a BIND mount, not a named volume - a deliberate choice (captain-approved 2026-07-18) to keep bench files directly browsable/editable on the host; the accepted caveat is that the supervisor's unix socket then sits on the host filesystem backing `CWCLI_HOME`, solid on the default native-Linux `~/.cwcli` and only fragile if `CWCLI_HOME` is relocated onto a networked filesystem. `mariadb-data` and the compose `volumes:` block are untouched - no new named volume.
+
+Two things guard real damage here: (1) **the rewrite is gated on `new_instance`** (the fresh-download branch) - an EXISTING instance's compose is frozen and never re-targeted, so a re-init against an already-running instance cannot silently change where its data lives out from under it; the ports/image rewrites stay unconditional as before (idempotent no-ops on an already-customized compose). (2) **a re-init mount MISMATCH is a `CwcliError(USAGE, "bench_parent.mismatch")`**, not a silent ephemeral-bench recreation: `_mounted_bench_parent` reads the frappe workspace mount's container target back out of the frozen compose (a regex matching `- ..<anything>:{target}:cached`, so it recognizes BOTH the old whole-project shape and the new `../data` shape) and, when a supplied `--bench-parent` disagrees with it, raises before touching any container, naming the mounted parent so the fix (drop the flag, or match it) is obvious. `core.remove` needs no change: deleting the project directory already cleans `{project}/data/` along with `conf/`.
+
+Regression coverage: `tests/test_core_init.py::TestWorkspaceMount` (default/custom `--bench-parent` rewrite, `working_dir` at the mount root, the unchanged `volumes:` block, host `data/` creation, the frozen-compose non-rewrite, the re-init mismatch/match cases).
 
 ### `init` command: Frappe/bench version gating
 
