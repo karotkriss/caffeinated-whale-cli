@@ -139,6 +139,7 @@ def _drive_init_to_bench_ref(monkeypatch, **overrides) -> str:
     monkeypatch.setattr(init_mod.core_init, "init_instance", fake_init_instance)
     monkeypatch.setattr(init_mod.core_init, "init_bench", fake_init_bench)
     monkeypatch.setattr(init_mod.config_utils, "get_show_tips", lambda: False)
+    monkeypatch.setattr(init_mod.cache, "recache_project", lambda *a, **k: True)
 
     params = dict(
         project_name="proj",

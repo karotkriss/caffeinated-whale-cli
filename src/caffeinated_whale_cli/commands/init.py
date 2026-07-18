@@ -26,7 +26,7 @@ from ..core import init as core_init
 from ..core import start as core_start
 from ..core.envelope import Choice, Status
 from ..core.errors import CwcliError
-from ..utils import config_utils
+from ..utils import cache, config_utils
 from ..utils.completion_utils import complete_project_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import handle_docker_errors
@@ -294,6 +294,25 @@ def _resolve_frappe_branch(frappe_branch: str | None, version: str | None) -> st
     if frappe_branch is not None:
         return frappe_branch
     return core_init.DEFAULT_FRAPPE_BRANCH
+
+
+def _refresh_cache(project: str, verbose: bool) -> None:
+    """Populate the bench cache right after a fresh bench is created.
+
+    ``init_bench`` only CLEARS the project's cache (a stale entry would be
+    worse than none); nothing else repopulates it. Every bench-resolving verb
+    (``status``, ``run``, ``apps``, ...) falls back to a hardcoded default
+    bench path when the cache is empty, which only happens to match a bench
+    built under the DEFAULT ``--bench-parent`` - a custom parent's very first
+    post-init command would silently resolve the wrong path. Mirrors
+    ``apps.py``'s post-mutation ``_refresh_cache``: degrades to a warning,
+    never fails init (the bench itself already succeeded).
+    """
+    if not cache.recache_project(project, verbose=verbose):
+        stderr_console.print(
+            "[yellow]Warning:[/yellow] bench created, but caching its bench path failed; "
+            "run 'cwcli inspect --update' to refresh."
+        )
 
 
 def _start_services(project: str, bench_path: str) -> bool:
@@ -622,6 +641,8 @@ def init(
         f"[bold green]✓[/bold green] Successfully initialized bench '{report.bench_name}' in {time_str}"
     )
     console.print(f"[dim]Bench path: {report.bench_path}[/dim]")
+
+    _refresh_cache(project, verbose)
 
     # Auto-start the bench dev services (default) so init leaves a running dev
     # environment. Containers are already up (stage 1 brought them up), so no

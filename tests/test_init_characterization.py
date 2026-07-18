@@ -172,6 +172,9 @@ def run_init(
     monkeypatch.setattr(config_utils, "get_show_tips", lambda: False)
     monkeypatch.setattr(config_utils, "add_custom_path", fake_add_custom_path)
     monkeypatch.setattr(db_utils, "clear_cache_for_project", lambda name: cleared.append(name))
+    # The post-success recache (a real `core.inspect`) is out of scope for this
+    # exec-order/command characterization; stub it to a no-op success.
+    monkeypatch.setattr(init_mod.cache, "recache_project", lambda *a, **k: True)
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(urllib.request, "urlopen", fail_urlopen)
     monkeypatch.setattr(urllib.request, "urlretrieve", fake_urlretrieve)
