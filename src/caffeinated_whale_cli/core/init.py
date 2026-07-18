@@ -578,9 +578,7 @@ def init_instance(
         # a root-owned dir outside the mounted data/ subtree.
         (project_dir / "data").mkdir(parents=True, exist_ok=True)
         content = content.replace("- ..:/workspace:cached", f"- ../data:{bench_parent_path}:cached")
-        content = content.replace(
-            "working_dir: /workspace/development", f"working_dir: {bench_parent_path}"
-        )
+        content = content.replace("working_dir: /workspace", f"working_dir: {bench_parent_path}")
     compose_path.write_text(content)
 
     compose_base = ["docker", "compose", "-p", project_name, "-f", "docker-compose.yml"]
