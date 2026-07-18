@@ -896,6 +896,10 @@ def _restart(plan: RestorePlan, emit: OnEvent, warnings: list[Message]) -> tuple
     except CwcliError as e:
         warnings.append(Message("restart.failed", f"Instance restart failed: {e.message}"))
         return False, None
+    # core.start's web-readiness timeout must not be silently dropped here: a
+    # restored site that never begins serving is exactly the kind of thing this
+    # safety-critical path must not hide.
+    warnings.extend(w for w in result.warnings if w.code == "start.web_not_ready")
     if result.data is None:  # a resolved path never yields a choice
         return False, None
     return True, result.data.log_path
