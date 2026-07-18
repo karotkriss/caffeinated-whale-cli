@@ -159,9 +159,10 @@ def _process_start_time(pid: int) -> str | None:
             ["ps", "-o", "lstart=", "-p", str(pid)],
             capture_output=True,
             text=True,
+            timeout=2,
         )
         return out.stdout.strip() or None
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
         return None
 
 
