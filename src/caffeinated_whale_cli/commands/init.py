@@ -189,8 +189,7 @@ def _render_error_exit(e: CwcliError, project_name: str, *, verbose: bool = Fals
             if output:
                 stderr_console.print(output)
     elif (
-        e.code in ("exec.stream_lost", "exec.exit_code_unknown", "bench_parent.mismatch")
-        and e.hint
+        e.code in ("exec.stream_lost", "exec.exit_code_unknown", "bench_parent.mismatch") and e.hint
     ):
         # The contract's honest lost-stream errors are new on this surface;
         # their hint says what the user should actually do. Same for the
