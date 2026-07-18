@@ -23,6 +23,7 @@ from tests.bench_fakes import MarkerFakeContainer
 
 BENCH_A = "/workspace/frappe-bench"
 BENCH_B = "/workspace/frappe-bench-2"
+MARKER_A = f"{BENCH_A}/.cwcli/.bench-label"
 MARKER_B = f"{BENCH_B}/.cwcli/.bench-label"
 
 
@@ -316,4 +317,185 @@ class TestSharedForks:
         _wire(monkeypatch, MarkerFakeContainer(bench_path=BENCH_A))
         with pytest.raises(CwcliError) as exc:
             core_label.set_label("nope", bench="0", label="x")
+        assert exc.value.kind is ErrorKind.NOT_FOUND
+
+
+class TestSetLabels:
+    """The batched verb behind `inspect -i`: the SAME validate/uniqueness/marker/
+    cache rule as `set_label`, but per-assignment outcomes (never batch-aborting),
+    a stopped-project degrade to cache-only, and first-wins uniqueness within the
+    batch. These pin the nuances the interactive loop used to own inline."""
+
+    def test_applies_several_labels_writing_markers_and_cache(self, temp_db, monkeypatch):
+        _seed(_two_benches())
+        container = MarkerFakeContainer(bench_path=BENCH_A)
+        _wire(monkeypatch, container)
+
+        result = core_label.set_labels("proj", [(BENCH_A, "web"), (BENCH_B, "worker")])
+
+        assert result.status is Status.OK
+        assert result.data is not None
+        assert [(r.bench_path, r.label, r.applied, r.marker_written) for r in result.data] == [
+            (BENCH_A, "web", True, True),
+            (BENCH_B, "worker", True, True),
+        ]
+        assert MARKER_A in container.fs and MARKER_B in container.fs
+        cached = db_utils.get_cached_project_data("proj")["bench_instances"]
+        assert cached[0]["label"] == "web"
+        assert cached[1]["label"] == "worker"
+
+    def test_label_is_stripped_and_blank_never_reaches_here(self, temp_db, monkeypatch):
+        # The frontend drops blank answers; a whitespace-padded label is trimmed.
+        _seed(_two_benches())
+        _wire(monkeypatch, MarkerFakeContainer(bench_path=BENCH_A))
+
+        result = core_label.set_labels("proj", [(BENCH_A, "  web  ")])
+
+        assert result.data is not None
+        assert result.data[0].label == "web"
+        assert result.data[0].applied is True
+
+    def test_first_wins_on_a_within_batch_duplicate(self, temp_db, monkeypatch):
+        # Two benches given the same label in one pass: the first is accepted, the
+        # second is rejected (matching the old in-memory cross-bench check), and the
+        # batch does NOT abort.
+        _seed(_two_benches())
+        _wire(monkeypatch, MarkerFakeContainer(bench_path=BENCH_A))
+
+        result = core_label.set_labels("proj", [(BENCH_A, "dup"), (BENCH_B, "dup")])
+
+        assert result.data is not None
+        first, second = result.data
+        assert (first.applied, first.error) == (True, None)
+        assert second.applied is False
+        assert "already used" in (second.error or "")
+        cached = db_utils.get_cached_project_data("proj")["bench_instances"]
+        assert cached[0]["label"] == "dup"
+        assert "label" not in cached[1]
+
+    def test_duplicate_of_an_untouched_bench_is_rejected(self, temp_db, monkeypatch):
+        _seed(_two_benches(labels=(None, "staging")))
+        _wire(monkeypatch, MarkerFakeContainer(bench_path=BENCH_A))
+
+        result = core_label.set_labels("proj", [(BENCH_A, "staging")])
+
+        assert result.data is not None
+        assert result.data[0].applied is False
+        assert "already used" in (result.data[0].error or "")
+
+    def test_invalid_label_is_rejected_but_siblings_still_apply(self, temp_db, monkeypatch):
+        _seed(_two_benches())
+        _wire(monkeypatch, MarkerFakeContainer(bench_path=BENCH_A))
+
+        result = core_label.set_labels("proj", [(BENCH_A, "7"), (BENCH_B, "ok")])
+
+        assert result.data is not None
+        assert result.data[0].applied is False  # purely-numeric label
+        assert result.data[1].applied is True
+        cached = db_utils.get_cached_project_data("proj")["bench_instances"]
+        assert "label" not in cached[0]
+        assert cached[1]["label"] == "ok"
+
+    def test_stopped_project_degrades_to_cache_only(self, temp_db, monkeypatch):
+        # `inspect -i` on a stopped instance still records labels (to the cache),
+        # rather than the hard NOT_RUNNING `set_label` raises - the interactive
+        # affordance the frontend used to own.
+        _seed(_two_benches())
+        container = MarkerFakeContainer(bench_path=BENCH_A)
+        container.status = "exited"
+        _wire(monkeypatch, container)
+
+        result = core_label.set_labels("proj", [(BENCH_A, "web")])
+
+        assert result.status is Status.OK
+        assert [w.code for w in result.warnings] == ["label.marker_skipped"]
+        assert result.data is not None
+        assert result.data[0].applied is True
+        assert result.data[0].marker_written is False
+        assert container.fs == {}  # no marker written
+        cached = db_utils.get_cached_project_data("proj")["bench_instances"]
+        assert cached[0]["label"] == "web"
+
+    def test_container_not_found_degrades_to_cache_only(self, temp_db, monkeypatch):
+        # A project whose containers were removed since the last inspect must
+        # degrade like a stopped project, not raise - the pre-migration frontend
+        # caught ANY container-resolution failure this broadly.
+        _seed(_two_benches())
+
+        def _boom(name):
+            raise CwcliError(ErrorKind.NOT_FOUND, "project.not_found", "gone")
+
+        monkeypatch.setattr(core_docker, "get_frappe_container", _boom)
+
+        result = core_label.set_labels("proj", [(BENCH_A, "web")])
+
+        assert result.status is Status.OK
+        assert [w.code for w in result.warnings] == ["label.marker_skipped"]
+        assert result.data is not None
+        assert result.data[0].applied is True
+        assert result.data[0].marker_written is False
+        cached = db_utils.get_cached_project_data("proj")["bench_instances"]
+        assert cached[0]["label"] == "web"
+
+    def test_docker_unreachable_degrades_to_cache_only(self, temp_db, monkeypatch):
+        # A daemon hiccup mid-session must degrade the same way, not crash the
+        # interactive session with a raw CwcliError.
+        _seed(_two_benches())
+
+        def _boom(name):
+            raise CwcliError(ErrorKind.DOCKER, "docker.unreachable", "Could not connect")
+
+        monkeypatch.setattr(core_docker, "get_frappe_container", _boom)
+
+        result = core_label.set_labels("proj", [(BENCH_A, "web")])
+
+        assert result.status is Status.OK
+        assert [w.code for w in result.warnings] == ["label.marker_skipped"]
+        assert result.data is not None
+        assert result.data[0].applied is True
+        assert result.data[0].marker_written is False
+        cached = db_utils.get_cached_project_data("proj")["bench_instances"]
+        assert cached[0]["label"] == "web"
+
+    def test_require_benches_not_found_still_propagates_before_container_fetch(
+        self, temp_db, monkeypatch
+    ):
+        # The broadened degrade must NOT swallow `_require_benches`'s own NOT_FOUND
+        # ("never inspected"): it runs before the container fetch, so an
+        # uninspected project still raises rather than silently degrading.
+        def _boom(name):
+            raise AssertionError("container must not be fetched for an uninspected project")
+
+        monkeypatch.setattr(core_docker, "get_frappe_container", _boom)
+        with pytest.raises(CwcliError) as exc:
+            core_label.set_labels("never-inspected", [(BENCH_A, "web")])
+        assert exc.value.kind is ErrorKind.NOT_FOUND
+        assert exc.value.code == "benches.none_cached"
+
+    def test_unknown_bench_path_is_reported_not_raised(self, temp_db, monkeypatch):
+        _seed(_two_benches())
+        _wire(monkeypatch, MarkerFakeContainer(bench_path=BENCH_A))
+
+        result = core_label.set_labels("proj", [("/workspace/ghost", "x")])
+
+        assert result.data is not None
+        assert result.data[0].applied is False
+        assert "No cached bench" in (result.data[0].error or "")
+
+    def test_empty_assignments_is_a_noop(self, temp_db, monkeypatch):
+        _seed(_two_benches(labels=(None, "staging")))
+        _wire(monkeypatch, MarkerFakeContainer(bench_path=BENCH_A))
+
+        result = core_label.set_labels("proj", [])
+
+        assert result.status is Status.OK
+        assert result.data == []
+        # Existing labels are preserved through the cache round-trip.
+        cached = db_utils.get_cached_project_data("proj")["bench_instances"]
+        assert cached[1]["label"] == "staging"
+
+    def test_uninspected_project_raises(self, temp_db, monkeypatch):
+        _wire(monkeypatch, MarkerFakeContainer(bench_path=BENCH_A))
+        with pytest.raises(CwcliError) as exc:
+            core_label.set_labels("nope", [(BENCH_A, "x")])
         assert exc.value.kind is ErrorKind.NOT_FOUND
