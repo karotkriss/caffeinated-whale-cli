@@ -173,10 +173,15 @@ def test_custom_bench_parent_persists_and_rm_removes_data(port_allocator):
         code, out = harness.exec_in_frappe(name, f"test -d {shlex.quote(bench)}")
         assert code == 0, f"bench missing in container at {bench}: {out}"
 
-        # start/status/logs resolve the custom-parent bench.
+        # start/status/logs resolve the custom-parent bench with no `--bench`
+        # selector needed (a single cached bench), proven by the honest
+        # "running" token - `status`'s stdout is a bare lifecycle token by
+        # contract and never echoes a path, so a wrong bench resolution would
+        # surface here as "online" (marker unreadable at the wrong path), not
+        # as a missing substring.
         st = harness.run_cwcli("status", name)
         assert st.returncode == 0, st.stdout + st.stderr
-        assert parent in harness.strip_ansi(st.stdout), st.stdout
+        assert harness.strip_ansi(st.stdout).strip() == "running", st.stdout + st.stderr
         lg = harness.run_cwcli("axi", "logs", name, "-n", "5")
         assert lg.returncode == 0, lg.stdout + lg.stderr
 
