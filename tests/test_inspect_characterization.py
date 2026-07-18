@@ -411,3 +411,116 @@ class TestStoppedProjectContract:
         assert writes == []
         err = capsys.readouterr().err
         assert "not running" in err
+
+
+def _stub_questionary(monkeypatch, answers):
+    """Feed the ``-i`` prompt loop a queued list of answers (None = Ctrl+C)."""
+    queue = list(answers)
+
+    class _Q:
+        def ask(self):
+            return queue.pop(0) if queue else ""
+
+    monkeypatch.setattr(inspect_mod.questionary, "text", lambda *a, **k: _Q())
+
+
+class TestInteractiveLabeling:
+    """`inspect -i` now PROMPTS (frontend) then routes the collected answers through
+    ``core.label.set_labels`` - the validate/uniqueness/marker/cache rule has one
+    owner. These pin the routing and the preserved per-bench outcome rendering."""
+
+    def test_accepted_label_persists_and_blank_keeps_existing(self, wired, monkeypatch, capsys):
+        store, writes, install = wired
+        _seed_cache(store)
+        install(MultiBenchContainer())
+        # Bench 0 gets "web"; bench 1 answered blank keeps its "staging" label.
+        _stub_questionary(monkeypatch, ["web", ""])
+        monkeypatch.setattr(
+            inspect_mod.core_label.bench_labels, "write_label_marker", lambda *a: True
+        )
+
+        _run_inspect(interactive=True, no_refresh=True)
+
+        out = json.loads(capsys.readouterr().out)
+        labels = {b["index"]: b.get("label") for b in out["bench_instances"]}
+        assert labels == {0: "web", 1: "staging"}
+        assert writes and writes[-1][0]["label"] == "web"
+
+    def test_duplicate_answer_is_rejected_with_todays_wording(self, wired, monkeypatch, capsys):
+        store, writes, install = wired
+        _seed_cache(store)
+        install(MultiBenchContainer())
+        # Bench 0 tries to reuse bench 1's existing "staging" label -> rejected.
+        _stub_questionary(monkeypatch, ["staging", ""])
+
+        _run_inspect(interactive=True, no_refresh=True)
+
+        captured = capsys.readouterr()
+        normalized = " ".join(captured.err.split())  # rich soft-wraps the line
+        assert "already used" in normalized
+        assert "Keeping the previous label" in normalized
+        out = json.loads(captured.out)
+        assert out["bench_instances"][0].get("label") is None
+
+    def test_stopped_project_warns_marker_skipped_but_saves_to_cache(
+        self, wired, monkeypatch, capsys
+    ):
+        store, writes, install = wired
+        _seed_cache(store)
+        install(MultiBenchContainer(status="exited"))
+        _stub_questionary(monkeypatch, ["web", ""])
+
+        _run_inspect(interactive=True, no_refresh=True)
+
+        captured = capsys.readouterr()
+        assert "cache only" in captured.err
+        out = json.loads(captured.out)
+        assert out["bench_instances"][0]["label"] == "web"
+
+    def test_ctrl_c_on_first_prompt_labels_nothing(self, wired, monkeypatch, capsys):
+        store, writes, install = wired
+        _seed_cache(store)
+        install(MultiBenchContainer())
+        _stub_questionary(monkeypatch, [None])  # Ctrl+C immediately
+
+        _run_inspect(interactive=True, no_refresh=True)
+
+        out = json.loads(capsys.readouterr().out)
+        assert out["bench_instances"][0].get("label") is None
+        assert out["bench_instances"][1].get("label") == "staging"
+
+    def test_marker_skipped_warning_shown_before_prompt_loop_not_after(
+        self, wired, monkeypatch, capsys
+    ):
+        """The cache-only warning must land BEFORE the user answers any prompt (the
+        pre-migration ordering), not only after ``set_labels`` returns - a user
+        against a stopped project should learn markers won't be written before
+        typing anything, not after answering every prompt."""
+        store, writes, install = wired
+        _seed_cache(store)
+        install(MultiBenchContainer(status="exited"))
+        _stub_questionary(monkeypatch, ["web", ""])
+
+        order: list[str] = []
+        real_text = inspect_mod.questionary.text
+
+        def spying_text(*a, **k):
+            order.append("prompt")
+            return real_text(*a, **k)
+
+        monkeypatch.setattr(inspect_mod.questionary, "text", spying_text)
+
+        real_print = inspect_mod.console_err.print
+
+        def spying_print(msg, *a, **k):
+            if "cache only" in str(msg):
+                order.append("warning")
+            return real_print(msg, *a, **k)
+
+        monkeypatch.setattr(inspect_mod.console_err, "print", spying_print)
+
+        _run_inspect(interactive=True, no_refresh=True)
+
+        assert order[0] == "warning"
+        assert order.count("warning") == 1  # not echoed again after set_labels
+        assert order.count("prompt") == 2

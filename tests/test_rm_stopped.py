@@ -111,7 +111,7 @@ class TestRecacheIsNonInteractive:
         # Make inspect believe there is no cached data so it proceeds to the
         # ensure_containers_running gate, and the frappe container is stopped.
         container = _stopped_frappe_container()
-        monkeypatch.setattr(inspect_mod.db_utils, "get_cached_project_data", lambda name: None)
+        monkeypatch.setattr(db_utils, "get_cached_project_data", lambda name: None)
         monkeypatch.setattr(cache.db_utils, "clear_cache_for_project", lambda name: None)
         monkeypatch.setattr(cmd_utils, "get_frappe_container", lambda name: container)
 

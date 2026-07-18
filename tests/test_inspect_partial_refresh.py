@@ -147,8 +147,8 @@ def patched_inspect(monkeypatch):
             "last_updated": "now",
         }
 
-    monkeypatch.setattr(inspect_mod.db_utils, "get_cached_project_data", fake_get)
-    monkeypatch.setattr(inspect_mod.db_utils, "cache_project_data", fake_cache)
+    monkeypatch.setattr(db_utils, "get_cached_project_data", fake_get)
+    monkeypatch.setattr(db_utils, "cache_project_data", fake_cache)
     # Containers are "running"; never prompt, never start (safe, non-disruptive).
     monkeypatch.setattr(inspect_mod, "ensure_containers_running", lambda *a, **k: True)
     monkeypatch.setattr(inspect_mod.config_utils, "get_show_tips", lambda: False)
@@ -391,7 +391,7 @@ class TestOpenAppInMemoryRefresh:
     def test_returns_fresh_apps_carries_config_and_never_writes_cache(self, monkeypatch):
         writes: list = []
         monkeypatch.setattr(
-            inspect_mod.db_utils,
+            db_utils,
             "cache_project_data",
             lambda *a, **k: writes.append(a),
         )
