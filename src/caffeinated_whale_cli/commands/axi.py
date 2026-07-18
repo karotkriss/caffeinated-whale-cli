@@ -52,7 +52,7 @@ from ..core import where as core_where
 from ..core.envelope import Choice
 from ..core.envelope import Status as CoreStatus
 from ..core.errors import CwcliError, ErrorKind
-from ..utils import agent_hooks, toon
+from ..utils import agent_hooks, cache, toon
 
 # --------------------------------------------------------------- parse-error -> TOON layer
 #
@@ -1245,6 +1245,14 @@ def axi_init(
 
     assert bench_result.data is not None  # OK/WARNING always carries an InitReport
     report = bench_result.data
+
+    if not cache.recache_project(project):
+        print(
+            "Warning: bench created, but caching its bench path failed; "
+            "run 'cwcli inspect --update' to refresh.",
+            file=sys.stderr,
+            flush=True,
+        )
 
     if start_services:
         print("Starting dev services...", file=sys.stderr, flush=True)
