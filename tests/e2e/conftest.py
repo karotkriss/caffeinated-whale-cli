@@ -71,6 +71,11 @@ def isolated_home(tmp_path_factory):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+        # The Docker daemon (root) can leave root-owned paths inside the bind-mounted
+        # CWCLI_HOME (e.g. a compose-created working_dir), which this non-root rmtree
+        # cannot remove - and tmp_home lives under a shared temp home, so the leak
+        # re-breaks later pytest runs. Reclaim ownership (scoped to tmp_home) first.
+        harness.reclaim_root_owned(tmp_home)
         shutil.rmtree(tmp_home, ignore_errors=True)
 
 

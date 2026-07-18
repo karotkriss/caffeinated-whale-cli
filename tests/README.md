@@ -74,6 +74,7 @@ Isolation and safety are non-negotiable and layered:
 - Each session gets a temporary `HOME` **and** a `CWCLI_HOME` override (the precise seam that relocates only cwcli's own footprint), plus unique `cwe2e-<runid>-<n>` project/site names and a port allocator (bases ≥1006 apart).
 - A **hard rail** (`enforce_isolation`) fails closed before any Docker work if `HOME` is (or nests under) the operator's real home, or if `CWCLI_HOME` is unset or does not resolve to a location inside that isolated `HOME` (so a `CWCLI_HOME` pointing at the real home can never slip through), and a name rail refuses any project name lacking the `cwe2e-` prefix.
 - An **unconditional teardown backstop** (`sweep_cwe2e`) removes every `cwe2e-`-labelled compose project's containers, volumes, and networks on session teardown, so a crashed test never leaks.
+- A **root-owned-path reclaim** (`reclaim_root_owned`) runs before a session's temp `HOME` is deleted: a scoped root-uid container chowns any root-owned path (e.g. a compose-created `working_dir`) back to the host uid/gid first, so a path the Docker daemon created as root can never survive teardown into the shared temp home.
 
 `CWE2E_FRAPPE_MAJOR` selects the Frappe version leg (default 16); version-agnostic E2E tests run only on the v16 leg, version-sensitive ones on every leg.
 The real-Docker E2E is Linux-only; Windows/macOS-specific code stays in the unit tier.

@@ -113,3 +113,44 @@ def test_backstop_sweeps_leaked_container(_docker_gate):
         assert leaked not in harness.cwe2e_projects(), "leak survived the sweep"
     finally:
         harness.sweep_cwe2e(only=leaked)
+
+
+def test_reclaim_root_owned_makes_teardown_removable(_docker_gate, tmp_path):
+    """Reproduce the exact leak - the Docker daemon (root) writing a root-owned
+    path into a bind-mounted host dir - and prove ``reclaim_root_owned`` lets the
+    ordinary non-root ``shutil.rmtree`` remove it. Scoped strictly to this test's
+    own ``tmp_path``; never touches the session instance or shared /tmp."""
+    import shutil
+
+    home = tmp_path / "cwe2e-home"
+    workspace = home / ".cwcli" / "projects" / "cwe2e-reclaim" / "conf"
+    workspace.mkdir(parents=True)
+    bind_root = workspace.parent  # what compose mounts as /workspace
+
+    # Mimic `compose up`'s working_dir creation + a root process writing there.
+    subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--user",
+            "0:0",
+            "-v",
+            f"{bind_root}:/workspace",
+            "busybox",
+            "sh",
+            "-c",
+            "mkdir -p /workspace/development && touch /workspace/development/f",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    leaked = bind_root / "development" / "f"
+    assert leaked.stat().st_uid == 0, "precondition: the leak must be a genuine root-owned file"
+    # A non-root rmtree cannot remove it as-is: the parent (root-owned) blocks unlink.
+    shutil.rmtree(home, ignore_errors=True)
+    assert leaked.exists(), "precondition: root-owned file survives a non-root rmtree"
+
+    assert harness.reclaim_root_owned(home) is True, "reclaim did not run over the root-owned tree"
+    shutil.rmtree(home, ignore_errors=False)
+    assert not home.exists(), "reclaimed tree must be fully removable by the non-root user"

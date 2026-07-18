@@ -517,6 +517,15 @@ def init_instance(
     content = content.replace(
         "9000-9005:9000-9005", f"{socketio_start}-{socketio_start+5}:9000-9005"
     )
+    # The upstream devcontainer template sets `working_dir: /workspace/development`
+    # - a path cwcli never creates (its bench lives at /workspace/frappe-bench).
+    # /workspace is a bind mount to CWCLI_HOME/projects/<name>/, so on `compose up`
+    # the Docker daemon (root) creates that missing working_dir INSIDE the bind
+    # mount as root:root, leaving a root-owned path in CWCLI_HOME that a non-root
+    # `cwcli rm` / test cleanup cannot remove (it re-broke bare pytest by leaking
+    # root-owned dirs into a shared temp home). Point it at the mount root, which
+    # always exists, so no root-owned working_dir is ever created on the host.
+    content = content.replace("working_dir: /workspace/development", "working_dir: /workspace")
     emit(
         InitStepStart(
             phase="resolve_bench_tag",
