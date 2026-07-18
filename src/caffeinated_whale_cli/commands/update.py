@@ -323,7 +323,8 @@ def _report_summary(report: UpdateReport) -> None:
         for site in report.failed_maintenance_disable:
             console.print(
                 f"  • {site}: still in maintenance mode - run "
-                f"'bench --site {shlex.quote(site)} set-maintenance-mode off'"
+                f"'cwcli run {shlex.quote(report.project)} --site {shlex.quote(site)} "
+                f"set-maintenance-mode off'"
             )
 
 
