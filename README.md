@@ -218,7 +218,7 @@ Stop:    cwcli stop my-project
 Restart: cwcli restart my-project
 
 Administrator password (generated): 3sK9nQx7Lm-2pT4vWbY6Za
-Shown once and not stored anywhere. To change it later, run `bench --site development.localhost set-admin-password <new-password>`.
+Shown once and not stored anywhere. To change it later, run `cwcli run my-project --site development.localhost set-admin-password <new-password>`.
 ```
 
 The generated administrator password prints only when `--admin-password` is omitted in an interactive run; supply `--admin-password` to set it yourself (and to run non-interactively).
