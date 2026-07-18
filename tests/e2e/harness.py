@@ -353,20 +353,23 @@ def reclaim_root_owned(root: Path) -> bool:
     # `busybox` is tiny and universally pullable; --user 0 forces root inside so
     # chown can reassign any owner. Best-effort: a failure falls back to today's
     # rmtree(ignore_errors=True), no worse than before.
-    r = _docker(
-        "run",
-        "--rm",
-        "--user",
-        "0:0",
-        "-v",
-        f"{root}:/reclaim",
-        "busybox:latest",
-        "chown",
-        "-R",
-        f"{uid}:{gid}",
-        "/reclaim",
-        timeout=300,
-    )
+    try:
+        r = _docker(
+            "run",
+            "--rm",
+            "--user",
+            "0:0",
+            "-v",
+            f"{root}:/reclaim",
+            "busybox:latest",
+            "chown",
+            "-R",
+            f"{uid}:{gid}",
+            "/reclaim",
+            timeout=300,
+        )
+    except Exception:
+        return False
     return r.returncode == 0
 
 
