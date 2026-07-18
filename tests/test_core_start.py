@@ -84,6 +84,43 @@ class TestLaunch:
         result = core_start.start("proj")
         assert any(w.code == "bench.default_used" for w in result.warnings)
 
+    def test_launch_waits_for_web_and_reports_ready(self, wire):
+        # A genuine launch blocks until :8000 serves, then reports web_ready=True
+        # (the fake serves 200 by default) - closing the start->status race.
+        frappe = FakeContainer(ps="1 0 5 0.0 1000 /sbin/init\n", cwds={})
+        wire(frappe)
+        result = core_start.start("proj")
+        assert result.data.web_ready is True
+        assert not any(w.code == "start.web_not_ready" for w in result.warnings)
+
+    def test_launch_warns_when_web_never_serves(self, wire, monkeypatch):
+        # Web that never binds: start still succeeds (the stack IS launched) but
+        # reports web_ready=False and emits the honest warning. wait_web_ready is
+        # stubbed to return immediately so the test doesn't wait the real timeout.
+        frappe = FakeContainer(ps="1 0 5 0.0 1000 /sbin/init\n", cwds={})
+        wire(frappe)
+        monkeypatch.setattr(supervision, "wait_web_ready", lambda *a, **k: False)
+        result = core_start.start("proj")
+        assert result.status is Status.OK
+        assert result.data.web_ready is False
+        assert any(w.code == "start.web_not_ready" for w in result.warnings)
+
+    def test_launch_skips_web_wait_when_no_web_program(self, wire, monkeypatch):
+        # A Procfile without a `web` program never waits on :8000 (web_ready=None).
+        no_web_procfile = "redis_cache: redis-server\nschedule: bench schedule\n"
+        frappe = FakeContainer(ps="1 0 5 0.0 1000 /sbin/init\n", cwds={}, procfile=no_web_procfile)
+        wire(frappe)
+        called = {"n": 0}
+        real = supervision.wait_web_ready
+        monkeypatch.setattr(
+            supervision,
+            "wait_web_ready",
+            lambda *a, **k: (called.__setitem__("n", called["n"] + 1), real(*a, **k))[1],
+        )
+        result = core_start.start("proj")
+        assert result.data.web_ready is None
+        assert called["n"] == 0, "must not probe web when the Procfile has no web program"
+
 
 class TestIdempotent:
     def test_already_running_is_a_clean_noop(self, wire):
@@ -93,6 +130,7 @@ class TestIdempotent:
         result = core_start.start("proj")
         assert result.status is Status.OK
         assert result.data.already_running is True
+        assert result.data.web_ready is None, "no-op must not re-probe the web"
         assert result.data.bench_path == BENCH
         assert frappe.launches == [], "must NOT launch a second supervisord"
         # No marker rewrite on the no-op path (started_at is preserved).

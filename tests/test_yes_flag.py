@@ -312,6 +312,25 @@ class TestStartProjectWrapper:
             start_mod._start_project("ghost", verbose=False, status=None)
         assert exc.value.exit_code == 1
 
+    def test_web_not_ready_warning_is_surfaced(self, monkeypatch, capsys):
+        # Used by whole-stack `cwcli restart` and the auto-start path: a
+        # web-readiness timeout must not be silently dropped here either.
+        self._neutralize(monkeypatch)
+        from caffeinated_whale_cli.core.envelope import Message
+
+        def fake_core_start(name, *, bench=None, bench_path=None, auto_start=False, restart=False):
+            return Result(
+                status=Status.OK,
+                data=_outcome(bench_path=bench_path or "/workspace/frappe-bench"),
+                warnings=[Message("start.web_not_ready", "web did not begin serving on :8000")],
+            )
+
+        monkeypatch.setattr(start_mod.core_start, "start", fake_core_start)
+        start_mod._start_project(
+            "proj", verbose=False, status=None, bench_path_override="/workspace/frappe-bench"
+        )
+        assert "web did not begin serving" in capsys.readouterr().err
+
 
 # ------------------------------------------------ start multi-project loop
 

@@ -419,6 +419,9 @@ def _apply_and_render(
             )
         else:
             console.print("[bold green]✓[/bold green] Instance restart requested")
+        for w in result.warnings:
+            if w.code == "start.web_not_ready":
+                stderr_console.print(f"[yellow]Warning:[/yellow] {w.text}")
 
     if result.status is Status.WARNING and report.migrate_ran and not report.migrate_ok:
         raise typer.Exit(code=1)

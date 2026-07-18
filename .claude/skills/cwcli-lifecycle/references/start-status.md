@@ -114,6 +114,26 @@ are now the whole point. Each note below guards a real bug.
   in `references/init.md`. A no-op when the ids already match; a failed remap degrades to a
   `start.uid_align_failed` warning (rendered unconditionally by `commands/start.py`, not just under
   `--verbose`) and start still proceeds.
+- **Blocks until the web server actually binds `:8000` before reporting running** (`fm/cwcli-start-web-readiness-w3`).
+  supervisord reports its programs up a beat before `bench serve` binds the port, so a caller that declared
+  "running" the instant the launch returned raced the web - a scripted `cwcli start && cwcli status` (or `cwcli
+  init && cwcli status`) caught a transient `degraded`. `start` closes that race itself, at the ONE shared point
+  every caller (`cwcli start`, init's auto-start, `axi start`/`axi init`, whole-stack `restart`, and the
+  post-restore restart) already funnels through, rather than each caller re-implementing its own wait.
+  `supervision.wait_web_ready(container)` (bounded 60s, 1s poll interval) reuses the existing `web_http_code`
+  probe via the new `web_is_serving` helper (status's own "up" definition: any code not in `(None, "000")`).
+  The wait runs ONLY on a genuine launch and ONLY when the Procfile defines a `web` program - the idempotent
+  no-op returns BEFORE it (stays fast, `web_ready=None`), and a no-web bench is never blocked
+  (`web_ready=None`, zero added latency). A timeout NEVER fails the start (the stack IS launched): it degrades
+  to a `start.web_not_ready` warning and `StartOutcome.web_ready=False`; a bench already serving passes on the
+  first poll with no added latency (`web_ready=True`). `start.web_not_ready` is on every caller's unconditional
+  warning list (`commands/start.py`'s `_run_start` AND `_start_project` - the latter is what `restart`'s
+  whole-stack path and the auto-start path share), `init`'s `_start_services` prints it and withholds "Dev
+  services are running" when `web_ready is False`, and `core/restore.py`'s post-restore `_restart` forwards it
+  rather than swallowing it (a restored site that never begins serving must not read as a silent success).
+  See `tests/e2e/test_start_status_e2e.py::test_status_is_running_immediately_after_start` for the regression
+  net (asserts `status` reads `running` the instant `start` returns, with no readiness wait between the two
+  calls) and `test_core_start.py`/`test_core_supervision.py` for the unit coverage of the branches above.
 
 ## `core/restart.py` - single-program restart (the per-process feature)
 

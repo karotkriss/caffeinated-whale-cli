@@ -318,14 +318,17 @@ def _refresh_cache(project: str, verbose: bool) -> None:
         )
 
 
-def _start_services(project: str, bench_path: str) -> bool:
+def _start_services(project: str, bench_path: str) -> tuple[bool, bool | None]:
     """Start the just-created bench's dev services over ``core.start``.
 
     Reuses the ``cwcli start`` path (``core.start``) rather than reinventing the
     supervisord launch. The bench path is known exactly (``report.bench_path``),
     so it is passed verbatim and ``core.start`` never forks to a multi-bench
-    choice. Returns True when the services are up; a failure degrades to a
-    warning (init already succeeded at creating the bench) and returns False.
+    choice. Returns ``(running, web_ready)``: ``running`` is True when the launch
+    itself succeeded; a failure degrades to a warning (init already succeeded at
+    creating the bench) and returns ``(False, None)``. ``web_ready`` mirrors
+    ``core.start``'s own honest signal (True served / False timed out / None not
+    probed) so the caller can avoid claiming "running" on a web-readiness timeout.
     """
     try:
         with stderr_console.status(
@@ -337,8 +340,16 @@ def _start_services(project: str, bench_path: str) -> bool:
             f"[yellow]Warning:[/yellow] Bench created, but its dev services could not be "
             f"started: {getattr(e, 'message', str(e))}"
         )
-        return False
-    return result.status is not Status.NEEDS_CHOICE
+        return False, None
+    # core.start now blocks until the web server binds :8000, so "running" is
+    # honest by the time we return. If it timed out, surface the warning so the
+    # user isn't told the web is up when it hasn't begun serving yet.
+    for warning in result.warnings:
+        if warning.code == "start.web_not_ready":
+            stderr_console.print(f"[yellow]Warning:[/yellow] {warning.text}")
+    running = result.status is not Status.NEEDS_CHOICE
+    web_ready = result.data.web_ready if running and result.data is not None else None
+    return running, web_ready
 
 
 def _resolve_reuse_choice(choice: Choice, bench_name: str) -> tuple[str, bool | None]:
@@ -653,11 +664,12 @@ def init(
     # A start failure does NOT fail init (the bench is created); it degrades to a
     # warning telling the user to run `cwcli start` themselves.
     services_running = False
+    web_ready: bool | None = None
     if start_services:
-        services_running = _start_services(project, report.bench_path)
+        services_running, web_ready = _start_services(project, report.bench_path)
 
     console.print()
-    if services_running:
+    if services_running and web_ready is not False:
         console.print(f"[bold green]✓[/bold green] Dev services are running for '{project}'.")
         console.print(
             f"[dim]Open:    http://{report.site_name}:8000  (or `cwcli open {project}`)[/dim]"
