@@ -107,8 +107,8 @@ uv run pytest -x
 
 ### Current Test Coverage
 
-`tests/` measures at ~82% overall coverage (via `uv run pytest --cov` at 0.37.0, unreleased); see [tests/README.md](../../tests/README.md#test-coverage) for the current test/file counts and the [Testing Directory Index](./README.md#current-status) for the full per-area breakdown.
-`test_completion_utils.py` remains the most complete single-module suite (tab completion, ~92% coverage): project name completion, app name completion, site name completion, cache functionality, Docker client management.
+For the overall coverage number, the test/file counts, and the full per-module breakdown, see [tests/README.md](../../tests/README.md#test-coverage) - the single source.
+`test_completion_utils.py` (tab completion) is a good single-module suite to model a new one on: project name completion, app name completion, site name completion, cache functionality, Docker client management.
 
 ### Test Organization
 
@@ -249,7 +249,7 @@ def temp_cache():
 
 - **Minimum**: 80% coverage for new code
 - **Target**: 90%+ coverage for critical paths
-- **Current**: ~63% overall at 0.37.0 (unreleased); `completion_utils.py` is the highest-covered module at ~92% (see the [Testing Directory Index](./README.md#current-status) for the rest)
+- **Current**: see [tests/README.md](../../tests/README.md#test-coverage) for the current overall coverage number and per-module breakdown
 
 ### Checking Coverage
 
@@ -385,24 +385,7 @@ uv run pytest -l  # Show local variables
 
 ## Future Test Coverage
 
-Status as of 0.37.0 (see the [Testing Directory Index](./README.md#future-test-priorities) for the full list):
-
-- [x] `core/inspect.py` - the `inspect` logic core: the T1/T2/T3 freshness tier machine, the discovery/gather fan-out, AND the cache write, one contract (`test_core_inspect`); `commands/inspect.py` is now a renderer over it (`test_inspect_partial_refresh`, `test_inspect_label_recovery`); `test_inspect_characterization` is the byte-identical green-before net pinned against the unmigrated command; `cwcli axi inspect` (`test_axi_inspect`) (`openspec/changes/migrate-inspect-core`)
-- [x] `utils/db_utils.py` - Cache database operations (`test_db_security`, `test_config_validation`)
-- [x] `commands/apps.py`, `commands/update.py` - App management and update-migration logic (`test_apps`); `list`/`install`/`uninstall` moved onto `core/apps.py` and `update` onto `core/update.py` (`test_apps_characterization`, `test_core_apps`, `test_axi_apps_list`, `test_core_update`, `test_axi_apps_update`, `test_update_characterization`), see the Testing Directory Index for the full breakdown
-- [x] `utils/config_utils.py`'s `cwcli_home()` - `CWCLI_HOME` override (`test_cwcli_home`, mock-free)
-- [~] `commands/start.py` - Port conflict detection; `test_yes_flag` covers the non-interactive contract, and the interactive port-conflict confirmation prompt is driven end to end by `tests/e2e/test_start_status_e2e.py`, but the remaining port-scanning helpers still have no dedicated unit suite
-- [ ] `utils/port_utils.py` - Port management
-- [~] `utils/docker_utils.py` - Docker interactions; the `get_frappe_container` CLI wrapper is covered by `test_core_resolvers`, but `handle_docker_errors`'s error branches and `exec_into_container` still have no dedicated unit suite. `decode_exec_stream` is gone, superseded by `core/exec_stream.py`; the UI-free primitives (`utf8_stream_decoder`, `get_project_containers`, `get_project_volumes`) moved to `core/docker.py` so the UI-pure core never imports this module - `test_exec_stream_decode` dedicated-tests `utf8_stream_decoder` there now
-- [x] `core/start.py`, `core/status.py`, `core/supervision.py` - the start/status logic core (`test_core_start`, `test_core_status`, `test_core_supervision`); `commands/status.py` (`test_status_frontend`, `test_status_watch` for the `--watch` live view); `cwcli axi start`/`status` (`test_axi_start_status`)
-- [x] Real-Docker E2E for `init` and `backup` (`tests/e2e/test_init_e2e.py`, `tests/e2e/test_backup_e2e.py`) - genuine `bench init`/`bench backup` against throwaway Frappe instances, both interactive and non-interactive
-- [x] Real-Docker E2E for the lifecycle commands `start`/`status`/`logs`/`restart` (`tests/e2e/test_start_status_e2e.py`) - a structure-agnostic outcome net that pinned the invariants the start/status core migration had to preserve, both interactive and non-interactive (`openspec/changes/add-start-status-e2e-net`); `tests/e2e/test_start_status_new_behavior_e2e.py` covers the behavior that migration added (`openspec/changes/migrate-start-status-core`); `tests/e2e/test_status_unsupervised_e2e.py` guards the not-cwcli-supervised fallback regression (a bench relaunched under plain honcho reports real per-process state instead of a false all-down), both interactive and non-interactive
-- [x] `core/unlock.py`, `core/stop.py` - the `unlock`/`stop` logic core (`test_core_unlock`, `test_core_stop`), the foundation's generality proof (`unlock` migrated with zero new primitives); `cwcli axi unlock`/`stop` (`test_axi_unlock_stop`); Real-Docker E2E for `unlock` in both modes (`tests/e2e/test_unlock_e2e.py`), closing a standing both-modes gap (`openspec/changes/migrate-unlock-stop-core`)
-- [x] `core/label.py` - the `label` logic core split into `list_benches`/`set_label`/`clear_label` (`test_core_label`), built with zero new primitives beyond widening `resolvers.resolve_container_state`'s hardcoded hint into a caller-supplied `not_running_hint` parameter; `cwcli axi benches`/`cwcli axi label`/`cwcli axi self-update --check` (`test_axi_label`); Real-Docker E2E for `label` (`tests/e2e/test_label_e2e.py`), the DB/marker two-store consistency invariant against a real container, non-interactive only since `label` has no prompt (`openspec/changes/migrate-label-core`)
-- [x] `core/exec_stream.py`, `core/run.py` - the per-exec exec-stream contract (`test_core_exec_stream`) and `run`'s core slice built on it (`test_core_run`), replacing the fail-open that let a bench command with an unknown exit code report success; `apps`/`update` re-pointed at the same primitive rather than migrated as commands (`test_apps` unchanged, plus new coverage for a `CwcliError` from the primitive being caught and rendered instead of escaping raw); Real-Docker E2E for `run` in both modes including a >32KB unicode leg (`tests/e2e/test_run_e2e.py`) (`openspec/changes/add-exec-stream-contract`)
-- [x] `core/restore.py` - the `restore` plan/apply split settling the destructive-preview boundary for cwcli's most destructive path (`restore_plan`/`receive_plan -> restore_apply`, `test_core_restore`), the reseated `commands/restore.py` renderer; Real-Docker E2E for `restore` in both modes (`tests/e2e/test_restore_e2e.py`), closing a standing E2E gap (`openspec/changes/migrate-restore-core`)
-- [x] `tests/e2e/test_restore_p2p_e2e.py` - fills the `e2e_p2p` marker with a real send->receive P2P transport proof (`restore --send` produces a genuine sendme ticket, non-interactive `restore --receive --ticket <t>` pulls-and-restores it), plus a v14-gated `--receive` bare-filename case; `tests/test_sendme_utils.py` lifted `utils/sendme_utils.py` from ~9% to ~89% alongside it
-- [ ] Real-Docker E2E for the remaining commands (`rm`, `apps list`/`install`/`uninstall`, `inspect`) - tracked in `openspec/changes/rebuild-e2e-test-suite`. `update`/`apps update` already closed its own E2E gap (`tests/e2e/test_apps_update_e2e.py`)
+The prioritized checklist of what still needs dedicated suites and what has already been done lives in [tests/README.md](../../tests/README.md#future-test-priorities) - the single source.
 
 ## Resources
 
