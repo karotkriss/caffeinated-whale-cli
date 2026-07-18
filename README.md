@@ -137,16 +137,17 @@ cwcli init [OPTIONS] [PROJECT_NAME]
 4. Binds the bench workspace to a host `~/.cwcli/projects/{project_name}/data/` directory at `--bench-parent` inside the container (default `/workspace`), so bench files stay directly accessible on the host and survive container recreation
 5. Resolves the latest stable `frappe/bench` image tag from Docker Hub (never uses `:latest`)
 6. Pulls Docker images and starts containers
-7. Pins the correct Python version via `PYENV_VERSION` for the branch (installs via pyenv if missing)
-8. Pins the correct Node.js version via nvm for older branches (installs via nvm if missing)
-9. Installs `yarn` globally for the activated Node.js version (older branches only)
-10. Initializes Frappe bench with specified branch
-11. Pins `setuptools<82` inside the bench virtualenv for `version-13` (retains `pkg_resources`)
-12. Configures database and Redis connections
-13. Creates site with admin credentials (admin password generated and printed once when `--admin-password` is omitted in an interactive run; required as a flag non-interactively)
-14. Enables developer mode and server scripts
-15. Optionally installs ERPNext
-16. Starts the bench's dev services (supervisord over `bench start`), unless `--no-start` is given; a start failure degrades to a warning rather than a non-zero exit, since the bench was already created successfully
+7. Aligns the container's `frappe` user to the host user's uid/gid, so bench files written to the mounted workspace stay host-owned and removable by `cwcli rm` on any host (no-op when the ids already match; a failed remap degrades to a warning and bench creation still proceeds)
+8. Pins the correct Python version via `PYENV_VERSION` for the branch (installs via pyenv if missing)
+9. Pins the correct Node.js version via nvm for older branches (installs via nvm if missing)
+10. Installs `yarn` globally for the activated Node.js version (older branches only)
+11. Initializes Frappe bench with specified branch
+12. Pins `setuptools<82` inside the bench virtualenv for `version-13` (retains `pkg_resources`)
+13. Configures database and Redis connections
+14. Creates site with admin credentials (admin password generated and printed once when `--admin-password` is omitted in an interactive run; required as a flag non-interactively)
+15. Enables developer mode and server scripts
+16. Optionally installs ERPNext
+17. Starts the bench's dev services (supervisord over `bench start`), unless `--no-start` is given; a start failure degrades to a warning rather than a non-zero exit, since the bench was already created successfully
 
 **Branch-Specific Runtime Setup:**
 
