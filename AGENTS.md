@@ -97,6 +97,9 @@ Each entry is the contract; the linked source file is authoritative and the name
   `test.yml` also runs `Pytest (Windows, auto-inspect)` on `windows-latest` - the ONLY non-Linux runner, deliberately narrow to `tests/test_auto_inspect.py`. It exists because a Windows-only defect in `utils/auto_inspect.py` survived precisely because everything ran `ubuntu-latest`, and the repo is public so Windows minutes are free. Platform-dependent process/path/signal work belongs in that suite, not assumed covered by the Linux jobs; widening it to the full `unit` tier is unproven and tracked separately. See `docs/testing/guide.md#the-windows-job-why-it-exists-and-why-it-is-narrow`.
   `develop` has no branch protection, so a repo admin must still tick `Pytest`/`Mypy` (and the `E2E (frappe vNN)` checks, to make E2E a required gate) as required status checks for them to block merges.
 - **Release.** See skill: `cwcli-release`.
+- **Suggested commands.** Any `bench`/`docker exec` command cwcli SUGGESTS to a user (hint, error, success message, help text) must be phrased as the `cwcli run <project> [--site <site>] <bench-args>` wrapper or the appropriate cwcli verb (`cwcli apps install`, ...), never a raw in-container command the user cannot run.
+  Substitute the live project/site/flag values at the point the hint is printed so it is copy-paste accurate against `commands/run.py`'s pass-through signature.
+  This is only for SUGGESTIONS; cwcli's own internal `bench`/`docker exec` construction it executes stays as is.
 - **Commits.** Author commits as `karotkriss <mckay.christopher73@outlook.com>` only.
   Never add an agent name as a co-author.
   Never hand-edit `CHANGELOG.md` outside a deliberate version bump, and never edit auto-generated files.
