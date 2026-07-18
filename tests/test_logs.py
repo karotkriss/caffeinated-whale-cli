@@ -87,7 +87,9 @@ def _wire(monkeypatch, *, isatty: bool, returncode: int = 0):
 
 
 def _tail_cmd(calls: list[list[str]]) -> list[str]:
-    return calls[-1]
+    # The tail run is always the FIRST docker exec; a non-TTY `--follow` adds a
+    # second exec afterwards (the orphan-tail reap), which is never what we assert on.
+    return calls[0]
 
 
 def _app():
@@ -127,7 +129,9 @@ def test_follow_flag_opts_in(monkeypatch):
     calls = _wire(monkeypatch, isatty=True)
     result = runner.invoke(_app(), ["proj", "--follow"])
     assert result.exit_code == 0
-    assert "-F" in _tail_cmd(calls)  # -f opted into following
+    # CliRunner replaces sys.stdin, so this runs the non-TTY follow path where the
+    # tail is wrapped in `sh -c` (the orphan-reap machinery); -F rides in the script.
+    assert "-F" in " ".join(str(part) for part in _tail_cmd(calls))  # -f opted into following
 
 
 def test_process_tails_one_file(monkeypatch):
@@ -218,11 +222,44 @@ def test_keyboard_interrupt_is_a_clean_exit(monkeypatch):
     # The non-TTY path (no `-it`): SIGINT reaches cwcli itself instead.
     _wire(monkeypatch, isatty=False)
 
+    calls: list[list[str]] = []
+
     def interrupted(cmd, *a, **k):
-        raise KeyboardInterrupt
+        calls.append(cmd)
+        # Only the tail run is interrupted; the best-effort orphan-reap that runs
+        # in the `finally` must still complete (it models a real docker exec).
+        if "tail" in cmd or any("tail" in str(part) for part in cmd):
+            raise KeyboardInterrupt
+        return types.SimpleNamespace(returncode=0, stdout="")
 
     monkeypatch.setattr(logs_mod.subprocess, "run", interrupted)
     _call_logs(follow=True)  # returns normally == exit 0
+
+
+def test_non_tty_follow_reaps_the_container_tail(monkeypatch):
+    # The orphan-tail leak: on the non-TTY `--follow` path, Ctrl+C kills the
+    # `docker exec` client but its exec'd `tail -F` keeps running in the container
+    # (Docker has no kill-exec API). The tail is wrapped to record its own PID, and
+    # a `finally` reap kills that PID so no orphan survives the follower's exit.
+    calls = _wire(monkeypatch, isatty=False)
+    _call_logs(follow=True)
+
+    # First exec: the PID-recording tail wrapper.
+    tail_run = calls[0]
+    assert tail_run[:2] == ["docker", "exec"]
+    assert "-it" not in tail_run  # non-TTY
+    script = tail_run[-1]
+    assert "echo $$ >" in script and "exec tail" in script and "-F" in script
+
+    # Second exec: the reap. Kills the recorded PID; needs only kill/cat/rm.
+    reap = calls[-1]
+    assert reap[:2] == ["docker", "exec"]
+    assert "kill $(cat" in reap[-1]
+    # Same pidfile written then killed - no orphan left behind.
+    import re
+
+    pidfile = re.search(r"(/tmp/cwcli-logs-\S+\.pid)", script).group(1)
+    assert pidfile in reap[-1]
 
 
 def test_successful_tail_exits_zero(monkeypatch):
