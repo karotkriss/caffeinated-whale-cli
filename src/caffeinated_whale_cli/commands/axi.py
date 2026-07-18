@@ -1257,7 +1257,7 @@ def axi_init(
     if start_services:
         print("Starting dev services...", file=sys.stderr, flush=True)
         try:
-            core_start.start(project, bench_path=report.bench_path)
+            start_result = core_start.start(project, bench_path=report.bench_path)
         except Exception as e:
             print(
                 f"Warning: bench created, but its dev services could not be started: "
@@ -1265,6 +1265,10 @@ def axi_init(
                 file=sys.stderr,
                 flush=True,
             )
+        else:
+            for warning in start_result.warnings:
+                if warning.code == "start.web_not_ready":
+                    print(f"Warning: {warning.text}", file=sys.stderr, flush=True)
 
     emit_result(bench_result.data, warnings=bench_result.warnings)
     raise typer.Exit(0 if bench_result.status in (CoreStatus.OK, CoreStatus.WARNING) else 1)
