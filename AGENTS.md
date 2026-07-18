@@ -137,8 +137,7 @@ Every skill here MUST carry `metadata: internal: true` in its frontmatter - the 
 
 Known-but-UNFIXED data-loss/safety gaps in code terms, so an agent working nearby is warned; this board is always-loaded so warnings are seen. Prune each entry as it is fixed.
 
-- **`auto_inspect.stop_daemon` can signal a recycled PID** (`utils/auto_inspect.py`). It reads a pid from `auto-inspect.pid` and `os.kill(pid, SIGTERM)`s it. Nothing ties that pid to cwcli, so if the daemon died and the OS reused its pid for an unrelated process, `auto-inspect stop`/`disable` signals that process instead - on Windows `SIGTERM` is not 0/1, so it reaches `TerminateProcess` and is unconditional (no handler, no cleanup). The `_pid_alive` fix narrowed the window (a dead pid is now correctly reported dead, so `stop_daemon` refuses before signalling) but did NOT close it: a pid that is reused AND live still probes as alive. Closing it needs identity, not liveness - record the process start-time alongside the pid and compare both. Cross-platform, pre-existing.
-- **`auto_inspect._handle_sigterm` re-signals itself** (`utils/auto_inspect.py`, POSIX only). The SIGTERM handler calls `stop_daemon()`, which sees itself as running and `os.kill`s its OWN pid with SIGTERM, re-entering the handler at the next bytecode boundary. Pre-existing and not exercised by the current tests; the handler should tear down directly rather than route back through `stop_daemon`.
+(None currently. The two `utils/auto_inspect.py` daemon-lifecycle hazards - the recycled-PID signal and the `_handle_sigterm` self-recursion - are FIXED: the pid file now records the daemon's creation-time as an identity checked before any signal, and the SIGTERM handler resets its own handlers and tears down its own state directly instead of routing through `stop_daemon`.)
 
 ## Maintaining this file
 

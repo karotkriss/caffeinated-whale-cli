@@ -8,6 +8,7 @@ holds `_pid_alive` honest.
 """
 
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -325,6 +326,116 @@ def test_get_log_tail_returns_the_last_lines(isolated_run_dir):
 def test_get_log_tail_without_a_log_file(isolated_run_dir):
     """No log file is reported, not raised."""
     assert auto_inspect.get_log_tail() == "No log file found"
+
+
+# ---------------------------------------------------------------------------
+# Process IDENTITY: a live pid alone is not proof it is OUR daemon.
+#
+# stop_daemon used to signal a stored pid after only a liveness check, so a pid
+# recycled to an unrelated live process got signalled - killed outright on
+# Windows, where SIGTERM maps to TerminateProcess. The pid file now records the
+# daemon's creation time and BOTH pid and creation time must match before any
+# signal. These pin that identity gate (bug: cwcli-daemon-recycled-pid-k4).
+# ---------------------------------------------------------------------------
+
+
+def test_process_start_time_is_real_and_stable_for_this_process():
+    """The identity token reads for a real live pid and is stable across calls."""
+    token = auto_inspect._process_start_time(os.getpid())
+    assert token is not None
+    assert auto_inspect._process_start_time(os.getpid()) == token
+
+
+def test_write_pid_file_records_the_creation_time_identity(isolated_run_dir):
+    """_write_pid_file stores pid AND its creation time; is_running confirms it."""
+    auto_inspect._write_pid_file()
+
+    lines = auto_inspect.PID_FILE.read_text().splitlines()
+    assert lines[0] == str(os.getpid())
+    assert lines[1] == auto_inspect._process_start_time(os.getpid())
+    assert auto_inspect.is_running() is True
+
+
+def test_is_running_is_false_when_a_live_pid_has_a_mismatched_identity(
+    isolated_run_dir, live_process, monkeypatch
+):
+    """A live pid whose creation time no longer matches is a recycled pid, not us."""
+    auto_inspect.PID_FILE.write_text(f"{live_process.pid}\nrecorded-identity")
+    monkeypatch.setattr(auto_inspect, "_process_start_time", lambda pid: "different-now")
+
+    assert auto_inspect.is_running() is False
+    assert not auto_inspect.PID_FILE.exists()
+
+
+def test_stop_daemon_refuses_to_signal_a_recycled_pid(isolated_run_dir, monkeypatch):
+    """A live pid with a mismatched identity is treated as gone and NOT signalled."""
+    monkeypatch.setattr(auto_inspect, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(auto_inspect, "_process_start_time", lambda pid: "different-now")
+    signalled = []
+    monkeypatch.setattr(auto_inspect.os, "kill", lambda pid, sig: signalled.append((pid, sig)))
+    auto_inspect.PID_FILE.write_text("4242\nrecorded-identity")
+
+    with pytest.raises(RuntimeError, match="not running"):
+        auto_inspect.stop_daemon()
+
+    assert signalled == []
+    assert not auto_inspect.PID_FILE.exists()
+
+
+def test_stop_daemon_signals_when_the_identity_matches(isolated_run_dir, monkeypatch):
+    """A live pid whose creation time matches the record IS signalled (and only then)."""
+    monkeypatch.setattr(auto_inspect, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(auto_inspect, "_process_start_time", lambda pid: "recorded-identity")
+    signalled = []
+
+    def fake_kill(pid, sig):
+        signalled.append((pid, sig))
+        # The real daemon would exit and clear its pid file on SIGTERM; do that
+        # so the stop wait-loop sees it gone instead of escalating to SIGKILL.
+        auto_inspect._clear_pid_file()
+
+    monkeypatch.setattr(auto_inspect.os, "kill", fake_kill)
+    auto_inspect.PID_FILE.write_text("4242\nrecorded-identity")
+
+    auto_inspect.stop_daemon()
+
+    assert signalled == [(4242, signal.SIGTERM)]
+
+
+# ---------------------------------------------------------------------------
+# The in-daemon SIGTERM handler must not signal itself.
+#
+# _handle_sigterm used to call stop_daemon(), which os.kill()s the stored pid -
+# which, run inside the daemon, is our OWN - re-entering the handler until
+# RecursionError (seen live on Linux). It now resets its handlers and tears down
+# its own state directly (bug: cwcli-sigterm-recursion-r3).
+# ---------------------------------------------------------------------------
+
+
+def test_sigterm_handler_tears_down_once_without_recursing(isolated_run_dir, monkeypatch):
+    """The handler resets its signals, clears its own pid file, and never self-signals."""
+    auto_inspect._write_pid_file()
+
+    routed = []
+    monkeypatch.setattr(auto_inspect, "stop_daemon", lambda: routed.append("stop_daemon"))
+    signalled = []
+    monkeypatch.setattr(auto_inspect.os, "kill", lambda pid, sig: signalled.append((pid, sig)))
+    resets = []
+    # Record handler installs WITHOUT actually changing this process's signal
+    # disposition (which would leak into the rest of the suite).
+    monkeypatch.setattr(
+        auto_inspect.signal, "signal", lambda signum, handler: resets.append((signum, handler))
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        auto_inspect._handle_sigterm(signal.SIGTERM, None)
+
+    assert exc.value.code == 0
+    assert routed == []  # never routed back through stop_daemon
+    assert signalled == []  # never signalled its own pid
+    assert not auto_inspect.PID_FILE.exists()  # tore down its own state
+    assert (signal.SIGTERM, signal.SIG_DFL) in resets
+    assert (signal.SIGINT, signal.SIG_DFL) in resets
 
 
 def test_pid_dir_honors_cwcli_home():
