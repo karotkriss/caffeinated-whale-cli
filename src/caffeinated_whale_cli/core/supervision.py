@@ -582,6 +582,34 @@ def web_http_code(container) -> str | None:
     return code or None
 
 
+def web_is_serving(container) -> bool:
+    """True iff the web server answers on :8000 (any HTTP code, even 404/5xx).
+
+    Same "up" definition ``core.status`` uses (``web_code not in (None, '000')``):
+    a bound port serving *any* code is up; ``None``/``000`` is unreachable.
+    """
+    return web_http_code(container) not in (None, "000")
+
+
+def wait_web_ready(container, *, timeout: float = 60.0, interval: float = 1.0) -> bool:
+    """Poll :8000 until the web server is serving, or ``timeout`` elapses.
+
+    ``bench serve`` binds :8000 a beat AFTER supervisord reports its programs up,
+    so a caller that declares "running" the instant the launch returns races the
+    web port (a scripted ``cwcli start && cwcli status`` catches a transient
+    ``degraded``). Blocking on this closes that race. Returns True as soon as the
+    web answers (typically the first poll once bound), False on timeout. Bounded,
+    and a no-op-fast when already serving.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        if web_is_serving(container):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(interval)
+
+
 def supervisor_installed(container, bench_path: str) -> bool:
     """True iff ``supervisor`` is importable in the bench virtualenv."""
     py = _venv_python(bench_path)

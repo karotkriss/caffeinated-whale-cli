@@ -101,5 +101,8 @@ The restart targets the SAME bench that was just restored via `_start_project`'s
 A failed migrate does NOT undo the restore; it is surfaced and the restart still runs, but the function returns False so the caller exits non-zero.
 A Docker/API exception raised by the migrate `exec_run` is treated as a failed-but-reported migrate (`exit_code=1`) that STILL continues to the restart, so an exec error can never skip bringing the instance back up.
 `--no-migrate` skips the whole post-restore step.
+The restart now goes through `core.start`'s web-readiness wait (see `start-status.md`); a `start.web_not_ready`
+timeout warning is forwarded onto the result rather than swallowed - a restored site that never begins serving
+is exactly the kind of thing this safety-critical path must not hide.
 
 Regression coverage: `tests/test_restore_inspect_fixes.py` (all six) and `tests/test_bench_labels`-style DB tests; `tests/test_inspect_partial_refresh.py` and `tests/test_restore_safety.py` fakes were updated for the shared site probe and the `no_migrate` param.

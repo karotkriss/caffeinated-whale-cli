@@ -318,6 +318,15 @@ def _start_project(
     except CwcliError as e:
         return _handle_start_project_error(e, project_name)
 
+    # Same unconditional warning list as _run_start: a web-readiness timeout must
+    # be visible here too, since restart's whole-stack path and the auto-start
+    # path (ensure_containers_running) both funnel through this helper.
+    for warning in result.warnings:
+        if warning.code in ("start.uid_align_failed", "bench.default_used", "start.web_not_ready"):
+            stderr_console.print(f"[yellow]Warning: {warning.text}[/yellow]")
+        elif verbose:
+            stderr_console.print(f"[dim]{warning.text}[/dim]")
+
     outcome = result.data
     if outcome is None:  # pragma: no cover - a resolved path never yields a choice
         return None
@@ -525,7 +534,7 @@ def _run_start(
     # init.uid_align_failed precedent for the uid remap failure): both signal the
     # bench workspace may not behave as expected, not just verbose diagnostics.
     for warning in result.warnings:
-        if warning.code in ("start.uid_align_failed", "bench.default_used"):
+        if warning.code in ("start.uid_align_failed", "bench.default_used", "start.web_not_ready"):
             stderr_console.print(f"[yellow]Warning: {warning.text}[/yellow]")
         elif verbose:
             stderr_console.print(f"[dim]{warning.text}[/dim]")
