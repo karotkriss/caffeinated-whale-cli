@@ -26,7 +26,7 @@ from ..core import init as core_init
 from ..core import start as core_start
 from ..core.envelope import Choice, Status
 from ..core.errors import CwcliError
-from ..utils import config_utils
+from ..utils import cache, config_utils
 from ..utils.completion_utils import complete_project_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import handle_docker_errors
@@ -155,7 +155,7 @@ class _InitRenderer:
                 stderr_console.print(f"[yellow]{event.text}[/yellow]")
         elif code in ("python.install_failed", "node.install_failed"):
             stderr_console.print(f"[bold red]Error:[/bold red] {event.text}")
-        elif code in ("yarn.install_failed", "setuptools.pin_failed"):
+        elif code in ("yarn.install_failed", "setuptools.pin_failed", "init.uid_align_failed"):
             stderr_console.print(f"[yellow]Warning: {event.text}[/yellow]")
 
     def _on_trace(self, event) -> None:
@@ -188,9 +188,12 @@ def _render_error_exit(e: CwcliError, project_name: str, *, verbose: bool = Fals
             output = (e.detail or {}).get("output")
             if output:
                 stderr_console.print(output)
-    elif e.code in ("exec.stream_lost", "exec.exit_code_unknown") and e.hint:
+    elif (
+        e.code in ("exec.stream_lost", "exec.exit_code_unknown", "bench_parent.mismatch") and e.hint
+    ):
         # The contract's honest lost-stream errors are new on this surface;
-        # their hint says what the user should actually do.
+        # their hint says what the user should actually do. Same for the
+        # frozen-compose --bench-parent mismatch guard's remedy hint.
         stderr_console.print(f"[dim]{e.hint}[/dim]")
     return typer.Exit(code=1)
 
@@ -294,6 +297,25 @@ def _resolve_frappe_branch(frappe_branch: str | None, version: str | None) -> st
     if frappe_branch is not None:
         return frappe_branch
     return core_init.DEFAULT_FRAPPE_BRANCH
+
+
+def _refresh_cache(project: str, verbose: bool) -> None:
+    """Populate the bench cache right after a fresh bench is created.
+
+    ``init_bench`` only CLEARS the project's cache (a stale entry would be
+    worse than none); nothing else repopulates it. Every bench-resolving verb
+    (``status``, ``run``, ``apps``, ...) falls back to a hardcoded default
+    bench path when the cache is empty, which only happens to match a bench
+    built under the DEFAULT ``--bench-parent`` - a custom parent's very first
+    post-init command would silently resolve the wrong path. Mirrors
+    ``apps.py``'s post-mutation ``_refresh_cache``: degrades to a warning,
+    never fails init (the bench itself already succeeded).
+    """
+    if not cache.recache_project(project, verbose=verbose):
+        stderr_console.print(
+            "[yellow]Warning:[/yellow] bench created, but caching its bench path failed; "
+            "run 'cwcli inspect --update' to refresh."
+        )
 
 
 def _start_services(project: str, bench_path: str) -> bool:
@@ -530,7 +552,11 @@ def init(
     try:
         try:
             result = core_init.init_instance(
-                project, port=port, stream_output=verbose, on_event=renderer
+                project,
+                port=port,
+                bench_parent=bench_parent,
+                stream_output=verbose,
+                on_event=renderer,
             )
         finally:
             renderer.close()
@@ -538,7 +564,12 @@ def init(
             ensure_containers_running(project, require_running=True, auto_start=auto_start)
             try:
                 core_init.init_instance(
-                    project, port=port, auto_start=True, stream_output=verbose, on_event=renderer
+                    project,
+                    port=port,
+                    bench_parent=bench_parent,
+                    auto_start=True,
+                    stream_output=verbose,
+                    on_event=renderer,
                 )
             finally:
                 renderer.close()
@@ -613,6 +644,8 @@ def init(
         f"[bold green]✓[/bold green] Successfully initialized bench '{report.bench_name}' in {time_str}"
     )
     console.print(f"[dim]Bench path: {report.bench_path}[/dim]")
+
+    _refresh_cache(project, verbose)
 
     # Auto-start the bench dev services (default) so init leaves a running dev
     # environment. Containers are already up (stage 1 brought them up), so no

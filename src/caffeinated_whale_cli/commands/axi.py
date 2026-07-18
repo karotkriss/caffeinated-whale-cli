@@ -52,7 +52,7 @@ from ..core import where as core_where
 from ..core.envelope import Choice
 from ..core.envelope import Status as CoreStatus
 from ..core.errors import CwcliError, ErrorKind
-from ..utils import agent_hooks, toon
+from ..utils import agent_hooks, cache, toon
 
 # --------------------------------------------------------------- parse-error -> TOON layer
 #
@@ -1188,7 +1188,9 @@ def axi_init(
     # the containers are init's OWN, so it is an operational error (exit 1)
     # pointing at status/logs, not the generic "start it first" usage error.
     try:
-        instance_result = core_init.init_instance(project, port=port, on_event=_init_narrate)
+        instance_result = core_init.init_instance(
+            project, port=port, bench_parent=bench_parent, on_event=_init_narrate
+        )
     except CwcliError as error:
         emit_axi_error(error)
         raise typer.Exit(exit_for(error.kind)) from None
@@ -1243,6 +1245,14 @@ def axi_init(
 
     assert bench_result.data is not None  # OK/WARNING always carries an InitReport
     report = bench_result.data
+
+    if not cache.recache_project(project):
+        print(
+            "Warning: bench created, but caching its bench path failed; "
+            "run 'cwcli inspect --update' to refresh.",
+            file=sys.stderr,
+            flush=True,
+        )
 
     if start_services:
         print("Starting dev services...", file=sys.stderr, flush=True)

@@ -57,9 +57,10 @@ def _patch_stages(
     bench_events=(),
     start_result=None,
     start_raises=None,
+    recache_result=True,
 ):
     """Patch both core seams; record kwargs; optionally emit events / raise."""
-    calls: dict[str, list] = {"instance": [], "bench": [], "start": []}
+    calls: dict[str, list] = {"instance": [], "bench": [], "start": [], "recache": []}
 
     def fake_instance(project, **kw):
         calls["instance"].append({"project": project, **kw})
@@ -91,9 +92,14 @@ def _patch_stages(
             return start_result
         return Result(status=Status.OK, data=None)
 
+    def fake_recache(project, **kw):
+        calls["recache"].append({"project": project, **kw})
+        return recache_result
+
     monkeypatch.setattr(axi_mod.core_init, "init_instance", fake_instance)
     monkeypatch.setattr(axi_mod.core_init, "init_bench", fake_bench)
     monkeypatch.setattr(axi_mod.core_start, "start", fake_start)
+    monkeypatch.setattr(axi_mod.cache, "recache_project", fake_recache)
     return calls
 
 
@@ -448,6 +454,43 @@ class TestAutoStartServices:
         assert_is_one_toon_document(result.stdout)
         assert len(calls["start"]) == 1
         assert "could not be started" in result.stderr
+
+
+# ------------------------------------------------------------------ post-init recache
+
+
+class TestRecache:
+    """A fresh bench must be recached (``init_bench`` unconditionally clears
+    the project's cache) so a custom ``--bench-parent`` resolves correctly on
+    the very next bench-resolving verb; a recache failure degrades to a
+    stderr warning and never fails the verb."""
+
+    def test_success_recaches_the_project(self, monkeypatch):
+        _no_admin_env(monkeypatch)
+        calls = _patch_stages(monkeypatch)
+
+        result = runner.invoke(axi_mod.app, ["init", "proj", "--admin-password", "a"])
+
+        assert result.exit_code == 0
+        assert calls["recache"] == [{"project": "proj"}]
+
+    def test_recache_failure_degrades_to_stderr_warning_not_a_failed_verb(self, monkeypatch):
+        _no_admin_env(monkeypatch)
+        _patch_stages(monkeypatch, recache_result=False)
+
+        result = runner.invoke(axi_mod.app, ["init", "proj", "--admin-password", "a"])
+
+        assert result.exit_code == 0
+        assert_is_one_toon_document(result.stdout)
+        assert "caching its bench path failed" in result.stderr
+
+    def test_recache_never_reaches_stdout(self, monkeypatch):
+        _no_admin_env(monkeypatch)
+        _patch_stages(monkeypatch, recache_result=False)
+
+        result = runner.invoke(axi_mod.app, ["init", "proj", "--admin-password", "a"])
+
+        assert "caching its bench path failed" not in result.stdout
 
 
 # ------------------------------------------------------------------ registration + no prompt

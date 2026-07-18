@@ -520,8 +520,14 @@ def _run_start(
             continue
         break
 
-    if verbose:
-        for warning in result.warnings:
+    # start.uid_align_failed and bench.default_used render unconditionally (the
+    # open.py/restore.py/unlock.py precedent for bench.default_used, and the
+    # init.uid_align_failed precedent for the uid remap failure): both signal the
+    # bench workspace may not behave as expected, not just verbose diagnostics.
+    for warning in result.warnings:
+        if warning.code in ("start.uid_align_failed", "bench.default_used"):
+            stderr_console.print(f"[yellow]Warning: {warning.text}[/yellow]")
+        elif verbose:
             stderr_console.print(f"[dim]{warning.text}[/dim]")
     return result.data
 

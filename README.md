@@ -117,7 +117,7 @@ cwcli init [OPTIONS] [PROJECT_NAME]
 | `-P`, `--port INTEGER` | Starting port for the project (default: 8000). Creates ports {port}-{port+5} for web servers and {port+1000}-{port+1005} for socketio |
 | `-b`, `--bench TEXT` | Bench directory name inside the container (default: frappe-bench) |
 | `-s`, `--site TEXT` | Primary site name, must end with .localhost (default: development.localhost) |
-| `--bench-parent TEXT` | Directory inside container where bench is created (default: /workspace) |
+| `--bench-parent TEXT` | Directory inside container where bench is created (default: /workspace); also the container mount point for the persisted host `data/` directory, fixed for the life of the instance - changing it on a re-init errors, naming the mounted directory |
 | `--frappe-branch TEXT` | Frappe branch or tag for bench init, e.g. `version-16` or `v16.26.3` (default: version-16). Mutually exclusive with `--version` |
 | `--version TEXT` | Frappe version for bench init, resolved by shape: a bare major (`16` → `version-16` branch) or a full semantic version (`16.26.3` → `v16.26.3` tag). Malformed values are rejected with a non-zero exit. Mutually exclusive with `--frappe-branch` |
 | `--db-root-password TEXT` | MariaDB root password (default: 123) |
@@ -134,18 +134,20 @@ cwcli init [OPTIONS] [PROJECT_NAME]
 1. Creates project directory at `~/.cwcli/projects/{project_name}/conf/`
 2. Downloads `docker-compose.yml` from frappe_docker GitHub repository
 3. Customizes port mappings based on `--port` flag
-4. Resolves the latest stable `frappe/bench` image tag from Docker Hub (never uses `:latest`)
-5. Pulls Docker images and starts containers
-6. Pins the correct Python version via `PYENV_VERSION` for the branch (installs via pyenv if missing)
-7. Pins the correct Node.js version via nvm for older branches (installs via nvm if missing)
-8. Installs `yarn` globally for the activated Node.js version (older branches only)
-9. Initializes Frappe bench with specified branch
-10. Pins `setuptools<82` inside the bench virtualenv for `version-13` (retains `pkg_resources`)
-11. Configures database and Redis connections
-12. Creates site with admin credentials (admin password generated and printed once when `--admin-password` is omitted in an interactive run; required as a flag non-interactively)
-13. Enables developer mode and server scripts
-14. Optionally installs ERPNext
-15. Starts the bench's dev services (supervisord over `bench start`), unless `--no-start` is given; a start failure degrades to a warning rather than a non-zero exit, since the bench was already created successfully
+4. Binds the bench workspace to a host `~/.cwcli/projects/{project_name}/data/` directory at `--bench-parent` inside the container (default `/workspace`), so bench files stay directly accessible on the host and survive container recreation
+5. Resolves the latest stable `frappe/bench` image tag from Docker Hub (never uses `:latest`)
+6. Pulls Docker images and starts containers
+7. Aligns the container's `frappe` user to the host user's uid/gid, so bench files written to the mounted workspace stay host-owned and removable by `cwcli rm` on any host (no-op when the ids already match; a failed remap degrades to a warning and bench creation still proceeds)
+8. Pins the correct Python version via `PYENV_VERSION` for the branch (installs via pyenv if missing)
+9. Pins the correct Node.js version via nvm for older branches (installs via nvm if missing)
+10. Installs `yarn` globally for the activated Node.js version (older branches only)
+11. Initializes Frappe bench with specified branch
+12. Pins `setuptools<82` inside the bench virtualenv for `version-13` (retains `pkg_resources`)
+13. Configures database and Redis connections
+14. Creates site with admin credentials (admin password generated and printed once when `--admin-password` is omitted in an interactive run; required as a flag non-interactively)
+15. Enables developer mode and server scripts
+16. Optionally installs ERPNext
+17. Starts the bench's dev services (supervisord over `bench start`), unless `--no-start` is given; a start failure degrades to a warning rather than a non-zero exit, since the bench was already created successfully
 
 **Branch-Specific Runtime Setup:**
 

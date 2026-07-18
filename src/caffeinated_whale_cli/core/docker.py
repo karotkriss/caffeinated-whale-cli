@@ -16,6 +16,7 @@ core makes the UI-purity ban transitively true, not just directly true.
 from __future__ import annotations
 
 import codecs
+import os
 
 import docker
 from docker.errors import DockerException
@@ -117,6 +118,74 @@ def get_container(container_id: str):
             f"Could not resolve container '{container_id}'.",
             detail={"output": str(e)},
         ) from e
+
+
+def _read_frappe_id(container, flag: str) -> int | None:
+    """Read the container ``frappe`` user's numeric uid/gid (``-u``/``-g``).
+
+    A bare ``id`` (no login shell) so pyenv's ``.profile`` rehash chatter never
+    contaminates the number. Returns ``None`` if it cannot be read as an int.
+    """
+    try:
+        code, out = container.exec_run(["id", flag, "frappe"])
+    except DockerException:
+        return None
+    if code != 0:
+        return None
+    text = out.decode("utf-8", "replace") if isinstance(out, (bytes, bytearray)) else str(out)
+    try:
+        return int(text.strip())
+    except ValueError:
+        return None
+
+
+def align_container_user_to_host(container, *, chown_home: bool = False) -> tuple[bool, str | None]:
+    """Align the container's ``frappe`` user's uid/gid with the host user's.
+
+    Bench commands run as the image's default ``frappe`` user (uid 1000), so every
+    file they write to the bind-mounted workspace lands owned by uid 1000 on the
+    host. When the host user's uid differs - a CI runner is uid 1001, a dev box is
+    commonly 1000 - the host cannot recurse into those directories to delete them
+    and ``cwcli rm`` fails with ``[Errno 13] Permission denied``. Remapping
+    ``frappe`` to the host uid/gid (the frappe devcontainer's ``updateRemoteUserUID``
+    trick) makes the workspace host-owned and host-removable on ANY host uid.
+
+    A no-op when the ids already match (the common dev-box case), so nothing runs
+    and no cost is paid there. ``chown_home`` additionally rewrites ``/home/frappe``
+    so pyenv/nvm/pip installs during a first provision can write it; it walks tens
+    of thousands of files, so callers pass it only at init, never per start (a
+    remapped ``frappe`` needs only READ access to its pristine home to serve).
+
+    Best-effort: returns ``(remapped, failure)``. ``failure`` is a short detail
+    string when a step failed (the caller surfaces it as a warning and the bench
+    still builds owned by the original uid, exactly as before this remap existed);
+    ``remapped`` is True only when the ids were actually changed.
+    """
+    host_uid, host_gid = os.getuid(), os.getgid()
+    cur_uid = _read_frappe_id(container, "-u")
+    cur_gid = _read_frappe_id(container, "-g")
+    if cur_uid is None or cur_gid is None:
+        return (False, "could not read the container 'frappe' user's uid/gid")
+    if cur_uid == host_uid and cur_gid == host_gid:
+        return (False, None)
+
+    # `-o` allows a non-unique id (the host uid may already exist in the image's
+    # passwd/group db). `bash -c` (not `-lc`) avoids sourcing any profile.
+    steps = []
+    if cur_gid != host_gid:
+        steps.append(f"groupmod -o -g {host_gid} frappe")
+    if cur_uid != host_uid:
+        steps.append(f"usermod -o -u {host_uid} frappe")
+    if chown_home:
+        steps.append(f"chown -R {host_uid}:{host_gid} /home/frappe")
+    try:
+        code, out = container.exec_run(["bash", "-c", " && ".join(steps)], user="root")
+    except DockerException as e:
+        return (False, f"could not align the container 'frappe' user to the host: {e}")
+    if code != 0:
+        detail = out.decode("utf-8", "replace") if isinstance(out, (bytes, bytearray)) else str(out)
+        return (False, f"could not align the container 'frappe' user to the host: {detail.strip()}")
+    return (True, None)
 
 
 def get_frappe_container(project_name: str):

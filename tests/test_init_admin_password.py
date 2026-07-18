@@ -119,6 +119,7 @@ def _run_init_command(monkeypatch, *, admin_password, interactive, site_created=
     monkeypatch.setattr(init_mod.core_init, "init_bench", fake_init_bench)
     monkeypatch.setattr(init_mod.config_utils, "get_show_tips", lambda: False)
     monkeypatch.setattr(init_mod, "_is_interactive_session", lambda: interactive)
+    monkeypatch.setattr(init_mod.cache, "recache_project", lambda *a, **k: True)
 
     init_mod.init.__wrapped__(
         project_name="proj",
