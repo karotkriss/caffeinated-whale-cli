@@ -9,6 +9,7 @@ silence, and plain-data DTOs.
 
 import dataclasses
 import json
+import os
 import subprocess
 import urllib.request
 from types import SimpleNamespace
@@ -108,6 +109,10 @@ class FakeContainer:
         pass
 
     def exec_run(self, cmd, **kwargs):
+        if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "id":
+            # `id -u/-g frappe` probe for the host-uid alignment: report the host's
+            # own ids so the align step is a clean no-op in these fakes.
+            return 0, (str(os.getuid()) if "-u" in cmd else str(os.getgid())).encode()
         script = cmd[2] if isinstance(cmd, (list, tuple)) and len(cmd) == 3 else ""
         self.exec_run_calls.append(script)
         for needle, response in self.exec_run_responses.items():
