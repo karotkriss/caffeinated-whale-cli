@@ -222,6 +222,12 @@ class TestGeneratedPasswordPrint:
         joined = "\n".join(printed)
         assert "Administrator password (generated)" in joined
         assert joined.count(pw) == 1
+        # The "change it later" hint must be a copy-paste-accurate cwcli
+        # invocation, not a raw `bench` command the user cannot run directly.
+        assert (
+            "`cwcli run proj --site development.localhost set-admin-password "
+            "<new-password>`" in joined
+        )
 
     def test_not_printed_on_idempotent_rerun(self, monkeypatch):
         # Site already exists -> new-site is skipped -> no password was set, so a

@@ -321,6 +321,13 @@ class TestReceiveMissingAppsGate:
 
         assert len(container.restore_calls()) == 1
         assert any("not available on this bench" in line for line in container.printed)
+        # The install hint must be a copy-paste-accurate cwcli invocation
+        # (cwcli apps install <project> <app> --site <site>), not the raw
+        # `bench get-app`/`bench --site ... install-app` the user cannot run.
+        assert any(
+            "cwcli apps install proj <app-name> --site development.localhost" in line
+            for line in container.printed
+        )
 
     def test_non_tty_without_yes_refuses_and_exits_nonzero(self, monkeypatch):
         container = FakeReceiveContainer()
@@ -829,3 +836,71 @@ class TestNormalPathSelectorsAndExitCodes:
         assert (
             len(cancelled) == 1
         ), f"expected 'Restore cancelled.' exactly once, got {len(cancelled)}: {cancelled}"
+
+
+class TestMigrateFailureRemediationHint:
+    """A failed post-restore migrate must point the user at the copy-paste-
+    accurate ``cwcli run <project> --site <site> migrate`` wrapper.
+
+    The hint previously read ``cwcli run <project> -- bench --site <site>
+    migrate``: everything after the ``--`` rides straight into the bench-args
+    list, so ``run_plan`` (``core/run.py``) would have assembled
+    ``"bench " + "bench --site <site> migrate"`` - a stray, non-functional
+    double ``bench`` invocation. Exercised at the ``_apply_and_render``
+    rendering seam directly (``core_restore.restore_apply`` stubbed to return
+    a migrate-failed report) since the full container simulation would also
+    have to fake the post-migrate restart.
+    """
+
+    def test_hint_is_cwcli_run_wrapper_not_raw_bench(self, monkeypatch):
+        from caffeinated_whale_cli.core.envelope import Message, Result, Status
+
+        plan = SimpleNamespace(
+            project_name="proj",
+            site="development.localhost",
+            backup_filename=DB_FILENAME,
+        )
+        report = restore_mod.core_restore.RestoreReport(
+            site="development.localhost",
+            bench_path=BENCH_PATH,
+            restored=True,
+            included_files=False,
+            encryption_key_updated=None,
+            migrate_ran=True,
+            migrate_ok=False,
+            restarted=True,
+            restart_log="restart.log",
+        )
+        warning = Message(
+            "migrate.failed", "'bench migrate' failed for site 'development.localhost'."
+        )
+        monkeypatch.setattr(
+            restore_mod.core_restore,
+            "restore_apply",
+            lambda *a, **k: Result(status=Status.WARNING, data=report, warnings=[warning]),
+        )
+        monkeypatch.setattr(restore_mod, "TipSpinner", _NullSpinner)
+        monkeypatch.setattr(restore_mod.config_utils, "get_show_tips", lambda: False)
+
+        printed: list[str] = []
+
+        def record(*args, **kwargs):
+            printed.append(" ".join(str(a) for a in args))
+
+        monkeypatch.setattr(restore_mod.console, "print", record)
+        monkeypatch.setattr(restore_mod.stderr_console, "print", record)
+
+        with pytest.raises(typer.Exit):
+            restore_mod._apply_and_render(
+                plan,
+                mariadb_root_username="root",
+                mariadb_root_password=SECRET_PW,
+                admin_password=None,
+                no_migrate=False,
+                verbose=False,
+            )
+
+        joined = "\n".join(printed)
+        assert "cwcli run proj --site development.localhost migrate" in joined
+        # Regression guard for the old stray `-- bench` double-bench bug.
+        assert "-- bench" not in joined
