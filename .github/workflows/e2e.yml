@@ -33,10 +33,23 @@ jobs:
   changes:
     name: Determine E2E scope
     runs-on: ubuntu-latest
+    # Same gate as the two heavy jobs below: on a PR that can never trigger the
+    # real matrix (wrong base branch, no `e2e` label), skip the checkout/diff
+    # work here too - it cannot change either job's outcome.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'e2e') ||
+      github.event.pull_request.base.ref == 'develop' ||
+      github.event.pull_request.base.ref == 'master'
     outputs:
       run: ${{ steps.decide.outputs.run }}
     steps:
       - name: Checkout code
+        id: checkout
+        # Fail-safe: a checkout failure must not silently skip the required E2E
+        # contexts below. Let it fail without failing the job so `decide` can
+        # still run and default to run=true.
+        continue-on-error: true
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           persist-credentials: false
@@ -50,8 +63,14 @@ jobs:
           HAS_E2E_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'e2e') }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          # Fail-SAFE, always toward running the matrix: the E2E contexts are
+          # REQUIRED, so any uncertainty here (a failed checkout, an undiffable
+          # history) must default to run=true. Running the matrix unnecessarily
+          # is always safe; skipping on uncertainty is the bug this job exists
+          # to remove.
           # A manual dispatch or an explicit `e2e` label is a deliberate request
           # to run the real matrix regardless of what the diff touches.
           if [ "$EVENT" = "workflow_dispatch" ] || [ "$HAS_E2E_LABEL" = "true" ]; then
@@ -59,13 +78,23 @@ jobs:
             echo "E2E requested explicitly (workflow_dispatch or 'e2e' label) - running the full matrix."
             exit 0
           fi
+          if [ "$CHECKOUT_OUTCOME" != "success" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Checkout failed - defaulting to running the full E2E matrix (fail-safe)."
+            exit 0
+          fi
           # On a PR, run the matrix ONLY when the diff touches application logic
           # (src/**), dependencies (pyproject.toml / uv.lock), or the E2E suite
           # itself (tests/e2e/** - those files ARE the E2E). Everything else
           # (docs, other CI config, CHANGELOG/ledger, unit fixtures, a pure
           # rebase with zero delta) is a provable no-logic/no-dep change and is
-          # short-circuited to success.
-          changed="$(git diff --name-only "$BASE_SHA...$HEAD_SHA")"
+          # short-circuited to success. If the diff itself cannot be computed,
+          # fall through to run=true rather than aborting the job.
+          if ! changed="$(git diff --name-only "$BASE_SHA...$HEAD_SHA")"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Could not compute the base...head diff - defaulting to running the full E2E matrix (fail-safe)."
+            exit 0
+          fi
           echo "Files changed in this PR:"
           echo "$changed"
           if printf '%s\n' "$changed" | grep -qE '^(src/|tests/e2e/|pyproject\.toml$|uv\.lock$)'; then
