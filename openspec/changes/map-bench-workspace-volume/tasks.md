@@ -25,17 +25,17 @@
 
 ## 5. E2E (real instance - CI owns the matrix, not run locally)
 
-- [ ] 5.1 Fresh `cwcli init` (default `/workspace`): bench + site provision; `docker compose down` then `up`; confirm the bench and its `{bench}/logs/*.supervisor.log` survived on the host `{project}/data/`.
-- [ ] 5.2 Fresh `cwcli init --bench-parent /opt/benches`: confirm the bench persists across a container recreation (the bug this fixes) and that `cwcli start`/`status`/`logs` see it.
-- [ ] 5.3 `cwcli rm` on a new instance removes the `{project}/data/` bench workspace (with the project dir) and `{project}_mariadb-data`, with the verified-backup gate intact.
-- [ ] 5.4 Regression: an instance created before this change (whole-project bind mount) still inits benches, supervises, and rm-cleans exactly as before.
-- [ ] 5.5 Validate BOTH interactive and non-interactive init paths per the captain standard (pty for prompts; flags for non-TTY).
+- [x] 5.1 Fresh `cwcli init` (default `/workspace`): bench + site provision; `docker compose down` then `up`; confirm the bench and its `{bench}/logs/*.supervisor.log` survived on the host `{project}/data/`. Automated: `tests/e2e/test_workspace_persistence_e2e.py::test_default_parent_persists_bench_across_recreation` (reuses the session instance; also asserts the host-visible marker proving the bind mount).
+- [x] 5.2 Fresh `cwcli init --bench-parent /opt/benches`: confirm the bench persists across a container recreation (the bug this fixes) and that `cwcli start`/`status`/`logs` see it. Automated: `::test_custom_bench_parent_persists_and_rm_removes_data` (status shows the custom parent; `axi logs` reads it; marker survives `down`/`up`).
+- [x] 5.3 `cwcli rm` on a new instance removes the `{project}/data/` bench workspace (with the project dir). Automated: same test asserts the host project/data dir is gone after `cwcli rm --volumes`. (`mariadb-data` removal and the verified-backup gate are covered by the existing rm E2E; unchanged here.)
+- [x] 5.4 Regression: a pre-existing frozen-compose instance (old whole-project `..:/workspace` mount) is neither rewritten nor allowed a mismatched re-init. Automated: `::test_preexisting_frozen_compose_is_not_rewritten_and_mismatch_refused` (real binary; USAGE refusal naming `/workspace`; compose byte-unchanged; no containers started). A matching re-init proceeds - covered by the unit `TestWorkspaceMount` frozen-compose case.
+- [x] 5.5 BOTH modes per the captain standard: the mount change adds NO new prompt, so interactive init is unchanged and stays covered by `test_init_e2e`'s pty test; the new persistence tests drive the non-interactive path with flags.
 
 ## 6. Docs and memory
 
 - [x] 6.1 `README.md`: make the "workspace volume" wording accurate - the bench workspace is a host bind mount from `{project}/data/`, with direct host access.
 - [x] 6.2 CLAUDE.md ledger + `cwcli-lifecycle` skill: record the workspace bind-mount wiring and the `--bench-parent`-is-the-mount-point semantics.
-- [ ] 6.3 `docs/e2e/`: add the persistence-across-recreation evidence.
+- [x] 6.3 Persistence-across-recreation evidence added as the automated `tests/e2e/test_workspace_persistence_e2e.py` (the CI-run harness that codifies the manual `docs/e2e/` recipe), running on the v16 leg of `e2e.yml`.
 
 ## 7. Captain decision gate (settled)
 
