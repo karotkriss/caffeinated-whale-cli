@@ -94,35 +94,136 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
-def is_running() -> bool:
-    """Check if the auto-inspect service is currently running."""
-    if not PID_FILE.exists():
-        return False
+def _process_start_time(pid: int) -> str | None:
+    """Return a stable per-process creation-time token, or None if unreadable.
 
+    Paired with the pid this forms an IDENTITY. A liveness probe alone cannot
+    tell our daemon from an unrelated process that later inherited its recycled
+    pid, so ``stop_daemon`` would signal (and on Windows outright kill) the
+    wrong process. A process's creation time changes when the pid is reused, so
+    matching BOTH pid and creation time distinguishes the two. Cross-platform by
+    necessity: the pid file is read on POSIX and Windows alike.
+    """
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000  # noqa: N806
+
+        class FILETIME(ctypes.Structure):
+            _fields_ = [
+                ("dwLowDateTime", wintypes.DWORD),
+                ("dwHighDateTime", wintypes.DWORD),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetProcessTimes.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return None
+        try:
+            creation, exit_t, kernel_t, user_t = (FILETIME(), FILETIME(), FILETIME(), FILETIME())
+            ok = kernel32.GetProcessTimes(
+                handle,
+                ctypes.byref(creation),
+                ctypes.byref(exit_t),
+                ctypes.byref(kernel_t),
+                ctypes.byref(user_t),
+            )
+            if not ok:
+                return None
+            return f"{creation.dwHighDateTime}:{creation.dwLowDateTime}"
+        finally:
+            kernel32.CloseHandle(handle)
+
+    # Linux: /proc/<pid>/stat field 22 is starttime (clock ticks since boot), a
+    # stable per-process token that changes when the pid is reused. comm (field
+    # 2) is parenthesized and may itself contain spaces/parens, so the fields
+    # after the final ')' are what parse at fixed positions.
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            after = f.read().rpartition(")")[2].split()
+        return after[19]  # field 22 == index 19, counting from field 3 (state)
+    except (OSError, IndexError):
+        pass
+
+    # POSIX without /proc (macOS/BSD): fall back to ps lstart. Second-grained and
+    # weaker, but still distinguishes a pid recycled over the daemon's lifetime.
+    try:
+        out = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        return out.stdout.strip() or None
+    except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+        return None
+
+
+def _read_daemon_record() -> tuple[int, str | None] | None:
+    """Parse the pid file into (pid, recorded start-time), or None if unusable.
+
+    Line 1 is the pid; line 2, when present, is the recorded creation-time token
+    written by ``_write_pid_file``. A pre-identity pid file (pid only) yields a
+    None start-time and is handled by the liveness-only fallback in is_running().
+    """
     try:
         with open(PID_FILE) as f:
-            pid = int(f.read().strip())
+            lines = f.read().splitlines()
+        pid = int(lines[0].strip())
+    except (OSError, ValueError, IndexError):
+        return None
+    start = lines[1].strip() if len(lines) > 1 and lines[1].strip() else None
+    return pid, start
 
-        if _pid_alive(pid):
-            return True
 
-        # Process doesn't exist, remove stale PID file
-        PID_FILE.unlink()
+def _clear_pid_file() -> None:
+    """Remove the pid file if present (stale/recycled), tolerating a race."""
+    PID_FILE.unlink(missing_ok=True)
+
+
+def is_running() -> bool:
+    """Check if the auto-inspect service is currently running.
+
+    Verifies process IDENTITY, not just liveness: a live pid whose recorded
+    creation time no longer matches has been recycled to a DIFFERENT process, so
+    it is not our daemon and its stale pid file is cleared. When identity cannot
+    be confirmed (creation time unreadable now), it is likewise treated as gone
+    rather than risking a signal to the wrong process.
+    """
+    record = _read_daemon_record()
+    if record is None:
         return False
-    except (ValueError, FileNotFoundError):
+    pid, recorded_start = record
+
+    if not _pid_alive(pid):
+        _clear_pid_file()
         return False
+
+    if recorded_start is not None:
+        if _process_start_time(pid) != recorded_start:
+            # Recycled pid (different creation time) or an unconfirmable
+            # identity: either way this is not our daemon.
+            _clear_pid_file()
+            return False
+        return True
+
+    # Pre-identity pid file (pid only): degrade to liveness rather than making an
+    # already-running daemon unstoppable.
+    # ponytail: this fallback retires once no pre-identity pid files can exist.
+    return True
 
 
 def get_pid() -> int | None:
     """Get the PID of the running auto-inspect service."""
-    if not PID_FILE.exists():
-        return None
-
-    try:
-        with open(PID_FILE) as f:
-            return int(f.read().strip())
-    except (ValueError, FileNotFoundError):
-        return None
+    record = _read_daemon_record()
+    return record[0] if record else None
 
 
 def _log(message: str, *, exc_info: bool = False):
@@ -340,10 +441,19 @@ def start_daemon():
 
 
 def _write_pid_file():
-    """Write the current process ID to the PID file."""
+    """Write the current process ID (and its creation time) to the PID file.
+
+    The creation-time second line is the daemon's IDENTITY: is_running() and
+    stop_daemon() match it against the live pid's current creation time so a
+    recycled pid can never be mistaken for the daemon (see _process_start_time).
+    """
     _ensure_pid_dir()
+    pid = os.getpid()
+    start = _process_start_time(pid)
     with open(PID_FILE, "w") as f:
-        f.write(str(os.getpid()))
+        f.write(str(pid))
+        if start is not None:
+            f.write("\n" + start)
 
 
 def _run_service_loop(interval: int):
@@ -359,9 +469,19 @@ def _run_service_loop(interval: int):
 
 
 def _handle_sigterm(signum, frame):
-    """Handle termination signal."""
+    """Handle termination signal from WITHIN the daemon.
+
+    This runs inside the daemon process being asked to stop, so it must NOT call
+    stop_daemon(): that function os.kill()s the stored pid - which is our own -
+    re-entering this handler until it hit RecursionError (seen live on Linux).
+    Instead reset the handlers to default first (so a second SIGTERM can't re-run
+    teardown), clean up our own pid file, and exit. The default disposition then
+    handles any signal that races in during the exit.
+    """
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
     _log("Auto-inspect service received termination signal")
-    stop_daemon()
+    _clear_pid_file()
     sys.exit(0)
 
 
@@ -397,8 +517,7 @@ def stop_daemon():
             raise
 
     # Remove PID file
-    if PID_FILE.exists():
-        PID_FILE.unlink()
+    _clear_pid_file()
 
 
 def get_log_tail(lines: int = 20) -> str:
