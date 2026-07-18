@@ -315,8 +315,8 @@ def _render_missing_apps_gate(plan, *, yes: bool, isatty: bool) -> None:
     console.print()
     console.print("[dim]You may need to install these apps before restoring to avoid errors.[/dim]")
     console.print(
-        f"[dim]Install apps with: bench get-app <app-name> && bench --site {plan.site} "
-        "install-app <app-name>[/dim]"
+        f"[dim]Install apps with: cwcli apps install {plan.project_name} <app-name> "
+        f"--site {plan.site}[/dim]"
     )
     console.print()
     _gate(
@@ -408,8 +408,8 @@ def _apply_and_render(
                 if w.code == "migrate.failed":
                     stderr_console.print(f"[bold yellow]⚠ Warning:[/bold yellow] {w.text}")
                     stderr_console.print(
-                        f"[dim]Run it manually: cwcli run {plan.project_name} -- "
-                        f"bench --site {plan.site} migrate[/dim]"
+                        f"[dim]Run it manually: cwcli run {plan.project_name} "
+                        f"--site {plan.site} migrate[/dim]"
                     )
         console.print()
         console.print("[bold cyan]Restarting instance...[/bold cyan]")

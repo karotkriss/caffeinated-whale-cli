@@ -874,8 +874,8 @@ def test_update_stream_loss_mid_fanout_still_reports_stuck_site_remediation(
     # The summary is reachable, and the stuck site keeps its actionable remediation,
     # for BOTH sites the finally tried and failed to take back out of maintenance.
     assert "Update completed with errors" in out
-    assert "bench --site a.localhost set-maintenance-mode off" in out
-    assert "bench --site b.localhost set-maintenance-mode off" in out
+    assert "cwcli run proj --site a.localhost set-maintenance-mode off" in out
+    assert "cwcli run proj --site b.localhost set-maintenance-mode off" in out
 
     # The lost site is reported as UNKNOWN, not as a failure: retrying a migration
     # that may still be running is harmful, so the two must stay distinguishable.
@@ -941,7 +941,7 @@ def test_stuck_site_remediation_line_is_shlex_quoted(monkeypatch, capsys):
         update_mod.run_app_update("proj", ["payments"], verbose=True)
 
     out = " ".join(capsys.readouterr().out.split())
-    assert "bench --site 'weird site' set-maintenance-mode off" in out
+    assert "cwcli run proj --site 'weird site' set-maintenance-mode off" in out
 
 
 # ------------------------------------------- narration lines the table-driven

@@ -660,5 +660,6 @@ def init(
         )
         console.print(
             "[dim]Shown once and not stored anywhere. To change it later, run "
-            f"`bench --site {report.site_name} set-admin-password <new-password>`.[/dim]"
+            f"`cwcli run {project} --site {report.site_name} set-admin-password "
+            "<new-password>`.[/dim]"
         )
