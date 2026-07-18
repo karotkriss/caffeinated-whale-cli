@@ -345,9 +345,7 @@ class TestBenchParentMismatch:
     compose mount is a USAGE error; the core's remedy hint must reach the
     human CLI's stderr, not just the axi frontend."""
 
-    def test_mismatched_parent_prints_remedy_hint_and_exits_1(
-        self, monkeypatch, tmp_path, capsys
-    ):
+    def test_mismatched_parent_prints_remedy_hint_and_exits_1(self, monkeypatch, tmp_path, capsys):
         frozen_compose = COMPOSE_TEMPLATE + "    volumes:\n      - ..:/workspace:cached\n"
         with pytest.raises(typer.Exit) as exc:
             run_init(
@@ -457,12 +455,12 @@ class TestAutoStartServices:
     (reusing ``core.start``) and its completion message reflects the running
     state; ``--no-start`` skips the start and points at ``cwcli start``."""
 
-    def _patch_start(self, monkeypatch, *, status):
+    def _patch_start(self, monkeypatch, *, status, warnings=None):
         calls: list[dict] = []
 
         def fake_start(project_name, **kwargs):
             calls.append({"project": project_name, **kwargs})
-            return SimpleNamespace(status=status)
+            return SimpleNamespace(status=status, warnings=warnings or [])
 
         monkeypatch.setattr(init_mod.core_start, "start", fake_start)
         return calls
@@ -481,6 +479,20 @@ class TestAutoStartServices:
         assert f"cwcli restart {PROJECT}" in out
         # The old "Once services are running" implication is gone.
         assert "Once services are running" not in out
+
+    def test_web_not_ready_warning_is_surfaced(self, monkeypatch, tmp_path, capsys):
+        # core.start now blocks on web readiness; if it timed out, init surfaces the
+        # honest warning instead of silently claiming the web is up.
+        from caffeinated_whale_cli.core.envelope import Message
+
+        self._patch_start(
+            monkeypatch,
+            status=Status.OK,
+            warnings=[Message("start.web_not_ready", "web did not begin serving on :8000")],
+        )
+        run_init(monkeypatch, tmp_path, start_services=True)
+        captured = capsys.readouterr()
+        assert "web did not begin serving" in captured.err
 
     def test_no_start_skips_and_points_at_start(self, monkeypatch, tmp_path, capsys):
         calls = self._patch_start(monkeypatch, status=Status.OK)

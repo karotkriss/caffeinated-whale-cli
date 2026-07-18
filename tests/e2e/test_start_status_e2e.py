@@ -153,6 +153,32 @@ def test_start_noninteractive_from_stopped_serves(running_instance):
     assert harness.frappe_container_id(inst.name) is not None
 
 
+def test_status_is_running_immediately_after_start(running_instance):
+    """1.2b Race closed: ``cwcli start`` must not return until the web server is
+    actually serving, so a scripted ``cwcli start && cwcli status`` sees
+    ``running`` - never a transient ``degraded`` (supervisord up but :8000 not
+    yet bound). No ``_wait_web_ready`` between the two calls: that is the point.
+
+    This is the regression the web-readiness wait fixes; before it, the tiny
+    window between supervisord launch and ``bench serve`` binding :8000 made an
+    immediate status read flake to ``degraded``."""
+    inst = running_instance
+
+    stop = harness.run_cwcli("stop", inst.name)
+    assert stop.returncode == 0, stop.stdout + stop.stderr
+
+    start = harness.run_cwcli("start", inst.name, "--yes")
+    assert start.returncode == 0, start.stdout + start.stderr
+
+    # Immediately, with NO readiness wait: start already blocked on the web.
+    st = harness.run_cwcli("status", inst.name)
+    assert st.returncode == 0, st.stdout + st.stderr
+    assert st.stdout.strip() == "running", (
+        "status must read 'running' the instant start returns (the web-readiness "
+        f"wait should have closed the race).\n{st.stdout}\n{st.stderr}"
+    )
+
+
 def test_start_rerun_leaves_instance_serving(running_instance):
     """1.3 Re-run invariant: with the instance already serving, run ``cwcli start``
     again -> the site is STILL reachable afterward. Asserts ONLY health, never the
