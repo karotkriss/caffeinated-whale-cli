@@ -45,7 +45,12 @@ class ProcessLaunch:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class StartOutcome:
-    """The typed outcome of a start (or an idempotent no-op)."""
+    """The typed outcome of a start (or an idempotent no-op).
+
+    ``web_ready`` is the honest web-serving signal after a genuine launch: True
+    once :8000 answers, False if it did not within the bounded wait, and None
+    when not probed (an idempotent no-op, or a bench whose Procfile has no web).
+    """
 
     project: str
     container: str
@@ -54,6 +59,7 @@ class StartOutcome:
     log_path: str
     already_running: bool
     processes: list[ProcessLaunch]
+    web_ready: bool | None = None
 
 
 def start(
@@ -170,6 +176,24 @@ def start(
     launched = supervision.discover_stack(frappe_container, resolved_path)
     processes = _launched_processes(frappe_container, resolved_path, launched)
 
+    # 6. Block until the web server actually binds :8000 before reporting running.
+    #    supervisord reports its programs up a beat before `bench serve` binds the
+    #    port, so returning immediately makes the tool's "running" claim race the
+    #    web (a scripted `cwcli start && cwcli status` catches a transient
+    #    `degraded`). Only wait when the Procfile actually defines a web program;
+    #    a timeout degrades to a warning, never a failure (the stack IS launched).
+    web_ready: bool | None = None
+    if "web" in {p.label for p in processes}:
+        web_ready = supervision.wait_web_ready(frappe_container)
+        if not web_ready:
+            warnings.append(
+                Message(
+                    "start.web_not_ready",
+                    "Dev services launched, but the web server did not begin serving on "
+                    ":8000 in time. Check 'cwcli status' / 'cwcli logs'.",
+                )
+            )
+
     return Result(
         status=Status.OK,
         data=StartOutcome(
@@ -180,6 +204,7 @@ def start(
             log_path=log_path,
             already_running=False,
             processes=processes,
+            web_ready=web_ready,
         ),
         warnings=warnings,
     )

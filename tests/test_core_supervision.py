@@ -483,3 +483,42 @@ class TestWebProbe:
 
     def test_web_none_when_curl_fails(self):
         assert supervision.web_http_code(FakeContainer(web_ok=False)) is None
+
+    def test_serving_true_for_any_http_code(self):
+        # A bound port serving ANY code (even 404/5xx) is up (status's definition).
+        assert supervision.web_is_serving(FakeContainer(web_code="404")) is True
+        assert supervision.web_is_serving(FakeContainer(web_code="200")) is True
+
+    def test_serving_false_when_unreachable_or_000(self):
+        assert supervision.web_is_serving(FakeContainer(web_ok=False)) is False
+        assert supervision.web_is_serving(FakeContainer(web_code="000")) is False
+
+    def test_wait_returns_immediately_when_serving(self):
+        # First poll sees a serving port -> returns True without sleeping.
+        assert supervision.wait_web_ready(FakeContainer(web_code="200")) is True
+
+    def test_wait_times_out_when_web_never_binds(self):
+        # A web that never serves returns False within the bounded timeout (tiny
+        # timeout so the test is fast; proves it does not hang).
+        assert (
+            supervision.wait_web_ready(FakeContainer(web_ok=False), timeout=0.05, interval=0.01)
+            is False
+        )
+
+    def test_wait_binds_after_a_few_polls(self):
+        # Flips to serving mid-wait: proves the poll loop actually retries.
+        c = FakeContainer(web_ok=False)
+        polls = {"n": 0}
+        orig = c.web_ok
+
+        def flip(cmd, **kw):
+            if cmd and cmd[0] == "curl":
+                polls["n"] += 1
+                if polls["n"] >= 3:
+                    c.web_ok = True
+            return type(c).exec_run(c, cmd, **kw)
+
+        c.exec_run = flip  # type: ignore[method-assign]
+        assert supervision.wait_web_ready(c, timeout=5, interval=0.01) is True
+        assert polls["n"] >= 3
+        c.web_ok = orig

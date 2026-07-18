@@ -525,7 +525,7 @@ def _run_start(
     # init.uid_align_failed precedent for the uid remap failure): both signal the
     # bench workspace may not behave as expected, not just verbose diagnostics.
     for warning in result.warnings:
-        if warning.code in ("start.uid_align_failed", "bench.default_used"):
+        if warning.code in ("start.uid_align_failed", "bench.default_used", "start.web_not_ready"):
             stderr_console.print(f"[yellow]Warning: {warning.text}[/yellow]")
         elif verbose:
             stderr_console.print(f"[dim]{warning.text}[/dim]")

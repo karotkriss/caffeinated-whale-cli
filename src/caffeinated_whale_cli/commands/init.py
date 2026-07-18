@@ -338,6 +338,12 @@ def _start_services(project: str, bench_path: str) -> bool:
             f"started: {getattr(e, 'message', str(e))}"
         )
         return False
+    # core.start now blocks until the web server binds :8000, so "running" is
+    # honest by the time we return. If it timed out, surface the warning so the
+    # user isn't told the web is up when it hasn't begun serving yet.
+    for warning in result.warnings:
+        if warning.code == "start.web_not_ready":
+            stderr_console.print(f"[yellow]Warning:[/yellow] {warning.text}")
     return result.status is not Status.NEEDS_CHOICE
 
 
