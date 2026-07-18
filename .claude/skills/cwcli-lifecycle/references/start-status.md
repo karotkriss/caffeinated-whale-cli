@@ -62,9 +62,14 @@ are now the whole point. Each note below guards a real bug.
   behind `cwcli axi logs`, sharing this module's resolve via `_resolve_log_files` - and it is deliberately
   NOT an `exec_stream` consumer: a bounded read blocks to completion and returns finite output, so it is one
   buffered `container.exec_run` (the `core.backup` shape), not an event stream. See the exec-stream contract
-  entry in `AGENTS.md`. **Separately filed
-  (`cwcli-logs-orphan-tail-o5`, NOT fixed here):** today's non-TTY `logs -f` already leaks the same orphan on
-  every Ctrl+C (no `-it` -> nothing forwards `^C` to `tail`); pre-existing, its own batch.
+  entry in `AGENTS.md`. **The non-TTY `logs -f` orphan leak is FIXED** (`cwcli-logs-orphan-tail-o5`):
+  on that path only (no `-it` -> nothing forwards `^C` to `tail`), the tail is wrapped as `sh -c 'echo $$ >
+  pidfile; exec tail ...'` so the exec'd tail inherits the wrapper shell's PID, recorded to a unique
+  per-invocation pidfile under the container's `/tmp`; a `finally` block (covering both `KeyboardInterrupt`
+  and a normal return) reaps that PID with a fresh `docker exec ... kill $(cat pidfile); rm -f pidfile`.
+  Best-effort - a missing PID or an already-dead tail is a harmless no-op, and any reap failure is swallowed
+  so it never masks the real exit code. The `-it` path is untouched (already verified clean). See
+  `commands/logs.py:_kill_container_tail`.
 - **`cwcli logs` not-cwcli-supervised FALLBACK (regression fix - same class as the status one).** The
   supervisord path builds its file list purely from `supervision.process_log_path` (`<program>.supervisor.log`).
   A bench running under honcho / `bench start` (pre-v3, or a plain `bench start`) has NONE of those files, so
