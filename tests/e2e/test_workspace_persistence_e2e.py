@@ -30,6 +30,7 @@ import pytest
 
 from . import harness
 from .conftest import SESSION_ADMIN_PW
+from .test_start_status_e2e import _wait_web_ready
 
 pytestmark = pytest.mark.e2e
 
@@ -179,6 +180,16 @@ def test_custom_bench_parent_persists_and_rm_removes_data(port_allocator):
         # contract and never echoes a path, so a wrong bench resolution would
         # surface here as "online" (marker unreadable at the wrong path), not
         # as a missing substring.
+        #
+        # Wait for the web server to actually serve on :8000 BEFORE asserting the
+        # "running" token. `wait_for_site_ready` above only proves the DB is
+        # reachable (`bench list-apps`), NOT that the supervised web program has
+        # bound its port; right after a fresh `init --auto-start` that program is
+        # still `STARTING`, so status's web probe would read `degraded` for a
+        # second or two. This is the documented serving-readiness pattern every
+        # other status==running assertion uses (see test_start_status_e2e.py) -
+        # it waits for the genuine steady state, it does not accept `degraded`.
+        _wait_web_ready(name)
         st = harness.run_cwcli("status", name)
         assert st.returncode == 0, st.stdout + st.stderr
         assert harness.strip_ansi(st.stdout).strip() == "running", st.stdout + st.stderr
