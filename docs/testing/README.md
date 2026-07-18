@@ -43,7 +43,7 @@ uv run pytest tests/test_completion_utils.py
 
 ### Test Coverage
 
-Measured with `uv run pytest --cov` at 0.37.0 (unreleased): ~79% overall coverage; see [tests/README.md](../../tests/README.md#test-coverage) for the current test/file counts.
+Measured with `uv run pytest --cov` at 0.37.0 (unreleased): ~82% overall coverage; see [tests/README.md](../../tests/README.md#test-coverage) for the current test/file counts.
 Per-area breakdown (highest-coverage module in each area; see the module list in each test file for what else it exercises):
 
 - **rm safety** (`test_rm_safety`, `test_rm_truth`, `test_rm_stopped`, `test_rm_stopped_backup`, `test_rm_characterization`, `test_core_rm`) - the delete-with-backup-gate state machine now lives in `core/rm.py`; `commands/rm.py` is a renderer
