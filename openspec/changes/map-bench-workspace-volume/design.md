@@ -41,74 +41,70 @@ Changing `--bench-parent`'s default (`/workspace`) or `--bench`'s default (`frap
 
 ## Decisions
 
-### 1. The workspace becomes a per-project named volume mounted at `--bench-parent`
+### 1. The workspace becomes a per-project host bind mount from `{project}/data/` at `--bench-parent`
 
-`init_instance` gains a `bench_parent` parameter and, in the same block that rewrites ports and the image tag, rewrites the frappe service's workspace mount to a named volume mounted at the resolved `--bench-parent`, and adds that volume to the top-level `volumes:` block.
-Under `docker compose -p {project}` this becomes `{project}_workspace`, matching the existing `{project}_mariadb-data` shape.
+`init_instance` gains a `bench_parent` parameter and, in the same block that rewrites ports and the image tag (and only on a freshly downloaded compose - Decision 6), rewrites the frappe service's workspace mount from the upstream `- ..:/workspace:cached` to `- ../data:{bench_parent}:cached` and sets `working_dir` to `{bench_parent}`.
+Because the compose file lives at `{project}/conf/docker-compose.yml`, the source `../data` resolves to `{project}/data/` on the host; `init_instance` creates that host directory so Docker never materializes it as a root-owned path.
+`mariadb-data` is left untouched and no new named volume is introduced.
 
-Rationale over the alternatives (Decision 4): a Docker-managed named volume gives uniform lifecycle with the database volume, is removed by the existing `_remove_named_volumes` path with no new code, is always socket-capable for s4 (Decision 5), and is already isolated across `CWCLI_HOME` values by its project-name namespace (Decision 3).
+The captain settled the named-volume-vs-bind-mount question in favor of the bind mount (Decision 4), so bench files stay directly accessible on the host. Mounting only `data/` - rather than the whole project dir (`..`) the upstream example bound - keeps `conf/` (the compose file itself) out of the container and is the cleaner source.
 
 ### 2. `--bench-parent` is the mount point; `--bench` is a subdirectory; the mount is a stage-1 property
 
-The volume resolves from `--bench-parent` alone.
-One volume per project, mounted once at `--bench-parent`.
-`--bench` (a NAME at init, not the `<index|label>` selector) is a subdirectory `{bench_parent}/{bench}` inside that mount; multi-bench instances place every bench as a sibling subdirectory sharing the one volume, exactly as `/workspace/frappe-bench` and `/workspace/frappe-bench-2` share `/workspace` today.
+The mount resolves from `--bench-parent` alone (the container mount point); the host source is always `{project}/data/`.
+One mount per project, mounted once at `--bench-parent`.
+`--bench` (a NAME at init, not the `<index|label>` selector) is a subdirectory `{bench_parent}/{bench}` inside that mount; multi-bench instances place every bench as a sibling subdirectory sharing the one `{project}/data/` host dir, exactly as `/workspace/frappe-bench` and `/workspace/frappe-bench-2` share `/workspace` today.
 
 Because the mount lives in the compose file that stage 1 creates, `--bench-parent` must be known at stage 1.
 It is therefore threaded into `init_instance`; `init_bench` continues to take it for the bench directory.
 The frontend passes the same value to both (no divergence).
 
 Consequence: the mount point is fixed at instance creation.
-On a re-init of an existing project (whose compose is frozen), a `--bench-parent` that does not match the instance's mounted parent is a `USAGE` error naming the mounted parent, instead of `mkdir`-ing an ephemeral directory outside the volume.
-Resolving the parent for the comparison reads it from the instance's compose file (the frappe service's workspace mount target).
+On a re-init of an existing project (whose compose is frozen), a `--bench-parent` that does not match the instance's mounted parent is a `USAGE` error naming the mounted parent, instead of `mkdir`-ing an ephemeral directory outside the mount.
+Resolving the parent for the comparison reads it from the instance's compose file (the frappe service's workspace mount target); the `_mounted_bench_parent` regex matches both the old whole-project `..:/workspace:cached` and the new `../data:{parent}:cached` shapes, so the guard fires correctly against either kind of existing instance.
 
 ### 3. CWCLI_HOME: no new coupling
 
-Today the bind mount follows `PROJECTS_DIR` because `..` is relative.
-`mariadb-data` already lives in Docker's storage (not under `~/.cwcli`) and is isolated across `CWCLI_HOME` values purely by its `{project}_` namespace, because distinct instances use distinct project names.
-`{project}_workspace` inherits exactly that isolation, so `CWCLI_HOME` remains correct with no additional wiring.
-This is a deliberate consequence, not an accident: the workspace joins the volume that already got `CWCLI_HOME` right, rather than the bind mount that got it right by a different mechanism.
+The bind mount source `../data` is relative to the compose file, so it follows `PROJECTS_DIR` under `cwcli_home()` exactly as today's `..` mount does; `mariadb-data` keeps its `{project}_` namespace in Docker storage.
+Two `CWCLI_HOME` instances therefore get distinct `{cwcli_home}/projects/{project}/data/` workspaces with no additional wiring - the mount that already got `CWCLI_HOME` right, narrowed from `..` to `../data`.
 
-### 4. Named volume vs re-targeted bind mount - the one product decision
+### 4. Bind mount vs named volume - the settled product decision
 
-Both fix the silent-ephemeral-bench bug.
-The difference is host-side file access.
+Both fix the silent-ephemeral-bench bug; the difference is host-side file access, and the captain settled it in favor of the bind mount (confirmed on the r&d review surface, 2026-07-18) so bench files stay directly accessible on the host.
 
-- **Recommended - named volume at `--bench-parent`** (Decision 1).
-  Loses direct host access to bench files (they move from `~/.cwcli/projects/{project}/` into Docker storage).
-  `cwcli open` (all four editor branches, in-container), `cwcli run`, `inspect`, `logs`, and the `rm` backup gate (copies out via exec) are all unaffected, because none of them read the host bench path.
-  Gains uniform `rm`, socket safety, and the mariadb-data-consistent `CWCLI_HOME` story.
+- **Chosen - host bind mount from `{project}/data/` at `--bench-parent`** (Decision 1).
+  Preserves direct host access to bench files at `{project}/data/`; `rm`'s project-directory removal keeps cleaning the bench with no code change; smallest diff (a string substitution in the existing customization pass).
+  Mounting only `data/` (not the whole project dir `..`) keeps `conf/` out of the container and is the cleaner source than the upstream example's whole-project bind mount.
+  Accepted caveat: the supervisor socket sits on the host filesystem backing `cwcli_home()` (Decision 5).
 
-- **Alternative A - re-target the bind mount** to `- ..:{bench_parent}:cached`.
-  Smallest diff (one string), preserves host file access, and `rm`'s project-directory removal keeps cleaning the bench.
-  But it perpetuates the unix-socket-on-networked-host-filesystem fragility for s4 (Decision 5), keeps bench data coupled to the project directory rather than a Docker-managed volume, and does not make `rm`'s "named volumes (databases, sites, files)" description true.
-  It also mounts the whole project directory (including `conf/`) at an arbitrary container path, which is odd for a non-`/workspace` parent.
+- **Rejected - named volume at `--bench-parent`** (materializing as `{project}_workspace`).
+  Would give uniform `rm`/socket handling via Docker storage, but LOSES direct host access to bench files - which was the captain's explicit goal for this task, so it is not chosen.
 
-The captain owns the host-file-access trade-off; it is called out here and in the proposal so approval is an explicit choice rather than an assumption.
-If host access must be preserved, Alternative A is the fallback and the rest of this design (semantics, backward-compat, s4, `CWCLI_HOME`) applies unchanged except that the volume is a bind mount.
+A future opt-in named-volume flag is out of scope (YAGNI until requested).
 
 ### 5. s4 start/status/logs consistency
 
 The mount at `--bench-parent` covers `{bench_parent}/{bench}` in full, so supervisord's config, launcher, socket, pid, and per-process `{bench}/logs/*.supervisor.log` persist across container recreation - which is strictly better than today for a custom `--bench-parent`, where they were ephemeral.
 The mapping SHALL never mount at a sub-path that excludes `{bench}/logs`.
 
-The named volume additionally removes a latent s4 failure: the supervisor's unix socket `{bench}/logs/.cwcli-supervisor.sock` on a bind mount backed by a networked host filesystem (WSL2 `/mnt/c`, macOS gRPC-FUSE) can fail to bind; on a Docker-managed named volume (Linux-backed) it is always socket-capable.
-No `core/supervision.py` change is needed - the paths are identical; only the filesystem beneath them improves.
+Accepted caveat of the bind mount: the supervisor's unix socket `{bench}/logs/.cwcli-supervisor.sock` sits on whatever host filesystem backs `cwcli_home()`. It is solid on a native-Linux `CWCLI_HOME` (the default `~/.cwcli`); only relocating `CWCLI_HOME` onto a networked host filesystem (WSL2 `/mnt/c`, macOS gRPC-FUSE) would reintroduce socket-bind fragility. This is the price of preserving host file access (Decision 4) and the captain accepted it.
+No `core/supervision.py` change is needed - the paths are identical.
 
 ### 6. Backward compatibility and migration
 
 The `if not compose_path.exists()` guard in `init_instance` is the migration boundary and it already exists: existing instances keep their frozen `..:/workspace:cached` compose and behave identically.
-New instances get the named volume.
-`rm` handles both (Decision 1); every read/write verb is backend-agnostic (operates on in-container `bench_path`).
+The workspace-mount + `working_dir` rewrites are gated on that fresh-compose branch (a `new_instance` flag), so a re-init never re-targets an old instance's mount - the ports/image rewrites stay unconditional as before (idempotent no-ops on an already-customized compose).
+New instances get the `../data` bind mount.
+`rm` handles both (Decision 1 - project-directory removal cleans the bench either way); every read/write verb is backend-agnostic (operates on in-container `bench_path`).
 There is no forced migration of existing instances; a user who wants the new shape re-creates the instance (documented in the implementation phase).
-This mixed fleet is safe because nothing outside init inspects the mount type - the only consumer that ever distinguished them was init itself deciding whether to persist, which this change makes uniform for new instances.
+This mixed fleet is safe because nothing outside init inspects the mount source - the only consumer that ever distinguished them was init itself deciding whether to persist, which this change makes uniform for new instances.
 
 ## Risks / trade-offs
 
-- **Host file access loss for new instances** (Decision 4) - surfaced for the captain; Alternative A is the fallback.
+- **Supervisor socket on a networked `CWCLI_HOME`** (Decision 5) - an accepted caveat of preserving host file access; solid on the default `~/.cwcli`.
 - **A mixed fleet** (old bind-mount + new named-volume instances) - safe by Decision 6; `rm` and all verbs handle both. The only visible difference is where a new instance's bench files live on the host (nowhere directly, vs the project directory).
 - **Re-init mount-mismatch as a `USAGE` error** (Decision 2) - a small behavior addition, justified by it replacing today's silent ephemeral-bench outcome; the default path (unchanged `--bench-parent`) is unaffected.
 
 ## Open questions
 
-- Only one, and it is Decision 4's host-file-access trade-off, deliberately routed through captain approval of this proposal rather than assumed.
+- None. The one product decision (Decision 4, host file access) was settled by the captain in favor of the bind mount from `{project}/data/`, confirmed on the r&d review surface (2026-07-18).
