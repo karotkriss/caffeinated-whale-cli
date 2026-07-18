@@ -26,7 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from . import resolvers, supervision
-from .docker import get_project_containers
+from .docker import align_container_user_to_host, get_project_containers
 from .envelope import Message, Result, Status
 from .errors import CwcliError, ErrorKind
 
@@ -108,6 +108,15 @@ def start(
             "frappe.not_found",
             f"No 'frappe' service found for project '{project_name}'.",
         )
+
+    # A just-recreated container reverts `frappe` to the image uid (1000), but the
+    # workspace on the bind mount is owned by the host uid it was built under. Re-
+    # align `frappe` to the host uid (cheap: usermod only, no home chown) so the
+    # supervisor writes its per-process logs to the host-owned bench dir instead of
+    # failing on a permission mismatch. A no-op when the ids already match.
+    _, remap_err = align_container_user_to_host(frappe_container)
+    if remap_err:
+        warnings.append(Message("start.uid_align_failed", remap_err))
 
     # 3. Resolve which bench to run (--bench/--path, else single, else default).
     resolved = resolvers.resolve_bench(project_name, bench, bench_path)

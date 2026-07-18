@@ -155,7 +155,7 @@ class _InitRenderer:
                 stderr_console.print(f"[yellow]{event.text}[/yellow]")
         elif code in ("python.install_failed", "node.install_failed"):
             stderr_console.print(f"[bold red]Error:[/bold red] {event.text}")
-        elif code in ("yarn.install_failed", "setuptools.pin_failed"):
+        elif code in ("yarn.install_failed", "setuptools.pin_failed", "init.uid_align_failed"):
             stderr_console.print(f"[yellow]Warning: {event.text}[/yellow]")
 
     def _on_trace(self, event) -> None:

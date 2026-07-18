@@ -12,6 +12,7 @@ container so no Docker is needed.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -121,6 +122,10 @@ class FakeContainer:
 
     def _exec_list(self, cmd, detach):
         head = cmd[0]
+        if head == "id":
+            # `id -u/-g frappe` probe: report the host's own ids so core.start's
+            # host-uid alignment is a clean no-op in these fakes.
+            return (0, (str(os.getuid()) if "-u" in cmd else str(os.getgid())).encode())
         if head == "ps":
             return (0, self.ps.encode())
         if head == "cat":

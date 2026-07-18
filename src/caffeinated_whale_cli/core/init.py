@@ -763,6 +763,21 @@ def init_bench(
     if state.status is Status.NEEDS_CHOICE:
         return Result(status=Status.NEEDS_CHOICE, choice=state.choice)
 
+    # Align the container's `frappe` user (uid 1000 by image default) with the
+    # host user BEFORE any bench command writes the bind-mounted workspace, so the
+    # files it creates are owned by the host user and `cwcli rm` can remove them on
+    # any host uid (a CI runner is 1001; a dev box is often 1000). `chown_home` is
+    # paid here, once, so this first provision's pyenv/nvm/pip installs can write
+    # the (now host-owned) home. A no-op when the ids already match.
+    remapped, remap_err = core_docker.align_container_user_to_host(
+        frappe_container, chown_home=True
+    )
+    if remap_err:
+        emit(InitNotice(code="init.uid_align_failed", text=remap_err))
+        warnings.append(Message("init.uid_align_failed", remap_err))
+    elif remapped:
+        emit(InitTrace(text="Aligned the container 'frappe' user to the host uid/gid."))
+
     bench_parent_path = bench_parent.rstrip("/") or "/workspace"
     _ensure_directory(frappe_container, bench_parent_path)
 
