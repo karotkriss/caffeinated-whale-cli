@@ -29,6 +29,7 @@ SITE_PATH = f"{BENCH_PATH}/sites/{SITE}"
 COMPOSE_TEMPLATE = """services:
   frappe:
     image: docker.io/frappe/bench:latest
+    working_dir: /workspace/development
     ports:
       - "8000-8005:8000-8005"
       - "9000-9005:9000-9005"
@@ -260,6 +261,11 @@ class TestInitInstance:
         # Docker Hub unreachable -> fail-open to the pinned fallback, never :latest.
         assert "docker.io/frappe/bench:v5.29.1" in content
         assert ":latest" not in content
+        # The vestigial devcontainer working_dir is repointed at the mount root, so
+        # the Docker daemon never creates a root-owned /workspace/development inside
+        # the bind-mounted CWCLI_HOME (the shared-/tmp root-owned-file leak).
+        assert "working_dir: /workspace\n" in content
+        assert "/workspace/development" not in content
         # The compose file was already present, so nothing was downloaded.
         assert s.downloads == []
 
