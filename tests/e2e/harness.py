@@ -17,7 +17,11 @@ layers guard the operator's real state:
   refuses any project name lacking the ``cwe2e-`` prefix;
 - an unconditional teardown backstop (``sweep_cwe2e``) that removes every
   ``cwe2e-``-labelled compose project's containers, volumes, and networks even
-  when a test crashes before its ``cwcli rm`` teardown fires.
+  when a test crashes before its ``cwcli rm`` teardown fires;
+- a root-owned-path reclaim (``reclaim_root_owned``) run before the session HOME
+  is deleted, so a path the Docker daemon (root) created inside the bind-mounted
+  CWCLI_HOME cannot survive a non-root ``rmtree`` and leak into the shared temp
+  home, re-breaking later ``pytest`` runs on the box.
 
 Nothing here touches Docker or the rails at import/collection time; all of that
 lives in functions the fixtures/tests call, so collecting these modules under
@@ -313,6 +317,60 @@ def sweep_cwe2e(only: str | None = None) -> list[str]:
 # THEIR stopped containers / dangling images. sweep_cwe2e is deliberately scoped
 # to cwe2e- resources only. Reclaiming the 14 GB SSD ceiling is a CI concern and
 # is done (broadly, safely) on the ephemeral runner in e2e.yml, not here.
+
+
+# --------------------------------------------------------------------------- #
+# Reclaim root-owned host paths before a non-root cleanup
+# --------------------------------------------------------------------------- #
+def reclaim_root_owned(root: Path) -> bool:
+    """Chown any root-owned path under ``root`` back to the host user, in place.
+
+    The instance's ``/workspace`` is a bind mount to ``CWCLI_HOME/projects/<name>``
+    inside this isolated ``root``. The Docker daemon runs as root, so on ``compose
+    up`` it can create paths there owned by root:root (a missing ``working_dir``
+    being the known case). A non-root ``shutil.rmtree`` / ``cwcli rm`` then cannot
+    remove those, and since ``root`` lives under a shared temp home the leak
+    re-breaks every later ``pytest`` on the box. This neutralises the whole class:
+    a root-uid Docker container chowns the tree back to the host uid:gid so the
+    ordinary non-root removal succeeds - regardless of which container or daemon
+    action created the root-owned path.
+
+    Scoped STRICTLY to ``root`` (already the isolation-rail-validated session
+    home; never the operator's real home). A pure-Python scan runs first, so the
+    root container only spins up when a root-owned path actually exists. Returns
+    True if a reclaim ran, False if nothing needed it (or Docker was unavailable).
+    """
+    uid, gid = os.getuid(), os.getgid()
+    if (
+        not any(
+            os.lstat(os.path.join(dirpath, name)).st_uid != uid
+            for dirpath, dirnames, filenames in os.walk(root)
+            for name in dirnames + filenames
+        )
+        and os.lstat(root).st_uid == uid
+    ):
+        return False
+    # `busybox` is tiny and universally pullable; --user 0 forces root inside so
+    # chown can reassign any owner. Best-effort: a failure falls back to today's
+    # rmtree(ignore_errors=True), no worse than before.
+    try:
+        r = _docker(
+            "run",
+            "--rm",
+            "--user",
+            "0:0",
+            "-v",
+            f"{root}:/reclaim",
+            "busybox:latest",
+            "chown",
+            "-R",
+            f"{uid}:{gid}",
+            "/reclaim",
+            timeout=300,
+        )
+    except Exception:
+        return False
+    return r.returncode == 0
 
 
 # --------------------------------------------------------------------------- #

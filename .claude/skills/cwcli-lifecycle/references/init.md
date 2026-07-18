@@ -66,6 +66,13 @@ All 10 provisioning execs now flow through `core.exec_stream` (bench init, 4 set
 The ENOSPC hint ("No space left on device inside the container...") fires on BOTH consumption modes: a drained exec scans its full joined output, and a live-rendered one (`stream_output=True`, the verbose long execs) scans a retained 8KB tail of the streamed chunks (`_run_exec` in `core/init.py`) - restoring it there was the batch-3 audit's recorded non-item, since fixed (disk exhaustion is most likely during exactly the long streaming `bench build` where the hint used to be dead). The tail is bounded by slicing, never unbounded buffering.
 The buffered probe/install helpers (pyenv, nvm, yarn, setuptools pin, `test -d`, `mkdir -p`) keep buffered `exec_run` argv calls; streaming was never their behavior.
 
+### `init` compose `working_dir`: avoid a daemon-created root-owned host path (`fm/cwcli-pytest-root-tmp-p3`)
+
+The downloaded devcontainer compose sets `working_dir: /workspace/development` - a path cwcli never creates (the bench lands at `/workspace/frappe-bench`). `/workspace` is a bind mount to `CWCLI_HOME/projects/<name>/`, so on `compose up` the DOCKER DAEMON (root, not the container process) creates that missing `working_dir` inside the bind mount as `root:root` - regardless of the container's `--user`. Matching the container uid to the host does NOT fix this, since the daemon creates the path, not the container process. Under the E2E harness, whose `CWCLI_HOME` sits inside pytest's `tmp_path` (shared `/tmp`), the leaked root-owned dir defeated a non-root `rmtree`/`cwcli rm` (unlink needs write on the parent) and re-broke a bare `pytest` for the next user on the box.
+`core/init.py:init_instance` repoints it to `working_dir: /workspace` (the mount root, which always exists) before writing the compose file, so the daemon never creates anything there - this also makes a raw `docker exec -it <container> bash` (no explicit `-w`) land where cwcli actually puts the bench instead of a dead vestigial path.
+Defense-in-depth for the harness itself lives in `tests/e2e/harness.py:reclaim_root_owned` (see the `cwcli-e2e-testing` skill) in case a future compose default reintroduces a similar daemon-created path.
+Regression coverage: `tests/test_core_init.py` (`working_dir: /workspace` present, `/workspace/development` absent, in the written compose).
+
 ### `init` post-create dev-services auto-start (`fm/cwcli-init-autostart`)
 
 After the bench+site is created, `cwcli init` and `cwcli axi init` both start the bench's dev services by default (`--start`/`--no-start`, default `--start`) rather than leaving a created-but-idle bench.
