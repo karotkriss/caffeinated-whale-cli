@@ -254,6 +254,29 @@ class TestRestoreApply:
         assert len(restarts) == 1  # restart still happened
         assert restarts[0] == (BENCH_PATH, True)
 
+    def test_web_not_ready_warning_reaches_result(self, monkeypatch):
+        # core.start's web-readiness timeout must not be silently dropped by the
+        # post-restore restart - the codebase's most safety-critical path.
+        c = FakeContainer()
+        monkeypatch.setattr(core_restore.core_docker, "get_frappe_container", lambda name: c)
+        import caffeinated_whale_cli.core.start as core_start
+        from caffeinated_whale_cli.core.envelope import Message
+
+        def fake_start(project_name, *, bench_path=None, restart=False, **k):
+            return Result(
+                status=Status.OK,
+                data=SimpleNamespace(log_path="/tmp/x.log"),
+                warnings=[Message("start.web_not_ready", "web did not begin serving on :8000")],
+            )
+
+        monkeypatch.setattr(core_start, "start", fake_start)
+
+        result = core_restore.restore_apply(
+            _plan(), mariadb_root_username="root", mariadb_root_password=SECRET_PW, consent=True
+        )
+        assert result.status is Status.OK
+        assert any(w.code == "start.web_not_ready" for w in result.warnings)
+
     def test_no_migrate_skips_migrate_and_restart(self, monkeypatch):
         c = FakeContainer()
         _patch_apply(monkeypatch, c)
