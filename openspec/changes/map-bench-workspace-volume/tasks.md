@@ -33,8 +33,8 @@
 
 ## 6. Docs and memory
 
-- [ ] 6.1 `README.md`: make the "workspace volume" wording accurate - the bench workspace is a host bind mount from `{project}/data/`, with direct host access.
-- [ ] 6.2 CLAUDE.md ledger + `cwcli-lifecycle` skill: record the workspace bind-mount wiring and the `--bench-parent`-is-the-mount-point semantics.
+- [x] 6.1 `README.md`: make the "workspace volume" wording accurate - the bench workspace is a host bind mount from `{project}/data/`, with direct host access.
+- [x] 6.2 CLAUDE.md ledger + `cwcli-lifecycle` skill: record the workspace bind-mount wiring and the `--bench-parent`-is-the-mount-point semantics.
 - [ ] 6.3 `docs/e2e/`: add the persistence-across-recreation evidence.
 
 ## 7. Captain decision gate (settled)
