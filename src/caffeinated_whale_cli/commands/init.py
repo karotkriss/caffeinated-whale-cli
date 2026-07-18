@@ -188,9 +188,13 @@ def _render_error_exit(e: CwcliError, project_name: str, *, verbose: bool = Fals
             output = (e.detail or {}).get("output")
             if output:
                 stderr_console.print(output)
-    elif e.code in ("exec.stream_lost", "exec.exit_code_unknown") and e.hint:
+    elif (
+        e.code in ("exec.stream_lost", "exec.exit_code_unknown", "bench_parent.mismatch")
+        and e.hint
+    ):
         # The contract's honest lost-stream errors are new on this surface;
-        # their hint says what the user should actually do.
+        # their hint says what the user should actually do. Same for the
+        # frozen-compose --bench-parent mismatch guard's remedy hint.
         stderr_console.print(f"[dim]{e.hint}[/dim]")
     return typer.Exit(code=1)
 

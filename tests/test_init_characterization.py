@@ -131,6 +131,7 @@ def run_init(
     interactive=None,
     host_fail_stage=None,
     host_fail_output=b"",
+    compose_content=COMPOSE_TEMPLATE,
     **overrides,
 ):
     """Drive the real ``init`` body through migration-surviving seams only.
@@ -186,7 +187,7 @@ def run_init(
     conf_dir = tmp_path / PROJECT / "conf"
     conf_dir.mkdir(parents=True, exist_ok=True)
     compose_path = conf_dir / "docker-compose.yml"
-    compose_path.write_text(COMPOSE_TEMPLATE)
+    compose_path.write_text(compose_content)
 
     port = base_port if base_port is not None else _free_base_port()
     params = dict(
@@ -337,6 +338,29 @@ class TestPortConflict:
         assert str(base) in err
         assert "--port" in err
         assert f"Example: cwcli init {PROJECT} --port 10000" in err
+
+
+class TestBenchParentMismatch:
+    """A --bench-parent that disagrees with an existing instance's frozen
+    compose mount is a USAGE error; the core's remedy hint must reach the
+    human CLI's stderr, not just the axi frontend."""
+
+    def test_mismatched_parent_prints_remedy_hint_and_exits_1(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        frozen_compose = COMPOSE_TEMPLATE + "    volumes:\n      - ..:/workspace:cached\n"
+        with pytest.raises(typer.Exit) as exc:
+            run_init(
+                monkeypatch,
+                tmp_path,
+                bench_parent="/opt/elsewhere",
+                compose_content=frozen_compose,
+            )
+
+        assert exc.value.exit_code == 1
+        err = capsys.readouterr().err
+        assert "mounts its workspace at '/workspace'" in err
+        assert "Re-run without --bench-parent or with --bench-parent /workspace" in err
 
 
 class TestComposeFailureOutput:
