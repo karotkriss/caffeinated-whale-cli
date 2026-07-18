@@ -23,6 +23,7 @@ import questionary
 import typer
 
 from ..core import init as core_init
+from ..core import start as core_start
 from ..core.envelope import Choice, Status
 from ..core.errors import CwcliError
 from ..utils import config_utils
@@ -295,6 +296,29 @@ def _resolve_frappe_branch(frappe_branch: str | None, version: str | None) -> st
     return core_init.DEFAULT_FRAPPE_BRANCH
 
 
+def _start_services(project: str, bench_path: str) -> bool:
+    """Start the just-created bench's dev services over ``core.start``.
+
+    Reuses the ``cwcli start`` path (``core.start``) rather than reinventing the
+    supervisord launch. The bench path is known exactly (``report.bench_path``),
+    so it is passed verbatim and ``core.start`` never forks to a multi-bench
+    choice. Returns True when the services are up; a failure degrades to a
+    warning (init already succeeded at creating the bench) and returns False.
+    """
+    try:
+        with stderr_console.status(
+            f"[bold green]Starting dev services for '{project}'...[/bold green]", spinner="dots"
+        ):
+            result = core_start.start(project, bench_path=bench_path)
+    except Exception as e:
+        stderr_console.print(
+            f"[yellow]Warning:[/yellow] Bench created, but its dev services could not be "
+            f"started: {getattr(e, 'message', str(e))}"
+        )
+        return False
+    return result.status is not Status.NEEDS_CHOICE
+
+
 def _resolve_reuse_choice(choice: Choice, bench_name: str) -> tuple[str, bool | None]:
     """Resolve the ``confirm_reuse_bench`` choice exactly as the old resolver did.
 
@@ -405,6 +429,16 @@ def init(
         False,
         "--auto-start",
         help="Automatically start containers if they are not running.",
+    ),
+    start_services: bool = typer.Option(
+        True,
+        "--start/--no-start",
+        help=(
+            "After creating the bench+site, start its dev services (supervisord over "
+            "'bench start') so init leaves a running dev environment. --no-start creates "
+            "without starting, for automation/CI. Distinct from --auto-start, which only "
+            "controls Docker container startup."
+        ),
     ),
     reuse_bench: bool | None = typer.Option(
         None,
@@ -579,13 +613,41 @@ def init(
         f"[bold green]✓[/bold green] Successfully initialized bench '{report.bench_name}' in {time_str}"
     )
     console.print(f"[dim]Bench path: {report.bench_path}[/dim]")
-    console.print(
-        f"[dim]Next steps: Run `cwcli open {project}` to open the project in vscode or exec with docker.[/dim]"
-    )
-    if install_erpnext:
+
+    # Auto-start the bench dev services (default) so init leaves a running dev
+    # environment. Containers are already up (stage 1 brought them up), so no
+    # port-conflict check is needed and core.start never forks to confirm_start.
+    # A start failure does NOT fail init (the bench is created); it degrades to a
+    # warning telling the user to run `cwcli start` themselves.
+    services_running = False
+    if start_services:
+        services_running = _start_services(project, report.bench_path)
+
+    console.print()
+    if services_running:
+        console.print(f"[bold green]✓[/bold green] Dev services are running for '{project}'.")
         console.print(
-            f"[dim]ERPNext installed. Once services are running, open http://{report.site_name}:8000 in your browser.[/dim]"
+            f"[dim]Open:    http://{report.site_name}:8000  (or `cwcli open {project}`)[/dim]"
         )
+        console.print(f"[dim]Logs:    cwcli logs {project}[/dim]")
+        console.print(f"[dim]Stop:    cwcli stop {project}[/dim]")
+        console.print(f"[dim]Restart: cwcli restart {project}[/dim]")
+        if install_erpnext:
+            console.print(f"[dim]ERPNext is installed at http://{report.site_name}:8000.[/dim]")
+    else:
+        if start_services:
+            console.print(f"[dim]Dev services are not running for '{project}'.[/dim]")
+        else:
+            console.print("[dim]Dev services were not started (--no-start).[/dim]")
+        console.print(f"[dim]Start them: cwcli start {project}[/dim]")
+        console.print(
+            f"[dim]Then open http://{report.site_name}:8000 (or `cwcli open {project}`).[/dim]"
+        )
+        if install_erpnext:
+            console.print(
+                f"[dim]ERPNext is installed; it will be reachable at "
+                f"http://{report.site_name}:8000 once services are running.[/dim]"
+            )
 
     # Show the generated admin password once - and only when a site was actually
     # created this run. On an idempotent re-run bench new-site is skipped

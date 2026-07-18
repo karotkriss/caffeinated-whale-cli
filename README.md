@@ -98,7 +98,7 @@ cwcli apps update my-project erpnext
 
 ### `init` - Initialize New Project
 
-Creates a complete Frappe development environment in a single step. Downloads compose files, starts containers, initializes bench, and creates a site.
+Creates a complete Frappe development environment in a single step. Downloads compose files, starts containers, initializes bench, creates a site, and starts the bench's dev services.
 
 ```bash
 cwcli init [OPTIONS] [PROJECT_NAME]
@@ -125,6 +125,7 @@ cwcli init [OPTIONS] [PROJECT_NAME]
 | `--install-erpnext` | Install ERPNext application after initialization |
 | `--erpnext-branch TEXT` | ERPNext branch to use (default: version-16) |
 | `--auto-start` | Automatically start containers if not running |
+| `--start` / `--no-start` | After creating the bench+site, start its dev services (supervisord over `bench start`) so init leaves a running dev environment (default: `--start`). `--no-start` creates without starting, for automation/CI. Distinct from `--auto-start`, which only controls Docker container startup |
 | `--reuse-bench` / `--no-reuse-bench` | Pre-answer the existing-bench question non-interactively: `--reuse-bench` reuses the bench and skips `bench init`; `--no-reuse-bench` requires a fresh `--bench` name and errors if it already exists. Default: ask interactively (a non-TTY without either flag refuses). Distinct from `--auto-start`, which controls container startup |
 | `-v`, `--verbose` | Show verbose output with streaming command execution |
 
@@ -144,6 +145,7 @@ cwcli init [OPTIONS] [PROJECT_NAME]
 12. Creates site with admin credentials (admin password generated and printed once when `--admin-password` is omitted in an interactive run; required as a flag non-interactively)
 13. Enables developer mode and server scripts
 14. Optionally installs ERPNext
+15. Starts the bench's dev services (supervisord over `bench start`), unless `--no-start` is given; a start failure degrades to a warning rather than a non-zero exit, since the bench was already created successfully
 
 **Branch-Specific Runtime Setup:**
 
@@ -198,6 +200,9 @@ cwcli init my-project \
 
 # Verbose mode for debugging
 cwcli init my-project -v
+
+# Create without starting dev services (automation/CI)
+cwcli init my-project --no-start
 ```
 
 **Example Output:**
@@ -205,13 +210,31 @@ cwcli init my-project -v
 ```
 ✓ Successfully initialized bench 'frappe-bench' in 8m 32s
 Bench path: /workspace/frappe-bench
-Next steps: Run `cwcli open my-project` to open the project in vscode or exec with docker.
+
+✓ Dev services are running for 'my-project'.
+Open:    http://development.localhost:8000  (or `cwcli open my-project`)
+Logs:    cwcli logs my-project
+Stop:    cwcli stop my-project
+Restart: cwcli restart my-project
 
 Administrator password (generated): 3sK9nQx7Lm-2pT4vWbY6Za
 Shown once and not stored anywhere. To change it later, run `bench --site development.localhost set-admin-password <new-password>`.
 ```
 
 The generated administrator password prints only when `--admin-password` is omitted in an interactive run; supply `--admin-password` to set it yourself (and to run non-interactively).
+
+With `--no-start`, the bench is created but its dev services are left down:
+
+```
+✓ Successfully initialized bench 'frappe-bench' in 8m 32s
+Bench path: /workspace/frappe-bench
+
+Dev services are not running for 'my-project'.
+Start them: cwcli start my-project
+Then open http://development.localhost:8000 (or `cwcli open my-project`).
+```
+
+If the dev services fail to start, init still exits successfully (the bench was already created) and prints a warning telling you to run `cwcli start` yourself.
 
 **Port Conflict Handling:**
 
@@ -1819,7 +1842,7 @@ cwcli axi config
 
 `cwcli axi apps list` is the read that answers what is *on* the bench `cwcli axi benches` names: the bench's available apps, and with `--installed`/`--site` which apps are installed on which site (only the app name, never the version column `bench list-apps` prints). A site whose read FAILED is reported as `null` and exits `1`, never as an empty list - "has no apps" and "could not tell" are different facts, and only one of them is safe to act on. Like every other bench-scoped verb it takes `--bench`, has no `--yes`, and reports a stopped project as a usage error naming `cwcli start` (exit 2). **`cwcli axi apps install` and `cwcli axi apps uninstall` deliberately do not exist:** letting an agent install into - or drop the tables of - a real site is a product decision that deserves its own evidence, not something settled as a side effect of moving code onto the logic core. Use the human `cwcli apps install`/`cwcli apps uninstall` (both have `--json` and honest exit codes) until that decision is taken.
 
-`cwcli axi init` provisions a new instance, bench, and site the way `cwcli init` does, but non-interactively and as ONE terminal TOON document. It **blocks** for the full 10-20 minute run - the same block-and-emit-one-document shape as `cwcli axi apps update`, because a progress stream would break the one-TOON-document contract - narrating coarse phase labels to stderr; run `cwcli logs <project>` / `cwcli status <project>` from a second shell for live progress. The site administrator password comes from the **`CWCLI_ADMIN_PASSWORD` environment variable (recommended)** or `--admin-password`; the flag wins if both are set, and with neither set the verb refuses with a usage error (exit 2) naming both - it never generates a password and never prompts. The env var keeps the secret off the process argv (visible in `ps`/shell history) that the flag exposes; the container-side `bench new-site` still receives it, so treat the value as one-time. The MariaDB root password takes the same shape via `CWCLI_DB_ROOT_PASSWORD` / `--db-root-password` (default `123`). The interactive decisions the human `cwcli init` prompts for become non-prompting errors: an existing bench with neither `--reuse-bench` nor `--no-reuse-bench` is a usage error (exit 2) naming both; a port conflict names `--port` (exit 1); containers that do not come up point at `cwcli status`/`cwcli logs` (exit 1). There is no `--auto-start` (compose `cwcli axi start` then re-run) and no `--verbose` (stdout is always TOON). `--bench` here is the NAME of the bench to create, distinct from the `--bench <index|label>` selector the other verbs use.
+`cwcli axi init` provisions a new instance, bench, and site the way `cwcli init` does, but non-interactively and as ONE terminal TOON document. It **blocks** for the full 10-20 minute run - the same block-and-emit-one-document shape as `cwcli axi apps update`, because a progress stream would break the one-TOON-document contract - narrating coarse phase labels to stderr; run `cwcli logs <project>` / `cwcli status <project>` from a second shell for live progress. After the bench+site is created, it starts the bench's dev services by default (the same `core.start` behind `cwcli start`/`cwcli axi start`), leaving a running bench rather than a created-but-idle one; `--no-start` creates without starting, for automation/CI, distinct from Docker container startup (stage 1 always brings the containers up regardless of this flag). A dev-services start failure degrades to a stderr warning rather than a non-zero exit, since the bench was already created. The site administrator password comes from the **`CWCLI_ADMIN_PASSWORD` environment variable (recommended)** or `--admin-password`; the flag wins if both are set, and with neither set the verb refuses with a usage error (exit 2) naming both - it never generates a password and never prompts. The env var keeps the secret off the process argv (visible in `ps`/shell history) that the flag exposes; the container-side `bench new-site` still receives it, so treat the value as one-time. The MariaDB root password takes the same shape via `CWCLI_DB_ROOT_PASSWORD` / `--db-root-password` (default `123`). The interactive decisions the human `cwcli init` prompts for become non-prompting errors: an existing bench with neither `--reuse-bench` nor `--no-reuse-bench` is a usage error (exit 2) naming both; a port conflict names `--port` (exit 1); containers that do not come up point at `cwcli status`/`cwcli logs` (exit 1). There is no `--auto-start` (compose `cwcli axi start` then re-run) and no `--verbose` (stdout is always TOON). `--bench` here is the NAME of the bench to create, distinct from the `--bench <index|label>` selector the other verbs use.
 
 #### Making agents aware of the surface
 
