@@ -236,7 +236,7 @@ Start them: cwcli start my-project
 Then open http://development.localhost:8000 (or `cwcli open my-project`).
 ```
 
-If the dev services fail to start, init still exits successfully (the bench was already created) and prints a warning telling you to run `cwcli start` yourself.
+If the dev services fail to start, init still exits successfully (the bench was already created) and prints a warning telling you to run `cwcli start` yourself. The start itself waits for the web server to answer on `:8000` before declaring success; if that times out, init reports the same "not running" output even though the containers and supervisor did launch, since the web isn't actually serving yet.
 
 **Port Conflict Handling:**
 
@@ -408,6 +408,7 @@ cwcli start [OPTIONS] [PROJECT_NAME]...
 
 - **Idempotent:** a re-run on an already-running bench is a clean no-op ("already running: N/N processes up"), never a second supervisor stack
 - **Per-process supervision:** each Procfile process runs under supervisord, so one can be restarted or auto-healed without disturbing the others
+- **Waits for the web server:** on a genuine launch, `start` blocks until `:8000` actually answers before reporting the bench as running, so a scripted `cwcli start && cwcli status` never catches a transient `degraded`. A timeout (60s) does not fail the start (the stack IS launched) - it prints a warning telling you to check `cwcli status` / `cwcli logs`
 - **Port Conflict Detection:** Automatically checks if required ports are available
 - **Interactive Resolution:** Offers to stop conflicting Frappe projects (use `--yes` to auto-confirm)
 - **Process Identification:** Shows which processes are using ports (cross-platform)
