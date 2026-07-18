@@ -218,7 +218,13 @@ class TestInitContainerReadiness:
                 pass
 
         def fake_init_instance(
-            project, *, port, auto_start=False, stream_output=False, on_event=None
+            project,
+            *,
+            port,
+            bench_parent="/workspace",
+            auto_start=False,
+            stream_output=False,
+            on_event=None,
         ):
             instance_calls.append(auto_start)
             # Emit a step so the renderer genuinely opens its spinner.

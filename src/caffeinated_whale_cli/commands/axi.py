@@ -1188,7 +1188,9 @@ def axi_init(
     # the containers are init's OWN, so it is an operational error (exit 1)
     # pointing at status/logs, not the generic "start it first" usage error.
     try:
-        instance_result = core_init.init_instance(project, port=port, on_event=_init_narrate)
+        instance_result = core_init.init_instance(
+            project, port=port, bench_parent=bench_parent, on_event=_init_narrate
+        )
     except CwcliError as error:
         emit_axi_error(error)
         raise typer.Exit(exit_for(error.kind)) from None

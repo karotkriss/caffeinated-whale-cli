@@ -35,6 +35,27 @@ COMPOSE_TEMPLATE = """services:
       - "9000-9005:9000-9005"
 """
 
+# The real upstream shape (frappe_docker devcontainer-example): the bench
+# workspace is a bind mount and working_dir sits under it. Used for the
+# workspace-mount rewrite tests, which need the exact lines init_instance
+# rewrites when it creates a fresh instance.
+COMPOSE_UPSTREAM = """services:
+  mariadb:
+    image: docker.io/mariadb:11.8
+    volumes:
+      - mariadb-data:/var/lib/mysql
+  frappe:
+    image: docker.io/frappe/bench:latest
+    volumes:
+      - ..:/workspace:cached
+    working_dir: /workspace/development
+    ports:
+      - 8000-8005:8000-8005
+      - 9000-9005:9000-9005
+volumes:
+  mariadb-data:
+"""
+
 
 class FakeApi:
     """Records ``exec_create`` calls; ``fail_command`` marks one failing exec."""
@@ -379,6 +400,71 @@ class TestInitInstance:
             core_init.init_instance("Bad Name!", port=18000)
         assert exc.value.kind is ErrorKind.USAGE
         assert s.host_calls == []
+
+
+class TestWorkspaceMount:
+    """The bench workspace becomes a per-project host bind mount from
+    ``{project}/data`` at the resolved ``--bench-parent`` (the ephemeral-bench
+    fix); existing instances keep their frozen mount."""
+
+    def _fresh(self, monkeypatch, tmp_path, *, bench_parent="/workspace"):
+        s = instance_setup(monkeypatch, tmp_path, seed_compose=False)
+        monkeypatch.setattr(
+            urllib.request,
+            "urlretrieve",
+            lambda url, dest: dest.write_text(COMPOSE_UPSTREAM),
+        )
+        core_init.init_instance(PROJECT, port=18000, bench_parent=bench_parent)
+        return s.compose_path.read_text()
+
+    def test_default_parent_binds_data_dir_at_workspace(self, monkeypatch, tmp_path, patched):
+        content = self._fresh(monkeypatch, tmp_path)
+        assert "- ../data:/workspace:cached" in content
+        assert "- ..:/workspace:cached" not in content
+        # working_dir sits at the mount root, inside the mounted subtree.
+        assert "working_dir: /workspace\n" in content
+        assert "/workspace/development" not in content
+
+    def test_custom_parent_binds_data_dir_at_that_path(self, monkeypatch, tmp_path, patched):
+        content = self._fresh(monkeypatch, tmp_path, bench_parent="/opt/benches")
+        assert "- ../data:/opt/benches:cached" in content
+        assert "working_dir: /opt/benches\n" in content
+
+    def test_no_new_named_volume_and_mariadb_untouched(self, monkeypatch, tmp_path, patched):
+        content = self._fresh(monkeypatch, tmp_path)
+        # The bind mount adds nothing to the volumes: block.
+        assert content.split("volumes:")[-1].strip() == "mariadb-data:"
+        assert "- mariadb-data:/var/lib/mysql" in content
+
+    def test_host_data_dir_is_created(self, monkeypatch, tmp_path, patched):
+        self._fresh(monkeypatch, tmp_path)
+        assert (tmp_path / PROJECT / "data").is_dir()
+
+    def test_reinit_mismatched_parent_is_usage_error_naming_mounted_parent(
+        self, monkeypatch, tmp_path, patched
+    ):
+        # An existing instance whose frozen compose mounts /workspace.
+        s = instance_setup(monkeypatch, tmp_path)
+        s.compose_path.write_text(COMPOSE_UPSTREAM)
+        with pytest.raises(CwcliError) as exc:
+            core_init.init_instance(PROJECT, port=18000, bench_parent="/opt/elsewhere")
+        assert exc.value.kind is ErrorKind.USAGE
+        assert exc.value.code == "bench_parent.mismatch"
+        assert "/workspace" in exc.value.message
+        # No containers were touched.
+        assert s.host_calls == []
+
+    def test_reinit_matching_parent_proceeds_without_rewriting_frozen_compose(
+        self, monkeypatch, tmp_path, patched
+    ):
+        s = instance_setup(monkeypatch, tmp_path)
+        s.compose_path.write_text(COMPOSE_UPSTREAM)
+        result = core_init.init_instance(PROJECT, port=18000, bench_parent="/workspace")
+        assert result.status is Status.OK
+        # Frozen: the old bind mount is preserved byte-for-byte, not re-targeted.
+        content = s.compose_path.read_text()
+        assert "- ..:/workspace:cached" in content
+        assert "../data" not in content
 
 
 # ------------------------------------------------------------------ stage 2

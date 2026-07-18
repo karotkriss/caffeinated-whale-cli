@@ -530,7 +530,11 @@ def init(
     try:
         try:
             result = core_init.init_instance(
-                project, port=port, stream_output=verbose, on_event=renderer
+                project,
+                port=port,
+                bench_parent=bench_parent,
+                stream_output=verbose,
+                on_event=renderer,
             )
         finally:
             renderer.close()
@@ -538,7 +542,12 @@ def init(
             ensure_containers_running(project, require_running=True, auto_start=auto_start)
             try:
                 core_init.init_instance(
-                    project, port=port, auto_start=True, stream_output=verbose, on_event=renderer
+                    project,
+                    port=port,
+                    bench_parent=bench_parent,
+                    auto_start=True,
+                    stream_output=verbose,
+                    on_event=renderer,
                 )
             finally:
                 renderer.close()

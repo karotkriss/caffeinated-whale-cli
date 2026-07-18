@@ -449,10 +449,23 @@ def _wait_for_running(project_name: str, *, attempts: int = 10, delay: float = 0
 # ------------------------------------------------------------------ stage 1: the instance
 
 
+def _mounted_bench_parent(compose_content: str) -> str | None:
+    """Read the frappe workspace mount's container target from a compose file.
+
+    Matches the ``- <..host>:{target}:cached`` bench-workspace mount (source
+    starts with ``..``), distinguishing it from ``mariadb-data``. Returns the
+    container mount point (e.g. ``/workspace``) for old bind-mount and new
+    ``../data`` instances alike, or ``None`` when no such mount is present.
+    """
+    match = re.search(r"-\s+\.\.[^\s:]*:([^\s:]+):cached", compose_content)
+    return match.group(1) if match else None
+
+
 def init_instance(
     project_name: str,
     *,
     port: int = 8000,
+    bench_parent: str = "/workspace",
     auto_start: bool = False,
     stream_output: bool = False,
     on_event: OnEvent | None = None,
@@ -498,9 +511,27 @@ def init_instance(
     emit(InitTrace(text=f"Project directory: {project_dir}"))
     emit(InitTrace(text=f"Config directory: {conf_dir}"))
 
+    # The mount point is fixed when the compose file is created. --bench-parent
+    # normalized once and reused for both the fresh rewrite and the re-init guard.
+    bench_parent_path = bench_parent.rstrip("/") or "/workspace"
+
     compose_path = conf_dir / "docker-compose.yml"
-    if not compose_path.exists():
+    new_instance = not compose_path.exists()
+    if new_instance:
         _download_github_file(_COMPOSE_URL, compose_path)
+    else:
+        # Frozen compose (backward-compat boundary): the mount point cannot
+        # change. A --bench-parent that disagrees would previously mkdir an
+        # ephemeral bench outside the mount; refuse instead of silently doing so.
+        mounted_parent = _mounted_bench_parent(compose_path.read_text())
+        if mounted_parent is not None and bench_parent_path != mounted_parent:
+            raise CwcliError(
+                ErrorKind.USAGE,
+                "bench_parent.mismatch",
+                f"Instance '{project_name}' mounts its workspace at "
+                f"'{mounted_parent}', which cannot be changed after creation.",
+                hint=f"Re-run without --bench-parent or with --bench-parent {mounted_parent}.",
+            )
 
     # Customize ports and pin the bench image (never :latest).
     emit(
@@ -537,6 +568,19 @@ def init_instance(
     content = content.replace(
         "docker.io/frappe/bench:latest", f"docker.io/frappe/bench:{bench_tag}"
     )
+    if new_instance:
+        # cwcli owns the bench workspace mount: bind the per-project host data/
+        # dir at the resolved --bench-parent so bench data (apps, sites, files,
+        # the supervisor's per-process logs, socket, and pid) persists on the
+        # host and survives container recreation - the ephemeral-bench fix. The
+        # mount covers the whole {bench_parent}/{bench} subtree; working_dir
+        # sits at the mount root so it is valid for any --bench-parent and never
+        # a root-owned dir outside the mounted data/ subtree.
+        (project_dir / "data").mkdir(parents=True, exist_ok=True)
+        content = content.replace("- ..:/workspace:cached", f"- ../data:{bench_parent_path}:cached")
+        content = content.replace(
+            "working_dir: /workspace/development", f"working_dir: {bench_parent_path}"
+        )
     compose_path.write_text(content)
 
     compose_base = ["docker", "compose", "-p", project_name, "-f", "docker-compose.yml"]
