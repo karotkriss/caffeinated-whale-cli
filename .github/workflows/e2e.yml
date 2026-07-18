@@ -18,16 +18,101 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Scope gate: the E2E legs below (frappe v14/v15/v16 + runtime-only) are
+  # REQUIRED status checks on develop, so they must ALWAYS report a status - a
+  # required context that never runs sits `pending` forever and blocks merge,
+  # the exact opposite of the goal. So we do NOT gate the heavy jobs out of
+  # existence with a top-level `paths:` filter (that leaves the contexts
+  # pending); instead this cheap job decides ONCE whether the diff touches real
+  # application logic or dependencies, and each heavy leg keeps its SAME context
+  # name but short-circuits every Frappe step to an immediate success when the
+  # answer is no. A docs-only / CI-config-only / changelog-only / pure-rebase
+  # push therefore reports the required E2E contexts green in seconds without a
+  # multi-minute real-Docker matrix, while a real src/dep change still runs the
+  # full matrix. Governing rule: E2E runs only on a real logic/dep change.
+  changes:
+    name: Determine E2E scope
+    runs-on: ubuntu-latest
+    # Same gate as the two heavy jobs below: on a PR that can never trigger the
+    # real matrix (wrong base branch, no `e2e` label), skip the checkout/diff
+    # work here too - it cannot change either job's outcome.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'e2e') ||
+      github.event.pull_request.base.ref == 'develop' ||
+      github.event.pull_request.base.ref == 'master'
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - name: Checkout code
+        id: checkout
+        # Fail-safe: a checkout failure must not silently skip the required E2E
+        # contexts below. Let it fail without failing the job so `decide` can
+        # still run and default to run=true.
+        continue-on-error: true
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+          # Full history so the base..head merge-base diff below is computable.
+          fetch-depth: 0
+
+      - name: Decide whether the E2E matrix must run
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          HAS_E2E_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'e2e') }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+        run: |
+          set -uo pipefail
+          # Fail-SAFE, always toward running the matrix: the E2E contexts are
+          # REQUIRED, so any uncertainty here (a failed checkout, an undiffable
+          # history) must default to run=true. Running the matrix unnecessarily
+          # is always safe; skipping on uncertainty is the bug this job exists
+          # to remove.
+          # A manual dispatch or an explicit `e2e` label is a deliberate request
+          # to run the real matrix regardless of what the diff touches.
+          if [ "$EVENT" = "workflow_dispatch" ] || [ "$HAS_E2E_LABEL" = "true" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "E2E requested explicitly (workflow_dispatch or 'e2e' label) - running the full matrix."
+            exit 0
+          fi
+          if [ "$CHECKOUT_OUTCOME" != "success" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Checkout failed - defaulting to running the full E2E matrix (fail-safe)."
+            exit 0
+          fi
+          # On a PR, run the matrix ONLY when the diff touches application logic
+          # (src/**), dependencies (pyproject.toml / uv.lock), or the E2E suite
+          # itself (tests/e2e/** - those files ARE the E2E). Everything else
+          # (docs, other CI config, CHANGELOG/ledger, unit fixtures, a pure
+          # rebase with zero delta) is a provable no-logic/no-dep change and is
+          # short-circuited to success. If the diff itself cannot be computed,
+          # fall through to run=true rather than aborting the job.
+          if ! changed="$(git diff --name-only "$BASE_SHA...$HEAD_SHA")"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Could not compute the base...head diff - defaulting to running the full E2E matrix (fail-safe)."
+            exit 0
+          fi
+          echo "Files changed in this PR:"
+          echo "$changed"
+          if printf '%s\n' "$changed" | grep -qE '^(src/|tests/e2e/|pyproject\.toml$|uv\.lock$)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Logic/dependency change detected - running the full E2E matrix."
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No logic/dependency change - short-circuiting the E2E matrix to success."
+          fi
+
   e2e:
     name: E2E (frappe v${{ matrix.frappe }})
+    needs: changes
     # Gate: run on a manual dispatch, on a PR carrying the `e2e` label, or on a
-    # PR into a protected branch (develop / master).
-    #
-    # NOTE: develop and master have NO branch protection today, so this is not
-    # actually a *required* merge gate yet - a repo admin must enable branch
-    # protection and tick these "E2E (frappe vNN)" checks as required for them
-    # to block a merge. Until then the fast unit tier (test.yml) is the only
-    # gate that bites, and this matrix runs informationally / on the label.
+    # PR into a protected branch (develop / master). The job ALWAYS enters (so
+    # its required context reports) whenever this gate is true; the `changes`
+    # scope decision then governs whether the heavy steps below actually do work
+    # or short-circuit to green - see the `changes` job header.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       contains(github.event.pull_request.labels.*.name, 'e2e') ||
@@ -63,18 +148,30 @@ jobs:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
+      - name: E2E scope
+        # Always runs, so the leg's required context is created and the logs
+        # state plainly whether the real matrix ran or was short-circuited.
+        run: |
+          if [ "${{ needs.changes.outputs.run }}" = "true" ]; then
+            echo "Logic/dep change - running the real frappe v${{ matrix.frappe }} E2E."
+          else
+            echo "No logic/dep change - skipping the frappe v${{ matrix.frappe }} E2E; reporting this required context green."
+          fi
+
       - name: Checkout code
+        if: needs.changes.outputs.run == 'true'
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           persist-credentials: false
 
       - name: Install uv
+        if: needs.changes.outputs.run == 'true'
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
 
       - name: Log in to Docker Hub
         # Authenticated pulls dodge the anonymous per-IP rate limit on the
         # multi-GB frappe/bench image. Skipped (anonymous pull) when creds absent.
-        if: env.HAS_DOCKERHUB == 'true'
+        if: needs.changes.outputs.run == 'true' && env.HAS_DOCKERHUB == 'true'
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4.4.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -86,6 +183,7 @@ jobs:
         # them here first: an upstream break annotates as an UPSTREAM/INFRA
         # failure, never an ambiguous red assertion, and this warms the base
         # image layers for the real init.
+        if: needs.changes.outputs.run == 'true'
         run: |
           set -o pipefail
           if ! curl -fsSL -o /tmp/cwe2e-compose.yml \
@@ -99,6 +197,7 @@ jobs:
           fi
 
       - name: Install dependencies
+        if: needs.changes.outputs.run == 'true'
         run: uv sync --frozen --all-extras
 
       - name: Run E2E (frappe v${{ matrix.frappe }})
@@ -114,15 +213,17 @@ jobs:
         # on separate runners, so combining needs a cross-runner artifact dance,
         # and a red or flaky E2E leg would then move the coverage number for
         # reasons unrelated to any code change - a worse signal, for ~6-12 points.
+        if: needs.changes.outputs.run == 'true'
         run: uv run pytest tests/e2e -m e2e -o addopts="" -v --tb=short
 
       - name: Teardown backstop - sweep leaked cwe2e- resources
-        # Unconditional: even if the run above crashed before `cwcli rm` fired,
-        # remove every cwe2e- compose project's containers, volumes, networks,
-        # then reclaim the 14 GB SSD. The broad prune is safe here (the runner is
-        # ephemeral and discarded) - it deliberately does NOT live in the harness,
-        # which also runs on operators' own machines.
-        if: always()
+        # Unconditional (given the leg actually ran): even if the run above
+        # crashed before `cwcli rm` fired, remove every cwe2e- compose project's
+        # containers, volumes, networks, then reclaim the 14 GB SSD. The broad
+        # prune is safe here (the runner is ephemeral and discarded) - it
+        # deliberately does NOT live in the harness, which also runs on
+        # operators' own machines.
+        if: always() && needs.changes.outputs.run == 'true'
         run: |
           uv run python - <<'PY'
           from tests.e2e import harness
@@ -139,8 +240,12 @@ jobs:
   # reads; this exercises real Docker command paths, where a lazily-imported dep
   # would otherwise stay invisible. Single v16 leg (packaging realism is
   # version-agnostic) and OFF the `-m e2e` matrix, so init cost is paid once.
+  #
+  # Same scope gate as the version matrix: this is a required context too, so it
+  # always enters and reports, short-circuiting to green on a no-logic/dep diff.
   e2e-runtime-only:
     name: E2E (runtime-only install)
+    needs: changes
     if: >-
       github.event_name == 'workflow_dispatch' ||
       contains(github.event.pull_request.labels.*.name, 'e2e') ||
@@ -154,7 +259,16 @@ jobs:
       HAS_DOCKERHUB: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
 
     steps:
+      - name: E2E scope
+        run: |
+          if [ "${{ needs.changes.outputs.run }}" = "true" ]; then
+            echo "Logic/dep change - running the runtime-only-install E2E."
+          else
+            echo "No logic/dep change - skipping the runtime-only-install E2E; reporting this required context green."
+          fi
+
       - name: Checkout code
+        if: needs.changes.outputs.run == 'true'
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           persist-credentials: false
@@ -163,21 +277,24 @@ jobs:
       # [project.dependencies] and never leaks onto PATH (see the clean-install
       # job in test.yml for why these are set here, not at job level).
       - name: Set up isolated tool dirs
+        if: needs.changes.outputs.run == 'true'
         run: |
           echo "UV_TOOL_DIR=$RUNNER_TEMP/tooldir" >> "$GITHUB_ENV"
           echo "UV_TOOL_BIN_DIR=$RUNNER_TEMP/toolbin" >> "$GITHUB_ENV"
 
       - name: Install uv
+        if: needs.changes.outputs.run == 'true'
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
 
       - name: Log in to Docker Hub
-        if: env.HAS_DOCKERHUB == 'true'
+        if: needs.changes.outputs.run == 'true' && env.HAS_DOCKERHUB == 'true'
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4.4.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Preflight - upstream reachability (a DISTINCT signal)
+        if: needs.changes.outputs.run == 'true'
         run: |
           set -o pipefail
           if ! curl -fsSL -o /tmp/cwe2e-compose.yml \
@@ -193,9 +310,11 @@ jobs:
       # The binary under test: runtime deps ONLY (no dev, no extras), exactly
       # what `uv tool install caffeinated-whale-cli` gives a user.
       - name: Install cwcli as a uv tool (runtime deps only)
+        if: needs.changes.outputs.run == 'true'
         run: uv tool install .
 
       - name: Assert install is runtime-only (dev deps absent)
+        if: needs.changes.outputs.run == 'true'
         run: |
           uv pip list --python "$UV_TOOL_DIR/caffeinated-whale-cli" > pkgs.txt
           grep -qi '^click ' pkgs.txt || { echo "FAIL: click not installed (undeclared runtime dep?)"; exit 1; }
@@ -204,15 +323,17 @@ jobs:
       # The pytest harness itself (pexpect, pytest) runs from the dev venv; the
       # binary it DRIVES is the runtime-only tool, selected via CWCLI_BIN.
       - name: Install test harness dependencies
+        if: needs.changes.outputs.run == 'true'
         run: uv sync --frozen --all-extras
 
       - name: Run runtime-only full-lifecycle E2E
+        if: needs.changes.outputs.run == 'true'
         env:
           CWCLI_BIN: ${{ runner.temp }}/toolbin/cwcli
         run: uv run pytest tests/e2e -m e2e_pkg -o addopts="" -v --tb=short
 
       - name: Teardown backstop - sweep leaked cwe2e- resources
-        if: always()
+        if: always() && needs.changes.outputs.run == 'true'
         run: |
           uv run python - <<'PY'
           from tests.e2e import harness
