@@ -82,6 +82,7 @@ def harness(monkeypatch):
     monkeypatch.setattr(init_mod.config_utils, "get_show_tips", lambda: False)
     monkeypatch.setattr(init_mod, "questionary", state.questionary)
     monkeypatch.setattr(init_mod.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(init_mod.cache, "recache_project", lambda *a, **k: True)
 
     def run(**overrides):
         params = dict(
@@ -218,7 +219,13 @@ class TestInitContainerReadiness:
                 pass
 
         def fake_init_instance(
-            project, *, port, auto_start=False, stream_output=False, on_event=None
+            project,
+            *,
+            port,
+            bench_parent="/workspace",
+            auto_start=False,
+            stream_output=False,
+            on_event=None,
         ):
             instance_calls.append(auto_start)
             # Emit a step so the renderer genuinely opens its spinner.
