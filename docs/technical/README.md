@@ -52,7 +52,7 @@ caffeinated-whale-cli/
 │   │   ├── apps.py             # core.list_apps/install_apps/uninstall_apps - per-bench and multi-site app management
 │   │   ├── update.py           # core.update - the app-update state machine (fan-out, maintenance mode, migrations)
 │   │   ├── supervision.py      # Shared tracked-state contract for start+status+restart (supervisord discovery, config/launcher generation, marker, per-process logs)
-│   │   ├── start.py            # core.start - idempotent bench start under supervisord (discovered-PID no-op, --autorestart)
+│   │   ├── start.py            # core.start - idempotent bench start under supervisord (discovered-PID no-op, --autorestart, blocks on web-readiness before reporting running)
 │   │   ├── status.py           # core.status - per-process health + pre-computed overall
 │   │   ├── restart.py          # core.restart_process - restart ONE supervised program, siblings untouched
 │   │   ├── logs.py             # core.logs_plan/read_logs - resolves container/bench/program selection; the interactive tail stays in the frontend, the bounded axi read runs in the core
