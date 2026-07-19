@@ -81,7 +81,7 @@ The real-Docker E2E is Linux-only; Windows/macOS-specific code stays in the unit
 
 ## Test Files
 
-As of 0.37.0 (unreleased), `tests/` holds 85 `test_*.py` suites totaling 1514 tests in the
+As of 1.0.0, `tests/` holds 85 `test_*.py` suites totaling 1514 tests in the
 `unit` tier (measured with `uv run pytest --cov`). Run `ls tests/` for the
 authoritative current list; see [../docs/testing/README.md](../docs/testing/README.md)
 for the per-area breakdown.
@@ -149,7 +149,7 @@ Tests for tab completion functionality.
 
 ## Test Coverage
 
-Current overall coverage at 0.37.0, unreleased (1514 tests across 85 test files, ~82% overall).
+Current overall coverage at 1.0.0 (1514 tests across 85 test files, ~82% overall).
 
 ### Covered Modules
 - ✅ `utils/completion_utils.py` - 92% (7 missing lines)
@@ -336,7 +336,7 @@ This can happen if pytest finds tests in multiple locations. Use `testpaths` in 
 
 ## Future Test Priorities
 
-Status as of 0.37.0, unreleased (see [../docs/testing/README.md](../docs/testing/README.md) for the full list):
+Status as of 1.0.0 (see [../docs/testing/README.md](../docs/testing/README.md) for the full list):
 
 ### Done
 1. **Project inspection** (`commands/inspect.py`, now a renderer over `core/inspect.py` - see 4h) - covered by `test_inspect_characterization`, `test_core_inspect`, `test_inspect_partial_refresh`, `test_inspect_label_recovery`.
