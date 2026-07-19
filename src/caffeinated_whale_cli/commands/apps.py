@@ -1,7 +1,8 @@
 """``cwcli apps`` - first-class Frappe app management (the renderer).
 
-A cohesive command group for listing, installing, uninstalling, and updating
-Frappe apps per bench and (multi-site by default) per site. It replaces the raw
+A cohesive command group for listing, installing, uninstalling, updating, and
+checking out a ref into Frappe apps per bench and (multi-site by default) per
+site. It replaces the raw
 ``cwcli run <project> bench ...`` escape hatch with per-bench/per-site addressing,
 ``--json`` output, honest aggregated exit codes, and the project's non-interactive
 contract (non-TTY-without-flag refuses; auto-start gated by ``--yes``; destructive
@@ -43,7 +44,7 @@ from ..utils.docker_utils import handle_docker_errors
 from .update import run_app_update
 from .utils import confirm_or_exit, ensure_containers_running, resolve_bench_path
 
-app = typer.Typer(help="Manage Frappe apps: list, install, uninstall, update.")
+app = typer.Typer(help="Manage Frappe apps: list, install, uninstall, update, checkout.")
 
 _DEFAULT_BENCH = "/workspace/frappe-bench"
 
@@ -405,6 +406,75 @@ def uninstall_apps(
         _refresh_cache(project_name, verbose)
 
     _report_and_exit(report, json_output, success_msg="App(s) uninstalled.")
+
+
+# --------------------------------------------------------------------------- checkout
+
+
+@app.command("checkout")
+@handle_docker_errors
+def checkout_app(
+    project_name: str = typer.Argument(
+        ..., help="The Docker Compose project name.", autocompletion=complete_project_names
+    ),
+    app: str = typer.Argument(
+        ..., help="The app whose in-instance checkout to update.", autocompletion=complete_app_names
+    ),
+    ref: str = typer.Argument(..., help="Branch, tag, or commit to fetch and check out."),
+    bench: str = typer.Option(
+        None, "--bench", help="Which bench to target: its numeric index or label."
+    ),
+    bench_path: str = typer.Option(
+        None, "--path", "-p", help="Explicit bench directory (lower-level alternative to --bench)."
+    ),
+    reset: bool = typer.Option(
+        False,
+        "--reset",
+        help="Hard-reset the working tree to the fetched ref (discards local edits in the checkout).",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Auto-start stopped containers without prompting."
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output."),
+):
+    """Fetch and check out a branch/ref into an app already installed in the instance.
+
+    Unlike 'apps install' (a fresh get-app clone) and 'apps update' (the tracked
+    upstream on every app), this puts a specific feature branch, tag, or commit
+    under test in the EXISTING apps/<app> checkout, authenticated for private repos
+    through the same credential bridge as install/update. Use --reset to force a
+    clean working tree at the fetched ref.
+    """
+    ensure_containers_running(project_name, require_running=True, verbose=verbose, auto_start=yes)
+    resolved = _resolve_bench(project_name, bench, bench_path, verbose)
+
+    if not json_output:
+        stderr_console.print(
+            f"[bold cyan]Checking out[/bold cyan] [cyan]{ref}[/cyan] into [cyan]{app}[/cyan]..."
+        )
+
+    try:
+        result = core_apps.checkout_app(
+            project_name,
+            app,
+            ref,
+            bench_path=resolved,
+            reset=reset,
+            on_event=_make_renderer(json_output=json_output, verbose=verbose),
+        )
+    except CwcliError as e:
+        _exit_on_exec_error(e)
+
+    report = result.data
+    assert report is not None  # OK/WARNING always carries a report
+
+    # A checkout changes the app's git state (and possibly its reported version), so
+    # refresh the cache whenever any git step ran, matching install/update.
+    if any(r.ok for r in report.results):
+        _refresh_cache(project_name, verbose)
+
+    _report_and_exit(report, json_output, success_msg=f"Checked out {ref} into {app}.")
 
 
 # ----------------------------------------------------------------------------- update
