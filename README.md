@@ -15,6 +15,7 @@ A command-line interface (CLI) for managing Frappe/ERPNext Docker instances duri
 - **Default Site Support** - Optional `--site` flag when default site is configured
 - **Backup & Restore** - Interactive site restoration with automatic file archive detection and P2P transfer support
 - **App Management** - List, install, uninstall, and update Frappe apps per bench and per site with `cwcli apps` (multi-site by default, `--json`, honest exit codes)
+- **Private App Repos** - `apps install`/`apps update` authenticate private GitHub/GitLab app fetches through your host's already-signed-in `gh`/`glab`, with no token ever entering the container
 - **Update Management** - App updates with automatic migrations and lock cleanup
 - **Self-Update** - Upgrade cwcli itself to the latest release with `cwcli self-update` (install-method aware)
 - **Update Notices** - A passive, once/day "a newer cwcli is available" hint on stderr, shown only to a human at a TTY
@@ -886,6 +887,8 @@ cwcli apps update [OPTIONS] PROJECT_NAME APPS...
 **`apps uninstall`** - removes each app from the target site(s) (`bench --site <site> uninstall-app`). This destroys site data, so it is gated by `-y`/`--yes` or an interactive confirmation (a non-TTY without `--yes` refuses).
 
 **`apps update`** - the canonical app-update path (what the deprecated `cwcli update` now delegates to). Updating the `frappe` framework app runs `bench update --reset`; other apps use the normal git-pull + migrate flow. `--site` narrows which affected sites are migrated; if none of the named site(s) actually have the app installed, the command refuses and exits non-zero rather than silently migrating nothing (a genuine typo/mismatch guard - a bench with no affected sites at all still exits zero). It accepts the same migration flags as the [deprecated `update` command](#update---update-apps-and-migrate) (`--clear-cache`, `--clear-website-cache`, `--build`, `--skip-maintenance`, `--no-recache`). When updating the `frappe` framework app the flow runs the bench-wide `bench update --reset`, so `--site` and those per-app migration flags do not apply and are reported as ignored.
+
+**Private repos:** `apps install`/`apps update` (and the deprecated `update`) transparently authenticate git fetches against private GitHub/GitLab app repos through your host's already-signed-in `gh`/`glab` - nothing to configure, no token ever stored in the container, and public repos are unaffected. Sign in on the host first (`gh auth login` / `glab auth login`).
 
 **Common Options:**
 

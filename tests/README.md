@@ -81,7 +81,7 @@ The real-Docker E2E is Linux-only; Windows/macOS-specific code stays in the unit
 
 ## Test Files
 
-As of 1.0.0, `tests/` holds 85 `test_*.py` suites totaling 1514 tests in the
+As of 1.0.0, `tests/` holds 87 `test_*.py` suites totaling 1580 tests in the
 `unit` tier (measured with `uv run pytest --cov`). Run `ls tests/` for the
 authoritative current list; see [../docs/testing/README.md](../docs/testing/README.md)
 for the per-area breakdown.
@@ -149,7 +149,7 @@ Tests for tab completion functionality.
 
 ## Test Coverage
 
-Current overall coverage at 1.0.0 (1514 tests across 85 test files, ~82% overall).
+Current overall coverage at 1.0.0 (1580 tests across 87 test files, ~82% overall).
 
 ### Covered Modules
 - ✅ `utils/completion_utils.py` - 92% (7 missing lines)
@@ -192,6 +192,7 @@ Current overall coverage at 1.0.0 (1514 tests across 85 test files, ~82% overall
 - ✅ `commands/axi.py` `unlock`/`stop` verbs - (`test_axi_unlock_stop`: TOON `UnlockOutcome`/`StopOutcome` rendering incl. `removed` as a structured list, exit-code mapping, `axi unlock`'s multi-bench `select_bench` and stopped-container `confirm_start` as usage errors (no `--yes` on this verb - it mirrors `axi backup`), `axi stop`'s idempotent already-stopped success and structured not-found error)
 - ✅ `commands/axi.py` `benches`/`label`/`self-update` verbs - (`test_axi_label`: TOON `BenchList`/`LabelOutcome` rendering, exit-code mapping, `axi benches`' uninspected-project error naming inspect rather than an empty list (since `migrate-inspect-core` the axi frontend re-points that hint at `cwcli axi inspect`; `test_axi_inspect` pins the re-point), `axi label`'s required-and-exclusive `--set`/`--clear` (neither is a usage error pointing at `axi benches`, NOT an implicit list), the multi-bench `select_bench` usage error, the `NOT_RUNNING` hint that does not name a flag `label` lacks, and `axi self-update --check`'s deliberate exit-0-when-outdated divergence from the human `--check`'s exit 1)
 - ✅ `commands/axi.py` `logs` verb (`add-axi-logs-verb`) - a bounded log-read verb over the new `core.read_logs` (`test_axi_logs`: one TOON document - a metadata head then one raw-line block per process, stdout stays pure TOON even when log lines carry `:`/`,`/`"`; the exit mapping - stopped -> usage exit 2 naming `cwcli start`, multi-bench/unknown-`--process` -> usage exit 2 naming the flag, running-but-quiet -> empty success exit 0, no-manager/Docker-down -> exit 1; and the guard: the verb is registered (closing the `logs` half of the deferral guards) and deliberately carries no `--follow`/`--yes`). See `openspec/changes/add-axi-logs-verb`.
+- ✅ `core/credbridge.py` - ~99% (`test_core_credbridge`: host dispatch by the `host=` field to `gh`/`glab`, the context manager's stand-up/answer/teardown over a fake container including teardown on both setup failure and a raise from the wrapped op, the accept loop surviving repeated `settimeout` wakes, and two overlapping bridges against the same bind mount keeping independent per-invocation socket/shim/git-config entries). Wrapped by `core.apps.install_apps`'s get-app fan-out and `core.update.update`'s whole dispatch; no dedicated E2E (the real proof against live GitHub/GitLab repos was run by hand, not committed as a harness test)
 - ✅ `core/version.py` - ~90% (`test_core_version`: install-method detection tree (dev/uv/uvx/pip fallback), the fail-open PyPI lookup, PEP 440 compare including the dev-ahead case, the TTL cache, and the `passive_notice` cache-only gate incl. the `attempted_at` once/day refresh throttle)
 - ✅ `commands/self_update.py` - 100% (`test_self_update`: dev/uvx no-op, the default upgrade run (success/failure/`FileNotFoundError`), `--check`, `--no-cache`)
 - ✅ `update_notice.py` - ~95% (`test_update_notice`: stderr-only rendering never on stdout, `sys.stderr.isatty()` gating, `CWCLI_NO_UPDATE_CHECK` suppression, fail-open when the core gate raises)
