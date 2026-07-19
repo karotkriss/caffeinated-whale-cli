@@ -143,3 +143,6 @@ def test_the_destructive_mutations_are_deliberately_not_verbs():
     assert "update" in registered
     assert "install" not in registered
     assert "uninstall" not in registered
+    # `apps checkout` mutates the in-instance checkout, so like install/uninstall it
+    # is a HUMAN verb only - no axi surface. Keep its absence a decision.
+    assert "checkout" not in registered

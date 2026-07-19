@@ -42,6 +42,7 @@ from ..utils import bench_sites
 from . import credbridge, resolvers
 from . import docker as core_docker
 from .envelope import Choice, Message, Result, Status
+from .errors import CwcliError, ErrorKind
 from .exec_stream import ExecChunk, exec_stream
 
 # ------------------------------------------------------------------------------ DTOs
@@ -431,6 +432,111 @@ def install_apps(
                 results.append(
                     AppResult(app=app_name, site=site, action="install-app", ok=code == 0)
                 )
+
+    any_fail = any(not r.ok for r in results)
+    return Result(
+        status=Status.WARNING if any_fail else Status.OK,
+        data=AppsReport(project=project_name, bench_path=path, results=results, ok=not any_fail),
+        warnings=warnings,
+    )
+
+
+# -------------------------------------------------------------------------- checkout
+
+
+def _resolve_remote(frappe_container, app_dir: str, app: str) -> str:
+    """The git remote to fetch the ref from - auto-detected, no hardcoded name.
+
+    bench's own ``get-app`` clones with ``--origin upstream``, so a
+    bench-installed app's remote is ``upstream``, NOT ``origin`` (verified on a
+    real bench); a hand-cloned checkout usually has ``origin``. Detecting it lets
+    the verb work on both with no flag. A dir that is not a git checkout (``git
+    remote`` fails) is a clear precondition error, not a cryptic later git failure.
+    """
+    exit_code, output = frappe_container.exec_run("git remote", workdir=app_dir)
+    if exit_code != 0:
+        raise CwcliError(
+            ErrorKind.NOT_FOUND,
+            "app.no_checkout",
+            f"No git checkout found for app '{app}' at {app_dir}.",
+            hint="Target an app already installed in the bench (see 'cwcli apps list').",
+        )
+    remotes = _decode(output).split()
+    for preferred in ("upstream", "origin"):
+        if preferred in remotes:
+            return preferred
+    if remotes:
+        return remotes[0]
+    raise CwcliError(
+        ErrorKind.PRECONDITION,
+        "app.no_remote",
+        f"The checkout for app '{app}' has no git remote to fetch from.",
+    )
+
+
+def checkout_app(
+    project_name: str,
+    app: str,
+    ref: str,
+    *,
+    bench: str | None = None,
+    bench_path: str | None = None,
+    reset: bool = False,
+    auto_start: bool = False,
+    on_event: OnEvent | None = None,
+) -> Result[AppsReport]:
+    """Fetch and check out an arbitrary ``ref`` into an app that ALREADY EXISTS.
+
+    The gap ``install``/``update`` leave: ``install`` is ``bench get-app`` (a FRESH
+    clone of a new app) and ``update`` is ``bench update --pull`` (the TRACKED
+    upstream on every app). Neither fetches one named branch/tag/commit into an
+    existing ``apps/<app>`` checkout, which is exactly what putting a feature branch
+    under test in the instance the app lives in needs.
+
+    The private-repo fetch rides the SAME credential bridge as ``install``/
+    ``update`` (host ``gh``/``glab`` -> in-container git over a unix socket; the raw
+    token never enters the container, and the bridge is inert for public repos).
+    ``reset=True`` additionally hard-resets the working tree to the fetched tip, the
+    clean-tree guarantee the delivery workflow's build/migrate steps rely on.
+
+    Returns the same :class:`AppsReport` as ``install``/``uninstall`` - one
+    :class:`AppResult` per git step - so the CLI renderer and exit-code logic are
+    shared. It stops at the first failed step (a failed fetch makes the checkout
+    meaningless).
+    """
+    emit: OnEvent = on_event or _noop
+
+    resolved = _resolve(project_name, bench, bench_path, auto_start=auto_start)
+    if isinstance(resolved, Result):
+        return resolved
+    frappe_container, path, warnings = resolved
+
+    app_dir = f"{path}/apps/{app}"
+    remote = _resolve_remote(frappe_container, app_dir, app)
+    q_ref = shlex.quote(ref)
+    q_remote = shlex.quote(remote)
+    # `-B <ref> FETCH_HEAD`: move the local branch <ref> to EXACTLY what we just
+    # fetched. FETCH_HEAD (not <remote>/<ref>) is what `git fetch <remote> <ref>`
+    # guarantees regardless of the app's fetch refspec, and `-B` makes a re-run
+    # idempotent by re-pointing an existing local branch at the new remote tip.
+    # ponytail: a tag/sha names its local branch after itself (odd, harmless) -
+    # the workflow's target is a feature branch, where the name is exactly right.
+    steps = [
+        ("fetch", f"git fetch {q_remote} -- {q_ref}"),
+        ("checkout", f"git checkout -B {q_ref} FETCH_HEAD"),
+    ]
+    if reset:
+        # Discard any local edits so build/migrate run against exactly the fetched
+        # tree (bench update's dirty-tree guard; the in-instance copy holds no work).
+        steps.append(("reset", "git reset --hard FETCH_HEAD"))
+
+    results: list[AppResult] = []
+    with credbridge.credential_bridge(frappe_container, path):
+        for action, cmd in steps:
+            code = _run_step(frappe_container, cmd, app_dir, emit=emit, phase=action, app=app)
+            results.append(AppResult(app=app, site=None, action=action, ok=code == 0))
+            if code != 0:
+                break
 
     any_fail = any(not r.ok for r in results)
     return Result(
