@@ -23,7 +23,10 @@ Three pieces (do not elaborate them):
    ``store``/``erase`` are no-ops, so nothing is ever persisted in the container.
 3. One global git-config line for the container ``frappe`` user pointing at the
    shim, in the ``!``-shell form with an absolute interpreter so it is
-   PATH-independent.
+   PATH-independent. The socket, shim, and config line are all named uniquely per
+   invocation (a ``uuid4`` token) and added/removed with ``git config --add``/
+   ``--unset <exact value>``, so two concurrent installs/updates against the same
+   bench never clobber each other's bridge or credential-helper entry.
 
 git only invokes a credential helper on an HTTP 401, so the bridge is inert for
 public repos - which is why :func:`credential_bridge` can safely wrap EVERY
@@ -35,17 +38,21 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import socket
 import subprocess
 import threading
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 
-_SOCK_NAME = ".git-cred.sock"
-_HELPER_NAME = ".git-credential-bridge.py"
+_SOCK_NAME_FMT = ".git-cred-{}.sock"
+_HELPER_NAME_FMT = ".git-credential-bridge-{}.py"
 
-# The container-side shim. It locates its socket as a sibling of itself so it needs
-# no hardcoded workspace path (works for any --bench-parent). Only `get` does
+# The container-side shim. It locates its socket as a sibling of itself by default
+# (works for any --bench-parent), but the DEFAULT is baked in per invocation (the
+# `{sock_name!r}` below) rather than a fixed name, so two concurrent bridges never
+# read each other's socket even if CWCLI_CRED_SOCK is unset. Only `get` does
 # anything; store/erase exit 0 without persisting, so no credential is ever written
 # in the container.
 _CONTAINER_HELPER_SRC = """\
@@ -53,7 +60,7 @@ import os, socket, sys
 if (sys.argv[1] if len(sys.argv) > 1 else "get") != "get":
     sys.exit(0)
 sock = os.environ.get("CWCLI_CRED_SOCK") or os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), ".git-cred.sock"
+    os.path.dirname(os.path.abspath(__file__)), {sock_name!r}
 )
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.connect(sock)
@@ -125,10 +132,18 @@ def _teardown(
     thread: threading.Thread | None,
     sock_host: Path,
     helper_host: Path,
+    unset_pattern: str,
 ) -> None:
-    """Undo whatever setup got as far as creating: config, listener thread, socket, files."""
+    """Undo whatever setup got as far as creating: config, listener thread, socket, files.
+
+    ``unset_pattern`` is an anchored regex matching ONLY this invocation's config
+    value, so a concurrent bridge's own ``credential.helper`` line (or a
+    pre-existing, unrelated one) is left in place.
+    """
     with contextlib.suppress(Exception):
-        container.exec_run(["git", "config", "--global", "--unset", "credential.helper"])
+        container.exec_run(
+            ["git", "config", "--global", "--unset", "credential.helper", unset_pattern]
+        )
     if stop is not None:
         stop.set()
     if srv is not None:
@@ -178,16 +193,20 @@ def credential_bridge(container, bench_path: str) -> Iterator[None]:
         return
     host_dir, container_dir = resolved
 
-    sock_host = host_dir / _SOCK_NAME
-    helper_host = host_dir / _HELPER_NAME
-    helper_container = f"{container_dir}/{_HELPER_NAME}"
+    token = uuid.uuid4().hex[:12]
+    sock_name = _SOCK_NAME_FMT.format(token)
+    helper_name = _HELPER_NAME_FMT.format(token)
+    sock_host = host_dir / sock_name
+    helper_host = host_dir / helper_name
+    helper_container = f"{container_dir}/{helper_name}"
     config_value = f"!/usr/bin/python3 {helper_container}"
+    unset_pattern = f"^{re.escape(config_value)}$"
 
     srv: socket.socket | None = None
     stop: threading.Event | None = None
     thread: threading.Thread | None = None
     try:
-        helper_host.write_text(_CONTAINER_HELPER_SRC)
+        helper_host.write_text(_CONTAINER_HELPER_SRC.format(sock_name=sock_name))
         with contextlib.suppress(FileNotFoundError):
             sock_host.unlink()
 
@@ -200,7 +219,7 @@ def credential_bridge(container, bench_path: str) -> Iterator[None]:
         prev_cwd = os.getcwd()
         try:
             os.chdir(host_dir)
-            srv.bind(_SOCK_NAME)
+            srv.bind(sock_name)
         finally:
             os.chdir(prev_cwd)
         # 0666 so the container frappe user connects regardless of whether its uid was
@@ -213,12 +232,14 @@ def credential_bridge(container, bench_path: str) -> Iterator[None]:
         thread = threading.Thread(target=_serve, args=(srv, stop), daemon=True)
         thread.start()
 
-        container.exec_run(["git", "config", "--global", "credential.helper", config_value])
+        container.exec_run(
+            ["git", "config", "--global", "--add", "credential.helper", config_value]
+        )
     except Exception:
-        _teardown(container, srv, stop, thread, sock_host, helper_host)
+        _teardown(container, srv, stop, thread, sock_host, helper_host, unset_pattern)
         raise
 
     try:
         yield
     finally:
-        _teardown(container, srv, stop, thread, sock_host, helper_host)
+        _teardown(container, srv, stop, thread, sock_host, helper_host, unset_pattern)
