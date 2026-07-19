@@ -75,6 +75,8 @@ class FakeContainer:
         for sub in self.fail_on:
             if sub in cmd_str:
                 return 1, f"boom: {cmd_str}"
+        if cmd_str.strip() == "git remote":
+            return 0, "\n".join(getattr(self, "remotes", ["upstream"])) + "\n"
         if cmd_str.startswith("ls -1") and cmd_str.rstrip().endswith("apps"):
             return 0, "\n".join(self.available) + "\n"
         if "list-apps" in cmd_str:
@@ -325,3 +327,99 @@ def test_what_the_core_returns_is_plain_serializable_data(monkeypatch, container
         return value is None or isinstance(value, (str, int, float, bool))
 
     assert _plain(plain), plain
+
+
+# ---------------------------------------------------------------------- checkout_app
+
+
+def _bridge_spy(monkeypatch):
+    """Record whether the credential bridge wrapped the git ops."""
+    import contextlib
+
+    entered = {"count": 0}
+
+    @contextlib.contextmanager
+    def _fake_bridge(_container, _path):
+        entered["count"] += 1
+        yield
+
+    monkeypatch.setattr(core_apps.credbridge, "credential_bridge", _fake_bridge)
+    return entered
+
+
+def test_checkout_fetches_then_checks_out_the_ref_in_the_app_dir(monkeypatch, container):
+    _cache(monkeypatch, [{"path": BENCH}])
+    entered = _bridge_spy(monkeypatch)
+
+    result = core_apps.checkout_app("proj", "payments", "feature/x")
+
+    assert result.status is Status.OK
+    assert result.data.ok is True
+    assert [(r.action, r.ok) for r in result.data.results] == [
+        ("fetch", True),
+        ("checkout", True),
+    ]
+    # The fetch is authed through the bridge, and both git ops run in apps/<app>.
+    assert entered["count"] == 1
+    # bench's get-app names the remote `upstream`, so the fetch auto-detects it.
+    assert "git fetch upstream feature/x" in container.calls
+    assert "git checkout -B feature/x FETCH_HEAD" in container.calls
+    # No reset step without --reset.
+    assert not any("reset --hard" in c for c in container.calls)
+
+
+def test_checkout_falls_back_to_origin_when_no_upstream(monkeypatch, container):
+    """A hand-cloned checkout (remote `origin`, no `upstream`) still works."""
+    container.remotes = ["origin"]
+    _cache(monkeypatch, [{"path": BENCH}])
+    _bridge_spy(monkeypatch)
+
+    core_apps.checkout_app("proj", "payments", "feature/x")
+
+    assert "git fetch origin feature/x" in container.calls
+
+
+def test_checkout_a_dir_that_is_not_a_git_checkout_raises(monkeypatch, container):
+    container.fail_on = ["git remote"]
+    _cache(monkeypatch, [{"path": BENCH}])
+    _bridge_spy(monkeypatch)
+
+    with pytest.raises(CwcliError) as exc:
+        core_apps.checkout_app("proj", "ghost", "feature/x")
+    assert exc.value.kind is ErrorKind.NOT_FOUND
+    assert not any("git fetch" in c for c in container.calls)
+
+
+def test_checkout_reset_adds_a_hard_reset_step(monkeypatch, container):
+    _cache(monkeypatch, [{"path": BENCH}])
+    _bridge_spy(monkeypatch)
+
+    result = core_apps.checkout_app("proj", "payments", "v1.2.0", reset=True)
+
+    assert result.data.ok is True
+    assert [r.action for r in result.data.results] == ["fetch", "checkout", "reset"]
+    assert "git reset --hard FETCH_HEAD" in container.calls
+
+
+def test_checkout_stops_at_a_failed_fetch(monkeypatch, container):
+    """A failed fetch makes checkout meaningless, so it never runs."""
+    container.fail_on = ["git fetch"]
+    _cache(monkeypatch, [{"path": BENCH}])
+    _bridge_spy(monkeypatch)
+
+    result = core_apps.checkout_app("proj", "payments", "feature/x")
+
+    assert result.status is Status.WARNING
+    assert result.data.ok is False
+    assert [(r.action, r.ok) for r in result.data.results] == [("fetch", False)]
+    assert not any("git checkout" in c for c in container.calls)
+
+
+def test_checkout_quotes_a_hostile_ref(monkeypatch, container):
+    """The ref is shell-quoted so it cannot break out of the git command."""
+    _cache(monkeypatch, [{"path": BENCH}])
+    _bridge_spy(monkeypatch)
+
+    core_apps.checkout_app("proj", "payments", "x; rm -rf /")
+
+    assert "git fetch upstream 'x; rm -rf /'" in container.calls
