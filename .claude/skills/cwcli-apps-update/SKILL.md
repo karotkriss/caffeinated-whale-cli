@@ -1,8 +1,8 @@
 ---
 name: cwcli-apps-update
 description: >
-  Incident-level internals of cwcli's apps command group (list/install/uninstall/update) and the
-  update state machine - multi-site fan-out by default, --json stdout purity, post-mutation recache,
+  Incident-level internals of cwcli's apps command group (list/install/uninstall/update/checkout) and
+  the update state machine - multi-site fan-out by default, --json stdout purity, post-mutation recache,
   git-URL app-name derivation, the deprecated `cwcli update` alias and its frappe special-case,
   list/install/uninstall on the logic core (core/apps.py: the untangled uninstall consent/auto_start,
   report.ok-driven exit codes, `cwcli axi apps list` shipping while install/uninstall stay deferred),
@@ -10,8 +10,8 @@ description: >
   stream is unknown-not-failed, per-site enable/disable, honest partial-failure exit codes,
   shlex-quoted interpolation). Use this whenever you edit or debug commands/apps.py, core/apps.py,
   commands/update.py, core/update.py, or `axi apps list`/`axi apps update`, or touch app
-  install/uninstall/update or bench migration behavior. Each note guards a real shipped bug - keep the
-  root-cause "why".
+  install/uninstall/update/checkout or bench migration behavior. Each note guards a real shipped bug -
+  keep the root-cause "why".
 metadata:
   internal: true
 ---
