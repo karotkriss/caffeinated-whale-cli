@@ -118,6 +118,28 @@ def _serve(srv: socket.socket, stop: threading.Event) -> None:
                 conn.sendall(host_credential(req))
 
 
+def _teardown(
+    container,
+    srv: socket.socket | None,
+    stop: threading.Event | None,
+    thread: threading.Thread | None,
+    sock_host: Path,
+    helper_host: Path,
+) -> None:
+    """Undo whatever setup got as far as creating: config, listener thread, socket, files."""
+    with contextlib.suppress(Exception):
+        container.exec_run(["git", "config", "--global", "--unset", "credential.helper"])
+    if stop is not None:
+        stop.set()
+    if srv is not None:
+        srv.close()
+    if thread is not None:
+        thread.join(timeout=2)
+    for path in (sock_host, helper_host):
+        with contextlib.suppress(FileNotFoundError):
+            path.unlink()
+
+
 def _resolve_workspace_mount(container, bench_path: str) -> tuple[Path, str] | None:
     """Find the bind mount the bench lives under: ``(host_dir, container_dir)``.
 
@@ -161,41 +183,42 @@ def credential_bridge(container, bench_path: str) -> Iterator[None]:
     helper_container = f"{container_dir}/{_HELPER_NAME}"
     config_value = f"!/usr/bin/python3 {helper_container}"
 
-    helper_host.write_text(_CONTAINER_HELPER_SRC)
-    with contextlib.suppress(FileNotFoundError):
-        sock_host.unlink()
-
-    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    # AF_UNIX sun_path caps at ~108 bytes, and a long CWCLI_HOME easily exceeds it.
-    # Bind the short RELATIVE name from inside the mount dir so sun_path stays tiny;
-    # the socket file lands at sock_host all the same, and cwd is restored at once
-    # (the listening fd does not depend on it afterwards). The container side always
-    # connects via its own short /workspace path, so it is never affected.
-    prev_cwd = os.getcwd()
+    srv: socket.socket | None = None
+    stop: threading.Event | None = None
+    thread: threading.Thread | None = None
     try:
-        os.chdir(host_dir)
-        srv.bind(_SOCK_NAME)
-    finally:
-        os.chdir(prev_cwd)
-    # 0666 so the container frappe user connects regardless of whether its uid was
-    # aligned to the host's; the socket only exists during the op.
-    sock_host.chmod(0o666)
-    srv.settimeout(_ACCEPT_TIMEOUT)
-    srv.listen(8)
+        helper_host.write_text(_CONTAINER_HELPER_SRC)
+        with contextlib.suppress(FileNotFoundError):
+            sock_host.unlink()
 
-    stop = threading.Event()
-    thread = threading.Thread(target=_serve, args=(srv, stop), daemon=True)
-    thread.start()
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        # AF_UNIX sun_path caps at ~108 bytes, and a long CWCLI_HOME easily exceeds it.
+        # Bind the short RELATIVE name from inside the mount dir so sun_path stays tiny;
+        # the socket file lands at sock_host all the same, and cwd is restored at once
+        # (the listening fd does not depend on it afterwards). The container side always
+        # connects via its own short /workspace path, so it is never affected.
+        prev_cwd = os.getcwd()
+        try:
+            os.chdir(host_dir)
+            srv.bind(_SOCK_NAME)
+        finally:
+            os.chdir(prev_cwd)
+        # 0666 so the container frappe user connects regardless of whether its uid was
+        # aligned to the host's; the socket only exists during the op.
+        sock_host.chmod(0o666)
+        srv.settimeout(_ACCEPT_TIMEOUT)
+        srv.listen(8)
 
-    container.exec_run(["git", "config", "--global", "credential.helper", config_value])
+        stop = threading.Event()
+        thread = threading.Thread(target=_serve, args=(srv, stop), daemon=True)
+        thread.start()
+
+        container.exec_run(["git", "config", "--global", "credential.helper", config_value])
+    except Exception:
+        _teardown(container, srv, stop, thread, sock_host, helper_host)
+        raise
+
     try:
         yield
     finally:
-        with contextlib.suppress(Exception):
-            container.exec_run(["git", "config", "--global", "--unset", "credential.helper"])
-        stop.set()
-        srv.close()
-        thread.join(timeout=2)
-        for path in (sock_host, helper_host):
-            with contextlib.suppress(FileNotFoundError):
-                path.unlink()
+        _teardown(container, srv, stop, thread, sock_host, helper_host)

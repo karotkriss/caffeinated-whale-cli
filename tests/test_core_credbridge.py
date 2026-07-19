@@ -176,6 +176,31 @@ def test_bridge_tears_down_on_exception(tmp_path, monkeypatch):
     assert container.exec_calls[-1][:4] == ["git", "config", "--global", "--unset"]
 
 
+def test_bridge_tears_down_on_setup_failure(tmp_path, monkeypatch):
+    """A failure DURING setup (e.g. the initial git-config exec) must still tear
+    down the socket/shim/daemon thread, not just a failure inside the `with` body.
+    """
+    monkeypatch.setattr(credbridge.subprocess, "run", lambda *a, **k: None)
+
+    class FailingContainer(FakeContainer):
+        def exec_run(self, cmd, **kwargs):
+            self.exec_calls.append(cmd)
+            if cmd[:4] == ["git", "config", "--global", "credential.helper"]:
+                raise RuntimeError("docker exec blew up")
+            return 0, b""
+
+    container = FailingContainer(tmp_path)
+    sock = tmp_path / credbridge._SOCK_NAME
+    helper = tmp_path / credbridge._HELPER_NAME
+
+    with pytest.raises(RuntimeError):
+        with credbridge.credential_bridge(container, "/workspace/frappe-bench"):
+            pytest.fail("setup should have raised before yield")
+
+    assert not sock.exists()
+    assert not helper.exists()
+
+
 def test_bridge_is_noop_without_bind_mount(tmp_path):
     """No workspace bind mount resolvable -> yield with no socket, no git config."""
     container = FakeContainer(tmp_path, container_dir="/somewhere-else")
