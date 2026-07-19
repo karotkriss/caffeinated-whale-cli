@@ -59,8 +59,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from ..utils import cache, db_utils
+from . import credbridge, resolvers
 from . import docker as core_docker
-from . import resolvers
 from .envelope import Message, Result, Status
 from .errors import CwcliError, ErrorKind
 from .exec_stream import ExecChunk, exec_stream
@@ -541,45 +541,51 @@ def update(
     # 4. Both bench directories must exist (update's own probe - see _require_bench_dirs).
     _require_bench_dirs(frappe_container, bench_path)
 
-    # 5. The frappe framework special-case: bench-wide, and it returns BEFORE the
-    # maintenance-mode state machine is entered.
-    if any(app.lower() == "frappe" for app in apps):
-        ignored = [
-            name
-            for name, active in (
-                ("--site", bool(sites)),
-                ("--clear-cache", clear_cache),
-                ("--clear-website-cache", clear_website_cache),
-                ("--build", build),
-                ("--skip-maintenance", skip_maintenance),
+    # Bridge the container's git back to the host's gh/glab so a `git pull` /
+    # `bench update --reset` against a PRIVATE app remote authenticates without any
+    # gh/glab or stored token in the container. Inert for public repos (git only
+    # calls a credential helper on 401), so every update is wrapped; see
+    # core.credbridge.
+    with credbridge.credential_bridge(frappe_container, bench_path):
+        # 5. The frappe framework special-case: bench-wide, and it returns BEFORE the
+        # maintenance-mode state machine is entered.
+        if any(app.lower() == "frappe" for app in apps):
+            ignored = [
+                name
+                for name, active in (
+                    ("--site", bool(sites)),
+                    ("--clear-cache", clear_cache),
+                    ("--clear-website-cache", clear_website_cache),
+                    ("--build", build),
+                    ("--skip-maintenance", skip_maintenance),
+                )
+                if active
+            ]
+            return _frappe_reset(
+                frappe_container,
+                project_name=project_name,
+                bench_path=bench_path,
+                apps=apps,
+                no_recache=no_recache,
+                ignored=ignored,
+                emit=emit,
+                warnings=warnings,
             )
-            if active
-        ]
-        return _frappe_reset(
+
+        return _update_apps(
             frappe_container,
             project_name=project_name,
             bench_path=bench_path,
             apps=apps,
+            sites_filter=sites,
+            clear_cache=clear_cache,
+            clear_website_cache=clear_website_cache,
+            build=build,
+            skip_maintenance=skip_maintenance,
             no_recache=no_recache,
-            ignored=ignored,
             emit=emit,
             warnings=warnings,
         )
-
-    return _update_apps(
-        frappe_container,
-        project_name=project_name,
-        bench_path=bench_path,
-        apps=apps,
-        sites_filter=sites,
-        clear_cache=clear_cache,
-        clear_website_cache=clear_website_cache,
-        build=build,
-        skip_maintenance=skip_maintenance,
-        no_recache=no_recache,
-        emit=emit,
-        warnings=warnings,
-    )
 
 
 def _update_apps(  # noqa: C901 - the state machine's phases are the function
