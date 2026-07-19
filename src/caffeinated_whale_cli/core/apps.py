@@ -522,7 +522,7 @@ def checkout_app(
     # ponytail: a tag/sha names its local branch after itself (odd, harmless) -
     # the workflow's target is a feature branch, where the name is exactly right.
     steps = [
-        ("fetch", f"git fetch {q_remote} {q_ref}"),
+        ("fetch", f"git fetch {q_remote} -- {q_ref}"),
         ("checkout", f"git checkout -B {q_ref} FETCH_HEAD"),
     ]
     if reset:

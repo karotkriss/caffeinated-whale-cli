@@ -362,7 +362,7 @@ def test_checkout_fetches_then_checks_out_the_ref_in_the_app_dir(monkeypatch, co
     # The fetch is authed through the bridge, and both git ops run in apps/<app>.
     assert entered["count"] == 1
     # bench's get-app names the remote `upstream`, so the fetch auto-detects it.
-    assert "git fetch upstream feature/x" in container.calls
+    assert "git fetch upstream -- feature/x" in container.calls
     assert "git checkout -B feature/x FETCH_HEAD" in container.calls
     # No reset step without --reset.
     assert not any("reset --hard" in c for c in container.calls)
@@ -376,7 +376,7 @@ def test_checkout_falls_back_to_origin_when_no_upstream(monkeypatch, container):
 
     core_apps.checkout_app("proj", "payments", "feature/x")
 
-    assert "git fetch origin feature/x" in container.calls
+    assert "git fetch origin -- feature/x" in container.calls
 
 
 def test_checkout_a_dir_that_is_not_a_git_checkout_raises(monkeypatch, container):
@@ -422,4 +422,16 @@ def test_checkout_quotes_a_hostile_ref(monkeypatch, container):
 
     core_apps.checkout_app("proj", "payments", "x; rm -rf /")
 
-    assert "git fetch upstream 'x; rm -rf /'" in container.calls
+    assert "git fetch upstream -- 'x; rm -rf /'" in container.calls
+
+
+def test_checkout_guards_a_dash_prefixed_ref_from_being_parsed_as_an_option(
+    monkeypatch, container
+):
+    """A `--upload-pack=...`-style ref must not be parsed as a fetch option."""
+    _cache(monkeypatch, [{"path": BENCH}])
+    _bridge_spy(monkeypatch)
+
+    core_apps.checkout_app("proj", "payments", "--upload-pack=touch pwned")
+
+    assert "git fetch upstream -- '--upload-pack=touch pwned'" in container.calls

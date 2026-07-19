@@ -1,7 +1,8 @@
 """``cwcli apps`` - first-class Frappe app management (the renderer).
 
-A cohesive command group for listing, installing, uninstalling, and updating
-Frappe apps per bench and (multi-site by default) per site. It replaces the raw
+A cohesive command group for listing, installing, uninstalling, updating, and
+checking out a ref into Frappe apps per bench and (multi-site by default) per
+site. It replaces the raw
 ``cwcli run <project> bench ...`` escape hatch with per-bench/per-site addressing,
 ``--json`` output, honest aggregated exit codes, and the project's non-interactive
 contract (non-TTY-without-flag refuses; auto-start gated by ``--yes``; destructive
@@ -43,7 +44,7 @@ from ..utils.docker_utils import handle_docker_errors
 from .update import run_app_update
 from .utils import confirm_or_exit, ensure_containers_running, resolve_bench_path
 
-app = typer.Typer(help="Manage Frappe apps: list, install, uninstall, update.")
+app = typer.Typer(help="Manage Frappe apps: list, install, uninstall, update, checkout.")
 
 _DEFAULT_BENCH = "/workspace/frappe-bench"
 
