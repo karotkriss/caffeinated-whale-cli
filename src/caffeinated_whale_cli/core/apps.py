@@ -39,8 +39,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from ..utils import bench_sites
+from . import credbridge, resolvers
 from . import docker as core_docker
-from . import resolvers
 from .envelope import Choice, Message, Result, Status
 from .exec_stream import ExecChunk, exec_stream
 
@@ -375,28 +375,34 @@ def install_apps(
     fetched: list[tuple[str, str]] = []
     branch_arg = f"--branch {shlex.quote(branch)} " if branch else ""
 
-    for target in apps:
-        get_cmd = f"bench get-app {branch_arg}{shlex.quote(target)}"
+    # Bridge the container's git back to the host's gh/glab for private-repo
+    # fetches. Inert for public repos (git only calls a credential helper on 401),
+    # so every git-URL fetch is wrapped and torn down; see core.credbridge.
+    with credbridge.credential_bridge(frappe_container, path):
+        for target in apps:
+            get_cmd = f"bench get-app {branch_arg}{shlex.quote(target)}"
 
-        # Announce BEFORE the apps/ read, so --verbose stderr keeps its historical
-        # order: "Fetching x..." then the read's echo then get-app's own echo.
-        emit(AppsAnnounce(phase="get-app", app=target))
-        command, before_apps = _available_apps(frappe_container, path)
-        emit(AppsCommand(command=command))
-        before = set(before_apps)
+            # Announce BEFORE the apps/ read, so --verbose stderr keeps its historical
+            # order: "Fetching x..." then the read's echo then get-app's own echo.
+            emit(AppsAnnounce(phase="get-app", app=target))
+            command, before_apps = _available_apps(frappe_container, path)
+            emit(AppsCommand(command=command))
+            before = set(before_apps)
 
-        code = _run_step(frappe_container, get_cmd, path, emit=emit, phase="get-app", app=target)
-        if code != 0:
-            results.append(AppResult(app=target, site=None, action="get-app", ok=False))
-            continue
-        results.append(AppResult(app=target, site=None, action="get-app", ok=True))
+            code = _run_step(
+                frappe_container, get_cmd, path, emit=emit, phase="get-app", app=target
+            )
+            if code != 0:
+                results.append(AppResult(app=target, site=None, action="get-app", ok=False))
+                continue
+            results.append(AppResult(app=target, site=None, action="get-app", ok=True))
 
-        command, after_apps = _available_apps(frappe_container, path)
-        emit(AppsCommand(command=command))
+            command, after_apps = _available_apps(frappe_container, path)
+            emit(AppsCommand(command=command))
 
-        new_dirs = set(after_apps) - before
-        app_name = new_dirs.pop() if len(new_dirs) == 1 else derive_app_name(target)
-        fetched.append((target, app_name))
+            new_dirs = set(after_apps) - before
+            app_name = new_dirs.pop() if len(new_dirs) == 1 else derive_app_name(target)
+            fetched.append((target, app_name))
 
     if not fetch_only:
         target_sites = _target_sites(frappe_container, path, sites)
