@@ -517,7 +517,7 @@ def test_checkout_fetches_and_checks_out_the_ref_and_refreshes(wired, monkeypatc
     out = json.loads(capsys.readouterr().out)
     assert out["ok"] is True
     assert [r["action"] for r in out["results"]] == ["fetch", "checkout"]
-    assert "git fetch upstream feature/x" in container.calls
+    assert "git fetch upstream -- feature/x" in container.calls
     assert "git checkout -B feature/x FETCH_HEAD" in container.calls
     assert not any("reset --hard" in c for c in container.calls)
     assert wired.recache_calls == ["proj"]  # git state changed -> cache refreshed
