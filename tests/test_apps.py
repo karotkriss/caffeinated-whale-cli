@@ -90,6 +90,8 @@ class FakeFrappeContainer:
                     self.available_apps.append(dirname)
                     break
             return 0, ""
+        if cmd_str.strip() == "git remote":
+            return 0, "upstream\n"
         if cmd_str.startswith("ls -1") and cmd_str.rstrip().endswith("apps"):
             # Matches both "ls -1 <bench>/apps" and the workdir form "ls -1 apps".
             return 0, "\n".join(self.available_apps) + "\n"
@@ -492,6 +494,77 @@ def test_uninstall_yes_fans_out_and_refreshes(wired, monkeypatch, capsys):
     assert len(uninstalls) == 2  # both sites
     assert all("--yes" in c for c in uninstalls)  # bench's own confirm suppressed
     assert wired.recache_calls == ["proj"]
+
+
+# -------------------------------------------------------------------------- checkout
+
+
+def test_checkout_fetches_and_checks_out_the_ref_and_refreshes(wired, monkeypatch, capsys):
+    container = _install_container()
+    monkeypatch.setattr(core_apps.core_docker, "get_frappe_container", lambda name: container)
+
+    apps_mod.checkout_app(
+        "proj",
+        "payments",
+        "feature/x",
+        bench=None,
+        bench_path=None,
+        reset=False,
+        json_output=True,
+        yes=False,
+        verbose=False,
+    )
+    out = json.loads(capsys.readouterr().out)
+    assert out["ok"] is True
+    assert [r["action"] for r in out["results"]] == ["fetch", "checkout"]
+    assert "git fetch upstream feature/x" in container.calls
+    assert "git checkout -B feature/x FETCH_HEAD" in container.calls
+    assert not any("reset --hard" in c for c in container.calls)
+    assert wired.recache_calls == ["proj"]  # git state changed -> cache refreshed
+
+
+def test_checkout_reset_adds_hard_reset(wired, monkeypatch, capsys):
+    container = _install_container()
+    monkeypatch.setattr(core_apps.core_docker, "get_frappe_container", lambda name: container)
+
+    apps_mod.checkout_app(
+        "proj",
+        "payments",
+        "v1.2.0",
+        bench=None,
+        bench_path=None,
+        reset=True,
+        json_output=True,
+        yes=False,
+        verbose=False,
+    )
+    out = json.loads(capsys.readouterr().out)
+    assert [r["action"] for r in out["results"]] == ["fetch", "checkout", "reset"]
+    assert "git reset --hard FETCH_HEAD" in container.calls
+
+
+def test_checkout_failed_fetch_exits_nonzero_and_skips_the_rest(wired, monkeypatch, capsys):
+    container = _install_container(fail_on=["git fetch"])
+    monkeypatch.setattr(core_apps.core_docker, "get_frappe_container", lambda name: container)
+
+    with pytest.raises(typer.Exit) as exc:
+        apps_mod.checkout_app(
+            "proj",
+            "payments",
+            "feature/x",
+            bench=None,
+            bench_path=None,
+            reset=False,
+            json_output=True,
+            yes=False,
+            verbose=False,
+        )
+    assert exc.value.exit_code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["ok"] is False
+    assert [r["action"] for r in out["results"]] == ["fetch"]
+    assert not any("git checkout" in c for c in container.calls)
+    assert wired.recache_calls == []  # nothing changed -> no refresh
 
 
 # ---------------------------------------------------------------------------- update

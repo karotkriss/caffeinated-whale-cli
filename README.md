@@ -878,6 +878,7 @@ cwcli apps list [OPTIONS] PROJECT_NAME
 cwcli apps install [OPTIONS] PROJECT_NAME APPS...
 cwcli apps uninstall [OPTIONS] PROJECT_NAME APPS...
 cwcli apps update [OPTIONS] PROJECT_NAME APPS...
+cwcli apps checkout [OPTIONS] PROJECT_NAME APP REF
 ```
 
 **`apps list`** - lists apps available in the bench (live `ls apps/`); with `--installed`/`--site` it also lists the apps installed per site (all sites by default, grouped by site).
@@ -888,7 +889,9 @@ cwcli apps update [OPTIONS] PROJECT_NAME APPS...
 
 **`apps update`** - the canonical app-update path (what the deprecated `cwcli update` now delegates to). Updating the `frappe` framework app runs `bench update --reset`; other apps use the normal git-pull + migrate flow. `--site` narrows which affected sites are migrated; if none of the named site(s) actually have the app installed, the command refuses and exits non-zero rather than silently migrating nothing (a genuine typo/mismatch guard - a bench with no affected sites at all still exits zero). It accepts the same migration flags as the [deprecated `update` command](#update---update-apps-and-migrate) (`--clear-cache`, `--clear-website-cache`, `--build`, `--skip-maintenance`, `--no-recache`). When updating the `frappe` framework app the flow runs the bench-wide `bench update --reset`, so `--site` and those per-app migration flags do not apply and are reported as ignored.
 
-**Private repos:** `apps install`/`apps update` (and the deprecated `update`) transparently authenticate git fetches against private GitHub/GitLab app repos through your host's already-signed-in `gh`/`glab` - nothing to configure, no token ever stored in the container, and public repos are unaffected. Sign in on the host first (`gh auth login` / `glab auth login`).
+**`apps checkout`** - fetches and checks out an arbitrary branch, tag, or commit (`REF`) into an app that is **already present** in the bench (`apps/<app>`), so a specific feature branch can be put under test in the instance the app lives in. Unlike `apps install` (a fresh `bench get-app` clone) and `apps update` (the tracked upstream on every app), this targets one existing checkout: it runs `git fetch <remote> <ref>` then `git checkout -B <ref> FETCH_HEAD` in the app directory (the remote is auto-detected - `upstream` for a bench-installed app, `origin` for a hand-cloned one). `--reset` additionally hard-resets the working tree to the fetched ref (discarding any local edits in the in-instance checkout), which guarantees the clean tree a subsequent `build`/`migrate` needs.
+
+**Private repos:** `apps install`/`apps update`/`apps checkout` (and the deprecated `update`) transparently authenticate git fetches against private GitHub/GitLab app repos through your host's already-signed-in `gh`/`glab` - nothing to configure, no token ever stored in the container, and public repos are unaffected. Sign in on the host first (`gh auth login` / `glab auth login`).
 
 **Common Options:**
 
@@ -925,6 +928,10 @@ cwcli apps uninstall frappe-one payments --yes
 # Update an app (or the framework) - multi-bench aware
 cwcli apps update frappe-one erpnext
 cwcli apps update frappe-one frappe        # runs 'bench update --reset'
+
+# Check a feature branch out into an already-installed app (private repo authed via the bridge)
+cwcli apps checkout frappe-one erpnext feature/new-report
+cwcli apps checkout frappe-one erpnext feature/new-report --reset   # force a clean tree
 ```
 
 ---
