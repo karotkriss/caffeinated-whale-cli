@@ -348,3 +348,91 @@ class TestPassiveNotice:
         monkeypatch.setattr(core_version, "_read_cache", lambda: None)
         assert core_version.passive_notice() is None
         assert len(spawned) == 1
+
+
+class TestBuildInfo:
+    """``build_info`` - which TREE the running cwcli was built from.
+
+    The discriminator is the PEP 610 ``direct_url.json``: absent means an
+    index-resolved (published) artifact, present means a build from a local path
+    or a VCS ref. The install-shape realism lives in
+    ``tests/e2e/test_version_build_id_e2e.py``, which builds both shapes for
+    real; these cases pin the branch logic and the fail-open contract.
+    """
+
+    def test_no_direct_url_is_a_release_build(self, monkeypatch):
+        """An index-resolved install reports ``release`` and never shells to git."""
+        _patch_dist(monkeypatch, FakeDist(direct_url=None))
+
+        def no_git(*args, **kwargs):  # pragma: no cover - must never be reached
+            raise AssertionError("a release build must not invoke git")
+
+        monkeypatch.setattr(core_version, "_git_head", no_git)
+
+        build = core_version.build_info()
+        assert build.source == "release"
+        assert build.commit is None and build.editable is False
+
+    def test_local_path_build_carries_commit_and_dirty(self, monkeypatch):
+        """A non-editable working-tree build names its sha and dirty state."""
+        _patch_dist(
+            monkeypatch,
+            FakeDist(direct_url=json.dumps({"url": "file:///src/cwcli", "dir_info": {}})),
+        )
+        monkeypatch.setattr(core_version, "_git_head", lambda path: ("618dfa5", True))
+
+        build = core_version.build_info()
+        assert build.source == "source"
+        assert build.editable is False
+        assert (build.commit, build.dirty) == ("618dfa5", True)
+        assert build.path == "/src/cwcli"
+
+    def test_editable_checkout_is_flagged(self, monkeypatch):
+        _patch_dist(
+            monkeypatch,
+            FakeDist(
+                direct_url=json.dumps({"url": "file:///src/cwcli", "dir_info": {"editable": True}})
+            ),
+        )
+        monkeypatch.setattr(core_version, "_git_head", lambda path: ("618dfa5", False))
+
+        build = core_version.build_info()
+        assert build.source == "source" and build.editable is True
+
+    def test_vcs_install_uses_the_pinned_commit(self, monkeypatch):
+        """A ``pip install git+...`` ref pins an immutable commit - no git needed."""
+        _patch_dist(
+            monkeypatch,
+            FakeDist(
+                direct_url=json.dumps(
+                    {
+                        "url": "https://github.com/karotkriss/caffeinated-whale-cli",
+                        "vcs_info": {"vcs": "git", "commit_id": "618dfa5" + "0" * 33},
+                    }
+                )
+            ),
+        )
+
+        def no_git(*args, **kwargs):  # pragma: no cover - must never be reached
+            raise AssertionError("a pinned VCS ref must not need a local checkout")
+
+        monkeypatch.setattr(core_version, "_git_head", no_git)
+
+        build = core_version.build_info()
+        assert build.source == "source" and build.commit == "618dfa5"
+
+    def test_unreadable_metadata_fails_open_to_release(self, monkeypatch):
+        """``--version`` must always print; a metadata failure is not an error."""
+
+        def boom(name):
+            raise RuntimeError("metadata is unreadable")
+
+        import importlib.metadata
+
+        monkeypatch.setattr(importlib.metadata, "distribution", boom)
+        assert core_version.build_info().source == "release"
+
+    def test_git_head_on_a_non_checkout(self, tmp_path):
+        """No ``.git`` at the recorded path -> unknown commit, never an exception."""
+        assert core_version._git_head(str(tmp_path)) == (None, None)
+        assert core_version._git_head(None) == (None, None)
