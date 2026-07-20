@@ -70,6 +70,8 @@ Exit codes: **0** success (a completed operation, including one with warnings, a
   inspect        Inspect a project's benches, sites, and apps; emit the report as TOON.
   benches        List a project's benches with their indices and labels; emit them as TOON.
   label          Set or clear a bench's durable user label; emit the outcome as TOON.
+  migrate        Run 'bench migrate' against ONE site under maintenance mode; emit the report as TOON.
+  run-tests      Run 'bench run-tests' for ONE app against ONE named site; emit the report as TOON.
   config         Report the effective cwcli configuration; emit it as one TOON document. READ-ONLY.
   init           Provision a new instance, bench, and site; emit the report as TOON (never prompts).
   self-update    Report whether a newer cwcli is available; emit the check as TOON. READ-ONLY.
