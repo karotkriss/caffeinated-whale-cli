@@ -54,6 +54,33 @@ uvx --from caffeinated-whale-cli cwcli --version
 uvx --from caffeinated-whale-cli cwcli ls
 ```
 
+### Checking which build you have
+
+`cwcli --version` identifies the build, not just the release number:
+
+```bash
+$ cwcli --version
+Caffeinated Whale CLI Version: 1.0.0 (release build)
+```
+
+`(release build)` means the artifact was installed from an index (PyPI), so the
+version number is the whole story: it maps to exactly one published tag.
+
+```bash
+$ cwcli --version
+Caffeinated Whale CLI Version: 1.0.0 (source build, git 618dfa5, dirty)
+```
+
+`(source build, ...)` means it was built from a working tree or a VCS
+reference, where the version number alone would mislead you - a tree can carry
+any number of unreleased commits under the same number.
+The commit is the durable identifier there, and `dirty` marks uncommitted
+changes.
+`(editable source build, ...)` is the same thing from an editable checkout.
+
+Read this before concluding a feature is missing: a `(release build)` that
+lacks a feature may simply predate it.
+
 ### With pip
 
 ```bash
