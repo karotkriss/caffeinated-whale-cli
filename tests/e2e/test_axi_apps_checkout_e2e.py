@@ -54,18 +54,37 @@ def test_axi_apps_checkout_fetches_and_checks_out_a_real_ref(running_instance):
 def test_axi_apps_checkout_without_reset_is_refused_by_git_on_a_dirty_tree(running_instance):
     """No cwcli-side dirty-tree pre-check: GIT refuses, and cwcli reports it honestly.
 
-    A tracked file is dirtied in-container, then checkout runs without --reset.
-    Git's own refusal must reach stderr, the edit must survive untouched, and the
-    exit code must be 1 (report.ok is False), not 0.
+    Checking out the SAME branch a tree is already on is a no-op for git when
+    upstream has not moved: FETCH_HEAD equals HEAD, so a merely-dirty file has
+    nothing to conflict with and rides the checkout through silently (this is
+    exactly what a real fetch of frappe's own upstream showed in CI - no
+    refusal, exit 0). To force a genuine conflict deterministically, HEAD is
+    first diverged from upstream with a local commit (so FETCH_HEAD's content
+    genuinely differs), then the working tree is dirtied on top of that.
     """
     inst = running_instance
     tracked_file = f"{_APP_DIR}/README.md"
     marker = "cwe2e-dirty-tree-marker"
 
-    code, out = harness.exec_in_frappe(inst.name, f"echo '{marker}' >> {tracked_file}")
-    assert code == 0, out
+    code, original_head = harness.exec_in_frappe(inst.name, f"git -C {_APP_DIR} rev-parse HEAD")
+    assert code == 0, original_head
+    original_head = original_head.strip()
 
     try:
+        code, out = harness.exec_in_frappe(
+            inst.name, f"echo 'cwe2e-local-divergence' >> {tracked_file}"
+        )
+        assert code == 0, out
+        code, out = harness.exec_in_frappe(
+            inst.name,
+            f"git -C {_APP_DIR} -c user.email=cwe2e@test.local -c user.name=cwe2e "
+            "commit -am 'cwe2e local divergence'",
+        )
+        assert code == 0, out
+
+        code, out = harness.exec_in_frappe(inst.name, f"echo '{marker}' >> {tracked_file}")
+        assert code == 0, out
+
         branch = _current_branch(inst)
         result = harness.run_cwcli("axi", "apps", "checkout", inst.name, "frappe", branch)
 
@@ -79,7 +98,7 @@ def test_axi_apps_checkout_without_reset_is_refused_by_git_on_a_dirty_tree(runni
         assert code == 0
         assert marker in out
     finally:
-        harness.exec_in_frappe(inst.name, f"git -C {_APP_DIR} checkout -- README.md")
+        harness.exec_in_frappe(inst.name, f"git -C {_APP_DIR} reset --hard {original_head}")
 
 
 def test_axi_apps_checkout_reset_discards_the_dirty_edit(running_instance):
