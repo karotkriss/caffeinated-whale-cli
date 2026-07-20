@@ -61,7 +61,7 @@ caffeinated-whale-cli/
 │   │   ├── init.py             # core.init_instance/init_bench - the two-call provisioning slice; the prompts/spinners/secret UX stay in the frontend
 │   │   ├── config.py           # core.config - settings/search-paths/cache-inventory decisions (validation, clear-cache consent)
 │   │   ├── auto_inspect.py     # core.auto_inspect - fused desired-state enable/disable/stop/status/log_tail over the daemon+boot-hook utils
-│   │   └── version.py          # core.version - install-method detection + PyPI lookup, shared by self-update and the passive notice
+│   │   └── version.py          # core.version - install-method detection + PyPI lookup (self-update, passive notice) + build_info for --version's build tag
 │   └── utils/                  # Utility modules
 │       ├── docker_utils.py    # Docker client management
 │       ├── port_utils.py      # Port conflict detection
