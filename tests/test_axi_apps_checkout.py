@@ -217,7 +217,9 @@ def test_a_successful_checkout_refreshes_the_cache(monkeypatch, container):
     """A checkout changes the app's git state, so a stale cache would make the
     agent's own confirming read (`axi apps list`) lie."""
     calls: list[str] = []
-    monkeypatch.setattr(axi_mod.cache, "recache_project", lambda p, *a, **k: calls.append(p) or True)
+    monkeypatch.setattr(
+        axi_mod.cache, "recache_project", lambda p, *a, **k: calls.append(p) or True
+    )
 
     with pytest.raises(typer.Exit):
         _checkout()
@@ -242,7 +244,9 @@ def test_no_recache_when_every_step_failed(monkeypatch, container):
     """Nothing moved, so there is nothing to re-read."""
     container.fail_on = ["git fetch"]
     calls: list[str] = []
-    monkeypatch.setattr(axi_mod.cache, "recache_project", lambda p, *a, **k: calls.append(p) or True)
+    monkeypatch.setattr(
+        axi_mod.cache, "recache_project", lambda p, *a, **k: calls.append(p) or True
+    )
 
     with pytest.raises(typer.Exit):
         _checkout()
