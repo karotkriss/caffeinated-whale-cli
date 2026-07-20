@@ -39,9 +39,35 @@ app = typer.Typer(
 )
 
 
+def _build_suffix() -> str:
+    """The parenthetical that says WHICH BUILD this is, not just which release.
+
+    A bare version number cannot tell a published artifact from a working-tree
+    build, so a probe of a released cwcli once concluded a feature did not exist
+    when it was merged and sitting at the tip of ``develop``. The release form
+    stays clean (``(release build)``, no git, no paths); a tree build names its
+    commit and whether the tree was dirty. The ``Caffeinated Whale CLI Version:
+    <pep440>`` prefix is unchanged, so anything already parsing the version out
+    of this line keeps working. Fail-open: never let ``--version`` crash.
+    """
+    try:
+        from .core.version import build_info
+
+        build = build_info()
+        if build.source == "release":
+            return "(release build)"
+        parts = ["editable source build" if build.editable else "source build"]
+        parts.append(f"git {build.commit}" if build.commit else "git unknown")
+        if build.dirty:
+            parts.append("dirty")
+        return f"({', '.join(parts)})"
+    except Exception:
+        return "(build unknown)"
+
+
 def version_callback(value: bool):
     if value:
-        print(f"Caffeinated Whale CLI Version: {__version__}")
+        print(f"Caffeinated Whale CLI Version: {__version__} {_build_suffix()}")
         raise typer.Exit()
 
 
