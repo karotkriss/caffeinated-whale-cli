@@ -27,6 +27,7 @@ from caffeinated_whale_cli.commands import apps as apps_mod
 from caffeinated_whale_cli.commands import update as update_mod
 from caffeinated_whale_cli.commands import utils as cmd_utils
 from caffeinated_whale_cli.core import apps as core_apps
+from caffeinated_whale_cli.core import docker as core_docker
 from caffeinated_whale_cli.core import exec_stream as exec_stream_mod
 from caffeinated_whale_cli.core import update as core_update
 
@@ -156,7 +157,7 @@ def _set_tty(monkeypatch, is_tty):
 
 def test_list_available_apps_json(wired, monkeypatch, capsys):
     container = FakeFrappeContainer(available_apps=["frappe", "erpnext"])
-    monkeypatch.setattr(core_apps.core_docker, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
 
     apps_mod.list_apps(
         "proj",
@@ -178,7 +179,7 @@ def test_list_installed_all_sites_default(wired, monkeypatch, capsys):
         available_apps=["frappe"],
         installed={"a.localhost": ["frappe", "payments"], "b.localhost": ["frappe"]},
     )
-    monkeypatch.setattr(core_apps.core_docker, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
 
     apps_mod.list_apps(
         "proj",
@@ -198,7 +199,7 @@ def test_list_installed_all_sites_default(wired, monkeypatch, capsys):
 
 def test_list_multibench_no_selector_refuses(wired, monkeypatch):
     container = FakeFrappeContainer(available_apps=["frappe"])
-    monkeypatch.setattr(core_apps.core_docker, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
 
     def _ambiguous(*a, **k):
         raise typer.Exit(code=1)
@@ -224,7 +225,7 @@ def test_list_installed_read_failure_exits_nonzero_json(wired, monkeypatch, caps
         installed={"a.localhost": ["frappe"]},
         fail_on=["--site b.localhost list-apps"],
     )
-    monkeypatch.setattr(core_apps.core_docker, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
 
     with pytest.raises(typer.Exit) as exc:
         apps_mod.list_apps(
@@ -249,7 +250,7 @@ def test_list_installed_read_failure_exits_nonzero_human(wired, monkeypatch, cap
         installed={"a.localhost": ["frappe"]},
         fail_on=["--site b.localhost list-apps"],
     )
-    monkeypatch.setattr(core_apps.core_docker, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
 
     with pytest.raises(typer.Exit) as exc:
         apps_mod.list_apps(
@@ -272,7 +273,7 @@ def test_list_installed_read_failure_exits_nonzero_human(wired, monkeypatch, cap
 
 def test_install_all_sites_success_refreshes_cache(wired, monkeypatch, capsys):
     container = _install_container()
-    monkeypatch.setattr(core_apps.core_docker, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
 
     apps_mod.install_apps(
         "proj",
@@ -298,7 +299,7 @@ def test_install_all_sites_success_refreshes_cache(wired, monkeypatch, capsys):
 def test_install_one_site_fails_exits_nonzero_no_success(wired, monkeypatch, capsys):
     # Fail install-app only on b.localhost (continue-and-report-all aggregation).
     container = _install_container(fail_on=["--site b.localhost install-app"])
-    monkeypatch.setattr(core_apps.core_docker, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
 
     with pytest.raises(typer.Exit) as exc:
         apps_mod.install_apps(
@@ -325,7 +326,7 @@ def test_install_git_url_derives_app_name(wired, monkeypatch):
         available_apps=["frappe"],
         get_app_creates={"custom_app.git": "custom_app"},
     )
-    monkeypatch.setattr(core_apps.core_docker, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
 
     apps_mod.install_apps(
         "proj",
@@ -351,7 +352,7 @@ def test_install_git_url_uses_detected_dir_over_url_basename(wired, monkeypatch)
         available_apps=["frappe"],
         get_app_creates={"hrms_custom.git": "hrms"},
     )
-    monkeypatch.setattr(core_apps.core_docker, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
 
     apps_mod.install_apps(
         "proj",
@@ -373,7 +374,7 @@ def test_install_falls_back_to_derived_name_when_no_new_dir(wired, monkeypatch):
     # get-app adds nothing new under apps/ (e.g. already present); fall back to
     # parsing the target instead of failing to resolve a name at all.
     container = FakeFrappeContainer(available_apps=["frappe"])
-    monkeypatch.setattr(core_apps.core_docker, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
 
     apps_mod.install_apps(
         "proj",
@@ -392,7 +393,7 @@ def test_install_falls_back_to_derived_name_when_no_new_dir(wired, monkeypatch):
 
 def test_install_fetch_only_skips_install(wired, monkeypatch):
     container = _install_container()
-    monkeypatch.setattr(core_apps.core_docker, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
 
     apps_mod.install_apps(
         "proj",
@@ -413,7 +414,7 @@ def test_install_fetch_only_skips_install(wired, monkeypatch):
 def test_install_fetch_only_banner_says_fetched(wired, monkeypatch, capsys):
     # The success banner must not claim "installed" when nothing was installed.
     container = _install_container()
-    monkeypatch.setattr(core_apps.core_docker, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
 
     apps_mod.install_apps(
         "proj",
@@ -437,7 +438,7 @@ def test_install_fetch_only_banner_says_fetched(wired, monkeypatch, capsys):
 
 def test_uninstall_json_without_yes_refuses(wired, monkeypatch):
     container = _install_container()
-    monkeypatch.setattr(core_apps.core_docker, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
 
     with pytest.raises(typer.Exit) as exc:
         apps_mod.uninstall_apps(
@@ -457,7 +458,7 @@ def test_uninstall_json_without_yes_refuses(wired, monkeypatch):
 def test_uninstall_non_tty_without_yes_refuses(wired, monkeypatch):
     _set_tty(monkeypatch, False)
     container = _install_container()
-    monkeypatch.setattr(core_apps.core_docker, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
 
     with pytest.raises(typer.Exit) as exc:
         apps_mod.uninstall_apps(
@@ -476,7 +477,7 @@ def test_uninstall_non_tty_without_yes_refuses(wired, monkeypatch):
 
 def test_uninstall_yes_fans_out_and_refreshes(wired, monkeypatch, capsys):
     container = _install_container()
-    monkeypatch.setattr(core_apps.core_docker, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
 
     apps_mod.uninstall_apps(
         "proj",
@@ -501,7 +502,7 @@ def test_uninstall_yes_fans_out_and_refreshes(wired, monkeypatch, capsys):
 
 def test_checkout_fetches_and_checks_out_the_ref_and_refreshes(wired, monkeypatch, capsys):
     container = _install_container()
-    monkeypatch.setattr(core_apps.core_docker, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
 
     apps_mod.checkout_app(
         "proj",
@@ -525,7 +526,7 @@ def test_checkout_fetches_and_checks_out_the_ref_and_refreshes(wired, monkeypatc
 
 def test_checkout_reset_adds_hard_reset(wired, monkeypatch, capsys):
     container = _install_container()
-    monkeypatch.setattr(core_apps.core_docker, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
 
     apps_mod.checkout_app(
         "proj",
@@ -545,7 +546,7 @@ def test_checkout_reset_adds_hard_reset(wired, monkeypatch, capsys):
 
 def test_checkout_failed_fetch_exits_nonzero_and_skips_the_rest(wired, monkeypatch, capsys):
     container = _install_container(fail_on=["git fetch"])
-    monkeypatch.setattr(core_apps.core_docker, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
 
     with pytest.raises(typer.Exit) as exc:
         apps_mod.checkout_app(
@@ -1238,7 +1239,7 @@ def _boom_frappe_container():
 def test_capture_path_reports_cwclierror_cleanly(wired, monkeypatch, capsys):
     """The drain-and-join path (list's per-site read) surfaces a lost stream."""
     monkeypatch.setattr(
-        core_apps.core_docker, "get_frappe_container", lambda name: _boom_frappe_container()
+        core_docker, "get_frappe_container", lambda name: _boom_frappe_container()
     )
 
     with pytest.raises(typer.Exit) as exc:
@@ -1262,7 +1263,7 @@ def test_capture_path_reports_cwclierror_cleanly(wired, monkeypatch, capsys):
 def test_stream_path_reports_cwclierror_cleanly(wired, monkeypatch, capsys):
     """The render-each-event path (install's fan-out) surfaces a lost stream."""
     monkeypatch.setattr(
-        core_apps.core_docker, "get_frappe_container", lambda name: _boom_frappe_container()
+        core_docker, "get_frappe_container", lambda name: _boom_frappe_container()
     )
 
     with pytest.raises(typer.Exit) as exc:

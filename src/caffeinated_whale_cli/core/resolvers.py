@@ -14,7 +14,8 @@ from dataclasses import dataclass
 from docker.errors import APIError, NotFound
 
 from ..utils import bench_labels, db_utils
-from .envelope import Choice, Result, Status
+from . import docker as core_docker
+from .envelope import Choice, Message, Result, Status
 from .errors import CwcliError, ErrorKind
 
 DEFAULT_BENCH_PATH = "/workspace/frappe-bench"
@@ -210,6 +211,55 @@ def resolve_default_site(project_name: str, bench_path: str) -> str:
             "No site specified and no default site found in config.",
         )
     return default_site
+
+
+def resolve_container_and_bench(
+    project_name: str,
+    bench: str | None,
+    bench_path: str | None,
+    *,
+    auto_start: bool = False,
+) -> tuple[object, str, list[Message]] | Result:
+    """The container + bench prologue every bench-scoped verb shares.
+
+    Returns ``(container, bench_path, warnings)``, or a ``NEEDS_CHOICE`` ``Result``
+    the caller must return as-is.
+
+    Promoted out of ``core.apps``'s private ``_resolve`` when ``core.bench_ops``
+    became its second caller (openspec ``add-axi-bench-exec-verbs``). It is a MOVE,
+    not a rewrite: the behaviour is byte-identical and ``core.apps._resolve`` is now
+    a one-line delegation. Copying it would have left two prologues to keep in sync,
+    and a drifted one resolves a DIFFERENT bench than the verb reports.
+    """
+    warnings: list[Message] = []
+
+    frappe_container = core_docker.get_frappe_container(project_name)
+
+    state = resolve_container_state(
+        project_name, frappe_container, auto_start=auto_start, offer_choice=True
+    )
+    if state.status is Status.NEEDS_CHOICE:
+        return Result(status=Status.NEEDS_CHOICE, choice=state.choice)
+
+    bench_result = resolve_bench(project_name, bench, bench_path)
+    if bench_result is None:
+        # No cache to resolve against: fall back to the historical default, matching
+        # `run` and the pre-migration `_resolve_bench`'s `or _DEFAULT_BENCH`.
+        resolved = DEFAULT_BENCH_PATH
+        warnings.append(
+            Message(
+                "bench.default_used",
+                f"No cached bench path found. Using default: {DEFAULT_BENCH_PATH}",
+            )
+        )
+    elif bench_result.status is Status.NEEDS_CHOICE:
+        return Result(status=Status.NEEDS_CHOICE, choice=bench_result.choice)
+    else:
+        assert bench_result.data is not None  # OK always carries the path
+        resolved = bench_result.data
+        warnings.extend(bench_result.warnings)
+
+    return frappe_container, resolved, warnings
 
 
 def validate_site_name(site: str) -> None:

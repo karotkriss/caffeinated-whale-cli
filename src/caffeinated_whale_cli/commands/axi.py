@@ -35,6 +35,7 @@ from typer import rich_utils as _rich_utils
 
 from ..core import apps as core_apps
 from ..core import backup as core_backup
+from ..core import bench_ops as core_bench_ops
 from ..core import config as core_config
 from ..core import init as core_init
 from ..core import inspect as core_inspect
@@ -1116,6 +1117,180 @@ def axi_apps_checkout(
     # The exit code reads report.ok, NOT result.status: a failed step is a
     # WARNING-shaped envelope, and WARNING maps to exit 0 everywhere else, so a
     # status-driven code would report success for a checkout git refused.
+    raise typer.Exit(0 if report.ok else 1)
+
+
+# ------------------------------------------------------------------- migrate / tests
+
+
+def _bench_op_narrate(event) -> None:
+    """The bench command's own bytes, to STDERR.
+
+    Forwards :class:`BenchOpOutput` verbatim and UNPARSED, on the same reasoning
+    ``_checkout_narrate`` forwards git's bytes and ``_init_narrate`` deliberately
+    does not: neither a migrate nor a test run is a supervised process, so neither
+    writes to a log ``cwcli logs`` can serve afterwards. The name of the patch that
+    blew up, and the assertion that failed, exist ONLY here. Dropping them leaves a
+    failure reported as a bare ``ok: false`` and an agent with no next move.
+
+    Deliberately NOT summarized into pass/fail counts: cwcli does not own the test
+    runner's output format, and the guess would be wrong the first time a suite used
+    a different runner.
+
+    Everything goes to stderr, so the one-TOON-document contract on stdout holds.
+    """
+    if isinstance(event, core_bench_ops.BenchOpCommand):
+        print(f"$ {event.command}", file=sys.stderr, flush=True)
+    elif isinstance(event, core_bench_ops.BenchOpOutput):
+        print(event.text, end="", file=sys.stderr, flush=True)
+
+
+@app.command("migrate")
+def axi_migrate(
+    project: str = typer.Argument(..., help="The Docker Compose project name."),
+    site: str = typer.Option(
+        None, "--site", "-s", help="Site to migrate (default: the bench's default site)."
+    ),
+    bench: str = typer.Option(None, "--bench", help="Which bench: numeric index or label."),
+) -> None:
+    """Run 'bench migrate' against ONE site under maintenance mode; emit the report as TOON.
+
+    The gap `axi apps update` leaves. That verb migrates too, but only as the tail
+    of a `git pull` across every named app - so an agent that has just pinned a
+    feature branch with `axi apps checkout` cannot migrate without a pull that moves
+    the ref it pinned. This is the migrate on its own.
+
+    BLAST RADIUS, stated plainly: this applies every pending schema patch from every
+    installed app to the site's LIVE database. It ALTERs tables and runs patch code
+    the apps ship, it is not transactional across patches, and cwcli has no rollback
+    - a patch that fails partway leaves the database partially migrated. Recovery is
+    from a backup. Compose `cwcli axi backup <project> --site <site>` first if the
+    data matters; this verb deliberately does not take one for you, because
+    `axi apps update` does not either and a silent backup is not a guard.
+
+    Safety posture, each guard against a named threat:
+
+    - EXACTLY ONE site per invocation, never a fan-out (an agent that ran this
+      discovering it migrated four sites, which is what `apps update` does because
+      there the APP is the subject). The RESOLVED site is in the report, so what was
+      acted on can always be read back.
+    - Maintenance mode is enabled first and a failed enable REFUSES the migrate
+      (migrating a site still serving live traffic). It is disabled in a `finally`,
+      and a site left in maintenance is reported as `maintenance_left_on` and fails
+      the verb, because that site is DOWN and the agent must know. There is NO
+      --skip-maintenance: a flag that removes the gate has no named beneficiary.
+    - NO --yes and no auto-start (an agent starting containers a user deliberately
+      stopped): a stopped project is a usage error naming `cwcli start`.
+
+    bench's own output goes to stderr in full and unparsed - the failing patch names
+    itself there and nowhere else.
+    """
+    try:
+        result = core_bench_ops.migrate_site(
+            project, site=site, bench=bench, auto_start=False, on_event=_bench_op_narrate
+        )
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    if result.status is CoreStatus.NEEDS_CHOICE:
+        assert result.choice is not None  # NEEDS_CHOICE always carries a Choice
+        emit_axi_choice_as_usage_error(result.choice)
+        raise typer.Exit(2)
+
+    assert result.data is not None  # OK/WARNING always carries a BenchOpReport
+    report = result.data
+    emit_result(report, warnings=result.warnings)
+    if not report.ok:
+        # Contextual disclosure (AXI section 9) on failure only: a successful migrate
+        # fully answers the query, and a help line there would be noise.
+        typer.echo(toon.kv("help", f"read the failure with 'cwcli axi logs {project}'"))
+    # The exit code reads report.ok, NOT result.status: a failed step is a
+    # WARNING-shaped envelope, and WARNING maps to exit 0 everywhere else.
+    raise typer.Exit(0 if report.ok else 1)
+
+
+@app.command("run-tests")
+def axi_run_tests(
+    project: str = typer.Argument(..., help="The Docker Compose project name."),
+    site: str = typer.Option(
+        None, "--site", "-s", help="Site to run the tests against. REQUIRED: no default."
+    ),
+    app_name: str = typer.Option(
+        None, "--app", help="App whose test suite to run. REQUIRED: no default."
+    ),
+    bench: str = typer.Option(None, "--bench", help="Which bench: numeric index or label."),
+) -> None:
+    """Run 'bench run-tests' for ONE app against ONE named site; emit the report as TOON.
+
+    BLAST RADIUS, stated plainly: this imports and executes the app's OWN test
+    modules inside the container, against the named site's live database. cwcli
+    cannot bound what that code does, because it IS the repository's code - a Frappe
+    test suite creates, modifies and deletes records. Honestly: arbitrary Python from
+    the repository under test, executed against a live site. Point it at a dedicated
+    test site; cwcli cannot tell one from a site holding real data, so that is a
+    practice it states and cannot enforce.
+
+    This is NOT the `axi run`/`axi exec` passthrough that stays deferred, and the
+    distinction is who AUTHORS the command: there, the agent supplies an unbounded
+    command string; here it SELECTS an app whose tests already exist in the bench,
+    put there by a human's `apps install` or `apps checkout`. No parameter on this
+    verb can express a second command.
+
+    Safety posture, each guard against a named threat:
+
+    - --site is REQUIRED with NO default-site fallback (an agent running a
+      destructive suite against whatever site happened to be the bench default,
+      having never named it). This deliberately diverges from `axi backup`,
+      `axi unlock` and `axi migrate`, which all default: for those, cwcli can state
+      exactly what the operation does to the site, and here it cannot. When the
+      effect is unbounded, defaulting the target is the wrong default.
+    - --app is REQUIRED (a bare `bench run-tests` running every installed app's
+      suite, including frappe's own, against that site).
+    - NO --yes and no auto-start: a stopped project is a usage error naming
+      `cwcli start`.
+
+    The runner's output goes to stderr in FULL and UNPARSED - cwcli does not own
+    that format, so it reports only the honest pass/fail and forwards the rest.
+    """
+    missing = [flag for flag, value in (("--site", site), ("--app", app_name)) if not value]
+    if missing:
+        emit_axi_error(
+            CwcliError(
+                ErrorKind.USAGE,
+                "run_tests.target_required",
+                f"Missing required flag(s): {', '.join(missing)}.",
+                hint=(
+                    "run-tests executes the app's own test code against a live site, so "
+                    "both the site and the app must be named explicitly; there is no default"
+                ),
+            )
+        )
+        raise typer.Exit(exit_for(ErrorKind.USAGE))
+
+    try:
+        result = core_bench_ops.run_tests(
+            project,
+            site=site,
+            app=app_name,
+            bench=bench,
+            auto_start=False,
+            on_event=_bench_op_narrate,
+        )
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    if result.status is CoreStatus.NEEDS_CHOICE:
+        assert result.choice is not None  # NEEDS_CHOICE always carries a Choice
+        emit_axi_choice_as_usage_error(result.choice)
+        raise typer.Exit(2)
+
+    assert result.data is not None  # OK/WARNING always carries a BenchOpReport
+    report = result.data
+    emit_result(report, warnings=result.warnings)
+    if not report.ok:
+        typer.echo(toon.kv("help", "the failing test's own output is on stderr"))
     raise typer.Exit(0 if report.ok else 1)
 
 
