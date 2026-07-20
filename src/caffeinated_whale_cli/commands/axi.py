@@ -1056,11 +1056,12 @@ def axi_apps_checkout(
       `cwcli start`, as every bench-scoped axi verb already does.
     - The app must ALREADY be a git checkout (a typo'd app name reading as a
       silent no-op or as an implicit install): absent -> NOT_FOUND/app.no_checkout.
-    - A dirty working tree refuses the checkout unless --reset (silently
-      discarding a human's uncommitted in-container edits). That refusal is
-      GIT's, not cwcli's - `git checkout -B` exits non-zero and leaves the file
-      intact - so there is deliberately no redundant cwcli-side pre-check; this
-      verb's job is to make it legible as a failed step and a non-zero exit.
+    - A checkout that would OVERWRITE a modified file is refused unless --reset
+      (a non-conflicting dirty file rides through at exit 0 - this is not
+      blanket dirty-tree protection). That refusal is GIT's, not cwcli's -
+      `git checkout -B` exits non-zero and leaves the file intact - so there is
+      deliberately no redundant cwcli-side pre-check; this verb's job is to
+      make it legible as a failed step and a non-zero exit.
     - --reset is the one destructive element and stays an explicit opt-in
       (irrecoverable loss of uncommitted work in apps/<app>), reported as its own
       `reset` row. It is kept rather than withheld because without it an agent
