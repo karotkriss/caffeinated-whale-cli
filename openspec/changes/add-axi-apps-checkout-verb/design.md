@@ -41,7 +41,7 @@ It is simply not a decision made on checkout's evidence, which is what §7.1 exp
 
 ### Claim C - "the agent surface is read-only" is not a rule this codebase follows
 
-Enumerated live, not from memory (`cwcli axi --help` on this branch): eight of eighteen verbs mutate real state.
+Enumerated live, not from memory (`cwcli axi --help` on this branch): nine of eighteen verbs mutate real state.
 `axi label` writes a marker file INSIDE the bench.
 `axi setup` edits the user's own `~/.claude/settings.json`.
 `axi init` provisions an entire instance, bench, and site.

@@ -137,12 +137,35 @@ def test_the_destructive_mutations_are_deliberately_not_verbs():
 
     This asserts the DEFERRAL, so that adding either verb is a deliberate act that
     updates this test rather than something that quietly slips in.
+
+    The threat that rationale names is precise, and it is worth keeping precise:
+    `bench uninstall-app` DROPS THE APP'S TABLES. It is not "agents may not
+    mutate" - nine of the eighteen live axi verbs mutate, `axi init` provisions a
+    whole instance and `axi apps update` runs schema migrations across live
+    sites. So a verb that deletes no site data is NOT covered by this deferral and
+    must be judged on its own evidence, which is exactly what happened to
+    `checkout` below.
     """
     registered = {c.name for c in axi_mod.apps_app.registered_commands}
     assert "list" in registered
     assert "update" in registered
     assert "install" not in registered
     assert "uninstall" not in registered
-    # `apps checkout` mutates the in-instance checkout, so like install/uninstall it
-    # is a HUMAN verb only - no axi surface. Keep its absence a decision.
-    assert "checkout" not in registered
+
+
+def test_apps_checkout_is_a_verb_decided_on_its_own_evidence():
+    """`axi apps checkout` SHIPPED 2026-07-20; this asserts its presence.
+
+    It used to be asserted ABSENT here, on the reasoning that it "mutates the
+    in-instance checkout, so like install/uninstall it is a HUMAN verb only".
+    That inherited the wrong rationale: install/uninstall were held for DESTROYING
+    SITE DATA (see the test above), and `core.checkout_app` runs `git fetch` then
+    `git checkout -B` inside apps/<app> - no bench command, no site, no SQL, no
+    table. Judged on its own evidence and approved.
+
+    Kept as an assertion so the decision stays a decision in both directions:
+    removing the verb should also be deliberate.
+    See `openspec/changes/add-axi-apps-checkout-verb/`.
+    """
+    registered = {c.name for c in axi_mod.apps_app.registered_commands}
+    assert "checkout" in registered
