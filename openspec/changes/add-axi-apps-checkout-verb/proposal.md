@@ -56,7 +56,7 @@ Enumerated from the live `cwcli axi --help` on this branch, not from memory:
 | `setup` | yes | edits the user's own `~/.claude/settings.json` / `~/.codex/` files |
 | `apps update` | yes | `bench update --pull` plus **schema migrations across live sites** |
 
-Eight of the eighteen verbs mutate.
+Nine of the eighteen verbs mutate.
 `cwcli axi init` creates an entire instance.
 `cwcli axi apps update` runs Frappe schema migrations against live sites under maintenance mode, which is materially more consequential than a `git fetch` into a source directory.
 

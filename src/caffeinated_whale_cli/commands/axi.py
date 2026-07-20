@@ -992,6 +992,133 @@ def axi_apps_update(
     raise typer.Exit(0 if result.data.ok else 1)
 
 
+# ----------------------------------------------------------------------- apps checkout
+
+
+def _checkout_narrate(event) -> None:
+    """The git steps, to STDERR.
+
+    Deliberately narrates ``AppsOutput`` (git's OWN bytes), where
+    :func:`_init_narrate` deliberately does NOT. The asymmetry is real: init's
+    raw output is thousands of lines of bench build noise an agent will not
+    parse, and ``cwcli logs`` exists to serve it afterwards. A checkout runs two
+    or three short git commands, nothing is logged anywhere afterwards (a git
+    step is not a supervised process), and the ENTIRE reason a step failed lives
+    in those bytes - "Your local changes to the following files would be
+    overwritten by checkout" is what tells an agent to pass --reset or to stop.
+    Dropping it would leave a failure reported as a bare ``ok: false``.
+
+    Everything here goes to stderr, including git's stdout, so the one-TOON-
+    document contract on stdout holds.
+    """
+    if isinstance(event, core_apps.AppsCommand):
+        print(f"$ {event.command}", file=sys.stderr, flush=True)
+    elif isinstance(event, core_apps.AppsOutput):
+        print(event.text, end="", file=sys.stderr, flush=True)
+
+
+@apps_app.command("checkout")
+def axi_apps_checkout(
+    project: str = typer.Argument(..., help="The Docker Compose project name."),
+    # Named `app_name` because `app` is this module's Typer instance; the metavar
+    # keeps the agent-visible usage line matching the human `cwcli apps checkout`.
+    app_name: str = typer.Argument(
+        ..., metavar="APP", help="The app whose in-instance checkout to update."
+    ),
+    ref: str = typer.Argument(..., help="Branch, tag, or commit to fetch and check out."),
+    bench: str = typer.Option(None, "--bench", help="Which bench: numeric index or label."),
+    reset: bool = typer.Option(
+        False,
+        "--reset",
+        help="Hard-reset the working tree to the fetched ref (discards local edits in the checkout).",
+    ),
+) -> None:
+    """Fetch and check out a ref into an app already in the bench; emit the report as TOON.
+
+    The gap `apps install` (a fresh get-app clone) and `apps update` (the tracked
+    upstream on every app) leave: putting ONE named branch, tag, or commit under
+    test in the EXISTING apps/<app> checkout. There is no `axi run`, so this is
+    the only agent-surface route to that step.
+
+    It exists on the agent surface even though `axi apps install`/`uninstall` do
+    not, and that is not an inconsistency. Their deferral (captain-locked
+    2026-07-15) names ONE threat: an agent DESTROYING SITE DATA, because
+    `bench uninstall-app` drops the app's tables. A checkout runs `git fetch`
+    then `git checkout -B` inside apps/<app> - no bench command, no site, no SQL,
+    no table. Decided on its own evidence 2026-07-20; see
+    `openspec/changes/add-axi-apps-checkout-verb/`.
+
+    Safety posture, each guard against a named threat:
+
+    - NO --yes and no auto-start (an agent silently starting containers a user
+      deliberately stopped): a stopped project is a usage error naming
+      `cwcli start`, as every bench-scoped axi verb already does.
+    - The app must ALREADY be a git checkout (a typo'd app name reading as a
+      silent no-op or as an implicit install): absent -> NOT_FOUND/app.no_checkout.
+    - A dirty working tree refuses the checkout unless --reset (silently
+      discarding a human's uncommitted in-container edits). That refusal is
+      GIT's, not cwcli's - `git checkout -B` exits non-zero and leaves the file
+      intact - so there is deliberately no redundant cwcli-side pre-check; this
+      verb's job is to make it legible as a failed step and a non-zero exit.
+    - --reset is the one destructive element and stays an explicit opt-in
+      (irrecoverable loss of uncommitted work in apps/<app>), reported as its own
+      `reset` row. It is kept rather than withheld because without it an agent
+      can reach a dirty tree it has no agent-surface way out of.
+
+    The private-repo fetch rides the SAME credential bridge as apps install and
+    apps update, which means this verb borrows the host's `gh`/`glab` auth for an
+    in-container fetch. That is inherited, not new: `axi apps update` already
+    wraps its whole dispatch in that bridge. The raw token still never enters the
+    container, and the bridge is inert for public repos.
+
+    KNOWN GAP: the report does not carry the commit the checkout landed on, so an
+    agent cannot confirm the resulting git state from the agent surface. That is
+    deliberately deferred to a READ (per-app git state on `axi apps list`), which
+    serves every app rather than only the one just checked out, instead of adding
+    a field to the AppsReport shared with install/uninstall/update.
+    """
+    try:
+        result = core_apps.checkout_app(
+            project,
+            app_name,
+            ref,
+            bench=bench,
+            reset=reset,
+            auto_start=False,
+            on_event=_checkout_narrate,
+        )
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    if result.status is CoreStatus.NEEDS_CHOICE:
+        assert result.choice is not None  # NEEDS_CHOICE always carries a Choice
+        emit_axi_choice_as_usage_error(result.choice)
+        raise typer.Exit(2)
+
+    assert result.data is not None  # OK/WARNING always carries an AppsReport
+    report = result.data
+
+    # A checkout changes the app's git state (and its reported version), so refresh
+    # the cache whenever any git step ran, matching the human verb. Post-mutation
+    # epilogue gated on a condition already in the returned report. A failed recache
+    # is a stderr warning, NOT a non-zero exit: the checkout itself landed, and
+    # failing here would make an agent retry a mutation that already succeeded.
+    if any(r.ok for r in report.results) and not cache.recache_project(project):
+        print(
+            f"Warning: checkout completed, but re-caching '{project}' failed; "
+            "run 'cwcli inspect --update' to refresh.",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    emit_result(report, warnings=result.warnings)
+    # The exit code reads report.ok, NOT result.status: a failed step is a
+    # WARNING-shaped envelope, and WARNING maps to exit 0 everywhere else, so a
+    # status-driven code would report success for a checkout git refused.
+    raise typer.Exit(0 if report.ok else 1)
+
+
 # ---------------------------------------------------------------------------- config
 
 
