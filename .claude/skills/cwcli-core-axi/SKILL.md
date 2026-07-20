@@ -281,3 +281,34 @@ A real shipped bug, not a migration: Typer/click reject an unknown flag, a missi
 - **Rider in the same file, unrelated mechanism, same PR:** `_choice_error_message`'s `confirm_start` branch used to return the `Choice`'s raw interactive prompt text (ending in "Start it?" - phrased as a question nobody on a non-prompting surface will answer). It now returns a statement ("the project's Frappe container is not running"); the actionable remedy (`cwcli start <project>`) still rides the `help:` line. `docs/e2e/inspect-core-migration-m9.md`'s quoted `axi inspect --update` transcript predates this wording and is a point-in-time evidence snapshot, not a spec - do not "fix" old evidence quotes to match current wording.
 
 Regression coverage: `tests/test_axi.py::TestAxiParseErrorsAreToon` (unknown flag, missing argument, missing required option, the `cwcli axi` mounted path, the human-CLI-untouched path, ANSI-free emitter output) and the updated `TestAxiBackup` `confirm_start` assertions (statement not question, remedy still present).
+
+## The two execution verbs: `axi migrate` + `axi run-tests` (`add-axi-bench-exec-verbs`, 2026-07-20)
+
+`bench migrate` and `bench run-tests` are the two commands every Frappe proof runs, and neither had ANY callable form: migrate lived only inside `core.update`'s pull-and-fan-out and `restore_apply`, run-tests existed nowhere, so every agent execution step dropped to raw `cwcli run`.
+The hole also broke the workflow `apps checkout` shipped for four days earlier - the only agent route to a migrate was `axi apps update`, which `git pull`s every named app FIRST (`core/update.py:641`) and would move the ref the checkout just pinned.
+**Check the composition, not just the verb**: an approved verb that cannot reach the next step of its own workflow is still a gap.
+
+**Shipped as two TOP-LEVEL verbs, not an `axi bench` group** (16 -> 18 top-level, 21 leaf).
+The argument is reusable: `apps` groups by DOMAIN NOUN and its boundary is statable, so membership never implied approval (`apps checkout` fit while `apps install` stayed open).
+A `bench` group would group by MECHANISM - every bench subcommand qualifies by construction - so its completion state is passthrough reached by accretion rather than by decision.
+That is the same destination `TestNoAxiRunVerb` refuses to reach by flag.
+
+**This does NOT erode the `axi run`/`axi exec` deferral.** The distinguishing property is who AUTHORS the command string: `axi run` takes an unbounded one; these take a fixed bench subcommand with typed, individually-quoted parameters. A test asserts no parameter is variadic or free-form, so the distinction cannot rot into a claim.
+
+**Two helpers were PROMOTED, not copied** (the captain's binding engineering item, and the generalizable rule):
+`set_maintenance` out of `core/update.py`-private into `core.bench_ops`, and `core.apps._resolve`'s container+bench prologue into `resolvers.resolve_container_and_bench`.
+Both originals are now one-line delegations - do NOT re-inline either. Two copies of a maintenance lifecycle drift until one stops disabling (a site left DOWN); a drifted resolve prologue resolves a DIFFERENT bench than the verb reports.
+**The promotion has a test-seam cost worth knowing**: `tests/test_apps.py` patched `core_apps.core_docker`, and once `_resolve` delegated, ruff correctly removed that now-unused import and 35 tests died on `AttributeError`. The fix was to patch `core_docker` directly (the same module object). Moving a resolve seam moves every monkeypatch aimed through it.
+
+**`migrate_site` resolves EXACTLY ONE site and never fans out.** That is the module's reason to exist: `apps update` discovers its targets, which is right when the APP is the subject and wrong when the SITE is. The RESOLVED site rides in the report so what was acted on can always be read back - the gap `apps checkout` left open, deliberately not repeated.
+**Maintenance mode is a GATE, not a courtesy**: a site that cannot enter maintenance is NOT migrated, the disable runs in a `finally`, and a site left in maintenance is `maintenance_left_on` and FAILS the verb.
+NO `--skip-maintenance` (captain ruling M1): `apps update`'s exists for long multi-site runs an operator opted into; a flag that removes the gate has no named beneficiary and its existence invites its use.
+It is a PLAIN function, not a generator, precisely for that `finally` - here `core.update`'s abandoned-generator hazard is REAL, not merely shape-consistency, because the cost is a site left down.
+
+**`run_tests` takes `site` and `app` as REQUIRED parameters** (captain ruling S1), pinned at the CORE so no frontend can default them.
+A deliberate divergence from the `--site`-defaults convention `backup`/`unlock`/`migrate` follow, and the reason generalizes: for those three cwcli can state exactly what the operation does to the site; run-tests executes the repository's OWN code against a live site, so the honest description is *arbitrary Python from the repo under test*. **When the effect is unbounded, defaulting the target is the wrong default.**
+
+`_bench_op_narrate` forwards the command's own bytes to stderr UNPARSED (the `_checkout_narrate` reasoning: neither op is a supervised process, so neither logs anywhere `cwcli logs` can serve, and the failing patch or assertion names itself ONLY there).
+Summarizing a suite into pass/fail counts is refused: cwcli does not own that format and the guess breaks on the first different runner.
+
+**These are the FIRST axi-only verbs** - no human `cwcli migrate`/`cwcli run-tests` (captain ruling H1, accepted knowingly), deferred to their own change since they carry their own prompt/spinner UX. The core is still the single implementation, so adding them later touches no logic.

@@ -522,7 +522,16 @@ class TestNoAxiRunVerb:
     ``cwcli run <project> bench get-app ...`` escape hatch", so giving ``run`` an
     axi verb would re-open the exact escape hatch ``apps`` was built to close
     (`openspec/changes/migrate-label-core/proposal.md:63`). This test keeps the
-    absence a decision, not an oversight (the ``axi open`` non-verb precedent)."""
+    absence a decision, not an oversight (the ``axi open`` non-verb precedent).
+
+    ``cwcli axi run-tests`` (shipped 2026-07-20, `add-axi-bench-exec-verbs`) does
+    NOT weaken this: the assertions compare EXACT command names, so a verb whose
+    name merely starts with "run" is untouched by them. The substantive distinction
+    is who AUTHORS the command string - ``axi run`` takes an unbounded one, while
+    ``run-tests`` takes a fixed bench subcommand with typed, individually-quoted
+    parameters. ``tests/test_axi_bench_ops.py`` asserts none of its parameters is
+    variadic or free-form, so that distinction is checked rather than merely
+    claimed. Do not read the hyphen as an erosion."""
 
     def test_axi_registry_has_no_run_or_exec_command(self):
         registered = {c.name for c in axi_mod.app.registered_commands}

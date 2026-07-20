@@ -40,7 +40,6 @@ from dataclasses import dataclass, field
 
 from ..utils import bench_sites
 from . import credbridge, resolvers
-from . import docker as core_docker
 from .envelope import Choice, Message, Result, Status
 from .errors import CwcliError, ErrorKind
 from .exec_stream import ExecChunk, exec_stream
@@ -161,38 +160,13 @@ def _resolve(
 ) -> tuple[object, str, list[Message]] | Result:
     """The container + bench prologue all three verbs share.
 
-    Returns ``(container, bench_path, warnings)``, or a ``NEEDS_CHOICE`` ``Result``
-    the caller must return as-is.
+    Promoted to :func:`core.resolvers.resolve_container_and_bench` when
+    ``core.bench_ops`` became its second caller; this stays as the module's own
+    spelling so every call site here is unchanged. Behaviour is identical.
     """
-    warnings: list[Message] = []
-
-    frappe_container = core_docker.get_frappe_container(project_name)
-
-    state = resolvers.resolve_container_state(
-        project_name, frappe_container, auto_start=auto_start, offer_choice=True
+    return resolvers.resolve_container_and_bench(
+        project_name, bench, bench_path, auto_start=auto_start
     )
-    if state.status is Status.NEEDS_CHOICE:
-        return Result(status=Status.NEEDS_CHOICE, choice=state.choice)
-
-    bench_result = resolvers.resolve_bench(project_name, bench, bench_path)
-    if bench_result is None:
-        # No cache to resolve against: fall back to the historical default, matching
-        # `run` and the pre-migration `_resolve_bench`'s `or _DEFAULT_BENCH`.
-        resolved = resolvers.DEFAULT_BENCH_PATH
-        warnings.append(
-            Message(
-                "bench.default_used",
-                f"No cached bench path found. Using default: {resolvers.DEFAULT_BENCH_PATH}",
-            )
-        )
-    elif bench_result.status is Status.NEEDS_CHOICE:
-        return Result(status=Status.NEEDS_CHOICE, choice=bench_result.choice)
-    else:
-        assert bench_result.data is not None  # OK always carries the path
-        resolved = bench_result.data
-        warnings.extend(bench_result.warnings)
-
-    return frappe_container, resolved, warnings
 
 
 def _available_apps(frappe_container, bench_path: str) -> tuple[str, list[str]]:

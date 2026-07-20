@@ -59,7 +59,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from ..utils import cache, db_utils
-from . import credbridge, resolvers
+from . import bench_ops, credbridge, resolvers
 from . import docker as core_docker
 from .envelope import Message, Result, Status
 from .errors import CwcliError, ErrorKind
@@ -271,11 +271,16 @@ def _run_step(
 
 
 def _set_maintenance(container, bench_path: str, site: str, *, enable: bool) -> bool:
-    """Turn maintenance mode on/off for one site. True when bench accepted it."""
-    mode = "on" if enable else "off"
-    cmd = f"bench --site {shlex.quote(site)} set-maintenance-mode {mode}"
-    exit_code, _ = container.exec_run(cmd, workdir=bench_path)
-    return bool(exit_code == 0)
+    """Turn maintenance mode on/off for one site. True when bench accepted it.
+
+    PROMOTED to :func:`core.bench_ops.set_maintenance` when the standalone
+    ``migrate`` verb became its second caller (openspec ``add-axi-bench-exec-verbs``).
+    This stays as the module's own spelling so every call site below is unchanged;
+    the implementation is now shared. Do NOT re-inline it - two copies of this
+    lifecycle drift until one stops disabling, and a site stuck in maintenance mode
+    is a site that is down.
+    """
+    return bench_ops.set_maintenance(container, bench_path, site, enable=enable)
 
 
 def _sites_with_app(project_name: str, bench_path: str, app: str, container) -> list[str]:
