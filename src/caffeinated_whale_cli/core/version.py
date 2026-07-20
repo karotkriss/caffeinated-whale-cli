@@ -182,13 +182,18 @@ def _current_version() -> str:
 def build_info() -> BuildInfo:
     """Identify the tree the running cwcli was built from; see :class:`BuildInfo`.
 
-    Fully fail-open: any unexpected failure reports ``release`` with no commit,
-    which is the honest reading of "no direct-URL provenance was found".
+    Fully fail-open: any unexpected failure (including a malformed
+    ``direct_url.json``) reports ``release`` with no commit, which is the
+    honest reading of "no direct-URL provenance was found".
     """
     try:
-        info = _direct_url()
+        return _build_info_from_direct_url()
     except Exception:
-        info = None
+        return BuildInfo(source="release")
+
+
+def _build_info_from_direct_url() -> BuildInfo:
+    info = _direct_url()
     if info is None:
         return BuildInfo(source="release")
 
