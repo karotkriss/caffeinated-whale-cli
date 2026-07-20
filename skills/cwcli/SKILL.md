@@ -58,24 +58,25 @@ Exit codes: **0** success (a completed operation, including one with warnings, a
 ## Verbs
 
 ```
-  ls           List all Frappe/ERPNext instances; emit them as TOON.
-  where        Search cached instances for apps/sites matching a string; emit matches as TOON.
-  backup       Back up a site's database (and optionally files); emit the outcome as TOON.
-  unlock       Remove a site's locks folder; emit the outcome as TOON.
-  stop         Stop a project's containers; emit the outcome as TOON.
-  start        Start a project's containers + bench; emit the outcome as TOON (never prompts).
-  status       Report a project's per-process health; emit the report as TOON (`overall` first).
-  logs         Read a bounded tail of a bench's per-process logs; emit them as ONE TOON document.
-  restart      Restart ONE supervised process; emit the outcome as TOON (never prompts, no --watch).
-  inspect      Inspect a project's benches, sites, and apps; emit the report as TOON.
-  benches      List a project's benches with their indices and labels; emit them as TOON.
-  label        Set or clear a bench's durable user label; emit the outcome as TOON.
-  config       Report the effective cwcli configuration; emit it as one TOON document. READ-ONLY.
-  init         Provision a new instance, bench, and site; emit the report as TOON (never prompts).
-  self-update  Report whether a newer cwcli is available; emit the check as TOON. READ-ONLY.
-  setup        Install the SessionStart hook into every detected agent harness; emit TOON.
-  apps list    List a bench's available apps, and (with --installed/--site) installed per site.
-  apps update  Update app(s) and migrate affected sites; emit the report as TOON.
+  ls             List all Frappe/ERPNext instances; emit them as TOON.
+  where          Search cached instances for apps/sites matching a string; emit matches as TOON.
+  backup         Back up a site's database (and optionally files); emit the outcome as TOON.
+  unlock         Remove a site's locks folder; emit the outcome as TOON.
+  stop           Stop a project's containers; emit the outcome as TOON.
+  start          Start a project's containers + bench; emit the outcome as TOON (never prompts).
+  status         Report a project's per-process health; emit the report as TOON (`overall` first).
+  logs           Read a bounded tail of a bench's per-process logs; emit them as ONE TOON document.
+  restart        Restart ONE supervised process; emit the outcome as TOON (never prompts, no --watch).
+  inspect        Inspect a project's benches, sites, and apps; emit the report as TOON.
+  benches        List a project's benches with their indices and labels; emit them as TOON.
+  label          Set or clear a bench's durable user label; emit the outcome as TOON.
+  config         Report the effective cwcli configuration; emit it as one TOON document. READ-ONLY.
+  init           Provision a new instance, bench, and site; emit the report as TOON (never prompts).
+  self-update    Report whether a newer cwcli is available; emit the check as TOON. READ-ONLY.
+  setup          Install the SessionStart hook into every detected agent harness; emit TOON.
+  apps list      List a bench's available apps, and (with --installed/--site) installed per site.
+  apps update    Update app(s) and migrate affected sites; emit the report as TOON.
+  apps checkout  Fetch and check out a ref into an app already in the bench; emit the report as TOON.
 ```
 
 Run `uvx --from caffeinated-whale-cli cwcli axi <verb> --help` for a verb's flags.
