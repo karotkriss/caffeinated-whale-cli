@@ -90,6 +90,10 @@ Each entry is the contract; the linked source file is authoritative and the name
 - **Distribution.** cwcli is distributed as a uv tool: `uv tool install caffeinated-whale-cli` (unpinned, so `uv tool upgrade` works) or `uvx --from caffeinated-whale-cli cwcli ...`.
   Both `cwcli` and `caffeinated-whale-cli` console scripts point at `caffeinated_whale_cli.main:cli`; the `--from` is needed because the command name differs from the package name.
   Install/run/upgrade docs live in `README.md`; the isolated E2E evidence is `docs/e2e/uv-tool-distribution.md`.
+- **Exit codes.** A step the tool itself reports as failed must NEVER exit 0: the exit code is the only failure signal automation has, and an agent-facing CLI that pins it to 0 cannot be driven safely.
+  Every frontend that aggregates per-step results reads its own report (`report.ok`, `outcome.failures`, `migrate_ok`), NEVER `result.status` - a partial fan-out failure is a `WARNING`-shaped envelope and every other verb maps `WARNING` to exit 0, so reading the envelope reports success for a half-finished mutation.
+  `tests/test_exit_codes_on_failure.py` is the cross-surface pin (both the failure and its success twin, since a change that makes everything fail is not a fix); the per-command pins live in `test_apps_characterization.py` and `test_core_run.py`.
+  The standing hazard: `typer.Exit` subclasses `RuntimeError`, hence `Exception`, so any broad `except Exception` around a call that raises it silently converts a failure into exit 0 - the frontend handlers that wrap such calls re-raise `typer.Exit` explicitly before their broad branch, and a new one must do the same.
 - **Types.** Keep `uv run mypy src/` at zero errors; it is a blocking gate.
   Prefer accurate annotations over `# type: ignore` (there are none in `src/`), and add the matching `types-*` stub (`types-requests`, `types-toml` are dev deps) rather than ignoring an untyped import.
   Do not loosen `[tool.mypy]` to hide errors.
