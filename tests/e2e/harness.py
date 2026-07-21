@@ -233,6 +233,20 @@ def exec_in_frappe(project: str, script: str, workdir: str | None = None) -> tup
     return (r.returncode, (r.stdout or "") + (r.stderr or ""))
 
 
+def project_containers(project: str) -> list[str]:
+    """IDs of every container (running or stopped) labelled with this compose project."""
+    return _docker(
+        "ps", "-aq", "--filter", f"label=com.docker.compose.project={project}"
+    ).stdout.split()
+
+
+def project_volumes(project: str) -> list[str]:
+    """Names of every named volume labelled with this compose project."""
+    return _docker(
+        "volume", "ls", "-q", "--filter", f"label=com.docker.compose.project={project}"
+    ).stdout.split()
+
+
 def docker_cp_out(project: str, container_path: str, host_path: Path) -> bool:
     """Copy a file out of the frappe container to the host. Returns success."""
     cid = frappe_container_id(project)
