@@ -430,6 +430,10 @@ class TestBoundary:
         # so the currentsite.txt pointer is the fallback that resolves.
         assert bench.default_site == "dev.local"
         assert bench.sites[0].has_site_config is True
+        # A cache_only read never observes the site's apps live, so the ref is
+        # served REMEMBERED and the honest token says so.
+        assert report.served_from == "cache"
+        assert bench.sites[0].installed_apps_verified is False
         # The config CONTENT never crosses the typed boundary.
         assert "db_name" not in json.dumps(asdict(report))
 
@@ -444,3 +448,63 @@ class TestBoundary:
         kinds = {type(e) for e in events}
         assert core_inspect.InspectCommand in kinds
         assert core_inspect.InspectTrace in kinds
+
+
+class TestInstalledAppsVerifiedToken:
+    """The fail-honest verified-or-remembered token on per-site installed_apps.
+
+    A ``git checkout`` inside an app changes the ref carried in ``installed_apps``
+    but touches neither the ``apps/`` listing nor the site set, so the cheap T1/T2
+    tiers serve a stale ref while labeling the read ``cache``/``partial``. The
+    token (and its warning) is how a caller tells a verified ref from a remembered
+    one - the same fail-honest contract ``core.where`` carries. See the module.
+    """
+
+    def _warning_codes(self, result):
+        return {w.code for w in result.warnings}
+
+    def test_cache_only_serves_remembered_and_warns(self, wired):
+        store, _writes, install = wired
+        _seed(store)
+        install(_drifted_container())  # cache_only must not look; token stays honest
+
+        result = core_inspect.inspect("proj", refresh="cache_only")
+
+        assert result.data.served_from == "cache"
+        assert result.data.benches[0].sites[0].installed_apps_verified is False
+        assert "inspect.apps_unverified" in self._warning_codes(result)
+
+    def test_partial_no_drift_serves_remembered_and_warns(self, wired):
+        # The exact defect shape: T2 confirms no drift and serves the cached ref,
+        # which a checkout could have moved out from under it.
+        store, _writes, install = wired
+        _seed(store)
+        install(_matching_container())
+
+        result = core_inspect.inspect("proj")
+
+        assert result.data.served_from == "partial"
+        assert result.data.benches[0].sites[0].installed_apps_verified is False
+        assert "inspect.apps_unverified" in self._warning_codes(result)
+
+    def test_full_inspect_observes_the_ref_and_vouches(self, wired):
+        store, _writes, install = wired
+        _seed(store)
+        install(_matching_container())
+
+        result = core_inspect.inspect("proj", refresh="full")
+
+        assert result.data.served_from == "full"
+        assert result.data.benches[0].sites[0].installed_apps_verified is True
+        assert "inspect.apps_unverified" not in self._warning_codes(result)
+
+    def test_no_installed_apps_stays_quiet(self, wired):
+        # Nothing remembered to be stale about -> no unverified nag.
+        store, _writes, install = wired
+        _seed(store, installed=())
+        install(_matching_container())
+
+        result = core_inspect.inspect("proj", refresh="cache_only")
+
+        assert result.data.benches[0].sites[0].installed_apps_verified is False
+        assert "inspect.apps_unverified" not in self._warning_codes(result)
