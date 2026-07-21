@@ -430,7 +430,7 @@ def checkout_app(
     reset: bool = typer.Option(
         False,
         "--reset",
-        help="Discard uncommitted changes and hard-reset the working tree to the fetched ref (required to check out a dirty app).",
+        help="Discard tracked local changes and hard-reset the working tree to the fetched ref (required to check out a dirty app; does not delete untracked files).",
     ),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
     yes: bool = typer.Option(

@@ -5,8 +5,8 @@ Validates the missing real-instance leg (task 6.2 in
 `FakeContainer` cannot: that `core.checkout_app`'s `git fetch` / `git checkout -B`
 genuinely run inside a real frappe container against a real `apps/frappe`
 checkout, that a genuinely dirty tree is genuinely refused by cwcli's own
-pre-check - INCLUDING the non-conflicting edit git alone lets through - and that
-`--reset` genuinely discards that edit.
+pre-check - INCLUDING both the non-conflicting edit and the untracked file git
+alone lets through - and that `--reset` genuinely discards that edit.
 
 Uses the `frappe` app itself as the checkout target - every bench already has
 `apps/frappe` as a real git checkout, so no extra app install is needed.
@@ -92,12 +92,12 @@ def test_axi_apps_checkout_refuses_a_dirty_tree_that_git_alone_would_let_through
         harness.exec_in_frappe(inst.name, f"git -C {_APP_DIR} checkout -- README.md")
 
 
-def test_axi_apps_checkout_ignores_untracked_files(running_instance):
-    """The stated line: untracked files are NOT dirty and never block a checkout.
+def test_axi_apps_checkout_refuses_an_untracked_file(running_instance):
+    """Untracked files count as dirty (captain's ruling), proven on a real tree.
 
-    A real bench app dir always carries build residue, and nothing on this path
-    removes untracked files, so refusing on them would block the verb with no
-    work at risk. Proven on a real tree, not just on the command string.
+    A new module written but not yet `git add`ed is uncommitted work, and git's
+    own refusal would never catch it unless the target ref happened to contain
+    the same path.
     """
     inst = running_instance
     stray = f"{_APP_DIR}/cwe2e-untracked-file.txt"
@@ -109,14 +109,35 @@ def test_axi_apps_checkout_ignores_untracked_files(running_instance):
         branch = _current_branch(inst)
         result = harness.run_cwcli("axi", "apps", "checkout", inst.name, "frappe", branch)
 
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert "ok: true" in result.stdout
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert result.stdout.startswith("error:")
+        assert "cwe2e-untracked-file.txt" in result.stdout
+        assert "$ git fetch" not in result.stderr
 
-        # And it survived the checkout.
+        # Refused, never deleted: cwcli does not run `git clean`.
         code, _ = harness.exec_in_frappe(inst.name, f"test -f {stray}")
         assert code == 0
     finally:
         harness.exec_in_frappe(inst.name, f"rm -f {stray}")
+
+
+def test_a_real_bench_app_checkout_is_clean_so_the_guard_does_not_block_normal_use(
+    running_instance,
+):
+    """The load-bearing precondition for counting untracked files as dirty.
+
+    Widening the guard is only safe because a freshly provisioned bench app is
+    genuinely clean: .gitignore keeps __pycache__/node_modules/*.egg-info out of
+    `git status` entirely. If that were not true this guard would refuse every
+    real checkout, so it is asserted against a real bench rather than assumed.
+    """
+    inst = running_instance
+
+    code, out = harness.exec_in_frappe(
+        inst.name, f"git -C {_APP_DIR} status --porcelain | head -20"
+    )
+    assert code == 0, out
+    assert out.strip() == "", f"a freshly provisioned bench app was not clean:\n{out}"
 
 
 def test_axi_apps_checkout_reset_discards_the_dirty_edit(running_instance):
