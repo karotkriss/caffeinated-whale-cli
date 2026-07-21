@@ -367,11 +367,27 @@ def axi_where(
     installed_only: bool = typer.Option(
         False, "--installed", "-i", help="Show only installed apps (app search only)."
     ),
+    no_verify: bool = typer.Option(
+        False, "--no-verify", help="Skip the live check that each match's instance still exists."
+    ),
 ) -> None:
-    """Search cached instances for apps/sites matching a string; emit matches as TOON."""
+    """Search cached instances for apps/sites matching a string; emit matches as TOON.
+
+    Results come from the cache, which outlives the instances it describes. Every
+    row carries ``project_state``: ``present`` (the instance was confirmed live
+    just now), ``absent`` (it is cached but gone), or ``unverified`` (the check
+    did not run). ``verified`` on the document says whether the live check
+    answered at all - an unreachable Docker daemon degrades to ``unverified``
+    rather than vouching. Do not act on an ``absent`` or ``unverified`` row
+    without confirming with ``cwcli axi ls``.
+    """
     try:
         result = core_where.where(
-            search, apps_only=apps_only, sites_only=sites_only, installed_only=installed_only
+            search,
+            apps_only=apps_only,
+            sites_only=sites_only,
+            installed_only=installed_only,
+            verify=not no_verify,
         )
     except CwcliError as error:
         emit_axi_error(error)

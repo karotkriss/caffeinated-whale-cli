@@ -373,21 +373,78 @@ class TestAxiWhere:
                 branch="version-15",
                 site="s.localhost",
                 installed=True,
+                project_state="present",
             ),
-            WhereMatch(type="site", project="proj-a", bench="/w/b", name="s.localhost"),
+            WhereMatch(
+                type="site",
+                project="proj-a",
+                bench="/w/b",
+                name="s.localhost",
+                project_state="present",
+            ),
         ]
         monkeypatch.setattr(
             axi_mod.core_where,
             "where",
-            lambda *a, **k: Result(status=Status.OK, data=WhereResult(matches=matches)),
+            lambda *a, **k: Result(
+                status=Status.OK, data=WhereResult(matches=matches, verified=True)
+            ),
         )
         result = runner.invoke(axi_mod.app, ["where", "erp"])
         assert result.exit_code == 0
         assert result.stdout.startswith(
-            "matches[2]{type,project,bench,name,version,branch,site,installed}:"
+            "matches[2]{type,project,bench,name,version,branch,site,installed,project_state}:"
         )
-        assert "app,proj-a,/w/b,erpnext,15.0.0,version-15,s.localhost,true" in result.stdout
-        assert "site,proj-a,/w/b,s.localhost,null,null,null,false" in result.stdout
+        assert "app,proj-a,/w/b,erpnext,15.0.0,version-15,s.localhost,true,present" in result.stdout
+        assert "site,proj-a,/w/b,s.localhost,null,null,null,false,present" in result.stdout
+        assert "verified: true" in result.stdout
+
+    def test_where_never_presents_a_cached_answer_as_verified(self, monkeypatch):
+        """The regression pin: an absent or unverified instance is legible to an agent.
+
+        ``where`` served rows for a removed project, and identical rows while the
+        Docker daemon was unreachable, with nothing in the structured output
+        separating a live-confirmed hit from a remembered one.
+        """
+        matches = [
+            WhereMatch(
+                type="app",
+                project="gone",
+                bench="/w/b",
+                name="erpnext",
+                installed=True,
+                project_state="absent",
+            ),
+        ]
+        monkeypatch.setattr(
+            axi_mod.core_where,
+            "where",
+            lambda *a, **k: Result(
+                status=Status.WARNING,
+                data=WhereResult(matches=matches, verified=True),
+                warnings=[Message("where.stale_projects", "instance no longer exists: gone")],
+            ),
+        )
+        result = runner.invoke(axi_mod.app, ["where", "erp"])
+        assert result.exit_code == 0
+        # The row itself carries the distinction - an agent reading only the table
+        # must not have to infer staleness from a warning it may not parse.
+        assert ",absent" in result.stdout
+        assert "present" not in result.stdout
+        assert "instance no longer exists: gone" in result.stdout
+
+    def test_where_passes_no_verify_through_to_the_core(self, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(
+            axi_mod.core_where,
+            "where",
+            lambda *a, **k: seen.update(k)
+            or Result(status=Status.OK, data=WhereResult(matches=[])),
+        )
+        runner.invoke(axi_mod.app, ["where", "erp"])
+        assert seen["verify"] is True
+        runner.invoke(axi_mod.app, ["where", "erp", "--no-verify"])
+        assert seen["verify"] is False
 
     def test_where_definitive_empty_state(self, monkeypatch):
         monkeypatch.setattr(
@@ -397,8 +454,9 @@ class TestAxiWhere:
         )
         result = runner.invoke(axi_mod.app, ["where", "zzz"])
         assert result.exit_code == 0
-        # An empty typed collection is still a definitive TOON empty state.
-        assert result.stdout.strip() == "matches[0]:"
+        # An empty typed collection is still a definitive TOON empty state; the
+        # verification flag rides along so "nothing found" is itself qualified.
+        assert result.stdout.strip() == "matches[0]:\nverified: false"
 
     def test_where_usage_error_exit_2(self, monkeypatch):
         def _raise(*a, **k):
