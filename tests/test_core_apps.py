@@ -75,6 +75,8 @@ class FakeContainer:
         for sub in self.fail_on:
             if sub in cmd_str:
                 return 1, f"boom: {cmd_str}"
+        if cmd_str.startswith("git status"):
+            return 0, getattr(self, "dirty", "")
         if cmd_str.strip() == "git remote":
             return 0, "\n".join(getattr(self, "remotes", ["upstream"])) + "\n"
         if cmd_str.startswith("ls -1") and cmd_str.rstrip().endswith("apps"):
@@ -413,6 +415,80 @@ def test_checkout_stops_at_a_failed_fetch(monkeypatch, container):
     assert result.data.ok is False
     assert [(r.action, r.ok) for r in result.data.results] == [("fetch", False)]
     assert not any("git checkout" in c for c in container.calls)
+
+
+class TestCheckoutRefusesADirtyTree:
+    """The guarantee the docs make: uncommitted work is never carried across a ref.
+
+    git's own refusal covers only a checkout that would OVERWRITE a modified file,
+    so a NON-CONFLICTING dirty file used to ride through at exit 0 while the docs
+    promised a dirty tree would fail. The guard lives in the core, so both the human
+    verb and `axi apps checkout` route through it.
+    """
+
+    def test_an_unstaged_modification_refuses_before_any_fetch(self, monkeypatch, container):
+        container.dirty = " M payments/hooks.py\n"
+        _cache(monkeypatch, [{"path": BENCH}])
+        _bridge_spy(monkeypatch)
+
+        with pytest.raises(CwcliError) as exc:
+            core_apps.checkout_app("proj", "payments", "feature/x")
+
+        assert exc.value.kind is ErrorKind.CONFLICT
+        assert exc.value.code == "app.dirty_tree"
+        # Actionable: names WHAT is dirty and --reset as the way through.
+        assert "payments/hooks.py" in exc.value.message
+        assert "--reset" in (exc.value.hint or "")
+        # Refused BEFORE the network op, not after.
+        assert not any("git fetch" in c for c in container.calls)
+
+    def test_a_staged_change_refuses_too(self, monkeypatch, container):
+        container.dirty = "M  payments/hooks.py\n"
+        _cache(monkeypatch, [{"path": BENCH}])
+        _bridge_spy(monkeypatch)
+
+        with pytest.raises(CwcliError) as exc:
+            core_apps.checkout_app("proj", "payments", "feature/x")
+        assert exc.value.code == "app.dirty_tree"
+
+    def test_untracked_files_are_deliberately_not_dirty(self, monkeypatch, container):
+        """`--untracked-files=no` is the stated line: --reset never removes them.
+
+        A real bench app dir always carries __pycache__/node_modules/*.egg-info, so
+        refusing on untracked would make the verb permanently unusable with no work
+        at risk. Asserted on the COMMAND so the flag cannot be dropped silently.
+        """
+        _cache(monkeypatch, [{"path": BENCH}])
+        _bridge_spy(monkeypatch)
+
+        result = core_apps.checkout_app("proj", "payments", "feature/x")
+
+        assert result.data.ok is True
+        assert "git status --porcelain --untracked-files=no" in container.calls
+
+    def test_reset_is_the_way_through_and_skips_the_check(self, monkeypatch, container):
+        container.dirty = " M payments/hooks.py\n"
+        _cache(monkeypatch, [{"path": BENCH}])
+        _bridge_spy(monkeypatch)
+
+        result = core_apps.checkout_app("proj", "payments", "feature/x", reset=True)
+
+        assert result.data.ok is True
+        assert [r.action for r in result.data.results] == ["fetch", "checkout", "reset"]
+        assert not any(c.startswith("git status") for c in container.calls)
+
+    def test_an_unreadable_status_fails_closed(self, monkeypatch, container):
+        """core.where's fail-honest rule: unknown must never degrade to "clean"."""
+        container.fail_on = ["git status"]
+        _cache(monkeypatch, [{"path": BENCH}])
+        _bridge_spy(monkeypatch)
+
+        with pytest.raises(CwcliError) as exc:
+            core_apps.checkout_app("proj", "payments", "feature/x")
+
+        assert exc.value.kind is ErrorKind.PRECONDITION
+        assert exc.value.code == "app.dirty_state_unknown"
+        assert not any("git fetch" in c for c in container.calls)
 
 
 def test_checkout_quotes_a_hostile_ref(monkeypatch, container):

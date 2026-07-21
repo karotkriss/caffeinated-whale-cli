@@ -4,8 +4,9 @@ Validates the missing real-instance leg (task 6.2 in
 `openspec/changes/add-axi-apps-checkout-verb/`) that the unit suite's
 `FakeContainer` cannot: that `core.checkout_app`'s `git fetch` / `git checkout -B`
 genuinely run inside a real frappe container against a real `apps/frappe`
-checkout, that a genuinely dirty tree is genuinely refused by git (not a cwcli
-pre-check), and that `--reset` genuinely discards that edit.
+checkout, that a genuinely dirty tree is genuinely refused by cwcli's own
+pre-check - INCLUDING the non-conflicting edit git alone lets through - and that
+`--reset` genuinely discards that edit.
 
 Uses the `frappe` app itself as the checkout target - every bench already has
 `apps/frappe` as a real git checkout, so no extra app install is needed.
@@ -51,37 +52,24 @@ def test_axi_apps_checkout_fetches_and_checks_out_a_real_ref(running_instance):
     assert _current_branch(inst) == original_branch
 
 
-def test_axi_apps_checkout_without_reset_is_refused_by_git_on_a_dirty_tree(running_instance):
-    """No cwcli-side dirty-tree pre-check: GIT refuses, and cwcli reports it honestly.
+def test_axi_apps_checkout_refuses_a_dirty_tree_that_git_alone_would_let_through(
+    running_instance,
+):
+    """THE regressed case, on a real bench: a dirty NON-CONFLICTING file.
 
-    Checking out the SAME branch a tree is already on is a no-op for git when
+    Checking out the SAME branch the tree is already on is a no-op for git when
     upstream has not moved: FETCH_HEAD equals HEAD, so a merely-dirty file has
-    nothing to conflict with and rides the checkout through silently (this is
-    exactly what a real fetch of frappe's own upstream showed in CI - no
-    refusal, exit 0). To force a genuine conflict deterministically, HEAD is
-    first diverged from upstream with a local commit (so FETCH_HEAD's content
-    genuinely differs), then the working tree is dirtied on top of that.
+    nothing to conflict with and used to ride the checkout through silently at
+    exit 0 - exactly what a real fetch of frappe's own upstream showed in CI,
+    while the docs promised a dirty tree would fail. No divergence is manufactured
+    here precisely so the conflict-free case is what is under test: cwcli's own
+    pre-check must now refuse it before anything is fetched.
     """
     inst = running_instance
     tracked_file = f"{_APP_DIR}/README.md"
     marker = "cwe2e-dirty-tree-marker"
 
-    code, original_head = harness.exec_in_frappe(inst.name, f"git -C {_APP_DIR} rev-parse HEAD")
-    assert code == 0, original_head
-    original_head = original_head.strip()
-
     try:
-        code, out = harness.exec_in_frappe(
-            inst.name, f"echo 'cwe2e-local-divergence' >> {tracked_file}"
-        )
-        assert code == 0, out
-        code, out = harness.exec_in_frappe(
-            inst.name,
-            f"git -C {_APP_DIR} -c user.email=cwe2e@test.local -c user.name=cwe2e "
-            "commit -am 'cwe2e local divergence'",
-        )
-        assert code == 0, out
-
         code, out = harness.exec_in_frappe(inst.name, f"echo '{marker}' >> {tracked_file}")
         assert code == 0, out
 
@@ -89,16 +77,46 @@ def test_axi_apps_checkout_without_reset_is_refused_by_git_on_a_dirty_tree(runni
         result = harness.run_cwcli("axi", "apps", "checkout", inst.name, "frappe", branch)
 
         assert result.returncode == 1, result.stdout + result.stderr
-        assert "ok: false" in result.stdout
-        stderr_text = result.stderr.lower()
-        assert "would be overwritten" in stderr_text or "local changes" in stderr_text
+        assert result.stdout.startswith("error:")
+        assert "uncommitted changes" in result.stdout
+        # Actionable: names the dirty file and --reset as the way through.
+        assert "README.md" in result.stdout
+        assert "--reset" in result.stdout
 
-        # The edit is intact: git's refusal, not a discard.
+        # Refused BEFORE the fetch, and the edit is intact.
+        assert "$ git fetch" not in result.stderr
         code, out = harness.exec_in_frappe(inst.name, f"cat {tracked_file}")
         assert code == 0
         assert marker in out
     finally:
-        harness.exec_in_frappe(inst.name, f"git -C {_APP_DIR} reset --hard {original_head}")
+        harness.exec_in_frappe(inst.name, f"git -C {_APP_DIR} checkout -- README.md")
+
+
+def test_axi_apps_checkout_ignores_untracked_files(running_instance):
+    """The stated line: untracked files are NOT dirty and never block a checkout.
+
+    A real bench app dir always carries build residue, and nothing on this path
+    removes untracked files, so refusing on them would block the verb with no
+    work at risk. Proven on a real tree, not just on the command string.
+    """
+    inst = running_instance
+    stray = f"{_APP_DIR}/cwe2e-untracked-file.txt"
+
+    try:
+        code, out = harness.exec_in_frappe(inst.name, f"echo stray > {stray}")
+        assert code == 0, out
+
+        branch = _current_branch(inst)
+        result = harness.run_cwcli("axi", "apps", "checkout", inst.name, "frappe", branch)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "ok: true" in result.stdout
+
+        # And it survived the checkout.
+        code, _ = harness.exec_in_frappe(inst.name, f"test -f {stray}")
+        assert code == 0
+    finally:
+        harness.exec_in_frappe(inst.name, f"rm -f {stray}")
 
 
 def test_axi_apps_checkout_reset_discards_the_dirty_edit(running_instance):
