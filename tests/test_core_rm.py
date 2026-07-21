@@ -1,4 +1,4 @@
-"""Core-contract tests for ``core.remove`` (batch 12: migrate-rm-core).
+"""Core-contract tests for ``core.remove`` (migrate-rm-core).
 
 The deep behavioral coverage (the C1 backup gate, the multi-bench fan-out, the
 streamed copy, the H5 refusals, the not-running backstop) lives in
@@ -6,7 +6,8 @@ streamed copy, the H5 refusals, the not-running backstop) lives in
 ``tests/test_rm_stopped.py``, re-pointed at ``core.rm`` with their subject. This
 file adds the CORE-CONTRACT assertions the migration is about: the typed error
 taxonomy, the ``Result`` status mapping, plain-data DTOs, core silence, and the
-deliberately-absent ``axi rm`` verb.
+shipped ``axi rm`` verb's decided properties (consent-only ``--yes``, no
+auto-start, no ``--no-backup``).
 """
 
 import dataclasses
@@ -163,7 +164,7 @@ class TestAxiRmVerbShipped:
     """``axi rm`` SHIPPED (captain-approved 2026-07-21), reversing the deferral
     this class used to assert.
 
-    The deferral (design Decision 5 of ``migrate-rm-core``) held that whether an
+    The deferral (``migrate-rm-core``'s design) held that whether an
     agent may delete an instance's data is a product decision the captain owns on
     its own evidence, because the fail-closed backup gate protects against ACCIDENT
     and not against an agent that deliberately means to delete. That reasoning was
