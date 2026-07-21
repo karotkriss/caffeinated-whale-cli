@@ -909,9 +909,11 @@ def axi_apps_list(
     starting a container is UI-coupled, so an agent composes `cwcli axi start`
     then this verb.
 
-    `axi apps install`/`axi apps uninstall` deliberately do NOT exist yet
-    (captain-locked, 2026-07-15): letting an agent destroy site data is a product
-    decision on its own evidence, not a side effect of a refactor.
+    `axi apps uninstall` deliberately does NOT exist (captain-locked,
+    2026-07-15): letting an agent destroy site data is a product decision on
+    its own evidence, not a side effect of a refactor. `axi apps install` was
+    held under that same rationale and has since shipped, scoped to the half
+    of it the rationale never covered - see that verb's own docstring.
     """
     try:
         result = core_apps.list_apps(
@@ -1057,13 +1059,15 @@ def axi_apps_checkout(
     test in the EXISTING apps/<app> checkout. There is no `axi run`, so this is
     the only agent-surface route to that step.
 
-    It exists on the agent surface even though `axi apps install`/`uninstall` do
-    not, and that is not an inconsistency. Their deferral (captain-locked
+    It exists on the agent surface even though `axi apps uninstall` does not,
+    and that is not an inconsistency. The shared deferral (captain-locked
     2026-07-15) names ONE threat: an agent DESTROYING SITE DATA, because
     `bench uninstall-app` drops the app's tables. A checkout runs `git fetch`
     then `git checkout -B` inside apps/<app> - no bench command, no site, no SQL,
     no table. Decided on its own evidence 2026-07-20; see
-    `openspec/changes/add-axi-apps-checkout-verb/`.
+    `openspec/changes/add-axi-apps-checkout-verb/`. (`axi apps install` was held
+    under that same deferral and has since shipped too, scoped to the half the
+    rationale never covered - see its own docstring below.)
 
     Safety posture, each guard against a named threat:
 
@@ -1451,7 +1455,7 @@ def axi_config() -> None:
     exists (paths add/remove, cache clear, auto-inspect enable/disable): an
     agent rewriting the user's search paths or wiping the cache is a product
     decision on its own evidence, not a consequence of the config migration -
-    the `axi apps install`/`uninstall` deferral discipline. A test asserts the
+    the `axi apps uninstall` deferral discipline. A test asserts the
     registry absence so "deliberately not built" cannot be misread as
     "forgotten".
     """
