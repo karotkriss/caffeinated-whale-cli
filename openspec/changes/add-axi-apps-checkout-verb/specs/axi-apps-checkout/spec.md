@@ -39,7 +39,7 @@ The verb SHALL exit 0 when `report.ok` is true and 1 when it is false, and SHALL
 
 #### Scenario: A failed git step exits non-zero
 
-- **WHEN** a git step fails (an unknown ref, an auth failure, or a dirty working tree refusing the checkout)
+- **WHEN** a git step fails (an unknown ref or an auth failure)
 - **THEN** the document reports `ok: false` with the failing step's row, and the process exits 1
 
 #### Scenario: A WARNING-shaped envelope does not report success
@@ -47,15 +47,24 @@ The verb SHALL exit 0 when `report.ok` is true and 1 when it is false, and SHALL
 - **WHEN** `core.checkout_app` returns `Status.WARNING` because a step failed
 - **THEN** the verb still exits 1, because the exit code reads `report.ok`
 
-### Requirement: A dirty working tree is surfaced, not silently overwritten
+### Requirement: A dirty working tree is refused, not silently carried across
 
 The verb SHALL NOT hard-reset or discard the app checkout's working tree unless `--reset` is passed.
-When git refuses the checkout because local changes would be overwritten, the verb SHALL report the failed `checkout` step and exit 1 rather than retrying, forcing, or resetting.
+`core.checkout_app` SHALL refuse a dirty working tree with `CONFLICT`/`app.dirty_tree` BEFORE fetching anything, so the guard covers every frontend rather than one caller.
+Dirty SHALL mean staged and/or unstaged changes to tracked files (`git status --porcelain --untracked-files=no`); untracked files SHALL NOT be treated as dirty, since `--reset` does not remove them.
+An unreadable `git status` SHALL fail closed as `PRECONDITION`/`app.dirty_state_unknown`, never degrading to "clean".
 
-#### Scenario: An uncommitted local edit blocks the checkout without --reset
+This requirement supersedes the verb's original reliance on git's own refusal, which covered only a checkout that would OVERWRITE a modified file and let a non-conflicting dirty file through at exit 0.
 
-- **WHEN** `cwcli axi apps checkout myproj myapp feature/x` runs against an app checkout with conflicting uncommitted edits and no `--reset`
-- **THEN** the `checkout` step is reported failed, the process exits 1, and the working tree is left as it was
+#### Scenario: A non-conflicting uncommitted edit still blocks the checkout without --reset
+
+- **WHEN** `cwcli axi apps checkout myproj myapp feature/x` runs against an app checkout with an uncommitted edit that the target ref does NOT touch, and no `--reset`
+- **THEN** the verb emits `error:`/`help:` naming the dirty path and `--reset`, exits 1, performs no fetch, and leaves the working tree as it was
+
+#### Scenario: Untracked files do not block the checkout
+
+- **WHEN** the app checkout contains untracked files only
+- **THEN** the checkout proceeds and exits 0, and the untracked files survive it
 
 #### Scenario: --reset is the only path that discards local work
 
