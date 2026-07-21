@@ -78,7 +78,13 @@ def _count_marker(project: str, site: str, bench: str, marker: str) -> int:
     )
     code, out = harness.exec_in_frappe(project, script)
     assert code == 0, f"reading the marker count back failed: {out}"
-    for line in reversed(out.strip().splitlines()):
+    stripped = out.strip()
+    if not stripped:
+        # bench's own `execute` command only prints the return value when it is
+        # truthy (`if ret: print(json.dumps(ret))`), so a genuine zero count
+        # prints nothing at all rather than "0" - not a failed read.
+        return 0
+    for line in reversed(stripped.splitlines()):
         line = line.strip()
         if line.lstrip("-").isdigit():
             return int(line)
