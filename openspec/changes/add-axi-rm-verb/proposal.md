@@ -6,7 +6,7 @@
 It is the one operation an agent driving a full lifecycle cannot finish: it can `axi init` a whole instance, install apps into it, migrate its schema and run its tests, and then has no way to take it down again.
 Every teardown drops to the human command.
 
-The verb's absence was pinned by a test (`tests/test_core_rm.py::TestNoAxiRmVerb`) recording the deferral from `migrate-rm-core` design Decision 5:
+The verb's absence was pinned by a test (`tests/test_core_rm.py::TestNoAxiRmVerb`) recording the deferral from `migrate-rm-core`'s design:
 
 > whether an agent may delete an instance's data (named volumes, the whole bench) is a product decision the captain owns on its own evidence [...] The fail-closed backup gate protects against ACCIDENT, not against an agent that deliberately means to delete.
 
