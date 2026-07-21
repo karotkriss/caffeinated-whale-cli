@@ -37,6 +37,7 @@ import typer
 from caffeinated_whale_cli.commands import apps as apps_mod
 from caffeinated_whale_cli.core.apps import AppResult, AppsReport
 from caffeinated_whale_cli.core.envelope import Result, Status
+from caffeinated_whale_cli.utils import docker_utils
 
 
 def _report(*, ok: bool) -> AppsReport:
@@ -99,6 +100,19 @@ def no_docker(monkeypatch):
     Only the exit plumbing is under test here, so the container work is stubbed
     out entirely - this suite must stay in the fast, Docker-free unit tier.
     """
+    # Bypass the @handle_docker_errors preflight on every apps command (the
+    # tests/test_apps.py pattern): it checks for a real `docker` binary and a
+    # live daemon before the function body runs, so without this a runner with
+    # no Docker installed raises typer.Exit(1) here regardless of what the
+    # verb's own logic would have done.
+    monkeypatch.setattr(docker_utils.shutil, "which", lambda name: "/usr/bin/docker")
+
+    class _Client:
+        def ping(self):
+            return True
+
+    monkeypatch.setattr(docker_utils.docker, "from_env", lambda: _Client())
+
     monkeypatch.setattr(apps_mod, "ensure_containers_running", lambda *a, **k: None)
     monkeypatch.setattr(apps_mod, "_resolve_bench", lambda *a, **k: "/workspace/frappe-bench")
     # The post-mutation recache is a frontend epilogue that runs BEFORE the exit
