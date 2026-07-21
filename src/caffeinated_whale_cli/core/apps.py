@@ -519,13 +519,20 @@ def _resolve_remote(frappe_container, app_dir: str, app: str) -> str:
 def _refuse_dirty_tree(frappe_container, app_dir: str, app: str) -> None:
     """Refuse the checkout when the app's working tree has uncommitted work.
 
-    DIRTY means, precisely: staged changes and/or unstaged modifications to
-    TRACKED files. UNTRACKED files are deliberately NOT dirty - the guard covers
-    exactly what the ``--reset`` escape hatch would destroy, and ``git reset
-    --hard`` does not remove untracked files (that is ``git clean``), so nothing
-    is at risk there. Refusing on untracked would also over-reject every real
-    bench app dir, which routinely carries ``__pycache__``/``node_modules``/
-    ``*.egg-info`` build residue and would make the verb permanently unusable.
+    DIRTY means, precisely: ANY change ``git status --porcelain`` reports - staged
+    changes, unstaged modifications to tracked files, AND untracked files. Files
+    matched by ``.gitignore`` are not reported by git and so never count, which is
+    what keeps a real bench app dir usable: its ``__pycache__``/``node_modules``/
+    ``*.egg-info`` build residue is ignored, so only genuinely unaccounted-for
+    files trip this.
+
+    Untracked files count DELIBERATELY (captain's ruling, widening the first cut of
+    this guard). A brand-new module a developer has written but not yet added is
+    uncommitted work in the plainest sense, and it is precisely the case where the
+    tool must not decide on the user's behalf that the file is worthless. Note the
+    honest consequence: ``git reset --hard`` does NOT delete untracked files (that
+    is ``git clean``), so ``--reset`` lets the checkout proceed and leaves them in
+    place rather than destroying them.
 
     This is cwcli's OWN guard and it is deliberately STRONGER than git's. ``git
     checkout -B`` refuses only a checkout that would OVERWRITE a modified file, so
@@ -538,9 +545,7 @@ def _refuse_dirty_tree(frappe_container, app_dir: str, app: str) -> None:
     unknown (``core.where``'s fail-honest rule - an unreadable state must never
     degrade to "nothing is there").
     """
-    exit_code, output = frappe_container.exec_run(
-        "git status --porcelain --untracked-files=no", workdir=app_dir
-    )
+    exit_code, output = frappe_container.exec_run("git status --porcelain", workdir=app_dir)
     if exit_code != 0:
         raise CwcliError(
             ErrorKind.PRECONDITION,
@@ -563,9 +568,9 @@ def _refuse_dirty_tree(frappe_container, app_dir: str, app: str) -> None:
         f"App '{app}' has uncommitted changes, so checking out another ref would "
         f"carry them across: {shown}{more}.",
         hint=(
-            "Commit or stash them in the instance, or pass --reset to DISCARD them "
-            "and hard-reset to the fetched ref. Untracked files are not affected "
-            "either way."
+            "Commit or stash them in the instance, or pass --reset to hard-reset to "
+            "the fetched ref, DISCARDING tracked changes (untracked files are left "
+            "in place, not deleted). '??' marks an untracked file."
         ),
         detail={"dirty": dirty},
     )
@@ -595,9 +600,10 @@ def checkout_app(
     token never enters the container, and the bridge is inert for public repos).
     A DIRTY working tree is REFUSED before anything is fetched (``CONFLICT``/
     ``app.dirty_tree``); ``reset=True`` is the explicit opt-in that instead discards
-    those changes and hard-resets to the fetched tip, the clean-tree guarantee the
-    delivery workflow's build/migrate steps rely on. Dirty means staged and/or
-    unstaged changes to TRACKED files only - see :func:`_refuse_dirty_tree`.
+    tracked changes and hard-resets to the fetched tip, the clean-tree guarantee the
+    delivery workflow's build/migrate steps rely on. Dirty means anything ``git
+    status --porcelain`` reports, untracked files included - see
+    :func:`_refuse_dirty_tree`.
 
     Returns the same :class:`AppsReport` as ``install``/``uninstall`` - one
     :class:`AppResult` per git step - so the CLI renderer and exit-code logic are

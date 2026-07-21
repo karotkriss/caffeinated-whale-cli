@@ -51,8 +51,10 @@ The verb SHALL exit 0 when `report.ok` is true and 1 when it is false, and SHALL
 
 The verb SHALL NOT hard-reset or discard the app checkout's working tree unless `--reset` is passed.
 `core.checkout_app` SHALL refuse a dirty working tree with `CONFLICT`/`app.dirty_tree` BEFORE fetching anything, so the guard covers every frontend rather than one caller.
-Dirty SHALL mean staged and/or unstaged changes to tracked files (`git status --porcelain --untracked-files=no`); untracked files SHALL NOT be treated as dirty, since `--reset` does not remove them.
+Dirty SHALL mean anything plain `git status --porcelain` reports: staged changes, unstaged modifications to tracked files, and untracked files.
+`--untracked-files=no` SHALL NOT be used to narrow the read, since a new file not yet added is uncommitted work.
 An unreadable `git status` SHALL fail closed as `PRECONDITION`/`app.dirty_state_unknown`, never degrading to "clean".
+`--reset` SHALL remain the opt-in through the refusal, and SHALL NOT delete untracked files (no `git clean`).
 
 This requirement supersedes the verb's original reliance on git's own refusal, which covered only a checkout that would OVERWRITE a modified file and let a non-conflicting dirty file through at exit 0.
 
