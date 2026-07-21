@@ -31,9 +31,11 @@ sendme flows is only the CONTAINER I/O: the streamed ``put_archive`` copy-in and
 
 There is deliberately NO ``axi restore`` verb (see the no-verb assertion in the
 tests): a ``bench restore --force`` that destroys a user's site data is a product
-decision the captain owns on its own evidence (the ``axi apps install``/
-``uninstall`` and ``axi init`` deferral class). It is DEFERRED, not structurally
-refused - the plan/apply shape makes the verb thin whenever it is decided.
+decision the captain owns on its own evidence (the ``axi apps uninstall``
+deferral class - ``axi apps install`` and ``axi init`` were once deferred the
+same way and have since shipped on their own separate evidence). It is
+DEFERRED, not structurally refused - the plan/apply shape makes the verb thin
+whenever it is decided.
 """
 
 from __future__ import annotations
