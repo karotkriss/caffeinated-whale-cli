@@ -5,8 +5,9 @@ description: >
   the update state machine - multi-site fan-out by default, --json stdout purity, post-mutation recache,
   git-URL app-name derivation, the deprecated `cwcli update` alias and its frappe special-case,
   list/install/uninstall on the logic core (core/apps.py: the untangled uninstall consent/auto_start,
-  report.ok-driven exit codes, `cwcli axi apps list` and `axi apps checkout` shipping while
-  install/uninstall stay deferred, and how checkout's absence assertion was reversed),
+  report.ok-driven exit codes, `cwcli axi apps list`, `axi apps checkout`, and `axi apps install`
+  shipping while `axi apps uninstall` stays deferred, and how the checkout and install absence
+  assertions were each reversed),
   and core/update.py's control flow plus maintenance-mode safety (why it is NOT a generator, why a lost
   stream is unknown-not-failed, per-site enable/disable, honest partial-failure exit codes,
   shlex-quoted interpolation). Use this whenever you edit or debug commands/apps.py, core/apps.py,

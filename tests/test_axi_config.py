@@ -63,7 +63,7 @@ class TestAxiConfig:
 class TestNoMutatingAxiConfigVerbs:
     """Design Decision 6: `axi config` is the ONE config verb, read-only.
     Mutations (paths add/remove, cache clear, auto-inspect enable/disable) are
-    deliberately NOT built - the `axi apps install`/`uninstall` deferral
+    deliberately NOT built - the `axi apps uninstall` deferral
     discipline. This test keeps that a decision, not an oversight."""
 
     def test_registry_carries_config_and_no_config_mutations(self):
