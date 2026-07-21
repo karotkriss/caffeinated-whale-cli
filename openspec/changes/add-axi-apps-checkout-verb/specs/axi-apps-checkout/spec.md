@@ -63,10 +63,10 @@ This requirement supersedes the verb's original reliance on git's own refusal, w
 - **WHEN** `cwcli axi apps checkout myproj myapp feature/x` runs against an app checkout with an uncommitted edit that the target ref does NOT touch, and no `--reset`
 - **THEN** the verb emits `error:`/`help:` naming the dirty path and `--reset`, exits 1, performs no fetch, and leaves the working tree as it was
 
-#### Scenario: Untracked files do not block the checkout
+#### Scenario: An untracked file also blocks the checkout without --reset
 
-- **WHEN** the app checkout contains untracked files only
-- **THEN** the checkout proceeds and exits 0, and the untracked files survive it
+- **WHEN** the app checkout contains an untracked file only, and no `--reset`
+- **THEN** the verb emits `error:`/`help:` naming the dirty path and `--reset`, exits 1, performs no fetch, and leaves the untracked file in place
 
 #### Scenario: --reset is the only path that discards local work
 
