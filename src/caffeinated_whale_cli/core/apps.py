@@ -326,6 +326,58 @@ def list_apps(
 # --------------------------------------------------------------------------- install
 
 
+def _refuse_if_installed(
+    frappe_container,
+    path: str,
+    apps: list[str],
+    sites: list[str] | None,
+    *,
+    emit: OnEvent,
+) -> None:
+    """Raise CONFLICT if any of ``apps`` is already installed on any target site.
+
+    Runs BEFORE ``bench get-app``, so a refused install fetches nothing and leaves
+    the bench exactly as it found it.
+
+    The name compared is :func:`derive_app_name` of the target, which is what
+    ``install-app`` would be handed when the ``apps/`` before/after diff is
+    inconclusive. When that derivation is wrong for an exotic URL the check simply
+    does not match and the install proceeds to bench's own behaviour - it can miss a
+    match, it cannot invent one, so it never refuses an install that was safe.
+    """
+    for site in _target_sites(frappe_container, path, sites):
+        command, ok, site_apps = _installed_apps(frappe_container, path, site)
+        emit(AppsCommand(command=command))
+        if not ok:
+            raise CwcliError(
+                ErrorKind.PRECONDITION,
+                "app.install_state_unknown",
+                f"Could not read the installed apps on site '{site}' (it may not exist "
+                "on this bench), so it cannot be confirmed that this install would not "
+                "touch existing app data.",
+                hint=(
+                    f"Check the site exists and is readable: 'cwcli axi apps list "
+                    f"<project> --site {site}'."
+                ),
+            )
+        for target in apps:
+            name = derive_app_name(target)
+            if name in site_apps:
+                raise CwcliError(
+                    ErrorKind.CONFLICT,
+                    "app.already_installed",
+                    f"App '{name}' is already installed on site '{site}'. Installing it "
+                    "again would re-run its install hooks against that site's existing "
+                    "data.",
+                    hint=(
+                        f"To move it to another ref: 'cwcli axi apps checkout <project> "
+                        f"{name} <ref>'. To pull and migrate it: 'cwcli axi apps update "
+                        f"<project> {name} --site {site}'. A genuine reinstall is the "
+                        f"human 'cwcli apps install', which confirms first."
+                    ),
+                )
+
+
 def install_apps(
     project_name: str,
     apps: list[str],
@@ -336,15 +388,31 @@ def install_apps(
     branch: str | None = None,
     fetch_only: bool = False,
     auto_start: bool = False,
+    require_absent: bool = False,
     on_event: OnEvent | None = None,
 ) -> Result[AppsReport]:
-    """Fetch (``bench get-app``) and install app(s) on the target site(s)."""
+    """Fetch (``bench get-app``) and install app(s) on the target site(s).
+
+    ``require_absent`` refuses, BEFORE fetching anything, if an app is already
+    installed on a target site. It defaults off so the human verb is unchanged, and
+    the rule lives here rather than in a frontend so ``axi`` and any future GUI share
+    one implementation of it (the ``apps uninstall`` consent lesson: a safety rule a
+    frontend owns alone is a rule the next frontend forgets). ``cwcli axi apps
+    install`` is its only caller today - see that verb for why it is applied there.
+
+    The check FAILS CLOSED: a site whose ``list-apps`` read fails cannot be confirmed
+    clean, so it refuses rather than proceeding on an unknown (``core.where``'s
+    fail-honest rule - an unreadable state must never degrade to "nothing is there").
+    """
     emit: OnEvent = on_event or _noop
 
     resolved = _resolve(project_name, bench, bench_path, auto_start=auto_start)
     if isinstance(resolved, Result):
         return resolved
     frappe_container, path, warnings = resolved
+
+    if require_absent and not fetch_only:
+        _refuse_if_installed(frappe_container, path, apps, sites, emit=emit)
 
     results: list[AppResult] = []
     fetched: list[tuple[str, str]] = []
