@@ -18,8 +18,11 @@ NOT route through ``resolvers.resolve_container_state`` or ``get_frappe_containe
 - rm is project-wide, must handle an orphan with no frappe service (the
 ``core.stop`` precedent), and a stopped project is NORMAL for rm (the frontend
 transiently starts it before calling here; the not-running branch below is the
-fail-closed backstop). There is deliberately no ``axi rm`` verb this batch
-(Decision 5, deferred as the captain's own product decision).
+fail-closed backstop). ``cwcli axi rm`` now exists: the deferral was the
+captain's own product decision, and he overturned it on 2026-07-21. The verb is
+a thin renderer over this unchanged ``core.remove``, so this module's own
+safety properties (the early fail-closed backup gate, the verified copy-out,
+the not-running backstop) are unchanged and are shared by both frontends.
 
 rm's ``_backup_sites`` is a copy-out-and-VERIFY gate, distinct from
 ``core.backup``'s in-container dump: it streams each artifact out of the
