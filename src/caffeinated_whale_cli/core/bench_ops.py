@@ -1,10 +1,10 @@
-"""``core.bench_ops`` - standalone ``bench migrate`` and ``bench run-tests`` as UI-pure logic.
+"""``core.bench_ops`` - standalone ``bench migrate``/``run-tests``/``build`` as UI-pure logic.
 
-The two commands every Frappe proof runs, neither of which existed as a callable
+The commands every Frappe proof runs, none of which existed as a callable
 operation before this module (openspec ``add-axi-bench-exec-verbs``). ``bench
 migrate`` lived only inside :func:`core.update.update`'s pull-and-fan-out state
-machine and inside ``restore_apply``'s post-restore step; ``bench run-tests``
-existed nowhere at all.
+machine and inside ``restore_apply``'s post-restore step; ``bench run-tests`` and
+``bench build`` existed nowhere at all.
 
 Both functions own their resolution and container I/O and RETURN a typed report.
 They print, prompt and exit nothing: a stopped container or an ambiguous
@@ -58,7 +58,7 @@ from .exec_stream import ExecChunk, exec_stream
 class BenchOpResult:
     """One step's outcome. ``message`` carries a reason only when there IS one."""
 
-    action: str  # "maintenance_on" | "migrate" | "maintenance_off" | "run-tests"
+    action: str  # "maintenance_on" | "migrate" | "maintenance_off" | "run-tests" | "build"
     ok: bool
     message: str | None = None
 
@@ -73,14 +73,17 @@ class BenchOpReport:
     lies. ``add-axi-apps-checkout-verb`` Decision 3 is binding on not bolting
     fields onto the shared mutation report.
 
-    ``site`` is the RESOLVED site, always populated - reading back what was acted
-    on is the gap ``apps checkout`` left open and this deliberately does not repeat.
+    ``site`` is the RESOLVED site - reading back what was acted on is the gap
+    ``apps checkout`` left open and this deliberately does not repeat. It is
+    populated on every site-scoped op and is None ONLY on :func:`build_assets`,
+    which acts on the bench and not on any site; naming a site there would state
+    something untrue, which is the same rule that keeps ``app`` off a migrate.
     """
 
     project: str
     bench_path: str
-    site: str
-    app: str | None = None  # run-tests only; a migrate is not app-scoped
+    site: str | None
+    app: str | None = None  # run-tests/build only; a migrate is not app-scoped
     results: list[BenchOpResult] = field(default_factory=list)
     ok: bool = True
     # A site we could not take back OUT of maintenance mode is a site left DOWN.
@@ -311,6 +314,7 @@ def run_tests(
     *,
     site: str,
     app: str,
+    module: str | None = None,
     bench: str | None = None,
     bench_path: str | None = None,
     auto_start: bool = False,
@@ -338,6 +342,12 @@ def run_tests(
     a command string. There is no parameter through which a second command can be
     expressed.
 
+    ``module`` narrows the run to ONE dotted test module (``bench run-tests --app X
+    --module X.tests.test_y``). It only ever REDUCES what executes, so it needs no
+    guard of its own; without it the single-module iteration every fix loop runs had
+    no form here and dropped to a raw ``cwcli run``. ``app`` stays required even
+    with it, so the report always names the scope that was under test.
+
     No maintenance mode: a test run is not a schema mutation, and putting a site
     into maintenance would change the conditions the suite runs under.
     """
@@ -357,13 +367,10 @@ def run_tests(
     # A typo'd app is left to bench's own error, forwarded verbatim to the caller's
     # narrator - the `apps checkout` lesson: a redundant cwcli-side pre-check drifts
     # from the tool's real answer and would over-reject targets bench accepts.
-    code = _run_step(
-        container,
-        f"bench --site {shlex.quote(target)} run-tests --app {shlex.quote(app)}",
-        path,
-        action="run-tests",
-        emit=emit,
-    )
+    command = f"bench --site {shlex.quote(target)} run-tests --app {shlex.quote(app)}"
+    if module and module.strip():
+        command += f" --module {shlex.quote(module.strip())}"
+    code = _run_step(container, command, path, action="run-tests", emit=emit)
     results = [BenchOpResult(action="run-tests", ok=code == 0)]
 
     return Result(
@@ -374,6 +381,67 @@ def run_tests(
             site=target,
             app=app,
             results=results,
+            ok=code == 0,
+        ),
+        warnings=warnings,
+    )
+
+
+# ----------------------------------------------------------------------------- build
+
+
+def build_assets(
+    project_name: str,
+    *,
+    app: str | None = None,
+    bench: str | None = None,
+    bench_path: str | None = None,
+    auto_start: bool = False,
+    on_event: OnEvent | None = None,
+) -> Result[BenchOpReport]:
+    """Run ``bench build`` for the bench, optionally scoped to ONE app.
+
+    The third member of the proof loop `migrate` and `run_tests` already cover: an
+    app whose JS/CSS changed is not visibly changed until its assets are rebuilt,
+    so a checkout of a front-end-bearing branch left no callable way to finish the
+    job and dropped to a raw ``cwcli run``.
+
+    It is the LEAST dangerous op in this module and is guarded accordingly - which
+    is to say barely, because there is little to guard. A build compiles the bench's
+    own asset sources and writes the result under ``sites/assets``; it touches no
+    database, runs no patch, and needs no site, so there is no maintenance gate here
+    and nothing to fail closed over. ``--app`` only narrows it.
+
+    That is also why :class:`BenchOpReport`'s ``site`` is ``None`` on this path
+    alone. Populating it with the default site would state that a site was acted
+    on, and none was; the module's own rule is that the report never carries a
+    placeholder that lies.
+    """
+    emit: OnEvent = on_event or _noop
+
+    resolved = resolvers.resolve_container_and_bench(
+        project_name, bench, bench_path, auto_start=auto_start
+    )
+    if isinstance(resolved, Result):
+        return resolved
+    container, path, warnings = resolved
+
+    if app is not None and not app.strip():
+        raise CwcliError(ErrorKind.USAGE, "app.empty", "App name cannot be empty.")
+
+    command = "bench build"
+    if app:
+        command += f" --app {shlex.quote(app.strip())}"
+    code = _run_step(container, command, path, action="build", emit=emit)
+
+    return Result(
+        status=Status.OK if code == 0 else Status.WARNING,
+        data=BenchOpReport(
+            project=project_name,
+            bench_path=path,
+            site=None,
+            app=app,
+            results=[BenchOpResult(action="build", ok=code == 0)],
             ok=code == 0,
         ),
         warnings=warnings,

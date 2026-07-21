@@ -461,6 +461,19 @@ def _mounted_bench_parent(compose_content: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _project_containers_running(project_name: str) -> bool:
+    """True when this project already has a running container of its own.
+
+    ``get_project_containers`` returns None on a Docker connection error; that is
+    NOT "running" - falling through to the port check is the honest answer, and
+    the compose calls below surface the real daemon failure.
+    """
+    containers = core_docker.get_project_containers(project_name)
+    if not containers:
+        return False
+    return any(c.status == "running" for c in containers)
+
+
 def init_instance(
     project_name: str,
     *,
@@ -491,7 +504,17 @@ def init_instance(
     # auto_start=True retry: that call shape is the frontend's stage-1 re-invoke
     # after ensure_containers_running has already started this project's own
     # containers, which bind exactly these ports - a self-conflict, not a real one.
-    if not auto_start:
+    #
+    # Skipped for the SAME reason when this project's own containers are already
+    # up. Re-running init against a live instance is the ordinary way to add a
+    # bench or a site to it (`cwcli init existing --reuse-bench --site other`),
+    # and there the ports the check finds "in use" are held by the very instance
+    # being initialized. The old check refused that case outright, telling the
+    # caller to pick a different --port for an instance whose ports are frozen in
+    # its compose file - advice that could not be followed. The check still runs
+    # for a stopped or absent project, where a bound port genuinely belongs to
+    # someone else.
+    if not auto_start and not _project_containers_running(project_name):
         web_ports = list(range(port, port + 6))
         socketio_ports = list(range(port + 1000, port + 1006))
         port_status = check_ports_in_use(web_ports + socketio_ports)
