@@ -1049,7 +1049,7 @@ def axi_apps_checkout(
     reset: bool = typer.Option(
         False,
         "--reset",
-        help="Discard uncommitted changes and hard-reset the working tree to the fetched ref (required to check out a dirty app).",
+        help="Discard tracked local changes and hard-reset the working tree to the fetched ref (required to check out a dirty app; does not delete untracked files).",
     ),
 ) -> None:
     """Fetch and check out a ref into an app already in the bench; emit the report as TOON.
@@ -1082,9 +1082,12 @@ def axi_apps_checkout(
       anything is fetched. This is cwcli's OWN pre-check in `core.checkout_app`
       and it is deliberately STRONGER than git's, which refuses only a checkout
       that would OVERWRITE a modified file and let a non-conflicting edit ride
-      through at exit 0 while the docs promised otherwise. Dirty means staged
-      and/or unstaged changes to TRACKED files; untracked files are NOT dirty,
-      because nothing on this path removes them.
+      through at exit 0 while the docs promised otherwise. Dirty means anything
+      `git status --porcelain` reports: staged changes, unstaged tracked
+      modifications, AND untracked files (a new module not yet added is
+      uncommitted work too). .gitignore'd build residue is not reported by git,
+      so it never blocks. --reset discards tracked changes but does NOT delete
+      untracked files, since cwcli never runs `git clean`.
     - --reset is the one destructive element and stays an explicit opt-in
       (irrecoverable loss of uncommitted work in apps/<app>), reported as its own
       `reset` row. It is kept rather than withheld because without it an agent

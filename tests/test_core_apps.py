@@ -451,12 +451,29 @@ class TestCheckoutRefusesADirtyTree:
             core_apps.checkout_app("proj", "payments", "feature/x")
         assert exc.value.code == "app.dirty_tree"
 
-    def test_untracked_files_are_deliberately_not_dirty(self, monkeypatch, container):
-        """`--untracked-files=no` is the stated line: --reset never removes them.
+    def test_an_untracked_file_refuses_too(self, monkeypatch, container):
+        """Captain's ruling: untracked files count as dirty.
 
-        A real bench app dir always carries __pycache__/node_modules/*.egg-info, so
-        refusing on untracked would make the verb permanently unusable with no work
-        at risk. Asserted on the COMMAND so the flag cannot be dropped silently.
+        A brand-new module written but not yet `git add`ed is uncommitted work in
+        the plainest sense, and it is exactly the case where the tool must not
+        decide for the user that the file is worthless. Build residue does not
+        trip this because .gitignore keeps it out of `git status` entirely.
+        """
+        container.dirty = "?? payments/new_module.py\n"
+        _cache(monkeypatch, [{"path": BENCH}])
+        _bridge_spy(monkeypatch)
+
+        with pytest.raises(CwcliError) as exc:
+            core_apps.checkout_app("proj", "payments", "feature/x")
+
+        assert exc.value.code == "app.dirty_tree"
+        assert "payments/new_module.py" in exc.value.message
+
+    def test_the_status_read_is_not_narrowed_to_tracked_files(self, monkeypatch, container):
+        """Asserted on the COMMAND: `--untracked-files=no` must not come back.
+
+        Re-adding it would silently drop untracked files out of the guard, which
+        is the exact narrowing the captain reversed.
         """
         _cache(monkeypatch, [{"path": BENCH}])
         _bridge_spy(monkeypatch)
@@ -464,10 +481,14 @@ class TestCheckoutRefusesADirtyTree:
         result = core_apps.checkout_app("proj", "payments", "feature/x")
 
         assert result.data.ok is True
-        assert "git status --porcelain --untracked-files=no" in container.calls
+        assert "git status --porcelain" in container.calls
+        assert not any("--untracked-files=no" in c for c in container.calls)
 
     def test_reset_is_the_way_through_and_skips_the_check(self, monkeypatch, container):
-        container.dirty = " M payments/hooks.py\n"
+        """--reset skips the check entirely. Note the honest limit documented on
+        the hint: it hard-resets TRACKED changes and leaves untracked files in
+        place - cwcli never runs `git clean`, so it cannot delete them."""
+        container.dirty = " M payments/hooks.py\n?? payments/new_module.py\n"
         _cache(monkeypatch, [{"path": BENCH}])
         _bridge_spy(monkeypatch)
 
