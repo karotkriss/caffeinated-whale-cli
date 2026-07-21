@@ -65,7 +65,7 @@ One project per invocation, never the human verb's variadic list or stdin pipe: 
 
 ## Impact
 
-- `commands/axi.py`: one new verb, one narrator. 17 -> 18 top-level verbs.
+- `commands/axi.py`: one new verb, one narrator. 19 -> 20 top-level verbs.
 - `core/rm.py`: unchanged.
 - `tests/test_core_rm.py`: `TestNoAxiRmVerb` becomes `TestAxiRmVerbShipped`, reversed deliberately and carrying the reasoning, the way `apps checkout` and `axi init` reversed theirs.
 - `tests/test_axi_rm.py`: new, covering the two decided properties and every refusal's actionability.
