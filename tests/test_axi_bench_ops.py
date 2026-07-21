@@ -1,13 +1,16 @@
-"""``cwcli axi migrate`` / ``cwcli axi run-tests`` - the execution verbs.
+"""``cwcli axi migrate`` / ``run-tests`` / ``build`` - the execution verbs.
 
 The gap frappemate reported: `bench migrate` and `bench run-tests` are the two
 commands every Frappe proof runs, and every execution step was dropping to raw
-`cwcli run` because neither had an agent form. The hole also broke the workflow
+`cwcli run` because neither had an agent form. `bench build` joined them for the
+same reason (a later probe): an app whose JS or CSS changed is not visibly changed
+until its assets are rebuilt, so a checkout of a front-end-bearing branch had no
+callable way to finish. The hole also broke the workflow
 `axi apps checkout` shipped for - the only agent route to a migrate was
 `axi apps update`, which `git pull`s every named app FIRST and would move the ref
 the checkout just pinned.
 
-They ship as two TOP-LEVEL verbs (captain ruling, Option A: 16 -> 18), not as an
+They ship as TOP-LEVEL verbs (captain ruling, Option A), not as an
 `axi bench` group, because `apps` groups by domain noun with a statable boundary
 while a `bench` group would group by mechanism and complete at passthrough by
 accretion. `tests/test_axi.py::TestNoAxiRunVerb` holds the passthrough absence.
@@ -50,7 +53,9 @@ def _migrate(**kwargs):
 
 
 def _run_tests(**kwargs):
-    params = {"site": SITE, "app_name": "payments", "bench": None}
+    # Every param explicitly, including `module`: a Typer command called directly
+    # keeps its typer.Option(...) default OBJECT for anything omitted.
+    params = {"site": SITE, "app_name": "payments", "module": None, "bench": None}
     params.update(kwargs)
     return axi_mod.axi_run_tests("proj", **params)
 
@@ -242,12 +247,13 @@ def test_a_failing_run_names_where_the_reason_is(container, capsys):
 
 
 def test_both_verbs_are_registered_at_the_top_level(container):
-    """Captain ruling: Option A, two TOP-LEVEL verbs, NOT an `axi bench` group.
+    """Captain ruling: Option A, TOP-LEVEL verbs, NOT an `axi bench` group.
     A `bench` group would group by mechanism, and every bench subcommand qualifies
     by construction, so its completion state is passthrough reached by accretion."""
     registered = {c.name for c in axi_mod.app.registered_commands}
     assert "migrate" in registered
     assert "run-tests" in registered
+    assert "build" in registered
     assert "bench" not in {g.typer_instance.info.name for g in axi_mod.app.registered_groups}
 
 
@@ -257,7 +263,7 @@ def test_neither_verb_accepts_a_free_form_command_string(container):
     and none is variadic or free-form, so no second command can be expressed."""
     import inspect
 
-    for fn in (axi_mod.axi_migrate, axi_mod.axi_run_tests):
+    for fn in (axi_mod.axi_migrate, axi_mod.axi_run_tests, axi_mod.axi_build):
         for param in inspect.signature(fn).parameters.values():
             assert param.kind is not inspect.Parameter.VAR_POSITIONAL
             # `from __future__ import annotations` makes these strings, so compare
@@ -282,3 +288,59 @@ def test_the_core_functions_are_called_with_auto_start_false(monkeypatch, contai
             call()
 
     assert [k["auto_start"] for k in seen] == [False, False]
+
+
+# ----------------------------------------------------------------------- axi build
+
+
+def _build(**kwargs):
+    params = {"app_name": None, "bench": None}
+    params.update(kwargs)
+    return axi_mod.axi_build("proj", **params)
+
+
+def test_a_build_is_one_toon_document_and_names_no_site(container, capsys):
+    """`bench build` compiles the bench's assets and acts on no site, so the report
+    says so. Populating `site` with the bench default would state that a site was
+    acted on when none was - the same rule that keeps `app` off a migrate."""
+    with pytest.raises(typer.Exit) as exc:
+        _build()
+
+    assert exc.value.exit_code == 0
+    out = capsys.readouterr().out
+    assert "site: null" in out
+    assert "ok: true" in out
+    assert [c for c in container.calls if c == "bench build"]
+
+
+def test_a_build_scoped_to_one_app_narrows_the_command(container, capsys):
+    with pytest.raises(typer.Exit):
+        _build(app_name="payments")
+
+    assert "bench build --app payments" in container.calls
+    assert "app: payments" in capsys.readouterr().out
+
+
+def test_a_failed_build_exits_one_and_says_where_the_reason_is(container, capsys):
+    container.fail_on = ["bench build"]
+
+    with pytest.raises(typer.Exit) as exc:
+        _build()
+
+    assert exc.value.exit_code == 1
+    out = capsys.readouterr().out
+    assert "ok: false" in out
+    assert "stderr" in out  # the build's own bytes are the only account of why
+
+
+def test_run_tests_can_narrow_to_one_module(container):
+    """The gap that dropped a single-module iteration to a raw `cwcli run`. It only
+    ever REDUCES what executes, so it carries no guard of its own - but --app stays
+    required, so the report still names the scope under test."""
+    with pytest.raises(typer.Exit):
+        _run_tests(module="payments.tests.test_thing")
+
+    assert (
+        "bench --site a.localhost run-tests --app payments --module payments.tests.test_thing"
+        in container.calls
+    )

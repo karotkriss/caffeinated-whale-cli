@@ -43,6 +43,7 @@ from ..core import label as core_label
 from ..core import list as core_list
 from ..core import logs as core_logs
 from ..core import restart as core_restart
+from ..core import rm as core_rm
 from ..core import start as core_start
 from ..core import status as core_status
 from ..core import stop as core_stop
@@ -50,7 +51,7 @@ from ..core import unlock as core_unlock
 from ..core import update as core_update
 from ..core import version as core_version
 from ..core import where as core_where
-from ..core.envelope import Choice
+from ..core.envelope import Choice, Message
 from ..core.envelope import Status as CoreStatus
 from ..core.errors import CwcliError, ErrorKind
 from ..utils import agent_hooks, cache, toon
@@ -1370,6 +1371,11 @@ def axi_run_tests(
     app_name: str = typer.Option(
         None, "--app", help="App whose test suite to run. REQUIRED: no default."
     ),
+    module: str = typer.Option(
+        None,
+        "--module",
+        help="Narrow the run to ONE dotted test module (e.g. myapp.tests.test_thing).",
+    ),
     bench: str = typer.Option(None, "--bench", help="Which bench: numeric index or label."),
 ) -> None:
     """Run 'bench run-tests' for ONE app against ONE named site; emit the report as TOON.
@@ -1401,6 +1407,11 @@ def axi_run_tests(
     - NO --yes and no auto-start: a stopped project is a usage error naming
       `cwcli start`.
 
+    --module narrows the run to one dotted test module. It only ever REDUCES what
+    executes, so unlike --site and --app it needs no guard; it exists because the
+    single-module iteration every fix loop runs had no form here and dropped to a
+    raw `cwcli run`, which is exactly the escape hatch this verb closes.
+
     The runner's output goes to stderr in FULL and UNPARSED - cwcli does not own
     that format, so it reports only the honest pass/fail and forwards the rest.
     """
@@ -1424,6 +1435,7 @@ def axi_run_tests(
             project,
             site=site,
             app=app_name,
+            module=module,
             bench=bench,
             auto_start=False,
             on_event=_bench_op_narrate,
@@ -1442,6 +1454,52 @@ def axi_run_tests(
     emit_result(report, warnings=result.warnings)
     if not report.ok:
         typer.echo(toon.kv("help", "the failing test's own output is on stderr"))
+    raise typer.Exit(0 if report.ok else 1)
+
+
+@app.command("build")
+def axi_build(
+    project: str = typer.Argument(..., help="The Docker Compose project name."),
+    app_name: str = typer.Option(
+        None, "--app", help="Build only this app's assets (default: the whole bench)."
+    ),
+    bench: str = typer.Option(None, "--bench", help="Which bench: numeric index or label."),
+) -> None:
+    """Run 'bench build' to compile the bench's assets; emit the report as TOON.
+
+    The third member of the proof loop `migrate` and `run-tests` already cover. An
+    app whose JS or CSS changed is not visibly changed until its assets are
+    rebuilt, so `apps checkout` of a front-end-bearing branch had no callable way
+    to finish the job and dropped to a raw `cwcli run` - the escape hatch these
+    verbs exist to close.
+
+    It carries no guards because it has nothing to guard: a build compiles asset
+    sources and writes under `sites/assets`, touching no database, running no
+    patch, and needing no site. That is also why the report's `site` is null here -
+    naming one would state that a site was acted on when none was. `--app` only
+    narrows the work.
+
+    NO --yes and no auto-start: a stopped project is a usage error naming
+    `cwcli start`. Build output goes to stderr in full and unparsed.
+    """
+    try:
+        result = core_bench_ops.build_assets(
+            project, app=app_name, bench=bench, auto_start=False, on_event=_bench_op_narrate
+        )
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    if result.status is CoreStatus.NEEDS_CHOICE:
+        assert result.choice is not None  # NEEDS_CHOICE always carries a Choice
+        emit_axi_choice_as_usage_error(result.choice)
+        raise typer.Exit(2)
+
+    assert result.data is not None  # OK/WARNING always carries a BenchOpReport
+    report = result.data
+    emit_result(report, warnings=result.warnings)
+    if not report.ok:
+        typer.echo(toon.kv("help", "the build's own output is on stderr"))
     raise typer.Exit(0 if report.ok else 1)
 
 
@@ -1725,6 +1783,168 @@ def axi_init(
 
     emit_result(bench_result.data, warnings=bench_result.warnings)
     raise typer.Exit(0 if bench_result.status in (CoreStatus.OK, CoreStatus.WARNING) else 1)
+
+
+# -------------------------------------------------------------------------------- rm
+
+
+def _rm_narrate(event) -> None:
+    """Removal progress to STDERR (never stdout, which carries only the TOON report).
+
+    ``RmStep`` is the human spinner label and ``RmNotice`` its dim progress line;
+    both are the only running account of which bench is being backed up and which
+    volume is being destroyed, so they narrate here for liveness during a removal
+    that can take minutes. ``RmTrace`` is dropped: it is the human verb's
+    ``--verbose``-only diagnostic and this surface has no --verbose.
+    """
+    if isinstance(event, core_rm.RmStep):
+        print(event.label, file=sys.stderr, flush=True)
+    elif isinstance(event, core_rm.RmNotice):
+        print(event.text, file=sys.stderr, flush=True)
+    elif isinstance(event, core_rm.RmWarning):
+        print(f"Warning: {event.text}", file=sys.stderr, flush=True)
+        if event.hint:
+            print(event.hint, file=sys.stderr, flush=True)
+    elif isinstance(event, core_rm.RmError):
+        print(f"Error: {event.text}", file=sys.stderr, flush=True)
+
+
+@app.command("rm")
+def axi_rm(
+    project: str = typer.Argument(..., help="The Docker Compose project name to remove."),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        help="REQUIRED consent to permanently delete this instance. Grants ONLY consent; "
+        "it never starts containers.",
+    ),
+    volumes: bool = typer.Option(
+        True,
+        "--volumes/--no-volumes",
+        help="--no-volumes keeps the named volumes (databases, sites, files) and removes "
+        "only the containers, project directory, and cache entry.",
+    ),
+) -> None:
+    """Permanently remove an instance; emit the outcome as TOON (never prompts).
+
+    The agent surface for cwcli's only destructive verb. It was deferred on the
+    reasoning that an agent DELIBERATELY deleting an instance is a different risk
+    from a human accident, and that the fail-closed backup gate defends against
+    accidents rather than intent - so the deferral was never about the gate being
+    weak, it was about whether an agent should hold the capability at all. The
+    captain answered that question on 2026-07-21; every safety property the human
+    verb has is preserved here, and the two that are frontend-owned are re-decided
+    below rather than inherited.
+
+    `--yes` is REQUIRED and means ONLY consent. The human `cwcli rm --yes` fuses
+    two meanings - skip the confirmation AND auto-start a stopped project for its
+    backup - which is exactly the fusion `core.remove` was migrated to keep out of
+    the core, and it must not be re-created here: an agent asking to delete an
+    instance has not thereby asked to START one. So consent is the flag's whole
+    meaning and there is NO auto-start on this surface (the `axi apps checkout`
+    guard, against an agent starting containers a user deliberately stopped).
+
+    Consequences of removing the auto-start half, both refusals that name their way
+    out rather than dead-ending:
+
+    - A STOPPED or orphaned project on the volume-deleting path is refused
+      (NOT_RUNNING, exit 1) BEFORE anything is touched. A live `bench backup` needs
+      a running project, so without the transient start there is no way to satisfy
+      the gate - and deleting anyway is precisely what the gate exists to prevent.
+      The refusal names `cwcli start <project>` (then re-run), `--no-volumes` (which
+      destroys no data and so needs no backup), and the human verb for a deliberate
+      backup-less delete.
+    - There is deliberately NO `--no-backup`. That flag disables the C1 gate, the
+      single guard between this verb and unrecoverable data loss, and on this
+      surface it has no named beneficiary - the same reasoning that keeps
+      `axi apps install` without a `--force` and `axi migrate` without a
+      `--skip-maintenance` (captain ruling M1): a bypass flag's mere existence
+      invites its use. The escape hatch is the human `cwcli rm --no-backup`, where
+      a human confirms the loss.
+
+    Everything else is the human verb's behaviour unchanged, because it lives in
+    `core.remove`: the verified per-bench copy-out, the EARLY fail-closed gate that
+    aborts before any container is removed (so a retry still has a live database to
+    back up), the archive of conf/ and the project directory, and a cache entry kept
+    when any step failed. One project per invocation, never the human verb's
+    variadic list or stdin pipe: a fan-out is how an agent reaches an instance it
+    never named, and here that costs an instance.
+
+    The exit code reads `outcome.failures`, NOT the envelope status - a partial
+    removal is a WARNING-shaped envelope, which maps to exit 0 everywhere else and
+    would report success for an instance that is still half there.
+    """
+    from .rm import _project_run_state
+
+    if not yes:
+        emit_axi_error(
+            CwcliError(
+                ErrorKind.USAGE,
+                "rm.consent_required",
+                f"Refusing to remove '{project}' without explicit consent.",
+                hint=(
+                    "re-run with --yes to permanently delete this instance's containers, "
+                    "named volumes (databases, sites, files), and project directory"
+                ),
+            )
+        )
+        raise typer.Exit(exit_for(ErrorKind.USAGE))
+
+    # The verified live backup is impossible without a running frappe container, and
+    # this surface will not start one. Refuse here, before core.remove creates an
+    # archive directory it cannot fill - the core's own not-running branch is the
+    # fail-closed backstop behind this, not a substitute for it. Scoped to the
+    # STOPPED case only: an orphan (no containers at all) is left to the core, which
+    # distinguishes leftover volumes worth protecting from a project that is
+    # genuinely gone - reporting the latter as "not running" would be a lie.
+    if volumes and _project_run_state(project) == "stopped":
+        emit_axi_error(
+            CwcliError(
+                ErrorKind.NOT_RUNNING,
+                "rm.not_running",
+                f"Refusing to remove '{project}': it is not running, so the verified "
+                "database backup that gates volume deletion cannot be taken.",
+                hint=(
+                    f"start it with 'cwcli start {project}' and re-run, or pass --no-volumes "
+                    f"to keep the data, or use 'cwcli rm {project} --no-backup' to delete "
+                    "without a backup"
+                ),
+            )
+        )
+        raise typer.Exit(exit_for(ErrorKind.NOT_RUNNING))
+
+    try:
+        result = core_rm.remove(
+            project, remove_volumes=volumes, no_backup=False, on_event=_rm_narrate
+        )
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    assert result.data is not None  # remove always returns an outcome
+    outcome = result.data
+
+    warnings = list(result.warnings)
+    if not outcome.found:
+        warnings.append(
+            Message(code="rm.not_found", text=f"No instance named '{project}' was found.")
+        )
+    if outcome.failures and not outcome.backup_ok:
+        # The core's gate hint names --no-backup, which does not exist here. Say
+        # where that escape hatch actually lives so the refusal is actionable.
+        warnings.append(
+            Message(
+                code="rm.backup_gate",
+                text=(
+                    "Nothing was deleted. Fix the backup failure and re-run, or use "
+                    f"'cwcli rm {project} --no-backup' to delete without a backup."
+                ),
+            )
+        )
+
+    emit_result(outcome, warnings=warnings)
+    # failures, NOT result.status: a partial removal is a WARNING-shaped envelope.
+    raise typer.Exit(1 if outcome.failures else 0)
 
 
 # ------------------------------------------------------------------------ self-update
