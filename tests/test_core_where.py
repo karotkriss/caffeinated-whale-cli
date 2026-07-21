@@ -66,6 +66,23 @@ def _seed():
     )
 
 
+#: Captured at import, before any fixture patches it, so a test can put the real
+#: implementation back and drive its Docker-error branch.
+_REAL_LIVE_PROJECT_NAMES = core_where._live_project_names
+
+
+@pytest.fixture(autouse=True)
+def live_projects(monkeypatch):
+    """Stub the live compose-project listing; tests mutate the set to drive staleness.
+
+    Autouse so no unit test reaches a real Docker daemon. The default has both
+    seeded projects live, which is what the pre-verification assertions assume.
+    """
+    live = {"proj-a", "proj-b"}
+    monkeypatch.setattr(core_where, "_live_project_names", lambda: set(live))
+    return live
+
+
 def _by(matches, **kw):
     return [m for m in matches if all(getattr(m, k) == v for k, v in kw.items())]
 
@@ -140,7 +157,7 @@ class TestWhere:
         _seed()
         result = core_where.where("erpnext")
         blob = dataclasses.asdict(result.data)
-        assert set(blob) == {"matches"}
+        assert set(blob) == {"matches", "verified"}
         for row in blob["matches"]:
             assert set(row) == {
                 "type",
@@ -151,4 +168,103 @@ class TestWhere:
                 "branch",
                 "site",
                 "installed",
+                "project_state",
             }
+
+
+class TestVerifiedVsRemembered:
+    """A cached answer must never be presented as a verified one.
+
+    The defect these pin: ``where`` served rows for a project that had been
+    removed, with ``installed=true`` and nothing marking them as remembered, and
+    served the identical rows while the Docker daemon was unreachable - the one
+    moment it could have known cheaply that it was guessing.
+    """
+
+    def test_absent_project_is_never_reported_as_present(self, temp_db, live_projects):
+        _seed()
+        live_projects.discard("proj-b")  # proj-b removed since it was cached
+
+        result = core_where.where("erpnext")
+
+        assert result.data.verified is True
+        states = {m.project: m.project_state for m in result.data.matches}
+        assert states["proj-b"] == core_where.PROJECT_ABSENT
+        assert states["proj-a"] == core_where.PROJECT_PRESENT
+        # A stale hit is not a silent success: it degrades the envelope and names
+        # the offending project, so a caller that only reads warnings still sees it.
+        assert result.status is Status.WARNING
+        assert [w.code for w in result.warnings] == ["where.stale_projects"]
+        assert result.warnings[0].detail == {"projects": ["proj-b"]}
+
+    def test_absent_row_is_reported_not_pruned(self, temp_db, live_projects):
+        """A read command reports; it does not mutate the cache to hide the problem."""
+        _seed()
+        live_projects.discard("proj-b")
+
+        result = core_where.where("erpnext")
+
+        assert _by(result.data.matches, project="proj-b")
+
+    def test_unreachable_daemon_degrades_to_unverified(self, temp_db, monkeypatch):
+        _seed()
+        monkeypatch.setattr(core_where, "_live_project_names", lambda: None)
+
+        result = core_where.where("erpnext")
+
+        assert result.data.verified is False
+        assert result.data.matches, "an unreachable daemon must not silently drop matches"
+        assert all(m.project_state == core_where.PROJECT_UNVERIFIED for m in result.data.matches)
+        assert result.status is Status.WARNING
+        assert [w.code for w in result.warnings] == ["where.unverified"]
+
+    def test_unreachable_daemon_is_not_read_as_everything_absent(self, temp_db, monkeypatch):
+        """``None`` must not degrade to an empty live set, which would read as all-gone."""
+        _seed()
+        monkeypatch.setattr(core_where, "_live_project_names", lambda: None)
+
+        result = core_where.where("erpnext")
+
+        assert not [m for m in result.data.matches if m.project_state == core_where.PROJECT_ABSENT]
+
+    def test_docker_error_never_escapes_as_a_failure(self, temp_db, monkeypatch):
+        """A search is still answerable without Docker - honestly, not fatally."""
+        _seed()
+
+        def _boom():
+            raise CwcliError(ErrorKind.DOCKER, "docker.unreachable", "nope")
+
+        monkeypatch.setattr(core_where, "list_instances", _boom)
+        # Undo the autouse stub so the real _live_project_names runs against _boom.
+        monkeypatch.setattr(core_where, "_live_project_names", _REAL_LIVE_PROJECT_NAMES)
+
+        result = core_where.where("erpnext")
+
+        assert result.data.verified is False
+        assert all(m.project_state == core_where.PROJECT_UNVERIFIED for m in result.data.matches)
+
+    def test_verify_false_skips_the_live_call_and_claims_nothing(self, temp_db, monkeypatch):
+        """The performance escape hatch must not buy speed by pretending to verify."""
+
+        def _must_not_run():
+            raise AssertionError("verify=False must not touch Docker")
+
+        monkeypatch.setattr(core_where, "_live_project_names", _must_not_run)
+        _seed()
+
+        result = core_where.where("erpnext", verify=False)
+
+        assert result.data.verified is False
+        assert all(m.project_state == core_where.PROJECT_UNVERIFIED for m in result.data.matches)
+        # Opting out is not an anomaly, so it does not warn - but it also does not vouch.
+        assert result.status is Status.OK
+        assert result.warnings == []
+
+    def test_default_is_verified(self, temp_db):
+        """Verification is on by default; a caller gets the honest answer unasked."""
+        _seed()
+
+        result = core_where.where("erpnext")
+
+        assert result.data.verified is True
+        assert all(m.project_state == core_where.PROJECT_PRESENT for m in result.data.matches)

@@ -19,6 +19,19 @@ from ..core.where import WhereMatch
 console = Console()
 
 
+#: The state token rendered per row, so a human sees the same distinction the
+#: structured output carries: a cached hit is never shown as a confirmed one.
+_STATE_CELLS = {
+    core_where.PROJECT_PRESENT: "[green]present[/green]",
+    core_where.PROJECT_ABSENT: "[red]absent (cached)[/red]",
+    core_where.PROJECT_UNVERIFIED: "[yellow]unverified[/yellow]",
+}
+
+
+def _state_cell(project_state: str) -> str:
+    return _STATE_CELLS.get(project_state, project_state)
+
+
 def _match_to_json(match: WhereMatch) -> dict:
     """The historical per-record JSON shape (site records omit the app-only fields)."""
     if match.type == "site":
@@ -27,6 +40,7 @@ def _match_to_json(match: WhereMatch) -> dict:
             "project": match.project,
             "bench": match.bench,
             "name": match.name,
+            "project_state": match.project_state,
         }
     return {
         "type": match.type,
@@ -37,6 +51,7 @@ def _match_to_json(match: WhereMatch) -> dict:
         "branch": match.branch,
         "site": match.site,
         "installed": match.installed,
+        "project_state": match.project_state,
     }
 
 
@@ -68,6 +83,11 @@ def where(
         "--json",
         help="Output results as JSON.",
     ),
+    no_verify: bool = typer.Option(
+        False,
+        "--no-verify",
+        help="Skip the live check that each match's instance still exists.",
+    ),
 ):
     """
     Search all cached instances for apps or sites matching a string.
@@ -86,6 +106,7 @@ def where(
             apps_only=apps_only,
             sites_only=sites_only,
             installed_only=installed_only,
+            verify=not no_verify,
         )
     except CwcliError as e:
         console.print(f"[red]Error: {e.message}[/red]")
@@ -115,6 +136,7 @@ def where(
         table.add_column("Version", style="dim")
         table.add_column("Branch", style="dim")
         table.add_column("Site", style="magenta")
+        table.add_column("Instance", style="dim")
 
         for match in app_results:
             version = match.version or "-"
@@ -126,6 +148,7 @@ def where(
                 version,
                 branch,
                 site,
+                _state_cell(match.project_state),
             )
 
         console.print(table)
@@ -138,12 +161,14 @@ def where(
         table.add_column("Project", style="cyan", no_wrap=True)
         table.add_column("Site", style="green")
         table.add_column("Bench Path", style="dim")
+        table.add_column("Instance", style="dim")
 
         for match in site_results:
             table.add_row(
                 match.project,
                 match.name,
                 match.bench,
+                _state_cell(match.project_state),
             )
 
         console.print(table)
@@ -151,3 +176,5 @@ def where(
     # Summary
     total = len(matches)
     console.print(f"\n[dim]Found {total} match{'es' if total != 1 else ''}.[/dim]")
+    for warning in result.warnings:
+        console.print(f"[yellow]{warning.text}[/yellow]")
