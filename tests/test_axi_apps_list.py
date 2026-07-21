@@ -6,12 +6,16 @@ three things it must get right: TOON on stdout (never JSON), the forks rendered 
 usage errors rather than prompts or auto-starts, and an exit code that reads
 ``ok`` rather than the envelope status.
 
-``axi apps install``/``axi apps uninstall`` are deliberately absent
-(captain-locked, 2026-07-15); there is a test below that says so, so their absence
-reads as a decision rather than an oversight.
+``axi apps uninstall`` is deliberately absent (captain-locked, 2026-07-15); there
+is a test below that says so, so its absence reads as a decision rather than an
+oversight. ``axi apps install`` was held under that same rationale and now ships
+scoped to the half the rationale never covered - the tests below pin both the
+permitted and the refused path.
 """
 
 from __future__ import annotations
+
+import inspect
 
 import pytest
 import typer
@@ -132,25 +136,144 @@ def test_the_verbose_command_trace_never_reaches_the_document(container, capsys)
     assert "-> exit 0" not in out
 
 
-def test_the_destructive_mutations_are_deliberately_not_verbs():
+def test_uninstall_is_deliberately_not_a_verb():
     """Captain-locked 2026-07-15: an agent destroying site data is its own decision.
 
-    This asserts the DEFERRAL, so that adding either verb is a deliberate act that
+    This asserts the DEFERRAL, so that adding the verb is a deliberate act that
     updates this test rather than something that quietly slips in.
 
     The threat that rationale names is precise, and it is worth keeping precise:
     `bench uninstall-app` DROPS THE APP'S TABLES. It is not "agents may not
-    mutate" - nine of the eighteen live axi verbs mutate, `axi init` provisions a
-    whole instance and `axi apps update` runs schema migrations across live
-    sites. So a verb that deletes no site data is NOT covered by this deferral and
-    must be judged on its own evidence, which is exactly what happened to
-    `checkout` below.
+    mutate" - most live axi verbs mutate, `axi init` provisions a whole instance
+    and `axi apps update` runs schema migrations across live sites. So a verb that
+    deletes no site data is NOT covered by this deferral and must be judged on its
+    own evidence, which is what happened to `checkout` and then to `install`.
     """
     registered = {c.name for c in axi_mod.apps_app.registered_commands}
     assert "list" in registered
     assert "update" in registered
-    assert "install" not in registered
     assert "uninstall" not in registered
+
+
+def test_apps_install_is_a_verb_scoped_to_the_safe_half():
+    """`axi apps install` SHIPPED 2026-07-20; this asserts its presence AND its scope.
+
+    It was deferred alongside `uninstall` on one shared rationale - an agent
+    destroying site data. That covers `uninstall` unconditionally and `install`
+    only where the app is ALREADY on the site, because then its install hooks
+    re-run over existing rows. Installing an app a site does not have creates that
+    app's own tables and touches no other app's data, so the verb ships scoped to
+    exactly that half.
+
+    The two guards are asserted here as SIGNATURE facts, not just behaviour, so
+    widening either one has to edit this test:
+
+    - `--site` is required (no fan-out onto sites the agent never named).
+    - There is no bypass flag for the already-installed refusal.
+    """
+    registered = {c.name for c in axi_mod.apps_app.registered_commands}
+    assert "install" in registered
+
+    params = inspect.signature(axi_mod.axi_apps_install).parameters
+    # A typer.Option whose default is Ellipsis is a REQUIRED option.
+    assert params["site"].default.default is ..., "--site must be required: no fan-out"
+    assert not any(
+        name in params for name in ("force", "yes", "allow_installed", "reinstall")
+    ), "the already-installed refusal must have no bypass flag"
+
+
+def _record_steps(monkeypatch) -> list[str]:
+    """Capture every command `_run_step` would exec, and report each as a success."""
+    ran: list[str] = []
+
+    def fake_run_step(_c, cmd, _workdir, *, emit, phase, app=None, site=None):
+        ran.append(cmd)
+        emit(core_apps.AppsStepEnd(phase=phase, app=app, site=site, ok=True))
+        return 0
+
+    monkeypatch.setattr(core_apps, "_run_step", fake_run_step)
+    return ran
+
+
+def test_a_failed_install_step_exits_one(container, monkeypatch, capsys):
+    """Reads `report.ok`, NOT the envelope status: a failed step is a WARNING
+    envelope, and WARNING maps to exit 0 on every other verb."""
+
+    def failing_step(_c, cmd, _workdir, *, emit, phase, app=None, site=None):
+        emit(core_apps.AppsStepEnd(phase=phase, app=app, site=site, ok=False))
+        return 1
+
+    monkeypatch.setattr(core_apps, "_run_step", failing_step)
+
+    with pytest.raises(typer.Exit) as exit_info:
+        axi_mod.axi_apps_install("proj", "hrms", site="a.localhost", bench=None, branch=None)
+
+    assert exit_info.value.exit_code == 1
+    # The document is still emitted, so the agent can see WHICH step failed.
+    assert "get-app" in capsys.readouterr().out
+
+
+def test_install_of_an_absent_app_is_permitted(container, monkeypatch, capsys):
+    """The safe half: the app is not on the site, so the install runs and reports."""
+    ran = _record_steps(monkeypatch)
+
+    with pytest.raises(typer.Exit) as exit_info:
+        axi_mod.axi_apps_install(
+            "proj", "hrms", site="a.localhost", bench=None, branch="version-15"
+        )
+
+    assert exit_info.value.exit_code == 0
+    assert any("bench get-app" in c and "hrms" in c for c in ran)
+    assert any("install-app" in c and "hrms" in c for c in ran)
+
+    out = capsys.readouterr().out
+    # Structured and actionable: a per-step row an agent reads, not prose.
+    assert "results[" in out
+    assert "get-app" in out
+    assert "install-app" in out
+    assert "ok: true" in out.lower()
+
+
+def test_install_over_an_already_installed_app_is_refused(container, monkeypatch, capsys):
+    """The dangerous half: refused, nothing fetched, and the refusal explains itself.
+
+    `payments` is already installed on a.localhost in the fixture. Re-installing
+    would re-run its install hooks against that site's existing rows, which is the
+    exact case the original deferral was protecting.
+    """
+    ran = _record_steps(monkeypatch)
+
+    with pytest.raises(typer.Exit) as exit_info:
+        axi_mod.axi_apps_install(
+            "proj", "payments", site="a.localhost", bench=None, branch=None
+        )
+
+    assert exit_info.value.exit_code == 1
+    # Refused BEFORE any mutation: not even the fetch ran.
+    assert not any("get-app" in c for c in ran)
+
+    out = capsys.readouterr().out
+    assert out.startswith("error:")
+    assert "already installed" in out
+    # Honest refusal: it names what to do instead, per axi spec section 6.
+    assert "help:" in out
+    assert "apps checkout" in out
+    assert "apps update" in out
+
+
+def test_install_refuses_when_the_sites_app_list_cannot_be_read(container, monkeypatch, capsys):
+    """Fail closed: an unreadable site must never degrade to "nothing is installed"."""
+    monkeypatch.setattr(
+        core_apps, "_installed_apps", lambda *a, **k: ("bench list-apps -> exit 1", False, [])
+    )
+    ran = _record_steps(monkeypatch)
+
+    with pytest.raises(typer.Exit) as exit_info:
+        axi_mod.axi_apps_install("proj", "hrms", site="a.localhost", bench=None, branch=None)
+
+    assert exit_info.value.exit_code == 1
+    assert not any("get-app" in c for c in ran)
+    assert "cannot be confirmed" in capsys.readouterr().out
 
 
 def test_apps_checkout_is_a_verb_decided_on_its_own_evidence():
