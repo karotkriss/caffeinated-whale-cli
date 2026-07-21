@@ -516,6 +516,61 @@ def _resolve_remote(frappe_container, app_dir: str, app: str) -> str:
     )
 
 
+def _refuse_dirty_tree(frappe_container, app_dir: str, app: str) -> None:
+    """Refuse the checkout when the app's working tree has uncommitted work.
+
+    DIRTY means, precisely: staged changes and/or unstaged modifications to
+    TRACKED files. UNTRACKED files are deliberately NOT dirty - the guard covers
+    exactly what the ``--reset`` escape hatch would destroy, and ``git reset
+    --hard`` does not remove untracked files (that is ``git clean``), so nothing
+    is at risk there. Refusing on untracked would also over-reject every real
+    bench app dir, which routinely carries ``__pycache__``/``node_modules``/
+    ``*.egg-info`` build residue and would make the verb permanently unusable.
+
+    This is cwcli's OWN guard and it is deliberately STRONGER than git's. ``git
+    checkout -B`` refuses only a checkout that would OVERWRITE a modified file, so
+    a dirty file the target ref does not touch used to ride silently across a
+    branch switch at exit 0 while the docs promised a dirty tree would fail. These
+    checkouts live in a SHARED dev instance, so the uncommitted work carried across
+    may not even belong to whoever ran the command.
+
+    FAILS CLOSED: an unreadable ``git status`` refuses rather than proceeding on an
+    unknown (``core.where``'s fail-honest rule - an unreadable state must never
+    degrade to "nothing is there").
+    """
+    exit_code, output = frappe_container.exec_run(
+        "git status --porcelain --untracked-files=no", workdir=app_dir
+    )
+    if exit_code != 0:
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "app.dirty_state_unknown",
+            f"Could not read the git working-tree state for app '{app}' at {app_dir}, "
+            "so it cannot be confirmed that this checkout would not discard "
+            "uncommitted work.",
+            hint="Check the checkout is readable, or pass --reset to discard local changes.",
+        )
+    dirty = [line for line in _decode(output).splitlines() if line.strip()]
+    if not dirty:
+        return
+    # ONE line: `axi` renders this through `toon.kv`, where an embedded newline
+    # would split the document into unparseable lines.
+    shown = ", ".join(line.strip() for line in dirty[:10])
+    more = f" (and {len(dirty) - 10} more)" if len(dirty) > 10 else ""
+    raise CwcliError(
+        ErrorKind.CONFLICT,
+        "app.dirty_tree",
+        f"App '{app}' has uncommitted changes, so checking out another ref would "
+        f"carry them across: {shown}{more}.",
+        hint=(
+            "Commit or stash them in the instance, or pass --reset to DISCARD them "
+            "and hard-reset to the fetched ref. Untracked files are not affected "
+            "either way."
+        ),
+        detail={"dirty": dirty},
+    )
+
+
 def checkout_app(
     project_name: str,
     app: str,
@@ -538,8 +593,11 @@ def checkout_app(
     The private-repo fetch rides the SAME credential bridge as ``install``/
     ``update`` (host ``gh``/``glab`` -> in-container git over a unix socket; the raw
     token never enters the container, and the bridge is inert for public repos).
-    ``reset=True`` additionally hard-resets the working tree to the fetched tip, the
-    clean-tree guarantee the delivery workflow's build/migrate steps rely on.
+    A DIRTY working tree is REFUSED before anything is fetched (``CONFLICT``/
+    ``app.dirty_tree``); ``reset=True`` is the explicit opt-in that instead discards
+    those changes and hard-resets to the fetched tip, the clean-tree guarantee the
+    delivery workflow's build/migrate steps rely on. Dirty means staged and/or
+    unstaged changes to TRACKED files only - see :func:`_refuse_dirty_tree`.
 
     Returns the same :class:`AppsReport` as ``install``/``uninstall`` - one
     :class:`AppResult` per git step - so the CLI renderer and exit-code logic are
@@ -555,6 +613,10 @@ def checkout_app(
 
     app_dir = f"{path}/apps/{app}"
     remote = _resolve_remote(frappe_container, app_dir, app)
+    if not reset:
+        # BEFORE any fetch: refuse a dirty tree outright. See _refuse_dirty_tree for
+        # what counts as dirty and why this is stronger than git's own refusal.
+        _refuse_dirty_tree(frappe_container, app_dir, app)
     q_ref = shlex.quote(ref)
     q_remote = shlex.quote(remote)
     # `-B <ref> FETCH_HEAD`: move the local branch <ref> to EXACTLY what we just
