@@ -81,7 +81,7 @@ The real-Docker E2E is Linux-only; Windows/macOS-specific code stays in the unit
 
 ## Test Files
 
-As of 1.0.0, `tests/` holds 91 `test_*.py` suites totaling 1656 tests in the
+As of 1.0.0, `tests/` holds 92 `test_*.py` suites totaling 1670 tests in the
 `unit` tier (measured with `uv run pytest --cov`). Run `ls tests/` for the
 authoritative current list; see [../docs/testing/README.md](../docs/testing/README.md)
 for the per-area breakdown.
@@ -149,7 +149,7 @@ Tests for tab completion functionality.
 
 ## Test Coverage
 
-Current overall coverage at 1.0.0 (1656 tests across 91 test files, ~82% overall).
+Current overall coverage at 1.0.0 (1670 tests across 92 test files, ~82% overall).
 
 ### Covered Modules
 - ✅ `utils/completion_utils.py` - 92% (7 missing lines)
