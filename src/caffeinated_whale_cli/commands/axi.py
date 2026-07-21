@@ -1137,6 +1137,130 @@ def axi_apps_checkout(
     raise typer.Exit(0 if report.ok else 1)
 
 
+# ------------------------------------------------------------------ apps install
+
+
+def _install_narrate(event) -> None:
+    """The fetch/install steps, to STDERR.
+
+    Same reasoning as :func:`_checkout_narrate` (bench's own bytes are the only
+    place a failure's reason exists - neither step is a supervised process, so
+    neither logs anywhere ``cwcli logs`` can serve), plus the phase announcements,
+    which install emits and checkout does not.
+    """
+    if isinstance(event, core_apps.AppsAnnounce):
+        target = " ".join(p for p in (event.app, event.site) if p)
+        print(f"[{event.phase}] {target}", file=sys.stderr, flush=True)
+    else:
+        _checkout_narrate(event)
+
+
+@apps_app.command("install")
+def axi_apps_install(
+    project: str = typer.Argument(..., help="The Docker Compose project name."),
+    # Named `app_name` because `app` is this module's Typer instance; the metavar
+    # keeps the agent-visible usage line matching the human `cwcli apps install`.
+    app_name: str = typer.Argument(
+        ..., metavar="APP", help="App name or git URL to fetch and install."
+    ),
+    site: str = typer.Option(
+        ..., "--site", help="The single site to install on. Required: there is no fan-out here."
+    ),
+    bench: str = typer.Option(None, "--bench", help="Which bench: numeric index or label."),
+    branch: str = typer.Option(None, "--branch", help="Git branch to fetch (passed to get-app)."),
+) -> None:
+    """Fetch and install ONE app on ONE named site; emit the report as TOON.
+
+    Installing an app is the first step of essentially any Frappe app work, and
+    without this verb it was the one routine operation with no agent-surface form,
+    forcing a drop to the raw human command.
+
+    It exists even though `axi apps uninstall` does not, and the difference is the
+    threat each faces. The 2026-07-15 deferral of install/uninstall named ONE
+    danger: an agent DESTROYING SITE DATA, because `bench uninstall-app` drops the
+    app's tables. That reason is real, but it covers uninstall unconditionally and
+    install only in one case - installing over an app a site already has, where the
+    app's own install hooks re-run against existing rows. Installing an app a site
+    does NOT have creates that app's own tables and touches no other app's data.
+    So the verb is scoped to exactly the safe half and refuses the other, rather
+    than being withheld whole or opened wide.
+
+    Two guards, each against a named threat:
+
+    - **`--site` is REQUIRED** (the human verb defaults to every site on the bench).
+      An unqualified fan-out is how an agent reaches a site it did not provision and
+      never named. This follows `axi run-tests`' captain ruling S1 - when the effect
+      is unbounded, defaulting the target is the wrong default - and it holds for
+      the same reason: `install-app` runs the app's `after_install`, which is
+      arbitrary Python from the repository being installed, against a live database.
+    - **The app must not already be installed on that site** (`require_absent`,
+      enforced in the core BEFORE anything is fetched). Refused as
+      CONFLICT/`app.already_installed`, exit 1, naming `axi apps checkout` to move
+      the ref, `axi apps update` to pull and migrate, and the human verb for a
+      genuine reinstall. A site whose app list cannot be READ is refused too
+      (PRECONDITION/`app.install_state_unknown`) - an unreadable state must never
+      degrade to "nothing is installed there".
+
+    There is deliberately NO flag to bypass the second guard. A `--force` here has
+    no named beneficiary in the workflow this serves (install, checkout a ref,
+    migrate, test) and its mere existence invites its use - captain ruling M1 on
+    `axi migrate`'s absent `--skip-maintenance`. The escape hatch is the human verb,
+    which is where a human confirms a reinstall.
+
+    The already-installed case is deliberately NOT reported as an idempotent exit-0
+    no-op, against the general AXI rule that an already-satisfied desired state is a
+    success. The desired state here is "installed FROM this branch", and cwcli
+    cannot confirm the copy already on the site matches the requested `--branch`, so
+    exit 0 would assert something it has not verified.
+
+    NO --yes and no auto-start: a stopped project is a usage error naming
+    `cwcli start`, as every bench-scoped axi verb already does. The private-repo
+    fetch rides the SAME credential bridge as `apps update`/`apps checkout`, so this
+    borrows the host's `gh`/`glab` auth for an in-container fetch without the raw
+    token ever entering the container; it is inert for public repos.
+    """
+    try:
+        result = core_apps.install_apps(
+            project,
+            [app_name],
+            bench=bench,
+            sites=[site],
+            branch=branch,
+            auto_start=False,
+            require_absent=True,
+            on_event=_install_narrate,
+        )
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    if result.status is CoreStatus.NEEDS_CHOICE:
+        assert result.choice is not None  # NEEDS_CHOICE always carries a Choice
+        emit_axi_choice_as_usage_error(result.choice)
+        raise typer.Exit(2)
+
+    assert result.data is not None  # OK/WARNING always carries an AppsReport
+    report = result.data
+
+    # An install changes the bench's apps and the site's installed set, so refresh
+    # the cache whenever any step landed, matching the human verb. A failed recache
+    # is a stderr warning, NOT a non-zero exit: the install itself landed, and
+    # failing here would make an agent retry a mutation that already succeeded.
+    if any(r.ok for r in report.results) and not cache.recache_project(project):
+        print(
+            f"Warning: install completed, but re-caching '{project}' failed; "
+            "run 'cwcli inspect --update' to refresh.",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    emit_result(report, warnings=result.warnings)
+    # The exit code reads report.ok, NOT result.status: a failed step is a
+    # WARNING-shaped envelope, and WARNING maps to exit 0 everywhere else, so a
+    # status-driven code would report success for an install that failed.
+    raise typer.Exit(0 if report.ok else 1)
+
+
 # ------------------------------------------------------------------- migrate / tests
 
 

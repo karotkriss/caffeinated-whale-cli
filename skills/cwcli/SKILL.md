@@ -79,6 +79,7 @@ Exit codes: **0** success (a completed operation, including one with warnings, a
   apps list      List a bench's available apps, and (with --installed/--site) installed per site.
   apps update    Update app(s) and migrate affected sites; emit the report as TOON.
   apps checkout  Fetch and check out a ref into an app already in the bench; emit the report as TOON.
+  apps install   Fetch and install ONE app on ONE named site; emit the report as TOON.
 ```
 
 Run `uvx --from caffeinated-whale-cli cwcli axi <verb> --help` for a verb's flags.
