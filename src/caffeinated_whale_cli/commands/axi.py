@@ -757,6 +757,14 @@ def axi_inspect(
     escalation that can no longer discover the bench serves the cached data with
     ``degraded: true`` and a warning, exit 0 (WARNING is a completed read).
 
+    Each site carries ``installed_apps_verified``: True only when a full inspect
+    re-observed the site's apps (and their git refs) live. The cache and partial
+    tiers carry the app list forward without re-reading it, so a ``git checkout``
+    inside an app is invisible to them - the token lets a caller tell a verified
+    ref from a remembered one rather than trusting a stale ``partial`` read. Do
+    NOT act on an unverified ``installed_apps`` ref; re-run with ``--update`` to
+    observe it live.
+
     Deliberately NO ``--yes``: an axi verb must never open a start-from-axi path.
     A stopped project on the refresh path is a usage error (exit 2) naming
     ``cwcli start``, matching every other stopped-project fork on this surface.

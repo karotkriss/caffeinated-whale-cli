@@ -61,10 +61,23 @@ from .errors import CwcliError, ErrorKind
 class SiteInfo:
     """One site on a bench. ``has_site_config`` is presence-as-data: the config
     CONTENT deliberately does not cross this boundary (a live-gathered config can
-    carry secrets; the typed report feeds ``axi``'s stdout document)."""
+    carry secrets; the typed report feeds ``axi``'s stdout document).
+
+    ``installed_apps_verified`` is the per-site VERIFIED-or-REMEMBERED token, the
+    same fail-honest signal ``core.where`` carries on every ``WhereMatch``. Each
+    ``installed_apps`` entry encodes the app's live version and git ref (e.g.
+    ``visa 2.0.0 testing``), but only a T3 full inspect actually re-runs
+    ``bench list-apps`` to observe it. The cheap T1/T2 tiers carry the CACHED
+    list forward, and a ``git checkout`` inside an app touches neither the
+    ``apps/`` directory listing nor the site set that T2's drift check watches -
+    so a stale ref rides through a ``served_from: partial`` read looking fresh.
+    This flag is True ONLY when the ref was live-observed (T3), so a caller can
+    tell a verified ref from a remembered one without having to know that
+    ``partial`` silently excludes ``installed_apps`` from its freshness pass."""
 
     name: str
     installed_apps: list[str]
+    installed_apps_verified: bool
     has_site_config: bool
 
 
@@ -672,7 +685,7 @@ def inspect_raw(
     )
 
 
-def _to_bench_info(index: int, bench: dict) -> BenchInfo:
+def _to_bench_info(index: int, bench: dict, *, apps_verified: bool) -> BenchInfo:
     common = bench.get("common_site_config") or {}
     # The "(default)" resolution order: common_site_config.default_site first,
     # the currentsite.txt pointer as the fallback (falsy-checked, matching the
@@ -689,6 +702,7 @@ def _to_bench_info(index: int, bench: dict) -> BenchInfo:
             SiteInfo(
                 name=site["name"],
                 installed_apps=list(site.get("installed_apps", [])),
+                installed_apps_verified=apps_verified,
                 has_site_config="site_config" in site,
             )
             for site in bench.get("sites", [])
@@ -723,13 +737,37 @@ def inspect(
         return Result(status=Status.NEEDS_CHOICE, choice=raw.choice)
 
     assert raw.data is not None  # OK/WARNING always carries a RawInspect
+    # Only a T3 full inspect re-observes each site's installed apps (and their
+    # git refs) live; the T1 cache and T2 partial tiers carry the cached list
+    # forward, so their per-site installed_apps are REMEMBERED, not verified.
+    apps_verified = raw.data.served_from == "full"
+    benches = [
+        _to_bench_info(i, b, apps_verified=apps_verified) for i, b in enumerate(raw.data.benches)
+    ]
+
+    warnings = list(raw.warnings)
+    # Name the remedy when a served list carries app refs it never observed live -
+    # the same fail-honest nudge core.where gives on its unverified path. Scoped to
+    # the case where there is actually a remembered app list to be stale about, so
+    # a container-less or app-less read stays quiet.
+    if not apps_verified and any(s.installed_apps for b in benches for s in b.sites):
+        warnings.append(
+            Message(
+                "inspect.apps_unverified",
+                "installed_apps were served from cache and NOT observed live; an app's "
+                "checked-out git ref may be stale. Run 'cwcli inspect "
+                f"{project_name} --update' to refresh (or 'cwcli axi inspect "
+                f"{project_name} --update' on the agent surface).",
+            )
+        )
+
     return Result(
         status=raw.status,
         data=InspectReport(
             project=raw.data.project,
             served_from=raw.data.served_from,
             degraded=raw.data.degraded,
-            benches=[_to_bench_info(i, b) for i, b in enumerate(raw.data.benches)],
+            benches=benches,
         ),
-        warnings=raw.warnings,
+        warnings=warnings,
     )
