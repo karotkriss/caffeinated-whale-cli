@@ -212,6 +212,43 @@ def test_an_app_that_is_not_a_git_checkout_errors_and_installs_nothing(container
     assert not any("get-app" in c for c in container.calls)
 
 
+def test_a_dirty_tree_is_a_single_line_toon_refusal_naming_reset(container, capsys):
+    """The agent surface's rendering of the guard the docs promise.
+
+    The refusal is cwcli's own (`core.apps._refuse_dirty_tree`), stronger than
+    git's, so an agent must be able to read WHAT is dirty and that `--reset` is
+    the way through. Both lines must stay SINGLE-line: `toon.kv` has no
+    continuation syntax, so an embedded newline would split the document.
+    """
+    container.dirty = " M payments/hooks.py\n"
+
+    with pytest.raises(typer.Exit) as exc:
+        axi_mod.axi_apps_checkout("proj", "payments", "feature/x", bench=None, reset=False)
+
+    assert exc.value.exit_code == 1
+    out = capsys.readouterr().out
+    assert out.startswith("error:")
+    assert "payments/hooks.py" in out
+    assert "--reset" in out
+    assert len(out.strip().splitlines()) == 2  # error: + help:, no stray lines
+    # Refused BEFORE the network op.
+    assert not any("git fetch" in c for c in container.calls)
+
+
+def test_reset_is_the_agent_surface_way_through_a_dirty_tree(container, capsys):
+    """--reset is kept rather than withheld precisely so a dirty tree is not a
+    dead end for an agent, which has no other route out of one."""
+    container.dirty = " M payments/hooks.py\n"
+
+    with pytest.raises(typer.Exit) as exc:
+        axi_mod.axi_apps_checkout("proj", "payments", "feature/x", bench=None, reset=True)
+
+    assert exc.value.exit_code == 0
+    out = capsys.readouterr().out
+    assert "ok: true" in out
+    assert "reset" in out
+
+
 # ------------------------------------------------------------------ recache epilogue
 
 

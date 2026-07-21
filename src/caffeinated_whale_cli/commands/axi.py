@@ -1049,7 +1049,7 @@ def axi_apps_checkout(
     reset: bool = typer.Option(
         False,
         "--reset",
-        help="Hard-reset the working tree to the fetched ref (discards local edits in the checkout).",
+        help="Discard uncommitted changes and hard-reset the working tree to the fetched ref (required to check out a dirty app).",
     ),
 ) -> None:
     """Fetch and check out a ref into an app already in the bench; emit the report as TOON.
@@ -1076,12 +1076,15 @@ def axi_apps_checkout(
       `cwcli start`, as every bench-scoped axi verb already does.
     - The app must ALREADY be a git checkout (a typo'd app name reading as a
       silent no-op or as an implicit install): absent -> NOT_FOUND/app.no_checkout.
-    - A checkout that would OVERWRITE a modified file is refused unless --reset
-      (a non-conflicting dirty file rides through at exit 0 - this is not
-      blanket dirty-tree protection). That refusal is GIT's, not cwcli's -
-      `git checkout -B` exits non-zero and leaves the file intact - so there is
-      deliberately no redundant cwcli-side pre-check; this verb's job is to
-      make it legible as a failed step and a non-zero exit.
+    - A DIRTY working tree is refused unless --reset (uncommitted work silently
+      carried across a branch switch, in a SHARED dev instance where it may not
+      even belong to whoever ran the command): CONFLICT/app.dirty_tree, before
+      anything is fetched. This is cwcli's OWN pre-check in `core.checkout_app`
+      and it is deliberately STRONGER than git's, which refuses only a checkout
+      that would OVERWRITE a modified file and let a non-conflicting edit ride
+      through at exit 0 while the docs promised otherwise. Dirty means staged
+      and/or unstaged changes to TRACKED files; untracked files are NOT dirty,
+      because nothing on this path removes them.
     - --reset is the one destructive element and stays an explicit opt-in
       (irrecoverable loss of uncommitted work in apps/<app>), reported as its own
       `reset` row. It is kept rather than withheld because without it an agent
