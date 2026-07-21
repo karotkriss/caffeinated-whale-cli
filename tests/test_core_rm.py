@@ -159,26 +159,61 @@ class TestCoreSilence:
         assert any(isinstance(e, core_rm.RmNotice) for e in events)
 
 
-class TestNoAxiRmVerb:
-    """There is deliberately NO ``axi rm`` verb this batch, and it is DEFERRED
-    (design Decision 5 of ``migrate-rm-core``): whether an agent may delete an
-    instance's data (named volumes, the whole bench) is a product decision the
-    captain owns on its own evidence - the ``axi apps install``/``uninstall`` and
-    ``axi init`` precedent. The fail-closed backup gate protects against ACCIDENT,
-    not against an agent that deliberately means to delete. This test keeps the
-    deferral legible so "deferred" can never read as "forgotten"; the
-    single-function core shape makes the verb thin whenever it is decided (it
-    would wire the destructive consent separately, the ``apps uninstall``
-    precedent)."""
+class TestAxiRmVerbShipped:
+    """``axi rm`` SHIPPED (captain-approved 2026-07-21), reversing the deferral
+    this class used to assert.
 
-    def test_axi_registry_has_no_rm_command(self):
+    The deferral (design Decision 5 of ``migrate-rm-core``) held that whether an
+    agent may delete an instance's data is a product decision the captain owns on
+    its own evidence, because the fail-closed backup gate protects against ACCIDENT
+    and not against an agent that deliberately means to delete. That reasoning was
+    about WHETHER the capability should exist, and only that: the captain answered
+    it, and NO safety property was waived with it. The verb is a thin frontend over
+    the UNCHANGED ``core.remove``, so the gate, the verified copy-out and the
+    failures-driven exit code are the same code the human verb runs.
+
+    Two properties below are the ones this surface DECIDED rather than inherited,
+    because the human verb owns them in its frontend, and they are asserted here so
+    a later change cannot quietly widen them:
+
+    - ``--yes`` grants consent ONLY. The human verb's ``--yes`` also auto-starts a
+      stopped project for its backup; fusing those is the interface convenience
+      ``core.remove`` was migrated to keep OUT of the core, and re-creating it on
+      the agent surface would mean an agent that asked to delete an instance had
+      thereby started one.
+    - There is NO ``--no-backup``. It disables the C1 gate, and on this surface a
+      bypass flag has no named beneficiary (the ``axi apps install`` ``--force`` and
+      ``axi migrate`` ``--skip-maintenance`` rulings). The human verb is the hatch.
+    """
+
+    def test_axi_registry_has_the_rm_command(self):
         from caffeinated_whale_cli.commands import axi as axi_mod
 
-        registered = {c.name for c in axi_mod.app.registered_commands}
-        assert "rm" not in registered
-        for group in axi_mod.app.registered_groups:
-            sub = {c.name for c in group.typer_instance.registered_commands}
-            assert "rm" not in sub
+        assert "rm" in {c.name for c in axi_mod.app.registered_commands}
+
+    def test_consent_is_required_and_never_implies_auto_start(self):
+        """``--yes`` exists and means consent; nothing on the verb starts a container."""
+        import inspect as _inspect
+
+        from caffeinated_whale_cli.commands import axi as axi_mod
+
+        params = _inspect.signature(axi_mod.axi_rm).parameters
+        assert "yes" in params
+        # The consent flag defaults to False, so omitting it can never be read as
+        # consent by a caller that simply did not pass it.
+        assert params["yes"].default.default is False
+        assert "auto_start" not in params
+
+    def test_there_is_no_no_backup_bypass_flag(self):
+        """The C1 gate has no agent-surface off switch. Widening this must edit this test."""
+        import inspect as _inspect
+
+        from caffeinated_whale_cli.commands import axi as axi_mod
+
+        params = _inspect.signature(axi_mod.axi_rm).parameters
+        assert "no_backup" not in params
+        source = _inspect.getsource(axi_mod.axi_rm)
+        assert "no_backup=False" in source  # the core is called with the gate ON
 
 
 class TestCorePurity:
