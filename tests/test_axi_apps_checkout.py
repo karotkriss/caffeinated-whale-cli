@@ -5,11 +5,13 @@ The verb the agent surface was missing: `apps install` is a fresh clone and
 existing apps/<app>. With no `axi run` passthrough, this is the only agent-surface
 route to that step.
 
-It ships while `axi apps install`/`uninstall` stay deferred, and these pin why that
-is coherent rather than inconsistent: their deferral names ONE threat, an agent
+It ships while `axi apps uninstall` stays deferred, and these pin why that is
+coherent rather than inconsistent: the deferral names ONE threat, an agent
 DESTROYING SITE DATA (`bench uninstall-app` drops the app's tables), and a checkout
-runs git inside a source directory. `tests/test_axi_apps_list.py` holds the two
-registry assertions.
+runs git inside a source directory. `axi apps install` was held under that same
+deferral and has since shipped, scoped to the half it never covered;
+`tests/test_axi_apps_list.py` holds both the `uninstall` absence assertion and the
+`install` scoped-verb assertion.
 
 What must be right here: TOON on stdout and nothing else (git's own bytes are
 load-bearing but belong on stderr), the forks rendered as usage errors rather than
