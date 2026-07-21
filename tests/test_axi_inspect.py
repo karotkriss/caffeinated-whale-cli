@@ -37,6 +37,8 @@ REPORT = InspectReport(
                 SiteInfo(
                     name="a.localhost",
                     installed_apps=["frappe 15.0.0 version-15"],
+                    # served_from="partial": the refs are remembered, not observed.
+                    installed_apps_verified=False,
                     has_site_config=True,
                 )
             ],
@@ -79,6 +81,9 @@ class TestAxiInspect:
         assert "label: primary" in result.stdout
         # The nested site records survive as TOON, never a Python repr.
         assert "installed_apps[1]: frappe 15.0.0 version-15" in result.stdout
+        # The per-site verified-or-remembered token rides alongside the ref, so a
+        # caller can tell a partial (remembered) read from a full (observed) one.
+        assert "installed_apps_verified: false" in result.stdout
         assert "{'" not in result.stdout
 
     def test_flag_mapping_to_refresh_modes(self, monkeypatch):
