@@ -137,8 +137,16 @@ def patched(monkeypatch, tmp_path):
     return SimpleNamespace(cleared=cleared, added=added)
 
 
-def use_container(monkeypatch, container):
+def use_container(monkeypatch, container, *, project_containers=None):
     monkeypatch.setattr(core_init.core_docker, "get_frappe_container", lambda name: container)
+    # The self-conflict port skip reads the project's OWN containers. Patched here
+    # so no unit test reaches a real Docker daemon to answer it; the default is an
+    # absent project, which is the state that KEEPS the port check running.
+    monkeypatch.setattr(
+        core_init.core_docker,
+        "get_project_containers",
+        lambda name: list(project_containers or []),
+    )
 
 
 def bench_kwargs(**overrides):
@@ -226,7 +234,9 @@ class TestResolveFrappeRef:
 # ------------------------------------------------------------------ stage 1
 
 
-def instance_setup(monkeypatch, tmp_path, *, seed_compose=True, container=None, hub_tags=None):
+def instance_setup(
+    monkeypatch, tmp_path, *, seed_compose=True, container=None, hub_tags=None, running=False
+):
     """Wire stage 1's host seams; returns the recorded host calls and paths."""
     host_calls: list[dict] = []
     downloads: list[str] = []
@@ -256,7 +266,8 @@ def instance_setup(monkeypatch, tmp_path, *, seed_compose=True, container=None, 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setattr(urllib.request, "urlretrieve", lambda url, dest: downloads.append(url))
     monkeypatch.setattr(config_utils, "PROJECTS_DIR", tmp_path)
-    use_container(monkeypatch, container or FakeContainer())
+    own = container or FakeContainer()
+    use_container(monkeypatch, own, project_containers=[own] if running else [])
 
     conf_dir = tmp_path / PROJECT / "conf"
     compose_path = conf_dir / "docker-compose.yml"
@@ -368,6 +379,33 @@ class TestInitInstance:
         monkeypatch.setattr(core_init, "check_ports_in_use", lambda ports: {p: True for p in ports})
         result = core_init.init_instance(PROJECT, port=18000, auto_start=True)
         assert result.status is Status.OK
+
+    def test_a_live_instances_own_ports_are_not_a_conflict(self, monkeypatch, tmp_path, patched):
+        """Re-running init against a RUNNING instance is the ordinary way to add a
+        bench or a site to it (`cwcli init existing --reuse-bench --site other`),
+        and there every port the check finds bound is bound by that very instance.
+
+        The old check refused it outright and told the caller to pick a different
+        --port - advice that cannot be followed, because an existing instance's
+        ports are frozen in its compose file. Same self-conflict the auto_start
+        retry above already skipped, reached by the other route.
+        """
+        instance_setup(monkeypatch, tmp_path, running=True)
+        monkeypatch.setattr(core_init, "check_ports_in_use", lambda ports: {p: True for p in ports})
+        result = core_init.init_instance(PROJECT, port=18000)
+        assert result.status is Status.OK
+
+    def test_a_stopped_instance_still_gets_the_port_check(self, monkeypatch, tmp_path, patched):
+        """The skip is scoped to a RUNNING project. A stopped one holds no ports, so
+        a bound port there genuinely belongs to somebody else and must still refuse."""
+        stopped = FakeContainer(status="exited")
+        instance_setup(monkeypatch, tmp_path, container=stopped, running=True)
+        monkeypatch.setattr(
+            core_init, "check_ports_in_use", lambda ports: {p: p == 18000 for p in ports}
+        )
+        with pytest.raises(CwcliError) as exc:
+            core_init.init_instance(PROJECT, port=18000)
+        assert exc.value.code == "ports.in_use"
 
     def test_poll_timeout_offers_confirm_start(self, monkeypatch, tmp_path, patched):
         stopped = FakeContainer(status="exited")
