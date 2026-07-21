@@ -25,13 +25,16 @@ Progress, the git command echo, and diagnostics SHALL go to stderr; stdout SHALL
 
 ### Requirement: The verb adds no core logic and reuses the existing envelope machinery
 
-The verb SHALL be a renderer over the unchanged `core.checkout_app`, changing no file under `src/caffeinated_whale_cli/core/`.
+The verb SHALL be a renderer over `core.checkout_app`.
 It SHALL reuse `emit_result`, `emit_axi_error`, and `emit_axi_choice_as_usage_error`, introducing no new `Choice.kind` token and no new `ErrorKind`.
 
-#### Scenario: core/apps.py is untouched
+This requirement originally froze `core.checkout_app` as entirely unchanged; the "A dirty working tree is refused" requirement below amended it, adding a guard (`core.apps._refuse_dirty_tree`) shared by both frontends rather than a per-verb branch.
+That amendment changes `core.checkout_app`'s behaviour but stays within this requirement's remaining guarantee: no new `Choice.kind` token and no new `ErrorKind` (the guard raises the EXISTING `ErrorKind.CONFLICT`/`ErrorKind.PRECONDITION`).
+
+#### Scenario: axi introduces no new choice or error kind
 
 - **WHEN** the change is implemented
-- **THEN** `core/apps.py` and every other `core/` module are unchanged, and `core.checkout_app`'s signature and behaviour are identical to before
+- **THEN** `commands/axi.py`'s checkout wiring introduces no new `Choice.kind` token and no new `ErrorKind`; any behavioural change to `core.checkout_app` itself is governed by its own requirement, not this one
 
 ### Requirement: The exit code reads the report, not the envelope status
 
