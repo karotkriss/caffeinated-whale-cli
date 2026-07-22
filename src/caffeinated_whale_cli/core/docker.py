@@ -99,6 +99,35 @@ def get_project_volumes(project_name: str):
         return None
 
 
+def get_project_networks(project_name: str):
+    """
+    Finds the Docker network(s) belonging to a specific Docker Compose project.
+
+    Compose labels a project's own network (typically ``<project>_default``)
+    with the same ``com.docker.compose.project`` label it puts on containers and
+    named volumes, so this is an exact-name lookup via that label, never a
+    prefix match or a broad listing.
+
+    Args:
+        project_name: The name of the docker-compose project.
+
+    Returns:
+        A list of network objects, an empty list if none are found,
+        or None if there was a Docker connection error.
+    """
+    try:
+        client = docker.from_env()
+        client.ping()
+
+        networks = client.networks.list(
+            filters={"label": f"com.docker.compose.project={project_name}"}
+        )
+        return networks
+
+    except DockerException:
+        return None
+
+
 def get_container(container_id: str):
     """Resolve a container ID back to an exec-usable handle.
 

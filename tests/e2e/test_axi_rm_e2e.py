@@ -145,24 +145,24 @@ def test_axi_rm_deletes_honestly_and_the_backup_genuinely_restores(port_allocato
         assert "found: true" in stdout, stdout
         assert "orphan: false" in stdout, stdout
         assert "dir_removed: true" in stdout, stdout
+        assert "network_removed: true" in stdout, stdout
         assert "backup_ok: true" in stdout, stdout
         assert "failures[0]:" in stdout, stdout  # empty failures list, never omitted
         assert _toon_int(stdout, "containers_removed") > 0, stdout
         assert _toon_int(stdout, "volumes_removed") > 0, stdout
 
         # --- 4. the deletion is honest ---
-        # Containers, named volumes, and the project directory - what
-        # `core.remove` actually promises to remove (`containers_removed`/
-        # `volumes_removed`/`dir_removed` above). The project's compose NETWORK
-        # is deliberately excluded here: cwcli never removes it (no code path in
-        # src/ touches a network), on either the human or the axi surface, and
-        # that is a pre-existing, accepted fact of this codebase - the harness's
-        # own unconditional session-end `sweep_cwe2e()` backstop exists precisely
-        # because the network outlives a clean `cwcli rm`. Asserting it away here
-        # would fail every rm regardless of this branch's changes.
+        # Every compose-labelled resource - containers, named volumes, the
+        # project's own network, and the project directory - is gone. The
+        # network assertion is the regression test for the leak this suite once
+        # deliberately excluded (`network_removed` above is `core.remove`'s own
+        # account of it; this re-derives the same fact independently via a raw
+        # `docker network ls` label filter, so a fix that lies in its own report
+        # would still be caught here).
         assert harness.frappe_container_id(project) is None, "a container survived removal"
         assert not harness.project_containers(project), "a container survived removal"
         assert not harness.project_volumes(project), "a named volume survived removal"
+        assert not harness.project_networks(project), "the compose network survived removal"
         assert not _project_dir(project).exists(), "the project directory survived removal"
 
         # --- 5. the backup genuinely restores, into a FRESH second instance ---
