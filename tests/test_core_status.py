@@ -19,6 +19,16 @@ from tests.test_core_supervision import _CTL_SINGLE, _PS_HONCHO, _PS_SINGLE, BEN
 _MARKER = {"supervisor": "supervisord", "started_at": "t", "config_path": "p"}
 
 
+def _bench(report, index: int = 0):
+    """The single bench a one-bench report carries.
+
+    ``supervisor_up``/``web_http_code``/``processes``/``not_cwcli_supervised`` are
+    per-BENCH facts and now live where they belong; the report itself carries only
+    the instance-level fold.
+    """
+    return report.benches[index]
+
+
 @pytest.fixture
 def wire(monkeypatch):
     def _wire(frappe, *, benches=None):
@@ -41,9 +51,9 @@ class TestOverall:
         report = result.data
         assert report.overall == "running"
         assert report.container_running is True
-        assert report.supervisor_up is True
-        assert report.web_http_code == "200"
-        web = next(p for p in report.processes if p.label == "web")
+        assert _bench(report).supervisor_up is True
+        assert _bench(report).web_http_code == "200"
+        web = next(p for p in _bench(report).processes if p.label == "web")
         assert web.up is True and web.uptime_s == 499 and web.rss_kb == 80000
 
     def test_online_when_no_marker(self, wire):
@@ -57,16 +67,16 @@ class TestOverall:
         wire(c, benches=[{"path": BENCH}])
         report = core_status.status("proj").data
         assert report.overall == "degraded"
-        assert report.supervisor_up is False
+        assert _bench(report).supervisor_up is False
         # every expected label is reported down.
-        assert all(not p.up for p in report.processes)
+        assert all(not p.up for p in _bench(report).processes)
 
     def test_degraded_when_supervisor_up_but_web_down(self, wire):
         wire(FakeContainer(marker=_MARKER, web_ok=False), benches=[{"path": BENCH}])
         report = core_status.status("proj").data
         assert report.overall == "degraded"
-        assert report.supervisor_up is True
-        assert report.web_http_code is None
+        assert _bench(report).supervisor_up is True
+        assert _bench(report).web_http_code is None
 
     def test_degraded_when_a_program_is_fatal(self, wire):
         # Supervisord keeps siblings alive when one dies, so "web serving while a
@@ -83,8 +93,8 @@ class TestOverall:
         wire(c, benches=[{"path": BENCH}])
         report = core_status.status("proj").data
         assert report.overall == "degraded"
-        assert report.supervisor_up is True
-        worker = next(p for p in report.processes if p.label == "worker:default")
+        assert _bench(report).supervisor_up is True
+        worker = next(p for p in _bench(report).processes if p.label == "worker:default")
         assert worker.state == "FATAL"
         assert worker.up is False
 
@@ -99,10 +109,10 @@ class TestNotCwcliSupervisedFallback:
         wire(c, benches=[{"path": BENCH}])
         report = core_status.status("proj").data
         # Not the regression's false all-down: every expected process is UP.
-        assert report.not_cwcli_supervised is True
-        assert report.supervisor_up is False  # cwcli's supervisord is NOT up
-        assert all(p.up for p in report.processes)
-        web = next(p for p in report.processes if p.label == "web")
+        assert _bench(report).not_cwcli_supervised is True
+        assert _bench(report).supervisor_up is False  # cwcli's supervisord is NOT up
+        assert all(p.up for p in _bench(report).processes)
+        web = next(p for p in _bench(report).processes if p.label == "web")
         assert web.up is True and web.pid == 201
         # supervisord state is unavailable in the fallback (up is the ps truth).
         assert web.state is None
@@ -124,9 +134,9 @@ class TestNotCwcliSupervisedFallback:
         c = FakeContainer(marker=None, ps=ps, cwds={200: BENCH}, web_code="200")
         wire(c, benches=[{"path": BENCH}])
         report = core_status.status("proj").data
-        assert report.not_cwcli_supervised is True
+        assert _bench(report).not_cwcli_supervised is True
         assert report.overall == "degraded"
-        worker = next(p for p in report.processes if p.label == "worker:default")
+        worker = next(p for p in _bench(report).processes if p.label == "worker:default")
         assert worker.up is False
 
     def test_no_manager_at_all_is_not_flagged(self, wire):
@@ -135,15 +145,15 @@ class TestNotCwcliSupervisedFallback:
         c = FakeContainer(marker=None, ps="1 0 5 0.0 1000 /sbin/init\n", cwds={})
         wire(c, benches=[{"path": BENCH}])
         report = core_status.status("proj").data
-        assert report.not_cwcli_supervised is False
+        assert _bench(report).not_cwcli_supervised is False
         assert report.overall == "online"
 
     def test_supervised_instance_is_not_flagged(self, wire):
         # The v3 supervisord path is untouched: never flagged not-cwcli-supervised.
         wire(FakeContainer(marker=_MARKER, web_code="200"), benches=[{"path": BENCH}])
         report = core_status.status("proj").data
-        assert report.not_cwcli_supervised is False
-        assert report.supervisor_up is True
+        assert _bench(report).not_cwcli_supervised is False
+        assert _bench(report).supervisor_up is True
         assert report.overall == "running"
 
 
@@ -157,7 +167,7 @@ class TestProbeWeb:
         c = FakeContainer(marker=_MARKER, web_code="200")
         wire(c, benches=[{"path": BENCH}])
         report = core_status.status("proj", probe_web=False).data
-        assert report.web_http_code is None
+        assert _bench(report).web_http_code is None
         assert not any(isinstance(cmd, list) and cmd[0] == "curl" for cmd in c.calls)
 
     def test_running_without_web_probe_when_supervisor_up(self, wire):
@@ -166,7 +176,7 @@ class TestProbeWeb:
         wire(FakeContainer(marker=_MARKER, web_code="200"), benches=[{"path": BENCH}])
         report = core_status.status("proj", probe_web=False).data
         assert report.overall == "running"
-        assert report.supervisor_up is True
+        assert _bench(report).supervisor_up is True
 
     def test_degraded_without_web_probe_when_supervisor_down(self, wire):
         # Suppressing the web probe does NOT mask a genuinely dead supervisor.
@@ -180,7 +190,7 @@ class TestProbeWeb:
         c = FakeContainer(marker=_MARKER, web_code="200")
         wire(c, benches=[{"path": BENCH}])
         report = core_status.status("proj").data
-        assert report.web_http_code == "200"
+        assert _bench(report).web_http_code == "200"
         assert any(isinstance(cmd, list) and cmd[0] == "curl" for cmd in c.calls)
 
 
@@ -220,19 +230,41 @@ class TestNotFound:
 
 
 class TestChoicesAndErrors:
-    def test_multi_bench_returns_select_bench(self, wire):
+    def test_status_never_returns_needs_choice(self, wire):
+        # REPLACES test_multi_bench_returns_select_bench. The multi-bench refusal is
+        # gone: the bare form ANSWERS the question it used to send the caller away to
+        # reconstruct. Asserted across every shape, so the refusal cannot return by
+        # accident through some path that was not re-pointed.
+        for benches in (
+            None,
+            [{"path": BENCH}],
+            [{"path": "/w/b0"}, {"path": "/w/b1"}],
+            [{"path": "/w/b0"}, {"path": "/w/b1"}, {"path": "/w/b2"}],
+        ):
+            wire(FakeContainer(marker=_MARKER), benches=benches)
+            for kwargs in ({}, {"bench": "1"} if benches and len(benches) > 1 else {},
+                           {"probe_web": False}):
+                result = core_status.status("proj", **kwargs)
+                assert result.status is not Status.NEEDS_CHOICE
+                assert result.choice is None
+
+    def test_multi_bench_reports_every_bench_each_named(self, wire):
         wire(FakeContainer(marker=_MARKER), benches=[{"path": "/w/b0"}, {"path": "/w/b1"}])
-        result = core_status.status("proj")
-        assert result.status is Status.NEEDS_CHOICE
-        assert result.choice.kind == "select_bench"
+        report = core_status.status("proj").data
+        assert [b.bench_path for b in report.benches] == ["/w/b0", "/w/b1"]
+        assert [b.index for b in report.benches] == [0, 1]
 
     def test_start_and_status_share_the_bench_selector(self, wire):
-        # --bench 1 resolves to the same path in both verbs (one shared resolver).
+        # DE-TAUTOLOGIZED. This test's name has always claimed that --bench 1 resolves
+        # to the same path in both verbs, but the old assertion (`overall in (...)`)
+        # admitted every non-offline value, so it passed whichever bench was resolved -
+        # it could not fail when the property it is named for was broken, BECAUSE the
+        # DTO had no bench field to assert on. It does now.
         benches = [{"path": "/w/b0"}, {"path": "/w/b1"}]
         wire(FakeContainer(marker=_MARKER), benches=benches)
         report = core_status.status("proj", bench="1").data
-        # status resolved bench 1 and reported without a choice.
-        assert report.overall in ("running", "degraded", "online")
+        assert [b.bench_path for b in report.benches] == ["/w/b1"]
+        assert report.benches[0].index == 1
 
     def test_docker_unreachable_raises(self, monkeypatch):
         """`status` raises a DOCKER CwcliError when Docker is unreachable."""
@@ -240,3 +272,215 @@ class TestChoicesAndErrors:
         with pytest.raises(CwcliError) as exc:
             core_status.status("proj")
         assert exc.value.kind is ErrorKind.DOCKER
+
+
+# --------------------------------------------------------------- the per-bench defect
+#
+# One instance is ONE container holding sibling benches under /workspace, each
+# serving the port bench's own make_ports assigned it. The probe used to hardcode
+# localhost:8000, so on any bench past the first it measured a DIFFERENT bench's web
+# server. These fakes are the two-bench shape the runtime audit proved it on.
+
+_B0 = "/w/b0"
+_B1 = "/w/b1"
+
+_PS_TWO_BENCH = f"""\
+1 0 99999 0.0 1000 /sbin/init
+100 1 500 0.1 2000 /env/bin/python /env/bin/supervisord -c {_B0}/logs/.cwcli-supervisor.conf
+101 100 499 0.5 80000 /env/bin/python /env/bin/bench serve --port 8000
+102 100 499 0.2 60000 node {_B0}/apps/frappe/socketio.js
+103 100 499 0.1 50000 /env/bin/python /env/bin/bench schedule
+104 100 499 0.1 50000 /env/bin/python /env/bin/bench watch
+105 100 499 0.3 70000 /env/bin/python /env/bin/bench worker --queue default
+106 100 499 0.0 3000 redis-server {_B0}/config/redis_cache.conf
+107 100 499 0.0 3000 redis-server {_B0}/config/redis_queue.conf
+200 1 500 0.1 2000 /env/bin/python /env/bin/supervisord -c {_B1}/logs/.cwcli-supervisor.conf
+201 200 499 0.5 80000 /env/bin/python /env/bin/bench serve --port 8001
+202 200 499 0.2 60000 node {_B1}/apps/frappe/socketio.js
+203 200 499 0.1 50000 /env/bin/python /env/bin/bench schedule
+204 200 499 0.1 50000 /env/bin/python /env/bin/bench watch
+205 200 499 0.3 70000 /env/bin/python /env/bin/bench worker --queue default
+206 200 499 0.0 3000 redis-server {_B1}/config/redis_cache.conf
+207 200 499 0.0 3000 redis-server {_B1}/config/redis_queue.conf
+"""
+
+# Only bench 1 is up: bench 0 was never started, which is the audit's headline flow
+# (`cwcli start <p> --bench 1`).
+_PS_ONLY_B1 = "".join(
+    line + "\n"
+    for line in _PS_TWO_BENCH.splitlines()
+    if line.startswith(("1 0", "2"))
+)
+
+_TWO_BENCH_CONFIGS = {
+    _B0: {"webserver_port": 8000, "socketio_port": 9000},
+    _B1: {"webserver_port": 8001, "socketio_port": 9001},
+}
+_TWO_BENCHES = [{"path": _B0}, {"path": _B1}]
+
+
+def _by_path(report):
+    return {b.bench_path: b for b in report.benches}
+
+
+class TestPerBenchWebProbe:
+    """F3/F4: the probe asks each bench's OWN port, and says which one it asked."""
+
+    def test_f3_a_healthy_bench_past_the_first_is_running_not_degraded(self, wire):
+        # THE headline regression. Bench 1 is genuinely healthy and serves :8001;
+        # bench 0 was never started so nothing answers :8000. Probing the hardcoded
+        # 8000 got no code and folded that into `degraded` for a bench whose every
+        # process was RUNNING - a document contradicting itself on its own face.
+        c = FakeContainer(
+            ps=_PS_ONLY_B1,
+            cwds={200: _B1},
+            markers={_B1: _MARKER},
+            web_code={8001: "200"},  # nothing answers :8000
+            configs=_TWO_BENCH_CONFIGS,
+        )
+        wire(c, benches=_TWO_BENCHES)
+        report = core_status.status("proj").data
+
+        b1 = _by_path(report)[_B1]
+        assert b1.overall == "running"
+        assert b1.web_port == 8001 and b1.web_port_verified is True
+        assert b1.web_http_code == "200"
+        # No bench pairs a RUNNING web process with a null web code.
+        for b in report.benches:
+            web = next((p for p in b.processes if p.label == "web"), None)
+            assert not (web is not None and web.up and b.web_http_code is None)
+        # A never-started bench is `online`, not a fault; the instance fold takes the
+        # running bench over it (see _fold).
+        assert _by_path(report)[_B0].overall == "online"
+        assert report.overall == "running"
+
+    def test_f4_a_dead_bench_never_reports_a_siblings_live_code(self, wire):
+        # The other output direction: bench 1's web is down while bench 0 serves. The
+        # hardcoded probe answered with bench 0's live code, so a bench serving
+        # NOTHING looked healthy.
+        ps = _PS_TWO_BENCH.replace(
+            "201 200 499 0.5 80000 /env/bin/python /env/bin/bench serve --port 8001\n", ""
+        )
+        ctl_b1 = _CTL_SINGLE.replace(
+            "web   RUNNING   pid 101, uptime 0:05:00\n", "web   STOPPED   Not started\n"
+        )
+        c = FakeContainer(
+            ps=ps,
+            cwds={100: _B0, 200: _B1},
+            markers={_B0: _MARKER, _B1: _MARKER},
+            web_code={8000: "200"},  # only bench 0 answers
+            ctl_status={_B0: _CTL_SINGLE, _B1: ctl_b1},
+            configs=_TWO_BENCH_CONFIGS,
+        )
+        wire(c, benches=_TWO_BENCHES)
+        report = core_status.status("proj").data
+
+        b1 = _by_path(report)[_B1]
+        assert b1.web_port == 8001
+        assert b1.web_http_code is None  # NOT bench 0's "200"
+        assert b1.overall == "degraded"
+        assert _by_path(report)[_B0].web_http_code == "200"
+
+    def test_each_bench_is_probed_on_its_own_port(self, wire):
+        c = FakeContainer(
+            ps=_PS_TWO_BENCH,
+            cwds={100: _B0, 200: _B1},
+            markers={_B0: _MARKER, _B1: _MARKER},
+            web_code={8000: "200", 8001: "404"},
+            configs=_TWO_BENCH_CONFIGS,
+        )
+        wire(c, benches=_TWO_BENCHES)
+        core_status.status("proj")
+        probed = [
+            cmd[-1] for cmd in c.calls if isinstance(cmd, list) and cmd[0] == "curl"
+        ]
+        assert probed == ["http://localhost:8000", "http://localhost:8001"]
+
+
+class TestFailHonestPort:
+    """An unreadable port is reported unknown, never guessed as 8000."""
+
+    def test_unreadable_config_reports_unknown_and_issues_zero_probes(self, wire):
+        # THE load-bearing constraint: falling back to 8000 IS the bug, so a bench
+        # whose config cannot be read is not probed at all.
+        c = FakeContainer(marker=_MARKER, web_code="200", configs={BENCH: None})
+        wire(c, benches=[{"path": BENCH}])
+        result = core_status.status("proj")
+        bench = _bench(result.data)
+        assert bench.web_port is None
+        assert bench.web_port_verified is False
+        assert bench.web_http_code is None
+        assert not any(isinstance(cmd, list) and cmd[0] == "curl" for cmd in c.calls)
+        assert any(w.code == "status.web_port_unknown" for w in result.warnings)
+
+    def test_an_otherwise_healthy_bench_does_not_degrade_on_an_unknown_port(self, wire):
+        # Degrading here would manufacture a fresh instance of F3 while fixing the
+        # old one: every program RUNNING, reported broken because a JSON read failed.
+        c = FakeContainer(marker=_MARKER, configs={BENCH: None})
+        wire(c, benches=[{"path": BENCH}])
+        report = core_status.status("proj").data
+        assert report.overall == "running"
+        assert _bench(report).overall == "running"
+
+    def test_a_config_that_omits_the_port_is_unresolved_not_defaulted_to_8000(self, wire):
+        # THE tightening. core.scale reads the same file and DOES default an omitted
+        # key to 8000, correctly - it is computing which host ports to publish. Here
+        # the same answer becomes a PROBE TARGET, so carrying that default across
+        # would silently re-create the defect inside the change that removes it: a
+        # bench past the first would report web_port 8000 / verified true and measure
+        # bench 0's server.
+        c = FakeContainer(
+            marker=_MARKER, web_code="200", configs={BENCH: {"some_other_key": 1}}
+        )
+        wire(c, benches=[{"path": BENCH}])
+        result = core_status.status("proj")
+        bench = _bench(result.data)
+        assert bench.web_port is None
+        assert bench.web_port_verified is False
+        assert not any(isinstance(cmd, list) and cmd[0] == "curl" for cmd in c.calls)
+        assert any(w.code == "status.web_port_unknown" for w in result.warnings)
+
+
+class TestInstanceFold:
+    """Four tokens, no fifth. `degraded` dominates; `running` beats never-started."""
+
+    @staticmethod
+    def _folded(*overalls):
+        benches = [
+            core_status.BenchStatus(
+                index=i,
+                bench_path=f"/w/b{i}",
+                label=None,
+                overall=o,
+                supervisor_up=True,
+                web_port=8000 + i,
+                web_port_verified=True,
+                web_http_code="200",
+                processes=[],
+            )
+            for i, o in enumerate(overalls)
+        ]
+        return core_status._fold(benches)
+
+    def test_running_beats_a_never_started_online_bench(self):
+        # The one non-obvious rule, and the one the audit's headline scenario turns
+        # on. A plain worst-wins fold ordered degraded > online > running would say
+        # `online` - "nothing is started" - while a bench serves real traffic.
+        assert self._folded("online", "running") == "running"
+        assert self._folded("running", "online") == "running"
+
+    def test_degraded_dominates_everything(self):
+        assert self._folded("running", "degraded") == "degraded"
+        assert self._folded("online", "degraded") == "degraded"
+        assert self._folded("degraded", "running", "online") == "degraded"
+
+    def test_all_online_stays_online(self):
+        assert self._folded("online", "online") == "online"
+
+    def test_container_down_is_offline_with_no_benches(self, wire):
+        c = FakeContainer()
+        c.status = "exited"
+        wire(c, benches=_TWO_BENCHES)
+        report = core_status.status("proj").data
+        assert report.overall == "offline"
+        assert report.benches == []

@@ -64,7 +64,7 @@ Exit codes: **0** success (a completed operation, including one with warnings, a
   unlock         Remove a site's locks folder; emit the outcome as TOON.
   stop           Stop a project's containers; emit the outcome as TOON.
   start          Start a project's containers + bench; emit the outcome as TOON (never prompts).
-  status         Report a project's per-process health; emit the report as TOON (`overall` first).
+  status         Report every bench's per-process health; emit the report as TOON (`overall` first).
   logs           Read a bounded tail of a bench's per-process logs; emit them as ONE TOON document.
   restart        Restart ONE supervised process; emit the outcome as TOON (never prompts, no --watch).
   scale          Widen the instance's published port range; emit the new port map as TOON.

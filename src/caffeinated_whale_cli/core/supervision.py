@@ -571,10 +571,20 @@ def write_marker(container, bench_path: str) -> str:
 # -------------------------------------------------------------------------- launch
 
 
-def web_http_code(container) -> str | None:
-    """The web server's HTTP code on :8000 (today's curl probe), or None if unreachable."""
+def web_http_code(container, *, port: int) -> str | None:
+    """The web server's HTTP code on ``port``, or None if unreachable.
+
+    ``port`` is keyword-only with NO DEFAULT, deliberately. One instance holds many
+    benches, each serving the port bench's own ``make_ports`` assigned it, so there
+    is no universal web port to fall back on - this probe once hardcoded 8000 and
+    therefore measured bench 0's web server no matter which bench was being asked
+    about (a healthy bench 1 read ``degraded``; a dead bench 1 read bench 0's live
+    code). With no default the caller must name a port, so a future caller cannot
+    re-inherit 8000 by omission, which is exactly how that defect arrived. Resolve
+    the port with ``resolvers.resolve_assigned_ports(..., fill_defaults=False)``.
+    """
     exit_code, output = container.exec_run(
-        ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://localhost:8000"]
+        ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", f"http://localhost:{port}"]
     )
     if exit_code not in (0, None):
         return None
@@ -582,28 +592,33 @@ def web_http_code(container) -> str | None:
     return code or None
 
 
-def web_is_serving(container) -> bool:
-    """True iff the web server answers on :8000 (any HTTP code, even 404/5xx).
+def web_is_serving(container, *, port: int) -> bool:
+    """True iff the web server answers on ``port`` (any HTTP code, even 404/5xx).
 
     Same "up" definition ``core.status`` uses (``web_code not in (None, '000')``):
     a bound port serving *any* code is up; ``None``/``000`` is unreachable.
+    ``port`` is keyword-only with no default - see :func:`web_http_code`.
     """
-    return web_http_code(container) not in (None, "000")
+    return web_http_code(container, port=port) not in (None, "000")
 
 
-def wait_web_ready(container, *, timeout: float = 60.0, interval: float = 1.0) -> bool:
-    """Poll :8000 until the web server is serving, or ``timeout`` elapses.
+def wait_web_ready(container, *, port: int, timeout: float = 60.0, interval: float = 1.0) -> bool:
+    """Poll ``port`` until the web server is serving, or ``timeout`` elapses.
 
-    ``bench serve`` binds :8000 a beat AFTER supervisord reports its programs up,
+    ``bench serve`` binds its port a beat AFTER supervisord reports its programs up,
     so a caller that declares "running" the instant the launch returns races the
     web port (a scripted ``cwcli start && cwcli status`` catches a transient
     ``degraded``). Blocking on this closes that race. Returns True as soon as the
     web answers (typically the first poll once bound), False on timeout. Bounded,
     and a no-op-fast when already serving.
+
+    ``port`` is keyword-only with no default - see :func:`web_http_code`. A caller
+    that cannot resolve the bench's port must SKIP the wait rather than guess, or it
+    spends the whole timeout probing a sibling bench's server.
     """
     deadline = time.monotonic() + timeout
     while True:
-        if web_is_serving(container):
+        if web_is_serving(container, port=port):
             return True
         if time.monotonic() >= deadline:
             return False

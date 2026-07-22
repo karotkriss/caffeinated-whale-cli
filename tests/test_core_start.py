@@ -85,12 +85,51 @@ class TestLaunch:
         assert any(w.code == "bench.default_used" for w in result.warnings)
 
     def test_launch_waits_for_web_and_reports_ready(self, wire):
-        # A genuine launch blocks until :8000 serves, then reports web_ready=True
-        # (the fake serves 200 by default) - closing the start->status race.
+        # A genuine launch blocks until the bench's OWN port serves, then reports
+        # web_ready=True (the fake serves 200 by default) - closing the start->status
+        # race.
         frappe = FakeContainer(ps="1 0 5 0.0 1000 /sbin/init\n", cwds={})
         wire(frappe)
         result = core_start.start("proj")
         assert result.data.web_ready is True
+        assert not any(w.code == "start.web_not_ready" for w in result.warnings)
+
+    def test_the_wait_polls_the_benchs_own_port(self, wire):
+        # The audit's F5: this wait used to poll a hardcoded :8000, so
+        # `cwcli start <p> --bench 1` spent 60 seconds watching bench 0's port and
+        # then warned that a perfectly healthy bench had not started.
+        frappe = FakeContainer(
+            ps="1 0 5 0.0 1000 /sbin/init\n",
+            cwds={},
+            web_code={8001: "200"},
+            configs={"/w/b1": {"webserver_port": 8001, "socketio_port": 9001}},
+        )
+        wire(frappe, benches=[{"path": "/w/b0"}, {"path": "/w/b1"}])
+        result = core_start.start("proj", bench="1")
+        assert result.data.web_ready is True
+        probed = {
+            cmd[-1] for cmd in frappe.calls if isinstance(cmd, list) and cmd[0] == "curl"
+        }
+        assert probed == {"http://localhost:8001"}
+
+    def test_an_unresolvable_port_skips_the_wait_rather_than_guessing(self, wire, monkeypatch):
+        # Fail honest: with no readable port the wait is SKIPPED and web_ready stays
+        # None (its existing "not probed" value). Falling back to 8000 would spend the
+        # whole timeout probing a sibling bench's server and then lie about the result.
+        frappe = FakeContainer(
+            ps="1 0 5 0.0 1000 /sbin/init\n", cwds={}, configs={BENCH: None}
+        )
+        wire(frappe)
+        called = {"n": 0}
+        monkeypatch.setattr(
+            supervision,
+            "wait_web_ready",
+            lambda *a, **k: called.__setitem__("n", called["n"] + 1),
+        )
+        result = core_start.start("proj")
+        assert result.data.web_ready is None
+        assert called["n"] == 0, "must never wait on a guessed port"
+        assert any(w.code == "start.web_port_unknown" for w in result.warnings)
         assert not any(w.code == "start.web_not_ready" for w in result.warnings)
 
     def test_launch_warns_when_web_never_serves(self, wire, monkeypatch):

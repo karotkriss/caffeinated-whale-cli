@@ -13,20 +13,40 @@ import typer
 from caffeinated_whale_cli.commands import status as status_mod
 from caffeinated_whale_cli.core.envelope import Result, Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
-from caffeinated_whale_cli.core.status import StatusReport
+from caffeinated_whale_cli.core.status import BenchStatus, StatusReport
 from caffeinated_whale_cli.core.supervision import ProcessHealth
 from caffeinated_whale_cli.utils import docker_utils
 
 
-def _report(overall, processes=None, *, not_cwcli_supervised=False):
+def _bench(overall, processes=None, *, index=0, path="/w/b0", not_cwcli_supervised=False,
+           web_port=8000, web_port_verified=True):
+    return BenchStatus(
+        index=index,
+        bench_path=path,
+        label=None,
+        overall=overall,
+        supervisor_up=overall in ("running", "degraded") and not not_cwcli_supervised,
+        web_port=web_port if web_port_verified else None,
+        web_port_verified=web_port_verified,
+        web_http_code="200" if overall == "running" and web_port_verified else None,
+        processes=processes if processes is not None else [],
+        not_cwcli_supervised=not_cwcli_supervised,
+    )
+
+
+def _report(overall, processes=None, *, not_cwcli_supervised=False, benches=None):
+    if benches is None:
+        # An `offline` instance carries NO benches (nothing was probed).
+        benches = (
+            []
+            if overall == "offline"
+            else [_bench(overall, processes, not_cwcli_supervised=not_cwcli_supervised)]
+        )
     return StatusReport(
         overall=overall,
         project="proj",
         container_running=overall != "offline",
-        supervisor_up=overall in ("running", "degraded") and not not_cwcli_supervised,
-        web_http_code="200" if overall == "running" else None,
-        processes=processes if processes is not None else [],
-        not_cwcli_supervised=not_cwcli_supervised,
+        benches=benches,
     )
 
 
@@ -117,3 +137,45 @@ def test_nonexistent_project_exits_nonzero(monkeypatch, capsys):
     # Nothing on stdout (no misleading "offline" token); the error is on stderr.
     assert captured.out.strip() == ""
     assert "No such project 'proj'." in captured.err
+
+
+def test_multi_bench_stdout_is_still_exactly_one_token(monkeypatch, capsys):
+    # The one-token contract is load-bearing and survives the restructure: a
+    # multi-bench project prints the INSTANCE fold, and every per-bench detail goes
+    # to stderr. There is no prompt on this path any more - the bare form used to
+    # ask which bench.
+    report = StatusReport(
+        overall="running",
+        project="proj",
+        container_running=True,
+        benches=[
+            _bench("online", index=0, path="/w/b0"),
+            _bench(
+                "running",
+                [ProcessHealth(label="web", up=True, pid=201)],
+                index=1,
+                path="/w/b1",
+                web_port=8001,
+            ),
+        ],
+    )
+    captured = _run(monkeypatch, capsys, report)
+    assert captured.out.strip() == "running"
+    assert "/w/b0" in captured.err and "/w/b1" in captured.err
+
+
+def test_the_web_line_names_the_port_it_probed(monkeypatch, capsys):
+    # An unattributed "web http: 404" is what let one bench's code stand in for
+    # another's, so the port is part of the answer.
+    report = _report("running", benches=[_bench("running", index=1, path="/w/b1", web_port=8001)])
+    captured = _run(monkeypatch, capsys, report)
+    assert "web :8001 -> 200" in captured.err
+
+
+def test_an_unknown_port_says_so_rather_than_implying_8000(monkeypatch, capsys):
+    report = _report(
+        "running", benches=[_bench("running", path="/w/b1", web_port_verified=False)]
+    )
+    captured = _run(monkeypatch, capsys, report)
+    assert "port unknown" in captured.err
+    assert "8000" not in captured.err

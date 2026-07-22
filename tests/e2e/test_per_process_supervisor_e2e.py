@@ -186,6 +186,9 @@ def test_axi_status_reports_supervisord_state(running_instance):
     assert res.returncode == 0, res.stdout + res.stderr
     lines = res.stdout.splitlines()
     assert lines[0] == "overall: running", res.stdout
-    # the per-process table carries supervisord's state column.
-    assert any(line.startswith("processes[") and "state" in line for line in lines), res.stdout
+    # the per-process table carries supervisord's state column. It is NESTED under
+    # its bench now (report-status-per-bench), so it is indented, not at column 0.
+    assert any(
+        line.lstrip().startswith("processes[") and "state" in line for line in lines
+    ), res.stdout
     assert "RUNNING" in res.stdout, res.stdout

@@ -32,7 +32,24 @@ Three properties follow from that choice, and the third is the reason for it.
 
 A `port: int = 8000` default would fix today's two call sites and leave the trap armed for the third.
 
-`web_is_serving` and `wait_web_ready` take the same treatment because they wrap the same probe. `web_is_serving` has no caller outside the module today, so its signature is free; changing it anyway keeps the three consistent, and a future caller finding an inconsistent trio is how one of them ends up bench-blind again.
+`web_is_serving` and `wait_web_ready` take the same treatment because they wrap the same probe. `web_is_serving` has no PRODUCTION caller outside the module (the only one is `supervision.py`'s own `wait_web_ready`), so its signature is nearly free - "no caller outside the module" as first written was false, because four tests in `tests/test_core_supervision.py::TestWebProbe` call it directly and the re-signature costs seven test edits there. Changing it anyway keeps the three consistent, and a future caller finding an inconsistent trio is how one of them ends up bench-blind again.
+
+### Decision 2a: the promoted port reader distinguishes explicit from defaulted
+
+The captain's TIGHTEN ruling (2026-07-22), and the one place this design departs from what the proposal originally specified.
+
+The promoted reader skips a bench whose `common_site_config.json` is unreadable, unparseable, not a mapping, or carries a non-numeric port - the fail-honest half, correctly preserved. But it has one more case: a config that PARSES as a mapping and simply OMITS `webserver_port`. There it returned a defaulted `(8000, 9000)` and gave the caller **no signal** distinguishing "this bench explicitly assigned 8000" from "this bench assigned nothing and I filled one in".
+
+`tasks.md` 1.1's original "behavior byte-identical" is exactly the instruction that carries that across, and the consequence is severe: `core.status` finds the bench present, reports `web_port: 8000` / `web_port_verified: true`, and probes `http://localhost:8000` - which on any bench past the first is a sibling's web server. That is F2 and F4 reproduced, as *verified fact*, inside the change whose stated load-bearing constraint is "it is never probed against 8000; that fallback IS the current bug".
+
+So `resolve_assigned_ports` takes `fill_defaults: bool`, keyword-only and undefaulted, and the two callers answer it oppositely:
+
+| Caller | `fill_defaults` | Why |
+| --- | --- | --- |
+| `core.scale` | `True` | Unchanged from today, and correct. A bench that omits the key serves Frappe's default, and scale is computing which host ports to PUBLISH - that bench must be covered by the range. |
+| `core.status`, `core.start` | `False` | The same answer becomes a PROBE TARGET. Unresolved takes the honest path this change already designed: `web_port: null`, no probe, `web_probed=False`, a `status.web_port_unknown` warning. |
+
+The asymmetry is what made the hole easy to miss, and it is the durable lesson: the default is not wrong, **promoting it into a different risk profile** is. A shared resolver whose two callers need opposite answers must make the caller state which one, rather than picking a default that is right for whoever wrote it first.
 
 ## Decision 3: The instance `overall` is a fold over the four existing tokens
 
@@ -71,7 +88,9 @@ This is reuse rather than a new axis, and the semantics line up exactly.
 
 The alternative - treat an unreadable config as `degraded` - would manufacture a fresh instance of F3 in the act of fixing the old one: a bench with every program `RUNNING` reported broken because cwcli could not read a JSON file.
 
-The gap is not silent. `web_port_verified: false` sits in the document (the pair `BenchPortMap` already uses, `core/scale.py:104-107`) and a `status.web_port_unknown` warning names the bench and points at `cwcli inspect`.
+The gap is not silent. `web_port_verified: false` sits in the document - the same value/verified PATTERN `BenchPortMap` already uses (its fields are `webserver_port: int | None` at `core/scale.py:111` and `ports_verified: bool` at `:116`; the names differ, the shape is the point) - and a `status.web_port_unknown` warning names the bench and points at `cwcli inspect`.
+
+Per Decision 2a, "unresolvable" includes a config that parses but names no port, not only one that fails to parse.
 
 ## Decision 5: A stopped instance reports `benches: []`
 
