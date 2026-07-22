@@ -59,9 +59,9 @@ class FakeContainer:
     def exec_run(self, cmd, workdir=None, environment=None, user=None):
         script = cmd[2] if isinstance(cmd, (list, tuple)) and len(cmd) >= 3 else str(cmd)
 
-        if "sites/common_site_config.json" in script and script.startswith("cat "):
+        if isinstance(cmd, (list, tuple)) and cmd[0] == "cat":
             for path, config in self.configs.items():
-                if f"{path}/sites/common_site_config.json" in script:
+                if cmd[1] == f"{path}/sites/common_site_config.json":
                     return (0, json.dumps(config).encode())
             return (1, b"")
 
@@ -78,6 +78,26 @@ class FakeContainer:
             return (1, b"")
 
         return (0, b"")
+
+
+def test_assigned_port_paths_are_passed_as_argv_data():
+    bench_path = "/workspace/bench one; false"
+
+    class RecordingContainer:
+        def __init__(self):
+            self.calls = []
+
+        def exec_run(self, cmd):
+            self.calls.append(cmd)
+            return (0, b'{"webserver_port": 8001, "socketio_port": 9001}')
+
+    container = RecordingContainer()
+    assigned = core_scale.resolvers.resolve_assigned_ports(
+        container, [bench_path], fill_defaults=False
+    )
+
+    assert assigned == {bench_path: (8001, 9001)}
+    assert container.calls == [["cat", f"{bench_path}/sites/common_site_config.json"]]
 
 
 @pytest.fixture

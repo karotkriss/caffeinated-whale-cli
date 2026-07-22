@@ -160,6 +160,12 @@ class FakeContainer:
             return (0, self.ps.encode())
         if head == "cat":
             path = cmd[1]
+            if path.endswith("/sites/common_site_config.json"):
+                bench = path[: -len("/sites/common_site_config.json")]
+                config = self.configs.get(bench)
+                if config is None:
+                    return (1, b"")
+                return (0, json.dumps(config).encode())
             if path.endswith(supervision._MARKER_NAME):
                 bench = path[: -len(f"/logs/{supervision._MARKER_NAME}")]
                 marker = self.markers.get(bench) if self.markers is not None else self.marker
@@ -199,12 +205,6 @@ class FakeContainer:
         return (0, b"")
 
     def _exec_bash(self, script, detach):
-        if "common_site_config.json" in script:
-            bench = script.split("cat ", 1)[1].strip()[: -len("/sites/common_site_config.json")]
-            config = self.configs.get(bench)
-            if config is None:
-                return (1, b"")
-            return (0, json.dumps(config).encode())
         if "import supervisor" in script:
             return (0, b"") if self.supervisor_present else (1, b"")
         if "pip install supervisor" in script:
