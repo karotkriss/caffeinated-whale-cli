@@ -2083,6 +2083,17 @@ def axi_rm_site(
 
     bench's own output goes to stderr in full and unparsed.
     """
+    if not yes:
+        emit_axi_error(
+            CwcliError(
+                ErrorKind.USAGE,
+                "rm_site.consent_required",
+                f"Refusing to drop site '{site}' without explicit consent.",
+                hint="re-run with --yes to permanently drop this site's database and files",
+            )
+        )
+        raise typer.Exit(exit_for(ErrorKind.USAGE))
+
     try:
         result = core_rm_site.drop_site(
             project,

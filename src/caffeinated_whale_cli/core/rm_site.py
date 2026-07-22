@@ -22,9 +22,9 @@ archive ``bench drop-site`` creates.
 **The archive decision (the hard requirement this module exists to satisfy).**
 ``bench drop-site`` (without ``--no-backup``) takes its own backup, then MOVES
 the site's whole directory - ``site_config.json`` (the database credentials)
-included - into ``{bench_path}/archived/sites/{site}`` inside the container
-(verified against a real bench: the path is deterministic, named after the
-site, not timestamped). Left there, that folder grows by one credential-bearing
+included - under ``{bench_path}/archived/sites/`` inside the container, normally
+named after the site and given a numeric suffix when that name already exists.
+Left there, that folder grows by one credential-bearing
 entry every drop, forever, unpruned, inside a container that keeps running for
 the rest of the bench's life. That is the same unbounded-residue shape the
 network-leak fix in ``core.rm`` closed for the whole-instance path, so it gets
@@ -49,11 +49,12 @@ is the archive's fate immediately AFTER, honestly reported either way.
 
 from __future__ import annotations
 
+import os
 import shlex
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from ..utils.config_utils import cwcli_home
 from . import resolvers
@@ -125,14 +126,48 @@ def _noop(_event: DropSiteEvent) -> None:
 # ---------------------------------------------------------------- archive helpers
 
 
-def _archived_site_path(bench_path: str, site: str) -> str:
-    """Where ``bench drop-site`` moves a dropped site's directory.
+def _validate_plain_component(value: str, *, kind: str) -> None:
+    if (
+        not value
+        or not value.strip()
+        or value in {".", ".."}
+        or PurePosixPath(value).name != value
+        or "\0" in value
+    ):
+        raise CwcliError(
+            ErrorKind.USAGE,
+            f"{kind}.invalid_component",
+            f"Invalid {kind} name '{value}'. It must be one plain directory name.",
+        )
 
-    Deterministic and named after the site, NOT timestamped - verified against
-    a real bench (see the module docstring), so no before/after diff is needed
-    to find it: the path is known before the drop even runs.
-    """
-    return f"{bench_path}/archived/sites/{site}"
+
+def _archived_sites_root(bench_path: str) -> str:
+    return f"{bench_path}/archived/sites"
+
+
+def _archived_site_names(container, root: str) -> set[str] | None:
+    exists, _ = container.exec_run(["test", "-d", root])
+    if exists != 0:
+        return set()
+    exit_code, output = container.exec_run(
+        ["find", root, "-mindepth", "1", "-maxdepth", "1", "-type", "d", "-printf", "%f\n"]
+    )
+    if exit_code != 0:
+        return None
+    if isinstance(output, bytes):
+        output = output.decode(errors="replace")
+    return {name for name in str(output).splitlines() if name}
+
+
+def _new_archived_site_path(root: str, site: str, before: set[str], after: set[str]) -> str | None:
+    candidates = [
+        name
+        for name in after - before
+        if name == site or (name.startswith(site) and name[len(site) :].isdigit())
+    ]
+    if len(candidates) != 1:
+        return None
+    return f"{root}/{candidates[0]}"
 
 
 def _archived_site_exists(container, path: str) -> bool:
@@ -155,12 +190,21 @@ def _copy_out_archived_site(container, source_path: str, dest_file: Path) -> boo
     inspect, so there is no reason to pay for extraction. Returns True only if
     the resulting host file is non-empty.
     """
+    created = False
     try:
         stream, _stat = container.get_archive(source_path)
-        with open(dest_file, "wb") as out:
+        fd = os.open(dest_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        created = True
+        with os.fdopen(fd, "wb") as out:
             for chunk in stream:
                 out.write(chunk)
+        dest_file.chmod(0o600)
     except Exception:
+        if created:
+            try:
+                dest_file.unlink()
+            except OSError:
+                pass
         return False
     try:
         return dest_file.stat().st_size > 0
@@ -203,6 +247,10 @@ def drop_site(
     emit: OnEvent = on_event or _noop
     warnings: list[Message] = []
 
+    _validate_plain_component(project_name, kind="project")
+    resolvers.validate_site_name(site)
+    _validate_plain_component(site, kind="site")
+
     resolved = resolvers.resolve_container_and_bench(
         project_name, bench, bench_path, auto_start=auto_start
     )
@@ -211,7 +259,6 @@ def drop_site(
     container, path, resolve_warnings = resolved
     warnings.extend(resolve_warnings)
 
-    resolvers.validate_site_name(site)
     resolvers.validate_bench_path(path)
     resolvers.require_bench_dir(container, path)
     resolvers.require_site_dir(container, path, site)
@@ -227,6 +274,15 @@ def drop_site(
                     f"'{project_name}'? This deletes its database and files."
                 ),
             ),
+        )
+
+    archive_root = _archived_sites_root(path)
+    archives_before = _archived_site_names(container, archive_root)
+    if archives_before is None:
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "rm_site.archive_state_unknown",
+            f"Could not inspect existing site archives at {archive_root}; the site was not dropped.",
         )
 
     # Secret rides the environment, never the argv (the restore.py M5 pattern):
@@ -251,17 +307,29 @@ def drop_site(
             f"Failed to drop site '{site}' (bench drop-site exited {exit_code}).",
         )
 
-    source = _archived_site_path(path, site)
+    archives_after = _archived_site_names(container, archive_root)
+    source = (
+        _new_archived_site_path(archive_root, site, archives_before, archives_after)
+        if archives_after is not None
+        else None
+    )
     archived_host_path: str | None = None
     archive_pruned = False
 
-    if _archived_site_exists(container, source):
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if source is not None and _archived_site_exists(container, source):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         dest_dir = cwcli_home() / "archive" / f"{project_name}_dropped_sites"
-        dest_dir.mkdir(parents=True, exist_ok=True)
         dest_file = dest_dir / f"{site}_{timestamp}.tar"
 
-        if _copy_out_archived_site(container, source, dest_file):
+        archive_dir_ready = False
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            dest_dir.chmod(0o700)
+            archive_dir_ready = True
+        except OSError:
+            pass
+
+        if archive_dir_ready and _copy_out_archived_site(container, source, dest_file):
             archived_host_path = str(dest_file)
             emit(DropSiteNotice(text=f"Archived dropped site to {dest_file}"))
             archive_pruned = _prune_archived_site(container, source)
@@ -288,8 +356,8 @@ def drop_site(
         warnings.append(
             Message(
                 "rm_site.archive_not_found",
-                f"bench did not archive the dropped site at the expected path ({source}); "
-                "nothing was copied out or pruned.",
+                f"cwcli could not uniquely identify the archive bench created under "
+                f"{archive_root}; nothing was copied out or pruned.",
             )
         )
 
