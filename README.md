@@ -1515,6 +1515,9 @@ cwcli run frappe-one migrate --path /workspace/custom-bench
 the command's output stream is lost, it reports that and exits non-zero rather
 than claiming success.
 
+Interrupting an `-i` command with Ctrl-C exits **130** once the command has been stopped inside the container.
+If that cannot be confirmed - the bench command may still be running and still changing the bench - it says so and exits **1** instead, rather than reporting a clean stop it cannot vouch for.
+
 ---
 
 ### `status` - Check Health Status
