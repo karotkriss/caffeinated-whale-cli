@@ -248,10 +248,11 @@ class TestNetworkRemoval:
     def test_network_only_orphan_is_removed(self, cwcli_home, monkeypatch):
         network = _make_network("proj_default")
         cache_clear = MagicMock()
+        events = []
         _wire(monkeypatch, [], [], networks=[network])
         monkeypatch.setattr(core_rm.db_utils, "clear_cache_for_project", cache_clear)
 
-        result = core_rm.remove("proj", remove_volumes=True, no_backup=True)
+        result = core_rm.remove("proj", on_event=events.append)
 
         network.remove.assert_called_once_with()
         cache_clear.assert_called_once_with("proj")
@@ -262,6 +263,41 @@ class TestNetworkRemoval:
         assert result.data.dir_removed is False
         assert result.data.network_removed is True
         assert result.data.failures == []
+        assert any(
+            isinstance(event, core_rm.RmWarning)
+            and "no named volumes were found" in event.text.lower()
+            and "no database backup was needed" in event.text.lower()
+            for event in events
+        )
+
+    def test_orphan_with_named_volumes_still_requires_backup(self, cwcli_home, monkeypatch):
+        volume = _make_volume("proj_sites")
+        network = _make_network("proj_default")
+        _wire(monkeypatch, [], [volume], networks=[network])
+
+        result = core_rm.remove("proj")
+
+        assert result.data.found is True
+        assert result.data.orphan is True
+        assert result.data.backup_ok is False
+        assert result.data.network_removed is False
+        assert result.data.failures
+        volume.remove.assert_not_called()
+        network.remove.assert_not_called()
+
+    def test_orphan_with_unknown_volumes_still_requires_backup(self, cwcli_home, monkeypatch):
+        network = _make_network("proj_default")
+        _wire(monkeypatch, [], [], networks=[network])
+        monkeypatch.setattr(core_rm, "get_project_volumes", lambda name: None)
+
+        result = core_rm.remove("proj")
+
+        assert result.data.found is True
+        assert result.data.orphan is True
+        assert result.data.backup_ok is False
+        assert result.data.network_removed is False
+        assert result.data.failures
+        network.remove.assert_not_called()
 
     def test_network_removed_regardless_of_no_volumes(self, cwcli_home, monkeypatch):
         """The network holds no user data, so --no-volumes must not spare it."""
