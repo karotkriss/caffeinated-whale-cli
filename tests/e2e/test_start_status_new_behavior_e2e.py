@@ -14,7 +14,10 @@ things the net deliberately does NOT pin:
     ``degraded``.
   - the captured logs are per-process files on the bench ``logs/`` volume (not
     ``/tmp``, and no combined ``bench-start.log``).
-  - multi-bench with no selector REFUSES non-interactively (never silently picks).
+  - multi-bench with no selector: ``start`` still REFUSES (it mutates one bench, so
+    it must be told which), while ``status`` REPORTS EVERY BENCH in one document -
+    each named, each probed on its own port, exit 0 (report-status-per-bench). A
+    bench whose config names no port reports it unknown rather than assuming 8000.
 
 Runs on the shared session instance; every test that leaves it un-served relies on
 ``_ensure_serving`` (imported from the net module) to restore sibling tests.
@@ -76,9 +79,19 @@ def test_axi_status_reports_per_process_health(running_instance):
     lines = res.stdout.splitlines()
     # overall aggregate leads the TOON document.
     assert lines[0] == "overall: running", res.stdout
-    # A real per-process table with resource columns, and at least the web row up.
-    assert any(line.startswith("processes[") and "uptime_s" in line for line in lines), res.stdout
+    # Uniform shape: the per-bench list, always, even for one bench.
+    assert any(line.startswith("benches[") for line in lines), res.stdout
+    # A real per-process table with resource columns, now NESTED under its bench (so
+    # it is indented, not at column 0), and at least the web row up.
+    assert any(
+        line.lstrip().startswith("processes[") and "uptime_s" in line for line in lines
+    ), res.stdout
     assert "supervisor_up: true" in res.stdout
+    # The bench names itself and names the port its HTTP code was measured on - the
+    # whole point: an unattributed web_http_code is how one bench's answer stood in
+    # for another's.
+    assert "bench_path: " in res.stdout
+    assert "web_port_verified: true" in res.stdout
 
 
 def test_human_status_running_token_with_detail_on_stderr(running_instance):
@@ -163,9 +176,9 @@ def test_logs_are_per_process_files_on_the_volume(running_instance):
 
 
 # --------------------------------------------------------------------------- #
-# 5. multi-bench with no selector refuses non-interactively (never silently picks)
+# 5. multi-bench: start still refuses without a selector; status REPORTS EVERY BENCH
 # --------------------------------------------------------------------------- #
-def test_multibench_no_selector_refuses_noninteractively(running_instance):
+def test_multibench_start_refuses_but_status_reports_every_bench(running_instance):
     inst = running_instance
     _ensure_serving(inst.name)
     second = "/workspace/cwe2e-second-bench"
@@ -194,14 +207,39 @@ def test_multibench_no_selector_refuses_noninteractively(running_instance):
         insp = harness.run_cwcli("inspect", inst.name, "--update")
         assert insp.returncode == 0, insp.stdout + insp.stderr
 
-        # axi start with no --bench: a usage error naming --bench, exit 2, never prompts.
+        # axi start with no --bench: a usage error naming --bench, exit 2, never
+        # prompts. UNCHANGED - start MUTATES one bench, so it must be told which.
         res = harness.run_cwcli("axi", "start", inst.name, "--yes")
         assert res.returncode == 2, res.stdout + res.stderr
         assert "--bench" in res.stdout, res.stdout
 
-        # human status from a non-TTY with no --bench: refuse (non-zero), never pick one.
+        # status is a READ, and it no longer refuses: the bare form reports every
+        # bench in ONE document, each named, exit 0. It is non-prompting on every
+        # path now, so TTY and non-TTY behave identically here.
+        axi = harness.run_cwcli("axi", "status", inst.name)
+        assert axi.returncode == 0, axi.stdout + axi.stderr
+        assert "benches[2]:" in axi.stdout, axi.stdout
+        assert second in axi.stdout, axi.stdout
+
+        # The skeleton bench's common_site_config.json is `{}` - it parses, but it
+        # names no webserver_port. That is EXACTLY the defaulted-port hole: cwcli
+        # must report the port unknown rather than assume Frappe's 8000 and probe
+        # the REAL bench's server while claiming to describe this one.
+        skeleton = axi.stdout.split(second, 1)[1]
+        assert "web_port: null" in skeleton, axi.stdout
+        assert "web_port_verified: false" in skeleton, axi.stdout
+
+        # Human status: still exactly one token on stdout (the instance fold), with
+        # the per-bench detail on stderr. Exit 0, no prompt, from a non-TTY.
         st = harness.run_cwcli("status", inst.name)
-        assert st.returncode != 0, st.stdout + st.stderr
+        assert st.returncode == 0, st.stdout + st.stderr
+        assert st.stdout.strip() in ("running", "degraded", "online"), st.stdout
+        assert len(st.stdout.split()) == 1, st.stdout
+
+        # --bench still answers for exactly one bench, unchanged.
+        one = harness.run_cwcli("axi", "status", inst.name, "--bench", "0")
+        assert one.returncode == 0, one.stdout + one.stderr
+        assert "benches[1]:" in one.stdout, one.stdout
     finally:
         # Restore the single-bench state so sibling tests are undisturbed: drop the
         # registered path + the skeleton, then re-inspect back to one bench.

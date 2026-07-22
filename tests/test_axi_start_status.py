@@ -14,7 +14,7 @@ from caffeinated_whale_cli.commands import start as start_mod
 from caffeinated_whale_cli.core.envelope import Choice, Message, Result, Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from caffeinated_whale_cli.core.start import ProcessLaunch, StartOutcome
-from caffeinated_whale_cli.core.status import StatusReport
+from caffeinated_whale_cli.core.status import BenchStatus, StatusReport
 from caffeinated_whale_cli.core.stop import StopOutcome
 from caffeinated_whale_cli.core.supervision import ProcessHealth
 
@@ -42,15 +42,36 @@ def _stop_result(project="other-proj"):
     )
 
 
-def _status_report(overall="running", processes=None, *, not_cwcli_supervised=False):
+def _bench_status(
+    overall="running", processes=None, *, index=0, path="/w/b0", web_port=8000,
+    not_cwcli_supervised=False,
+):
+    return BenchStatus(
+        index=index,
+        bench_path=path,
+        label=None,
+        overall=overall,
+        supervisor_up=overall in ("running", "degraded") and not not_cwcli_supervised,
+        web_port=web_port,
+        web_port_verified=True,
+        web_http_code="200" if overall == "running" else None,
+        processes=processes if processes is not None else [],
+        not_cwcli_supervised=not_cwcli_supervised,
+    )
+
+
+def _status_report(overall="running", processes=None, *, not_cwcli_supervised=False, benches=None):
+    if benches is None:
+        benches = (
+            []
+            if overall == "offline"
+            else [_bench_status(overall, processes, not_cwcli_supervised=not_cwcli_supervised)]
+        )
     return StatusReport(
         overall=overall,
         project="proj",
         container_running=overall != "offline",
-        supervisor_up=overall in ("running", "degraded") and not not_cwcli_supervised,
-        web_http_code="200" if overall == "running" else None,
-        processes=processes if processes is not None else [],
-        not_cwcli_supervised=not_cwcli_supervised,
+        benches=benches,
     )
 
 
@@ -261,21 +282,39 @@ class TestAxiStatus:
         assert "not_cwcli_supervised: true" in result.stdout
         assert "cwcli start" in result.stdout  # the hint rides in the warnings block
 
-    def test_multi_bench_names_the_flag_exit_2(self, monkeypatch):
-        choice = Choice(
-            kind="select_bench",
-            param="bench",
-            prompt="Project 'proj' has multiple benches; select one.",
-            options=[{"value": "0", "label": "/w/b0"}, {"value": "1", "label": "/w/b1"}],
+    def test_multi_bench_reports_every_bench_exit_0(self, monkeypatch):
+        # REPLACES test_multi_bench_names_the_flag_exit_2 (this class's copy only -
+        # TestAxiStart's identically-named test pins `axi start`'s refusal, which this
+        # change does not touch). The refusal was a signal to go read
+        # `cwcli axi benches` and poll once per bench, reassembling the instance view
+        # from documents that never said which bench they described. That enumeration
+        # now arrives inline, in one document, each bench named.
+        report = _status_report(
+            overall="running",
+            benches=[
+                _bench_status("online", index=0, path="/w/b0"),
+                _bench_status(
+                    "running",
+                    [ProcessHealth(label="web", up=True, pid=201)],
+                    index=1,
+                    path="/w/b1",
+                    web_port=8001,
+                ),
+            ],
         )
         monkeypatch.setattr(
-            axi_mod.core_status,
-            "status",
-            lambda *a, **k: Result(status=Status.NEEDS_CHOICE, choice=choice),
+            axi_mod.core_status, "status", lambda *a, **k: Result(status=Status.OK, data=report)
         )
         result = runner.invoke(axi_mod.app, ["status", "proj"])
-        assert result.exit_code == 2
-        assert "--bench" in result.stdout
+        assert result.exit_code == 0
+        assert result.stdout.splitlines()[0] == "overall: running"
+        assert "benches[2]:" in result.stdout
+        # Each bench names itself and the port its own code was measured on.
+        assert "bench_path: /w/b0" in result.stdout
+        assert "bench_path: /w/b1" in result.stdout
+        assert "web_port: 8001" in result.stdout
+        # Nested records survive as TOON, never a Python repr (the axi inspect rule).
+        assert "{'" not in result.stdout
 
     def test_docker_error_renders_exit_1(self, monkeypatch):
         def _raise(*a, **k):

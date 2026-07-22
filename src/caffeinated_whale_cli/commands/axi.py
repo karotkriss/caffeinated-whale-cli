@@ -622,17 +622,20 @@ def axi_status(
     project: str = typer.Argument(..., help="The Docker Compose project name."),
     bench: str = typer.Option(None, "--bench", help="Which bench: numeric index or label."),
 ) -> None:
-    """Report a project's per-process health; emit the report as TOON (``overall`` first)."""
+    """Report every bench's per-process health; emit the report as TOON (``overall`` first).
+
+    With no ``--bench`` this reports EVERY bench in one document, each named, exit 0 -
+    it used to refuse a multi-bench project with exit 2 and send the agent away to
+    enumerate `cwcli axi benches` and poll once per bench, reassembling the instance
+    view from documents that never said which bench they described. There is no
+    ``NEEDS_CHOICE`` branch here because the core no longer has one; a retained-but-
+    unreachable refusal is how the refusal comes back.
+    """
     try:
         result = core_status.status(project, bench=bench)
     except CwcliError as error:
         emit_axi_error(error)
         raise typer.Exit(exit_for(error.kind)) from None
-
-    if result.status is CoreStatus.NEEDS_CHOICE:
-        assert result.choice is not None
-        emit_axi_choice_as_usage_error(result.choice)
-        raise typer.Exit(2)
 
     assert result.data is not None  # OK/WARNING always carries a StatusReport
     emit_result(result.data, warnings=result.warnings)

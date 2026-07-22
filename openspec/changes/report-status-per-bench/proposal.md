@@ -169,9 +169,9 @@ Per `core.where`'s rule, and stated as the load-bearing constraint of this chang
 
 **If a bench's assigned port cannot be read, the HTTP code is reported unknown and said to be unknown. It is never probed against 8000. That fallback IS the current bug.**
 
-Concretely, when `sites/common_site_config.json` is unreadable or unparseable for a bench (the case `_read_assigned_ports` already skips rather than defaults):
+Concretely, when a bench's `sites/common_site_config.json` cannot be read, cannot be parsed, or **parses but names no `webserver_port`** (that last case is the captain's TIGHTEN ruling - the shipped reader defaulted it to 8000, which is right for `core.scale` and wrong for a probe target; see `design.md` Decision 2a):
 
-- `web_port: null` and `web_port_verified: false` - the same honest pair `BenchPortMap` already uses (`core/scale.py:104-107`), rather than a guessed 8000 reported as fact.
+- `web_port: null` and `web_port_verified: false` - the same honest value/verified PATTERN `BenchPortMap` already uses (`webserver_port` at `core/scale.py:111`, `ports_verified` at `:116`), rather than a guessed 8000 reported as fact.
 - `web_http_code: null`, because no probe was made.
 - **The bench does not degrade on account of it.** `_overall` already has this exact behavior behind its `web_probed=False` parameter (built for `--watch`); an unresolved port takes the same path. A bench whose supervisor is up and whose every program is healthy stays `running` when cwcli could not determine where to look, because that is a gap in cwcli's knowledge, not a fault in the bench.
 - A `status.web_port_unknown` warning names the bench and points at `cwcli inspect <project>`.
@@ -255,7 +255,7 @@ Leaving `start` passing a literal 8000 would re-create the bug at the one remain
 
 ## What Changes
 
-- **PROMOTE** `core/scale.py:_read_assigned_ports` to `resolvers.resolve_assigned_ports(container, bench_paths) -> dict[str, tuple[int, int]]`, behavior byte-identical (including its skip-on-unreadable, which is the fail-honest half). `core.scale`'s one call site re-points; the private helper is deleted, not left as a shim.
+- **PROMOTE** `core/scale.py:_read_assigned_ports` to `resolvers.resolve_assigned_ports(container, bench_paths, *, fill_defaults: bool) -> dict[str, tuple[int, int]]`, preserving its skip-on-unreadable (the fail-honest half) and adding the explicit/defaulted distinction the captain's TIGHTEN ruling requires (`design.md` Decision 2a): `core.scale` passes True and is unchanged; `core.status`/`core.start` pass False, so a config that omits a port is UNRESOLVED rather than a guessed 8000 that would re-create this very bug. BOTH of `core.scale`'s call sites re-point; the private helper is deleted, not left as a shim.
 - **RE-SIGNATURE** `supervision.web_http_code(container, *, port: int)`, `web_is_serving(container, *, port: int)`, `wait_web_ready(container, *, port: int, ...)`. No default, keyword-only.
 - **ADD** `core.status.BenchStatus` and restructure `StatusReport` to `overall` / `project` / `container_running` / `benches: list[BenchStatus]`.
 - **CHANGE** `core.status.status(...)` to report every cached bench when no selector is given, and exactly one when `--bench`/`--path` is. It never returns `NEEDS_CHOICE`.
@@ -268,9 +268,10 @@ Leaving `start` passing a literal 8000 would re-create the bug at the one remain
 ## Impact
 
 - **New:** `resolvers.resolve_assigned_ports`, `core.status.BenchStatus`, per-bench rendering in both frontends, E2E coverage on a real two-bench instance.
-- **Changed:** `core/status.py`, `core/supervision.py` (three signatures), `core/start.py`, `core/scale.py` (one call site), `core/resolvers.py`, `commands/status.py`, `commands/axi.py`, `tests/test_core_status.py`, `tests/test_axi_start_status.py`, `tests/test_core_start.py`, `README.md`, `CLAUDE.md`, `.claude/skills/cwcli-lifecycle/`.
+- **Changed:** `core/status.py`, `core/supervision.py` (three signatures), `core/start.py`, `core/scale.py` (BOTH call sites), `core/resolvers.py`, `commands/status.py`, `commands/axi.py`, `tests/test_core_status.py`, `tests/test_core_supervision.py` (the re-signature breaks 7 `TestWebProbe` tests; missing from this list as first written), `tests/test_axi_start_status.py`, `tests/test_core_start.py`, `tests/test_status_frontend.py`, `tests/test_status_watch.py`, `tests/e2e/test_start_status_new_behavior_e2e.py`, `tests/e2e/test_per_process_supervisor_e2e.py`, `README.md`, `AGENTS.md`, `.claude/skills/cwcli-lifecycle/`.
 - **Unchanged:** `utils/toon.py` (the nested shape is already supported), `scripts/build_skill.py`'s output verb table, every other core verb, the cache schema, `discover_stack`'s bench keying (which was already correct), the `axi status` always-exits-0 contract, and the one-token-on-stdout contract.
-- **Measured, not assumed:** the instance-wide form performs the per-bench probe set N times. Task 5.4 measures it on a real 2-bench and 6-bench instance and reports; no optimization is specified in advance (Decision 6).
+- **Measured, not assumed:** the instance-wide form performs the per-bench probe set N times. Task 5.5 measures it on a real 2-bench and 6-bench instance; no optimization is specified in advance (Decision 7).
+- **Corrected cost statement:** **no code anywhere calls `cwcli axi status`.** The one known consumer follows PROSE, not a parser (two lines in another project's own notes describing `web_http_code` and `processes` as top-level). Option A's internal cost is therefore a two-line documentation refresh, not a code break, and nothing had to land in the same batch. The break is real for external users; it should not be overstated internally.
 
 ## Non-goals
 

@@ -9,6 +9,7 @@ wrappers in ``commands/utils.py`` that call these.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 from docker.errors import APIError, NotFound
@@ -306,3 +307,71 @@ def require_site_dir(frappe_container, bench_path: str, site: str) -> str:
             f"Site '{site}' not found at {site_path}",
         )
     return site_path
+
+
+# ------------------------------------------------------------------ per-bench ports
+
+# Frappe's own defaults, the values bench's ``make_ports`` counts up from.
+WEB_CONTAINER_BASE = 8000
+SOCKETIO_CONTAINER_BASE = 9000
+
+
+def resolve_assigned_ports(
+    container, bench_paths: list[str], *, fill_defaults: bool
+) -> dict[str, tuple[int, int]]:
+    """Each bench's assigned ``(webserver_port, socketio_port)`` from its OWN config.
+
+    Reads ``sites/common_site_config.json`` live inside the container - the source of
+    truth, written by bench's ``make_ports``; cwcli writes zero port config. A bench
+    whose config is unreadable, unparseable, not a mapping, or carries a non-numeric
+    port is SKIPPED (absent from the result), never defaulted, so a caller can tell
+    "this bench serves 8000" from "I could not find out".
+
+    ``fill_defaults`` decides the one remaining case - a config that parses as a
+    mapping but simply OMITS a port key - and the two callers need opposite answers,
+    which is why it is keyword-only with NO default:
+
+    - ``True`` (``core.scale``): fall back to 8000/9000, the same assumption bench
+      itself makes. Correct there, because scale is computing which host ports to
+      PUBLISH and a bench serving Frappe's default must be covered by the range.
+    - ``False`` (``core.status``, ``core.start``): skip the bench. These callers turn
+      the answer into a PROBE TARGET, and probing a guessed 8000 is the exact defect
+      this resolver was promoted to fix - on any bench past the first it measures a
+      different bench's web server. Unresolved is reported as unresolved.
+
+    Promoted out of ``core.scale``'s private ``_read_assigned_ports`` when status and
+    start became its second and third callers (the ``set_maintenance`` precedent:
+    promote, never copy - three copies of "which port does this bench serve" drift,
+    and the day they drift is the day the bug comes back on one of them).
+    """
+    assigned: dict[str, tuple[int, int]] = {}
+    for bench_path in bench_paths:
+        config_file = f"{bench_path.rstrip('/')}/sites/common_site_config.json"
+        exit_code, output = container.exec_run(["bash", "-lc", f"cat {config_file}"])
+        if exit_code != 0:
+            continue
+        try:
+            config = json.loads(_decode(output))
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(config, dict):
+            continue
+        if fill_defaults:
+            web = config.get("webserver_port", WEB_CONTAINER_BASE)
+            sio = config.get("socketio_port", SOCKETIO_CONTAINER_BASE)
+        else:
+            web = config.get("webserver_port")
+            sio = config.get("socketio_port")
+            if web is None or sio is None:
+                continue
+        try:
+            assigned[bench_path] = (int(web), int(sio))
+        except (TypeError, ValueError):
+            continue
+    return assigned
+
+
+def _decode(output) -> str:
+    if isinstance(output, (bytes, bytearray)):
+        return bytes(output).decode("utf-8", errors="replace")
+    return str(output) if output is not None else ""
