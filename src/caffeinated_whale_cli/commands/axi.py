@@ -44,6 +44,7 @@ from ..core import list as core_list
 from ..core import logs as core_logs
 from ..core import restart as core_restart
 from ..core import rm as core_rm
+from ..core import rm_site as core_rm_site
 from ..core import scale as core_scale
 from ..core import start as core_start
 from ..core import status as core_status
@@ -235,6 +236,10 @@ def _choice_error_message(choice: Choice) -> str:
         # container, restarting every serving bench; the agent must consent. The
         # --yes flag rides the `help:` line below.
         return "expanding the port range restarts every serving bench in the instance"
+    if choice.kind == "confirm_drop_site":
+        # `axi rm-site` only. Dropping a site deletes its database and files;
+        # the agent must consent. The --yes flag rides the `help:` line below.
+        return "dropping this site permanently deletes its database and files"
     return f"a decision is required: {choice.prompt}"
 
 
@@ -257,6 +262,8 @@ def emit_axi_choice_as_usage_error(choice: Choice) -> None:
         typer.echo(toon.kv("help", "start it first with 'cwcli start <project>'"))
     elif choice.kind == "confirm_scale":
         typer.echo(toon.kv("help", "re-run with --yes to accept the whole-instance restart"))
+    elif choice.kind == "confirm_drop_site":
+        typer.echo(toon.kv("help", "re-run with --yes to consent to permanently dropping it"))
     elif choice.kind == "confirm_reuse_bench":
         typer.echo(
             toon.kv(
@@ -2012,6 +2019,110 @@ def axi_rm(
     emit_result(outcome, warnings=warnings)
     # failures, NOT result.status: a partial removal is a WARNING-shaped envelope.
     raise typer.Exit(1 if outcome.failures else 0)
+
+
+# --------------------------------------------------------------------------- rm-site
+
+
+def _drop_site_narrate(event) -> None:
+    """``bench drop-site``'s own bytes, to STDERR - the ``axi_migrate`` reasoning:
+    a drop is not a supervised process, so its own bytes are the only place a
+    mid-drop failure's reason exists. Everything goes to stderr so the
+    one-TOON-document contract on stdout holds.
+    """
+    if isinstance(event, core_rm_site.DropSiteCommand):
+        print(f"$ {event.command}", file=sys.stderr, flush=True)
+    elif isinstance(event, core_rm_site.DropSiteOutput):
+        print(event.text, end="", file=sys.stderr, flush=True)
+    elif isinstance(event, core_rm_site.DropSiteNotice):
+        print(event.text, file=sys.stderr, flush=True)
+
+
+@app.command("rm-site")
+def axi_rm_site(
+    project: str = typer.Argument(..., help="The Docker Compose project name."),
+    site: str = typer.Argument(..., help="The site to permanently drop."),
+    bench: str = typer.Option(None, "--bench", help="Which bench: numeric index or label."),
+    db_root_password: str = typer.Option(
+        "123", "--db-root-password", help="MariaDB root password used by 'bench drop-site'."
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        help="REQUIRED consent to permanently drop this site's database and files.",
+    ),
+) -> None:
+    """Permanently drop ONE site; emit the outcome as TOON (never prompts).
+
+    The per-site inverse of `axi init`: the warm-bench delivery model creates a
+    new site per task on a shared, already-running bench and must drop it at
+    teardown, and until this verb existed that had no agent-surface form. It
+    never touches containers, volumes, or the project directory - only the one
+    named site - so it carries none of `axi rm`'s whole-instance blast radius
+    or that verb's deferral history; the instance and every other site on it
+    keep running.
+
+    `--yes` is REQUIRED: without it this is a usage error naming the flag,
+    never a prompt. There is no `--force`-style bypass beyond it. NO auto-start:
+    a stopped project is a usage error naming `cwcli start`, exactly as every
+    other bench-scoped axi verb (`axi backup`, `axi unlock`, `axi migrate`)
+    already refuses it.
+
+    `bench drop-site` archives the dropped site's full directory - including
+    site_config.json (its database credentials and, if set, its encryption
+    key) - inside the container's own `archived/sites/` folder before this
+    command ever sees it.
+    Left there it would grow, unpruned, forever, so this immediately copies that
+    one archive out to the SAME managed host location `cwcli rm` already uses
+    (`archived_host_path` in the report) and, only once that copy is verified on
+    disk, deletes the in-container copy (`archive_pruned_in_container: true`).
+    If the copy could not be verified, the in-container archive is left in place
+    rather than deleted unbacked, and `ok: false` plus a warning names exactly
+    what remains - a caller that only checks the exit code still learns its
+    site's credentials may not be safely out of the container.
+
+    bench's own output goes to stderr in full and unparsed.
+    """
+    try:
+        result = core_rm_site.drop_site(
+            project,
+            site,
+            bench=bench,
+            consent=yes,
+            db_root_password=db_root_password,
+            on_event=_drop_site_narrate,
+        )
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    if result.status is CoreStatus.NEEDS_CHOICE:
+        assert result.choice is not None  # NEEDS_CHOICE always carries a Choice
+        emit_axi_choice_as_usage_error(result.choice)
+        raise typer.Exit(2)
+
+    assert result.data is not None  # OK/WARNING always carries a DropSiteOutcome
+    outcome = result.data
+
+    # Dropping a site changes the bench's site set, so refresh the cache
+    # whenever this landed (a CwcliError above would have already returned
+    # before this point, so reaching here always means the site was dropped).
+    # A failed recache is a stderr warning, NOT a non-zero exit: the drop
+    # already happened, and failing here would make an agent retry a mutation
+    # that already succeeded.
+    if not cache.recache_project(project):
+        print(
+            f"Warning: site dropped, but re-caching '{project}' failed; "
+            "run 'cwcli inspect --update' to refresh.",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    emit_result(outcome, warnings=result.warnings)
+    # ok, NOT result.status: a drop with an unsafe archive is a WARNING-shaped
+    # envelope, which maps to exit 0 everywhere else and would hide leftover
+    # in-container credentials behind a green exit code.
+    raise typer.Exit(0 if outcome.ok else 1)
 
 
 # ------------------------------------------------------------------------ self-update
