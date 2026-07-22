@@ -454,13 +454,16 @@ def test_interactive_attaches_stdin_via_docker_exec(monkeypatch, frontend, spy_e
     with pytest.raises(typer.Exit):
         invoke(interactive=True, bench_args=["new-app", "my_app"])
 
-    assert spy_exec["argv"] == [
+    assert spy_exec["argv"][:7] == [
         "docker",
         "exec",
         "-i",
         "-w",
         resolvers.DEFAULT_BENCH_PATH,
         "container-abc",  # the container PLANNED, not a re-resolution
+        "setsid",
+    ]
+    assert spy_exec["argv"][-3:] == [
         "bench",
         "new-app",
         "my_app",
@@ -519,8 +522,13 @@ def test_interactive_reports_a_ctrl_c_as_130_not_success(monkeypatch, frontend):
     interrupted did not succeed, and must never exit 0."""
     terminals(monkeypatch, stdin=False, stdout=False)
 
-    def interrupted(_argv, *a, **k):
-        raise KeyboardInterrupt
+    calls = []
+
+    def interrupted(argv, *a, **k):
+        calls.append(argv)
+        if len(calls) == 1:
+            raise KeyboardInterrupt
+        return types.SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(run_mod.subprocess, "run", interrupted)
 
@@ -528,6 +536,13 @@ def test_interactive_reports_a_ctrl_c_as_130_not_success(monkeypatch, frontend):
         invoke(interactive=True)
 
     assert exc.value.exit_code == 130
+    assert calls[0][6:9] == ["setsid", "sh", "-c"]
+    assert "echo $$ >" in calls[0][9]
+    pidfile = next(arg for arg in calls[0] if arg.startswith("/tmp/cwcli-run-"))
+    assert calls[1][:3] == ["docker", "exec", "container-abc"]
+    assert 'kill -TERM -- "-$pid"' in calls[1][-1]
+    assert 'kill -KILL -- "-$pid"' in calls[1][-1]
+    assert pidfile in calls[1][-1]
 
 
 def test_interactive_quoting_survives_the_round_trip(monkeypatch, frontend, spy_exec):
