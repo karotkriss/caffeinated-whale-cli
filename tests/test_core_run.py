@@ -7,6 +7,7 @@ is also the command this batch refactors onto new machinery, so these exist
 because refactoring it blind was the actual risk.
 """
 
+import subprocess
 import types
 
 import pytest
@@ -540,9 +541,43 @@ def test_interactive_reports_a_ctrl_c_as_130_not_success(monkeypatch, frontend):
     assert "echo $$ >" in calls[0][9]
     pidfile = next(arg for arg in calls[0] if arg.startswith("/tmp/cwcli-run-"))
     assert calls[1][:3] == ["docker", "exec", "container-abc"]
+    assert '[ ! -s ' in calls[1][-1]
     assert 'kill -TERM -- "-$pid"' in calls[1][-1]
     assert 'kill -KILL -- "-$pid"' in calls[1][-1]
+    assert 'if kill -0 -- "-$pid"' in calls[1][-1]
     assert pidfile in calls[1][-1]
+
+
+def test_interactive_refuses_to_claim_termination_when_cleanup_fails(
+    monkeypatch, frontend, capsys
+):
+    terminals(monkeypatch, stdin=False, stdout=False)
+    calls = 0
+
+    def cleanup_fails(_argv, *a, **k):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise KeyboardInterrupt
+        return types.SimpleNamespace(returncode=4)
+
+    monkeypatch.setattr(run_mod.subprocess, "run", cleanup_fails)
+
+    with pytest.raises(typer.Exit) as exc:
+        invoke(interactive=True)
+
+    assert exc.value.exit_code == 1
+    assert "termination could not be verified" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("failure", [subprocess.TimeoutExpired("docker", 5), OSError("lost")])
+def test_interactive_cleanup_exceptions_fail_closed(monkeypatch, failure):
+    def fail(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(run_mod.subprocess, "run", fail)
+
+    assert not run_mod._kill_interactive_process_group("container-abc", "/tmp/run.pid")
 
 
 def test_interactive_quoting_survives_the_round_trip(monkeypatch, frontend, spy_exec):
