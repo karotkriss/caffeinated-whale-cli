@@ -274,6 +274,72 @@ class TestArchiveHonesty:
         assert any(w.code == "rm_site.archive_not_copied" for w in result.warnings)
         assert not [c for c in container.calls if isinstance(c, list) and c[:2] == ["rm", "-rf"]]
 
+    def test_post_drop_archive_listing_exception_returns_an_honest_outcome(
+        self, monkeypatch, container
+    ):
+        original = container.exec_run
+        finds = 0
+
+        def _exec_run(cmd, workdir=None, **kwargs):
+            nonlocal finds
+            if cmd[0] == "find":
+                finds += 1
+                if finds == 2:
+                    raise RuntimeError("Docker connection lost")
+            return original(cmd, workdir=workdir, **kwargs)
+
+        monkeypatch.setattr(container, "exec_run", _exec_run)
+
+        result = core_rm_site.drop_site("proj", SITE, consent=True)
+
+        assert result.status is Status.WARNING
+        assert result.data.ok is False
+        assert result.data.archived_host_path is None
+        assert any(w.code == "rm_site.archive_not_found" for w in result.warnings)
+
+    def test_post_drop_archive_probe_exception_returns_an_honest_outcome(
+        self, monkeypatch, container
+    ):
+        original = container.exec_run
+
+        def _exec_run(cmd, workdir=None, **kwargs):
+            if (
+                container._dropped
+                and cmd[:2] == ["test", "-d"]
+                and cmd[2] == f"{BENCH}/archived/sites/{SITE}"
+            ):
+                raise RuntimeError("Docker connection lost")
+            return original(cmd, workdir=workdir, **kwargs)
+
+        monkeypatch.setattr(container, "exec_run", _exec_run)
+
+        result = core_rm_site.drop_site("proj", SITE, consent=True)
+
+        assert result.status is Status.WARNING
+        assert result.data.ok is False
+        assert result.data.archived_host_path is None
+        assert any(w.code == "rm_site.archive_probe_failed" for w in result.warnings)
+
+    def test_post_drop_prune_exception_keeps_the_verified_copy_and_reports_not_ok(
+        self, monkeypatch, container
+    ):
+        original = container.exec_run
+
+        def _exec_run(cmd, workdir=None, **kwargs):
+            if cmd[:2] == ["rm", "-rf"]:
+                raise RuntimeError("Docker connection lost")
+            return original(cmd, workdir=workdir, **kwargs)
+
+        monkeypatch.setattr(container, "exec_run", _exec_run)
+
+        result = core_rm_site.drop_site("proj", SITE, consent=True)
+
+        assert result.status is Status.WARNING
+        assert result.data.ok is False
+        assert result.data.archived_host_path is not None
+        assert result.data.archive_pruned_in_container is False
+        assert any(w.code == "rm_site.archive_not_pruned" for w in result.warnings)
+
 
 # ----------------------------------------------------------------------- hard failures
 
