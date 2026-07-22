@@ -92,7 +92,8 @@ See [../docs/testing/README.md](../docs/testing/README.md) for the per-area brea
 `test_start_status_new_behavior_e2e.py`, `test_per_process_supervisor_e2e.py`,
 `test_status_unsupervised_e2e.py`, `test_logs_orphan_tail_e2e.py`,
 `test_unlock_e2e.py`, `test_label_e2e.py`, `test_axi_rm_e2e.py`,
-`test_rm_site_e2e.py`, `test_harness_safety.py`); run `ls tests/e2e/`
+`test_rm_site_e2e.py`, `test_multibench_correctness_e2e.py`,
+`test_harness_safety.py`); run `ls tests/e2e/`
 for the current list. They are not part of the count above since they need a
 Docker daemon and are excluded from a bare `pytest`. `test_axi_rm_e2e.py` is the
 permanent net for `cwcli axi rm` (`add-axi-rm-verb`): its own dedicated instance
@@ -118,6 +119,15 @@ features honcho's all-or-nothing model made impossible: supervisord as the live
 supervisor, `cwcli restart --process`/`cwcli axi restart --process` cycling one program
 while its siblings keep their pids, auto-heal after a killed process, `cwcli logs
 --process`, and the unknown-process usage error.
+`test_multibench_correctness_e2e.py` is the net for the multibench correctness
+fixes, each asserting the POSITIVE before the negative (a check that also passes
+against a dead instance proves nothing): the web probe naming the bench's site so a
+healthy bench reads 200 rather than the multi-tenant 404, `status` staying a pure
+read that never resurrects a deliberately stopped bench, `cwcli stop --bench` /
+`cwcli axi stop --bench` ending one bench while the containers and siblings keep
+running, `cwcli restart --bench` relaunching the bench it was named, and the
+advertised address (the `init` banner and `cwcli open`) resolving to the published
+host port rather than the container's.
 `test_logs_orphan_tail_e2e.py` (`cwcli-logs-orphan-tail-o5`) guards the orphan
 `tail -F` regression: a non-TTY `cwcli logs --follow` (agent/pipe) Ctrl+C'd out used
 to leave the exec'd tail running INSIDE the container forever (no kill-exec API,
