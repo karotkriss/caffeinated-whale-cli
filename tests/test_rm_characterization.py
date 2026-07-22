@@ -189,6 +189,7 @@ def _wire(monkeypatch, containers, volumes, *, cached=None):
     """
     _patch_attr(monkeypatch, "get_project_containers", lambda name: list(containers))
     _patch_attr(monkeypatch, "get_project_volumes", lambda name: list(volumes))
+    _patch_attr(monkeypatch, "get_project_networks", lambda name: [])
     monkeypatch.setattr(db_utils, "clear_cache_for_project", lambda name: None)
     monkeypatch.setattr(db_utils, "get_cached_project_data", lambda name: cached)
     # Recache is a frontend concern; no-op it so the command does not touch Docker.

@@ -43,6 +43,7 @@ def _outcome(**kwargs):
         containers_removed=4,
         volumes_removed=2,
         dir_removed=True,
+        network_removed=True,
         backup_ok=True,
         failures=[],
     )

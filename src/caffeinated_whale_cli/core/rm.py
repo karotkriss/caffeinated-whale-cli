@@ -1,13 +1,15 @@
-"""``core.remove`` - delete a project's containers, named volumes, and directory.
+"""``core.remove`` - delete a project's containers, named volumes, network, and directory.
 
 The migrated ``commands/rm.py:_remove_project`` and its data-destruction
 helpers: the verified copy-out backup gate (C1), the container-removal loop, the
-named-volume + project-directory deletion (issue #19), the multi-bench per-bench
-backup fan-out, the path-traversal name guard (H5), the honest-exit accounting
-(M11), and the cache-clear-on-clean-removal rule. It prints, prompts, and exits
-nothing: it emits progress and warnings through the typed-event ``on_event``
-callback, raises :class:`~.errors.CwcliError` for hard failures (invalid name,
-Docker unreachable), and otherwise returns ``Result(status, RemovalOutcome(...))``
+named-volume + project-directory deletion (issue #19), the project's own compose
+network removal (by exact compose-project label, never a prune - see
+``_remove_project_network``), the multi-bench per-bench backup fan-out, the
+path-traversal name guard (H5), the honest-exit accounting (M11), and the
+cache-clear-on-clean-removal rule. It prints, prompts, and exits nothing: it
+emits progress and warnings through the typed-event ``on_event`` callback,
+raises :class:`~.errors.CwcliError` for hard failures (invalid name, Docker
+unreachable), and otherwise returns ``Result(status, RemovalOutcome(...))``
 carrying the tri-state result as plain data.
 
 This is ONE plain function, the ``core.backup``/``core.update`` shape, not a
@@ -46,7 +48,7 @@ from pathlib import Path
 
 from ..utils import bench_sites, db_utils
 from ..utils.config_utils import PROJECTS_DIR, cwcli_home
-from .docker import get_project_containers, get_project_volumes
+from .docker import get_project_containers, get_project_networks, get_project_volumes
 from .envelope import Result, Status
 from .errors import CwcliError, ErrorKind
 from .resolvers import DEFAULT_BENCH_PATH
@@ -69,6 +71,12 @@ class RemovalOutcome:
     caller must exit non-zero; ``found=False`` means the project was genuinely
     absent (an exit-0 no-op for the human CLI). ``backup_ok`` is True unless a
     backup was attempted on the ``--volumes`` path and did not fully succeed.
+    ``network_removed`` is True only if the project's own compose network was
+    actually deleted this run - False covers BOTH "there was none to remove"
+    and "it could not be removed"; the latter always adds an entry to
+    ``failures`` too, so the two are only distinguishable together, mirroring
+    how ``dir_removed`` already reports "was something deleted" rather than
+    "is the project now clean".
     """
 
     project: str
@@ -77,6 +85,7 @@ class RemovalOutcome:
     containers_removed: int
     volumes_removed: int
     dir_removed: bool
+    network_removed: bool
     backup_ok: bool
     failures: list[str] = field(default_factory=list)
 
@@ -540,6 +549,81 @@ def _remove_named_volumes(
     return removed
 
 
+def _remove_project_network(
+    project_name: str,
+    emit: OnEvent,
+    failures: list[str] | None = None,
+) -> bool:
+    """Remove the project's own Docker Compose network, by exact compose-project label.
+
+    Compose creates and labels one network per project (typically
+    ``<project>_default``); neither ``Container.remove(v=True)`` nor
+    :func:`_remove_named_volumes` above ever touches it, so - before this - it
+    outlived every other removal step and accumulated forever, each leaked
+    network consuming a slice of Docker's finite address pool until an
+    unrelated command failed with "could not find an available, non-overlapping
+    IPv4 address pool", naming nothing about this being the cause. Scoped to
+    THIS project's network only, via the same ``com.docker.compose.project``
+    label the container/volume lookups use (an exact-value match, never a name
+    prefix or a broad ``network prune`` - the fleet forbids prune outright).
+
+    A network that still has an endpoint attached from OUTSIDE this project (a
+    container manually joined to it, or one of this project's own containers
+    that failed to be removed above) cannot be deleted without disconnecting
+    that endpoint first, and this function never does that: disconnecting
+    something it does not know it owns is a bigger blast radius than the leak
+    it exists to close. Docker's own API refuses the delete in that case
+    (``network has active endpoints``); the refusal is reported as a failure
+    with a self-explaining hint, never silently skipped and never forced
+    through.
+
+    Returns True only if a network was found AND removed; False if none
+    existed (nothing to do) or a removal failed - the caller distinguishes the
+    two via ``failures``, mirroring how ``dir_removed`` already reports "was
+    something actually deleted", not "is the leak now clean".
+    """
+    networks = get_project_networks(project_name)
+
+    if networks is None:
+        emit(
+            RmWarning(
+                text=(f"Could not enumerate the network for '{project_name}'; it may remain.")
+            )
+        )
+        if failures is not None:
+            failures.append(f"could not enumerate the network for '{project_name}'")
+        return False
+
+    if not networks:
+        emit(RmTrace(text=f"No network found for '{project_name}'"))
+        return False
+
+    removed = False
+    for network in networks:
+        try:
+            emit(RmStep(label=f"Removing network '{network.name}'...", style="red"))
+            emit(RmTrace(text=f"Removing network '{network.name}'"))
+            network.remove()
+            emit(RmNotice(text=f"Removed network '{network.name}' for '{project_name}'"))
+            removed = True
+        except Exception as e:
+            emit(
+                RmWarning(
+                    text=(f"Could not remove network '{network.name}' for '{project_name}': {e}"),
+                    hint=(
+                        "A container outside this project may still be attached to it. "
+                        "Disconnect it, then remove the network manually with "
+                        f"'docker network rm {network.name}'."
+                    ),
+                )
+            )
+            if failures is not None:
+                failures.append(f"could not remove network '{network.name}'")
+            emit(RmTrace(text=f"Exception: {e}"))
+
+    return removed
+
+
 def _archive_project_directory(
     project_name: str,
     emit: OnEvent,
@@ -700,7 +784,7 @@ def remove(
     no_backup: bool = False,
     on_event: OnEvent | None = None,
 ) -> Result[RemovalOutcome]:
-    """Remove a single project's containers, named volumes, and directory.
+    """Remove a single project's containers, named volumes, network, and directory.
 
     See the module docstring. Raises :class:`~.errors.CwcliError` (``USAGE`` for
     an invalid name, ``DOCKER`` when the daemon is unreachable); otherwise returns
@@ -715,6 +799,7 @@ def remove(
     containers_removed = 0
     volumes_removed = 0
     dir_removed = False
+    network_removed = False
     backup_ok = True
     failures: list[str] = []
 
@@ -729,6 +814,7 @@ def remove(
                 containers_removed=containers_removed,
                 volumes_removed=volumes_removed,
                 dir_removed=dir_removed,
+                network_removed=network_removed,
                 backup_ok=backup_ok,
                 failures=failures,
             ),
@@ -960,7 +1046,7 @@ def remove(
         if archive_failed:
             reasons.append("its configuration could not be archived")
         message = (
-            f"Skipping volume and directory removal for '{project_name}' because "
+            f"Skipping volume, network, and directory removal for '{project_name}' because "
             + " and ".join(reasons)
             + "."
         )
@@ -973,6 +1059,14 @@ def remove(
         if remove_volumes:
             emit(RmStep(label=f"Removing volumes for '{project_name}'...", style="red"))
             volumes_removed = _remove_named_volumes(project_name, emit, failures=failures)
+
+        # Remove the project's own compose network. Attempted regardless of
+        # --no-volumes: unlike the named volumes, the network holds none of the
+        # user's data, so keeping it is never a safety choice - see
+        # _remove_project_network's docstring for why a failure here refuses
+        # rather than forces.
+        emit(RmStep(label=f"Removing network for '{project_name}'...", style="red"))
+        network_removed = _remove_project_network(project_name, emit, failures=failures)
 
         # Remove the local project directory (deleted regardless of --no-volumes:
         # it is config, not data, and leaving it behind is the issue #19 bug).

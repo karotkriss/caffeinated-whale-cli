@@ -247,6 +247,13 @@ def project_volumes(project: str) -> list[str]:
     ).stdout.split()
 
 
+def project_networks(project: str) -> list[str]:
+    """IDs of every network labelled with this compose project (exact-label match)."""
+    return _docker(
+        "network", "ls", "-q", "--filter", f"label=com.docker.compose.project={project}"
+    ).stdout.split()
+
+
 def docker_cp_out(project: str, container_path: str, host_path: Path) -> bool:
     """Copy a file out of the frappe container to the host. Returns success."""
     cid = frappe_container_id(project)

@@ -189,6 +189,7 @@ class TestRmStoppedProjectSkipsRecache:
                         containers_removed=0,
                         volumes_removed=0,
                         dir_removed=False,
+                        network_removed=False,
                         backup_ok=True,
                         failures=[],
                     ),
@@ -238,6 +239,7 @@ class TestStoppedRemoveProjectFailsClosed:
         _patch_attr(monkeypatch, "PROJECTS_DIR", cwcli_home / "projects")
         _patch_attr(monkeypatch, "get_project_containers", lambda name: [container])
         _patch_attr(monkeypatch, "get_project_volumes", lambda name: list(volumes))
+        _patch_attr(monkeypatch, "get_project_networks", lambda name: [])
         monkeypatch.setattr(db_utils, "clear_cache_for_project", lambda name: None)
         return project_dir
 
@@ -323,6 +325,7 @@ class TestStoppedRemoveProjectFailsClosed:
         _patch_attr(monkeypatch, "PROJECTS_DIR", cwcli_home / "projects")
         _patch_attr(monkeypatch, "get_project_containers", lambda name: [])
         _patch_attr(monkeypatch, "get_project_volumes", lambda name: list(volumes))
+        _patch_attr(monkeypatch, "get_project_networks", lambda name: [])
         monkeypatch.setattr(db_utils, "clear_cache_for_project", lambda name: None)
 
         result = _remove_project("proj", remove_volumes=True, no_backup=False)
@@ -345,6 +348,7 @@ class TestStoppedRemoveProjectFailsClosed:
         _patch_attr(monkeypatch, "PROJECTS_DIR", cwcli_home / "projects")
         _patch_attr(monkeypatch, "get_project_containers", lambda name: [])
         _patch_attr(monkeypatch, "get_project_volumes", lambda name: list(volumes))
+        _patch_attr(monkeypatch, "get_project_networks", lambda name: [])
         monkeypatch.setattr(db_utils, "clear_cache_for_project", lambda name: None)
 
         result = _remove_project("proj", remove_volumes=True, no_backup=True)
