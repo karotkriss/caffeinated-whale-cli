@@ -93,7 +93,7 @@ Run `uvx --from caffeinated-whale-cli cwcli axi <verb> --help` for a verb's flag
 - **Never prompts.** A missing decision is a usage error naming the flag, never a hang. If a verb seems to want input, pass the flag its `help:` line names.
 - **Read verbs exit 0 even when the news is bad.** `axi status` on a fully stopped project, and `axi self-update --check` on an outdated install, both succeeded - the answer is in the document, not the exit code.
 - **`axi` output is always TOON, never JSON.** JSON lives on the human commands' `--json` flag. Do not pass `--json` to an `axi` verb.
-- **Most destructive verbs are deliberately absent.** `axi apps install` only ever creates the app being installed's own tables, and refuses (exit 1) instead of running if the app is already on the target site. There is no `axi apps uninstall` (uninstalling an app drops its tables), and no `axi restore` or `axi rm`. Ask the user to run the human command for those; do not work around this.
+- **Destructive access is verb-specific.** Registered verbs such as `axi rm` and `axi rm-site` carry their own consent and data-safety gates; follow each verb's help exactly. There is no `axi apps uninstall` (uninstalling an app drops its tables) or `axi restore`. Ask the user to run the human command for those operations; do not work around their absence.
 
 ## Ambient context (optional)
 
