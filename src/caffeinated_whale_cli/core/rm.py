@@ -845,6 +845,7 @@ def remove(
     dir_existed = project_dir.exists()
 
     is_orphan = not containers
+    orphan_volumes = None
     if is_orphan:
         # No containers left. The project may still have orphaned named volumes,
         # an orphaned network, or a lingering local directory. Clean those up
@@ -884,6 +885,13 @@ def remove(
     # stopped frappe container is a normal rm case: do NOT attempt those
     # exec-based steps against it. The conf/ safety net is copied host-side below.
     frappe_running = frappe_container is not None and frappe_container.status == "running"
+    volume_free_orphan_exemption = (
+        is_orphan
+        and orphan_volumes is not None
+        and not orphan_volumes
+        and remove_volumes
+        and not no_backup
+    )
 
     if frappe_running:
         bench_paths = _resolve_bench_paths(project_name, frappe_container, emit)
@@ -936,15 +944,8 @@ def remove(
                         )
                     )
                 )
-    elif is_orphan and orphan_volumes is not None and not orphan_volumes:
-        emit(
-            RmWarning(
-                text=(
-                    f"No named volumes were found for '{project_name}', so no database "
-                    "backup was needed."
-                )
-            )
-        )
+    elif volume_free_orphan_exemption:
+        backup_ok = True
     elif remove_volumes and not no_backup:
         # No running frappe container, so a live `bench backup` is impossible -
         # and this is the data-destroying path. Mark the backup not-OK so the
@@ -1054,7 +1055,26 @@ def remove(
     # conf/ config archive succeeded. (The verified live backup is enforced
     # EARLIER, as an abort before any container is removed.)
     archive_failed = dir_existed and not archived_ok
-    gate_blocked = container_removal_failed or archive_failed
+    volume_recheck_failed = False
+    if volume_free_orphan_exemption:
+        cleanup_volumes = get_project_volumes(project_name)
+        if cleanup_volumes is None:
+            volume_recheck_failed = True
+            backup_ok = False
+        elif cleanup_volumes:
+            volume_recheck_failed = True
+            backup_ok = False
+        else:
+            emit(
+                RmWarning(
+                    text=(
+                        f"No named volumes were found for '{project_name}', so no database "
+                        "backup was needed."
+                    )
+                )
+            )
+
+    gate_blocked = container_removal_failed or archive_failed or volume_recheck_failed
 
     if gate_blocked:
         reasons = []
@@ -1062,6 +1082,8 @@ def remove(
             reasons.append("one or more containers could not be removed")
         if archive_failed:
             reasons.append("its configuration could not be archived")
+        if volume_recheck_failed:
+            reasons.append("its named-volume state changed or could not be verified")
         message = (
             f"Skipping volume, network, and directory removal for '{project_name}' because "
             + " and ".join(reasons)
@@ -1073,7 +1095,7 @@ def remove(
         # Remove named compose volumes. Anonymous volumes were already handled by
         # container.remove(v=remove_volumes), but the named volumes that hold the
         # databases and sites must be removed explicitly or the data survives.
-        if remove_volumes:
+        if remove_volumes and not volume_free_orphan_exemption:
             emit(RmStep(label=f"Removing volumes for '{project_name}'...", style="red"))
             volumes_removed = _remove_named_volumes(project_name, emit, failures=failures)
 

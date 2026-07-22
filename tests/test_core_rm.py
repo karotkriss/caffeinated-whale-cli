@@ -299,6 +299,42 @@ class TestNetworkRemoval:
         assert result.data.failures
         network.remove.assert_not_called()
 
+    def test_volume_appearing_after_exemption_is_never_deleted(
+        self, cwcli_home, monkeypatch
+    ):
+        volume = _make_volume("proj_late_data")
+        network = _make_network("proj_default")
+        volume_queries = iter([[], [volume]])
+        _wire(monkeypatch, [], [], networks=[network])
+        monkeypatch.setattr(core_rm, "get_project_volumes", lambda name: next(volume_queries))
+
+        result = core_rm.remove("proj")
+
+        assert result.data.backup_ok is False
+        assert result.data.volumes_removed == 0
+        assert result.data.network_removed is False
+        assert result.data.failures
+        assert any("named-volume state" in failure for failure in result.data.failures)
+        volume.remove.assert_not_called()
+        network.remove.assert_not_called()
+
+    def test_unknown_volume_state_after_exemption_fails_closed(
+        self, cwcli_home, monkeypatch
+    ):
+        network = _make_network("proj_default")
+        volume_queries = iter([[], None])
+        _wire(monkeypatch, [], [], networks=[network])
+        monkeypatch.setattr(core_rm, "get_project_volumes", lambda name: next(volume_queries))
+
+        result = core_rm.remove("proj")
+
+        assert result.data.backup_ok is False
+        assert result.data.volumes_removed == 0
+        assert result.data.network_removed is False
+        assert result.data.failures
+        assert any("named-volume state" in failure for failure in result.data.failures)
+        network.remove.assert_not_called()
+
     def test_network_removed_regardless_of_no_volumes(self, cwcli_home, monkeypatch):
         """The network holds no user data, so --no-volumes must not spare it."""
         _make_project_dir(cwcli_home / "projects", "proj")
