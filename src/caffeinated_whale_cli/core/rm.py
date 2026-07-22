@@ -852,7 +852,13 @@ def remove(
         # typo / not found.
         orphan_volumes = get_project_volumes(project_name)
         orphan_networks = get_project_networks(project_name)
-        if not dir_existed and not orphan_volumes and not orphan_networks:
+        if (
+            not dir_existed
+            and orphan_volumes is not None
+            and not orphan_volumes
+            and orphan_networks is not None
+            and not orphan_networks
+        ):
             return _result()  # found stays False -> the frontend renders "not found"
         orphan = True
 
