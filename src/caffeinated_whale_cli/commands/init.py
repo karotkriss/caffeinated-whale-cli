@@ -22,7 +22,9 @@ from collections.abc import Callable
 import questionary
 import typer
 
+from ..core import docker as core_docker
 from ..core import init as core_init
+from ..core import resolvers as core_resolvers
 from ..core import start as core_start
 from ..core.envelope import Choice, Status
 from ..core.errors import CwcliError
@@ -316,6 +318,24 @@ def _refresh_cache(project: str, verbose: bool) -> None:
             "[yellow]Warning:[/yellow] bench created, but caching its bench path failed; "
             "run 'cwcli inspect --update' to refresh."
         )
+
+
+def _bench_web_url(project: str, bench_path: str, site: str) -> str | None:
+    """The new bench's REAL host URL for the success banner, or None.
+
+    The banner used to hardcode ``http://{site}:8000``, which is wrong twice over on
+    any real instance: 8000 is a CONTAINER port (a ``--port 21000`` instance
+    publishes it as 21000), and every bench past the first serves its own
+    ``make_ports`` assignment (bench 1 is 8001 -> 21001). Both hops now come from
+    ``resolvers.resolve_host_web_url``, the one reader of that question. Degrades to
+    None - and the banner then simply omits the line - rather than printing an
+    address the user cannot reach.
+    """
+    try:
+        container = core_docker.get_frappe_container(project)
+        return core_resolvers.resolve_host_web_url(container, bench_path, site=site)
+    except Exception:  # noqa: BLE001 - a banner hint must never fail a successful init
+        return None
 
 
 def _start_services(project: str, bench_path: str) -> tuple[bool, bool | None]:
@@ -668,31 +688,39 @@ def init(
     if start_services:
         services_running, web_ready = _start_services(project, report.bench_path)
 
+    web_url = _bench_web_url(project, report.bench_path, report.site_name)
+
     console.print()
     if services_running and web_ready is not False:
         console.print(f"[bold green]✓[/bold green] Dev services are running for '{project}'.")
-        console.print(
-            f"[dim]Open:    http://{report.site_name}:8000  (or `cwcli open {project}`)[/dim]"
-        )
+        if web_url:
+            console.print(f"[dim]Open:    {web_url}  (or `cwcli open {project}`)[/dim]")
+        else:
+            console.print(f"[dim]Open:    cwcli open {project}[/dim]")
         console.print(f"[dim]Logs:    cwcli logs {project}[/dim]")
         console.print(f"[dim]Stop:    cwcli stop {project}[/dim]")
         console.print(f"[dim]Restart: cwcli restart {project}[/dim]")
-        if install_erpnext:
-            console.print(f"[dim]ERPNext is installed at http://{report.site_name}:8000.[/dim]")
+        if install_erpnext and web_url:
+            console.print(f"[dim]ERPNext is installed at {web_url}.[/dim]")
+        elif install_erpnext:
+            console.print("[dim]ERPNext is installed.[/dim]")
     else:
         if start_services:
             console.print(f"[dim]Dev services are not running for '{project}'.[/dim]")
         else:
             console.print("[dim]Dev services were not started (--no-start).[/dim]")
         console.print(f"[dim]Start them: cwcli start {project}[/dim]")
-        console.print(
-            f"[dim]Then open http://{report.site_name}:8000 (or `cwcli open {project}`).[/dim]"
-        )
-        if install_erpnext:
+        if web_url:
+            console.print(f"[dim]Then open {web_url} (or `cwcli open {project}`).[/dim]")
+        else:
+            console.print(f"[dim]Then run `cwcli open {project}`.[/dim]")
+        if install_erpnext and web_url:
             console.print(
                 f"[dim]ERPNext is installed; it will be reachable at "
-                f"http://{report.site_name}:8000 once services are running.[/dim]"
+                f"{web_url} once services are running.[/dim]"
             )
+        elif install_erpnext:
+            console.print("[dim]ERPNext is installed.[/dim]")
 
     # Show the generated admin password once - and only when a site was actually
     # created this run. On an idempotent re-run bench new-site is skipped

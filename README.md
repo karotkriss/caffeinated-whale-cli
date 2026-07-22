@@ -478,7 +478,8 @@ Warning: Some ports needed by 'frappe-one' are in use by other Frappe projects:
 
 ### `stop` - Stop Containers
 
-Stops a running project's containers.
+Stops a running project's containers, or with `--bench`, just one bench's dev
+processes.
 
 ```bash
 cwcli stop [OPTIONS] [PROJECT_NAME]...
@@ -494,7 +495,14 @@ cwcli stop [OPTIONS] [PROJECT_NAME]...
 
 | Option | Description |
 |--------|-------------|
+| `--bench TEXT` | Stop only this bench's dev processes (numeric index or label), leaving sibling benches and every container running. Omit to stop the whole instance |
 | `-v`, `--verbose` | Enable verbose diagnostic output |
+
+`--bench` is the inverse of `cwcli start --bench`: an instance is one container
+holding sibling benches, so stopping a single bench ends that bench's own
+supervisor rather than stopping any container. Sibling benches keep serving, the
+containers stay up, and `cwcli start --bench` brings it back. Stopping a bench
+that is already stopped is a success, not an error.
 
 **Example:**
 
@@ -504,6 +512,9 @@ cwcli stop frappe-one
 
 # Stop multiple projects
 cwcli stop frappe-one frappe-two
+
+# Stop just bench 1's dev processes; bench 0 keeps serving
+cwcli stop frappe-one --bench 1
 ```
 
 ---
@@ -535,8 +546,12 @@ cwcli restart [OPTIONS] [PROJECT_NAME]...
 | Option | Description |
 |--------|-------------|
 | `-p`, `--process TEXT` | Restart ONE Procfile process (e.g. `web`, `worker`, `socketio`), leaving its siblings running. Omit to restart the whole stack |
-| `--bench TEXT` | Which bench the `--process` belongs to: its numeric index or label (multi-bench projects) |
+| `--bench TEXT` | Which bench to act on: its numeric index or label (multi-bench projects). With `--process` it selects the process's bench; without it, the bench relaunched once the containers are back |
 | `-v`, `--verbose` | Enable verbose diagnostic output |
+
+On a multi-bench project a whole-stack restart takes every container down and
+brings **one** bench back up; `--bench` names which. Omitted, it relaunches the
+first bench and says so.
 
 **Example:**
 
@@ -546,6 +561,9 @@ cwcli restart frappe-one
 
 # Restart just the web process (siblings keep running)
 cwcli restart frappe-one --process web
+
+# Whole-stack restart, bringing bench 1 back up
+cwcli restart frappe-one --bench 1
 ```
 
 **Example Output:**
@@ -1643,6 +1661,15 @@ multi-bench instance that measures a *different* bench's web server. A bench who
 port is unknown does not `degraded` on that account: cwcli not knowing where to look
 is a gap in cwcli's knowledge, not a fault in the bench.
 
+**The probe names the bench's site.** Frappe is multi-tenant and routes by the
+`Host` header, so a request naming no site is correctly answered `404` by a
+perfectly healthy bench - which is what `status` used to report on every read. The
+probe now sends the bench's site as its `Host`, so a healthy bench reads `200`, and
+the report says which site it asked for (`web_site`, shown as `web <site>:<port> ->
+<code>`). That keeps the code attributable the same way the port does: it is that
+site's code, not a claim about the bench as a whole. A bench with no site recorded
+probes without a `Host` header, as before, and reports `web_site: null`.
+
 A truly-nonexistent project name (a typo, or one never created - no containers
 with the label at all) is NOT `offline`: it exits non-zero with a "no such
 project" error on stderr, so a script can tell a stopped instance apart from a
@@ -1901,7 +1928,7 @@ cwcli run my-project migrate --bench 1          # by index
 cwcli update my-project --app erpnext --bench staging   # by label
 ```
 
-`--bench` is available on `run`, `backup`, `update`, `open`, `unlock`, `restore`, `rm-site`, and `start`. Setting labels lives in the [`label`](#label---manage-bench-labels) command.
+`--bench` is available on `run`, `backup`, `update`, `open`, `unlock`, `restore`, `rm-site`, `start`, `stop`, `restart`, `status`, and `logs`. Setting labels lives in the [`label`](#label---manage-bench-labels) command.
 
 **No silent guessing on data commands:**
 
@@ -1917,7 +1944,8 @@ Single-bench projects are unaffected: with only one bench, that bench is used au
 
 `start` and `cwcli restart --process` mutate one bench, so on a multi-bench project with no `--bench` they prompt which bench interactively and refuse (non-zero) on a non-TTY.
 `status` is a read and reports every bench when `--bench` is omitted; it never prompts.
-A whole-stack `cwcli restart` (no `--process`) restarts each project's default bench.
+A whole-stack `cwcli restart` (no `--process`) takes every container down and brings **one** bench back up: `--bench` names which, and omitted it relaunches the first bench and says so.
+`cwcli stop --bench` stops one bench's dev processes and leaves the containers and sibling benches running - the inverse of `cwcli start --bench`. Without `--bench`, `stop` stops the whole instance's containers, which takes every bench in it down.
 
 **`--path` escape hatch:** `-p`/`--path` still accepts an explicit bench directory for cases outside the cached set. It takes precedence over `--bench`, but the two cannot be combined (that is an error).
 
@@ -1985,6 +2013,10 @@ cwcli axi unlock frappe-one --site development.localhost
 # Stop a project's containers; the outcome prints as TOON. Idempotent: an
 # already-stopped project is a definitive success (already_stopped: true).
 cwcli axi stop frappe-one
+
+# Stop ONE bench's dev processes, leaving sibling benches and every container
+# running (the inverse of `cwcli axi start --bench`). Also idempotent.
+cwcli axi stop frappe-one --bench 1
 
 # Start a project's containers + bench; the outcome (including already_running)
 # prints as TOON. --bench selects a bench on a multi-bench project; --yes
@@ -2081,7 +2113,7 @@ cwcli axi self-update --check
 cwcli axi config
 ```
 
-`cwcli axi ls`, `cwcli axi where`, `cwcli axi backup`, `cwcli axi unlock`, `cwcli axi stop`, `cwcli axi start`, `cwcli axi status`, `cwcli axi restart`, `cwcli axi inspect`, `cwcli axi benches`, and `cwcli axi label` run on the same logic core as their human counterparts; only the output (always TOON, never JSON) and choice-handling differ. `cwcli axi start` never prompts: an ambiguous multi-bench project is a `--bench` usage error (exit 2), and an unresolved port conflict is a `CONFLICT` error naming `--yes` (exit 1). `cwcli axi unlock` follows `cwcli axi backup`'s conventions exactly: an ambiguous multi-bench project is a `--bench` usage error (exit 2) and a stopped instance is a usage error pointing at `cwcli start` (exit 2). `cwcli axi stop` is idempotent for an agent - stopping an already-stopped project is a success, not an error. `cwcli axi where` answers from the cache, which outlives the instances it describes, so every match carries `project_state` (`present`, `absent`, or `unverified`) and the document carries `verified`: an agent must read those before acting on a hit, because an `absent` row describes an instance that no longer exists and an `unverified` row means the liveness check could not run. An unreachable Docker daemon degrades the whole answer to `unverified` rather than vouching for it, and `--no-verify` skips the check (reporting `unverified`) when a caller has already established liveness. `cwcli axi status` always exits 0, leading with the instance `overall` aggregate (`offline`/`online`/`running`/`degraded`). It reports **every** bench, in one document, under `benches[N]` - with no `--bench` it used to refuse a multi-bench project with exit 2 and send you off to `cwcli axi benches` to poll once per bench, reassembling the instance view from documents that never said which bench they described. The shape is uniform, so `supervisor_up`, `web_http_code`, `processes` and `not_cwcli_supervised` live inside `benches[i]` even for a single-bench project (`benches[0].processes`), and there is one parse path rather than a branch on bench count. Each bench also carries `index`, `bench_path`, `label`, its own `overall`, and `web_port`/`web_port_verified`: the port that bench's `web_http_code` was actually measured on. When that port cannot be read it is `null`/`false` and **no probe was made** - cwcli never falls back to `:8000`, because on a multi-bench instance that reports a different bench's web server as this one's. A stopped instance carries `benches: []`. `cwcli axi restart` requires `--process`; an unknown/ambiguous process is a usage error listing the valid labels (exit 2). `cwcli axi inspect` serves whichever freshness tier answers the request (`served_from` names it) and, unlike every other bench-scoped verb, has deliberately NO `--yes` - a stopped project on the refresh path is a usage error (exit 2) naming `cwcli start`, and a drift escalation that can no longer discover the bench serves the cached data with `degraded: true` and a warning (exit 0). Every site also carries `installed_apps_verified`: only a full read actually re-observes an app's installed version and git ref, so a cache or partial read carries the remembered list forward unverified and, when that list is non-empty, adds a warning naming `--update` - an agent must not treat an unverified `installed_apps` entry as the live git state. `cwcli axi benches` is the discovery verb behind every other verb's `--bench`: when a bench-scoped verb reports "multiple benches; pass `--bench <index|label>`", this is what tells you the valid values, and a project that has never been inspected is a structured error naming `cwcli axi inspect` rather than an empty list. `cwcli axi label` never starts a stopped project (the label marker lives inside the bench), and listing is deliberately `cwcli axi benches` rather than a mode of the mutation verb. `cwcli axi self-update --check` is read-only and **exits 0 whenever the check succeeds, including when an update is available** - the answer is the `is_outdated` field, not the exit code, because on the agent surface a non-zero exit means an error. This deliberately differs from the human `cwcli self-update --check`, which exits 1 when an update is available so shell scripts can gate on it; the mutating `cwcli axi self-update` is deliberately not offered. `cwcli axi config` is the read-only counterpart of `cwcli config show`: one TOON document carrying the search paths, all three auto-inspect state stores, the tips setting, and the file locations. **No config-mutating axi verbs exist** (no `paths add`/`remove`, no `cache clear`, no `auto-inspect enable`/`disable`): an agent rewriting the user's search paths or wiping the cache is a product decision that deserves its own evidence, so mutations stay on the human `cwcli config` surface (whose reads all have `--json`).
+`cwcli axi ls`, `cwcli axi where`, `cwcli axi backup`, `cwcli axi unlock`, `cwcli axi stop`, `cwcli axi start`, `cwcli axi status`, `cwcli axi restart`, `cwcli axi inspect`, `cwcli axi benches`, and `cwcli axi label` run on the same logic core as their human counterparts; only the output (always TOON, never JSON) and choice-handling differ. `cwcli axi start` never prompts: an ambiguous multi-bench project is a `--bench` usage error (exit 2), and an unresolved port conflict is a `CONFLICT` error naming `--yes` (exit 1). `cwcli axi unlock` follows `cwcli axi backup`'s conventions exactly: an ambiguous multi-bench project is a `--bench` usage error (exit 2) and a stopped instance is a usage error pointing at `cwcli start` (exit 2). `cwcli axi stop` is idempotent for an agent - stopping an already-stopped project is a success, not an error. `cwcli axi where` answers from the cache, which outlives the instances it describes, so every match carries `project_state` (`present`, `absent`, or `unverified`) and the document carries `verified`: an agent must read those before acting on a hit, because an `absent` row describes an instance that no longer exists and an `unverified` row means the liveness check could not run. An unreachable Docker daemon degrades the whole answer to `unverified` rather than vouching for it, and `--no-verify` skips the check (reporting `unverified`) when a caller has already established liveness. `cwcli axi status` always exits 0, leading with the instance `overall` aggregate (`offline`/`online`/`running`/`degraded`). It reports **every** bench, in one document, under `benches[N]` - with no `--bench` it used to refuse a multi-bench project with exit 2 and send you off to `cwcli axi benches` to poll once per bench, reassembling the instance view from documents that never said which bench they described. The shape is uniform, so `supervisor_up`, `web_http_code`, `processes` and `not_cwcli_supervised` live inside `benches[i]` even for a single-bench project (`benches[0].processes`), and there is one parse path rather than a branch on bench count. Each bench also carries `index`, `bench_path`, `label`, its own `overall`, `web_port`/`web_port_verified` (the port that bench's `web_http_code` was actually measured on), and `web_site` (the site it was measured FOR - Frappe routes by `Host`, so the code belongs to that site, and a probe naming no site is answered `404` by a healthy bench). When that port cannot be read it is `null`/`false` and **no probe was made** - cwcli never falls back to `:8000`, because on a multi-bench instance that reports a different bench's web server as this one's. A stopped instance carries `benches: []`. `cwcli axi stop` takes `--bench <index|label>` to stop ONE bench's dev processes, leaving sibling benches and every container running - the inverse of `cwcli axi start --bench`; without it, it stops the whole instance's containers, and either form is idempotent. `cwcli axi restart` requires `--process`; an unknown/ambiguous process is a usage error listing the valid labels (exit 2). `cwcli axi inspect` serves whichever freshness tier answers the request (`served_from` names it) and, unlike every other bench-scoped verb, has deliberately NO `--yes` - a stopped project on the refresh path is a usage error (exit 2) naming `cwcli start`, and a drift escalation that can no longer discover the bench serves the cached data with `degraded: true` and a warning (exit 0). Every site also carries `installed_apps_verified`: only a full read actually re-observes an app's installed version and git ref, so a cache or partial read carries the remembered list forward unverified and, when that list is non-empty, adds a warning naming `--update` - an agent must not treat an unverified `installed_apps` entry as the live git state. `cwcli axi benches` is the discovery verb behind every other verb's `--bench`: when a bench-scoped verb reports "multiple benches; pass `--bench <index|label>`", this is what tells you the valid values, and a project that has never been inspected is a structured error naming `cwcli axi inspect` rather than an empty list. `cwcli axi label` never starts a stopped project (the label marker lives inside the bench), and listing is deliberately `cwcli axi benches` rather than a mode of the mutation verb. `cwcli axi self-update --check` is read-only and **exits 0 whenever the check succeeds, including when an update is available** - the answer is the `is_outdated` field, not the exit code, because on the agent surface a non-zero exit means an error. This deliberately differs from the human `cwcli self-update --check`, which exits 1 when an update is available so shell scripts can gate on it; the mutating `cwcli axi self-update` is deliberately not offered. `cwcli axi config` is the read-only counterpart of `cwcli config show`: one TOON document carrying the search paths, all three auto-inspect state stores, the tips setting, and the file locations. **No config-mutating axi verbs exist** (no `paths add`/`remove`, no `cache clear`, no `auto-inspect enable`/`disable`): an agent rewriting the user's search paths or wiping the cache is a product decision that deserves its own evidence, so mutations stay on the human `cwcli config` surface (whose reads all have `--json`).
 
 `cwcli axi apps update` blocks until the update finishes and emits ONE terminal document, exactly as `cwcli axi backup` does for a minutes-long `bench backup`: progress is deliberately not streamed, because N documents on stdout would break the one-TOON-document contract and an agent needs a verdict it can branch on rather than a progress bar (use `cwcli logs`/`cwcli status --watch` if you want live progress). Its exit code is `0` only when the report's `ok` is true; any failed phase, any stuck site, or any unknown outcome exits `1`, and an ambiguous multi-bench project is a `--bench` usage error (exit 2). A stopped project is likewise a usage error pointing at `cwcli start` (exit 2) - there is deliberately no `--yes` on this verb, because starting a container is UI-coupled and the core stays UI-pure about it, so an agent composes `cwcli axi start` then this verb, exactly as `cwcli axi unlock`/`cwcli axi backup` already document. **`failed_*` and `unknown_*` are not the same thing and must not be collapsed:** a `failed_*` item ran and failed, so retrying it is safe, while an `unknown_*` item's output stream was lost - its exit code is unknowable and **it may still be running**, so retrying it (a migration above all) can do real harm. Check before retrying. There is deliberately no `cwcli axi update`: the deprecated `cwcli update` spelling does not get an agent-facing verb. JSON output stays on the human commands (`cwcli ls --json`, `cwcli where --json`, `cwcli apps update --json`).
 

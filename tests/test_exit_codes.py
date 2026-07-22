@@ -169,7 +169,7 @@ class TestStopHonesty:
 
         monkeypatch.setattr(core_stop, "get_project_containers", containers)
         with pytest.raises(typer.Exit) as exc:
-            stop_mod.stop(ctx=None, verbose=False, project_name=["good", "no-such"])
+            stop_mod.stop(ctx=None, verbose=False, bench=None, project_name=["good", "no-such"])
         assert exc.value.exit_code == 1
         out = capsys.readouterr().out
         assert "Instance 'good' stopped." in out  # the good one still stopped

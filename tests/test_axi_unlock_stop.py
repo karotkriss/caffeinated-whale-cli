@@ -179,3 +179,92 @@ class TestAxiStop:
 
         assert result.exit_code == 1
         assert "error: Could not connect." in result.stdout
+
+
+class TestAxiStopBench:
+    """``axi stop --bench`` - stopping ONE bench without reaching into the container.
+
+    Every other bench-scoped verb (`start`, `status`, `restart --process`, `logs`)
+    already took `--bench`; stopping one bench was the gap, and the only way through
+    it was `docker exec ... supervisorctl stop`, which is exactly the escape hatch
+    the agent surface exists to close.
+    """
+
+    def _outcome(self, **kwargs):
+        from caffeinated_whale_cli.core.stop import BenchStopOutcome
+
+        defaults = dict(
+            project="proj",
+            bench_path="/w/b1",
+            stopped_processes=["web", "worker"],
+            already_stopped=False,
+        )
+        return BenchStopOutcome(**{**defaults, **kwargs})
+
+    def test_emits_the_bench_outcome_as_toon(self, monkeypatch):
+        monkeypatch.setattr(
+            axi_mod.core_stop,
+            "stop_bench",
+            lambda p, bench=None: Result(status=Status.OK, data=self._outcome()),
+        )
+        result = runner.invoke(axi_mod.app, ["stop", "proj", "--bench", "1"])
+
+        assert result.exit_code == 0
+        assert "bench_path: /w/b1" in result.stdout
+        assert "already_stopped: false" in result.stdout
+
+    def test_the_selector_reaches_the_core_verbatim(self, monkeypatch):
+        seen = {}
+
+        def fake(p, bench=None):
+            seen["bench"] = bench
+            return Result(status=Status.OK, data=self._outcome())
+
+        monkeypatch.setattr(axi_mod.core_stop, "stop_bench", fake)
+        runner.invoke(axi_mod.app, ["stop", "proj", "--bench", "web-dev"])
+
+        assert seen["bench"] == "web-dev"
+
+    def test_an_already_stopped_bench_is_a_success_so_it_is_idempotent(self, monkeypatch):
+        monkeypatch.setattr(
+            axi_mod.core_stop,
+            "stop_bench",
+            lambda p, bench=None: Result(
+                status=Status.OK,
+                data=self._outcome(stopped_processes=[], already_stopped=True),
+            ),
+        )
+        result = runner.invoke(axi_mod.app, ["stop", "proj", "--bench", "1"])
+
+        assert result.exit_code == 0
+        assert "already_stopped: true" in result.stdout
+
+    def test_without_the_flag_the_project_wide_stop_is_untouched(self, monkeypatch):
+        called = []
+        monkeypatch.setattr(
+            axi_mod.core_stop,
+            "stop",
+            lambda p: called.append(p) or Result(status=Status.OK, data=_stop_outcome()),
+        )
+        monkeypatch.setattr(
+            axi_mod.core_stop,
+            "stop_bench",
+            lambda *a, **k: pytest.fail("the bench path must not run without --bench"),
+        )
+        result = runner.invoke(axi_mod.app, ["stop", "proj"])
+
+        assert result.exit_code == 0
+        assert called == ["proj"]
+
+    def test_a_stopped_container_is_an_error_not_a_silent_success(self, monkeypatch):
+        def _raise(p, bench=None):
+            raise CwcliError(
+                ErrorKind.NOT_RUNNING, "container.not_running", "Frappe container is not running."
+            )
+
+        monkeypatch.setattr(axi_mod.core_stop, "stop_bench", _raise)
+        result = runner.invoke(axi_mod.app, ["stop", "proj", "--bench", "1"])
+
+        assert result.exit_code != 0
+        assert "error:" in result.stdout
+        assert "Traceback" not in result.stdout

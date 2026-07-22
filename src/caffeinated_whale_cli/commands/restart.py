@@ -20,12 +20,19 @@ app = typer.Typer(help="Restart a Frappe project's containers.")
 
 
 @handle_docker_errors
-def _restart_project(project_name: str, verbose: bool = False, status=None):
+def _restart_project(project_name: str, verbose: bool = False, status=None, bench=None):
     """The core logic for restarting a single project's containers.
 
     Returns ``(log_file, stopped)``. ``stopped`` is ``None`` only when the project
     does not exist, so the caller can tell a genuine not-found failure apart from a
     legitimate zero count (found, but nothing was running) and exit non-zero.
+
+    ``bench`` is the ``--bench`` selector, and it must be threaded all the way into
+    ``_start_project``: the containers come back for the whole instance, but only one
+    bench is relaunched, so an unthreaded selector meant the bench the user NAMED
+    stayed dead while a different one (``on_ambiguous="first"``) came up - a silent
+    retarget, at exit 0, on the one verb where ``start``, ``status`` and ``logs`` all
+    honor the same flag.
     """
     containers = get_project_containers(project_name)
 
@@ -51,7 +58,7 @@ def _restart_project(project_name: str, verbose: bool = False, status=None):
     # teardown race, since the not-found check above already returned; the caller
     # still handles it.
     stopped = stop_project_best_effort(project_name, verbose=verbose)
-    log_file = _start_project(project_name, verbose=verbose, status=status)
+    log_file = _start_project(project_name, verbose=verbose, status=status, bench_selector=bench)
 
     return log_file, stopped
 
@@ -75,8 +82,9 @@ def restart(
     bench: str = typer.Option(
         None,
         "--bench",
-        help="Which bench the --process belongs to: its numeric index or label "
-        "(multi-bench projects).",
+        help="Which bench to act on: its numeric index or label (multi-bench "
+        "projects). With --process it selects the process's bench; without it, "
+        "the bench relaunched after the containers come back.",
     ),
     project_name: list[str] = typer.Argument(
         None,
@@ -88,6 +96,10 @@ def restart(
     Restart a project. With --process, restart just that one supervisord program
     (siblings keep running); without it, restart all containers and relaunch the
     bench under supervisord (the whole-stack restart).
+
+    --bench names the bench either way: with --process, the process's bench; without
+    it, the bench relaunched once the containers are back. Omitted on a multi-bench
+    project, the whole-stack path relaunches the first bench and says so.
     """
     project_names_to_process = []
 
@@ -147,7 +159,9 @@ def restart(
         with stderr_console.status(
             f"[bold cyan]Restarting '{name}'...[/bold cyan]", spinner="dots"
         ) as status:
-            log_file, stopped = _restart_project(name, verbose=actual_verbose, status=status)
+            log_file, stopped = _restart_project(
+                name, verbose=actual_verbose, status=status, bench=actual_bench
+            )
 
         # Print outside spinner context. ``stopped is None`` means the project did
         # not exist (error already printed): record the failure and skip the

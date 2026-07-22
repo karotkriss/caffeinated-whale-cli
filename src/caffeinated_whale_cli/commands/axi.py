@@ -485,12 +485,29 @@ def axi_unlock(
 @app.command("stop")
 def axi_stop(
     project: str = typer.Argument(..., help="The Docker Compose project name."),
+    bench: str = typer.Option(
+        None,
+        "--bench",
+        help="Stop only THIS bench's dev processes (numeric index or label), leaving "
+        "sibling benches and every container running.",
+    ),
 ) -> None:
-    """Stop a project's containers; emit the outcome as TOON.
+    """Stop a project's containers, or one bench's dev processes; emit TOON.
 
     Idempotent: an already-stopped project is a definitive success
     (``already_stopped: true``), not an error, so an agent can stop twice safely.
+
+    ``--bench`` stops just that bench's supervisord - the inverse of
+    ``cwcli axi start --bench`` - and leaves the containers and every sibling bench
+    running, so one bench can be taken down without reaching into the container. A
+    multi-bench project with no ``--bench`` still stops the whole instance's
+    containers (the unambiguous project-wide meaning), and a stopped container is a
+    usage error: there is nothing bench-scoped left to stop.
     """
+    if bench is not None:
+        _axi_stop_bench(project, bench)
+        return
+
     try:
         result = core_stop.stop(project)
     except CwcliError as error:
@@ -498,6 +515,24 @@ def axi_stop(
         raise typer.Exit(exit_for(error.kind)) from None
 
     assert result.data is not None  # OK always carries a StopOutcome
+    emit_result(result.data, warnings=result.warnings)
+    raise typer.Exit(0)
+
+
+def _axi_stop_bench(project: str, bench: str) -> None:
+    """``axi stop --bench``: the per-bench half, rendered as one TOON document."""
+    try:
+        result = core_stop.stop_bench(project, bench=bench)
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    if result.status is CoreStatus.NEEDS_CHOICE:
+        assert result.choice is not None  # NEEDS_CHOICE always carries a Choice
+        emit_axi_choice_as_usage_error(result.choice)
+        raise typer.Exit(2)
+
+    assert result.data is not None  # OK always carries a BenchStopOutcome
     emit_result(result.data, warnings=result.warnings)
     raise typer.Exit(0)
 
