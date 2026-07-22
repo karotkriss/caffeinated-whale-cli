@@ -230,6 +230,7 @@ def invoke(**overrides):
         bench=None,
         bench_path=None,
         yes=True,
+        interactive=False,
         verbose=False,
     )
     kwargs.update(overrides)
@@ -404,6 +405,143 @@ def test_run_verbose_reports_the_envelope_warnings(monkeypatch, frontend, capsys
     assert "bench migrate" in err
 
 
+# ------------------------------------------------------------------ --interactive
+#
+# `cwcli run` could not carry a bench command that PROMPTS: nothing forwarded
+# stdin, so `bench new-app` (frappe's boilerplate uses `click.prompt`) was
+# undrivable through the wrapper the project's own convention says every
+# suggested bench command must be phrased as, pushing the user back to raw
+# `docker exec`.
+#
+# The fix is a SECOND mechanism, not a widened first one: `core.exec_stream`
+# starts its exec with `stream=True` (a read-only generator) and pins
+# `demux=True`, which is mutually exclusive with the `tty=True` an interactive
+# prompt needs. These tests pin that separation as much as the behaviour.
+
+
+class FakeStream:
+    def __init__(self, tty):
+        self._tty = tty
+
+    def isatty(self):
+        return self._tty
+
+
+def terminals(monkeypatch, *, stdin, stdout):
+    monkeypatch.setattr(run_mod.sys, "stdin", FakeStream(stdin))
+    monkeypatch.setattr(run_mod.sys, "stdout", FakeStream(stdout))
+
+
+@pytest.fixture
+def spy_exec(monkeypatch):
+    """Capture the argv handed to `docker`, without running anything."""
+    seen = {}
+
+    class Completed:
+        returncode = 0
+
+    def fake_run(argv, *a, **k):
+        seen["argv"] = argv
+        return seen.get("result", Completed())
+
+    monkeypatch.setattr(run_mod.subprocess, "run", fake_run)
+    return seen
+
+
+def test_interactive_attaches_stdin_via_docker_exec(monkeypatch, frontend, spy_exec):
+    terminals(monkeypatch, stdin=False, stdout=False)
+
+    with pytest.raises(typer.Exit):
+        invoke(interactive=True, bench_args=["new-app", "my_app"])
+
+    assert spy_exec["argv"] == [
+        "docker",
+        "exec",
+        "-i",
+        "-w",
+        resolvers.DEFAULT_BENCH_PATH,
+        "container-abc",  # the container PLANNED, not a re-resolution
+        "bench",
+        "new-app",
+        "my_app",
+    ]
+
+
+def test_interactive_never_goes_through_the_exec_stream_contract(monkeypatch, frontend, spy_exec):
+    """The separation, pinned. Bending `exec_stream` to carry stdin would mean
+    giving up the locked `demux=True` stream tag; this path must not touch it."""
+    terminals(monkeypatch, stdin=False, stdout=False)
+
+    def explode(_plan):
+        raise AssertionError("the interactive path must not use core.exec_stream")
+        yield  # pragma: no cover - generator marker
+
+    monkeypatch.setattr(run_mod, "run_stream", explode)
+
+    with pytest.raises(typer.Exit):
+        invoke(interactive=True)
+
+
+def test_interactive_requests_a_tty_only_with_a_terminal_on_both_ends(
+    monkeypatch, frontend, spy_exec
+):
+    """`-t` is what makes raw-mode prompting work, and it is also what makes the
+    container emit colour and CRLF. Asking for it when stdout is a pipe would
+    corrupt captured output; asking for it without a TTY on stdin fails
+    outright ("the input device is not a TTY")."""
+    for stdin_tty, stdout_tty, expected in (
+        (True, True, True),
+        (True, False, False),
+        (False, True, False),
+        (False, False, False),
+    ):
+        terminals(monkeypatch, stdin=stdin_tty, stdout=stdout_tty)
+
+        with pytest.raises(typer.Exit):
+            invoke(interactive=True)
+
+        assert ("-t" in spy_exec["argv"]) is expected, (stdin_tty, stdout_tty)
+        assert "-i" in spy_exec["argv"]  # stdin is forwarded in every combination
+
+
+def test_interactive_propagates_the_bench_commands_exit_code(monkeypatch, frontend, spy_exec):
+    terminals(monkeypatch, stdin=False, stdout=False)
+    spy_exec["result"] = types.SimpleNamespace(returncode=42)
+
+    with pytest.raises(typer.Exit) as exc:
+        invoke(interactive=True)
+
+    assert exc.value.exit_code == 42
+
+
+def test_interactive_reports_a_ctrl_c_as_130_not_success(monkeypatch, frontend):
+    """Without `-t` the SIGINT lands on this process. A bench command the user
+    interrupted did not succeed, and must never exit 0."""
+    terminals(monkeypatch, stdin=False, stdout=False)
+
+    def interrupted(_argv, *a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(run_mod.subprocess, "run", interrupted)
+
+    with pytest.raises(typer.Exit) as exc:
+        invoke(interactive=True)
+
+    assert exc.value.exit_code == 130
+
+
+def test_interactive_quoting_survives_the_round_trip(monkeypatch, frontend, spy_exec):
+    """`core.run_plan` quotes for docker-py (which splits a command STRING); the
+    docker CLI takes an argv, so the frontend splits it back. An argument with a
+    space must arrive as ONE argv entry, not two."""
+    terminals(monkeypatch, stdin=False, stdout=False)
+
+    with pytest.raises(typer.Exit):
+        invoke(interactive=True, bench_args=["--site", "a b", "migrate"])
+
+    assert spy_exec["argv"][-4:] == ["bench", "--site", "a b", "migrate"]
+
+
 # ------------------------------------------------------------------ the argv surface
 #
 # These drive the REAL `main.app` through Typer's parser, because the thing under
@@ -477,3 +615,20 @@ def test_run_double_dash_shields_a_flag_that_collides_with_cwclis_own(parsed):
     calls = cli(parsed, "--", "build", "--verbose")
 
     assert calls["args"] == ["build", "--verbose"]
+
+
+def test_run_claims_dash_i_as_its_own_interactive_flag(monkeypatch, parsed, spy_exec):
+    """`-i` is cwcli's, like `-y`/`-v`/`-p`: it never reaches bench as an arg."""
+    terminals(monkeypatch, stdin=False, stdout=False)
+
+    calls = cli(parsed, "-i", "new-app", "my_app")
+
+    assert calls["args"] == ["new-app", "my_app"]
+    assert spy_exec["argv"][2] == "-i"  # it took the interactive path
+
+
+def test_run_double_dash_shields_a_bench_dash_i(parsed):
+    """And the documented escape hatch still hands `-i` to bench when meant for it."""
+    calls = cli(parsed, "--", "some-cmd", "-i")
+
+    assert calls["args"] == ["some-cmd", "-i"]
