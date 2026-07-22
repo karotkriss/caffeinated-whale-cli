@@ -846,11 +846,13 @@ def remove(
 
     is_orphan = not containers
     if is_orphan:
-        # No containers left. The project may still have orphaned named volumes
-        # and/or a lingering local directory. Clean those up rather than refusing.
-        # If there is genuinely nothing left, treat it as a typo / not found.
+        # No containers left. The project may still have orphaned named volumes,
+        # an orphaned network, or a lingering local directory. Clean those up
+        # rather than refusing. If there is genuinely nothing left, treat it as a
+        # typo / not found.
         orphan_volumes = get_project_volumes(project_name)
-        if not dir_existed and not orphan_volumes:
+        orphan_networks = get_project_networks(project_name)
+        if not dir_existed and not orphan_volumes and not orphan_networks:
             return _result()  # found stays False -> the frontend renders "not found"
         orphan = True
 
@@ -1078,7 +1080,9 @@ def remove(
     # directory, so keep the cache entry (the half-removed project stays visible
     # in `ls`/`inspect` and can be retried). On a clean full/orphan/--no-volumes
     # removal, `failures` is empty and the cache is cleared.
-    if not failures and (containers_removed > 0 or volumes_removed > 0 or dir_removed):
+    if not failures and (
+        containers_removed > 0 or volumes_removed > 0 or dir_removed or network_removed
+    ):
         emit(RmTrace(text=f"Clearing cache for '{project_name}'"))
         db_utils.clear_cache_for_project(project_name)
 

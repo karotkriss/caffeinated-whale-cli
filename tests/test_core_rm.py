@@ -245,6 +245,24 @@ class TestNetworkRemoval:
         assert result.data.network_removed is True
         assert result.data.failures == []
 
+    def test_network_only_orphan_is_removed(self, cwcli_home, monkeypatch):
+        network = _make_network("proj_default")
+        cache_clear = MagicMock()
+        _wire(monkeypatch, [], [], networks=[network])
+        monkeypatch.setattr(core_rm.db_utils, "clear_cache_for_project", cache_clear)
+
+        result = core_rm.remove("proj", remove_volumes=True, no_backup=True)
+
+        network.remove.assert_called_once_with()
+        cache_clear.assert_called_once_with("proj")
+        assert result.data.found is True
+        assert result.data.orphan is True
+        assert result.data.containers_removed == 0
+        assert result.data.volumes_removed == 0
+        assert result.data.dir_removed is False
+        assert result.data.network_removed is True
+        assert result.data.failures == []
+
     def test_network_removed_regardless_of_no_volumes(self, cwcli_home, monkeypatch):
         """The network holds no user data, so --no-volumes must not spare it."""
         _make_project_dir(cwcli_home / "projects", "proj")
