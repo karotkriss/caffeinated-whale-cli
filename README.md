@@ -265,7 +265,9 @@ Start them: cwcli start my-project
 Then open http://development.localhost:8000 (or `cwcli open my-project`).
 ```
 
-If the dev services fail to start, init still exits successfully (the bench was already created) and prints a warning telling you to run `cwcli start` yourself. The start itself waits for the web server to answer on `:8000` before declaring success; if that times out, init reports the same "not running" output even though the containers and supervisor did launch, since the web isn't actually serving yet.
+If the dev services fail to start, init still exits successfully (the bench was already created) and prints a warning telling you to run `cwcli start` yourself.
+The start itself waits for the web server to answer on the bench's own configured port before declaring success; if that times out, init reports the same "not running" output even though the containers and supervisor did launch, since the web isn't actually serving yet.
+If the port cannot be read, start skips the wait and warns instead of probing another bench's port.
 
 **Port Conflict Handling:**
 
@@ -1913,7 +1915,9 @@ Error: project 'my-project' has multiple benches; specify one with --bench <inde
 
 Single-bench projects are unaffected: with only one bench, that bench is used automatically and `--bench` is optional.
 
-`start`, `status`, and `cwcli restart --process` follow the same family rule: on a multi-bench project with no `--bench` they prompt which bench interactively and refuse (non-zero) on a non-TTY. A whole-stack `cwcli restart` (no `--process`) restarts each project's default bench.
+`start` and `cwcli restart --process` mutate one bench, so on a multi-bench project with no `--bench` they prompt which bench interactively and refuse (non-zero) on a non-TTY.
+`status` is a read and reports every bench when `--bench` is omitted; it never prompts.
+A whole-stack `cwcli restart` (no `--process`) restarts each project's default bench.
 
 **`--path` escape hatch:** `-p`/`--path` still accepts an explicit bench directory for cases outside the cached set. It takes precedence over `--bench`, but the two cannot be combined (that is an error).
 
