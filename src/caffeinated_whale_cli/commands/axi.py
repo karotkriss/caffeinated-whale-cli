@@ -44,6 +44,7 @@ from ..core import list as core_list
 from ..core import logs as core_logs
 from ..core import restart as core_restart
 from ..core import rm as core_rm
+from ..core import scale as core_scale
 from ..core import start as core_start
 from ..core import status as core_status
 from ..core import stop as core_stop
@@ -229,6 +230,11 @@ def _choice_error_message(choice: Choice) -> str:
         # what to do; the flag names ride the `help:` line below.
         path = (choice.options or [{}])[0].get("label") or "the target bench"
         return f"bench '{path}' already exists; pass --reuse-bench or --no-reuse-bench"
+    if choice.kind == "confirm_scale":
+        # `axi scale` only. Expanding the port range recreates the frappe
+        # container, restarting every serving bench; the agent must consent. The
+        # --yes flag rides the `help:` line below.
+        return "expanding the port range restarts every serving bench in the instance"
     return f"a decision is required: {choice.prompt}"
 
 
@@ -249,6 +255,8 @@ def emit_axi_choice_as_usage_error(choice: Choice) -> None:
         typer.echo(toon.kv("help", "re-run with --process <label>"))
     elif choice.kind == "confirm_start":
         typer.echo(toon.kv("help", "start it first with 'cwcli start <project>'"))
+    elif choice.kind == "confirm_scale":
+        typer.echo(toon.kv("help", "re-run with --yes to accept the whole-instance restart"))
     elif choice.kind == "confirm_reuse_bench":
         typer.echo(
             toon.kv(
@@ -725,6 +733,51 @@ def axi_restart(
         raise typer.Exit(2)
 
     assert result.data is not None  # OK/WARNING always carries a ProcessRestartOutcome
+    emit_result(result.data, warnings=result.warnings)
+    raise typer.Exit(0 if result.status in (CoreStatus.OK, CoreStatus.WARNING) else 1)
+
+
+# ------------------------------------------------------------------------------- scale
+
+
+@app.command("scale")
+def axi_scale(
+    project: str = typer.Argument(..., help="The Docker Compose project name."),
+    to: int = typer.Option(
+        None,
+        "--to",
+        help="Ensure at least this many benches are host-reachable (publish at "
+        "least this many ports). Omit to auto-fit every bench.",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Consent to the whole-instance restart that expanding the port range causes.",
+    ),
+) -> None:
+    """Widen the instance's published port range; emit the new port map as TOON.
+
+    Reconciles the published range to cover every bench's assigned port so a bench
+    past the 6-port ceiling becomes host-reachable, database-safe (only the frappe
+    service is recreated, with ``--no-deps``). Expanding restarts every serving
+    bench in the instance, so it needs ``--yes``: without it, an expansion that
+    would restart is a usage error naming ``--yes``. An instance whose range
+    already covers every bench is a clean no-op (``expanded: false``), no ``--yes``
+    needed.
+    """
+    try:
+        result = core_scale.scale(project, to=to, consent=yes)
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    if result.status is CoreStatus.NEEDS_CHOICE:
+        assert result.choice is not None
+        emit_axi_choice_as_usage_error(result.choice)
+        raise typer.Exit(2)
+
+    assert result.data is not None  # OK/WARNING always carries a ScaleReport
     emit_result(result.data, warnings=result.warnings)
     raise typer.Exit(0 if result.status in (CoreStatus.OK, CoreStatus.WARNING) else 1)
 

@@ -67,6 +67,7 @@ Exit codes: **0** success (a completed operation, including one with warnings, a
   status         Report a project's per-process health; emit the report as TOON (`overall` first).
   logs           Read a bounded tail of a bench's per-process logs; emit them as ONE TOON document.
   restart        Restart ONE supervised process; emit the outcome as TOON (never prompts, no --watch).
+  scale          Widen the instance's published port range; emit the new port map as TOON.
   inspect        Inspect a project's benches, sites, and apps; emit the report as TOON.
   benches        List a project's benches with their indices and labels; emit them as TOON.
   label          Set or clear a bench's durable user label; emit the outcome as TOON.
