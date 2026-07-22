@@ -1,4 +1,5 @@
-This is a multi-PR rebuild; checked boxes are implemented, unchecked boxes are deferred to follow-up PRs. The first PR lands §1 (`CWCLI_HOME`), §2 (the shared harness), §3 (CI matrix + gating), §4.1-4.2 (`init`/`backup` E2E), §5.1-5.2 (their version-sensitive coverage), and §7 (docs); the remaining commands' E2E (§4.3-4.9), the rest of §5, P2P (§6), and the full-matrix/no-mistakes validation (§8.2, §8.5) are deferred.
+This is a multi-PR rebuild; checked boxes are implemented, unchecked boxes are deferred to follow-up PRs.
+Items 4.3, 4.7, 4.8, 4.9, 5.4, and 8.5 remain deferred.
 The per-command groups in §4 encode the parallel-run cadence: land a command's real E2E, prove it out, THEN retire that command's mock behavior tests. The mock suite stays green until each command's E2E lands.
 
 ## 1. CWCLI_HOME source hardening (decision #9 - lands first, its own PR)
