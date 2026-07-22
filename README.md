@@ -620,15 +620,23 @@ Re-running when the range already covers every bench is a safe no-op.
 
 ### `rm` - Remove Project
 
-Removes a Frappe project: its containers, its named Docker volumes, and its local project directory.
+Removes a Frappe project: its containers, named Docker volumes, own Docker Compose network, and local project directory.
 
 **WARNING:** This action is destructive and cannot be undone.
-Before deleting anything, the command re-caches the project, backs up the databases and files for all sites across every bench (a live `bench backup --with-files`, run once per bench on a multi-bench project), and archives the `docker-compose.yml`, `site_config.json`, and the project's `conf/` directory into a timestamped folder under `~/.cwcli/archive/` (or `$CWCLI_HOME/archive/` when the `CWCLI_HOME` override is set). The backup and the config archive are written first, and the named volumes and project directory are only deleted once both have succeeded. When volumes are being deleted (the default `--volumes`), a backup that cannot be fully created and verified blocks removal: each backup artifact is copied out of the container to the host archive and the database dump must be present and non-empty, and if it is not, the command aborts before any container is removed and exits non-zero, so data is never destroyed without a confirmed backup. Aborting before removal keeps the whole project intact (containers, volumes, directory, and cache), so a retry can still take a live backup from the running container. Under `--no-volumes` no volume data is destroyed, so a failed backup does not block the container, directory, and cache cleanup.
+Before deleting anything, the command re-caches the project, backs up the databases and files for all sites across every bench (a live `bench backup --with-files`, run once per bench on a multi-bench project), and archives the `docker-compose.yml`, `site_config.json`, and the project's `conf/` directory into a timestamped folder under `~/.cwcli/archive/` (or `$CWCLI_HOME/archive/` when the `CWCLI_HOME` override is set).
+The backup and the config archive are written first, and the named volumes and project directory are only deleted once both have succeeded.
+When volumes are being deleted (the default `--volumes`), a backup that cannot be fully created and verified blocks removal: each backup artifact is copied out of the container to the host archive and the database dump must be present and non-empty.
+If verification fails, the command aborts before any container is removed and exits non-zero, so data is never destroyed without a confirmed backup.
+Aborting before removal keeps the whole project intact (containers, volumes, network, directory, and cache), so a retry can still take a live backup from the running container.
+Under `--no-volumes` no volume data is destroyed, so a failed backup does not block the container, network, directory, and cache cleanup.
 
 A live `bench backup` needs a running frappe and MariaDB, so when you remove a **stopped** project on the `--volumes` path, `cwcli rm` transiently **starts** it, takes a verified backup, and only then deletes it (start → back up → delete), reusing the same port-conflict handling as `cwcli start`.
 The confirmation prompt discloses this before you confirm.
 If the project cannot be started, or the backup fails, the removal is aborted: all data is kept, the project is returned to its stopped state, and the command exits non-zero - fix the problem and retry, or pass `--no-backup` to delete without a backup.
-An orphan project (no containers left to start) is likewise refused on the `--volumes` path unless `--no-backup` is given.
+An orphan project with named volumes is refused on the default `--volumes` path because there is no running bench to back up.
+The same fail-closed refusal applies when Docker cannot verify whether named volumes exist.
+If Docker confirms that no named volumes remain, no backup is needed: `cwcli rm` cleans up the orphan's network and local directory under the default settings.
+The volume state is checked again before cleanup, and any change or verification failure aborts instead of risking unbacked data.
 Under `--no-volumes` no volume data is destroyed, so a stopped project is cleaned up without a backup as before.
 
 ```bash
@@ -645,19 +653,24 @@ cwcli rm [OPTIONS] [PROJECT_NAME]...
 
 | Option | Description |
 |--------|-------------|
-| `--volumes` / `--no-volumes` | Remove the named Docker volumes (databases, sites, files). Default: `--volumes`. Use `--no-volumes` to keep them |
+| `--volumes` / `--no-volumes` | Remove the named Docker volumes (databases, sites, files). Default: `--volumes`. Use `--no-volumes` to keep them; the project's own network is removed either way |
 | `--no-backup` | Skip database backups before removal, including the backup safety gate (also skips recaching; faster but risky) |
 | `-y`, `--yes` | Skip the confirmation prompt and proceed with removal |
 | `-v`, `--verbose` | Enable verbose diagnostic output |
 
-By default `cwcli rm` removes the containers, removes the project's named Docker volumes (where the databases, sites, and files live), deletes the local project directory at `~/.cwcli/projects/{project_name}/`, and clears the project from the cache.
+By default `cwcli rm` removes the containers, the project's named Docker volumes (where the databases, sites, and files live), the project's own Docker Compose network, the local project directory at `~/.cwcli/projects/{project_name}/`, and the project cache entry.
 
-`--no-volumes` preserves the named Docker volumes so the project can be recreated from existing data, but still removes the containers, the local project directory, and the cache entry.
+`--no-volumes` preserves the named Docker volumes so the project can be recreated from existing data, but still removes the containers, project network, local project directory, and cache entry.
+Network removal is unconditional because the network holds no user data.
 The project directory is always removed because it is cwcli configuration, not data.
 
-If a project has no running containers but still has orphaned named volumes or a lingering local directory (for example after a partial removal), `cwcli rm` cleans up that leftover state instead of reporting the project as not found.
+If a project has no containers but still has a network, named volumes, or a local directory (for example after a partial removal), `cwcli rm` treats it as an orphan instead of reporting it as not found.
+Confirmed volume-free orphans are cleaned under the defaults.
+Orphans with named volumes, or an unknown volume state, remain protected by the backup gate.
 
-An invalid project name (empty, `.`, `..`, an absolute path, or one containing a path separator) is rejected before anything is removed, since such a name could otherwise escape the projects directory. `cwcli rm` exits non-zero whenever any removal step fails - a blocked backup, a rejected name, or a volume, directory, or container that could not be removed - and does not print the success summary for a project that was not fully removed; the project stays in the cache (and `cwcli ls`) so the leftover state remains visible and can be retried.
+An invalid project name (empty, `.`, `..`, an absolute path, or one containing a path separator) is rejected before anything is removed, since such a name could otherwise escape the projects directory.
+`cwcli rm` exits non-zero whenever any removal step fails, including a blocked backup, a rejected name, or a container, volume, network, or directory that could not be removed.
+It does not print the success summary for a project that was not fully removed; the project stays in the cache (and `cwcli ls`) so the leftover state remains visible and can be retried.
 
 **Examples:**
 
@@ -665,7 +678,7 @@ An invalid project name (empty, `.`, `..`, an absolute path, or one containing a
 # Remove everything (with confirmation)
 cwcli rm my-project
 
-# Keep the named volumes, remove containers and project directory only
+# Keep the named volumes; remove containers, project network, and directory
 cwcli rm my-project --no-volumes
 
 # Skip backups (not recommended)
@@ -2024,11 +2037,21 @@ These are agent-only for now: there is no human `cwcli migrate`, `cwcli run-test
 
 `cwcli axi init` provisions a new instance, bench, and site the way `cwcli init` does, but non-interactively and as ONE terminal TOON document. It **blocks** for the full 10-20 minute run - the same block-and-emit-one-document shape as `cwcli axi apps update`, because a progress stream would break the one-TOON-document contract - narrating coarse phase labels to stderr; run `cwcli logs <project>` / `cwcli status <project>` from a second shell for live progress. After the bench+site is created, it starts the bench's dev services by default (the same `core.start` behind `cwcli start`/`cwcli axi start`), leaving a running bench rather than a created-but-idle one; `--no-start` creates without starting, for automation/CI, distinct from Docker container startup (stage 1 always brings the containers up regardless of this flag). A dev-services start failure degrades to a stderr warning rather than a non-zero exit, since the bench was already created. The site administrator password comes from the **`CWCLI_ADMIN_PASSWORD` environment variable (recommended)** or `--admin-password`; the flag wins if both are set, and with neither set the verb refuses with a usage error (exit 2) naming both - it never generates a password and never prompts. The env var keeps the secret off the process argv (visible in `ps`/shell history) that the flag exposes; the container-side `bench new-site` still receives it, so treat the value as one-time. The MariaDB root password takes the same shape via `CWCLI_DB_ROOT_PASSWORD` / `--db-root-password` (default `123`). The interactive decisions the human `cwcli init` prompts for become non-prompting errors: an existing bench with neither `--reuse-bench` nor `--no-reuse-bench` is a usage error (exit 2) naming both; a port conflict names `--port` (exit 1); containers that do not come up point at `cwcli status`/`cwcli logs` (exit 1). There is no `--auto-start` (compose `cwcli axi start` then re-run) and no `--verbose` (stdout is always TOON). `--bench` here is the NAME of the bench to create, distinct from the `--bench <index|label>` selector the other verbs use.
 
-`cwcli axi rm <project> --yes` permanently removes an instance: its containers, its named volumes (databases, sites, and files), and its local project directory. It is the agent form of `cwcli rm`, and it runs the same code - the verified per-bench backup is taken and checked before anything is destroyed, and a backup that cannot be created and verified **aborts the removal with everything still intact**, so data is never destroyed without a confirmed copy on the host.
+`cwcli axi rm <project> --yes` permanently removes an instance: its containers, named volumes (databases, sites, and files), own Docker Compose network, and local project directory.
+It is the agent form of `cwcli rm`, and it runs the same code.
+The verified per-bench backup is taken and checked before anything is destroyed, and a backup that cannot be created and verified **aborts the removal with everything still intact**, so data is never destroyed without a confirmed copy on the host.
+The project's own network is removed whether `--volumes` or `--no-volumes` is selected because it holds no user data.
 
 Two things differ from the human command, both deliberate.
 
-`--yes` is required and means **consent only**. On `cwcli rm` the same flag also starts a stopped project so a live backup can be taken; here it does not, because asking to delete an instance is not asking to start one. The consequence is that a **stopped** project cannot be removed by this verb while its volumes are in scope - a live backup needs a running bench, and deleting without one is what the gate exists to prevent. It refuses before touching anything and tells you the three ways forward: start it and re-run, pass `--no-volumes` (which keeps the data and so needs no backup), or use the human `cwcli rm <project> --no-backup`.
+`--yes` is required and means **consent only**.
+On `cwcli rm` the same flag also starts a stopped project so a live backup can be taken; here it does not, because asking to delete an instance is not asking to start one.
+The consequence is that a **stopped** project cannot be removed by this verb while its volumes are in scope: a live backup needs a running bench, and deleting without one is what the gate exists to prevent.
+It refuses before touching anything and tells you the three ways forward: start it and re-run, pass `--no-volumes` (which keeps the named-volume data but still removes the network), or use the human `cwcli rm <project> --no-backup`.
+
+An **orphan** reaches the core for live resource discovery.
+If named volumes exist, or Docker cannot verify their absence, the backup gate refuses cleanup.
+If Docker confirms that no named volumes remain, `cwcli axi rm` removes the orphan's network and local directory under the defaults.
 
 There is deliberately **no `--no-backup`** here. That flag turns off the one guard between this command and unrecoverable loss, and on the agent surface it has no beneficiary - the human command is where a person confirms that trade, the same way `cwcli axi apps install` has no `--force`. Removal takes **one project per invocation**; the human command's list and stdin pipe are not offered, because a fan-out is how an agent reaches an instance nobody named.
 
