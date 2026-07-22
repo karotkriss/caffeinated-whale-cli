@@ -299,9 +299,7 @@ class TestNetworkRemoval:
         assert result.data.failures
         network.remove.assert_not_called()
 
-    def test_volume_appearing_after_exemption_is_never_deleted(
-        self, cwcli_home, monkeypatch
-    ):
+    def test_volume_appearing_after_exemption_is_never_deleted(self, cwcli_home, monkeypatch):
         volume = _make_volume("proj_late_data")
         network = _make_network("proj_default")
         volume_queries = iter([[], [volume]])
@@ -318,9 +316,7 @@ class TestNetworkRemoval:
         volume.remove.assert_not_called()
         network.remove.assert_not_called()
 
-    def test_unknown_volume_state_after_exemption_fails_closed(
-        self, cwcli_home, monkeypatch
-    ):
+    def test_unknown_volume_state_after_exemption_fails_closed(self, cwcli_home, monkeypatch):
         network = _make_network("proj_default")
         volume_queries = iter([[], None])
         _wire(monkeypatch, [], [], networks=[network])
@@ -386,9 +382,7 @@ class TestNetworkRemoval:
         assert result.data.network_removed is False
         assert any("enumerate" in f and "network" in f for f in result.data.failures)
 
-    def test_network_enumeration_failure_is_not_reported_as_absent(
-        self, cwcli_home, monkeypatch
-    ):
+    def test_network_enumeration_failure_is_not_reported_as_absent(self, cwcli_home, monkeypatch):
         _wire(monkeypatch, [], [])
         monkeypatch.setattr(core_rm, "get_project_networks", lambda name: None)
 
@@ -399,9 +393,7 @@ class TestNetworkRemoval:
         assert result.data.network_removed is False
         assert any("enumerate" in f and "network" in f for f in result.data.failures)
 
-    def test_volume_enumeration_failure_is_not_reported_as_absent(
-        self, cwcli_home, monkeypatch
-    ):
+    def test_volume_enumeration_failure_is_not_reported_as_absent(self, cwcli_home, monkeypatch):
         _wire(monkeypatch, [], [], networks=[])
         monkeypatch.setattr(core_rm, "get_project_volumes", lambda name: None)
 

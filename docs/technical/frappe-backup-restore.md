@@ -816,7 +816,7 @@ This is the "peer-to-peer restore" capability once sketched here as `cwcli backu
 
 `cwcli rm` is not a backup command, but it backs up every site in every bench (looping over all benches on a multi-bench project) before deleting a project's volumes: a failed or unverifiable `bench backup` for any bench aborts the removal before any container is touched.
 A live `bench backup` needs a running frappe and MariaDB, so a **stopped** project on the `--volumes` path is transiently started, backed up, and only then deleted (start -> back up -> delete); if it cannot be started or backed up, the removal aborts, all data is kept, and the project is returned to its stopped state.
-This gate only applies when volumes will be deleted (the default `--volumes`); under `--no-volumes` no volume data is destroyed, so a failed backup does not block container removal, directory cleanup, or cache clearing.
+This gate only applies when volumes will be deleted (the default `--volumes`); under `--no-volumes` no volume data is destroyed, so a failed backup does not block container, network, directory, or cache cleanup.
 See the "Data-safety gates" section of the `cwcli-lifecycle` skill (`.claude/skills/cwcli-lifecycle/references/rm.md`) for the exact contract.
 `--no-backup` opts out of the gate entirely.
 
