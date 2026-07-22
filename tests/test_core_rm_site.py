@@ -10,6 +10,7 @@ verified, and report the honest ``ok`` either way).
 from __future__ import annotations
 
 import types
+from pathlib import Path
 
 import pytest
 
@@ -69,6 +70,7 @@ class FakeContainer:
         self.prune_ok = prune_ok
         self.archive_bytes = archive_bytes
         self.calls: list = []
+        self.get_archive_path: str | None = None
         self._dropped = False
         self._last_code = 0
         self.client = types.SimpleNamespace(api=FakeAPI(self))
@@ -95,11 +97,14 @@ class FakeContainer:
             if target == f"{BENCH}/archived/sites/{SITE}":
                 return (0 if self._dropped else 1, b"")
             return (0 if self.site_dir_ok else 1, b"")
+        if cmd[0] == "find":
+            return (0, f"{SITE}\n".encode() if self._dropped else b"")
         if cmd[:2] == ["rm", "-rf"]:
             return (0 if self.prune_ok else 1, b"")
         return (0, b"")
 
     def get_archive(self, path):
+        self.get_archive_path = path
         if not self.get_archive_ok:
             raise RuntimeError("boom")
         return ([self.archive_bytes], {"size": len(self.archive_bytes)})
@@ -164,6 +169,8 @@ class TestSuccess:
         assert host_path.exists()
         assert host_path.read_bytes() == container.archive_bytes
         assert host_path.parent == tmp_path / "archive" / "proj_dropped_sites"
+        assert host_path.stat().st_mode & 0o777 == 0o600
+        assert host_path.parent.stat().st_mode & 0o777 == 0o700
 
         prune_calls = [c for c in container.calls if isinstance(c, list) and c[:2] == ["rm", "-rf"]]
         assert prune_calls == [["rm", "-rf", f"{BENCH}/archived/sites/{SITE}"]]
@@ -231,6 +238,42 @@ class TestArchiveHonesty:
         assert result.data.archived_host_path is None
         assert any(w.code == "rm_site.archive_not_found" for w in result.warnings)
 
+    def test_new_suffixed_archive_is_selected_instead_of_stale_exact_path(
+        self, monkeypatch, container
+    ):
+        listings = iter([(0, f"{SITE}\n".encode()), (0, f"{SITE}\n{SITE}1\n".encode())])
+        original = container.exec_run
+
+        def _exec_run(cmd, workdir=None, **kwargs):
+            if cmd[0] == "find":
+                return next(listings)
+            return original(cmd, workdir=workdir, **kwargs)
+
+        monkeypatch.setattr(container, "exec_run", _exec_run)
+
+        result = core_rm_site.drop_site("proj", SITE, consent=True)
+
+        assert result.status is Status.OK
+        assert container.get_archive_path == f"{BENCH}/archived/sites/{SITE}1"
+        assert [c for c in container.calls if isinstance(c, list) and c[:2] == ["rm", "-rf"]] == [
+            ["rm", "-rf", f"{BENCH}/archived/sites/{SITE}1"]
+        ]
+
+    def test_archive_directory_creation_failure_is_reported_after_drop(
+        self, monkeypatch, container
+    ):
+        def _mkdir(*args, **kwargs):
+            raise PermissionError("read only")
+
+        monkeypatch.setattr(Path, "mkdir", _mkdir)
+
+        result = core_rm_site.drop_site("proj", SITE, consent=True)
+
+        assert result.status is Status.WARNING
+        assert result.data.ok is False
+        assert any(w.code == "rm_site.archive_not_copied" for w in result.warnings)
+        assert not [c for c in container.calls if isinstance(c, list) and c[:2] == ["rm", "-rf"]]
+
 
 # ----------------------------------------------------------------------- hard failures
 
@@ -258,6 +301,17 @@ class TestHardFailures:
     def test_empty_site_raises_usage(self, container):
         with pytest.raises(CwcliError) as exc:
             core_rm_site.drop_site("proj", "   ", consent=True)
+        assert exc.value.kind is ErrorKind.USAGE
+
+    def test_project_name_cannot_escape_the_managed_archive_directory(self, container):
+        with pytest.raises(CwcliError) as exc:
+            core_rm_site.drop_site("../proj", SITE, consent=True)
+        assert exc.value.kind is ErrorKind.USAGE
+
+    @pytest.mark.parametrize("site", ["../other.localhost", "nested/site.localhost", ".", ".."])
+    def test_site_must_be_one_plain_directory_name(self, container, site):
+        with pytest.raises(CwcliError) as exc:
+            core_rm_site.drop_site("proj", site, consent=True)
         assert exc.value.kind is ErrorKind.USAGE
 
     def test_missing_bench_dir_raises_not_found(self, container):
