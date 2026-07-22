@@ -1926,10 +1926,13 @@ def axi_rm(
     Everything else is the human verb's behaviour unchanged, because it lives in
     `core.remove`: the verified per-bench copy-out, the EARLY fail-closed gate that
     aborts before any container is removed (so a retry still has a live database to
-    back up), the archive of conf/ and the project directory, and a cache entry kept
-    when any step failed. One project per invocation, never the human verb's
-    variadic list or stdin pipe: a fan-out is how an agent reaches an instance it
-    never named, and here that costs an instance.
+    back up), the archive of conf/ and the project directory, the project's own
+    compose network removal (`network_removed` in the TOON outcome; a network
+    that could not be removed - typically something outside this project still
+    attached to it - is a `failures` entry, never forced through), and a cache
+    entry kept when any step failed. One project per invocation, never the human
+    verb's variadic list or stdin pipe: a fan-out is how an agent reaches an
+    instance it never named, and here that costs an instance.
 
     The exit code reads `outcome.failures`, NOT the envelope status - a partial
     removal is a WARNING-shaped envelope, which maps to exit 0 everywhere else and

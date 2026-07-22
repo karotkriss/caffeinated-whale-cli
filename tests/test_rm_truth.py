@@ -234,6 +234,7 @@ class TestRemoveProjectEndToEnd:
 
         _patch_attr(monkeypatch, "get_project_containers", lambda name: [container])
         _patch_attr(monkeypatch, "get_project_volumes", lambda name: list(volumes))
+        _patch_attr(monkeypatch, "get_project_networks", lambda name: [])
         monkeypatch.setattr(db_utils, "clear_cache_for_project", lambda name: None)
 
         result = _remove_project("proj", remove_volumes=True, no_backup=True)
@@ -259,6 +260,7 @@ class TestRemoveProjectEndToEnd:
         _patch_attr(monkeypatch, "get_project_containers", lambda name: [container])
         get_volumes = MagicMock(return_value=list(volumes))
         _patch_attr(monkeypatch, "get_project_volumes", get_volumes)
+        _patch_attr(monkeypatch, "get_project_networks", lambda name: [])
         monkeypatch.setattr(db_utils, "clear_cache_for_project", lambda name: None)
 
         result = _remove_project("proj", remove_volumes=False, no_backup=True)
@@ -279,6 +281,7 @@ class TestRemoveProjectEndToEnd:
         # No containers, no volumes, no project directory -> genuine "not found".
         _patch_attr(monkeypatch, "get_project_containers", lambda name: [])
         _patch_attr(monkeypatch, "get_project_volumes", lambda name: [])
+        _patch_attr(monkeypatch, "get_project_networks", lambda name: [])
         monkeypatch.setattr(db_utils, "clear_cache_for_project", lambda name: None)
 
         result = _remove_project("ghost", remove_volumes=True, no_backup=True)
@@ -315,6 +318,7 @@ class TestRemoveProjectEndToEnd:
         # the project directory linger - the orphaned-project scenario.
         _patch_attr(monkeypatch, "get_project_containers", lambda name: [])
         _patch_attr(monkeypatch, "get_project_volumes", lambda name: list(volumes))
+        _patch_attr(monkeypatch, "get_project_networks", lambda name: [])
         monkeypatch.setattr(db_utils, "clear_cache_for_project", lambda name: None)
 
         result = _remove_project("proj", remove_volumes=True, no_backup=True)
@@ -345,6 +349,7 @@ class TestRemoveProjectEndToEnd:
 
         _patch_attr(monkeypatch, "get_project_containers", lambda name: [container])
         _patch_attr(monkeypatch, "get_project_volumes", lambda name: list(volumes))
+        _patch_attr(monkeypatch, "get_project_networks", lambda name: [])
         monkeypatch.setattr(db_utils, "clear_cache_for_project", lambda name: None)
 
         def boom(*_args, **_kwargs):

@@ -613,6 +613,8 @@ def rm(
                 cleaned = []
                 if outcome.volumes_removed:
                     cleaned.append(f"{outcome.volumes_removed} orphaned volume(s)")
+                if outcome.network_removed:
+                    cleaned.append("network")
                 if outcome.dir_removed:
                     cleaned.append("project directory")
                 detail = ", ".join(cleaned) if cleaned else "no leftover data"
@@ -625,6 +627,8 @@ def rm(
                     f"[bold green]✓[/bold green] Project '{name}' removed "
                     f"({containers_removed} container(s))"
                 )
+                if outcome.network_removed:
+                    console.print(f"  [dim]Network removed for '{name}'[/dim]")
                 if not volumes:
                     console.print(f"  [dim]Volumes preserved for '{name}'[/dim]")
         else:

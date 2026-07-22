@@ -39,6 +39,12 @@ def _make_volume(name):
     return v
 
 
+def _make_network(name):
+    n = MagicMock()
+    n.name = name
+    return n
+
+
 @pytest.fixture()
 def cwcli_home(tmp_path, monkeypatch):
     projects_dir = tmp_path / "projects"
@@ -55,9 +61,10 @@ def _make_project_dir(projects_dir, name):
     return project_dir
 
 
-def _wire(monkeypatch, containers, volumes):
+def _wire(monkeypatch, containers, volumes, networks=()):
     monkeypatch.setattr(core_rm, "get_project_containers", lambda name: list(containers))
     monkeypatch.setattr(core_rm, "get_project_volumes", lambda name: list(volumes))
+    monkeypatch.setattr(core_rm, "get_project_networks", lambda name: list(networks))
     monkeypatch.setattr(core_rm.db_utils, "clear_cache_for_project", lambda name: None)
     monkeypatch.setattr(core_rm.db_utils, "get_cached_project_data", lambda name: None)
 
@@ -215,6 +222,89 @@ class TestAxiRmVerbShipped:
         assert "no_backup" not in params
         source = _inspect.getsource(axi_mod.axi_rm)
         assert "no_backup=False" in source  # the core is called with the gate ON
+
+
+class TestNetworkRemoval:
+    """``core.remove`` cleans up the project's OWN compose network too - the
+    leak this class exists to close (a network outlived containers/volumes/dir
+    on every prior removal, silently consuming Docker's finite address pool)."""
+
+    def test_network_is_removed_and_reported(self, cwcli_home, monkeypatch):
+        _make_project_dir(cwcli_home / "projects", "proj")
+        network = _make_network("proj_default")
+        _wire(
+            monkeypatch,
+            [_make_container()],
+            [_make_volume("proj_sites")],
+            networks=[network],
+        )
+
+        result = core_rm.remove("proj", remove_volumes=True, no_backup=True)
+
+        network.remove.assert_called_once_with()
+        assert result.data.network_removed is True
+        assert result.data.failures == []
+
+    def test_network_removed_regardless_of_no_volumes(self, cwcli_home, monkeypatch):
+        """The network holds no user data, so --no-volumes must not spare it."""
+        _make_project_dir(cwcli_home / "projects", "proj")
+        network = _make_network("proj_default")
+        _wire(
+            monkeypatch,
+            [_make_container()],
+            [_make_volume("proj_sites")],
+            networks=[network],
+        )
+
+        result = core_rm.remove("proj", remove_volumes=False, no_backup=True)
+
+        network.remove.assert_called_once_with()
+        assert result.data.network_removed is True
+
+    def test_network_removal_failure_is_reported_never_forced(self, cwcli_home, monkeypatch):
+        """A network with an endpoint attached from outside this project cannot
+        be removed; the failure is reported (non-zero exit) rather than the
+        network being disconnected/forced or the failure silently swallowed."""
+        _make_project_dir(cwcli_home / "projects", "proj")
+        network = _make_network("proj_default")
+        network.remove.side_effect = RuntimeError("network has active endpoints")
+        volumes = [_make_volume("proj_sites")]
+        _wire(monkeypatch, [_make_container()], volumes, networks=[network])
+
+        result = core_rm.remove("proj", remove_volumes=True, no_backup=True)
+
+        network.remove.assert_called_once_with()
+        assert result.data.network_removed is False
+        assert any("network" in f for f in result.data.failures)
+        assert result.status is Status.WARNING
+        # Never forced: no disconnect call was ever made against the network.
+        network.disconnect.assert_not_called()
+        # A failed network removal does not block the volume/dir cleanup already
+        # in flight - it is orthogonal to the C1 data-safety gate.
+        volumes[0].remove.assert_called_once_with(force=True)
+        assert result.data.dir_removed is True
+
+    def test_network_enumeration_failure_is_reported(self, cwcli_home, monkeypatch):
+        """None from get_project_networks is a Docker error, distinct from 'no
+        network' - it must be reported, not silently treated as clean."""
+        _make_project_dir(cwcli_home / "projects", "proj")
+        _wire(monkeypatch, [_make_container()], [_make_volume("proj_sites")])
+        monkeypatch.setattr(core_rm, "get_project_networks", lambda name: None)
+
+        result = core_rm.remove("proj", remove_volumes=True, no_backup=True)
+
+        assert result.data.network_removed is False
+        assert any("enumerate" in f and "network" in f for f in result.data.failures)
+
+    def test_no_network_found_is_not_a_failure(self, cwcli_home, monkeypatch):
+        _make_project_dir(cwcli_home / "projects", "proj")
+        _wire(monkeypatch, [_make_container()], [_make_volume("proj_sites")], networks=[])
+
+        result = core_rm.remove("proj", remove_volumes=True, no_backup=True)
+
+        assert result.data.network_removed is False
+        assert result.data.failures == []
+        assert result.status is Status.OK
 
 
 class TestCorePurity:

@@ -280,10 +280,17 @@ def _patch_docker(monkeypatch):
     monkeypatch.setattr(docker_utils.docker, "from_env", lambda: MagicMock())
 
 
-def _wire(monkeypatch, container, volumes):
-    """Point _remove_project's collaborators at the fakes."""
+def _wire(monkeypatch, container, volumes, networks=()):
+    """Point _remove_project's collaborators at the fakes.
+
+    ``networks`` defaults to empty (no network to remove) so these tests, which
+    predate network removal, keep exercising the volume/dir/backup contracts
+    they were written for without an unmocked ``docker.from_env()`` call
+    surfacing as a spurious "could not enumerate the network" failure.
+    """
     _patch_attr(monkeypatch, "get_project_containers", lambda name: [container])
     _patch_attr(monkeypatch, "get_project_volumes", lambda name: list(volumes))
+    _patch_attr(monkeypatch, "get_project_networks", lambda name: list(networks))
     monkeypatch.setattr(db_utils, "clear_cache_for_project", lambda name: None)
     monkeypatch.setattr(db_utils, "get_cached_project_data", lambda name: None)
 
@@ -325,6 +332,7 @@ class TestBackupGate:
         volumes = [_make_volume("proj_sites"), _make_volume("proj_db-data")]
         _patch_attr(monkeypatch, "get_project_containers", lambda name: [container])
         _patch_attr(monkeypatch, "get_project_volumes", lambda name: list(volumes))
+        _patch_attr(monkeypatch, "get_project_networks", lambda name: [])
         monkeypatch.setattr(db_utils, "get_cached_project_data", lambda name: None)
         clear_cache = MagicMock()
         monkeypatch.setattr(db_utils, "clear_cache_for_project", clear_cache)
@@ -487,6 +495,7 @@ class TestBackupGate:
         volumes = [_make_volume("proj_sites")]
         _patch_attr(monkeypatch, "get_project_containers", lambda name: [container])
         _patch_attr(monkeypatch, "get_project_volumes", lambda name: list(volumes))
+        _patch_attr(monkeypatch, "get_project_networks", lambda name: [])
         monkeypatch.setattr(db_utils, "get_cached_project_data", lambda name: None)
         clear_cache = MagicMock()
         monkeypatch.setattr(db_utils, "clear_cache_for_project", clear_cache)
@@ -508,6 +517,7 @@ class TestBackupGate:
         volumes = [_make_volume("proj_sites")]
         _patch_attr(monkeypatch, "get_project_containers", lambda name: [container])
         _patch_attr(monkeypatch, "get_project_volumes", lambda name: list(volumes))
+        _patch_attr(monkeypatch, "get_project_networks", lambda name: [])
         monkeypatch.setattr(db_utils, "get_cached_project_data", lambda name: None)
         clear_cache = MagicMock()
         monkeypatch.setattr(db_utils, "clear_cache_for_project", clear_cache)
@@ -530,6 +540,7 @@ class TestBackupGate:
         bad_volume.remove.side_effect = RuntimeError("volume in use")
         _patch_attr(monkeypatch, "get_project_containers", lambda name: [container])
         _patch_attr(monkeypatch, "get_project_volumes", lambda name: [bad_volume])
+        _patch_attr(monkeypatch, "get_project_networks", lambda name: [])
         monkeypatch.setattr(db_utils, "get_cached_project_data", lambda name: None)
         clear_cache = MagicMock()
         monkeypatch.setattr(db_utils, "clear_cache_for_project", clear_cache)
@@ -630,6 +641,7 @@ class TestMultiBench:
         volumes = [_make_volume("proj_sites"), _make_volume("proj_db-data")]
         _patch_attr(monkeypatch, "get_project_containers", lambda name: [container])
         _patch_attr(monkeypatch, "get_project_volumes", lambda name: list(volumes))
+        _patch_attr(monkeypatch, "get_project_networks", lambda name: [])
         monkeypatch.setattr(db_utils, "clear_cache_for_project", lambda name: None)
         monkeypatch.setattr(
             db_utils,
@@ -661,6 +673,7 @@ class TestMultiBench:
         volumes = [_make_volume("proj_sites"), _make_volume("proj_db-data")]
         _patch_attr(monkeypatch, "get_project_containers", lambda name: [container])
         _patch_attr(monkeypatch, "get_project_volumes", lambda name: list(volumes))
+        _patch_attr(monkeypatch, "get_project_networks", lambda name: [])
         monkeypatch.setattr(db_utils, "clear_cache_for_project", lambda name: None)
         monkeypatch.setattr(
             db_utils,
@@ -692,6 +705,7 @@ class TestMultiBench:
         volumes = [_make_volume("proj_sites"), _make_volume("proj_db-data")]
         _patch_attr(monkeypatch, "get_project_containers", lambda name: [container])
         _patch_attr(monkeypatch, "get_project_volumes", lambda name: list(volumes))
+        _patch_attr(monkeypatch, "get_project_networks", lambda name: [])
         monkeypatch.setattr(db_utils, "clear_cache_for_project", lambda name: None)
         monkeypatch.setattr(
             db_utils,
@@ -727,6 +741,7 @@ class TestMultiBench:
         volumes = [_make_volume("proj_sites"), _make_volume("proj_db-data")]
         _patch_attr(monkeypatch, "get_project_containers", lambda name: [container])
         _patch_attr(monkeypatch, "get_project_volumes", lambda name: list(volumes))
+        _patch_attr(monkeypatch, "get_project_networks", lambda name: [])
         monkeypatch.setattr(db_utils, "clear_cache_for_project", lambda name: None)
         monkeypatch.setattr(
             db_utils,
@@ -793,6 +808,7 @@ class TestMultiBench:
         volumes = [_make_volume("proj_sites"), _make_volume("proj_db-data")]
         _patch_attr(monkeypatch, "get_project_containers", lambda name: [container])
         _patch_attr(monkeypatch, "get_project_volumes", lambda name: list(volumes))
+        _patch_attr(monkeypatch, "get_project_networks", lambda name: [])
         monkeypatch.setattr(db_utils, "clear_cache_for_project", lambda name: None)
         monkeypatch.setattr(
             db_utils,
@@ -1120,6 +1136,7 @@ class TestHonestOutcomes:
         _patch_attr(monkeypatch, "get_project_containers", lambda name: [container])
         # None = a Docker error enumerating volumes (distinct from "no volumes").
         _patch_attr(monkeypatch, "get_project_volumes", lambda name: None)
+        _patch_attr(monkeypatch, "get_project_networks", lambda name: [])
         monkeypatch.setattr(db_utils, "clear_cache_for_project", lambda name: None)
         monkeypatch.setattr(db_utils, "get_cached_project_data", lambda name: None)
 
@@ -1209,6 +1226,7 @@ class TestHonestOutcomes:
                     containers_removed=1,
                     volumes_removed=0,
                     dir_removed=False,
+                    network_removed=True,
                     backup_ok=True,
                     failures=["could not remove volume 'proj_db-data'"],
                 ),
@@ -1245,6 +1263,7 @@ class TestHonestOutcomes:
                     containers_removed=1,
                     volumes_removed=2,
                     dir_removed=True,
+                    network_removed=True,
                     backup_ok=True,
                     failures=[],
                 ),
