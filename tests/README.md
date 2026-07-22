@@ -81,10 +81,14 @@ The real-Docker E2E is Linux-only; Windows/macOS-specific code stays in the unit
 
 ## Test Files
 
-As of 1.0.0, `tests/` holds 92 `test_*.py` suites totaling 1670 tests in the
-`unit` tier (measured with `uv run pytest --cov`). Run `ls tests/` for the
-authoritative current list; see [../docs/testing/README.md](../docs/testing/README.md)
-for the per-area breakdown.
+`tests/` holds one `test_*.py` suite per area in the `unit` tier. Counts below
+are a moving target - a suite or a test is added or removed on nearly every
+PR - so treat any number in this file as illustrative, not authoritative.
+For the current suite-file count, run `ls tests/test_*.py | wc -l`; for the
+current test count and pass/fail totals, run `uv run pytest -m unit` and read
+its own summary line (see [Reading the output](#reading-the-output) above).
+See [../docs/testing/README.md](../docs/testing/README.md) for the per-area
+breakdown.
 
 `tests/e2e/` adds more `test_*.py` suites in the real-Docker `e2e` tier
 (`test_init_e2e.py`, `test_backup_e2e.py`, `test_start_status_e2e.py`,
@@ -137,9 +141,8 @@ generic loopback once on the v16 leg, and keeps the v14-only `--receive` bare-fi
 reproduction as a separate, clearly-labeled, v14-gated test.
 
 ### `test_completion_utils.py`
-Tests for tab completion functionality.
-
-**Coverage:** 92%
+Tests for tab completion functionality. Coverage is listed under
+`utils/completion_utils.py` in [Covered Modules](#covered-modules) below.
 
 **What it tests:**
 - Project name completion from Docker
@@ -150,15 +153,24 @@ Tests for tab completion functionality.
 - Error handling
 
 **Test classes:**
-- `TestCompleteProjectNames` - 7 tests
-- `TestCompleteAppNames` - 6 tests
-- `TestCompleteSiteNames` - 4 tests
-- `TestCacheHelpers` - 4 tests
-- `TestGetDockerClient` - 3 tests
+- `TestCompleteProjectNames`
+- `TestCompleteAppNames`
+- `TestCompleteSiteNames`
+- `TestCacheHelpers`
+- `TestGetDockerClient`
+
+Run `uv run pytest tests/test_completion_utils.py -v` for the current
+per-class test counts.
 
 ## Test Coverage
 
-Current overall coverage at 1.1.0 (1728 tests across 94 test files, ~82% overall).
+Every percentage below is a snapshot from the most recent full run, not a
+promise - it drifts with every test added or removed. Regenerate the current
+overall total and the per-module breakdown with:
+
+```bash
+uv run pytest -m unit --cov=caffeinated_whale_cli --cov-report=term-missing
+```
 
 ### Covered Modules
 - ✅ `utils/completion_utils.py` - 92% (7 missing lines)
