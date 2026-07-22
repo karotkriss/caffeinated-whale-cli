@@ -158,7 +158,7 @@ Tests for tab completion functionality.
 
 ## Test Coverage
 
-Current overall coverage at 1.1.0 (1713 tests across 93 test files, ~82% overall).
+Current overall coverage at 1.1.0 (1728 tests across 94 test files, ~82% overall).
 
 ### Covered Modules
 - ✅ `utils/completion_utils.py` - 92% (7 missing lines)
@@ -206,6 +206,7 @@ Current overall coverage at 1.1.0 (1713 tests across 93 test files, ~82% overall
 - ✅ `core/version.py` - ~90% (`test_core_version`: install-method detection tree (dev/uv/uvx/pip fallback), the fail-open PyPI lookup, PEP 440 compare including the dev-ahead case, the TTL cache, and the `passive_notice` cache-only gate incl. the `attempted_at` once/day refresh throttle)
 - ✅ `commands/self_update.py` - 100% (`test_self_update`: dev/uvx no-op, the default upgrade run (success/failure/`FileNotFoundError`), `--check`, `--no-cache`)
 - ✅ `update_notice.py` - ~95% (`test_update_notice`: stderr-only rendering never on stdout, `sys.stderr.isatty()` gating, `CWCLI_NO_UPDATE_CHECK` suppression, fail-open when the core gate raises)
+- ✅ `core/scale.py` + `commands/scale.py`/`axi scale` renderers - (`test_core_scale`: the published-range parse/widen, the idempotent no-op when the range already covers every bench, `consent=False` returning `NEEDS_CHOICE` `confirm_scale` only when expansion is needed, the mandatory `--no-deps` recreate, a newly-needed port already in use refused BEFORE any write, a failed recreate rolling the compose file back rather than stranding a widened-but-unapplied file, an unreadable bench's ports reported `ports_verified=False` rather than fabricated, the `--to` floor, and the v13/v14 toolchain repair reinstalling only a genuinely broken interpreter while a working v16 interpreter is left alone). `tests/e2e/test_scale_e2e.py` is the real-Docker net: the DB survives (MariaDB container id unchanged, a seeded marker read back), frappe is recreated, the newly-covered ports are published, and `cwcli axi scale` emits TOON and is idempotent on a second run.
 
 ### Modules Needing Dedicated Suites
 - ⚠️ `utils/port_utils.py` (~9%, only incidental coverage)
