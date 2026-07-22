@@ -590,7 +590,7 @@ def rm(
         outcome = result.data
 
         # A non-empty ``failures`` list means at least one requested step did not
-        # complete (backup gate, volume/dir removal, container removal). Do not
+        # complete (backup gate, container/volume/network/directory removal). Do not
         # print a green check for a project that did not fully remove - report the
         # failures and force a non-zero exit.
         step_failures = outcome.failures
