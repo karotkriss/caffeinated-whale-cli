@@ -10,9 +10,11 @@ first - see :func:`_exec_interactive` for why the exec-stream contract cannot
 carry stdin without giving up the decisions that contract exists to own.
 """
 
+import os
 import shlex
 import subprocess
 import sys
+import uuid
 
 import typer
 from rich.console import Console
@@ -42,11 +44,12 @@ def _exec_interactive(plan: RunPlan, *, verbose: bool) -> int:
     exclusive with that locked ``demux=True`` stream tag - the same collision
     ``core/logs.py`` records for ``--follow``.
 
-    So this reuses the mechanism ``logs --follow`` already ships and has
-    measured clean under a real pty (exit 130, zero orphan processes): hand the
-    exec to the ``docker`` CLI, which does the stdin pump, the raw mode and the
-    signal forwarding itself. ``core/exec_stream.py`` is untouched, and the
-    default non-interactive ``cwcli run`` still streams through it.
+    So this reuses the mechanism ``logs --follow`` already ships: hand the exec
+    to the ``docker`` CLI, which does the stdin pump and raw mode itself. The
+    non-TTY path also gives the command its own process group so an interrupt can
+    reap the container-side command before returning. ``core/exec_stream.py`` is
+    untouched, and the default non-interactive ``cwcli run`` still streams
+    through it.
 
     The ``docker`` binary is guaranteed present: ``@handle_docker_errors``
     already refuses without it.
@@ -60,14 +63,16 @@ def _exec_interactive(plan: RunPlan, *, verbose: bool) -> int:
     # file's bytes into the command, which is the non-interactive half of the
     # both-modes contract - an agent answers by piping the same lines a human
     # types.
+    is_tty = sys.stdin.isatty() and sys.stdout.isatty()
     flags = ["-i"]
-    if sys.stdin.isatty() and sys.stdout.isatty():
+    if is_tty:
         flags.append("-t")
 
     # `shlex.split` undoes the quoting `core.run_plan` applied for docker-py,
     # which splits a command STRING itself where the docker CLI takes an argv.
     # Round-tripping the plan's own command keeps the assembly decision in the
     # core rather than re-deriving it here from the raw args.
+    command = shlex.split(plan.command)
     argv = [
         "docker",
         "exec",
@@ -75,20 +80,52 @@ def _exec_interactive(plan: RunPlan, *, verbose: bool) -> int:
         "-w",
         plan.bench_path,
         plan.container_id,
-        *shlex.split(plan.command),
     ]
+    cleanup_pidfile = None
+    if is_tty:
+        argv.extend(command)
+    else:
+        cleanup_pidfile = f"/tmp/cwcli-run-{os.getpid()}-{uuid.uuid4().hex}.pid"
+        script = (
+            'pidfile="$1"; shift; echo $$ > "$pidfile"; '
+            '"$@"; status=$?; rm -f "$pidfile"; exit "$status"'
+        )
+        argv.extend(
+            ["setsid", "sh", "-c", script, "cwcli-run", cleanup_pidfile, *command]
+        )
 
     if verbose:
         stderr_console.print(f"[dim]$ {' '.join(argv)}[/dim]")
 
+    completed = False
     try:
-        return subprocess.run(argv).returncode
+        result = subprocess.run(argv)
+        completed = True
+        return result.returncode
     except KeyboardInterrupt:
-        # Only reachable without `-t`: with it, docker forwards ^C into the
-        # container and the stop arrives as exit 130 rather than as a signal
-        # here. Report the interrupt honestly instead of letting it surface as a
-        # traceback, and never as success.
         return 130
+    finally:
+        if cleanup_pidfile is not None and not completed:
+            _kill_interactive_process_group(plan.container_id, cleanup_pidfile)
+
+
+def _kill_interactive_process_group(container_id: str, pidfile: str) -> None:
+    quoted = shlex.quote(pidfile)
+    script = (
+        f'pid=$(cat {quoted} 2>/dev/null) || exit 0; '
+        'kill -TERM -- "-$pid" 2>/dev/null; sleep 1; '
+        'kill -KILL -- "-$pid" 2>/dev/null; '
+        f"rm -f {quoted}"
+    )
+    try:
+        subprocess.run(
+            ["docker", "exec", container_id, "sh", "-c", script],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except Exception:
+        pass
 
 
 @handle_docker_errors
