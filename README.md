@@ -1874,11 +1874,11 @@ cwcli run my-project migrate --bench 1          # by index
 cwcli update my-project --app erpnext --bench staging   # by label
 ```
 
-`--bench` is available on `run`, `backup`, `update`, `open`, `unlock`, `restore`, and `start`. Setting labels lives in the [`label`](#label---manage-bench-labels) command.
+`--bench` is available on `run`, `backup`, `update`, `open`, `unlock`, `restore`, `rm-site`, and `start`. Setting labels lives in the [`label`](#label---manage-bench-labels) command.
 
 **No silent guessing on data commands:**
 
-If a project has more than one bench and you do not pass `--bench` (or `--path`), the data commands (`run`, `backup`, `update`, `open`, `unlock`, `restore`) stop and list the benches instead of guessing:
+If a project has more than one bench and you do not pass `--bench` (or `--path`), the data commands (`run`, `backup`, `update`, `open`, `unlock`, `restore`, `rm-site`) stop and list the benches instead of guessing:
 
 ```
 Error: project 'my-project' has multiple benches; specify one with --bench <index|label>:
@@ -2211,14 +2211,14 @@ The CLI uses:
 - **Peewee ORM** - SQLite-based caching
 
 **Logic core:** business logic and I/O live in a UI-pure `core/` package that carries no `rich`/`questionary`/`typer`; it returns a serializable typed envelope (or raises a typed error) so the human CLI, the `cwcli axi` agent surface, and any future GUI are all thin frontends over one implementation.
-`backup`, `unlock`, `stop`, `label`, `run`, `ls`/`list`, `where`, `start`/`status`/`restart`, `logs`, `inspect`, `apps`, `update`, `open`, `init`, `config`, `restore`, and `rm` are migrated onto it so far.
+`backup`, `unlock`, `stop`, `label`, `run`, `ls`/`list`, `where`, `start`/`status`/`restart`, `logs`, `inspect`, `apps`, `update`, `open`, `init`, `config`, `restore`, `rm`, and `rm-site` are migrated onto it so far.
 
 **Data Directories:**
 - **Projects**: `~/.cwcli/projects/` - Project directories created by `cwcli init`
 - **Config**: `~/.cwcli/config/` - Configuration files
 - **Cache**: `~/.cwcli/cache/cwc-cache.db` - Project inspection cache
 - **Runtime**: `~/.cwcli/run/` - PID and log files for background services
-- **Archive**: `~/.cwcli/archive/` - Pre-deletion backups and config snapshots written by `cwcli rm`
+- **Archive**: `~/.cwcli/archive/` - Pre-deletion backups and config snapshots from `cwcli rm`, plus dropped-site archives from `cwcli rm-site`
 
 **Relocating cwcli's data (`CWCLI_HOME`):**
 
