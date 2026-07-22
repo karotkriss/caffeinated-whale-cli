@@ -146,12 +146,26 @@ def _archived_sites_root(bench_path: str) -> str:
 
 
 def _archived_site_names(container, root: str) -> set[str] | None:
-    exists, _ = container.exec_run(["test", "-d", root])
-    if exists != 0:
-        return set()
-    exit_code, output = container.exec_run(
-        ["find", root, "-mindepth", "1", "-maxdepth", "1", "-type", "d", "-printf", "%f\n"]
-    )
+    try:
+        exists, _ = container.exec_run(["test", "-d", root])
+        if exists != 0:
+            return set()
+        exit_code, output = container.exec_run(
+            [
+                "find",
+                root,
+                "-mindepth",
+                "1",
+                "-maxdepth",
+                "1",
+                "-type",
+                "d",
+                "-printf",
+                "%f\n",
+            ]
+        )
+    except Exception:
+        return None
     if exit_code != 0:
         return None
     if isinstance(output, bytes):
@@ -170,14 +184,20 @@ def _new_archived_site_path(root: str, site: str, before: set[str], after: set[s
     return f"{root}/{candidates[0]}"
 
 
-def _archived_site_exists(container, path: str) -> bool:
-    exit_code, _ = container.exec_run(["test", "-d", path])
+def _archived_site_exists(container, path: str) -> bool | None:
+    try:
+        exit_code, _ = container.exec_run(["test", "-d", path])
+    except Exception:
+        return None
     return bool(exit_code == 0)
 
 
 def _prune_archived_site(container, source_path: str) -> bool:
     """Delete ``source_path`` inside the container. True only if the exit code was 0."""
-    exit_code, _ = container.exec_run(["rm", "-rf", source_path])
+    try:
+        exit_code, _ = container.exec_run(["rm", "-rf", source_path])
+    except Exception:
+        return False
     return bool(exit_code == 0)
 
 
@@ -316,7 +336,9 @@ def drop_site(
     archived_host_path: str | None = None
     archive_pruned = False
 
-    if source is not None and _archived_site_exists(container, source):
+    source_exists = _archived_site_exists(container, source) if source is not None else False
+
+    if source is not None and source_exists:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         dest_dir = cwcli_home() / "archive" / f"{project_name}_dropped_sites"
         dest_file = dest_dir / f"{site}_{timestamp}.tar"
@@ -352,12 +374,22 @@ def drop_site(
                     "it out manually, then remove it.",
                 )
             )
+    elif source is not None and source_exists is None:
+        warnings.append(
+            Message(
+                "rm_site.archive_probe_failed",
+                f"bench created the dropped site's archive at {source}, but cwcli could not "
+                "verify it after the drop; nothing was copied out or pruned, and the "
+                "credential-bearing archive may remain there.",
+            )
+        )
     else:
         warnings.append(
             Message(
                 "rm_site.archive_not_found",
                 f"cwcli could not uniquely identify the archive bench created under "
-                f"{archive_root}; nothing was copied out or pruned.",
+                f"{archive_root}; the credential-bearing archive may remain there, and "
+                "nothing was copied out or pruned.",
             )
         )
 
