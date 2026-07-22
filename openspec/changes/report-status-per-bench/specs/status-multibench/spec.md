@@ -44,8 +44,14 @@ The document shape SHALL be uniform: a single-bench project and an explicit `--b
 
 `supervision.web_http_code`, `supervision.web_is_serving` and `supervision.wait_web_ready` SHALL each take an explicit keyword-only `port: int` parameter with NO default value, so a caller cannot reach the probe without naming a port.
 
-The port SHALL be resolved from that bench's OWN `sites/common_site_config.json` through a single shared reader promoted from `core/scale.py`'s `_read_assigned_ports` to `resolvers.resolve_assigned_ports`, with behavior byte-identical to the original.
-`core/scale.py` SHALL be re-pointed at the promoted reader and SHALL NOT keep a private copy.
+The port SHALL be resolved from that bench's OWN `sites/common_site_config.json` through a single shared reader promoted from `core/scale.py`'s `_read_assigned_ports` to `resolvers.resolve_assigned_ports`.
+
+The promoted reader SHALL preserve the original's skip-on-unreadable/unparseable/non-mapping/non-numeric behavior, and SHALL additionally DISTINGUISH an explicitly-assigned port from a defaulted one via a keyword-only `fill_defaults: bool` parameter with no default value:
+
+- `core.scale` SHALL pass `fill_defaults=True`, keeping its existing behavior, because it computes which host ports to PUBLISH and a bench that omits the key serves Frappe's default.
+- `core.status` and `core.start` SHALL pass `fill_defaults=False`, because they turn the answer into a PROBE TARGET, and a defaulted 8000 measures a different bench's web server.
+
+EVERY call site in `core/scale.py` SHALL be re-pointed at the promoted reader, and `core/scale.py` SHALL NOT keep a private copy.
 
 `core.status` SHALL report, per bench, the port it actually probed.
 
@@ -71,7 +77,7 @@ The port SHALL be resolved from that bench's OWN `sites/common_site_config.json`
 
 ### Requirement: An unresolvable port is reported unknown and never guessed
 
-WHEN a bench's `sites/common_site_config.json` cannot be read or parsed, status SHALL report `web_port: null` and `web_port_verified: false` for that bench, SHALL NOT issue any probe, and SHALL NOT fall back to port 8000.
+WHEN a bench's `sites/common_site_config.json` cannot be read, cannot be parsed, or parses but names no `webserver_port`, status SHALL report `web_port: null` and `web_port_verified: false` for that bench, SHALL NOT issue any probe, and SHALL NOT fall back to port 8000.
 
 That bench SHALL NOT be degraded on account of the missing web signal: the aggregate SHALL be computed with `_overall`'s existing `web_probed=False` path, so supervisor-up plus every program healthy still reads `running`.
 
@@ -81,6 +87,11 @@ A `status.web_port_unknown` warning SHALL name the affected bench and point at `
 
 - **WHEN** a bench's config cannot be read while its supervisord is up and every program is `RUNNING`
 - **THEN** that bench's `overall` is `running`, `web_port` is null, `web_port_verified` is false, and a `status.web_port_unknown` warning names the bench
+
+#### Scenario: A config that omits the port is unresolved, not defaulted
+
+- **WHEN** a bench's `common_site_config.json` parses as a mapping but carries no `webserver_port`
+- **THEN** that bench reports `web_port: null` and `web_port_verified: false` and is NOT probed, rather than reporting `web_port: 8000` with `web_port_verified: true`
 
 #### Scenario: No probe is issued against a guessed port
 

@@ -114,14 +114,21 @@ are now the whole point. Each note below guards a real bug.
   in `references/init.md`. A no-op when the ids already match; a failed remap degrades to a
   `start.uid_align_failed` warning (rendered unconditionally by `commands/start.py`, not just under
   `--verbose`) and start still proceeds.
-- **Blocks until the web server actually binds `:8000` before reporting running** (`fm/cwcli-start-web-readiness-w3`).
+- **Blocks until the web server actually binds THE BENCH'S OWN PORT before reporting running** (`fm/cwcli-start-web-readiness-w3`; the port became explicit in `report-status-per-bench`).
   supervisord reports its programs up a beat before `bench serve` binds the port, so a caller that declared
   "running" the instant the launch returned raced the web - a scripted `cwcli start && cwcli status` (or `cwcli
   init && cwcli status`) caught a transient `degraded`. `start` closes that race itself, at the ONE shared point
   every caller (`cwcli start`, init's auto-start, `axi start`/`axi init`, whole-stack `restart`, and the
   post-restore restart) already funnels through, rather than each caller re-implementing its own wait.
-  `supervision.wait_web_ready(container)` (bounded 60s, 1s poll interval) reuses the existing `web_http_code`
-  probe via the new `web_is_serving` helper (status's own "up" definition: any code not in `(None, "000")`).
+  `supervision.wait_web_ready(container, port=...)` (bounded 60s, 1s poll interval) reuses the existing
+  `web_http_code` probe via the `web_is_serving` helper (status's own "up" definition: any code not in
+  `(None, "000")`). **The port is REQUIRED, keyword-only, and undefaulted**, and the port itself is READ from the
+  bench's own `sites/common_site_config.json` via `resolvers.resolve_assigned_ports(..., fill_defaults=False)` -
+  this wait used to poll a hardcoded `:8000`, so `cwcli start <p> --bench 1` sat 60 seconds watching bench 0's
+  port and then warned that a perfectly healthy bench had not started (audit F5), then pointed the user at
+  `cwcli status`, which confirmed the phantom fault by making the same mistake. **With no resolvable port the
+  wait is SKIPPED** (`web_ready` stays None - its existing "not probed" value - plus a `start.web_port_unknown`
+  warning): spending the timeout on a guess is worse than saying nothing, and `StartOutcome` needed no new field.
   The wait runs ONLY on a genuine launch and ONLY when the Procfile defines a `web` program - the idempotent
   no-op returns BEFORE it (stays fast, `web_ready=None`), and a no-web bench is never blocked
   (`web_ready=None`, zero added latency). A timeout NEVER fails the start (the stack IS launched): it degrades
@@ -168,7 +175,7 @@ are now the whole point. Each note below guards a real bug.
   `label_for` + `_descendants` machinery walking the honcho / `bench start` process tree (keyed by honcho's
   `/proc/<pid>/cwd == bench`, the same cwd fallback supervisord keying uses). It reports each process's TRUE
   `up`/pid/uptime from `ps`; the per-process supervisord `state` is `None` here (there is no supervisord to ask -
-  correct: `up` is the observable truth). The report is flagged `StatusReport.not_cwcli_supervised=True` with a
+  correct: `up` is the observable truth). The report is flagged `BenchStatus.not_cwcli_supervised=True` with a
   `supervisor.not_cwcli` hint warning ("run `cwcli start`..."), the heading reads `(not under cwcli supervision)`
   not `(supervisor down)`, and `overall` is the honest `running`/`degraded` off the real processes. It is a PURE
   READ - status NEVER launches supervisord or mutates the instance (captain decision; migrating is `cwcli start`'s
@@ -181,8 +188,8 @@ are now the whole point. Each note below guards a real bug.
   (worker already had the dual form). Miss this and a genuinely-serving web/watch/schedule reads as `down` under
   the supervisord path too (the fakes used `bench serve` cmdlines and masked it; `test_real_bench_helper_cmdlines_map_to_labels` guards it now).
 - **`cwcli status --watch` must NOT probe the web server** (the load-bearing reason the flag exists).
-  `probe_web=False` suppresses the `curl localhost:8000` call (which is what spams the bench's access logs);
-  per-program health still comes from `ps` + `supervisorctl` (the control socket, NOT :8000), so repeated
+  `probe_web=False` suppresses the per-bench `curl` call (which is what spams the bench's access logs);
+  per-program health still comes from `ps` + `supervisorctl` (the control socket, which touches no web port), so repeated
   ticks leave ZERO HTTP requests. With `probe_web=False`, `_overall` is driven by supervisor-up + all-healthy
   (a missing web code must NOT falsely `degrade`). `--watch` is a frontend re-poll (`commands/status.py:_watch_loop`,
   `rich.Live` on stderr) - the core stays one-shot. The loop starts only when BOTH stdout+stderr are TTYs;
@@ -190,11 +197,26 @@ are now the whole point. Each note below guards a real bug.
 
 ## Multi-bench (D5), the axi verbs, and the container-boot NON-GOAL
 
-- `start`/`status`/`restart --process` share `resolvers.resolve_bench`; on multi-bench with no `--bench` the
-  human CLI prompts (`on_ambiguous="prompt"`, TTY) and refuses non-zero on a non-TTY. The internal
-  `_start_project` (restart / auto-start callers) keeps the lenient first-bench fallback. `cwcli axi
-  start`/`status`/`restart` take `--bench` or emit a `select_bench` usage error naming it. `cwcli axi start`
+- `start`/`status`/`restart --process` share `resolvers.resolve_bench`. `start`/`restart` MUTATE one bench, so
+  on multi-bench with no `--bench` the human CLI prompts (`on_ambiguous="prompt"`, TTY) and refuses non-zero on
+  a non-TTY, while `cwcli axi start`/`restart` emit a `select_bench` usage error naming the flag. The internal
+  `_start_project` (restart / auto-start callers) keeps the lenient first-bench fallback. `cwcli axi start`
   never prompts a port conflict: a `CONFLICT` naming `--yes` via the non-printing `detect_port_conflicts`.
+- **`status` no longer joins that refusal, and the difference is READ vs MUTATE** (`report-status-per-bench`).
+  It is a read, so the bare form ANSWERS the question the refusal used to send the caller away to
+  reconstruct: it reports EVERY cached bench in one document (`StatusReport.benches: list[BenchStatus]`, the
+  `InspectReport.benches` model, uniform even for one bench) and `core.status` never returns `NEEDS_CHOICE` at
+  all. Both resolvers of that choice are DELETED, not left unreachable - `commands/status.py:_fetch`'s
+  prompt-and-retry loop and `commands/axi.py:axi_status`'s `emit_axi_choice_as_usage_error` branch - because a
+  retained-but-unreachable prompt is how the refusal comes back. `status` is therefore non-prompting on EVERY
+  path, which satisfies the both-modes standard trivially. **Each bench is probed on its OWN port**, read from
+  its `sites/common_site_config.json` (`resolvers.resolve_assigned_ports(..., fill_defaults=False)`) and passed
+  explicitly to `supervision.web_http_code(container, port=...)`; the probe used to hardcode `localhost:8000`,
+  so a healthy bench 1 read `degraded` (F3) and a dead bench 1 reported bench 0's live code (F4). An unresolved
+  port is `web_port: null`/`web_port_verified: false`, NO probe, a `status.web_port_unknown` warning, and
+  `_overall(web_probed=False)` - it does NOT degrade, because degrading on an unreadable JSON file would
+  manufacture a fresh F3 while fixing the old one. The instance `overall` folds the per-bench ones over the same
+  four tokens (no fifth): `degraded` dominates, and a `running` bench beats a never-started `online` one.
 - **Container-boot auto-relaunch is an explicit NON-GOAL.** supervisord's lifecycle is the container's
   lifecycle: it heals crashed PROGRAMS on its own, but it is NOT auto-relaunched when the container itself
   restarts (that needs the image entrypoint, which cwcli cannot set via `docker exec`). A `cwcli start` is

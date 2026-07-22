@@ -11,6 +11,7 @@ container so no Docker is needed.
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 
@@ -88,7 +89,24 @@ class FakeContainer:
         supervisor_present=True,
         install_succeeds=True,
         ctl_status=None,
+        configs=None,
+        markers=None,
     ):
+        # ``marker`` is the single-bench answer for every bench; ``markers`` is the
+        # per-bench mapping a multi-bench test needs. Two parameters rather than one
+        # overloaded value, because the marker IS a dict, so a dict cannot signal
+        # "keyed by bench" the way it can for ``ctl_status``/``web_code``.
+        self.markers = markers
+        # Each bench's ``sites/common_site_config.json``, keyed by bench path - the
+        # ONLY authority on which port a bench serves (bench's own make_ports writes
+        # it). ``None`` for a bench means the read fails, which is how a test drives
+        # the fail-honest "port unknown, never probed" path. A dict WITHOUT
+        # ``webserver_port`` drives the defaulted-vs-explicit distinction.
+        self.configs = (
+            configs
+            if configs is not None
+            else {BENCH: {"webserver_port": 8000, "socketio_port": 9000}}
+        )
         self.status = "running"
         self.name = "cwe2e-proj-frappe-1"
         self.labels = {"com.docker.compose.service": "frappe"}
@@ -107,6 +125,18 @@ class FakeContainer:
         self.restarts: list[str] = []
         self.pip_installed = False
         self.calls: list = []
+
+    @staticmethod
+    def _per_key(value, key):
+        """A scalar answer, or a per-bench/per-port one when a dict is supplied.
+
+        ``ctl_status`` and ``web_code`` are single-bench facts in the original fakes
+        and stay scalars there. A MULTI-bench test needs each bench (or each web port)
+        to answer differently - that is the whole point of the defect being guarded -
+        so each also accepts a dict. (The marker uses ``markers=`` instead: it is
+        itself a dict, so a dict cannot signal "keyed by bench" here.)
+        """
+        return value.get(key) if isinstance(value, dict) else value
 
     def reload(self):
         pass
@@ -131,12 +161,18 @@ class FakeContainer:
         if head == "cat":
             path = cmd[1]
             if path.endswith(supervision._MARKER_NAME):
-                if self.marker is None:
+                bench = path[: -len(f"/logs/{supervision._MARKER_NAME}")]
+                marker = self.markers.get(bench) if self.markers is not None else self.marker
+                if marker is None:
                     return (1, b"")
-                return (0, json.dumps(self.marker).encode())
+                return (0, json.dumps(marker).encode())
             return (0, b"")
         if head == "curl":
-            return (0, self.web_code.encode()) if self.web_ok else (7, b"")
+            port = int(cmd[-1].rsplit(":", 1)[1])
+            code = self._per_key(self.web_code, port)
+            if not self.web_ok or code is None:
+                return (7, b"")
+            return (0, code.encode())
         if head == "python3":
             # ["python3","-c", prog, path, payload] -> a file write (marker/config/launcher).
             path, payload = cmd[3], cmd[4]
@@ -163,6 +199,12 @@ class FakeContainer:
         return (0, b"")
 
     def _exec_bash(self, script, detach):
+        if "common_site_config.json" in script:
+            bench = script.split("cat ", 1)[1].strip()[: -len("/sites/common_site_config.json")]
+            config = self.configs.get(bench)
+            if config is None:
+                return (1, b"")
+            return (0, json.dumps(config).encode())
         if "import supervisor" in script:
             return (0, b"") if self.supervisor_present else (1, b"")
         if "pip install supervisor" in script:
@@ -176,8 +218,13 @@ class FakeContainer:
                 program = script.split(" restart ", 1)[1].strip().strip("'\"")
                 self.restarts.append(program)
                 return (0, f"{program}: stopped\n{program}: started\n".encode())
-            body = self.ctl_status if self.ctl_status is not None else _CTL_SINGLE
-            return (0, body.encode())
+            # The script carries the bench's own control socket, so a dict-valued
+            # ctl_status can answer per bench.
+            bench = None
+            if isinstance(self.ctl_status, dict):
+                bench = next((b for b in self.ctl_status if b in script), None)
+            body = self._per_key(self.ctl_status, bench)
+            return (0, (body if body is not None else _CTL_SINGLE).encode())
         if "supervisor.supervisord" in script:
             self.launches.append(script)
             return (None, None) if detach else (0, b"")
@@ -479,29 +526,31 @@ class TestSupervisorctl:
 
 class TestWebProbe:
     def test_web_code_when_answering(self):
-        assert supervision.web_http_code(FakeContainer(web_code="200")) == "200"
+        assert supervision.web_http_code(FakeContainer(web_code="200"), port=8000) == "200"
 
     def test_web_none_when_curl_fails(self):
-        assert supervision.web_http_code(FakeContainer(web_ok=False)) is None
+        assert supervision.web_http_code(FakeContainer(web_ok=False), port=8000) is None
 
     def test_serving_true_for_any_http_code(self):
         # A bound port serving ANY code (even 404/5xx) is up (status's definition).
-        assert supervision.web_is_serving(FakeContainer(web_code="404")) is True
-        assert supervision.web_is_serving(FakeContainer(web_code="200")) is True
+        assert supervision.web_is_serving(FakeContainer(web_code="404"), port=8000) is True
+        assert supervision.web_is_serving(FakeContainer(web_code="200"), port=8000) is True
 
     def test_serving_false_when_unreachable_or_000(self):
-        assert supervision.web_is_serving(FakeContainer(web_ok=False)) is False
-        assert supervision.web_is_serving(FakeContainer(web_code="000")) is False
+        assert supervision.web_is_serving(FakeContainer(web_ok=False), port=8000) is False
+        assert supervision.web_is_serving(FakeContainer(web_code="000"), port=8000) is False
 
     def test_wait_returns_immediately_when_serving(self):
         # First poll sees a serving port -> returns True without sleeping.
-        assert supervision.wait_web_ready(FakeContainer(web_code="200")) is True
+        assert supervision.wait_web_ready(FakeContainer(web_code="200"), port=8000) is True
 
     def test_wait_times_out_when_web_never_binds(self):
         # A web that never serves returns False within the bounded timeout (tiny
         # timeout so the test is fast; proves it does not hang).
         assert (
-            supervision.wait_web_ready(FakeContainer(web_ok=False), timeout=0.05, interval=0.01)
+            supervision.wait_web_ready(
+                FakeContainer(web_ok=False), port=8000, timeout=0.05, interval=0.01
+            )
             is False
         )
 
@@ -519,6 +568,26 @@ class TestWebProbe:
             return type(c).exec_run(c, cmd, **kw)
 
         c.exec_run = flip  # type: ignore[method-assign]
-        assert supervision.wait_web_ready(c, timeout=5, interval=0.01) is True
+        assert supervision.wait_web_ready(c, port=8000, timeout=5, interval=0.01) is True
         assert polls["n"] >= 3
         c.web_ok = orig
+
+    def test_the_probe_asks_the_port_it_was_given(self):
+        # The whole fix: the URL carries the CALLER's port, not a hardcoded 8000.
+        # A bench past the first serves 8001, and probing 8000 measures a sibling.
+        c = FakeContainer(web_code="200")
+        supervision.web_http_code(c, port=8001)
+        curl = next(cmd for cmd in c.calls if isinstance(cmd, list) and cmd[0] == "curl")
+        assert "http://localhost:8001" in curl
+        assert not any("8000" in part for part in curl)
+
+    def test_none_of_the_three_probes_declares_a_default_port(self):
+        # A "convenience" default is exactly how the bug arrived: web_http_code was
+        # written for a single-bench world, and every later caller correctly passed
+        # nothing. With no default the bug is unrepresentable, so re-adding one must
+        # be a test failure rather than a silent re-arming.
+        for fn in (supervision.web_http_code, supervision.web_is_serving,
+                   supervision.wait_web_ready):
+            param = inspect.signature(fn).parameters["port"]
+            assert param.default is inspect.Parameter.empty, fn.__name__
+            assert param.kind is inspect.Parameter.KEYWORD_ONLY, fn.__name__
