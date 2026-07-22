@@ -47,9 +47,10 @@ class ProcessLaunch:
 class StartOutcome:
     """The typed outcome of a start (or an idempotent no-op).
 
-    ``web_ready`` is the honest web-serving signal after a genuine launch: True
-    once :8000 answers, False if it did not within the bounded wait, and None
-    when not probed (an idempotent no-op, or a bench whose Procfile has no web).
+    ``web_ready`` is the honest web-serving signal after a genuine launch: True once
+    the bench's OWN web port answers, False if it did not within the bounded wait,
+    and None when not probed (an idempotent no-op, a bench whose Procfile has no web,
+    or a bench whose assigned port could not be read - cwcli never waits on a guess).
     """
 
     project: str
@@ -176,23 +177,44 @@ def start(
     launched = supervision.discover_stack(frappe_container, resolved_path)
     processes = _launched_processes(frappe_container, resolved_path, launched)
 
-    # 6. Block until the web server actually binds :8000 before reporting running.
-    #    supervisord reports its programs up a beat before `bench serve` binds the
-    #    port, so returning immediately makes the tool's "running" claim race the
-    #    web (a scripted `cwcli start && cwcli status` catches a transient
+    # 6. Block until the web server actually binds THIS BENCH's port before reporting
+    #    running. supervisord reports its programs up a beat before `bench serve`
+    #    binds the port, so returning immediately makes the tool's "running" claim
+    #    race the web (a scripted `cwcli start && cwcli status` catches a transient
     #    `degraded`). Only wait when the Procfile actually defines a web program;
     #    a timeout degrades to a warning, never a failure (the stack IS launched).
+    #
+    #    The port is READ from the bench's own config, never assumed: this wait used
+    #    to poll a hardcoded :8000, so `cwcli start <p> --bench 1` sat 60 seconds
+    #    watching bench 0's port and then warned that a perfectly healthy bench had
+    #    not started - then pointed the user at `cwcli status`, which confirmed the
+    #    phantom fault by making the same mistake. With no resolvable port the wait
+    #    is SKIPPED and `web_ready` stays None (its existing "not probed" value):
+    #    spending the timeout on a guess is worse than saying nothing.
     web_ready: bool | None = None
     if "web" in {p.label for p in processes}:
-        web_ready = supervision.wait_web_ready(frappe_container)
-        if not web_ready:
+        ports = resolvers.resolve_assigned_ports(
+            frappe_container, [resolved_path], fill_defaults=False
+        ).get(resolved_path)
+        if ports is None:
             warnings.append(
                 Message(
-                    "start.web_not_ready",
-                    "Dev services launched, but the web server did not begin serving on "
-                    ":8000 in time. Check 'cwcli status' / 'cwcli logs'.",
+                    "start.web_port_unknown",
+                    "Dev services launched, but the bench's web port could not be read, "
+                    f"so cwcli did not wait for it. Run 'cwcli inspect {project_name}' "
+                    "to refresh, then check 'cwcli status'.",
                 )
             )
+        else:
+            web_ready = supervision.wait_web_ready(frappe_container, port=ports[0])
+            if not web_ready:
+                warnings.append(
+                    Message(
+                        "start.web_not_ready",
+                        "Dev services launched, but the web server did not begin serving "
+                        f"on :{ports[0]} in time. Check 'cwcli status' / 'cwcli logs'.",
+                    )
+                )
 
     return Result(
         status=Status.OK,

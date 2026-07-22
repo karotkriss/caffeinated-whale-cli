@@ -13,19 +13,35 @@ import typer
 
 from caffeinated_whale_cli.commands import status as status_mod
 from caffeinated_whale_cli.core.envelope import Result, Status
-from caffeinated_whale_cli.core.status import StatusReport
+from caffeinated_whale_cli.core.status import BenchStatus, StatusReport
 from caffeinated_whale_cli.core.supervision import ProcessHealth
 from caffeinated_whale_cli.utils import docker_utils
 
 
-def _report(overall="running"):
+def _bench(overall="running", processes=None, *, index=0, path="/w/b0", web_port=8000):
+    return BenchStatus(
+        index=index,
+        bench_path=path,
+        label=None,
+        overall=overall,
+        supervisor_up=overall in ("running", "degraded"),
+        web_port=web_port,
+        web_port_verified=True,
+        web_http_code=None,  # watch mode never carries a web code
+        processes=(
+            processes
+            if processes is not None
+            else [ProcessHealth(label="web", up=True, pid=101, uptime_s=499, rss_kb=80000)]
+        ),
+    )
+
+
+def _report(overall="running", benches=None):
     return StatusReport(
         overall=overall,
         project="proj",
         container_running=overall != "offline",
-        supervisor_up=overall in ("running", "degraded"),
-        web_http_code=None,  # watch mode never carries a web code
-        processes=[ProcessHealth(label="web", up=True, pid=101, uptime_s=499, rss_kb=80000)],
+        benches=[_bench(overall)] if benches is None else benches,
     )
 
 
@@ -70,13 +86,11 @@ def test_render_table_includes_state_column():
     # just up/down), matching the one-shot stderr detail.
     from rich.console import Console
 
-    report = StatusReport(
-        overall="degraded",
-        project="proj",
-        container_running=True,
-        supervisor_up=True,
-        web_http_code=None,
-        processes=[ProcessHealth(label="worker:default", up=False, state="BACKOFF")],
+    report = _report(
+        "degraded",
+        benches=[
+            _bench("degraded", [ProcessHealth(label="worker:default", up=False, state="BACKOFF")])
+        ],
     )
     table = status_mod._render_table(report)
     console = Console(width=120)
@@ -164,3 +178,30 @@ def test_watch_interval_floored_at_one_second(given, expected, monkeypatch):
         )
     assert exc.value.exit_code == 0
     assert seen == [expected]
+
+
+def test_the_bench_column_appears_only_when_more_than_one_bench_is_reported():
+    # The single-bench live view is byte-identical to what it has always been; the
+    # column is added only where it carries information.
+    from rich.console import Console
+
+    def _render(report):
+        console = Console(width=140)
+        with console.capture() as capture:
+            console.print(status_mod._render_table(report))
+        return capture.get()
+
+    single = _render(_report("running"))
+    assert "bench" not in single.split("\n")[1]
+
+    multi = _render(
+        _report(
+            "running",
+            benches=[
+                _bench("online", index=0, path="/w/b0"),
+                _bench("running", index=1, path="/w/b1", web_port=8001),
+            ],
+        )
+    )
+    assert "bench" in multi
+    assert "0" in multi and "1" in multi

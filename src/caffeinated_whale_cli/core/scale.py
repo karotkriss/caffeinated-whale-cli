@@ -15,8 +15,8 @@ core defect.
 The five steps (each proven safe in the report):
 
 1. **Read, don't invent, the port truth.** Each bench's ``sites/common_site_config.json``
-   is the source of truth (``_read_assigned_ports``); this module never creates a
-   second authoritative port store that could drift from bench's.
+   is the source of truth (``resolvers.resolve_assigned_ports``); this module never
+   creates a second authoritative port store that could drift from bench's.
 2. **Detect the ceiling and expand.** Reconcile the published range to cover
    ``[8000 .. max(webserver_port)]`` / ``[9000 .. max(socketio_port)]`` (and an
    optional ``--to N`` floor), preserving the host base cwcli chose at init.
@@ -46,7 +46,6 @@ the port count is the binding limit.
 
 from __future__ import annotations
 
-import json
 import re
 import subprocess
 import time
@@ -100,8 +99,8 @@ class BenchPortMap:
     reaches this bench (True once the published range covers its assigned port).
 
     ``ports_verified`` is False when this bench's config could not be read live
-    (a transient container/parse failure - see ``_read_assigned_ports``); in that
-    case the port fields are None and ``reachable`` is False rather than a guessed
+    (a transient container/parse failure - see ``resolvers.resolve_assigned_ports``);
+    in that case the port fields are None and ``reachable`` is False rather than a guessed
     8000/9000 reported as fact, matching the fail-honest contract the rest of this
     module (and ``core.where``) follows.
     """
@@ -206,36 +205,6 @@ def _parse_published_range(compose_text: str, project_name: str) -> _PublishedRa
         socketio_base=int(sio.group("host_lo")),
         count=max(web_count, sio_count),
     )
-
-
-def _read_assigned_ports(container, bench_paths: list[str]) -> dict[str, tuple[int, int]]:
-    """Each bench's assigned (webserver_port, socketio_port) from its OWN config.
-
-    Reads ``sites/common_site_config.json`` live inside the container - the source
-    of truth (bench's ``make_ports`` output). A bench with no explicit value uses
-    Frappe's defaults (8000/9000), same as bench itself. A bench whose config is
-    unreadable is skipped (it cannot be reconciled), not defaulted, so a transient
-    read error never shrinks the target.
-    """
-    assigned: dict[str, tuple[int, int]] = {}
-    for bench_path in bench_paths:
-        config_file = f"{bench_path.rstrip('/')}/sites/common_site_config.json"
-        exit_code, output = container.exec_run(["bash", "-lc", f"cat {config_file}"])
-        if exit_code != 0:
-            continue
-        try:
-            config = json.loads(_decode(output))
-        except (json.JSONDecodeError, ValueError):
-            continue
-        if not isinstance(config, dict):
-            continue
-        web = config.get("webserver_port", _WEB_CONTAINER_BASE)
-        sio = config.get("socketio_port", _SOCKETIO_CONTAINER_BASE)
-        try:
-            assigned[bench_path] = (int(web), int(sio))
-        except (TypeError, ValueError):
-            continue
-    return assigned
 
 
 def _widen_ports_block(compose_text: str, published: _PublishedRange, count: int) -> str:
@@ -460,7 +429,11 @@ def scale(
 
     compose_text = compose_path.read_text()
     published = _parse_published_range(compose_text, project_name)
-    assigned = _read_assigned_ports(frappe_container, bench_paths)
+    # fill_defaults=True is SCALE's answer, not the shared one: a bench whose config
+    # omits a port key serves Frappe's default, and scale is computing which host ports
+    # to PUBLISH, so that bench must be covered by the range. core.status/core.start
+    # pass False, because they turn the same answer into a probe target.
+    assigned = resolvers.resolve_assigned_ports(frappe_container, bench_paths, fill_defaults=True)
 
     # Reconciliation target: cover [8000..max web] / [9000..max socketio], honor the
     # --to floor, and never shrink below what is already published.
@@ -553,7 +526,9 @@ def scale(
     # Recompute the map from the (possibly re-read) assigned ports so the report is
     # honest even on the no-op path.
     if expanded:
-        assigned = _read_assigned_ports(frappe_container, bench_paths)
+        assigned = resolvers.resolve_assigned_ports(
+            frappe_container, bench_paths, fill_defaults=True
+        )
     published_after = target
 
     port_map: list[BenchPortMap] = []
