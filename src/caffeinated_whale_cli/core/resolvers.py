@@ -347,7 +347,7 @@ def resolve_assigned_ports(
     assigned: dict[str, tuple[int, int]] = {}
     for bench_path in bench_paths:
         config_file = f"{bench_path.rstrip('/')}/sites/common_site_config.json"
-        exit_code, output = container.exec_run(["bash", "-lc", f"cat {config_file}"])
+        exit_code, output = container.exec_run(["cat", config_file])
         if exit_code != 0:
             continue
         try:
