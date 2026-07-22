@@ -1457,6 +1457,7 @@ cwcli run [OPTIONS] PROJECT_NAME BENCH_ARGS...
 | `--bench TEXT` | Which bench to target: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)) |
 | `-p`, `--path TEXT` | Explicit bench directory inside the container (lower-level alternative to `--bench`; cannot be combined with it). Falls back to the single cached bench, or `/workspace/frappe-bench` when nothing is cached |
 | `-y`, `--yes` | Auto-start stopped containers without prompting |
+| `-i`, `--interactive` | Forward stdin to the bench command, for bench commands that prompt |
 | `-v`, `--verbose` | Enable verbose output |
 
 **Passing bench's own flags:** a flag `cwcli run` does not define itself, such as
@@ -1475,6 +1476,19 @@ cwcli run frappe-one -- build --verbose
 For app management, prefer the [`apps`](#apps---manage-frappe-apps) group, which
 takes these flags directly.
 
+**Bench commands that prompt:** pass `-i`.
+By default nothing is attached to the command's stdin, so a bench command that asks a question - `new-app`, `console`, `mariadb` - reads end-of-file and fails.
+`-i` forwards stdin, which covers both ways the question gets answered: a human types the answers at a terminal, and automation pipes in the same lines.
+
+```bash
+# Interactive: answer frappe's new-app questions at the terminal
+cwcli run frappe-one -i new-app my_app
+
+# Non-interactive: pipe the same answers in
+printf 'My App\nMy description\nme\nme@example.com\nmit\nn\n' \
+  | cwcli run frappe-one -i new-app my_app
+```
+
 **Examples:**
 
 ```bash
@@ -1487,8 +1501,8 @@ cwcli run frappe-one --site development.localhost migrate
 # Install an app from a branch
 cwcli run frappe-one get-app --branch develop https://github.com/user/app.git
 
-# Execute a custom bench command
-cwcli run frappe-one console
+# Open bench's interactive console (`-i` attaches stdin)
+cwcli run frappe-one -i console
 
 # Target a specific bench in a multi-bench project
 cwcli run frappe-one migrate --bench staging
