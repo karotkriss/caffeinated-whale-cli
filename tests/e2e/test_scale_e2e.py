@@ -78,8 +78,12 @@ def test_scale_expands_ports_and_the_database_survives(running_instance):
 
     # 3. Record the container ids: MariaDB must survive, frappe must be recreated.
     mariadb_before = harness._docker(
-        "ps", "-q", "--filter", f"label=com.docker.compose.project={inst.name}",
-        "--filter", "label=com.docker.compose.service=mariadb",
+        "ps",
+        "-q",
+        "--filter",
+        f"label=com.docker.compose.project={inst.name}",
+        "--filter",
+        "label=com.docker.compose.service=mariadb",
     ).stdout.split()
     assert mariadb_before, "no mariadb container found before scale"
     frappe_before = harness.frappe_container_id(inst.name)
@@ -99,8 +103,12 @@ def test_scale_expands_ports_and_the_database_survives(running_instance):
 
     # 7. MariaDB was never touched (same container id); frappe was recreated.
     mariadb_after = harness._docker(
-        "ps", "-q", "--filter", f"label=com.docker.compose.project={inst.name}",
-        "--filter", "label=com.docker.compose.service=mariadb",
+        "ps",
+        "-q",
+        "--filter",
+        f"label=com.docker.compose.project={inst.name}",
+        "--filter",
+        "label=com.docker.compose.service=mariadb",
     ).stdout.split()
     assert mariadb_after == mariadb_before, "MariaDB container changed - the DB was at risk"
     assert harness.frappe_container_id(inst.name) != frappe_before, "frappe was not recreated"
