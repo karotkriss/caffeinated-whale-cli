@@ -17,6 +17,7 @@ from .commands.label import label as _label_cmd
 from .commands.logs import logs as _logs_cmd
 from .commands.open import open_bench as _open_cmd
 from .commands.restore import restore as _restore_cmd
+from .commands.rm_site import rm_site as _rm_site_cmd
 from .commands.run import run as _run_cmd
 from .commands.scale import scale as _scale_cmd
 from .commands.self_update import self_update as _self_update_cmd
@@ -103,6 +104,7 @@ app.add_typer(start_cmd.app, name="start")
 app.add_typer(stop_cmd.app, name="stop")
 app.add_typer(restart_cmd.app, name="restart")
 app.add_typer(rm_cmd.app, name="rm")
+app.command("rm-site")(_rm_site_cmd)
 app.add_typer(config_cmd.app, name="config")
 app.add_typer(apps_cmd.app, name="apps")
 app.add_typer(axi_cmd.app, name="axi")
