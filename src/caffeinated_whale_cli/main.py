@@ -18,6 +18,7 @@ from .commands.logs import logs as _logs_cmd
 from .commands.open import open_bench as _open_cmd
 from .commands.restore import restore as _restore_cmd
 from .commands.run import run as _run_cmd
+from .commands.scale import scale as _scale_cmd
 from .commands.self_update import self_update as _self_update_cmd
 from .commands.status import status as _status_cmd
 from .commands.unlock import unlock as _unlock_cmd
@@ -120,6 +121,7 @@ app.command("status")(_status_cmd)
 app.command("open")(_open_cmd)
 app.command("logs")(_logs_cmd)
 app.command("unlock")(_unlock_cmd)
+app.command("scale")(_scale_cmd)
 app.command("restore")(_restore_cmd)
 app.command("backup")(_backup_cmd)
 
