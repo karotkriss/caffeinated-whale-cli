@@ -111,6 +111,7 @@ def test_run_streams_split_character_intact(monkeypatch, capsys, split_stream):
             bench=None,
             bench_path=None,
             yes=True,
+            interactive=False,
             verbose=False,
         )
 
