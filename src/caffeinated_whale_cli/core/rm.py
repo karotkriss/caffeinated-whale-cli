@@ -936,6 +936,15 @@ def remove(
                         )
                     )
                 )
+    elif is_orphan and orphan_volumes is not None and not orphan_volumes:
+        emit(
+            RmWarning(
+                text=(
+                    f"No named volumes were found for '{project_name}', so no database "
+                    "backup was needed."
+                )
+            )
+        )
     elif remove_volumes and not no_backup:
         # No running frappe container, so a live `bench backup` is impossible -
         # and this is the data-destroying path. Mark the backup not-OK so the
