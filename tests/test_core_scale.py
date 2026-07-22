@@ -100,7 +100,15 @@ def wiring(monkeypatch, tmp_path):
         pyenv_calls=[],
         nvm_calls=[],
         recreate_rc=0,
+        port_check_calls=[],
+        ports_in_use=frozenset(),
     )
+
+    def fake_check_ports_in_use(ports, host="0.0.0.0", verbose=False):
+        state.port_check_calls.append(list(ports))
+        return {p: p in state.ports_in_use for p in ports}
+
+    monkeypatch.setattr(core_scale, "check_ports_in_use", fake_check_ports_in_use)
 
     def write_compose(project, text):
         conf = tmp_path / "projects" / project / "conf"
@@ -109,9 +117,7 @@ def wiring(monkeypatch, tmp_path):
 
     state.write_compose = write_compose
 
-    monkeypatch.setattr(
-        core_scale.core_docker, "get_frappe_container", lambda _p: state.container
-    )
+    monkeypatch.setattr(core_scale.core_docker, "get_frappe_container", lambda _p: state.container)
     monkeypatch.setattr(core_scale.resolvers, "cached_benches", lambda _p: state.benches)
 
     def fake_subprocess_run(cmd, cwd=None, capture_output=None):
@@ -131,7 +137,10 @@ def wiring(monkeypatch, tmp_path):
         state.pyenv_calls.append(prefix)
         # A successful reinstall un-breaks the bench.
         for path in list(state.container.broken):
-            if state.container.majors.get(path) and str(state.container.majors[path]) in ("13", "14"):
+            if state.container.majors.get(path) and str(state.container.majors[path]) in (
+                "13",
+                "14",
+            ):
                 state.container.broken.discard(path)
         return prefix + ".9"
 
@@ -256,6 +265,91 @@ def test_expand_widens_recreates_no_deps_and_restarts_every_bench(wiring):
     seventh = next(b for b in report.port_map if b.webserver_port == 8006)
     assert seventh.host_web_port == 16006
     assert seventh.reachable is True
+
+
+def test_new_port_conflict_is_refused_before_any_write(wiring):
+    wiring.write_compose("proj", _compose())
+    wiring.benches = [_bench(f"/workspace/bench{i}") for i in range(7)]
+    wiring.container = FakeContainer(
+        configs={
+            f"/workspace/bench{i}": {"webserver_port": 8000 + i, "socketio_port": 9000 + i}
+            for i in range(7)
+        }
+    )
+    wiring.ports_in_use = frozenset({16006})
+
+    from caffeinated_whale_cli.utils import config_utils
+
+    compose_path = config_utils.PROJECTS_DIR / "proj" / "conf" / "docker-compose.yml"
+    compose_before = compose_path.read_text()
+
+    with pytest.raises(CwcliError) as exc:
+        core_scale.scale("proj", consent=True)
+    assert exc.value.kind is ErrorKind.CONFLICT
+
+    # Only the NEWLY needed ports were checked - the already-published ones are
+    # this project's own current binding, not a real conflict.
+    checked = {p for call in wiring.port_check_calls for p in call}
+    assert checked == {16006, 17006}
+
+    # Refused before any write and before any recreate.
+    assert compose_path.read_text() == compose_before
+    assert wiring.recreate_calls == []
+
+
+def test_failed_recreate_rolls_back_the_compose_file(wiring):
+    wiring.write_compose("proj", _compose())
+    wiring.benches = [_bench(f"/workspace/bench{i}") for i in range(7)]
+    wiring.container = FakeContainer(
+        configs={
+            f"/workspace/bench{i}": {"webserver_port": 8000 + i, "socketio_port": 9000 + i}
+            for i in range(7)
+        }
+    )
+    wiring.recreate_rc = 1
+
+    from caffeinated_whale_cli.utils import config_utils
+
+    compose_path = config_utils.PROJECTS_DIR / "proj" / "conf" / "docker-compose.yml"
+    compose_before = compose_path.read_text()
+
+    with pytest.raises(CwcliError) as exc:
+        core_scale.scale("proj", consent=True)
+    assert exc.value.kind is ErrorKind.DOCKER
+
+    # The compose command never actually applied the widened file - restore it so
+    # a retry re-attempts the expansion instead of reading the already-widened
+    # file as a completed, idempotent no-op.
+    assert compose_path.read_text() == compose_before
+
+
+def test_unreadable_bench_config_reports_unverified_not_fabricated(wiring):
+    wiring.write_compose("proj", _compose())
+    wiring.benches = [
+        _bench("/workspace/frappe-bench"),
+        _bench("/workspace/flaky-bench"),
+    ]
+    wiring.container = FakeContainer(
+        configs={"/workspace/frappe-bench": {"webserver_port": 8000, "socketio_port": 9000}}
+        # "/workspace/flaky-bench" is deliberately absent: its config read fails
+        # (exit_code 1), so its assigned ports are genuinely unknown.
+    )
+
+    result = core_scale.scale("proj", consent=False)
+    assert result.status is Status.WARNING
+    assert result.data.expanded is False
+
+    flaky = next(b for b in result.data.port_map if b.bench_path == "/workspace/flaky-bench")
+    assert flaky.ports_verified is False
+    assert flaky.webserver_port is None
+    assert flaky.host_web_port is None
+    assert flaky.reachable is False
+
+    known = next(b for b in result.data.port_map if b.bench_path == "/workspace/frappe-bench")
+    assert known.ports_verified is True
+    assert known.reachable is True
+
+    assert any("flaky-bench" in w.text for w in result.warnings)
 
 
 def test_to_floor_expands_even_when_benches_fit(wiring):
