@@ -62,7 +62,7 @@ Exit codes: **0** success (a completed operation, including one with warnings, a
   where          Search cached instances for apps/sites matching a string; emit matches as TOON.
   backup         Back up a site's database (and optionally files); emit the outcome as TOON.
   unlock         Remove a site's locks folder; emit the outcome as TOON.
-  stop           Stop a project's containers; emit the outcome as TOON.
+  stop           Stop a project's containers, or one bench's dev processes; emit TOON.
   start          Start a project's containers + bench; emit the outcome as TOON (never prompts).
   status         Report every bench's per-process health; emit the report as TOON (`overall` first).
   logs           Read a bounded tail of a bench's per-process logs; emit them as ONE TOON document.

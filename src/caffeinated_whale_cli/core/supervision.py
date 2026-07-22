@@ -571,7 +571,7 @@ def write_marker(container, bench_path: str) -> str:
 # -------------------------------------------------------------------------- launch
 
 
-def web_http_code(container, *, port: int) -> str | None:
+def web_http_code(container, *, port: int, site: str | None = None) -> str | None:
     """The web server's HTTP code on ``port``, or None if unreachable.
 
     ``port`` is keyword-only with NO DEFAULT, deliberately. One instance holds many
@@ -582,24 +582,36 @@ def web_http_code(container, *, port: int) -> str | None:
     code). With no default the caller must name a port, so a future caller cannot
     re-inherit 8000 by omission, which is exactly how that defect arrived. Resolve
     the port with ``resolvers.resolve_assigned_ports(..., fill_defaults=False)``.
+
+    ``site`` is the bench's site, sent as the ``Host`` header. Frappe is
+    MULTI-TENANT: it routes by Host, so a request carrying none (``localhost``)
+    names no site and Frappe correctly answers 404 - which is what a healthy bench
+    used to report. That 404 was never a fault (``core.status`` counts any code as
+    serving), but a health field whose normal value is an error code teaches its
+    reader to discount it, and a reader who discounts this one discounts a genuine
+    ``degraded`` too. With the site named, the probe is the request a real user
+    makes and a healthy bench reads 200. Omitted (or unresolvable) keeps the old
+    host-less request rather than guessing a site.
     """
-    exit_code, output = container.exec_run(
-        ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", f"http://localhost:{port}"]
-    )
+    url = f"http://localhost:{port}"
+    cmd = ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}"]
+    if site:
+        cmd += ["-H", f"Host: {site}"]
+    exit_code, output = container.exec_run([*cmd, url])
     if exit_code not in (0, None):
         return None
     code = _decode(output).strip()
     return code or None
 
 
-def web_is_serving(container, *, port: int) -> bool:
+def web_is_serving(container, *, port: int, site: str | None = None) -> bool:
     """True iff the web server answers on ``port`` (any HTTP code, even 404/5xx).
 
     Same "up" definition ``core.status`` uses (``web_code not in (None, '000')``):
     a bound port serving *any* code is up; ``None``/``000`` is unreachable.
     ``port`` is keyword-only with no default - see :func:`web_http_code`.
     """
-    return web_http_code(container, port=port) not in (None, "000")
+    return web_http_code(container, port=port, site=site) not in (None, "000")
 
 
 def wait_web_ready(container, *, port: int, timeout: float = 60.0, interval: float = 1.0) -> bool:
@@ -793,6 +805,19 @@ def states_by_label(states: dict[str, tuple[str, int | None]]) -> dict[str, tupl
 def restart_program(container, bench_path: str, program: str) -> tuple[int | None, str]:
     """Restart ONE supervisord program (siblings untouched); return (code, text)."""
     return _supervisorctl(container, bench_path, "restart", program)
+
+
+def clear_marker(container, bench_path: str) -> None:
+    """Remove the launch marker, so the bench reads as never-started, not crashed.
+
+    The marker is what distinguishes "started, supervisor now down" (``degraded``)
+    from "never started" (``online``), so a DELIBERATE stop must clear it: leaving it
+    behind makes ``cwcli stop --bench`` produce a permanently ``degraded`` instance
+    with nothing wrong with it, which is a health signal crying wolf. Only the
+    per-bench stop clears it - a supervisord that died on its own leaves it in place,
+    which is exactly the state it exists to report.
+    """
+    container.exec_run(["rm", "-f", _marker_path(bench_path)])
 
 
 def _self_check() -> None:

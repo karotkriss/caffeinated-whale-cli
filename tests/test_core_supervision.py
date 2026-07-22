@@ -581,6 +581,27 @@ class TestWebProbe:
         assert "http://localhost:8001" in curl
         assert not any("8000" in part for part in curl)
 
+    def test_the_probe_names_the_site_as_the_host_header(self):
+        # Frappe is multi-tenant and routes by Host. A request naming no site is
+        # answered 404 by a perfectly healthy bench, which is what `status` used to
+        # print for every bench on every read. Naming the site makes the probe the
+        # request a real user sends.
+        c = FakeContainer(web_code="200")
+        supervision.web_http_code(c, port=8001, site="two.localhost")
+        curl = next(cmd for cmd in c.calls if isinstance(cmd, list) and cmd[0] == "curl")
+        assert "-H" in curl
+        assert "Host: two.localhost" in curl
+        # The URL still targets localhost on the bench's own port - the Host header
+        # is what selects the site, never the URL authority.
+        assert "http://localhost:8001" in curl
+
+    def test_no_site_keeps_the_old_host_less_request(self):
+        # An unresolvable site probes as before rather than guessing one.
+        c = FakeContainer(web_code="404")
+        supervision.web_http_code(c, port=8000)
+        curl = next(cmd for cmd in c.calls if isinstance(cmd, list) and cmd[0] == "curl")
+        assert "-H" not in curl
+
     def test_none_of_the_three_probes_declares_a_default_port(self):
         # A "convenience" default is exactly how the bug arrived: web_http_code was
         # written for a single-bench world, and every later caller correctly passed

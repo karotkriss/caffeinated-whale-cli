@@ -19,7 +19,7 @@ from caffeinated_whale_cli.utils import docker_utils
 
 
 def _bench(overall, processes=None, *, index=0, path="/w/b0", not_cwcli_supervised=False,
-           web_port=8000, web_port_verified=True):
+           web_port=8000, web_port_verified=True, web_site="site.localhost"):
     return BenchStatus(
         index=index,
         bench_path=path,
@@ -28,6 +28,7 @@ def _bench(overall, processes=None, *, index=0, path="/w/b0", not_cwcli_supervis
         supervisor_up=overall in ("running", "degraded") and not not_cwcli_supervised,
         web_port=web_port if web_port_verified else None,
         web_port_verified=web_port_verified,
+        web_site=web_site if web_port_verified else None,
         web_http_code="200" if overall == "running" and web_port_verified else None,
         processes=processes if processes is not None else [],
         not_cwcli_supervised=not_cwcli_supervised,
@@ -164,10 +165,24 @@ def test_multi_bench_stdout_is_still_exactly_one_token(monkeypatch, capsys):
     assert "/w/b0" in captured.err and "/w/b1" in captured.err
 
 
-def test_the_web_line_names_the_port_it_probed(monkeypatch, capsys):
+def test_the_web_line_names_the_port_and_site_it_probed(monkeypatch, capsys):
     # An unattributed "web http: 404" is what let one bench's code stand in for
-    # another's, so the port is part of the answer.
-    report = _report("running", benches=[_bench("running", index=1, path="/w/b1", web_port=8001)])
+    # another's, so the port is part of the answer - and so is the site, because
+    # Frappe answers per Host and the code is that site's code.
+    report = _report(
+        "running",
+        benches=[
+            _bench("running", index=1, path="/w/b1", web_port=8001, web_site="two.localhost")
+        ],
+    )
+    captured = _run(monkeypatch, capsys, report)
+    assert "web two.localhost:8001 -> 200" in captured.err
+
+
+def test_the_web_line_still_names_the_port_when_no_site_is_known(monkeypatch, capsys):
+    report = _report(
+        "running", benches=[_bench("running", index=1, path="/w/b1", web_port=8001, web_site=None)]
+    )
     captured = _run(monkeypatch, capsys, report)
     assert "web :8001 -> 200" in captured.err
 

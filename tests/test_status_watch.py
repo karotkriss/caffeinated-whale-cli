@@ -27,6 +27,7 @@ def _bench(overall="running", processes=None, *, index=0, path="/w/b0", web_port
         supervisor_up=overall in ("running", "degraded"),
         web_port=web_port,
         web_port_verified=True,
+        web_site="site.localhost",
         web_http_code=None,  # watch mode never carries a web code
         processes=(
             processes

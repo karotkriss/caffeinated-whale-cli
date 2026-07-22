@@ -25,6 +25,15 @@ resolved reports ``web_port=None``/``web_port_verified=False``, is NOT probed, a
 does NOT degrade on that account (see ``_overall``'s ``web_probed``) - a gap in
 cwcli's knowledge is not a fault in the bench, and falling back to 8000 IS the bug.
 
+**The probe also names the bench's site**, as the ``Host`` header. Frappe routes by
+Host, so a host-less request names no site and is correctly answered 404 - a healthy
+bench used to report ``web :8000 -> 404`` on every read. The aggregate was never
+wrong (any code counts as serving), but a health number whose normal value is an
+error code trains its reader to ignore the field, and that habit costs a real
+``degraded`` its audience. The site comes from
+``resolvers.resolve_representative_site`` and is REPORTED as ``web_site``, so the
+code stays attributable; a bench with no site at all probes host-less, as before.
+
 The per-bench ``overall`` distinguishes the four lifecycle states:
 
 ===========  ===========================================================
@@ -110,6 +119,14 @@ class BenchStatus:
     port is then None, no probe was made, ``web_http_code`` is None, and a
     ``status.web_port_unknown`` warning names the bench. The honest value/verified
     pair ``scale.BenchPortMap`` already uses - never a guessed 8000 reported as fact.
+
+    ``web_site`` is the site the probe named in its ``Host`` header, and it makes
+    ``web_http_code`` ATTRIBUTABLE the same way ``web_port`` does. Frappe routes by
+    Host, so the code answered is the code FOR THAT SITE; a bench with several
+    undefaulted sites has one picked for it (see
+    ``resolvers.resolve_representative_site``), and reporting which one is what keeps
+    that a disclosed pick rather than a silent claim about the bench as a whole. None
+    means no site could be resolved and the probe named none.
     """
 
     index: int | None
@@ -119,6 +136,7 @@ class BenchStatus:
     supervisor_up: bool
     web_port: int | None
     web_port_verified: bool
+    web_site: str | None
     web_http_code: str | None
     processes: list[ProcessHealth]
     # True when the bench is running under honcho / ``bench start`` rather than
@@ -262,6 +280,7 @@ def status(
                 bench_path=path,
                 label=label,
                 web_port=web_port,
+                web_site=resolvers.resolve_representative_site(project_name, path),
                 probe_web=probe_web,
                 warnings=warnings,
             )
@@ -338,6 +357,7 @@ def _bench_status(
     bench_path: str,
     label: str | None,
     web_port: int | None,
+    web_site: str | None,
     probe_web: bool,
     warnings: list[Message],
 ) -> BenchStatus:
@@ -355,7 +375,7 @@ def _bench_status(
     snapshot = supervision.discover_stack(frappe_container, bench_path)
     expected = supervision.expected_labels(frappe_container, bench_path)
     web_code = (
-        supervision.web_http_code(frappe_container, port=web_port)
+        supervision.web_http_code(frappe_container, port=web_port, site=web_site)
         if probed and web_port is not None
         else None
     )
@@ -419,6 +439,7 @@ def _bench_status(
         supervisor_up=snapshot.supervisor_up,
         web_port=web_port,
         web_port_verified=web_port is not None,
+        web_site=web_site if probed else None,
         web_http_code=web_code,
         processes=processes,
         not_cwcli_supervised=not_cwcli_supervised,

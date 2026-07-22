@@ -229,6 +229,12 @@ def open_bench(
     if verbose:
         stderr_console.print(f"[dim]VERBOSE: Selected editor: {target.editor}[/dim]")
 
+    # The bench's real address, printed before the handover (the docker branch execs
+    # away and never returns here). Omitted entirely when it could not be read - a
+    # guessed port in a line the user is meant to click is worse than no line.
+    if target.web_url:
+        stderr_console.print(f"[dim]Web: {target.web_url}[/dim]")
+
     # The handover switch: the frontend's own final lines (design Decision 7).
     if target.editor == "docker":
         stderr_console.print(
