@@ -314,6 +314,31 @@ class TestNetworkRemoval:
         assert result.data.network_removed is False
         assert any("enumerate" in f and "network" in f for f in result.data.failures)
 
+    def test_network_enumeration_failure_is_not_reported_as_absent(
+        self, cwcli_home, monkeypatch
+    ):
+        _wire(monkeypatch, [], [])
+        monkeypatch.setattr(core_rm, "get_project_networks", lambda name: None)
+
+        result = core_rm.remove("proj", remove_volumes=True, no_backup=True)
+
+        assert result.data.found is True
+        assert result.data.orphan is True
+        assert result.data.network_removed is False
+        assert any("enumerate" in f and "network" in f for f in result.data.failures)
+
+    def test_volume_enumeration_failure_is_not_reported_as_absent(
+        self, cwcli_home, monkeypatch
+    ):
+        _wire(monkeypatch, [], [], networks=[])
+        monkeypatch.setattr(core_rm, "get_project_volumes", lambda name: None)
+
+        result = core_rm.remove("proj", remove_volumes=True, no_backup=True)
+
+        assert result.data.found is True
+        assert result.data.orphan is True
+        assert any("enumerate" in f and "volume" in f for f in result.data.failures)
+
     def test_no_network_found_is_not_a_failure(self, cwcli_home, monkeypatch):
         _make_project_dir(cwcli_home / "projects", "proj")
         _wire(monkeypatch, [_make_container()], [_make_volume("proj_sites")], networks=[])
