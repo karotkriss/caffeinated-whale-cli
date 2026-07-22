@@ -159,6 +159,125 @@ def test_run_reports_a_failing_bench_command_nonzero(running_instance):
 # ------------------------------------------------------------------ both modes
 
 
+# ------------------------------------------------------------------ --interactive, for real
+#
+# `cwcli run` forwarded no stdin, so a bench command that PROMPTS could not be
+# driven through the wrapper at all - and the project's own convention says every
+# bench command cwcli suggests must be phrased as that wrapper. `bench new-app`
+# is the case that surfaced it: frappe's `make-app` boilerplate asks for App
+# Title / Description / Publisher / Email / License through `click.prompt`.
+#
+# These legs need a real instance because the thing under test IS the plumbing:
+# a fake cannot show whether bytes reached the container's stdin.
+
+# One answer per boilerplate prompt (v15's set), then blank lines so a version
+# whose set is longer accepts its defaults rather than hanging. Answering by
+# COUNT, not by matching each prompt's text, is what keeps this stable across the
+# v14/v15/v16 matrix - only the outcome is asserted.
+_NEW_APP_ANSWERS = "Cwe2E Stdin App\nstdin probe\ncwe2e\ncwe2e@example.com\nmit\nn\n" + "\n" * 6
+
+
+def _app_dir(inst, app: str) -> str:
+    return f"{inst.bench}/apps/{app}"
+
+
+def _app_exists(inst, app: str) -> bool:
+    code, _ = harness.exec_in_frappe(inst.name, f"test -d {_app_dir(inst, app)}")
+    return code == 0
+
+
+@pytest.fixture()
+def new_app_name(running_instance):
+    """A unique app name per test, removed from the bench afterwards."""
+    import uuid
+
+    inst = running_instance
+    app = f"cwe2e_stdin_{uuid.uuid4().hex[:8]}"
+    try:
+        yield app
+    finally:
+        # `bench new-app` scaffolds apps/<app> and registers it; unpick both so a
+        # later test in the shared session instance sees the bench it expects.
+        harness.exec_in_frappe(
+            inst.name,
+            f"rm -rf {_app_dir(inst, app)}; "
+            f"sed -i '/^{app}$/d' {inst.bench}/sites/apps.txt 2>/dev/null; "
+            f"{inst.bench}/env/bin/pip uninstall -y {app} 2>/dev/null",
+        )
+
+
+def test_run_without_interactive_cannot_carry_a_prompting_command(running_instance, new_app_name):
+    """THE DEFECT, pinned so it cannot come back.
+
+    Without `-i` nothing is attached to the exec's stdin, so the very first
+    `click.prompt` reads EOF. The wrapper must not silently swallow that as a
+    success either - the app is not created.
+    """
+    inst = running_instance
+
+    result = harness.run_cwcli(
+        "run", inst.name, "--yes", "new-app", new_app_name, input_text=_NEW_APP_ANSWERS
+    )
+
+    assert not _app_exists(inst, new_app_name), "the app was created without stdin reaching bench"
+    assert result.returncode != 0, result.stdout + result.stderr
+
+
+def test_run_interactive_pipes_answers_into_a_real_prompting_bench_command(
+    running_instance, new_app_name
+):
+    """Non-interactive half of the both-modes standard: an agent pipes the same
+    lines a human types, with NO prompt left unanswered and no hang."""
+    inst = running_instance
+
+    result = harness.run_cwcli(
+        "run",
+        inst.name,
+        "--yes",
+        "-i",
+        "new-app",
+        new_app_name,
+        input_text=_NEW_APP_ANSWERS,
+        timeout=900,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _app_exists(inst, new_app_name), result.stdout + result.stderr
+
+
+def test_run_interactive_drives_a_real_prompting_bench_command_over_a_pty(
+    running_instance, new_app_name
+):
+    """Interactive half: on a real terminal the prompt is genuinely SHOWN and
+    genuinely AWAITS a keystroke - reaching "App Title" proves bench is blocked
+    on our stdin, and the command only completes once we answer.
+
+    `-i` must request `docker exec -it` here (a terminal on both ends), which is
+    also the path docker's raw mode and signal forwarding ride on.
+    """
+    import io
+
+    import pexpect
+
+    inst = running_instance
+
+    log = io.StringIO()
+    child = harness.spawn_cwcli(["run", inst.name, "--yes", "-i", "new-app", new_app_name])
+    child.logfile_read = log
+    try:
+        # Blocked on OUR stdin: nothing else can print this and then stop.
+        child.expect("App Title", timeout=300)
+        for answer in _NEW_APP_ANSWERS.splitlines():
+            child.sendline(answer)
+        child.expect(pexpect.EOF, timeout=900)
+    finally:
+        child.close(force=True)
+
+    out = harness.strip_ansi(log.getvalue())
+    assert "App Description" in out, out  # it kept going, so the first answer landed
+    assert _app_exists(inst, new_app_name), out
+
+
 def test_run_noninteractive_without_yes_refuses_rather_than_hanging(session_instance):
     """Non-TTY + stopped containers + no `--yes`: refuse non-zero.
 

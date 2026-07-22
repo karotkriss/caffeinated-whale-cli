@@ -4,7 +4,15 @@ Typer signature, the auto-start prompt, rendering, and the exit code live here;
 everything else is the core's. See ``core/run.py`` for why the resolve and the
 stream are two calls (generators are lazy), and ``core/exec_stream.py`` for why
 the exit code is polled rather than read once.
+
+``--interactive`` is a SECOND, dedicated mechanism rather than a widening of the
+first - see :func:`_exec_interactive` for why the exec-stream contract cannot
+carry stdin without giving up the decisions that contract exists to own.
 """
+
+import shlex
+import subprocess
+import sys
 
 import typer
 from rich.console import Console
@@ -12,12 +20,75 @@ from rich.console import Console
 from ..core.envelope import Status
 from ..core.errors import CwcliError
 from ..core.exec_stream import ExecChunk
-from ..core.run import run_plan, run_stream
+from ..core.run import RunPlan, run_plan, run_stream
 from ..utils.completion_utils import complete_project_names
 from ..utils.docker_utils import handle_docker_errors
 from .utils import ensure_containers_running
 
 stderr_console = Console(stderr=True)
+
+
+def _exec_interactive(plan: RunPlan, *, verbose: bool) -> int:
+    """Run the planned bench command through ``docker exec``, stdin attached.
+
+    A DEDICATED interactive primitive, deliberately NOT a widening of
+    ``core.exec_stream``. That contract owns the decode and pins ``demux=True``
+    (``init`` routes container stderr to ``sys.stderr``; ``axi`` needs stdout
+    purity), and it starts the exec with ``stream=True``, which is one-way by
+    construction: docker-py returns a read-only generator, so forwarding stdin
+    through it would mean ``exec_create(stdin=True)`` plus a raw ``socket=True``
+    start, a caller-side frame demuxer and a pump thread. A genuinely
+    interactive prompt additionally wants ``tty=True``, which is mutually
+    exclusive with that locked ``demux=True`` stream tag - the same collision
+    ``core/logs.py`` records for ``--follow``.
+
+    So this reuses the mechanism ``logs --follow`` already ships and has
+    measured clean under a real pty (exit 130, zero orphan processes): hand the
+    exec to the ``docker`` CLI, which does the stdin pump, the raw mode and the
+    signal forwarding itself. ``core/exec_stream.py`` is untouched, and the
+    default non-interactive ``cwcli run`` still streams through it.
+
+    The ``docker`` binary is guaranteed present: ``@handle_docker_errors``
+    already refuses without it.
+    """
+    # `-t` only when a real terminal is on BOTH ends. It is what puts docker in
+    # raw mode, so a prompt can be answered keystroke-by-keystroke and ^C reaches
+    # bench - but it also makes the container see a TTY, so bench emits colour and
+    # CRLF line endings. Requesting it when stdout is a pipe would corrupt
+    # captured output, and requesting it without a TTY on stdin fails outright
+    # ("the input device is not a TTY"). `-i` alone still carries a pipe's or a
+    # file's bytes into the command, which is the non-interactive half of the
+    # both-modes contract - an agent answers by piping the same lines a human
+    # types.
+    flags = ["-i"]
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        flags.append("-t")
+
+    # `shlex.split` undoes the quoting `core.run_plan` applied for docker-py,
+    # which splits a command STRING itself where the docker CLI takes an argv.
+    # Round-tripping the plan's own command keeps the assembly decision in the
+    # core rather than re-deriving it here from the raw args.
+    argv = [
+        "docker",
+        "exec",
+        *flags,
+        "-w",
+        plan.bench_path,
+        plan.container_id,
+        *shlex.split(plan.command),
+    ]
+
+    if verbose:
+        stderr_console.print(f"[dim]$ {' '.join(argv)}[/dim]")
+
+    try:
+        return subprocess.run(argv).returncode
+    except KeyboardInterrupt:
+        # Only reachable without `-t`: with it, docker forwards ^C into the
+        # container and the stop arrives as exit 130 rather than as a signal
+        # here. Report the interrupt honestly instead of letting it surface as a
+        # traceback, and never as success.
+        return 130
 
 
 @handle_docker_errors
@@ -40,6 +111,12 @@ def run(
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Auto-start stopped containers without prompting."
     ),
+    interactive: bool = typer.Option(
+        False,
+        "--interactive",
+        "-i",
+        help="Forward stdin to the bench command, for commands that prompt (e.g. new-app).",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output."),
 ):
     """
@@ -50,6 +127,10 @@ def run(
     stay this command's wherever they appear; to send bench a flag that collides
     with one of them, put it after a `--` separator, as in
     `cwcli run my-project -- build --verbose`.
+
+    Use `-i` for a bench command that prompts: it attaches stdin, so a human can
+    answer at a terminal and automation can pipe the answers in
+    (`printf 'a\\nb\\n' | cwcli run my-project -i new-app my_app`).
     """
     # Interactive prologue: prompts happen HERE, before the core call. The core
     # then re-checks and only returns confirm_start on the (rare) race.
@@ -102,6 +183,9 @@ def run(
         for warning in result.warnings:
             stderr_console.print(f"[dim]{warning.text}[/dim]")
         stderr_console.print(f"[dim]$ {plan.command}  (in {plan.bench_path})[/dim]")
+
+    if interactive:
+        raise typer.Exit(code=_exec_interactive(plan, verbose=verbose))
 
     exit_code = 1
     try:
