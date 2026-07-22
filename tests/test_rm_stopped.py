@@ -22,7 +22,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from caffeinated_whale_cli.commands import inspect as inspect_mod
 from caffeinated_whale_cli.commands import rm
 from caffeinated_whale_cli.commands import utils as cmd_utils
 from caffeinated_whale_cli.core import rm as core_rm
