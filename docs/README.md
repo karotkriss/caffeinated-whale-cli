@@ -114,7 +114,7 @@ CWE2E_FRAPPE_MAJOR=16 uv run pytest tests/e2e -m e2e
 
 ### Current Status
 
-- **Coverage and suite inventory**: [tests/README.md](../tests/README.md#test-coverage) is the single source for the overall coverage number, the test/file counts, and the per-module breakdown.
+- **Coverage and suite inventory**: [tests/README.md](../tests/README.md#test-coverage) is the single source for commands that report current test and coverage totals, plus the point-in-time per-module breakdown.
 - **Target**: Expand coverage on the modules that still have none (`port_utils.py`, `vscode_utils.py`).
 
 See [Testing Directory](./testing/) for complete documentation.

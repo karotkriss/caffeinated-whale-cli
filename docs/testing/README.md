@@ -43,7 +43,8 @@ uv run pytest tests/test_completion_utils.py
 
 ### Test Coverage
 
-The overall coverage number, the test/file counts, and the full per-module breakdown (every suite, its module, and its coverage %) live in [tests/README.md](../../tests/README.md#test-coverage) - the single source. That is also where the list of modules with no dedicated suite yet is kept.
+[tests/README.md](../../tests/README.md#test-coverage) is the single source for commands that report current test and coverage totals, plus the point-in-time per-module breakdown.
+That is also where the list of modules with no dedicated suite yet is kept.
 
 ### Test Files
 
