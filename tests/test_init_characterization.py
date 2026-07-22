@@ -469,20 +469,42 @@ class TestAutoStartServices:
         monkeypatch.setattr(init_mod.core_start, "start", fake_start)
         return calls
 
+    def _patch_web_url(self, monkeypatch, url):
+        """Stand in for the live port lookup the banner's URL comes from."""
+        monkeypatch.setattr(init_mod, "_bench_web_url", lambda *a, **k: url)
+
     def test_default_starts_services_and_reports_running(self, monkeypatch, tmp_path, capsys):
         calls = self._patch_start(monkeypatch, status=Status.OK)
+        # The banner prints the address the resolver reports, NOT a hardcoded :8000:
+        # 8000 is a container port, and this instance publishes bench 1 on 21001.
+        self._patch_web_url(monkeypatch, "http://development.localhost:21001")
         run_init(monkeypatch, tmp_path, start_services=True)
 
         # core.start was reused with the exact created bench path (no re-resolve).
         assert calls == [{"project": PROJECT, "bench_path": BENCH_PATH}]
         out = capsys.readouterr().out
         assert "Dev services are running" in out
-        assert "http://development.localhost:8000" in out
+        assert "http://development.localhost:21001" in out
+        assert ":8000" not in out
         assert f"cwcli logs {PROJECT}" in out
         assert f"cwcli stop {PROJECT}" in out
         assert f"cwcli restart {PROJECT}" in out
         # The old "Once services are running" implication is gone.
         assert "Once services are running" not in out
+
+    def test_an_unresolvable_address_is_omitted_never_guessed(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        # A port that cannot be read costs the banner its Open line; printing a
+        # guessed one would send the user to an address that answers nothing.
+        self._patch_start(monkeypatch, status=Status.OK)
+        self._patch_web_url(monkeypatch, None)
+        run_init(monkeypatch, tmp_path, start_services=True)
+
+        out = capsys.readouterr().out
+        assert "Dev services are running" in out
+        assert "http://" not in out
+        assert f"cwcli open {PROJECT}" in out
 
     def test_web_not_ready_warning_is_surfaced(self, monkeypatch, tmp_path, capsys):
         # core.start now blocks on web readiness; if it timed out, init surfaces the

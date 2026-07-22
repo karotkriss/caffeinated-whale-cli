@@ -41,12 +41,19 @@ from .errors import CwcliError, ErrorKind
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class LaunchTarget:
-    """What the frontend should launch, and where. Serializable: four strings."""
+    """What the frontend should launch, and where. Serializable: plain strings."""
 
     project: str
     container_name: str  # a NAME string; both handover mechanisms consume the name
     working_dir: str  # the bench path, or {bench}/apps/{app} under --app
     editor: str  # "docker" | "code" | "code-insiders" | "cursor"
+    # The host URL this bench actually serves on (``resolvers.resolve_host_web_url``),
+    # or None when it cannot be read. ``open`` hands over to an editor or a shell and
+    # never opens a browser, but it is the command every "open it at ..." hint points
+    # at, so it is the one place that owes the reader the real address: bench 1 of a
+    # ``--port 21000`` instance is http://<site>:21001, not the :8000 that used to be
+    # printed. None is rendered as nothing at all - never a guessed port.
+    web_url: str | None = None
 
 
 # ------------------------------------------------------------------------ typed events
@@ -206,9 +213,24 @@ def open_plan(
             container_name=frappe_container.name,
             working_dir=working_dir,
             editor=editor_result.data,
+            web_url=_web_url(project_name, frappe_container, resolved_path),
         ),
         warnings=warnings,
     )
+
+
+def _web_url(project_name: str, frappe_container, bench_path: str) -> str | None:
+    """This bench's real host URL, or None.
+
+    Fails SOFT by design: the URL is a convenience the plan carries, never the thing
+    ``open`` was asked to do, so an unreadable config or port table costs the caller
+    one hint line - it must not turn a working ``cwcli open`` into an error.
+    """
+    try:
+        site = resolvers.resolve_representative_site(project_name, bench_path)
+        return resolvers.resolve_host_web_url(frappe_container, bench_path, site=site)
+    except Exception:  # noqa: BLE001 - a hint must never fail the launch
+        return None
 
 
 def _fallback_populate(

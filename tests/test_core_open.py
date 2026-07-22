@@ -67,6 +67,9 @@ class TestPlanOk:
             "container_name": "proj-frappe-1",
             "working_dir": BENCH,
             "editor": "docker",
+            # The bench's real host URL, None here because this fake container
+            # publishes no ports - a hint that cannot be read is omitted, not guessed.
+            "web_url": None,
         }
 
     def test_core_prints_nothing_at_all(self, running, capsys):

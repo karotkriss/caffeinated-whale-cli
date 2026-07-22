@@ -270,3 +270,95 @@ class TestResolveBenchPathWrapper:
         with pytest.raises(typer.Exit) as exc:
             cmd_utils.resolve_bench_path("proj", "nope", None)
         assert exc.value.exit_code == 1
+
+
+class _PortContainer:
+    """A frappe container with a readable bench config and published port bindings."""
+
+    def __init__(self, *, config='{"webserver_port": 8001, "socketio_port": 9001}',
+                 ports=None):
+        self.config = config
+        self.ports = ports if ports is not None else {
+            "8000/tcp": [{"HostIp": "0.0.0.0", "HostPort": "21000"}],
+            "8001/tcp": [{"HostIp": "0.0.0.0", "HostPort": "21001"}],
+        }
+
+    def exec_run(self, cmd, **kwargs):
+        if self.config is None:
+            return 1, b""
+        return 0, self.config.encode()
+
+
+class TestResolveHostWebUrl:
+    """The address a bench is actually reachable at, from the HOST.
+
+    Two hops, and skipping either was the shipped defect: `http://<site>:8000`
+    named a CONTAINER port as if it were a host port (wrong under any --port base)
+    and ignored per-bench port assignment (wrong for every bench past the first).
+    """
+
+    def test_the_container_port_is_mapped_through_the_published_bindings(self):
+        url = resolvers.resolve_host_web_url(
+            _PortContainer(), "/w/b1", site="two.localhost"
+        )
+        # bench 1 serves 8001 INSIDE and is published on 21001 OUTSIDE.
+        assert url == "http://two.localhost:21001"
+
+    def test_the_site_is_the_host_part_because_frappe_routes_by_host(self):
+        url = resolvers.resolve_host_web_url(
+            _PortContainer(config='{"webserver_port": 8000, "socketio_port": 9000}'),
+            "/w/b0",
+            site="one.localhost",
+        )
+        assert url == "http://one.localhost:21000"
+
+    def test_no_site_still_gives_the_right_port(self):
+        url = resolvers.resolve_host_web_url(_PortContainer(), "/w/b1")
+        assert url == "http://localhost:21001"
+
+    def test_an_unreadable_bench_config_is_unknown_never_8000(self):
+        assert resolvers.resolve_host_web_url(_PortContainer(config=None), "/w/b1") is None
+
+    def test_an_unpublished_container_port_is_unknown_never_the_container_port(self):
+        # The 7th bench binds :8006 inside but is published nowhere. Reporting 8006
+        # as a host port would send the user to a port nothing listens on.
+        c = _PortContainer(config='{"webserver_port": 8006, "socketio_port": 9006}')
+        assert resolvers.resolve_host_web_url(c, "/w/b6") is None
+
+
+class TestResolveRepresentativeSite:
+    """Which site stands for a bench when the caller named none."""
+
+    def _cache(self, monkeypatch, *, default=None, sites=()):
+        monkeypatch.setattr(resolvers.db_utils, "get_default_site", lambda p, b=None: default)
+        monkeypatch.setattr(
+            resolvers.db_utils, "get_all_site_configs", lambda p, b=None: {s: {} for s in sites}
+        )
+
+    def test_the_benchs_own_default_site_wins(self, monkeypatch):
+        self._cache(monkeypatch, default="chosen.localhost", sites=["other.localhost"])
+        assert resolvers.resolve_representative_site("proj", "/w/b0") == "chosen.localhost"
+
+    def test_a_bench_with_no_default_falls_back_to_its_only_site(self, monkeypatch):
+        # NOT a corner case: a bench `cwcli init` creates has exactly one site and
+        # records no default (nothing runs `bench use`), so a default-only lookup
+        # answers None on precisely the benches that most need an answer.
+        self._cache(monkeypatch, default=None, sites=["only.localhost"])
+        assert resolvers.resolve_representative_site("proj", "/w/b0") == "only.localhost"
+
+    def test_several_undefaulted_sites_pick_stably(self, monkeypatch):
+        self._cache(monkeypatch, default=None, sites=["b.localhost", "a.localhost"])
+        assert resolvers.resolve_representative_site("proj", "/w/b0") == "a.localhost"
+
+    def test_a_bench_with_no_sites_at_all_is_none(self, monkeypatch):
+        self._cache(monkeypatch, default=None, sites=[])
+        assert resolvers.resolve_representative_site("proj", "/w/b0") is None
+
+    def test_a_failing_cache_read_is_none_not_an_exception(self, monkeypatch):
+        monkeypatch.setattr(resolvers.db_utils, "get_default_site", lambda p, b=None: None)
+
+        def boom(*a, **k):
+            raise RuntimeError("cache is gone")
+
+        monkeypatch.setattr(resolvers.db_utils, "get_all_site_configs", boom)
+        assert resolvers.resolve_representative_site("proj", "/w/b0") is None

@@ -455,6 +455,7 @@ class TestInstanceFold:
                 supervisor_up=True,
                 web_port=8000 + i,
                 web_port_verified=True,
+                web_site="site.localhost",
                 web_http_code="200",
                 processes=[],
             )
@@ -484,3 +485,85 @@ class TestInstanceFold:
         report = core_status.status("proj").data
         assert report.overall == "offline"
         assert report.benches == []
+
+
+class TestTheProbeNamesTheSite:
+    """Frappe routes by ``Host``, so the probe must name a site.
+
+    A host-less request names no site, and Frappe correctly answers 404 - which is
+    what a fully healthy bench reported on every read. The aggregate was never wrong
+    (any code counts as serving), but a health field whose normal value is an error
+    code teaches its reader to discount it, and that habit is what would make a
+    genuine ``degraded`` go unread.
+    """
+
+    def _sites(self, monkeypatch, mapping):
+        """Stand in for the cached per-bench site lists the resolver reads."""
+        monkeypatch.setattr(
+            resolvers.db_utils, "get_default_site", lambda p, b=None: None
+        )
+        monkeypatch.setattr(
+            resolvers.db_utils,
+            "get_all_site_configs",
+            lambda p, b=None: {s: {} for s in mapping.get(b, [])},
+        )
+
+    def test_the_probe_sends_the_benchs_site_as_host(self, wire, monkeypatch):
+        self._sites(monkeypatch, {BENCH: ["one.localhost"]})
+        c = FakeContainer(marker=_MARKER, web_code="200")
+        wire(c, benches=[{"path": BENCH}])
+
+        report = core_status.status("proj").data
+
+        curl = next(cmd for cmd in c.calls if isinstance(cmd, list) and cmd[0] == "curl")
+        assert "Host: one.localhost" in curl
+        # And the report says WHICH site the code belongs to, so the number stays
+        # attributable the same way web_port makes it attributable to a bench.
+        assert _bench(report).web_site == "one.localhost"
+
+    def test_each_bench_is_probed_for_its_own_site(self, wire, monkeypatch):
+        self._sites(monkeypatch, {_B0: ["one.localhost"], _B1: ["two.localhost"]})
+        c = FakeContainer(
+            ps=_PS_TWO_BENCH,
+            cwds={100: _B0, 200: _B1},
+            markers={_B0: _MARKER, _B1: _MARKER},
+            web_code={8000: "200", 8001: "200"},
+            configs=_TWO_BENCH_CONFIGS,
+        )
+        wire(c, benches=_TWO_BENCHES)
+
+        report = core_status.status("proj").data
+
+        by_path = _by_path(report)
+        assert by_path[_B0].web_site == "one.localhost"
+        assert by_path[_B1].web_site == "two.localhost"
+        hosts = [
+            cmd[cmd.index("-H") + 1]
+            for cmd in c.calls
+            if isinstance(cmd, list) and cmd[0] == "curl" and "-H" in cmd
+        ]
+        assert sorted(hosts) == ["Host: one.localhost", "Host: two.localhost"]
+
+    def test_a_bench_with_no_site_probes_host_less_and_says_so(self, wire, monkeypatch):
+        self._sites(monkeypatch, {})
+        c = FakeContainer(marker=_MARKER, web_code="404")
+        wire(c, benches=[{"path": BENCH}])
+
+        report = core_status.status("proj").data
+
+        curl = next(cmd for cmd in c.calls if isinstance(cmd, list) and cmd[0] == "curl")
+        assert "-H" not in curl
+        assert _bench(report).web_site is None  # unknown, never guessed
+
+    def test_watch_mode_reports_no_site_because_it_probed_nothing(
+        self, wire, monkeypatch
+    ):
+        # web_site describes a probe that happened. With the probe suppressed there
+        # is no site to attribute, and claiming one would imply a request was made.
+        self._sites(monkeypatch, {BENCH: ["one.localhost"]})
+        wire(FakeContainer(marker=_MARKER, web_code="200"), benches=[{"path": BENCH}])
+
+        report = core_status.status("proj", probe_web=False).data
+
+        assert _bench(report).web_site is None
+        assert _bench(report).web_http_code is None

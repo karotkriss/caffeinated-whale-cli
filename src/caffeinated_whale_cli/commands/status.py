@@ -195,17 +195,21 @@ def _up_mark(up: bool) -> str:
 
 
 def _web_line(bench: BenchStatus, verbose: bool) -> str | None:
-    """The web line, NAMING the port that was probed (or why none was).
+    """The web line, NAMING the port and the site that were probed (or why none was).
 
     An unattributed "web http: 404" is what let one bench's HTTP code stand in for
-    another's; the port is part of the answer, not decoration.
+    another's; the port is part of the answer, not decoration. The site is part of
+    it too, because Frappe answers per Host - the code is that site's code.
     """
     if not bench.web_port_verified:
         return "[yellow]web port unknown - not probed; run `cwcli inspect`[/yellow]"
+    target = f":{bench.web_port}"
+    if bench.web_site:
+        target = f"{bench.web_site}{target}"
     if bench.web_http_code is not None:
-        return f"[dim]web :{bench.web_port} -> {bench.web_http_code}[/dim]"
+        return f"[dim]web {target} -> {bench.web_http_code}[/dim]"
     if verbose:
-        return f"[dim]web :{bench.web_port} -> no response[/dim]"
+        return f"[dim]web {target} -> no response[/dim]"
     return None
 
 
