@@ -81,14 +81,11 @@ The real-Docker E2E is Linux-only; Windows/macOS-specific code stays in the unit
 
 ## Test Files
 
-`tests/` holds one `test_*.py` suite per area in the `unit` tier. Counts below
-are a moving target - a suite or a test is added or removed on nearly every
-PR - so treat any number in this file as illustrative, not authoritative.
-For the current suite-file count, run `ls tests/test_*.py | wc -l`; for the
-current test count and pass/fail totals, run `uv run pytest -m unit` and read
-its own summary line (see [Reading the output](#reading-the-output) above).
-See [../docs/testing/README.md](../docs/testing/README.md) for the per-area
-breakdown.
+`tests/` holds one `test_*.py` suite per area in the `unit` tier.
+Counts below are a moving target because a suite or a test is added or removed on nearly every PR, so treat any number in this file as illustrative, not authoritative.
+For the current suite-file count, run `ls tests/test_*.py | wc -l`.
+For the current test count and pass/fail totals, run `uv run pytest -m unit` and read its own summary line (see [Reading the output](#reading-the-output) above).
+See [../docs/testing/README.md](../docs/testing/README.md) for the per-area breakdown.
 
 `tests/e2e/` adds more `test_*.py` suites in the real-Docker `e2e` tier
 (`test_init_e2e.py`, `test_backup_e2e.py`, `test_start_status_e2e.py`,
@@ -141,8 +138,8 @@ generic loopback once on the v16 leg, and keeps the v14-only `--receive` bare-fi
 reproduction as a separate, clearly-labeled, v14-gated test.
 
 ### `test_completion_utils.py`
-Tests for tab completion functionality. Coverage is listed under
-`utils/completion_utils.py` in [Covered Modules](#covered-modules) below.
+Tests for tab completion functionality.
+Coverage is listed under `utils/completion_utils.py` in [Covered Modules](#covered-modules) below.
 
 **What it tests:**
 - Project name completion from Docker
@@ -159,14 +156,13 @@ Tests for tab completion functionality. Coverage is listed under
 - `TestCacheHelpers`
 - `TestGetDockerClient`
 
-Run `uv run pytest tests/test_completion_utils.py -v` for the current
-per-class test counts.
+Run `uv run pytest tests/test_completion_utils.py -v` for the current per-class test counts.
 
 ## Test Coverage
 
-Every percentage below is a snapshot from the most recent full run, not a
-promise - it drifts with every test added or removed. Regenerate the current
-overall total and the per-module breakdown with:
+Every percentage below is a snapshot from the most recent full run, not a promise.
+It drifts with every test added or removed.
+Regenerate the current overall total and the per-module breakdown with:
 
 ```bash
 uv run pytest -m unit --cov=caffeinated_whale_cli --cov-report=term-missing

@@ -107,7 +107,7 @@ uv run pytest -x
 
 ### Current Test Coverage
 
-For the overall coverage number, the test/file counts, and the full per-module breakdown, see [tests/README.md](../../tests/README.md#test-coverage) - the single source.
+For the commands that report current test and coverage totals, plus the point-in-time per-module breakdown, see [tests/README.md](../../tests/README.md#test-coverage), the single source.
 `test_completion_utils.py` (tab completion) is a good single-module suite to model a new one on: project name completion, app name completion, site name completion, cache functionality, Docker client management.
 
 ### Test Organization
@@ -249,7 +249,7 @@ def temp_cache():
 
 - **Minimum**: 80% coverage for new code
 - **Target**: 90%+ coverage for critical paths
-- **Current**: see [tests/README.md](../../tests/README.md#test-coverage) for the current overall coverage number and per-module breakdown
+- **Current**: see [tests/README.md](../../tests/README.md#test-coverage) for the commands that report current coverage and the point-in-time per-module breakdown
 
 ### Checking Coverage
 
