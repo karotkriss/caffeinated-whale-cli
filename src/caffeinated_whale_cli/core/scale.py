@@ -54,6 +54,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from ..utils import config_utils
+from ..utils.port_utils import check_ports_in_use, format_port_list
 from . import docker as core_docker
 from . import resolvers
 from . import start as core_start
@@ -97,15 +98,22 @@ class BenchPortMap:
     (its ``common_site_config.json``); ``host_web_port``/``host_socketio_port`` are
     the host ports they now publish to; ``reachable`` is whether the host actually
     reaches this bench (True once the published range covers its assigned port).
+
+    ``ports_verified`` is False when this bench's config could not be read live
+    (a transient container/parse failure - see ``_read_assigned_ports``); in that
+    case the port fields are None and ``reachable`` is False rather than a guessed
+    8000/9000 reported as fact, matching the fail-honest contract the rest of this
+    module (and ``core.where``) follows.
     """
 
     bench_path: str
     label: str | None
-    webserver_port: int
-    socketio_port: int
-    host_web_port: int
-    host_socketio_port: int
+    webserver_port: int | None
+    socketio_port: int | None
+    host_web_port: int | None
+    host_socketio_port: int | None
     reachable: bool
+    ports_verified: bool
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -482,12 +490,40 @@ def scale(
     benches_restarted = 0
 
     if expanded:
+        # Pre-check the NEWLY claimed host ports (never the already-published ones -
+        # those are this project's own container's current binding, not a conflict)
+        # before any filesystem write, the same check-before-write order
+        # core.init_instance uses via the same utils/port_utils.py helpers.
+        new_web_ports = list(
+            range(published.web_base + published.count, published.web_base + target)
+        )
+        new_socketio_ports = list(
+            range(published.socketio_base + published.count, published.socketio_base + target)
+        )
+        port_status = check_ports_in_use(new_web_ports + new_socketio_ports)
+        ports_in_use = [p for p, in_use in port_status.items() if in_use]
+        if ports_in_use:
+            raise CwcliError(
+                ErrorKind.CONFLICT,
+                "scale.ports_in_use",
+                f"The following newly needed ports are already in use: "
+                f"{format_port_list(ports_in_use)}",
+                hint="Free the ports (or stop whatever is using them) and retry.",
+            )
+
         _emit(on_event, f"Widening the published range from {published.count} to {target} ports")
         compose_path.write_text(_widen_ports_block(compose_text, published, target))
 
         conf_dir = str(compose_path.parent)
         _emit(on_event, "Recreating the frappe service (--no-deps: the database is untouched)")
-        _recreate_frappe(project_name, conf_dir)
+        try:
+            _recreate_frappe(project_name, conf_dir)
+        except CwcliError:
+            # The compose command itself never applied the widened file - restore
+            # the original so a retry re-attempts the expansion instead of reading
+            # the file's already-widened range as a completed, idempotent no-op.
+            compose_path.write_text(compose_text)
+            raise
 
         if not _wait_for_frappe_running(project_name):
             raise CwcliError(
@@ -521,8 +557,25 @@ def scale(
     published_after = target
 
     port_map: list[BenchPortMap] = []
+    unverified_benches: list[str] = []
     for bench_path in bench_paths:
-        web, sio = assigned.get(bench_path, (_WEB_CONTAINER_BASE, _SOCKETIO_CONTAINER_BASE))
+        ports = assigned.get(bench_path)
+        if ports is None:
+            unverified_benches.append(bench_path)
+            port_map.append(
+                BenchPortMap(
+                    bench_path=bench_path,
+                    label=labels.get(bench_path),
+                    webserver_port=None,
+                    socketio_port=None,
+                    host_web_port=None,
+                    host_socketio_port=None,
+                    reachable=False,
+                    ports_verified=False,
+                )
+            )
+            continue
+        web, sio = ports
         web_offset = web - _WEB_CONTAINER_BASE
         sio_offset = sio - _SOCKETIO_CONTAINER_BASE
         reachable = web_offset < published_after and sio_offset < published_after
@@ -535,6 +588,17 @@ def scale(
                 host_web_port=published.web_base + web_offset,
                 host_socketio_port=published.socketio_base + sio_offset,
                 reachable=reachable,
+                ports_verified=True,
+            )
+        )
+
+    if unverified_benches:
+        warnings.append(
+            Message(
+                "scale.bench_ports_unverified",
+                f"Could not read the assigned ports for {len(unverified_benches)} bench(es) "
+                f"({', '.join(unverified_benches)}); their reachability is unknown, not "
+                "confirmed - re-run once the container is responsive.",
             )
         )
 

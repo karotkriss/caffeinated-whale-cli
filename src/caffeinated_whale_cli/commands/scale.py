@@ -42,6 +42,11 @@ def _render(report: ScaleReport) -> None:
     console.print("\n[bold]Host port map:[/bold]")
     for bench in report.port_map:
         label = f" ({bench.label})" if bench.label else ""
+        if not bench.ports_verified:
+            console.print(
+                f"  {bench.bench_path}{label}: [yellow]ports unknown (unreadable)[/yellow]"
+            )
+            continue
         mark = "[green]reachable[/green]" if bench.reachable else "[red]UNREACHABLE[/red]"
         console.print(
             f"  {bench.bench_path}{label}: "
