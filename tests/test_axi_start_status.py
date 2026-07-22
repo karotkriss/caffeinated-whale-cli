@@ -54,6 +54,7 @@ def _bench_status(
         supervisor_up=overall in ("running", "degraded") and not not_cwcli_supervised,
         web_port=web_port,
         web_port_verified=True,
+        web_site="site.localhost",
         web_http_code="200" if overall == "running" else None,
         processes=processes if processes is not None else [],
         not_cwcli_supervised=not_cwcli_supervised,

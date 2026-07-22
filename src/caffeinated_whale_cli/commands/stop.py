@@ -21,6 +21,13 @@ def stop(
         "-v",
         help="Enable verbose diagnostic output.",
     ),
+    bench: str = typer.Option(
+        None,
+        "--bench",
+        help="Stop only THIS bench's dev processes (numeric index or label), "
+        "leaving sibling benches and every container running. Omit to stop the "
+        "whole instance's containers.",
+    ),
     project_name: list[str] = typer.Argument(
         None,
         help="The name(s) of the Frappe project(s) to stop. Can be piped from stdin.",
@@ -29,19 +36,36 @@ def stop(
 ):
     """
     Stops all containers for a given project or for all projects piped from stdin.
+
+    With --bench, stops just that bench's dev processes (its supervisord) and leaves
+    the containers and every sibling bench running - the inverse of
+    `cwcli start --bench`.
     """
     project_names_to_process = []
 
-    # Handle -v or --verbose in remaining args
+    # A variadic Argument greedily eats options placed AFTER the project name, so
+    # recover -v/--verbose and --bench <value> from the name list (the same
+    # forgiveness start and restart apply to their trailing flags).
     actual_verbose = verbose
+    actual_bench = bench
     filtered_project_names = []
 
     if project_name:
-        for name in project_name:
-            if name in ("-v", "--verbose"):
+        tokens = list(project_name)
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            if token in ("-v", "--verbose"):
                 actual_verbose = True
+            elif token == "--bench":
+                if i + 1 < len(tokens):
+                    actual_bench = tokens[i + 1]
+                    i += 1
+            elif token.startswith("--bench="):
+                actual_bench = token.split("=", 1)[1]
             else:
-                filtered_project_names.append(name)
+                filtered_project_names.append(token)
+            i += 1
         project_names_to_process.extend(filtered_project_names)
 
     if not sys.stdin.isatty():
@@ -53,6 +77,10 @@ def stop(
             "[bold red]Error:[/bold red] Please provide at least one project name or pipe a list of names."
         )
         raise typer.Exit(code=1)
+
+    if actual_bench is not None:
+        _stop_benches(project_names_to_process, actual_bench, actual_verbose)
+        return
 
     console.print(
         f"Attempting to stop [bold yellow]{len(project_names_to_process)}[/bold yellow] project(s)..."
@@ -95,6 +123,59 @@ def stop(
 
     if had_failure:
         raise typer.Exit(code=1)
+
+
+def _stop_benches(names: list[str], bench: str, verbose: bool) -> None:
+    """``--bench``: stop one bench per named project; honest per-project exit code."""
+    had_failure = False
+    for name in names:
+        try:
+            outcome = _run_stop_bench(name, bench, verbose)
+        except CwcliError as e:
+            console.print(f"[bold red]Error: {e.message}[/bold red]")
+            if e.hint:
+                stderr_console.print(f"[dim]{e.hint}[/dim]")
+            had_failure = True
+            continue
+        if outcome.already_stopped:
+            console.print(
+                f"Bench '{outcome.bench_path}' of '{name}' is already stopped "
+                "(no dev processes running)."
+            )
+        else:
+            processes = ", ".join(outcome.stopped_processes) or "no processes"
+            console.print(
+                f"Bench '{outcome.bench_path}' of '{name}' stopped "
+                f"([bold cyan]{processes}[/bold cyan]); other benches and containers "
+                "are untouched."
+            )
+        console.print(f"[dim]Start it again with: cwcli start {name} --bench {bench}[/dim]")
+
+    if had_failure:
+        raise typer.Exit(code=1)
+
+
+def _run_stop_bench(name: str, bench: str, verbose: bool) -> core_stop.BenchStopOutcome:
+    """Call ``core.stop_bench`` for a NAMED bench.
+
+    No prompt, and none is possible: this path is reached only when ``--bench``
+    carried a value, so ``core.stop_bench``'s ``select_bench`` fork - which exists
+    for a caller that passes no selector at all - is unreachable from here. An
+    unresolvable selector is a ``CwcliError`` the caller renders.
+    """
+    with stderr_console.status(
+        f"[bold yellow]Stopping bench '{bench}' of '{name}'...[/bold yellow]", spinner="dots"
+    ):
+        result = core_stop.stop_bench(name, bench=bench)
+
+    for warning in result.warnings:
+        if warning.code == "bench.default_used":
+            stderr_console.print(f"[yellow]Warning: {warning.text}[/yellow]")
+        elif verbose:
+            stderr_console.print(f"[dim]{warning.text}[/dim]")
+
+    assert result.data is not None  # OK always carries a BenchStopOutcome
+    return result.data
 
 
 def stop_project_best_effort(project_name: str, verbose: bool = False) -> int | None:

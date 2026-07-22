@@ -214,6 +214,39 @@ def resolve_default_site(project_name: str, bench_path: str) -> str:
     return default_site
 
 
+def resolve_representative_site(project_name: str, bench_path: str) -> str | None:
+    """A site that stands for this bench when one is needed but none was named.
+
+    Frappe is multi-tenant and routes by ``Host``, so "is this bench serving?" and
+    "what is this bench's address?" both need a SITE, not just a port - a request
+    naming none is answered 404 by a perfectly healthy bench. Neither question is
+    about a particular site, so neither can require one from the caller, but a
+    hint or a health field that names no site is not an answer either.
+
+    Order: the bench's own default site (:func:`resolve_default_site` -
+    ``default_site`` or ``currentsite.txt``); else its cached sites, the sole one
+    when there is only one; else the first in stable sorted order; else None. The
+    fallback matters, and is not a corner case: a bench ``cwcli init`` creates has
+    exactly one site and records NO default (nothing runs ``bench use``), which is
+    the shape of most instances, so a default-site-only lookup answers None on
+    precisely the benches that most need an answer.
+
+    Choosing among several undefaulted sites is a pick, not a deduction, so every
+    consumer reports WHICH site it used (``BenchStatus.web_site``, the URL itself)
+    rather than presenting the result as sitewide. Returns None when the bench has
+    no site at all - reported as unknown, never guessed.
+    """
+    try:
+        return resolve_default_site(project_name, bench_path)
+    except CwcliError:
+        pass
+    try:
+        sites = sorted(db_utils.get_all_site_configs(project_name, bench_path))
+    except Exception:  # noqa: BLE001 - a cache read must never fail the caller
+        return None
+    return sites[0] if sites else None
+
+
 def resolve_container_and_bench(
     project_name: str,
     bench: str | None,
@@ -369,6 +402,54 @@ def resolve_assigned_ports(
         except (TypeError, ValueError):
             continue
     return assigned
+
+
+def resolve_host_web_url(container, bench_path: str, *, site: str | None = None) -> str | None:
+    """The URL a browser ON THE HOST reaches this bench at, or None if unresolvable.
+
+    Two hops, neither of them guessed:
+
+    1. the CONTAINER port this bench serves, from
+       :func:`resolve_assigned_ports` (``fill_defaults=False`` - this becomes a URL
+       handed to a user, so an unreadable config is reported as unknown, never as
+       Frappe's 8000);
+    2. the HOST port that container port is published on, read from the container's
+       OWN live port bindings. Docker's binding table IS the published mapping, so
+       there is nothing to re-derive from the compose file and nothing that can drift
+       out of step with what is actually bound.
+
+    Both hops are load-bearing on a real instance, and skipping either is the defect
+    this replaces: a banner that printed ``http://<site>:8000`` named a CONTAINER
+    port as if it were a host port (wrong under any ``--port`` base) AND ignored that
+    bench's ``make_ports`` assignment (wrong for every bench past the first). On a
+    ``--port 21000`` instance, bench 1 is ``8001`` inside and ``21001`` outside.
+
+    ``site`` becomes the host part, because Frappe routes by Host: the URL must name
+    the site to reach it. With no site the URL falls back to ``localhost``, which is
+    still the right port - and still answers, with Frappe's own site-not-found page.
+    """
+    ports = resolve_assigned_ports(container, [bench_path], fill_defaults=False)
+    assigned = ports.get(bench_path)
+    if assigned is None:
+        return None
+    host_port = _published_host_port(container, assigned[0])
+    if host_port is None:
+        return None
+    return f"http://{site or 'localhost'}:{host_port}"
+
+
+def _published_host_port(container, container_port: int) -> int | None:
+    """The host port ``container_port/tcp`` is published on, from the live bindings."""
+    bindings = getattr(container, "ports", None) or {}
+    entries = bindings.get(f"{container_port}/tcp") or []
+    for entry in entries:
+        host_port = (entry or {}).get("HostPort")
+        if host_port:
+            try:
+                return int(host_port)
+            except (TypeError, ValueError):
+                continue
+    return None
 
 
 def _decode(output) -> str:

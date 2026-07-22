@@ -119,3 +119,123 @@ class TestBoundary:
         wire([_container("a", status="exited")])
         core_stop.stop("proj")
         assert capsys.readouterr().out == ""
+
+
+class TestStopBench:
+    """``core.stop_bench`` - the per-bench half.
+
+    Stopping ONE bench is a different operation from stopping the instance, not a
+    narrowed one: benches are siblings in a single container, so there is no
+    container to stop. It ends that bench's own supervisord and leaves every
+    container - and every sibling bench - running. Before it existed, taking one
+    bench down meant reaching past cwcli with ``docker exec ... supervisorctl``.
+    """
+
+    @pytest.fixture
+    def bench_wire(self, monkeypatch):
+        """Wire a running frappe container plus the bench/supervision reads."""
+
+        def _wire(*, supervisor_up=True, processes=(), benches=(("/w/b0", None),)):
+            frappe = _container("proj-frappe-1")
+            frappe.labels = {"com.docker.compose.service": "frappe"}
+            monkeypatch.setattr(core_stop, "get_project_containers", lambda name: [frappe])
+            monkeypatch.setattr(
+                core_stop.resolvers,
+                "cached_benches",
+                lambda p: [{"path": path, "label": label} for path, label in benches],
+            )
+            snapshot = MagicMock()
+            snapshot.supervisor_up = supervisor_up
+            snapshot.processes = [
+                MagicMock(label=label, up=up) for label, up in processes
+            ]
+            monkeypatch.setattr(
+                core_stop.supervision, "discover_stack", lambda c, p: snapshot
+            )
+            calls: dict[str, list] = {"stopped": [], "cleared": []}
+            monkeypatch.setattr(
+                core_stop.supervision,
+                "stop_supervisor",
+                lambda c, p: calls["stopped"].append(p) or True,
+            )
+            monkeypatch.setattr(
+                core_stop.supervision,
+                "clear_marker",
+                lambda c, p: calls["cleared"].append(p),
+            )
+            return frappe, calls
+
+        return _wire
+
+    def test_stops_the_named_bench_and_reports_what_was_up(self, bench_wire):
+        _frappe, calls = bench_wire(
+            processes=[("web", True), ("worker", True), ("watch", False)],
+            benches=(("/w/b0", None), ("/w/b1", None)),
+        )
+
+        result = core_stop.stop_bench("proj", bench="1")
+
+        assert result.status is Status.OK
+        assert result.data.bench_path == "/w/b1"
+        assert result.data.already_stopped is False
+        assert result.data.stopped_processes == ["web", "worker"]  # not the down one
+        # Only the NAMED bench's supervisor was signalled; the sibling is untouched.
+        assert calls["stopped"] == ["/w/b1"]
+
+    def test_process_labels_are_deduplicated(self, bench_wire):
+        """Discovery is per-PID and one program can hold several processes (the
+        bench wrapper plus what it execs); reporting `web, web` would read as two."""
+        bench_wire(processes=[("web", True), ("web", True), ("worker", True)])
+
+        result = core_stop.stop_bench("proj", bench="0")
+
+        assert result.data.stopped_processes == ["web", "worker"]
+
+    def test_a_bench_that_is_not_running_is_a_clean_success(self, bench_wire):
+        """Idempotent, like the project-wide stop: an agent can stop twice."""
+        _frappe, calls = bench_wire(supervisor_up=False)
+
+        result = core_stop.stop_bench("proj", bench="0")
+
+        assert result.status is Status.OK
+        assert result.data.already_stopped is True
+        assert result.data.stopped_processes == []
+        assert calls["stopped"] == []  # nothing was signalled
+
+    def test_the_launch_marker_is_cleared_so_a_stop_does_not_read_as_a_fault(
+        self, bench_wire
+    ):
+        """The marker is what tells "started, supervisor died" (degraded) from
+        "never started" (online). A DELIBERATE stop must clear it, or every
+        stopped bench leaves the instance permanently `degraded` with nothing
+        wrong - a health signal crying wolf."""
+        _frappe, calls = bench_wire(processes=[("web", True)])
+
+        core_stop.stop_bench("proj", bench="0")
+
+        assert calls["cleared"] == ["/w/b0"]
+
+    def test_multi_bench_without_a_selector_is_a_choice_not_a_guess(self, bench_wire):
+        _frappe, calls = bench_wire(benches=(("/w/b0", None), ("/w/b1", None)))
+
+        result = core_stop.stop_bench("proj")
+
+        assert result.status is Status.NEEDS_CHOICE
+        assert result.choice.kind == "select_bench"
+        assert calls["stopped"] == []  # nothing was stopped while asking
+
+    def test_a_stopped_container_is_not_running_not_a_silent_success(self, monkeypatch):
+        frappe = _container("proj-frappe-1", status="exited")
+        frappe.labels = {"com.docker.compose.service": "frappe"}
+        monkeypatch.setattr(core_stop, "get_project_containers", lambda name: [frappe])
+
+        with pytest.raises(CwcliError) as exc:
+            core_stop.stop_bench("proj", bench="0")
+        assert exc.value.kind is ErrorKind.NOT_RUNNING
+
+    def test_core_stop_bench_prints_nothing(self, bench_wire, capsys):
+        bench_wire(processes=[("web", True)])
+        core_stop.stop_bench("proj", bench="0")
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
