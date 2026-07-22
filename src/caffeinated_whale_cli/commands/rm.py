@@ -85,8 +85,8 @@ def _project_run_state(project_name: str) -> str:
       * ``"running"`` - the frappe container is up (a live backup is possible),
       * ``"stopped"`` - containers exist but the frappe container is not running
         (it CAN be started for a transient pre-delete backup),
-      * ``"orphan"`` - no containers at all (nothing to start; only ``--no-backup``
-        can remove it), or
+      * ``"orphan"`` - no containers at all (nothing to start; the core checks
+        whether named volumes remain before deciding if a backup is required), or
       * ``"error"`` - Docker could not be reached.
     """
     containers = get_project_containers(project_name)
@@ -340,8 +340,11 @@ def rm(
     handling as `cwcli start`. If it cannot be started, or the backup fails, the
     removal is aborted, ALL data is kept, the project is returned to its stopped
     state, and the command exits non-zero - pass --no-backup to delete without a
-    backup instead. An orphan project (no containers) cannot be started, so it too
-    is refused on the --volumes path unless --no-backup is given.
+    backup instead. An orphan project (no containers) cannot be started. If named
+    volumes remain, or Docker cannot verify their absence, the backup gate refuses
+    removal unless --no-backup or --no-volumes is given. If Docker confirms that
+    no named volumes remain, there is no data-bearing volume to protect, so the
+    leftover project network and directory are cleaned under the default settings.
 
     Use --no-backup to skip backups (not recommended):
     - Skips database backups (and the backup safety gate)
