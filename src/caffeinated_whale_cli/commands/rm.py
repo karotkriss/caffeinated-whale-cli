@@ -316,12 +316,13 @@ def rm(
     - Stops all containers for the project
     - Removes all containers for the project
     - Removes all named Docker volumes for the project (deletes all data!)
+    - Removes the project's own Docker network
     - Deletes the local project directory (~/.cwcli/projects/{name}/, or $CWCLI_HOME/projects/{name}/ if that override is set)
     - Clears the project from the cache
 
     Use --no-volumes to keep volumes:
     - Keeps the named Docker volumes (preserves databases, sites, and files)
-    - Still removes the containers, project directory, and cache entry
+    - Still removes the containers, project network, project directory, and cache entry
 
     When volumes are being deleted (the default --volumes), a backup that cannot
     be fully created and verified (e.g. a wedged site, the DB is down, or the disk
@@ -348,7 +349,7 @@ def rm(
 
     Examples:
         cwcli rm my-project                 # Remove everything (with confirmation)
-        cwcli rm my-project --no-volumes    # Keep volumes, remove containers only
+        cwcli rm my-project --no-volumes    # Keep volumes, remove the remaining project resources
         cwcli rm my-project --no-backup     # Skip backups (not recommended)
         cwcli rm my-project --yes           # Skip confirmation
         cwcli ls | cwcli rm                 # Remove multiple projects via pipe
@@ -479,6 +480,9 @@ def rm(
                 "named Docker volumes (databases, sites, and files) are kept so you can recreate "
                 "the project from existing data.[/dim]"
             )
+        console.print(
+            "[dim]The project's own Docker network is also removed; it holds no user data.[/dim]"
+        )
         console.print()
 
         try:
