@@ -90,9 +90,7 @@ def _exec_interactive(plan: RunPlan, *, verbose: bool) -> int:
             'pidfile="$1"; shift; echo $$ > "$pidfile"; '
             '"$@"; status=$?; rm -f "$pidfile"; exit "$status"'
         )
-        argv.extend(
-            ["setsid", "sh", "-c", script, "cwcli-run", cleanup_pidfile, *command]
-        )
+        argv.extend(["setsid", "sh", "-c", script, "cwcli-run", cleanup_pidfile, *command])
 
     if verbose:
         stderr_console.print(f"[dim]$ {' '.join(argv)}[/dim]")
@@ -120,19 +118,19 @@ def _kill_interactive_process_group(container_id: str, pidfile: str) -> bool:
     quoted = shlex.quote(pidfile)
     script = (
         f'i=0; while [ ! -s {quoted} ] && [ "$i" -lt 20 ]; '
-        'do i=$((i + 1)); sleep 0.05; done; '
-        f'pid=$(cat {quoted} 2>/dev/null) || exit 2; '
+        "do i=$((i + 1)); sleep 0.05; done; "
+        f"pid=$(cat {quoted} 2>/dev/null) || exit 2; "
         'case "$pid" in ""|*[!0-9]*) exit 2;; esac; '
         'if kill -0 -- "-$pid" 2>/dev/null; then '
         'kill -TERM -- "-$pid" 2>/dev/null; '
         'i=0; while kill -0 -- "-$pid" 2>/dev/null && [ "$i" -lt 20 ]; '
-        'do i=$((i + 1)); sleep 0.05; done; '
+        "do i=$((i + 1)); sleep 0.05; done; "
         'if kill -0 -- "-$pid" 2>/dev/null; then '
         'kill -KILL -- "-$pid" 2>/dev/null || exit 3; '
         'i=0; while kill -0 -- "-$pid" 2>/dev/null && [ "$i" -lt 20 ]; '
-        'do i=$((i + 1)); sleep 0.05; done; '
-        'fi; fi; '
-        f'rm -f {quoted}; '
+        "do i=$((i + 1)); sleep 0.05; done; "
+        "fi; fi; "
+        f"rm -f {quoted}; "
         'if kill -0 -- "-$pid" 2>/dev/null; then exit 4; fi'
     )
     try:
