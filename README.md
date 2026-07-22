@@ -9,6 +9,7 @@ A command-line interface (CLI) for managing Frappe/ERPNext Docker instances duri
 - **Project Discovery** - Scan and list all Frappe Docker projects
 - **Cross-Project Search** - Find apps and sites across all instances with `cwcli where`
 - **Container Lifecycle** - Start, stop, and restart projects with ease
+- **Scale Beyond Six Benches** - Widen an instance's published port range on demand with `cwcli scale` so more than six benches are reachable from the host - database-safe (only the frappe service is recreated)
 - **Development Tools** - VS Code integration, log viewing, and command execution
 - **Cache System** - Fast project inspection with SQLite-based caching and configuration storage
 - **Multi-Bench Support** - Address individual benches in a multi-bench instance by numeric index or a durable label with `--bench`
@@ -558,6 +559,62 @@ View logs with: cwcli logs frappe-one
 # single process
 Instance 'frappe-one': restarted process web (pid 123 -> 456, RUNNING)
 ```
+
+---
+
+### `scale` - Widen the Published Port Range
+
+An instance publishes a **fixed range of six web ports and six socketio ports** when it is created.
+Because each bench is assigned its own web/socketio port by bench's own port allocator (it scans sibling benches in the shared workspace and counts up from 8000/9000), a **seventh** serving bench binds its port *inside* the container fine but is **silently unreachable from the host** - no crash, no warning.
+
+`cwcli scale` fixes that: it reads each bench's assigned port from its own `sites/common_site_config.json` (the source of truth - cwcli never invents a competing port store), widens the frappe service's published range in `conf/docker-compose.yml` to cover every bench, and applies it by **recreating only the frappe service** (`docker compose up -d --no-deps frappe`).
+This is **database-safe**: `--no-deps` leaves MariaDB, Redis, and the database volume untouched.
+
+Recreation reverts the container's home directory to the image, which wipes the **runtime-installed** node/python of **v13/v14** benches (v15/v16 are baked into the image and survive).
+`cwcli scale` repairs that automatically - it probes each bench's interpreter and re-runs cwcli's own idempotent installers only for a bench that actually broke - then relaunches every bench.
+
+Because every bench shares one container's supervisor, expanding the range **restarts every serving bench in the instance** - this is unavoidable (the port map is fixed when the container is created), so `cwcli scale` confirms before proceeding unless `--yes` is given.
+
+> **Note:** publishing more ports does not add memory. Several full benches serving at once can exhaust host RAM well before the port range does - memory, not ports, is the practical ceiling.
+
+```bash
+cwcli scale [OPTIONS] PROJECT_NAME
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `PROJECT_NAME` | The Frappe instance to scale |
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--to INTEGER` | Ensure at least this many benches are reachable from the host (publish at least this many ports). Omit to auto-fit every existing bench |
+| `-y`, `--yes` | Skip the whole-instance-restart confirmation |
+
+**Example:**
+
+```bash
+# Auto-fit: widen the range to cover every bench that is currently past the ceiling
+cwcli scale my-project
+
+# Pre-provision headroom for eight benches (restarts the instance, no prompt)
+cwcli scale my-project --to 8 --yes
+```
+
+**Example Output:**
+
+```
+Expanded 'my-project' from 6 to 8 published ports and restarted 2 bench(es).
+
+Host port map:
+  /workspace/frappe-bench: web localhost:16000 socketio localhost:17000 - reachable
+  /workspace/bench2: web localhost:16006 socketio localhost:17006 - reachable
+```
+
+Re-running when the range already covers every bench is a safe no-op.
 
 ---
 
@@ -1838,6 +1895,12 @@ cwcli axi logs frappe-one --process web --lines 50
 # Restart ONE supervised process (siblings keep running); the outcome prints as
 # TOON. --process is required; --bench selects a bench on a multi-bench project.
 cwcli axi restart frappe-one --process web
+
+# Widen the published port range so more than six benches are reachable from the
+# host; the new host port map prints as TOON. Expanding restarts every serving
+# bench in the instance, so it needs --yes. An instance whose range already covers
+# every bench is a clean no-op (expanded: false), no --yes needed.
+cwcli axi scale frappe-one --to 8 --yes
 
 # Inspect a project's benches, sites, and apps; the report prints as ONE TOON
 # document. ONE tiered read (cache/partial/full, whichever answers the request),
