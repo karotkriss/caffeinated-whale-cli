@@ -97,35 +97,54 @@ def _exec_interactive(plan: RunPlan, *, verbose: bool) -> int:
     if verbose:
         stderr_console.print(f"[dim]$ {' '.join(argv)}[/dim]")
 
-    completed = False
     try:
         result = subprocess.run(argv)
-        completed = True
         return result.returncode
     except KeyboardInterrupt:
+        if cleanup_pidfile is not None and not _kill_interactive_process_group(
+            plan.container_id, cleanup_pidfile
+        ):
+            stderr_console.print(
+                "[bold red]Error:[/bold red] Interrupted command termination "
+                "could not be verified; it may still be running in the container."
+            )
+            return 1
         return 130
-    finally:
-        if cleanup_pidfile is not None and not completed:
+    except BaseException:
+        if cleanup_pidfile is not None:
             _kill_interactive_process_group(plan.container_id, cleanup_pidfile)
+        raise
 
 
-def _kill_interactive_process_group(container_id: str, pidfile: str) -> None:
+def _kill_interactive_process_group(container_id: str, pidfile: str) -> bool:
     quoted = shlex.quote(pidfile)
     script = (
-        f'pid=$(cat {quoted} 2>/dev/null) || exit 0; '
-        'kill -TERM -- "-$pid" 2>/dev/null; sleep 1; '
-        'kill -KILL -- "-$pid" 2>/dev/null; '
-        f"rm -f {quoted}"
+        f'i=0; while [ ! -s {quoted} ] && [ "$i" -lt 20 ]; '
+        'do i=$((i + 1)); sleep 0.05; done; '
+        f'pid=$(cat {quoted} 2>/dev/null) || exit 2; '
+        'case "$pid" in ""|*[!0-9]*) exit 2;; esac; '
+        'if kill -0 -- "-$pid" 2>/dev/null; then '
+        'kill -TERM -- "-$pid" 2>/dev/null; '
+        'i=0; while kill -0 -- "-$pid" 2>/dev/null && [ "$i" -lt 20 ]; '
+        'do i=$((i + 1)); sleep 0.05; done; '
+        'if kill -0 -- "-$pid" 2>/dev/null; then '
+        'kill -KILL -- "-$pid" 2>/dev/null || exit 3; '
+        'i=0; while kill -0 -- "-$pid" 2>/dev/null && [ "$i" -lt 20 ]; '
+        'do i=$((i + 1)); sleep 0.05; done; '
+        'fi; fi; '
+        f'rm -f {quoted}; '
+        'if kill -0 -- "-$pid" 2>/dev/null; then exit 4; fi'
     )
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["docker", "exec", container_id, "sh", "-c", script],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=5,
         )
     except Exception:
-        pass
+        return False
+    return result.returncode == 0
 
 
 @handle_docker_errors
