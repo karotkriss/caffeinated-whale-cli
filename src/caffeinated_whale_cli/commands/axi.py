@@ -1882,8 +1882,8 @@ def axi_rm(
     volumes: bool = typer.Option(
         True,
         "--volumes/--no-volumes",
-        help="--no-volumes keeps the named volumes (databases, sites, files) and removes "
-        "only the containers, project directory, and cache entry.",
+        help="--no-volumes keeps the named volumes (databases, sites, files); containers, "
+        "the project network, project directory, and cache entry are still removed.",
     ),
 ) -> None:
     """Permanently remove an instance; emit the outcome as TOON (never prompts).
@@ -1905,17 +1905,19 @@ def axi_rm(
     meaning and there is NO auto-start on this surface (the `axi apps checkout`
     guard, against an agent starting containers a user deliberately stopped).
 
-    Consequences of removing the auto-start half, both refusals that name their way
-    out rather than dead-ending:
+    A STOPPED project on the volume-deleting path is refused (NOT_RUNNING, exit 1)
+      BEFORE anything is touched. A live `bench backup` needs a running project, so
+      without the transient start there is no way to satisfy the gate. The refusal
+      names `cwcli start <project>` (then re-run), `--no-volumes` (which preserves
+      named-volume data while still removing the network), and the human verb for a
+      deliberate backup-less delete.
 
-    - A STOPPED or orphaned project on the volume-deleting path is refused
-      (NOT_RUNNING, exit 1) BEFORE anything is touched. A live `bench backup` needs
-      a running project, so without the transient start there is no way to satisfy
-      the gate - and deleting anyway is precisely what the gate exists to prevent.
-      The refusal names `cwcli start <project>` (then re-run), `--no-volumes` (which
-      destroys no data and so needs no backup), and the human verb for a deliberate
-      backup-less delete.
-    - There is deliberately NO `--no-backup`. That flag disables the C1 gate, the
+    An orphan reaches `core.remove` for live resource discovery. Present named
+      volumes or an unverified volume state are refused by the backup gate. A
+      confirmed volume-free orphan needs no backup, so its network and project
+      directory are cleaned under the defaults.
+
+    There is deliberately NO `--no-backup`. That flag disables the C1 gate, the
       single guard between this verb and unrecoverable data loss, and on this
       surface it has no named beneficiary - the same reasoning that keeps
       `axi apps install` without a `--force` and `axi migrate` without a
@@ -1948,7 +1950,8 @@ def axi_rm(
                 f"Refusing to remove '{project}' without explicit consent.",
                 hint=(
                     "re-run with --yes to permanently delete this instance's containers, "
-                    "named volumes (databases, sites, files), and project directory"
+                    "named volumes (databases, sites, files), project network, and "
+                    "project directory"
                 ),
             )
         )
