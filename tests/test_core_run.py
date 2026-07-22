@@ -541,16 +541,14 @@ def test_interactive_reports_a_ctrl_c_as_130_not_success(monkeypatch, frontend):
     assert "echo $$ >" in calls[0][9]
     pidfile = next(arg for arg in calls[0] if arg.startswith("/tmp/cwcli-run-"))
     assert calls[1][:3] == ["docker", "exec", "container-abc"]
-    assert '[ ! -s ' in calls[1][-1]
+    assert "[ ! -s " in calls[1][-1]
     assert 'kill -TERM -- "-$pid"' in calls[1][-1]
     assert 'kill -KILL -- "-$pid"' in calls[1][-1]
     assert 'if kill -0 -- "-$pid"' in calls[1][-1]
     assert pidfile in calls[1][-1]
 
 
-def test_interactive_refuses_to_claim_termination_when_cleanup_fails(
-    monkeypatch, frontend, capsys
-):
+def test_interactive_refuses_to_claim_termination_when_cleanup_fails(monkeypatch, frontend, capsys):
     terminals(monkeypatch, stdin=False, stdout=False)
     calls = 0
 
