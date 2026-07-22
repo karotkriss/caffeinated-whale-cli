@@ -129,7 +129,7 @@ class TestSkillContent:
         for leaked in ("cwe2e-", "/home/", str(Path.home())):
             assert leaked not in skill
 
-    @pytest.mark.parametrize("absent", ["axi apps install", "axi apps uninstall", "axi restore"])
+    @pytest.mark.parametrize("absent", ["axi apps uninstall", "axi restore"])
     def test_documents_the_deliberately_absent_verbs(self, absent):
         """Captain-locked deferrals; an agent must not be nudged to hunt for them."""
         assert absent in SKILL_PATH.read_text(encoding="utf-8")
