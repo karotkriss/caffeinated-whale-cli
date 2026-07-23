@@ -64,6 +64,7 @@ pytestmark = pytest.mark.e2e
 # supervisorctl. Defined here (next to `_ensure_serving`, which reads them) and
 # imported by the sibling supervisor modules, so there is ONE spelling of each.
 SUPERVISOR_CFG = f"{harness.DEFAULT_BENCH_PATH}/logs/.cwcli-supervisor.conf"
+SUPERVISOR_PID = f"{harness.DEFAULT_BENCH_PATH}/logs/.cwcli-supervisord.pid"
 BENCH_PY = f"{harness.DEFAULT_BENCH_PATH}/env/bin/python"
 
 
@@ -102,13 +103,14 @@ _SUPERVISOR_STATES = frozenset(
     {"STOPPED", "STARTING", "RUNNING", "BACKOFF", "STOPPING", "EXITED", "FATAL", "UNKNOWN"}
 )
 # States a program is still moving through: its pid is absent, or about to change.
-_TRANSITIONAL = frozenset({"STARTING", "BACKOFF"})
+_TRANSITIONAL = frozenset({"STARTING", "BACKOFF", "STOPPING"})
 # How long a RUNNING program must have been up before we call the stack settled.
 # cwcli generates `startsecs=3`, so RUNNING alone only means "survived 3s" - a
 # program that crashes on its first DB connection is RUNNING, then BACKOFF, then
 # RUNNING again. Waiting past that window is what makes a sibling's pid stable.
 _SETTLED_UPTIME_S = 10
 _UPTIME_RE = re.compile(r"uptime\s+(?:(\d+)\s+days?,\s+)?(\d+):(\d+):(\d+)")
+_SUPERVISOR_LIVENESS_MARKER = "__CWCLI_SUPERVISORD_LIVENESS__="
 
 
 def _parse_supervised_programs(status_output: str) -> dict[str, tuple[str, int]]:
@@ -139,10 +141,27 @@ def _supervised_programs(project: str) -> dict[str, tuple[str, int]]:
     at all, e.g. one run under honcho) yields an empty mapping, which reads as
     "nothing to wait for" rather than a failure.
     """
-    _, out = harness.exec_in_frappe(
-        project, f"{BENCH_PY} -m supervisor.supervisorctl -c {SUPERVISOR_CFG} status"
+    code, out = harness.exec_in_frappe(
+        project,
+        (
+            f"{BENCH_PY} -m supervisor.supervisorctl -c {SUPERVISOR_CFG} status\n"
+            "status_code=$?\n"
+            f'if [ -r {SUPERVISOR_PID} ] && kill -0 "$(cat {SUPERVISOR_PID})" 2>/dev/null; then\n'
+            f"  printf '\\n{_SUPERVISOR_LIVENESS_MARKER}running\\n'\n"
+            "else\n"
+            f"  printf '\\n{_SUPERVISOR_LIVENESS_MARKER}absent\\n'\n"
+            "fi\n"
+            'exit "$status_code"'
+        ),
     )
-    return _parse_supervised_programs(out)
+    programs = _parse_supervised_programs(out)
+    if programs or code == 0:
+        return programs
+    if f"{_SUPERVISOR_LIVENESS_MARKER}absent" in out:
+        return {}
+    raise AssertionError(
+        f"could not read supervisor status for the live supervised stack in {project}: {out}"
+    )
 
 
 def _wait_supervised_stack(project: str, *, timeout: int = 180) -> None:
