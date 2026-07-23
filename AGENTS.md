@@ -165,7 +165,7 @@ Every skill here MUST carry `metadata: internal: true` in its frontmatter - the 
 - **`cwcli-inspect-benches`** - inspect 3-tier freshness, multi-bench labels / `--bench` selector / marker recovery, the `--yes` + honest-exit-code contract, cache secret-redaction, `CWCLI_HOME` footprint. Load when editing `commands/inspect.py`, `label.py`, `utils/bench_labels.py`, `db_utils.py`, `config_utils.py`, or the cache/multi-bench addressing.
 - **`cwcli-apps-update`** - the `apps` group + `update.py` (multi-site fan-out, `--json` stdout purity, post-mutation recache, `cwcli update` deprecation + frappe special-case, maintenance-mode safety). Load when editing `commands/apps.py` or `update.py`.
 - **`cwcli-core-axi`** - the UI-pure logic core + `cwcli axi` boundary + the migrated read-only ls/where slices + the AXI cross-cutting shell (SessionStart hook, installable skill). Load when editing `core/`, `commands/axi.py`, `utils/toon.py`, `commands/list.py`/`where.py`, `utils/agent_hooks.py`, `scripts/build_skill.py`, or migrating a command onto the core.
-- **`cwcli-release`** - cutting a release (the four version-bump files, the uv trusted-publishing PyPI flow). Load when bumping the version or publishing.
+- **`cwcli-release`** - cutting a release (the four version-bump files, required hand-written release-card copy, and token-authenticated uv publish flow). Load when bumping the version or publishing.
 
 ## Known hazards
 
