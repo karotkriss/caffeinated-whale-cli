@@ -16,8 +16,8 @@ We use five GitHub Actions workflows:
 
 Lint, Build, and Release, along with Test's `Pytest`/`Mypy` jobs, run inside the `ghcr.io/astral-sh/uv:python3.12-bookworm` Docker image. E2E runs directly on the `ubuntu-latest` host runner (no `container:`) so `docker`/`docker compose` can reach the runner's own daemon; it installs `uv` via `astral-sh/setup-uv` instead. Test's other two jobs also run on host runners rather than the container: `Pytest (Windows, auto-inspect)` runs on `windows-latest` (no Linux container available there), and `Clean install smoke` runs on `ubuntu-latest` so `uv tool install` resolves a real runtime-only environment instead of the container's `--all-extras` sync. Both install `uv` via `astral-sh/setup-uv`.
 
-`develop` is branch-protected and currently requires `Lint & Format Check`, `Pytest`, `Mypy`, and the six `E2E (frappe vNN, shared)` / `E2E (frappe vNN, standalone)` contexts.
-`E2E (runtime-only install)` is not required, and `master` is not branch-protected.
+`develop` is branch-protected and currently requires ten contexts: `Lint & Format Check`, `Pytest`, `Mypy`, `E2E (runtime-only install)`, and the six `E2E (frappe vNN, shared)` / `E2E (frappe vNN, standalone)` contexts.
+`master` is not branch-protected.
 Job names are load-bearing because renaming a required job also renames its status context; update the required-check list in the same window as any such rename.
 
 ---
