@@ -62,6 +62,43 @@ def _sup_pid(project: str, program: str) -> int | None:
 
 
 # --------------------------------------------------------------------------- #
+# TEMPORARY DIAGNOSTIC - remove before this branch ships.
+#
+# Question it exists to settle: when a sibling program's pid changes across a
+# `restart --process web`, did that program EXIT ON ITS OWN (a crash - supervisord
+# logs "exit status N") or was it SIGNALLED (supervisord logs "terminated by
+# SIGxxx", or "stopped:" when supervisord asked it to stop)? Those two readings
+# imply completely different fixes, and the distinction is recorded verbatim in
+# supervisord's own log, so it is read rather than inferred.
+#
+# It prints on EVERY leg, passing ones included, because the v14 leg fails where
+# v15 and v16 pass - so the evidence that matters is the DIFFERENCE between them,
+# which a failure-only dump could not show.
+# --------------------------------------------------------------------------- #
+_SUPERVISORD_LOG = f"{BENCH}/logs/.cwcli-supervisord.log"
+
+
+def _diag(project: str, when: str) -> None:
+    _, transitions = harness.exec_in_frappe(
+        project,
+        f"grep -E 'schedule|web' {_SUPERVISORD_LOG} 2>/dev/null | tail -25",
+    )
+    _, sched_log = harness.exec_in_frappe(
+        project, f"tail -15 {BENCH}/logs/schedule.supervisor.log 2>/dev/null"
+    )
+    # Process groups test the one concrete mechanism by which restarting web could
+    # signal a sibling: `stopasgroup`/`killasgroup` signal the whole process GROUP,
+    # so if schedule shares web's PGID, restarting web necessarily takes it down.
+    _, groups = harness.exec_in_frappe(
+        project, "ps -eo pid,pgid,args | grep -E '[s]chedule|[b]ench serve|[f]rappe serve'"
+    )
+    print(f"\n===== DIAG {when} ({project}) =====")
+    print(f"--- supervisord transitions ---\n{transitions.strip()}")
+    print(f"--- schedule program log ---\n{sched_log.strip()}")
+    print(f"--- pid/pgid ---\n{groups.strip()}")
+
+
+# --------------------------------------------------------------------------- #
 # 1. the bench runs under supervisord, installed into the bench env
 # --------------------------------------------------------------------------- #
 def test_bench_runs_under_supervisord(running_instance):
@@ -91,6 +128,7 @@ def test_restart_process_cycles_one_leaves_siblings(running_instance):
 
     web_before = _sup_pid(inst.name, "web")
     sched_before = _sup_pid(inst.name, "schedule")
+    _diag(inst.name, "BEFORE restart")  # TEMPORARY DIAGNOSTIC
     assert web_before and sched_before, "web + schedule must be up before the restart"
 
     res = harness.run_cwcli("restart", inst.name, "--process", "web")
@@ -104,7 +142,9 @@ def test_restart_process_cycles_one_leaves_siblings(running_instance):
         interval=3,
         desc="web restarted with a new pid",
     )
-    assert _sup_pid(inst.name, "schedule") == sched_before, "siblings must be untouched"
+    sched_after = _sup_pid(inst.name, "schedule")
+    _diag(inst.name, f"AFTER restart (schedule {sched_before} -> {sched_after})")  # TEMPORARY
+    assert sched_after == sched_before, "siblings must be untouched"
     _wait_web_ready(inst.name)
     assert _web_reachable(inst.name)
 
