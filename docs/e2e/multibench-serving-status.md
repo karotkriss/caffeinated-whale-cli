@@ -5,13 +5,14 @@ Real-instance validation of the per-bench status report (`report-status-per-benc
 Everything here was produced by the repository's own CI Docker matrix on GitHub-hosted runners, not by hand on a developer's machine.
 The tests are `tests/e2e/test_multibench_serving_e2e.py` and `tests/e2e/test_multibench_latency_e2e.py`.
 
-Three CI runs produced the evidence below, each on a throwaway branch since deleted:
+Four CI runs produced the evidence below, each on a throwaway branch since deleted:
 
 | Run | What it establishes |
 | --- | --- |
 | Serving suite with the defect reintroduced | Every assertion that guards a defect goes red when that defect returns |
 | Serving suite + six-bench latency, unmodified | The suite is green, and the 1-to-6-bench cost curve |
 | The same, driven through the `latency_benches` dispatch input | The opt-in path works end to end, and the curve reproduces |
+| The defect reintroduced again, against the final tests | The same assertions still go red after review changed them |
 
 ## Why a new fixture existed at all
 
@@ -56,10 +57,15 @@ The fixture asserts those two ports **differ** before yielding: if bench ever ha
 
 A test that cannot fail is not a test, so this was demonstrated rather than claimed.
 
-**One** mutation was run, not one per defect, because the three defects share a single root cause - that is the audit's own central finding, and it is one line.
+**One** mutation was used, not one per defect, because the three defects share a single root cause - that is the audit's own central finding, and it is one line.
 `supervision.web_http_code`'s URL was pinned back to `http://localhost:8000`, ignoring the port it is handed, and the suite re-run on the same CI leg.
 
-Per test, against that one mutation:
+It was run **twice**: once against the tests as first written, and again against the final tests after review sharpened F4's discriminator and reordered F5's assertions.
+The second run is not ceremony.
+A red result does not survive an edit to the assertion that produced it, so once those assertions changed the first run no longer proved anything about the code being shipped.
+Both runs give the identical outcome below.
+
+Per test, against that mutation:
 
 | Test | Defect it guards | Under the mutation |
 | --- | --- | --- |
@@ -75,7 +81,25 @@ The one that stayed green guards nothing: it times `cwcli axi status` and assert
 Green is the right answer for it, and it is neither an uncaught defect nor an unreachable mutation.
 State it that way rather than as a ratio of the module's five tests, which reads as a score and hides which coverage is which.
 
-What this run does **not** establish: it mutates the one shared root cause, so it says nothing about regressions of a different shape - dropping the probe's `Host` header, say, or breaking the instance fold.
+**Which assertion fires**, since three of these tests carry several and only the first to fail is reported:
+
+| Test | Assertion that caught the mutation |
+| --- | --- |
+| F3 | `assert 'null' == '200'` - the reported web code for a bench whose every process is `RUNNING` |
+| F4 | `assert '404' in ('000', 'null')` |
+| F5 | `assert 'web_ready: true' in ...` |
+
+Two of those are worth reading closely.
+
+F4 is caught by the **pre-existing** check, not by the exact discriminator review added.
+That assertion sits above the new one, so it fails first and the new one is never evaluated - it would also be false there (`'404' == '404'`), so it discriminates correctly; it simply is not what fires.
+Its value is durability: it names the defect's actual signature, so it remains a backstop if the broader check above it is ever loosened.
+
+F5's **reordered positive check passes** under the mutation.
+That is the point of keeping the negative assertion beside it: with the probe pinned to the wrong port the bench genuinely does start serving - only the *wait* watched the wrong port - so "this bench serves" is true while "the tool reported it correctly" is false.
+Positive-before-negative makes the test honest about what happened; it does not make the negative redundant, and this run is what shows that.
+
+What this mutation does **not** establish: it is the one shared root cause, so it says nothing about regressions of a different shape - dropping the probe's `Host` header, say, or breaking the instance fold.
 Those carry unit coverage (`TestPerBenchWebProbe` and the fold tests) and were not separately mutation-tested here.
 
 Each failure below is the audit's original defect, reproduced verbatim against real benches.
@@ -194,7 +218,8 @@ Two differences, both disclosed rather than glossed:
 
 - The first two runs carried an earlier revision of the helper that parses a bench out of an `axi status` document.
   It differed only in also collecting a nested process row as a spurious key that no assertion reads.
-  The third run carries the shipped version, and it is green.
+  The later runs carry the shipped version.
+  The final mutation run carries the shipped tests exactly, which is why it exists.
 - The third run's workflow additionally dropped the runner's preinstalled toolchains before starting, on the assumption that six bench trees would not fit.
   That run measured 108 GB free and disproved the assumption, so the step was removed afterwards.
   Its absence leaves the run with *more* preinstalled software and the same headroom; it cannot turn a pass into a failure.
@@ -203,5 +228,5 @@ Everything else - the tests, the fixture, the workflow's input plumbing and time
 
 ## Safety
 
-All three proof runs executed on ephemeral GitHub-hosted runners against `cwe2e-`-prefixed throwaway instances under an isolated `HOME`/`CWCLI_HOME`, torn down by exact name (`cwcli rm --yes --volumes --no-backup`) with the harness's unconditional `sweep_cwe2e` backstop behind it.
+All four proof runs executed on ephemeral GitHub-hosted runners against `cwe2e-`-prefixed throwaway instances under an isolated `HOME`/`CWCLI_HOME`, torn down by exact name (`cwcli rm --yes --volumes --no-backup`) with the harness's unconditional `sweep_cwe2e` backstop behind it.
 No instance on any developer machine was created, started, stopped or removed for this work, and no broad prune ran outside the ephemeral runner.
