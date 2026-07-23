@@ -19,7 +19,7 @@ from ..utils.port_utils import (
     get_ports_in_use_with_processes,
     get_project_ports,
 )
-from .utils import resolve_bench_path
+from .utils import resolve_bench_path, split_trailing_options
 
 app = typer.Typer(help="Start a Frappe project's containers.")
 
@@ -395,40 +395,28 @@ def start(
     (non-zero) on a non-TTY. Crashed processes self-heal by default
     (--no-autorestart to disable).
     """
-    project_names_to_process = []
-
     # A variadic Argument greedily eats options placed AFTER the project name, so
-    # recover -v/--verbose, -y/--yes, and --bench <value> from the name list (the
-    # same forgiveness rm applies to its trailing flags).
-    actual_verbose = verbose
-    actual_yes = yes
-    actual_bench = bench
-    actual_autorestart = autorestart
-    filtered_project_names = []
-
-    if project_name:
-        tokens = list(project_name)
-        i = 0
-        while i < len(tokens):
-            token = tokens[i]
-            if token in ("-v", "--verbose"):
-                actual_verbose = True
-            elif token in ("-y", "--yes"):
-                actual_yes = True
-            elif token == "--autorestart":
-                actual_autorestart = True
-            elif token == "--no-autorestart":
-                actual_autorestart = False
-            elif token == "--bench":
-                if i + 1 < len(tokens):
-                    actual_bench = tokens[i + 1]
-                    i += 1
-            elif token.startswith("--bench="):
-                actual_bench = token.split("=", 1)[1]
-            else:
-                filtered_project_names.append(token)
-            i += 1
-        project_names_to_process.extend(filtered_project_names)
+    # recover -v/--verbose, -y/--yes, --autorestart/--no-autorestart, and
+    # --bench <value> from the name list. An option start does NOT define is a
+    # usage error there, never an extra project to start.
+    filtered_project_names, recovered_flags, recovered_values = split_trailing_options(
+        project_name,
+        command="start",
+        flags={
+            "-v": ("verbose", True),
+            "--verbose": ("verbose", True),
+            "-y": ("yes", True),
+            "--yes": ("yes", True),
+            "--autorestart": ("autorestart", True),
+            "--no-autorestart": ("autorestart", False),
+        },
+        values={"--bench": "bench"},
+    )
+    project_names_to_process = list(filtered_project_names)
+    actual_verbose = recovered_flags.get("verbose", verbose)
+    actual_yes = recovered_flags.get("yes", yes)
+    actual_autorestart = recovered_flags.get("autorestart", autorestart)
+    actual_bench = recovered_values.get("bench", bench)
 
     if not sys.stdin.isatty():
         piped_input = [line.strip() for line in sys.stdin]

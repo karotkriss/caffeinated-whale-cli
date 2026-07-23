@@ -14,7 +14,7 @@ from ..utils.console import console, stderr_console
 from ..utils.docker_utils import handle_docker_errors
 from .start import _start_project
 from .stop import stop_project_best_effort
-from .utils import resolve_bench_path
+from .utils import resolve_bench_path, split_trailing_options
 
 app = typer.Typer(help="Restart a Frappe project's containers.")
 
@@ -111,67 +111,20 @@ def restart(
     it, the bench relaunched once the containers are back. Omitted on a multi-bench
     project, the whole-stack path relaunches the first bench and says so.
     """
-    project_names_to_process = []
-
     # A variadic Argument greedily eats options placed AFTER the project name, so
     # recover -v/--verbose, --process/-p <value>, and --bench <value> from the name
-    # list (the same forgiveness start applies to its trailing flags).
-    actual_verbose = verbose
-    actual_process = process
-    actual_bench = bench
-    missing_option_value: str | None = None
-    filtered_project_names = []
-    verbose_options = ("-v", "--verbose")
-    process_long_option = "--process"
-    process_options = (process_long_option, "-p")
-    bench_option = "--bench"
-
-    def is_recovered_option(token: str) -> bool:
-        return (
-            token in verbose_options
-            or token in process_options
-            or token.startswith(f"{process_long_option}=")
-            or token == bench_option
-            or token.startswith(f"{bench_option}=")
-        )
-
-    if project_name:
-        tokens = list(project_name)
-        i = 0
-        while i < len(tokens):
-            token = tokens[i]
-            if token in verbose_options:
-                actual_verbose = True
-            elif token in process_options:
-                if i + 1 < len(tokens) and not is_recovered_option(tokens[i + 1]):
-                    actual_process = tokens[i + 1]
-                    i += 1
-                else:
-                    missing_option_value = token
-            elif token.startswith(f"{process_long_option}="):
-                actual_process = token.split("=", 1)[1]
-                if not actual_process:
-                    missing_option_value = process_long_option
-            elif token == bench_option:
-                if i + 1 < len(tokens) and not is_recovered_option(tokens[i + 1]):
-                    actual_bench = tokens[i + 1]
-                    i += 1
-                else:
-                    missing_option_value = token
-            elif token.startswith(f"{bench_option}="):
-                actual_bench = token.split("=", 1)[1]
-                if not actual_bench:
-                    missing_option_value = "--bench"
-            else:
-                filtered_project_names.append(token)
-            i += 1
-        project_names_to_process.extend(filtered_project_names)
-
-    if missing_option_value is not None:
-        stderr_console.print(
-            f"[bold red]Error:[/bold red] Option '{missing_option_value}' requires a value."
-        )
-        raise typer.Exit(code=2)
+    # list. An option restart does NOT define is a usage error there, never an
+    # extra project to restart.
+    filtered_project_names, recovered_flags, recovered_values = split_trailing_options(
+        project_name,
+        command="restart",
+        flags={"-v": ("verbose", True), "--verbose": ("verbose", True)},
+        values={"--process": "process", "-p": "process", "--bench": "bench"},
+    )
+    project_names_to_process = list(filtered_project_names)
+    actual_verbose = recovered_flags.get("verbose", verbose)
+    actual_process = recovered_values.get("process", process)
+    actual_bench = recovered_values.get("bench", bench)
 
     if not sys.stdin.isatty():
         piped_input = [line.strip() for line in sys.stdin]
