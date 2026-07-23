@@ -14,9 +14,8 @@ seventh bench binds a port inside the container that nothing outside can reach
 (that is what ``cwcli scale`` widens).
 
 **This is OPT-IN and skips by default.** It builds up to six full benches - each
-one a real ``bench init`` virtualenv plus a real site, roughly 1.5 GB of disk and a
-couple of minutes of build apiece - which is far too much to spend on every pull
-request for a number that only needs taking when the probe changes. Set
+one a real ``bench init`` virtualenv plus a real site - which is far too much to
+spend on every pull request for a number that only needs taking when the probe changes. Set
 ``CWE2E_LATENCY_BENCHES=6`` to run it; the ``latency_benches`` input on the E2E
 workflow does exactly that, so the measurement is taken on the same CI runners
 every other real-instance proof runs on, not on somebody's laptop. The recorded
@@ -24,7 +23,7 @@ numbers live in ``docs/e2e/multibench-serving-status.md``.
 
 The two-bench half of 5.5 is NOT here: it rides the two-serving-bench fixture in
 ``test_multibench_serving_e2e.py``, so it costs nothing extra and runs on every
-v16 leg.
+v16 standalone leg.
 """
 
 from __future__ import annotations
@@ -56,13 +55,11 @@ def _requested_bench_count() -> int:
         bench_count = int(raw)
     except ValueError:
         raise pytest.UsageError(
-            "CWE2E_LATENCY_BENCHES must be a positive integer when set; "
-            f"got {raw!r}"
+            "CWE2E_LATENCY_BENCHES must be a positive integer when set; " f"got {raw!r}"
         ) from None
     if bench_count <= 0:
         raise pytest.UsageError(
-            "CWE2E_LATENCY_BENCHES must be a positive integer when set; "
-            f"got {raw!r}"
+            "CWE2E_LATENCY_BENCHES must be a positive integer when set; " f"got {raw!r}"
         )
     return bench_count
 
@@ -73,7 +70,7 @@ opt_in = pytest.mark.skipif(
     BENCH_COUNT < 2,
     reason=(
         "the six-bench latency measurement builds a real bench per data point "
-        "(~1.5 GB and ~2 min each), so it is opt-in: set CWE2E_LATENCY_BENCHES=6 "
+        "so it is opt-in: set CWE2E_LATENCY_BENCHES=6 "
         "(or run the E2E workflow with the latency_benches input) to take it"
     ),
 )
