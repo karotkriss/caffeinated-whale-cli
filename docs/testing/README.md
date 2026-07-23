@@ -236,7 +236,7 @@ Run `ls tests/` for the current, authoritative list.
 
 ### By Type
 
-Four markers are registered in `pyproject.toml`: `unit`, `e2e`, `e2e_p2p`, `e2e_pkg`. `tests/conftest.py` auto-applies `unit` to any collected test not already marked `e2e`/`e2e_p2p`/`e2e_pkg`, so unit tests need no hand-added marker; only the real-Docker tests under `tests/e2e/` mark themselves explicitly (`e2e_pkg` is the runtime-deps-only packaging leg, off the `-m e2e` matrix):
+Marker definitions and hand-marking rules live in [`tests/README.md`](../../tests/README.md#two-tiers-fast-unit-vs-real-docker-e2e).
 
 ```python
 import pytest

@@ -336,13 +336,11 @@ CI is two-tiered.
 
   The required-check configuration is documented in the [CI/CD Workflows guide](../docs/contributing/ci-cd.md).
 
-- **`.github/workflows/e2e.yml`** runs the real-Docker `e2e` tier as a `strategy.matrix.frappe: [14, 15, 16]` crossed with `group: [shared, standalone]` of GitHub-hosted `ubuntu-latest` jobs (no `container:`, so `docker`/`docker compose` reach the daemon).
-  It is triggered on PRs into `develop`/`master` and on-demand via the `e2e` PR label, with per-job `timeout-minutes` and an `always()` `cwe2e-` teardown backstop.
+- **`.github/workflows/e2e.yml`** runs the real-Docker `e2e` tier as a Frappe v14/v15/v16 matrix on GitHub-hosted `ubuntu-latest` jobs.
   The `standalone` marker splits each version leg in two: the `standalone` job runs the tests that build their own instance or need none, the `shared` job runs the tests that assert against the one session-scoped instance, and they partition the tier exactly.
-  Separate runners mean separate Docker daemons, so the two groups share no state; `tests/e2e/conftest.py` fails collection if the marker ever disagrees with the fixtures a test requests.
-  On `develop`, branch protection makes the E2E checks blocking.
+  `tests/e2e/conftest.py` fails collection if the marker disagrees with the fixtures a test requests.
 
-See the [CI/CD Workflows guide](../docs/contributing/ci-cd.md) for the full setup.
+See the [CI/CD Workflows guide](../docs/contributing/ci-cd.md) for triggers, runner isolation, required checks, and branch-protection state.
 
 ## Common Issues
 
