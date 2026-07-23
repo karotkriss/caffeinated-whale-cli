@@ -160,6 +160,7 @@ class TestStopHonesty:
         ],
     )
     def test_a_missing_bench_value_cannot_expand_to_project_stop(self, tokens, monkeypatch):
+        _neutralize_docker(monkeypatch)
         monkeypatch.setattr(stop_mod.sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr(
             core_stop,
@@ -173,6 +174,7 @@ class TestStopHonesty:
         assert exc.value.exit_code == 2
 
     def test_a_dash_prefixed_bench_label_remains_addressable(self, monkeypatch):
+        _neutralize_docker(monkeypatch)
         monkeypatch.setattr(stop_mod.sys.stdin, "isatty", lambda: True)
         seen = []
         monkeypatch.setattr(

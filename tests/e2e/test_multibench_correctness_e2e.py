@@ -68,6 +68,14 @@ def _bench_block(toon: str, bench_path: str) -> str:
     return toon.split(bench_path, 1)[1]
 
 
+def _site_http_code(project: str, site: str, port: int) -> tuple[int, str]:
+    """Read the response code for the bench's real site, not just socket liveness."""
+    return harness.exec_in_frappe(
+        project,
+        f'curl -s -o /dev/null -w "%{{http_code}}" -H "Host: {site}" http://localhost:{port}',
+    )
+
+
 # --------------------------------------------------------------------------- #
 # 1. the web probe names the bench's site, so a healthy bench reads 200
 # --------------------------------------------------------------------------- #
@@ -77,13 +85,19 @@ def test_status_probes_with_the_site_so_a_healthy_bench_is_not_404(running_insta
 
     port = _container_web_port(inst.name)
 
+    # This session instance is shared with app-mutation suites. A reachable stale
+    # worker can answer 500 after one of those suites, and `_ensure_serving` quite
+    # deliberately checks only socket liveness. Refresh the workers before claiming
+    # this test's stronger precondition that the application itself is healthy.
+    code, served = _site_http_code(inst.name, inst.site, port)
+    if code != 0 or served.strip() != "200":
+        restarted = harness.run_cwcli("restart", inst.name)
+        assert restarted.returncode == 0, restarted.stdout + restarted.stderr
+        _wait_web_ready(inst.name)
+
     # POSITIVE FIRST: the bench genuinely serves 200 for its own site. Without this
     # the "no 404" assertion below would pass against a bench serving nothing.
-    code, served = harness.exec_in_frappe(
-        inst.name,
-        f'curl -s -o /dev/null -w "%{{http_code}}" -H "Host: {inst.site}" '
-        f"http://localhost:{port}",
-    )
+    code, served = _site_http_code(inst.name, inst.site, port)
     assert code == 0 and served.strip() == "200", f"setup: bench must serve 200, got {served!r}"
 
     # And the SAME request without a Host header is answered 404 - not a fault, just
@@ -92,9 +106,9 @@ def test_status_probes_with_the_site_so_a_healthy_bench_is_not_404(running_insta
     code, hostless = harness.exec_in_frappe(
         inst.name, f'curl -s -o /dev/null -w "%{{http_code}}" http://localhost:{port}'
     )
-    assert (
-        code == 0 and hostless.strip() == "404"
-    ), f"setup: a host-less request is expected to be 404 on multi-tenant Frappe, got {hostless!r}"
+    assert code == 0 and hostless.strip() == "404", (
+        f"setup: a host-less request is expected to be 404 on multi-tenant Frappe, got {hostless!r}"
+    )
 
     res = harness.run_cwcli("axi", "status", inst.name)
     assert res.returncode == 0, res.stdout + res.stderr
