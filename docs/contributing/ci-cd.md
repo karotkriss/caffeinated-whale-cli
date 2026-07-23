@@ -12,7 +12,7 @@ We use five GitHub Actions workflows:
 | **Test** | All branches, all PRs | Run the fast `unit` pytest tier (required gate) + mypy (zero-error gate), a narrow `tests/test_auto_inspect.py` leg on `windows-latest`, and a runtime-deps-only clean-install smoke test |
 | **E2E** | PRs into `develop`/`master`, `e2e`-labeled PRs, manual dispatch | Run the real-Docker `e2e` tier on a v14/v15/v16 Frappe matrix, plus a runtime-deps-only full-lifecycle leg (`e2e_pkg`) that drives a `uv tool install .` binary via `CWCLI_BIN` |
 | **Build** | Push to `master`, manual dispatch | Build package, verify version consistency |
-| **Release** | Tags `v*.*.*`, push to `master`, published releases, manual dispatch | Publish to PyPI, create GitHub release |
+| **Release** | Tags `v*.*.*` | Publish to PyPI, create GitHub release |
 
 Lint, Build, and Release, along with Test's `Pytest`/`Mypy` jobs, run inside the `ghcr.io/astral-sh/uv:python3.12-bookworm` Docker image. E2E runs directly on the `ubuntu-latest` host runner (no `container:`) so `docker`/`docker compose` can reach the runner's own daemon; it installs `uv` via `astral-sh/setup-uv` instead. Test's other two jobs also run on host runners rather than the container: `Pytest (Windows, auto-inspect)` runs on `windows-latest` (no Linux container available there), and `Clean install smoke` runs on `ubuntu-latest` so `uv tool install` resolves a real runtime-only environment instead of the container's `--all-extras` sync. Both install `uv` via `astral-sh/setup-uv`.
 
@@ -125,13 +125,16 @@ ls -lh dist/
 ### Release (`.github/workflows/release.yml`)
 
 Publishes package to PyPI when a version tag is pushed.
-It also triggers on pushes to `master`, on published GitHub releases, and on manual dispatch.
 
 **Steps:**
 1. Extract and verify version from `__init__.py`, `pyproject.toml`, and git tag
-2. Build package (`uv build`)
-3. Publish to PyPI (`uv publish --trusted-publishing automatic --check-url https://pypi.org/simple/`, authenticated over GitHub OIDC - no token secret)
-4. Create GitHub release (if tag-triggered)
+2. Compose the release card from the required hand-written note and generated footer
+3. Build package (`uv build --no-create-gitignore`)
+4. Publish to PyPI (`uv publish --check-url https://pypi.org/simple/`, authenticated with `UV_PUBLISH_TOKEN`)
+5. Create the GitHub release with the composed card and build artifacts
+
+The release note must exist before the tag is pushed.
+See [`.github/release-notes/README.md`](../../.github/release-notes/README.md) for its authoritative format and rendering instructions.
 
 **Trigger a release:**
 ```bash
@@ -140,9 +143,10 @@ vim pyproject.toml                          # version = "0.10.0"
 vim src/caffeinated_whale_cli/__init__.py   # __version__ = "0.10.0"
 uv lock                                     # refresh the project's own entry in uv.lock
 vim CHANGELOG.md                            # add the "## [0.10.0] - YYYY-MM-DD" section
+vim .github/release-notes/v0.10.0.md        # write the GitHub release-card copy
 
 # 2. Land the bump as a normal PR to develop
-git add pyproject.toml src/caffeinated_whale_cli/__init__.py uv.lock CHANGELOG.md
+git add pyproject.toml src/caffeinated_whale_cli/__init__.py uv.lock CHANGELOG.md .github/release-notes/v0.10.0.md
 git commit -m "chore: bump version to 0.10.0"
 # push the branch, open a PR, merge into develop
 
@@ -151,37 +155,32 @@ git tag v0.10.0
 git push origin v0.10.0
 ```
 
-See [Chores Guide](./chores.md) for the full release process.
-
 ---
 
 ## Setup (First Time)
 
-### Required: PyPI Trusted Publisher
+### Required: PyPI API Token
 
-The release workflow publishes with `uv publish --trusted-publishing automatic`, authenticating over GitHub OIDC - there is **no** `PYPI_API_TOKEN` secret to manage. Register a [trusted publisher](https://docs.pypi.org/trusted-publishers/) for the project on PyPI (**Manage project > Publishing**):
+The release workflow authenticates with the `UV_PUBLISH_TOKEN` repository secret.
+Store a valid PyPI API token for this project at:
 
-- Owner: `karotkriss`
-- Repository: `caffeinated-whale-cli`
-- Workflow: `release.yml`
-- Environment: `pypi`
+**Settings > Secrets and variables > Actions > New repository secret**
 
-Until this publisher is registered, `uv publish` fails with an auth error; CI cannot create it (captain-only, one-time step).
+Publishing fails with an authentication error if that secret is absent, expired, or invalid.
+CI cannot create or rotate it.
 
 ### Required: GitHub Environment
 
-Trusted publishing binds the OIDC token to a deployment environment, so the workflow runs in a `pypi` environment whose name must match the publisher's `Environment` above:
+The workflow deploys through a GitHub environment named `pypi` by default:
 
 **Settings > Environments > New environment: `pypi`**
 
 **Protection rules:**
 - ☑ Required reviewers (optional)
-- ☑ Deployment branches: `master` only
 
 **Benefits:**
 - Manual approval before publishing
 - Deployment history tracking
-- Branch restrictions
 
 ---
 
@@ -246,18 +245,6 @@ git merge test-ci
 git push origin master
 # Check Actions tab for build
 ```
-
-### Test Release (Use TestPyPI First)
-
-The release workflow hardcodes the PyPI publish/check URLs, so a real TestPyPI dry run means temporarily pointing `uv publish` at TestPyPI on a branch:
-
-1. Create a TestPyPI account at https://test.pypi.org
-2. Register a TestPyPI trusted publisher for the project (owner `karotkriss`, repo `caffeinated-whale-cli`, workflow `release.yml`, environment `testpypi`) - trusted publishing, no token secret
-3. On a branch, point the publish step at TestPyPI (`uv publish --trusted-publishing automatic --publish-url https://test.pypi.org/legacy/ --check-url https://test.pypi.org/simple/`) and create a matching `testpypi` environment
-4. Manually dispatch the release workflow
-5. Verify: `pip install --index-url https://test.pypi.org/simple/ caffeinated-whale-cli`
-
----
 
 ## Resources
 

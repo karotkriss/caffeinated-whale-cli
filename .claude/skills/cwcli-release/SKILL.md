@@ -27,11 +27,11 @@ Current practice (the `UV_PUBLISH_TOKEN` flow), verified against `.github/workfl
 - Version choice follows semver as this repo practices it: minor for new flags or behavior changes (0.32.0, 0.33.0, 0.34.0), patch for a narrow compatibility fix (0.31.1).
 - The bump lands as a normal PR to `develop` with a `chore: bump version to x.y.z` commit.
 - Publishing to PyPI is done by `release.yml`, not from a dev machine.
-  Since the default branch is `develop` but the workflow's branch trigger is `master`, the working path is: merge the bump PR into `develop`, then push a `vX.Y.Z` tag pointing at the merge commit (the tag trigger fires regardless of branch).
+  Merge the bump PR into the default `develop` branch, then push a `vX.Y.Z` tag pointing at the merge commit; the tag trigger fires regardless of branch.
   The workflow verifies the tag matches the package version, publishes to PyPI, and creates a GitHub release with the built artifacts.
-- **The release card's copy is written by hand, in the repo, BEFORE the tag is pushed** - `.github/release-notes/v<version>.md`, whose format and the five rules the card must satisfy are owned by `.github/release-notes/README.md`.
-  Its exact first line is version-aware: a major release (`X.0.0`) requires `### What's New`, while every smaller release requires `### What's Changed`, so the heading itself signals the release size.
-  `.github/scripts/release-body.sh` prepends that file to a generated footer (Installation, a CHANGELOG link pinned to the release's own TAG, and a `**Full Changelog**` compare from the previous version tag), and the workflow composes the body BEFORE the build and the publish, so a missing note stops the release while stopping it is still free rather than after a version is consumed on PyPI.
+- **The release card's copy is written by hand, in the repo, BEFORE the tag is pushed** - `.github/release-notes/v<version>.md`.
+  `.github/release-notes/README.md` owns the format and all five card rules.
+  `.github/scripts/release-body.sh` combines that note with the mechanical footer, and the workflow composes the result BEFORE the build and publish, so an invalid note stops the release before a version is consumed on PyPI.
   The split is load-bearing: a template cannot write advertising copy, and a generated commit list is not a release card - which is why `generate_release_notes` is off and the workflow's old hardcoded body is gone.
   That body pointed the CHANGELOG link at `blob/master/`, a branch this repo does not have; the owner corrected it on the published 1.0.0 note but not in the generator, so every later release regenerated the dead link. Fix the generator, not the output.
   Render before tagging with `.github/scripts/release-body.sh <version> karotkriss/caffeinated-whale-cli`.

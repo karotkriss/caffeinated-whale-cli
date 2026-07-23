@@ -288,67 +288,9 @@ chore: configure .mailmap
 
 ## Release Chore Workflow
 
-Most chores happen during the release process. Here's the standard workflow:
-
-### Traditional Approach (Multiple Commits)
-
-```bash
-# 1. Bump version
-# Edit pyproject.toml: version = "0.9.2"
-# Edit src/caffeinated_whale_cli/__init__.py: __version__ = "0.9.2"
-# Regenerate uv.lock: uv lock
-git commit -m "chore: bump version to 0.9.2"
-
-# 2. Update CHANGELOG
-# Edit CHANGELOG.md with release notes
-git commit -m "chore: update CHANGELOG for v0.9.2"
-
-# 3. Update README
-# Edit README.md with new features
-git commit -m "chore: update README with new features"
-
-# 4. Create tag
-git tag v0.9.2
-
-# 5. Push
-git push origin develop --tags
-```
-
-**Commits Generated:** 3 chore commits
-
-**Observed in Project:** This is the current pattern (creates multiple chore commits).
-
-### Recommended Approach (Single Commit)
-
-```bash
-# 1. Update all release files
-# - version in pyproject.toml
-# - __version__ in src/caffeinated_whale_cli/__init__.py
-# - uv.lock (regenerate with `uv lock`)
-# - CHANGELOG.md
-# - README.md (if needed)
-
-# 2. Single commit
-git commit -m "chore: release v0.9.2
-
-- Bump version to 0.9.2
-- Update CHANGELOG with new features
-- Update README with tab completion docs"
-
-# 3. Create tag
-git tag v0.9.2
-
-# 4. Push
-git push origin develop --tags
-```
-
-**Commits Generated:** 1 chore commit
-
-**Benefits:**
-- Cleaner commit history
-- Atomic release preparation
-- Easier to revert if needed
-- Follows atomic commit principle
+The [CI/CD guide](./ci-cd.md#release-githubworkflowsreleaseyml) owns the release procedure.
+Release preparation now includes a hand-written `.github/release-notes/v<version>.md` file in addition to the four version-bump files.
+The release-note format is owned by [`.github/release-notes/README.md`](../../.github/release-notes/README.md).
 
 ## Chore Checklist
 
@@ -605,6 +547,7 @@ Don't mix chores with features/fixes:
 **Every Release:**
 - [ ] Bump version
 - [ ] Update CHANGELOG
+- [ ] Write `.github/release-notes/v<version>.md`
 - [ ] Update README (if features added)
 
 **Monthly:**
