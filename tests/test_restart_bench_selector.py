@@ -14,11 +14,18 @@ from __future__ import annotations
 import pytest
 
 from caffeinated_whale_cli.commands import restart as restart_mod
+from caffeinated_whale_cli.utils import docker_utils
 
 
 @pytest.fixture
 def wired(monkeypatch):
     """Capture what the whole-stack path asks ``_start_project`` to start."""
+    monkeypatch.setattr(docker_utils.shutil, "which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(
+        docker_utils.docker,
+        "from_env",
+        lambda: type("Client", (), {"ping": lambda self: True})(),
+    )
     monkeypatch.setattr(restart_mod.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(restart_mod, "get_project_containers", lambda name: [_RunningContainer()])
     monkeypatch.setattr(
