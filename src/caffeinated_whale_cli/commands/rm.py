@@ -22,6 +22,7 @@ from ..utils import cache
 from ..utils.completion_utils import complete_project_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import handle_docker_errors
+from .utils import split_trailing_options
 
 app = typer.Typer(help="Remove a Frappe project and its containers.")
 
@@ -252,24 +253,33 @@ def _recover_trailing_flags(
     name (and then prompt and try to remove a project literally named "--yes").
     Recover the common flags from the name list so flag order is forgiving.
 
+    An option ``rm`` does NOT define is a usage error (exit 2), not a further
+    project to delete - see :func:`split_trailing_options`.
+
     Returns the project names with flags removed, followed by the (possibly
     updated) ``verbose``, ``yes``, ``no_backup`` and ``volumes`` values.
     """
-    projects: list[str] = []
-    for name in names or []:
-        if name in ("-v", "--verbose"):
-            verbose = True
-        elif name in ("-y", "--yes"):
-            yes = True
-        elif name == "--no-backup":
-            no_backup = True
-        elif name == "--volumes":
-            volumes = True
-        elif name == "--no-volumes":
-            volumes = False
-        else:
-            projects.append(name)
-    return projects, verbose, yes, no_backup, volumes
+    projects, recovered, _values = split_trailing_options(
+        names,
+        command="rm",
+        flags={
+            "-v": ("verbose", True),
+            "--verbose": ("verbose", True),
+            "-y": ("yes", True),
+            "--yes": ("yes", True),
+            "--no-backup": ("no_backup", True),
+            "--volumes": ("volumes", True),
+            "--no-volumes": ("volumes", False),
+        },
+        values={},
+    )
+    return (
+        projects,
+        recovered.get("verbose", verbose),
+        recovered.get("yes", yes),
+        recovered.get("no_backup", no_backup),
+        recovered.get("volumes", volumes),
+    )
 
 
 @app.callback(invoke_without_command=True)

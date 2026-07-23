@@ -2,12 +2,17 @@
 Shared utility functions for command implementations.
 
 This module provides general utilities for ensuring containers are running
-before executing commands, resolving a ``--bench`` selector to a bench path, and
-handling ``--yes`` confirmations consistently.
+before executing commands, resolving a ``--bench`` selector to a bench path,
+handling ``--yes`` confirmations consistently, and splitting the options that
+trail a variadic project argument back out of the project-name list
+(:func:`split_trailing_options`).
 """
 
 import sys
+from collections.abc import Mapping, Sequence
+from typing import NoReturn
 
+import click
 import questionary
 import typer
 
@@ -351,3 +356,115 @@ def _start_containers_for_command(project_name: str, verbose: bool = False):
     except Exception as e:
         stderr_console.print(f"[bold red]Error:[/bold red] Failed to start containers: {e}")
         raise typer.Exit(code=1) from None
+
+
+# ------------------------------------------------- trailing-option recovery
+#
+# ``start``, ``stop``, ``restart`` and ``rm`` all take a VARIADIC project
+# argument, which greedily eats every token that follows it - options included.
+# Each grew its own hand-rolled recovery loop, and every one of them ended in the
+# same ``else: names.append(token)``: an option the command does NOT define was
+# silently swallowed as another project name. ``cwcli stop myproj --benhc 1``
+# therefore stopped the WHOLE instance (plus two "not found" lines) at exit 0.
+# One splitter, used by all four, so the swallow cannot come back one command at
+# a time.
+
+_HELP_OPTIONS = frozenset({"-h", "--help"})
+
+
+def _inline_value(token: str, values: Mapping[str, str]) -> tuple[str, str] | None:
+    """Split a ``--option=value`` token into its option and value, if it is one."""
+    for option in values:
+        if option.startswith("--") and token.startswith(f"{option}="):
+            return option, token.split("=", 1)[1]
+    return None
+
+
+def _is_recognised_option(
+    token: str, flags: Mapping[str, tuple[str, bool]], values: Mapping[str, str]
+) -> bool:
+    """True when the token is an option THIS command defines."""
+    return (
+        token in _HELP_OPTIONS
+        or token in flags
+        or token in values
+        or _inline_value(token, values) is not None
+    )
+
+
+def _show_command_help() -> NoReturn:
+    context = click.get_current_context()
+    click.echo(context.get_help())
+    raise typer.Exit()
+
+
+def _usage_error(message: str, hint: str | None = None) -> NoReturn:
+    stderr_console.print(f"[bold red]Error:[/bold red] {message}")
+    if hint:
+        stderr_console.print(f"[dim]{hint}[/dim]")
+    raise typer.Exit(code=2)
+
+
+def split_trailing_options(
+    tokens: Sequence[str] | None,
+    *,
+    command: str,
+    flags: Mapping[str, tuple[str, bool]],
+    values: Mapping[str, str],
+) -> tuple[list[str], dict[str, bool], dict[str, str]]:
+    """Split a variadic project argument into project names and trailing options.
+
+    ``flags`` maps a boolean option token to the ``(destination, value)`` it sets
+    (so ``--no-volumes`` and ``--volumes`` can share one destination); ``values``
+    maps a value-taking option token to its destination.
+
+    Returns the project names, then the recovered boolean flags and the recovered
+    option values, each keyed by destination and holding ONLY what actually
+    trailed the names - so a caller applies it as ``recovered.get(dest, parsed)``
+    and an option written BEFORE the names keeps the value Typer parsed for it.
+
+    An unrecognised option token is a USAGE ERROR (exit 2), never a project name.
+    That is the whole point of this function: swallowed as a name, ``--benhc`` on
+    a destructive verb becomes an action on the wrong target at exit 0.
+
+    A leading dash alone does NOT make a token an option: cwcli's bench labels may
+    start with one, so ``--bench -1`` and ``--bench=-1`` must keep working. The
+    distinction is POSITIONAL - the token after a value-taking option is that
+    option's value unless it is an option this command defines - which is why the
+    unrecognised-option check below can only ever see a token in option position.
+    """
+    names: list[str] = []
+    recovered_flags: dict[str, bool] = {}
+    recovered_values: dict[str, str] = {}
+    items = list(tokens or [])
+    i = 0
+    while i < len(items):
+        token = items[i]
+        if token in _HELP_OPTIONS:
+            _show_command_help()
+        elif token in flags:
+            destination, value = flags[token]
+            recovered_flags[destination] = value
+        elif token in values:
+            following = items[i + 1] if i + 1 < len(items) else None
+            if following in _HELP_OPTIONS:
+                _show_command_help()
+            if following is None or _is_recognised_option(following, flags, values):
+                _usage_error(f"Option '{token}' requires a value.")
+            recovered_values[values[token]] = following
+            i += 1
+        elif (inline := _inline_value(token, values)) is not None:
+            option, inline_value = inline
+            if not inline_value:
+                _usage_error(f"Option '{option}' requires a value.")
+            recovered_values[values[option]] = inline_value
+        elif len(token) > 1 and token.startswith("-"):
+            _usage_error(
+                f"No such option: {token}",
+                f"Run 'cwcli {command} --help' to see the available options. "
+                "Nothing was changed.",
+            )
+        else:
+            names.append(token)
+        i += 1
+    return names, recovered_flags, recovered_values
