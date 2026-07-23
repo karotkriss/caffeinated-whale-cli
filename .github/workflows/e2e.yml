@@ -109,7 +109,7 @@ jobs:
     name: E2E (frappe v${{ matrix.frappe }}, ${{ matrix.group }})
     needs: changes
     # Gate: run on a manual dispatch, on a PR carrying the `e2e` label, or on a
-    # PR into a protected branch (develop / master). The job ALWAYS enters (so
+    # PR into develop or master. The job ALWAYS enters (so
     # its required context reports) whenever this gate is true; the `changes`
     # scope decision then governs whether the heavy steps below actually do work
     # or short-circuit to green - see the `changes` job header.

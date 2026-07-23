@@ -383,10 +383,7 @@ ignore = [
 
 mypy is a static type checker for Python that verifies type hints.
 
-**Status:** Runs as a zero-error gate in CI via the `Mypy` job in `.github/workflows/test.yml`.
-The historical ~50 errors across ~14 files were burned down to zero and `continue-on-error` was dropped from the step, so any new type error fails the job.
-`Mypy` is a required `develop` branch-protection check, so a failure blocks merges.
-Keep `uv run mypy src/` at zero errors: prefer accurate annotations over `# type: ignore` (there are none in `src/`), add the matching `types-*` stub package for an untyped third-party import rather than ignoring it, and do not loosen `[tool.mypy]` to make errors disappear.
+**Status:** Runs as a zero-error gate in CI via the `Mypy` job in `.github/workflows/test.yml`. The historical ~50 errors across ~14 files were burned down to zero and `continue-on-error` was dropped from the step, so any new type error fails the job. Keep `uv run mypy src/` at zero errors: prefer accurate annotations over `# type: ignore` (there are none in `src/`), add the matching `types-*` stub package for an untyped third-party import rather than ignoring it, and do not loosen `[tool.mypy]` to make errors disappear. Branch-protection status is owned by the [CI/CD Workflows guide](./ci-cd.md).
 
 ### Basic Usage
 

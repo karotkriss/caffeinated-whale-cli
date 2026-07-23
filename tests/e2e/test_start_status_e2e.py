@@ -168,8 +168,7 @@ def _supervised_programs(project: str) -> dict[str, tuple[str, int]]:
     if programs or code == 0:
         return programs
     if any(
-        f"{_MANAGER_PROVENANCE_MARKER}{provenance}" in out
-        for provenance in ("honcho", "absent")
+        f"{_MANAGER_PROVENANCE_MARKER}{provenance}" in out for provenance in ("honcho", "absent")
     ):
         return {}
     raise AssertionError(
@@ -221,8 +220,8 @@ def _ensure_serving(project: str) -> None:
     is the point: callers assert on SIBLING programs (a schedule pid that must not
     change across a ``restart --process web``), but a reachable web port says
     nothing about them. When an earlier test stops the instance and ``running_instance``
-    restarts it, web answers within seconds while ``schedule`` is still crash-looping
-    on its first DB connection - so this used to return with the stack half up, and
+    restarts it, web answers within seconds while sibling programs may still be
+    starting or retrying. This helper used to return with the stack half up, and
     those sibling assertions passed only on whatever unrelated work happened to run
     in between. Splitting the E2E tier into per-group CI jobs removed that accidental
     delay and turned the latent race into a deterministic failure.
