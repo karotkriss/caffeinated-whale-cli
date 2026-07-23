@@ -449,6 +449,14 @@ def test_f5_starting_a_non_first_bench_waits_on_its_own_port(two_benches, capsys
         elapsed = time.monotonic() - started_at
         assert res.returncode == 0, res.stdout + res.stderr
 
+        # POSITIVE FIRST: the bench it started genuinely serves. A negative
+        # assertion about false warnings also passes when nothing happened at
+        # all, which is how the old empty bench skeleton hid this defect. The
+        # first bench's port is STILL dead, so the wait cannot have succeeded
+        # there; the only port that answered is the one this bench owns.
+        assert _http_code(inst.name, inst.second_port, SECOND_SITE) == "200"
+        assert _http_code(inst.name, inst.first_port) == "000"
+
         out = harness.strip_ansi(res.stdout)
         combined = out + harness.strip_ansi(res.stderr)
         # The honest signal: the web wait observed a serving port and said so.
@@ -457,12 +465,6 @@ def test_f5_starting_a_non_first_bench_waits_on_its_own_port(two_benches, capsys
         # ... and no false alarm about a bench that started perfectly well.
         assert "web_not_ready" not in combined, combined
         assert "did not begin serving" not in combined, combined
-
-        # POSITIVE: the bench it started genuinely serves. And the first bench's
-        # port is STILL dead, so the wait cannot have been satisfied there - the
-        # only port that answered is the one this bench owns.
-        assert _http_code(inst.name, inst.second_port, SECOND_SITE) == "200"
-        assert _http_code(inst.name, inst.first_port) == "000"
 
         with capsys.disabled():
             print(

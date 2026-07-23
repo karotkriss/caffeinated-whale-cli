@@ -48,11 +48,23 @@ pytestmark = [pytest.mark.e2e, pytest.mark.standalone]
 
 
 def _requested_bench_count() -> int:
-    """How many benches the operator asked for, 0 (skip) when unset or unparseable."""
-    try:
-        return int(os.environ.get("CWE2E_LATENCY_BENCHES", "") or 0)
-    except ValueError:
+    """How many benches the operator asked for, or 0 (skip) when unset."""
+    raw = os.environ.get("CWE2E_LATENCY_BENCHES", "")
+    if raw == "":
         return 0
+    try:
+        bench_count = int(raw)
+    except ValueError:
+        raise pytest.UsageError(
+            "CWE2E_LATENCY_BENCHES must be a positive integer when set; "
+            f"got {raw!r}"
+        ) from None
+    if bench_count <= 0:
+        raise pytest.UsageError(
+            "CWE2E_LATENCY_BENCHES must be a positive integer when set; "
+            f"got {raw!r}"
+        )
+    return bench_count
 
 
 BENCH_COUNT = _requested_bench_count()
