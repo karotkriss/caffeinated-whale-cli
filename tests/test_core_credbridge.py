@@ -49,7 +49,7 @@ def _only(paths):
         ("github.com", "gh"),
         ("api.github.com", "gh"),
         ("gitlab.com", "glab"),
-        ("dev.egov.gy", "glab"),
+        ("gitlab.example.com", "glab"),
     ],
 )
 def test_host_credential_dispatches_by_host(monkeypatch, host, expected_tool):
