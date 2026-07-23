@@ -136,6 +136,7 @@ def test_default_parent_persists_bench_across_recreation(running_instance):
 
 
 @v16_only
+@pytest.mark.standalone
 def test_custom_bench_parent_persists_and_rm_removes_data(port_allocator):
     """A custom `--bench-parent` builds a real running bench under that parent
     (from the same host data/ dir), `status`/`axi logs` see it, it survives a
@@ -213,6 +214,7 @@ def test_custom_bench_parent_persists_and_rm_removes_data(port_allocator):
 
 
 @v16_only
+@pytest.mark.standalone
 def test_preexisting_frozen_compose_is_not_rewritten_and_mismatch_refused(port_allocator):
     """Backward-compat: an instance created BEFORE this change (the old
     whole-project `..:/workspace:cached` mount) is neither rewritten nor allowed a

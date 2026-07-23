@@ -14,7 +14,9 @@ import pytest
 
 from . import harness
 
-pytestmark = pytest.mark.e2e
+# `standalone`: none of these needs the shared session instance (see the marker's
+# entry in pyproject.toml).
+pytestmark = [pytest.mark.e2e, pytest.mark.standalone]
 
 
 def test_name_rail_refuses_unprefixed():

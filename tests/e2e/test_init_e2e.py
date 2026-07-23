@@ -87,6 +87,7 @@ def test_default_start_leaves_dev_services_running(session_instance):
     )
 
 
+@pytest.mark.standalone
 def test_no_start_leaves_dev_services_down(port_allocator):
     """`--no-start` creates the bench+site without starting dev services: stage 1
     still brings the containers up (unaffected by this flag), the completion
@@ -122,6 +123,7 @@ def test_no_start_leaves_dev_services_down(port_allocator):
 
 # --- §4.1 interactive + generated-password print-once (v16 leg only) ------- #
 @v16_only
+@pytest.mark.standalone
 def test_interactive_init_generates_and_prints_admin_password_once(port_allocator):
     """Drive init interactively via a real pty: omit the project name so the
     prompt_toolkit prompt fires (await ESC[?2004h, then type the name), and omit

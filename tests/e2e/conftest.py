@@ -30,6 +30,35 @@ class Instance:
     init_stderr: str
 
 
+@pytest.hookimpl(trylast=True)
+def pytest_collection_modifyitems(items):
+    """Keep the `standalone` marker honest against the fixtures a test requests.
+
+    e2e.yml splits each version leg into two matrix jobs on this marker, and the
+    split only pays off while the marker means what it says: a `standalone` test
+    must never reach the shared session instance, and a test that does reach it
+    must not be marked. Drift in either direction is silent - the tests still
+    pass, the job just does the wrong work - so it is caught here, at collection,
+    in whichever group collected the offending test. Scoped to `e2e` items; the
+    `e2e_pkg` leg is not split and carries no marker.
+    """
+    for item in items:
+        if item.get_closest_marker("e2e") is None:
+            continue
+        marked = item.get_closest_marker("standalone") is not None
+        shared = bool({"session_instance", "running_instance"} & set(item.fixturenames))
+        if marked and shared:
+            raise pytest.UsageError(
+                f"{item.nodeid} is marked `standalone` but requests the shared "
+                "session instance. Drop the marker, or stop using it."
+            )
+        if not marked and not shared:
+            raise pytest.UsageError(
+                f"{item.nodeid} touches no shared session instance, so it belongs "
+                "in the standalone group: add `@pytest.mark.standalone`."
+            )
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _docker_gate():
     """SKIP LOUDLY when no Docker daemon is reachable - an infra failure, never
