@@ -127,7 +127,7 @@ def test_supervised_program_read_fails_closed_for_a_live_daemon(monkeypatch):
         return (
             1,
             "unix:///tmp/x.sock refused connection\n"
-            "__CWCLI_SUPERVISORD_LIVENESS__=running\n",
+            "__CWCLI_MANAGER_PROVENANCE__=supervisord\n",
         )
 
     monkeypatch.setattr(harness, "exec_in_frappe", failed_live_read)
@@ -135,18 +135,34 @@ def test_supervised_program_read_fails_closed_for_a_live_daemon(monkeypatch):
         _supervised_programs("cwe2e-test-live")
 
 
-def test_supervised_program_read_allows_an_absent_daemon(monkeypatch):
+@pytest.mark.parametrize("provenance", ["honcho", "absent"])
+def test_supervised_program_read_allows_an_absent_daemon(monkeypatch, provenance):
     from .test_start_status_e2e import _supervised_programs
 
     def failed_absent_read(project, script, workdir=None):
         return (
             1,
             "unix:///tmp/x.sock no such file\n"
-            "__CWCLI_SUPERVISORD_LIVENESS__=absent\n",
+            f"__CWCLI_MANAGER_PROVENANCE__={provenance}\n",
         )
 
     monkeypatch.setattr(harness, "exec_in_frappe", failed_absent_read)
     assert _supervised_programs("cwe2e-test-honcho") == {}
+
+
+def test_supervised_program_read_fails_closed_for_a_crashed_expected_daemon(monkeypatch):
+    from .test_start_status_e2e import _supervised_programs
+
+    def failed_expected_read(project, script, workdir=None):
+        return (
+            1,
+            "unix:///tmp/x.sock no such file\n"
+            "__CWCLI_MANAGER_PROVENANCE__=expected\n",
+        )
+
+    monkeypatch.setattr(harness, "exec_in_frappe", failed_expected_read)
+    with pytest.raises(AssertionError, match="could not read supervisor status"):
+        _supervised_programs("cwe2e-test-crashed")
 
 
 def _create_fake_leaked_project(name: str) -> None:

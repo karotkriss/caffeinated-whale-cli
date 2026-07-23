@@ -110,7 +110,7 @@ _TRANSITIONAL = frozenset({"STARTING", "BACKOFF", "STOPPING"})
 # RUNNING again. Waiting past that window is what makes a sibling's pid stable.
 _SETTLED_UPTIME_S = 10
 _UPTIME_RE = re.compile(r"uptime\s+(?:(\d+)\s+days?,\s+)?(\d+):(\d+):(\d+)")
-_SUPERVISOR_LIVENESS_MARKER = "__CWCLI_SUPERVISORD_LIVENESS__="
+_MANAGER_PROVENANCE_MARKER = "__CWCLI_MANAGER_PROVENANCE__="
 
 
 def _parse_supervised_programs(status_output: str) -> dict[str, tuple[str, int]]:
@@ -147,17 +147,30 @@ def _supervised_programs(project: str) -> dict[str, tuple[str, int]]:
             f"{BENCH_PY} -m supervisor.supervisorctl -c {SUPERVISOR_CFG} status\n"
             "status_code=$?\n"
             f'if [ -r {SUPERVISOR_PID} ] && kill -0 "$(cat {SUPERVISOR_PID})" 2>/dev/null; then\n'
-            f"  printf '\\n{_SUPERVISOR_LIVENESS_MARKER}running\\n'\n"
+            "  provenance=supervisord\n"
             "else\n"
-            f"  printf '\\n{_SUPERVISOR_LIVENESS_MARKER}absent\\n'\n"
+            "  provenance=absent\n"
+            "  for manager_pid in $(pgrep -f '[h]oncho' 2>/dev/null); do\n"
+            f'    if [ "$(readlink -f /proc/$manager_pid/cwd 2>/dev/null)" = "{harness.DEFAULT_BENCH_PATH}" ]; then\n'
+            "      provenance=honcho\n"
+            "      break\n"
+            "    fi\n"
+            "  done\n"
+            f'  if [ "$provenance" = absent ] && [ -f {SUPERVISOR_CFG} ]; then\n'
+            "    provenance=expected\n"
+            "  fi\n"
             "fi\n"
+            f"printf '\\n{_MANAGER_PROVENANCE_MARKER}%s\\n' \"$provenance\"\n"
             'exit "$status_code"'
         ),
     )
     programs = _parse_supervised_programs(out)
     if programs or code == 0:
         return programs
-    if f"{_SUPERVISOR_LIVENESS_MARKER}absent" in out:
+    if any(
+        f"{_MANAGER_PROVENANCE_MARKER}{provenance}" in out
+        for provenance in ("honcho", "absent")
+    ):
         return {}
     raise AssertionError(
         f"could not read supervisor status for the live supervised stack in {project}: {out}"
