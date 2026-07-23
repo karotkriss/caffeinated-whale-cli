@@ -238,7 +238,7 @@ jobs:
           else
             select="e2e and not standalone"
           fi
-          uv run pytest tests/e2e -m "$select" -o addopts="" -v --tb=short -s
+          uv run pytest tests/e2e -m "$select" -o addopts="" -v --tb=short
 
       - name: Teardown backstop - sweep leaked cwe2e- resources
         # Unconditional (given the leg actually ran): even if the run above
