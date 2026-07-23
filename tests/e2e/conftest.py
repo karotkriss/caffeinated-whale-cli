@@ -165,6 +165,16 @@ def session_instance(isolated_home, _docker_gate, _teardown_backstop, port_alloc
     try:
         yield inst
     finally:
+        # TEMPORARY MEASUREMENT - revert with this comment.
+        # Counts scheduler self-exits over the WHOLE job, to answer whether the
+        # crash-loop is actually gone rather than merely not sampled by a passing
+        # assertion. Printed before teardown, since `cwcli rm` takes the log with it.
+        _, crashes = harness.exec_in_frappe(
+            name,
+            f"grep -c 'exited: schedule' {harness.DEFAULT_BENCH_PATH}"
+            "/logs/.cwcli-supervisord.log 2>/dev/null || true",
+        )
+        print(f"\n===== SCHEDULE SELF-EXITS THIS JOB: {crashes.strip()!r} =====")
         harness.cwcli_rm(name)
 
 
