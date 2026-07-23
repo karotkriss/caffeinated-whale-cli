@@ -120,6 +120,7 @@ def _bench_blocks(toon: str) -> dict[str, dict[str, str]]:
     """
     blocks: dict[str, dict[str, str]] = {}
     current: dict[str, str] | None = None
+    field_indent = -1
     in_benches = False
     for raw in toon.splitlines():
         if raw.startswith("benches["):
@@ -129,10 +130,14 @@ def _bench_blocks(toon: str) -> dict[str, dict[str, str]]:
             continue
         if raw.strip() and not raw.startswith(" "):
             break  # a top-level key: the bench list has ended
+        indent = len(raw) - len(raw.lstrip())
         stripped = raw.strip()
         if stripped.startswith("- "):
             current = {}
+            field_indent = indent + 2
             stripped = stripped[2:]
+        elif indent != field_indent:
+            continue  # a nested table's rows sit deeper than the item's own fields
         if current is None or ":" not in stripped:
             continue
         key, _, value = stripped.partition(":")
