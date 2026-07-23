@@ -134,7 +134,9 @@ jobs:
     # Provisional ceiling: a full `cwcli init` (image pull + bench init build +
     # new-site) is the dominant cost. Generous, but well under GitHub's 6h cap so
     # a hung `bench init` fails fast. Tune once real runtimes exist.
-    timeout-minutes: 45
+    # A run that opts into the latency measurement adds a bench build per data
+    # point on top of the ordinary leg, which does not fit 45 minutes.
+    timeout-minutes: ${{ inputs.latency_benches != '' && 90 || 45 }}
     strategy:
       # One leg per Frappe version, each on its own runner (isolation +
       # parallelism + per-version resource headroom). A leaky instance on one
