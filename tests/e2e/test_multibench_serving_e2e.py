@@ -24,11 +24,8 @@ own site, its own Procfile, its own supervisord, and the port bench's own
 **Every test asserts the positive before the negative.** Before asserting that a
 bench is not misreported it proves that bench is genuinely serving, because a
 "no wrong answer" check passes just as happily against a bench that is not there.
-F3 and F5 also assert the exact DISCRIMINATOR: the value the removed bench-blind
-probe would have read, shown to differ from the correct target. F4 establishes
-that the neighbouring bench is genuinely live and that the stopped bench's own
-port is dead; its mutation evidence is recorded in
-``docs/e2e/multibench-serving-status.md``.
+F3, F4, and F5 also assert the exact DISCRIMINATOR: the value the removed
+bench-blind probe would have read, shown to differ from the correct target.
 
 Multibench port assignment and the probe are version-agnostic, so this runs once
 on the v16 leg (the ``v16_only`` precedent from ``test_scale_e2e``). It builds and
@@ -394,6 +391,8 @@ def test_f4_a_stopped_bench_never_borrows_its_neighbours_http_code(two_benches):
         # run where both benches were down would pass the negative below for the
         # wrong reason.
         assert _http_code(inst.name, inst.first_port, FIRST_SITE) == "200"
+        borrowed_code = _http_code(inst.name, inst.first_port, SECOND_SITE)
+        assert borrowed_code != "000"
         # And the second bench genuinely serves nothing.
         assert _http_code(inst.name, inst.second_port, SECOND_SITE) == "000"
 
@@ -402,12 +401,18 @@ def test_f4_a_stopped_bench_never_borrows_its_neighbours_http_code(two_benches):
         assert second["web_port"] == str(inst.second_port), out
         assert second["web_http_code"] in ("000", "null"), out
         assert second["web_http_code"] != "200", out
+        # The live-neighbour precondition above can hold even when the actual
+        # discriminator would not. Assert the defect's exact signature so a
+        # future variant cannot pass, and the test proves what it claims about
+        # the value the removed bench-blind probe would have read.
+        assert second["web_http_code"] != borrowed_code, out
 
         # Both benches in ONE document: the live code belongs to the bench that
         # earned it, and the dead one is reported dead.
         whole_out, whole = _axi_status_blocks(inst.name)
         assert whole[FIRST_BENCH_PATH]["web_http_code"] == "200", whole_out
         assert whole[SECOND_BENCH_PATH]["web_http_code"] != "200", whole_out
+        assert whole[SECOND_BENCH_PATH]["web_http_code"] != borrowed_code, whole_out
         assert whole[FIRST_BENCH_PATH]["overall"] == "running", whole_out
         # A deliberate `stop --bench` clears the marker, so the stopped bench is
         # honestly `online` (never started), not `degraded` (started, died).
