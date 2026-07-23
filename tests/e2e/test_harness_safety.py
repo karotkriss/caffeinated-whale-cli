@@ -88,6 +88,38 @@ def test_port_allocator_spacing():
     assert p1 > p0 + 1005
 
 
+def test_supervised_program_parsing_is_not_silently_permissive():
+    """The stack-settle read must not degrade to "everything is fine".
+
+    `_ensure_serving` waits for the supervised stack by parsing `supervisorctl
+    status`. If that parse silently yielded nothing, every caller would sail past
+    a half-started stack again - the exact race the per-group CI split exposed,
+    back but invisible. Pure logic, so it is checked here rather than against a
+    real bench.
+    """
+    from .test_start_status_e2e import _parse_supervised_programs
+
+    parsed = _parse_supervised_programs(
+        "web                    RUNNING   pid 191, uptime 0:01:23\n"
+        "schedule               BACKOFF   Exited too quickly (process log may have details)\n"
+        "watch                  STARTING\n"
+        "worker_default         FATAL     Exited too quickly (process log may have details)\n"
+        "veteran                RUNNING   pid 5, uptime 1 day, 2:03:04\n"
+        "unix:///tmp/x.sock refused connection\n"
+    )
+    assert parsed == {
+        "web": ("RUNNING", 83),
+        "schedule": ("BACKOFF", 0),
+        "watch": ("STARTING", 0),
+        "worker_default": ("FATAL", 0),
+        "veteran": ("RUNNING", 93784),
+    }, parsed
+
+    # A daemon that is not running yields NO programs (a honcho bench, or a
+    # Procfile with no schedule): "nothing to wait for", never a false program.
+    assert _parse_supervised_programs("error: could not connect\n") == {}
+
+
 def _create_fake_leaked_project(name: str) -> None:
     label = f"com.docker.compose.project={name}"
     subprocess.run(
