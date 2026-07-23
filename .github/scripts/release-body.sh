@@ -4,7 +4,7 @@
 # Usage: release-body.sh <version> <owner/repo>
 #
 # The card is two parts:
-#   - The "What's Changed" copy, written by hand per release in
+#   - The "What's New" or "What's Changed" copy, written by hand per release in
 #     .github/release-notes/v<version>.md. It is advertising copy in the
 #     reader's terms, which no template can generate, so this script requires
 #     the file and refuses to invent a substitute.
@@ -20,15 +20,24 @@ REPO="${2:?usage: release-body.sh <version> <owner/repo>}"
 TAG="v${VERSION}"
 NOTES=".github/release-notes/${TAG}.md"
 
+if [[ "$VERSION" =~ ^[0-9]+\.0\.0$ ]]; then
+  EXPECTED_HEADING="### What's New"
+  RELEASE_SIZE="major"
+else
+  EXPECTED_HEADING="### What's Changed"
+  RELEASE_SIZE="smaller"
+fi
+
 if [ ! -s "$NOTES" ]; then
   echo "error: ${NOTES} is missing or empty." >&2
-  echo "The release card's What's Changed copy is written by hand per release." >&2
+  echo "The release card's copy is written by hand per release." >&2
   echo "See .github/release-notes/README.md for the format." >&2
   exit 1
 fi
 
-if ! grep -q "^### What's Changed" "$NOTES"; then
-  echo "error: ${NOTES} must open with a \"### What's Changed\" heading." >&2
+FIRST_LINE=$(head -n 1 "$NOTES")
+if [ "$FIRST_LINE" != "$EXPECTED_HEADING" ]; then
+  echo "error: ${NOTES} must open with exactly \"${EXPECTED_HEADING}\" because ${VERSION} is a ${RELEASE_SIZE} release." >&2
   exit 1
 fi
 
