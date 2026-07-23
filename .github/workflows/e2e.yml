@@ -10,6 +10,16 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
+    inputs:
+      latency_benches:
+        description: >-
+          Bench count for the multibench `cwcli status` latency measurement
+          (report-status-per-bench task 5.5). Empty skips it. 6 builds a real
+          six-bench serving instance on the v16 standalone leg - roughly 1.5 GB
+          and a couple of minutes of bench build per bench, which is why it is
+          not part of the per-PR matrix.
+        required: false
+        default: ''
 
 # Cancel superseded runs on the same ref so a rapid push sequence does not queue
 # multiple multi-GB E2E matrices.
@@ -159,6 +169,9 @@ jobs:
       # The automatic job token authenticates that call (5000/hour) without
       # widening `permissions:` above (contents:read is already sufficient).
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Opt-in bench count for the task 5.5 latency measurement. Empty on every
+      # PR run, so tests/e2e/test_multibench_latency_e2e.py skips itself there.
+      CWE2E_LATENCY_BENCHES: ${{ inputs.latency_benches }}
 
     steps:
       - name: E2E scope
@@ -176,6 +189,21 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           persist-credentials: false
+
+      - name: Reclaim runner disk for the latency measurement
+        # ONLY for the opt-in task 5.5 run: six real benches are roughly 9 GB of
+        # bind-mounted bench trees on top of the images and the rest of the leg,
+        # which does not fit the runner's default free space. Dropping the
+        # preinstalled toolchains this job never touches frees well over that.
+        # Not run on the ordinary matrix, which has plenty of headroom.
+        if: >-
+          needs.changes.outputs.run == 'true' &&
+          inputs.latency_benches != '' &&
+          matrix.group == 'standalone'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
 
       - name: Install uv
         if: needs.changes.outputs.run == 'true'
