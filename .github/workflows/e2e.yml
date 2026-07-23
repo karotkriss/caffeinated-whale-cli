@@ -238,10 +238,7 @@ jobs:
           else
             select="e2e and not standalone"
           fi
-          # TEMPORARY: -s so the supervisor diagnostic prints on PASSING legs too
-          # (the v14 failure has to be compared against v15/v16 passing). Revert
-          # with the diagnostic itself.
-          uv run pytest tests/e2e -m "$select" -o addopts="" -v --tb=short -s
+          uv run pytest tests/e2e -m "$select" -o addopts="" -v --tb=short
 
       - name: Teardown backstop - sweep leaked cwe2e- resources
         # Unconditional (given the leg actually ran): even if the run above
