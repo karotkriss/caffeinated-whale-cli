@@ -9,7 +9,7 @@ Three CI runs produced the evidence below, each on a throwaway branch since dele
 
 | Run | What it establishes |
 | --- | --- |
-| Serving suite with the defect reintroduced | The new assertions fail when the defect returns - 4 of 5 red |
+| Serving suite with the defect reintroduced | Every assertion that guards a defect goes red when that defect returns |
 | Serving suite + six-bench latency, unmodified | The suite is green, and the 1-to-6-bench cost curve |
 | The same, driven through the `latency_benches` dispatch input | The opt-in path works end to end, and the curve reproduces |
 
@@ -55,11 +55,30 @@ The fixture asserts those two ports **differ** before yielding: if bench ever ha
 ## Proof that the assertions bite
 
 A test that cannot fail is not a test, so this was demonstrated rather than claimed.
-The defect was reintroduced as a one-line change - the web probe's URL pinned back to `http://localhost:8000`, ignoring the port it is handed - and the suite re-run on the same CI leg.
-Result: **4 failed, 1 passed** in 5m 20s.
-The one that passed is the latency test, which asserts nothing about the probe.
 
-Each failure is the audit's original defect, reproduced verbatim against real benches.
+**One** mutation was run, not one per defect, because the three defects share a single root cause - that is the audit's own central finding, and it is one line.
+`supervision.web_http_code`'s URL was pinned back to `http://localhost:8000`, ignoring the port it is handed, and the suite re-run on the same CI leg.
+
+Per test, against that one mutation:
+
+| Test | Defect it guards | Under the mutation |
+| --- | --- | --- |
+| `test_f3_a_healthy_second_bench_is_not_reported_degraded` | F3 | **red** |
+| `test_f4_a_stopped_bench_never_borrows_its_neighbours_http_code` | F4 | **red** |
+| `test_f5_starting_a_non_first_bench_waits_on_its_own_port` | F5 | **red** |
+| `test_both_benches_genuinely_serve_on_their_own_ports` | the fixture's own serving precondition | **red** |
+| `test_instance_wide_status_latency_on_two_serving_benches` | none - it is a measurement | green, correctly |
+
+**No assertion fails to catch its defect.**
+Every test that guards a defect went red.
+The one that stayed green guards nothing: it times `cwcli axi status` and asserts a loose ceiling, and the mutation changes what `status` reports, not what it costs.
+Green is the right answer for it, and it is neither an uncaught defect nor an unreachable mutation.
+State it that way rather than as a ratio of the module's five tests, which reads as a score and hides which coverage is which.
+
+What this run does **not** establish: it mutates the one shared root cause, so it says nothing about regressions of a different shape - dropping the probe's `Host` header, say, or breaking the instance fold.
+Those carry unit coverage (`TestPerBenchWebProbe` and the fold tests) and were not separately mutation-tested here.
+
+Each failure below is the audit's original defect, reproduced verbatim against real benches.
 
 **F3 - a healthy bench reported `degraded`.**
 The second bench, every one of its five processes `RUNNING`, its port resolved correctly, and a null web code beside them:
