@@ -556,7 +556,8 @@ jobs:
 - ✅ Black formatting
 - ✅ Ruff linting
 
-The test suite and type checking run in a separate `.github/workflows/test.yml` workflow (`Pytest` as the intended required gate, plus a zero-error `Mypy` gate). See the [CI/CD Workflows guide](./ci-cd.md) for details.
+The test suite and type checking run in a separate `.github/workflows/test.yml` workflow (`Pytest` as a required gate, plus a zero-error `Mypy` gate).
+See the [CI/CD Workflows guide](./ci-cd.md) for details.
 
 ## Common Issues & Solutions
 
