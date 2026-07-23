@@ -14,10 +14,22 @@ things the net deliberately does NOT pin:
     ``degraded``.
   - the captured logs are per-process files on the bench ``logs/`` volume (not
     ``/tmp``, and no combined ``bench-start.log``).
-  - multi-bench with no selector: ``start`` still REFUSES (it mutates one bench, so
-    it must be told which), while ``status`` REPORTS EVERY BENCH in one document -
-    each named, each probed on its own port, exit 0 (report-status-per-bench). A
-    bench whose config names no port reports it unknown rather than assuming 8000.
+  - multi-bench DOCUMENT STRUCTURE ONLY (see the caveat below): ``start`` still
+    REFUSES with no selector (it mutates one bench, so it must be told which), while
+    ``status`` reports every bench in one document, each named, exit 0
+    (report-status-per-bench). A bench whose config names no port reports it unknown
+    rather than assuming 8000.
+
+**The multi-bench test here is structural and says so.** Its second bench is a
+DIRECTORY SKELETON - ``apps/``, ``sites/`` and an empty ``common_site_config.json``,
+with no virtualenv, no Procfile, no supervisord and nothing bound to a port. That is
+enough to pin the document shape, the surviving ``start`` refusal, and the
+unresolved-port path, and it is enough for NOTHING about the web probe: the defects
+that motivated the per-bench report (a healthy bench past the first reading
+``degraded``, a dead one reading its neighbour's HTTP code, ``start`` waiting on the
+wrong port) only exist when a second bench is genuinely answering on its own port.
+Those live in ``test_multibench_serving_e2e.py``, which builds a real second bench.
+Do not read a green run of this module as covering them.
 
 Runs on the shared session instance; every test that leaves it un-served relies on
 ``_ensure_serving`` (imported from the net module) to restore sibling tests.
@@ -176,9 +188,18 @@ def test_logs_are_per_process_files_on_the_volume(running_instance):
 
 
 # --------------------------------------------------------------------------- #
-# 5. multi-bench: start still refuses without a selector; status REPORTS EVERY BENCH
+# 5. multi-bench DOCUMENT STRUCTURE over a bench SKELETON (not a serving bench)
 # --------------------------------------------------------------------------- #
-def test_multibench_start_refuses_but_status_reports_every_bench(running_instance):
+def test_multibench_document_structure_over_a_bench_skeleton(running_instance):
+    """Structure only: the shape of the multi-bench document, the surviving
+    ``start`` refusal, and the unresolved-port path.
+
+    The second bench here is a directory skeleton with nothing running in it, so
+    this test says nothing about the per-bench web probe - by construction, since
+    a skeleton binds no port for a probe to read. The runtime behaviour (F3/F4/F5)
+    is proven against two genuinely serving benches in
+    ``test_multibench_serving_e2e.py``.
+    """
     inst = running_instance
     _ensure_serving(inst.name)
     second = "/workspace/cwe2e-second-bench"

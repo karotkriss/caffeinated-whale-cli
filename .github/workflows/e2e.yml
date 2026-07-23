@@ -10,6 +10,16 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
+    inputs:
+      latency_benches:
+        description: >-
+          Bench count for the multibench `cwcli status` latency measurement
+          (report-status-per-bench task 5.5). Empty skips it. 6 builds a real
+          six-bench serving instance on the v16 standalone leg. Each point
+          requires another real bench build, so it is not part of the per-PR
+          matrix.
+        required: false
+        default: ''
 
 # Cancel superseded runs on the same ref so a rapid push sequence does not queue
 # multiple multi-GB E2E matrices.
@@ -124,7 +134,9 @@ jobs:
     # Provisional ceiling: a full `cwcli init` (image pull + bench init build +
     # new-site) is the dominant cost. Generous, but well under GitHub's 6h cap so
     # a hung `bench init` fails fast. Tune once real runtimes exist.
-    timeout-minutes: 45
+    # A run that opts into the latency measurement adds a bench build per data
+    # point on top of the ordinary leg, which does not fit 45 minutes.
+    timeout-minutes: ${{ inputs.latency_benches != '' && 90 || 45 }}
     strategy:
       # One leg per Frappe version, each on its own runner (isolation +
       # parallelism + per-version resource headroom). A leaky instance on one
@@ -159,6 +171,9 @@ jobs:
       # The automatic job token authenticates that call (5000/hour) without
       # widening `permissions:` above (contents:read is already sufficient).
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Opt-in bench count for the task 5.5 latency measurement. Empty on every
+      # PR run, so tests/e2e/test_multibench_latency_e2e.py skips itself there.
+      CWE2E_LATENCY_BENCHES: ${{ inputs.latency_benches }}
 
     steps:
       - name: E2E scope
