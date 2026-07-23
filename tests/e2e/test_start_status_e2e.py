@@ -197,6 +197,7 @@ def test_start_rerun_leaves_instance_serving(running_instance):
     assert _web_reachable(inst.name), "re-running start must leave the site serving"
 
 
+@pytest.mark.standalone
 def test_start_nonexistent_fails_honestly():
     """1.4 Honest failure: starting a project that does not exist exits non-zero and
     never reports it as started."""
@@ -275,6 +276,7 @@ def test_start_interactive_port_conflict_prompt_is_driven(running_instance):
 # --------------------------------------------------------------------------- #
 # 2. status (lifecycle-state discrimination)
 # --------------------------------------------------------------------------- #
+@pytest.mark.standalone
 def test_status_nonexistent_fails_honestly():
     """2.1 A truly-nonexistent project (never created - no containers at all) is NOT
     ``offline``: it exits non-zero with a "no such project" error, distinct from a
@@ -387,6 +389,7 @@ def test_status_containers_up_bench_down_is_distinct_from_running(running_instan
     assert not _web_reachable(inst.name), "site must not be answering in this state"
 
 
+@pytest.mark.standalone
 def test_restart_nonexistent_fails_honestly():
     """3.3 Honest failure: restarting a project that does not exist exits non-zero
     and never reports it as started."""

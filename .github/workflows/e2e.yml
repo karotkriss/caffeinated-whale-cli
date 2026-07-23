@@ -106,7 +106,7 @@ jobs:
           fi
 
   e2e:
-    name: E2E (frappe v${{ matrix.frappe }})
+    name: E2E (frappe v${{ matrix.frappe }}, ${{ matrix.group }})
     needs: changes
     # Gate: run on a manual dispatch, on a PR carrying the `e2e` label, or on a
     # PR into a protected branch (develop / master). The job ALWAYS enters (so
@@ -129,14 +129,27 @@ jobs:
       # One leg per Frappe version, each on its own runner (isolation +
       # parallelism + per-version resource headroom). A leaky instance on one
       # leg cannot poison another; don't cancel the others when one fails.
+      #
+      # Each version leg is split in two by the `standalone` pytest marker, which
+      # is why the workflow's wall clock is roughly half what a single leg costs.
+      # `shared` runs the tests that assert against one session-scoped instance
+      # and pays one `cwcli init` for it; `standalone` runs the tests that build
+      # their own instance or need none at all, and pays no session init. The two
+      # groups land on separate runners, so they share no Docker daemon, no disk
+      # and no $CWCLI_HOME - which is what makes the split safe without touching a
+      # single test body. See the `standalone` marker in pyproject.toml.
       fail-fast: false
       matrix:
         frappe: [14, 15, 16]
+        group: [shared, standalone]
     env:
       CWE2E_FRAPPE_MAJOR: ${{ matrix.frappe }}
-      # One prefix per leg so the always() backstop sweeps exactly this leg's
-      # cwe2e- resources.
-      CWE2E_RUN_ID: gha${{ github.run_id }}-${{ matrix.frappe }}
+      # One prefix per job, so every instance name in the whole matrix is unique
+      # and a log line names exactly the job that created it. Group isolation
+      # does NOT rest on this - it rests on the two groups being separate runners
+      # with separate Docker daemons - but a unique name means the two groups
+      # would still not collide if they were ever run side by side on one host.
+      CWE2E_RUN_ID: gha${{ github.run_id }}-${{ matrix.frappe }}-${{ matrix.group }}
       # True only when a repo admin configured Docker Hub creds; gates the login
       # step so CI still works (anonymous pulls) when they are absent.
       HAS_DOCKERHUB: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
@@ -153,9 +166,9 @@ jobs:
         # state plainly whether the real matrix ran or was short-circuited.
         run: |
           if [ "${{ needs.changes.outputs.run }}" = "true" ]; then
-            echo "Logic/dep change - running the real frappe v${{ matrix.frappe }} E2E."
+            echo "Logic/dep change - running the real frappe v${{ matrix.frappe }} ${{ matrix.group }} E2E."
           else
-            echo "No logic/dep change - skipping the frappe v${{ matrix.frappe }} E2E; reporting this required context green."
+            echo "No logic/dep change - skipping the frappe v${{ matrix.frappe }} ${{ matrix.group }} E2E; reporting this required context green."
           fi
 
       - name: Checkout code
@@ -200,10 +213,15 @@ jobs:
         if: needs.changes.outputs.run == 'true'
         run: uv sync --frozen --all-extras
 
-      - name: Run E2E (frappe v${{ matrix.frappe }})
+      - name: Run E2E (frappe v${{ matrix.frappe }}, ${{ matrix.group }})
         # Version-sensitive tests run on every leg; version-agnostic tests skip
         # themselves off the non-v16 legs (see tests/e2e). Empty addopts drops
         # the default `-m "not e2e"` and the coverage machinery.
+        #
+        # The two groups partition the `e2e` tier exactly - every test that ran
+        # before still runs, in one group or the other, and `standalone` is the
+        # only thing that decides which. tests/e2e/conftest.py fails collection if
+        # that marker ever disagrees with the fixtures a test requests.
         #
         # Cross-tier coverage IS obtainable, and "out of process" is no barrier:
         # the harness drives the real `cwcli` console script, which is a Python
@@ -214,7 +232,13 @@ jobs:
         # and a red or flaky E2E leg would then move the coverage number for
         # reasons unrelated to any code change - a worse signal, for ~6-12 points.
         if: needs.changes.outputs.run == 'true'
-        run: uv run pytest tests/e2e -m e2e -o addopts="" -v --tb=short
+        run: |
+          if [ "${{ matrix.group }}" = "standalone" ]; then
+            select="e2e and standalone"
+          else
+            select="e2e and not standalone"
+          fi
+          uv run pytest tests/e2e -m "$select" -o addopts="" -v --tb=short
 
       - name: Teardown backstop - sweep leaked cwe2e- resources
         # Unconditional (given the leg actually ran): even if the run above
