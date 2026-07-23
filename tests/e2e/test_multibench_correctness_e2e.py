@@ -92,9 +92,9 @@ def test_status_probes_with_the_site_so_a_healthy_bench_is_not_404(running_insta
     code, hostless = harness.exec_in_frappe(
         inst.name, f'curl -s -o /dev/null -w "%{{http_code}}" http://localhost:{port}'
     )
-    assert code == 0 and hostless.strip() == "404", (
-        f"setup: a host-less request is expected to be 404 on multi-tenant Frappe, got {hostless!r}"
-    )
+    assert (
+        code == 0 and hostless.strip() == "404"
+    ), f"setup: a host-less request is expected to be 404 on multi-tenant Frappe, got {hostless!r}"
 
     res = harness.run_cwcli("axi", "status", inst.name)
     assert res.returncode == 0, res.stdout + res.stderr

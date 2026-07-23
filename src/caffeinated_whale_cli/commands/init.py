@@ -361,7 +361,7 @@ def _start_services(project: str, bench_path: str) -> tuple[bool, bool | None]:
             f"started: {getattr(e, 'message', str(e))}"
         )
         return False, None
-    # core.start now blocks until the web server binds :8000, so "running" is
+    # core.start now blocks until the web server binds this bench's assigned port, so "running" is
     # honest by the time we return. If it timed out, surface the warning so the
     # user isn't told the web is up when it hasn't begun serving yet.
     for warning in result.warnings:

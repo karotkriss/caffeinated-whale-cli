@@ -103,10 +103,12 @@ Regression coverage: `tests/test_core_init.py` (`working_dir: /workspace` presen
 After the bench+site is created, `cwcli init` and `cwcli axi init` both start the bench's dev services by default (`--start`/`--no-start`, default `--start`) rather than leaving a created-but-idle bench.
 This is deliberately a FRONTEND epilogue, not a third `core/init.py` stage: both renderers call the UNCHANGED `core.start(project, bench_path=report.bench_path)` (the same primitive behind `cwcli start`/`cwcli axi start`) with the report's exact `bench_path`, so it never re-resolves the bench or forks to a multi-bench `select_bench` choice - the bench that was just created is the only one in play.
 A start failure (any exception, not just `CwcliError`) degrades to a stderr warning and does NOT change `init`'s exit code or outcome: the bench was already created successfully, so a supervisor-launch failure is not an `init` failure - the human CLI prints `Dev services are not running for '<project>'.` and points at `cwcli start`; `axi init` prints the same warning to stderr and still emits its one TOON `InitReport` document unchanged (`InitReport` carries no services-running field).
-`core.start` itself now blocks until the web server binds `:8000` (see the web-readiness note in the
+`core.start` itself now blocks until the web server binds the bench's assigned web port (see the web-readiness note in the
 `cwcli-lifecycle` skill's `start-status.md` reference) before it reports success, so `_start_services` threads
-that honest `web_ready` signal back through: a launch that succeeds but times out waiting for `:8000` still
+that honest `web_ready` signal back through: a launch that succeeds but times out waiting for that port still
 prints `Dev services are not running for '<project>'.` (never the "running" success block) even though the
 containers and supervisor did come up, because the web genuinely isn't serving yet.
+The success block resolves the site's host URL from that assigned container port and Docker's live published binding, so a custom `--port` and every later bench advertise the address that is actually reachable from the host.
+If either half cannot be read, it omits the address rather than guessing.
 `--no-start` skips the call entirely (for automation/CI that wants a created-but-idle bench); it is orthogonal to `--auto-start`/container startup, which stage 1 always performs regardless of this flag.
 Regression coverage: `tests/test_init_characterization.py::TestAutoStartServices` (the human CLI: exact `bench_path` passthrough, the running/not-running/`--no-start` completion messages, the failure-degrades-to-warning-not-exit case) and `tests/test_axi_init.py::TestAutoStartServices` (axi parity: exit 0 on a start failure, the stderr warning, `--no-start`).

@@ -492,9 +492,7 @@ class TestAutoStartServices:
         # The old "Once services are running" implication is gone.
         assert "Once services are running" not in out
 
-    def test_an_unresolvable_address_is_omitted_never_guessed(
-        self, monkeypatch, tmp_path, capsys
-    ):
+    def test_an_unresolvable_address_is_omitted_never_guessed(self, monkeypatch, tmp_path, capsys):
         # A port that cannot be read costs the banner its Open line; printing a
         # guessed one would send the user to an address that answers nothing.
         self._patch_start(monkeypatch, status=Status.OK)

@@ -153,6 +153,11 @@ are now the whole point. Each note below guards a real bug.
   `select_bench`. The CLI frontend (`commands/restart.py`) prompts (TTY) / errors listing valid labels
   (non-TTY); `cwcli axi restart` renders both as usage errors (exit 2). `--process` is REQUIRED on the axi
   verb; whole-stack restart is not an axi verb.
+- **A whole-stack restart preserves the selected bench.** The frontend still stops every container, then
+  calls the shared `_start_project`, but now threads `--bench` into that call on the no-`--process` path too.
+  Without this, the accepted selector was discarded and `_start_project`'s intentional first-bench fallback
+  relaunched a sibling at exit 0. An omitted selector keeps that documented fallback; an explicit selector
+  must never retarget.
 
 ## `core/status.py` - the stdout-token-only contract + per-process state
 
@@ -194,13 +199,33 @@ are now the whole point. Each note below guards a real bug.
   (a missing web code must NOT falsely `degrade`). `--watch` is a frontend re-poll (`commands/status.py:_watch_loop`,
   `rich.Live` on stderr) - the core stays one-shot. The loop starts only when BOTH stdout+stderr are TTYs;
   otherwise one quiet snapshot. `--interval` floors at 1s; Ctrl-C exits 0. `cwcli axi status` stays one-shot.
+- **The web probe names the site in its `Host` header and report.** Frappe routes by Host, so a host-less
+  curl correctly returns 404 even when the selected site serves 200. `resolve_representative_site` first uses
+  the declared default site, then falls back to the cached site list because benches created by `cwcli init`
+  do not necessarily run `bench use`. If several undefaulted sites exist, choosing one is a disclosed pick:
+  `BenchStatus.web_site` and the human `web <site>:<port> -> <code>` line name the site whose response was
+  measured. No resolvable site keeps the host-less probe and reports `web_site=None`.
+
+## `core.stop.py` - project stop and bench stop are distinct operations
+
+- **`stop_bench(project, bench=..., bench_path=...)` stops one bench's supervisord, not a container.** A
+  multi-bench instance has one frappe container shared by sibling benches, so `cwcli stop --bench` reuses
+  `supervision.stop_supervisor` for the resolved bench and leaves every container and sibling bench running.
+  The human and `axi` frontends share this core function, and an already-stopped bench is an idempotent
+  success.
+- **A deliberate bench stop clears its launch marker only after teardown succeeds.** The marker distinguishes
+  started-then-died (`degraded`) from never-started (`online`). Leaving it after an intentional stop would make
+  a healthy instance cry wolf forever; clearing it before verified teardown would hide a failed stop. An
+  unreadable process state, failed signal, surviving supervisor, or marker-clear failure therefore fails
+  closed.
 
 ## Multi-bench (D5), the axi verbs, and the container-boot NON-GOAL
 
-- `start`/`status`/`restart --process` share `resolvers.resolve_bench`. `start`/`restart` MUTATE one bench, so
+- `start`/`status`/`restart`/`stop --bench` share `resolvers.resolve_bench`. `start`/`restart` MUTATE one bench, so
   on multi-bench with no `--bench` the human CLI prompts (`on_ambiguous="prompt"`, TTY) and refuses non-zero on
   a non-TTY, while `cwcli axi start`/`restart` emit a `select_bench` usage error naming the flag. The internal
-  `_start_project` (restart / auto-start callers) keeps the lenient first-bench fallback. `cwcli axi start`
+  `_start_project` (restart / auto-start callers) keeps the lenient first-bench fallback only when no selector
+  was supplied; whole-stack restart threads an explicit `--bench` through to it. `cwcli axi start`
   never prompts a port conflict: a `CONFLICT` naming `--yes` via the non-printing `detect_port_conflicts`.
 - **`status` no longer joins that refusal, and the difference is READ vs MUTATE** (`report-status-per-bench`).
   It is a read, so the bare form ANSWERS the question the refusal used to send the caller away to
@@ -211,12 +236,15 @@ are now the whole point. Each note below guards a real bug.
   retained-but-unreachable prompt is how the refusal comes back. `status` is therefore non-prompting on EVERY
   path, which satisfies the both-modes standard trivially. **Each bench is probed on its OWN port**, read from
   its `sites/common_site_config.json` (`resolvers.resolve_assigned_ports(..., fill_defaults=False)`) and passed
-  explicitly to `supervision.web_http_code(container, port=...)`; the probe used to hardcode `localhost:8000`,
+  explicitly to `supervision.web_http_code(container, port=..., site=...)`; the probe used to hardcode `localhost:8000`,
   so a healthy bench 1 read `degraded` (F3) and a dead bench 1 reported bench 0's live code (F4). An unresolved
   port is `web_port: null`/`web_port_verified: false`, NO probe, a `status.web_port_unknown` warning, and
   `_overall(web_probed=False)` - it does NOT degrade, because degrading on an unreadable JSON file would
   manufacture a fresh F3 while fixing the old one. The instance `overall` folds the per-bench ones over the same
   four tokens (no fifth): `degraded` dominates, and a `running` bench beats a never-started `online` one.
+- **`stop --bench` is the bench-scoped inverse of `start --bench`.** It ends only that bench's supervised dev
+  processes and clears its launch marker; the project-wide form still stops the instance's containers and all
+  benches with them. `cwcli axi stop --bench` exposes the same idempotent operation without prompting.
 - **Container-boot auto-relaunch is an explicit NON-GOAL.** supervisord's lifecycle is the container's
   lifecycle: it heals crashed PROGRAMS on its own, but it is NOT auto-relaunched when the container itself
   restarts (that needs the image entrypoint, which cwcli cannot set via `docker exec`). A `cwcli start` is
