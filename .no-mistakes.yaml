@@ -1,7 +1,7 @@
 # Per-repo no-mistakes overrides.
 
-# Bound the validation gate's test step to the fast `unit` tier, the same
-# command CI's `Pytest` job runs. Without a configured commands.test the step is
+# Bound the validation gate's test step to the fast `unit` tier, the same tier
+# CI's `Pytest` job runs. Without a configured commands.test the step is
 # an open-ended agent invocation that decides for itself what "testing" means,
 # and on this repo that means `cwcli init` - a genuine Frappe bench build,
 # minutes per run, repeated after every review fix round. That is a duplicate of

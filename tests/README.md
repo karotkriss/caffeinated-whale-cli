@@ -323,11 +323,11 @@ CI is two-tiered.
     run: uv run pytest -m unit --cov=caffeinated_whale_cli
   ```
 
-  The `Pytest` (unit) job is the always-required gate.
+  The required-check configuration is documented in the [CI/CD Workflows guide](../docs/contributing/ci-cd.md).
 
 - **`.github/workflows/e2e.yml`** runs the real-Docker `e2e` tier as a `strategy.matrix.frappe: [14, 15, 16]` of GitHub-hosted `ubuntu-latest` jobs (no `container:`, so `docker`/`docker compose` reach the daemon).
   It is triggered on PRs into `develop`/`master` and on-demand via the `e2e` PR label, with per-job `timeout-minutes` and an `always()` `cwe2e-` teardown backstop.
-  Note: `develop`/`master` have no branch protection today, so a repo admin must enable it and tick these checks before the E2E matrix is a *required* gate; until then the unit tier is the only gate that blocks a merge.
+  On `develop`, branch protection makes the E2E checks blocking.
 
 See the [CI/CD Workflows guide](../docs/contributing/ci-cd.md) for the full setup.
 
