@@ -19,7 +19,7 @@ Keep the root-cause "why" so a later change does not silently re-break the relea
 
 ### Cutting a release
 
-Current practice at 0.34.0 (the `uv --trusted-publishing` flow), verified against `.github/workflows/release.yml`:
+Current practice (the `UV_PUBLISH_TOKEN` flow), verified against `.github/workflows/release.yml`:
 
 - A version bump touches exactly four files: `version` in `pyproject.toml`, `__version__` in `src/caffeinated_whale_cli/__init__.py`, the project's own entry in `uv.lock` (regenerate via `uv lock`, do not hand-edit), and a new `CHANGELOG.md` section.
 - Both `build.yml` and `release.yml` hard-fail when `pyproject.toml` and `__init__.py` disagree, so the two version strings must always be bumped together.
