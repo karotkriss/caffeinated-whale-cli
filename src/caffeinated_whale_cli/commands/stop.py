@@ -50,21 +50,30 @@ def stop(
     actual_bench = bench
     missing_bench_value = False
     filtered_project_names = []
+    verbose_options = ("-v", "--verbose")
+    bench_option = "--bench"
+
+    def is_recovered_option(token: str) -> bool:
+        return (
+            token in verbose_options
+            or token == bench_option
+            or token.startswith(f"{bench_option}=")
+        )
 
     if project_name:
         tokens = list(project_name)
         i = 0
         while i < len(tokens):
             token = tokens[i]
-            if token in ("-v", "--verbose"):
+            if token in verbose_options:
                 actual_verbose = True
-            elif token == "--bench":
-                if i + 1 < len(tokens) and not tokens[i + 1].startswith("-"):
+            elif token == bench_option:
+                if i + 1 < len(tokens) and not is_recovered_option(tokens[i + 1]):
                     actual_bench = tokens[i + 1]
                     i += 1
                 else:
                     missing_bench_value = True
-            elif token.startswith("--bench="):
+            elif token.startswith(f"{bench_option}="):
                 actual_bench = token.split("=", 1)[1]
                 if not actual_bench:
                     missing_bench_value = True
@@ -74,9 +83,7 @@ def stop(
         project_names_to_process.extend(filtered_project_names)
 
     if missing_bench_value:
-        stderr_console.print(
-            "[bold red]Error:[/bold red] Option '--bench' requires a value."
-        )
+        stderr_console.print("[bold red]Error:[/bold red] Option '--bench' requires a value.")
         raise typer.Exit(code=2)
 
     if not sys.stdin.isatty():

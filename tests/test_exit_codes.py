@@ -151,10 +151,15 @@ class _RunningFrappe:
 
 
 class TestStopHonesty:
-    @pytest.mark.parametrize("tokens", [["good", "--bench"], ["good", "--bench="]])
-    def test_a_missing_bench_value_cannot_expand_to_project_stop(
-        self, tokens, monkeypatch
-    ):
+    @pytest.mark.parametrize(
+        "tokens",
+        [
+            ["good", "--bench"],
+            ["good", "--bench="],
+            ["good", "--bench", "--verbose"],
+        ],
+    )
+    def test_a_missing_bench_value_cannot_expand_to_project_stop(self, tokens, monkeypatch):
         monkeypatch.setattr(stop_mod.sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr(
             core_stop,
@@ -166,6 +171,24 @@ class TestStopHonesty:
             stop_mod.stop(ctx=None, verbose=False, bench=None, project_name=tokens)
 
         assert exc.value.exit_code == 2
+
+    def test_a_dash_prefixed_bench_label_remains_addressable(self, monkeypatch):
+        monkeypatch.setattr(stop_mod.sys.stdin, "isatty", lambda: True)
+        seen = []
+        monkeypatch.setattr(
+            stop_mod,
+            "_stop_benches",
+            lambda names, bench, verbose: seen.append((names, bench, verbose)),
+        )
+
+        stop_mod.stop(
+            ctx=None,
+            verbose=False,
+            bench=None,
+            project_name=["good", "--bench", "-staging"],
+        )
+
+        assert seen == [(["good"], "-staging", False)]
 
     def test_nonexistent_project_exits_one(self, monkeypatch, capsys):
         _neutralize_docker(monkeypatch)
