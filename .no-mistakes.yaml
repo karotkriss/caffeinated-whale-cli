@@ -1,0 +1,20 @@
+# Per-repo no-mistakes overrides.
+
+# Bound the validation gate's test step to the fast `unit` tier, the same tier
+# CI's `Pytest` job runs. Without a configured commands.test the step is
+# an open-ended agent invocation that decides for itself what "testing" means,
+# and on this repo that means `cwcli init` - a genuine Frappe bench build,
+# minutes per run, repeated after every review fix round. That is a duplicate of
+# work CI already does.
+#
+# `-m unit` is explicit rather than relying on the `addopts` default in
+# pyproject.toml, so the gate can never select a real-Docker tier even if that
+# default changes. Real-instance validation is CI's: `.github/workflows/e2e.yml`
+# runs the v14/v15/v16 matrix plus the runtime-only leg, and it still blocks the
+# PR. See docs/testing/guide.md#gate-policy, the authoritative policy this
+# pins in configuration so it holds without an agent having to read it.
+#
+# `commands.*` is honored only from the default-branch copy of this file, so a
+# pushed branch cannot change what the gate executes.
+commands:
+  test: 'uv sync --frozen --all-extras && uv run pytest -m unit'
