@@ -48,6 +48,7 @@ def stop(
     # forgiveness start and restart apply to their trailing flags).
     actual_verbose = verbose
     actual_bench = bench
+    missing_bench_value = False
     filtered_project_names = []
 
     if project_name:
@@ -58,15 +59,25 @@ def stop(
             if token in ("-v", "--verbose"):
                 actual_verbose = True
             elif token == "--bench":
-                if i + 1 < len(tokens):
+                if i + 1 < len(tokens) and not tokens[i + 1].startswith("-"):
                     actual_bench = tokens[i + 1]
                     i += 1
+                else:
+                    missing_bench_value = True
             elif token.startswith("--bench="):
                 actual_bench = token.split("=", 1)[1]
+                if not actual_bench:
+                    missing_bench_value = True
             else:
                 filtered_project_names.append(token)
             i += 1
         project_names_to_process.extend(filtered_project_names)
+
+    if missing_bench_value:
+        stderr_console.print(
+            "[bold red]Error:[/bold red] Option '--bench' requires a value."
+        )
+        raise typer.Exit(code=2)
 
     if not sys.stdin.isatty():
         piped_input = [line.strip() for line in sys.stdin]

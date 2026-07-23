@@ -40,6 +40,10 @@ def _restart_project(project_name: str, verbose: bool = False, status=None, benc
         console.print(f"[bold red]Error: Project '{project_name}' not found.[/bold red]")
         return None, None
 
+    resolved_path = resolve_bench_path(
+        project_name, bench, None, verbose=verbose, on_ambiguous="first"
+    )
+
     # Check if any containers are running
     running_containers = [c for c in containers if c.status == "running"]
 
@@ -58,7 +62,13 @@ def _restart_project(project_name: str, verbose: bool = False, status=None, benc
     # teardown race, since the not-found check above already returned; the caller
     # still handles it.
     stopped = stop_project_best_effort(project_name, verbose=verbose)
-    log_file = _start_project(project_name, verbose=verbose, status=status, bench_selector=bench)
+    log_file = _start_project(
+        project_name,
+        verbose=verbose,
+        status=status,
+        bench_selector=bench if resolved_path is None else None,
+        bench_path_override=resolved_path,
+    )
 
     return log_file, stopped
 
@@ -109,6 +119,7 @@ def restart(
     actual_verbose = verbose
     actual_process = process
     actual_bench = bench
+    missing_option_value: str | None = None
     filtered_project_names = []
 
     if project_name:
@@ -119,21 +130,35 @@ def restart(
             if token in ("-v", "--verbose"):
                 actual_verbose = True
             elif token in ("--process", "-p"):
-                if i + 1 < len(tokens):
+                if i + 1 < len(tokens) and not tokens[i + 1].startswith("-"):
                     actual_process = tokens[i + 1]
                     i += 1
+                else:
+                    missing_option_value = token
             elif token.startswith("--process="):
                 actual_process = token.split("=", 1)[1]
+                if not actual_process:
+                    missing_option_value = "--process"
             elif token == "--bench":
-                if i + 1 < len(tokens):
+                if i + 1 < len(tokens) and not tokens[i + 1].startswith("-"):
                     actual_bench = tokens[i + 1]
                     i += 1
+                else:
+                    missing_option_value = token
             elif token.startswith("--bench="):
                 actual_bench = token.split("=", 1)[1]
+                if not actual_bench:
+                    missing_option_value = "--bench"
             else:
                 filtered_project_names.append(token)
             i += 1
         project_names_to_process.extend(filtered_project_names)
+
+    if missing_option_value is not None:
+        stderr_console.print(
+            f"[bold red]Error:[/bold red] Option '{missing_option_value}' requires a value."
+        )
+        raise typer.Exit(code=2)
 
     if not sys.stdin.isatty():
         piped_input = [line.strip() for line in sys.stdin]
