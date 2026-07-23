@@ -23,6 +23,7 @@ NOTES_DIR = REPO_ROOT / ".github" / "release-notes"
 
 REPO = "karotkriss/caffeinated-whale-cli"
 
+
 def _notes_for(version: str) -> str:
     _, minor, patch = (int(part) for part in version.split("."))
     heading = "### What's New" if minor == patch == 0 else "### What's Changed"

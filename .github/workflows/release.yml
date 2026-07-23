@@ -24,7 +24,7 @@ jobs:
 
     permissions:
       contents: write  # For creating releases
-      id-token: write  # For trusted publishing to PyPI
+      id-token: write  # Legacy OIDC permission; current publishing uses UV_PUBLISH_TOKEN
 
     steps:
       - name: Checkout code

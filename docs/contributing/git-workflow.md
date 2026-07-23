@@ -149,59 +149,8 @@ git push origin --delete feat-my-feature
 
 ## Release Workflow
 
-### Traditional Approach (Current Pattern)
-
-```bash
-# 1. Bump version
-# Edit pyproject.toml: version = "0.9.2"
-# Edit src/caffeinated_whale_cli/__init__.py: __version__ = "0.9.2"
-uv lock  # regenerate uv.lock so its version matches
-git add pyproject.toml src/caffeinated_whale_cli/__init__.py uv.lock
-git commit -m "chore: bump version to 0.9.2"
-
-# 2. Update CHANGELOG
-# Edit CHANGELOG.md
-git add CHANGELOG.md
-git commit -m "chore: update CHANGELOG for v0.9.2"
-
-# 3. Update README (if needed)
-# Edit README.md
-git add README.md
-git commit -m "chore: update README with new features"
-
-# 4. Create tag
-git tag v0.9.2
-
-# 5. Push
-git push origin develop --tags
-```
-
-**Result:** 3 separate chore commits
-
-### Recommended Approach (Atomic Releases)
-
-```bash
-# 1. Update all release files
-# - pyproject.toml (version)
-# - src/caffeinated_whale_cli/__init__.py (__version__)
-# - uv.lock (regenerate with `uv lock`)
-# - CHANGELOG.md (release notes)
-# - README.md (if needed)
-
-# 2. Single atomic commit
-git add pyproject.toml src/caffeinated_whale_cli/__init__.py uv.lock CHANGELOG.md README.md
-git commit -m "chore: release v0.9.2
-
-- Bump version to 0.9.2
-- Update CHANGELOG with new features and fixes
-- Update README with tab completion documentation"
-
-# 3. Create and push tag
-git tag v0.9.2
-git push origin develop --tags
-```
-
-**Result:** 1 atomic chore commit (cleaner history)
+The [CI/CD guide](./ci-cd.md#release-githubworkflowsreleaseyml) owns the release procedure.
+It includes the required hand-written release-card file, version files, CHANGELOG, tag, and publish path.
 
 ## Commit Message Examples
 
@@ -408,32 +357,8 @@ git commit -m "test: update Docker client tests"
 
 ### Scenario 4: Preparing a Release
 
-**Option A: Traditional (Multiple Commits)**
-```bash
-# On develop branch
-# Update pyproject.toml and src/caffeinated_whale_cli/__init__.py, then run `uv lock`
-git commit -m "chore: bump version to 0.9.2"
-git commit -m "chore: update CHANGELOG for v0.9.2"
-git commit -m "chore: update README with new features"
-git tag v0.9.2
-git push origin develop --tags
-```
-
-**Option B: Atomic (Single Commit)**
-```bash
-# On develop branch
-# Update pyproject.toml, __init__.py, uv.lock (via `uv lock`), CHANGELOG.md, README.md
-git commit -m "chore: release v0.9.2
-
-- Bump version to 0.9.2 (pyproject.toml + __init__.py)
-- Update CHANGELOG with tab completion feature
-- Update README with installation and usage"
-
-git tag v0.9.2
-git push origin develop --tags
-```
-
-**Recommendation:** Use Option B for cleaner history.
+Follow the [release procedure](./ci-cd.md#release-githubworkflowsreleaseyml).
+Do not push the version tag until the version files, CHANGELOG, and required release-card copy have landed on `develop`.
 
 ## Code Review Checklist
 
