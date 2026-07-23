@@ -121,31 +121,44 @@ def restart(
     actual_bench = bench
     missing_option_value: str | None = None
     filtered_project_names = []
+    verbose_options = ("-v", "--verbose")
+    process_long_option = "--process"
+    process_options = (process_long_option, "-p")
+    bench_option = "--bench"
+
+    def is_recovered_option(token: str) -> bool:
+        return (
+            token in verbose_options
+            or token in process_options
+            or token.startswith(f"{process_long_option}=")
+            or token == bench_option
+            or token.startswith(f"{bench_option}=")
+        )
 
     if project_name:
         tokens = list(project_name)
         i = 0
         while i < len(tokens):
             token = tokens[i]
-            if token in ("-v", "--verbose"):
+            if token in verbose_options:
                 actual_verbose = True
-            elif token in ("--process", "-p"):
-                if i + 1 < len(tokens) and not tokens[i + 1].startswith("-"):
+            elif token in process_options:
+                if i + 1 < len(tokens) and not is_recovered_option(tokens[i + 1]):
                     actual_process = tokens[i + 1]
                     i += 1
                 else:
                     missing_option_value = token
-            elif token.startswith("--process="):
+            elif token.startswith(f"{process_long_option}="):
                 actual_process = token.split("=", 1)[1]
                 if not actual_process:
-                    missing_option_value = "--process"
-            elif token == "--bench":
-                if i + 1 < len(tokens) and not tokens[i + 1].startswith("-"):
+                    missing_option_value = process_long_option
+            elif token == bench_option:
+                if i + 1 < len(tokens) and not is_recovered_option(tokens[i + 1]):
                     actual_bench = tokens[i + 1]
                     i += 1
                 else:
                     missing_option_value = token
-            elif token.startswith("--bench="):
+            elif token.startswith(f"{bench_option}="):
                 actual_bench = token.split("=", 1)[1]
                 if not actual_bench:
                     missing_option_value = "--bench"

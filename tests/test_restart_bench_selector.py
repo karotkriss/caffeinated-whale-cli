@@ -20,9 +20,7 @@ from caffeinated_whale_cli.commands import restart as restart_mod
 def wired(monkeypatch):
     """Capture what the whole-stack path asks ``_start_project`` to start."""
     monkeypatch.setattr(restart_mod.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(
-        restart_mod, "get_project_containers", lambda name: [_RunningContainer()]
-    )
+    monkeypatch.setattr(restart_mod, "get_project_containers", lambda name: [_RunningContainer()])
     monkeypatch.setattr(
         restart_mod,
         "resolve_bench_path",
@@ -45,9 +43,7 @@ class _RunningContainer:
 
 
 def test_the_named_bench_is_the_one_relaunched(wired):
-    restart_mod.restart(
-        ctx=None, verbose=False, process=None, bench="1", project_name=["proj"]
-    )
+    restart_mod.restart(ctx=None, verbose=False, process=None, bench="1", project_name=["proj"])
 
     assert len(wired) == 1
     assert wired[0]["bench_path_override"] == "/w/b1"
@@ -65,17 +61,13 @@ def test_the_selector_survives_being_written_after_the_project_name(wired):
 
 def test_no_selector_still_leaves_the_resolver_to_choose(wired):
     # Unchanged behaviour without --bench: the resolver picks (and says so).
-    restart_mod.restart(
-        ctx=None, verbose=False, process=None, bench=None, project_name=["proj"]
-    )
+    restart_mod.restart(ctx=None, verbose=False, process=None, bench=None, project_name=["proj"])
 
     assert wired[0]["bench_path_override"] == "/w/b0"
 
 
 def test_an_invalid_selector_is_rejected_before_the_project_is_stopped(monkeypatch):
-    monkeypatch.setattr(
-        restart_mod, "get_project_containers", lambda name: [_RunningContainer()]
-    )
+    monkeypatch.setattr(restart_mod, "get_project_containers", lambda name: [_RunningContainer()])
     monkeypatch.setattr(
         restart_mod,
         "resolve_bench_path",
@@ -91,9 +83,7 @@ def test_an_invalid_selector_is_rejected_before_the_project_is_stopped(monkeypat
         restart_mod._restart_project("proj", bench="nope")
 
 
-@pytest.mark.parametrize(
-    "option", ["--bench", "--bench=", "--process", "--process=", "-p"]
-)
+@pytest.mark.parametrize("option", ["--bench", "--bench=", "--process", "--process=", "-p"])
 def test_a_trailing_value_option_is_a_usage_error(option, monkeypatch):
     monkeypatch.setattr(restart_mod.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(
@@ -112,3 +102,43 @@ def test_a_trailing_value_option_is_a_usage_error(option, monkeypatch):
         )
 
     assert exc.value.exit_code == 2
+
+
+def test_a_recognized_option_after_bench_is_a_usage_error(monkeypatch):
+    monkeypatch.setattr(restart_mod.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(
+        restart_mod,
+        "_restart_project",
+        lambda *a, **k: pytest.fail("malformed --bench must not restart anything"),
+    )
+
+    with pytest.raises(restart_mod.typer.Exit) as exc:
+        restart_mod.restart(
+            ctx=None,
+            verbose=False,
+            process=None,
+            bench=None,
+            project_name=["proj", "--bench", "--verbose"],
+        )
+
+    assert exc.value.exit_code == 2
+
+
+def test_a_dash_prefixed_bench_label_remains_addressable(monkeypatch):
+    monkeypatch.setattr(restart_mod.sys.stdin, "isatty", lambda: True)
+    seen = []
+    monkeypatch.setattr(
+        restart_mod,
+        "_restart_project",
+        lambda name, **kwargs: seen.append((name, kwargs["bench"])) or (None, 0),
+    )
+
+    restart_mod.restart(
+        ctx=None,
+        verbose=False,
+        process=None,
+        bench=None,
+        project_name=["proj", "--bench", "-staging"],
+    )
+
+    assert seen == [("proj", "-staging")]
