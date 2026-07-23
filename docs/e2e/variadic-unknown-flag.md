@@ -1,7 +1,6 @@
 # E2E: an unrecognised trailing flag on a variadic-project command
 
-Real-instance validation for the fix that turns an unrecognised option token trailing a variadic
-`project_name` into a usage error instead of another project name.
+Real-instance validation for the fix that turns an unrecognised option token trailing a variadic `project_name` into a usage error instead of another project name.
 
 - Instance: `cwe2e-argswallow`, a throwaway Frappe `version-16` instance built with `cwcli init`, ports 14000/15000.
 - Isolation: `CWCLI_HOME=/tmp/cwe2e-argswallow-home`, binary is the worktree's own editable install (`uv run cwcli`).
@@ -147,12 +146,9 @@ $ cwcli rm cwe2e-argswallow --yes
 exit=0
 ```
 
-Afterwards zero containers and zero volumes carried the project label, and every other instance on
-the host was left in the state it started in.
+Afterwards zero containers and zero volumes carried the project label, and every other instance on the host was left in the state it started in.
 
 ## Observation, not a defect
 
-`cwcli label <project> 0 -staging` is refused by the option parser (`No such option: -s`), because
-`new_label` is a plain positional argument; `--` is the standard escape and is what the run above
-used. That is ordinary CLI behaviour and the opposite of the failure fixed here, where a bad token
-was accepted silently.
+`cwcli label <project> 0 -staging` is refused by the option parser (`No such option: -s`), because `new_label` is a plain positional argument; `--` is the standard escape and is what the run above used.
+That is ordinary CLI behaviour and the opposite of the failure fixed here, where a bad token was accepted silently.
