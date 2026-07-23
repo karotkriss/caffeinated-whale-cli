@@ -34,7 +34,9 @@ import pytest
 from . import harness
 from .conftest import SESSION_ADMIN_PW
 
-pytestmark = pytest.mark.e2e
+# `standalone`: this file builds its own instances and never touches the shared
+# session instance (see the marker's entry in pyproject.toml).
+pytestmark = [pytest.mark.e2e, pytest.mark.standalone]
 
 v16_only = pytest.mark.skipif(
     harness.FRAPPE_MAJOR != 16,

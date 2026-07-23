@@ -15,7 +15,7 @@ The suite is split into two tiers by pytest marker.
   They require a reachable Docker daemon and are excluded by default; run them explicitly with `-m e2e`.
   See [E2E harness](#e2e-harness-real-docker) below.
 
-The `unit`, `e2e`, `e2e_p2p`, and `e2e_pkg` markers are registered in `pyproject.toml`; `tests/conftest.py` auto-applies `unit` to any test not marked `e2e`/`e2e_p2p`/`e2e_pkg`, so there is nothing to hand-mark. `e2e_pkg` is the runtime-deps-only packaging leg (one full lifecycle driven against a `uv tool install .` binary via `CWCLI_BIN`); it is excluded from `-m e2e` so it does not double the version matrix's init cost.
+The `unit`, `e2e`, `e2e_p2p`, `e2e_pkg`, and `standalone` markers are registered in `pyproject.toml`; `tests/conftest.py` auto-applies `unit` to any test not marked `e2e`/`e2e_p2p`/`e2e_pkg`, so there is nothing to hand-mark. `e2e_pkg` is the runtime-deps-only packaging leg (one full lifecycle driven against a `uv tool install .` binary via `CWCLI_BIN`); it is excluded from `-m e2e` so it does not double the version matrix's init cost. `standalone` is the one marker that *is* hand-applied: it names each `e2e` test that never touches the shared session instance, and CI splits every version leg into a `standalone` and a `shared` job on it (see [CI/CD](#cicd) below).
 
 ## Quick Reference
 
@@ -311,6 +311,7 @@ markers = [
     "e2e: real-Docker end-to-end tests driving the real cwcli binary",
     "e2e_p2p: real-Docker P2P (sendme loopback) end-to-end tests (also carry e2e, so they ride the version matrix version-gated)",
     "e2e_pkg: real-Docker full-lifecycle test against a runtime-deps-only uv-tool-install binary (CWCLI_BIN)",
+    "standalone: an e2e test that never touches the shared session instance (the CI group split)",
 ]
 ```
 
@@ -335,11 +336,11 @@ CI is two-tiered.
 
   The required-check configuration is documented in the [CI/CD Workflows guide](../docs/contributing/ci-cd.md).
 
-- **`.github/workflows/e2e.yml`** runs the real-Docker `e2e` tier as a `strategy.matrix.frappe: [14, 15, 16]` of GitHub-hosted `ubuntu-latest` jobs (no `container:`, so `docker`/`docker compose` reach the daemon).
-  It is triggered on PRs into `develop`/`master` and on-demand via the `e2e` PR label, with per-job `timeout-minutes` and an `always()` `cwe2e-` teardown backstop.
-  On `develop`, branch protection makes the E2E checks blocking.
+- **`.github/workflows/e2e.yml`** runs the real-Docker `e2e` tier as a Frappe v14/v15/v16 matrix on GitHub-hosted `ubuntu-latest` jobs.
+  The `standalone` marker splits each version leg in two: the `standalone` job runs the tests that build their own instance or need none, the `shared` job runs the tests that assert against the one session-scoped instance, and they partition the tier exactly.
+  `tests/e2e/conftest.py` fails collection if the marker disagrees with the fixtures a test requests.
 
-See the [CI/CD Workflows guide](../docs/contributing/ci-cd.md) for the full setup.
+See the [CI/CD Workflows guide](../docs/contributing/ci-cd.md) for triggers, runner isolation, required checks, and branch-protection state.
 
 ## Common Issues
 

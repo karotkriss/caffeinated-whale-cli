@@ -23,13 +23,21 @@ from __future__ import annotations
 import pytest
 
 from . import harness
-from .test_start_status_e2e import _ensure_serving, _wait_web_ready, _web_reachable
+from .test_start_status_e2e import (
+    BENCH_PY as _PY,
+)
+from .test_start_status_e2e import (
+    SUPERVISOR_CFG as _CFG,
+)
+from .test_start_status_e2e import (
+    _ensure_serving,
+    _wait_web_ready,
+    _web_reachable,
+)
 
 pytestmark = pytest.mark.e2e
 
 BENCH = harness.DEFAULT_BENCH_PATH
-_CFG = f"{BENCH}/logs/.cwcli-supervisor.conf"
-_PY = f"{BENCH}/env/bin/python"
 
 
 def _proc_pids(project: str, pattern: str) -> list[int]:

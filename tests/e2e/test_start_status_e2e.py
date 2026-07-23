@@ -51,6 +51,7 @@ multi-bench case exercised here would pass an explicit ``--bench <index|label>``
 from __future__ import annotations
 
 import io
+import re
 import subprocess
 
 import pytest
@@ -58,6 +59,13 @@ import pytest
 from . import harness
 
 pytestmark = pytest.mark.e2e
+
+# The cwcli-generated supervisord config and the bench interpreter that runs
+# supervisorctl. Defined here (next to `_ensure_serving`, which reads them) and
+# imported by the sibling supervisor modules, so there is ONE spelling of each.
+SUPERVISOR_CFG = f"{harness.DEFAULT_BENCH_PATH}/logs/.cwcli-supervisor.conf"
+SUPERVISOR_PID = f"{harness.DEFAULT_BENCH_PATH}/logs/.cwcli-supervisord.pid"
+BENCH_PY = f"{harness.DEFAULT_BENCH_PATH}/env/bin/python"
 
 
 # --------------------------------------------------------------------------- #
@@ -89,24 +97,144 @@ def _wait_web_ready(project: str, *, timeout: int = 300) -> None:
     )
 
 
+# supervisord's own state tokens, so an error string from a bench with no live
+# supervisord is never mistaken for a program row.
+_SUPERVISOR_STATES = frozenset(
+    {"STOPPED", "STARTING", "RUNNING", "BACKOFF", "STOPPING", "EXITED", "FATAL", "UNKNOWN"}
+)
+# States a program is still moving through: its pid is absent, or about to change.
+_TRANSITIONAL = frozenset({"STARTING", "BACKOFF", "STOPPING"})
+# How long a RUNNING program must have been up before we call the stack settled.
+# cwcli generates `startsecs=3`, so RUNNING alone only means "survived 3s" - a
+# program that crashes on its first DB connection is RUNNING, then BACKOFF, then
+# RUNNING again. Waiting past that window is what makes a sibling's pid stable.
+_SETTLED_UPTIME_S = 10
+_UPTIME_RE = re.compile(r"uptime\s+(?:(\d+)\s+days?,\s+)?(\d+):(\d+):(\d+)")
+_MANAGER_PROVENANCE_MARKER = "__CWCLI_MANAGER_PROVENANCE__="
+
+
+def _parse_supervised_programs(status_output: str) -> dict[str, tuple[str, int]]:
+    """``supervisorctl status`` output -> ``name -> (state, uptime seconds)``.
+
+    Only lines whose second field is one of supervisord's OWN state tokens count
+    as a program, so a connection-refused error from a bench with no live
+    supervisord yields an empty mapping instead of a phantom program.
+    """
+    programs: dict[str, tuple[str, int]] = {}
+    for line in status_output.splitlines():
+        parts = line.split()
+        if len(parts) < 2 or parts[1] not in _SUPERVISOR_STATES:
+            continue
+        uptime = 0
+        if m := _UPTIME_RE.search(line):
+            days, hours, minutes, seconds = (int(g or 0) for g in m.groups())
+            uptime = ((days * 24 + hours) * 60 + minutes) * 60 + seconds
+        programs[parts[0]] = (parts[1], uptime)
+    return programs
+
+
+def _supervised_programs(project: str) -> dict[str, tuple[str, int]]:
+    """Every program cwcli's supervisord tracks, live from the container.
+
+    Reads whatever supervisord actually reports and NEVER assumes a particular
+    program exists - a bench whose Procfile has no ``schedule`` (or no supervisord
+    at all, e.g. one run under honcho) yields an empty mapping, which reads as
+    "nothing to wait for" rather than a failure.
+    """
+    code, out = harness.exec_in_frappe(
+        project,
+        (
+            f"{BENCH_PY} -m supervisor.supervisorctl -c {SUPERVISOR_CFG} status\n"
+            "status_code=$?\n"
+            f'if [ -r {SUPERVISOR_PID} ] && kill -0 "$(cat {SUPERVISOR_PID})" 2>/dev/null; then\n'
+            "  provenance=supervisord\n"
+            "else\n"
+            "  provenance=absent\n"
+            "  for manager_pid in $(pgrep -f '[h]oncho' 2>/dev/null); do\n"
+            f'    if [ "$(readlink -f /proc/$manager_pid/cwd 2>/dev/null)" = "{harness.DEFAULT_BENCH_PATH}" ]; then\n'
+            "      provenance=honcho\n"
+            "      break\n"
+            "    fi\n"
+            "  done\n"
+            f'  if [ "$provenance" = absent ] && [ -f {SUPERVISOR_CFG} ]; then\n'
+            "    provenance=expected\n"
+            "  fi\n"
+            "fi\n"
+            f"printf '\\n{_MANAGER_PROVENANCE_MARKER}%s\\n' \"$provenance\"\n"
+            'exit "$status_code"'
+        ),
+    )
+    programs = _parse_supervised_programs(out)
+    if programs or code == 0:
+        return programs
+    if any(
+        f"{_MANAGER_PROVENANCE_MARKER}{provenance}" in out for provenance in ("honcho", "absent")
+    ):
+        return {}
+    raise AssertionError(
+        f"could not read supervisor status for the live supervised stack in {project}: {out}"
+    )
+
+
+def _wait_supervised_stack(project: str, *, timeout: int = 180) -> None:
+    """Block until every supervised program has settled, or fail naming the ones that did not.
+
+    Settled means: not mid-transition, and if RUNNING, up for longer than the
+    crash-and-retry window. A program in a terminal state (``FATAL``/``EXITED``/
+    ``STOPPED``) is settled too - waiting cannot help it, and the caller's own
+    assertions are the right place to judge whether it should have been up.
+    """
+    unsettled: dict[str, tuple[str, int]] = {}
+
+    def settled() -> bool:
+        nonlocal unsettled
+        unsettled = {
+            name: detail
+            for name, detail in _supervised_programs(project).items()
+            if detail[0] in _TRANSITIONAL
+            or (detail[0] == "RUNNING" and detail[1] < _SETTLED_UPTIME_S)
+        }
+        return not unsettled
+
+    try:
+        harness.wait_until(
+            settled, timeout=timeout, interval=3, desc=f"{project} supervised stack settled"
+        )
+    except TimeoutError as exc:
+        raise AssertionError(
+            f"the supervised stack for {project} never settled within {timeout}s. "
+            f"Still unsettled (program: state, uptime seconds): {unsettled}"
+        ) from exc
+
+
 def _ensure_serving(project: str) -> None:
-    """Guarantee the web server is up on :8000, idempotently and order-independently.
+    """Guarantee the SUPERVISED STACK is up, idempotently and order-independently.
 
     A no-op curl check when already serving (so only the FIRST serving test in the
     module pays the supervisor's boot cost); otherwise drives the real ``cwcli stop``
     -> ``cwcli start`` from-stopped path that actually launches the supervisor, then
     waits for the web port. Restores the running state so sibling tests sharing the
     session instance are undisturbed (mirrors ``running_instance``'s guarantee).
+
+    The stack wait runs on BOTH paths, including the already-serving one, and that
+    is the point: callers assert on SIBLING programs (a schedule pid that must not
+    change across a ``restart --process web``), but a reachable web port says
+    nothing about them. When an earlier test stops the instance and ``running_instance``
+    restarts it, web answers within seconds while sibling programs may still be
+    starting or retrying. This helper used to return with the stack half up, and
+    those sibling assertions passed only on whatever unrelated work happened to run
+    in between. Splitting the E2E tier into per-group CI jobs removed that accidental
+    delay and turned the latent race into a deterministic failure.
     """
-    if _web_reachable(project):
-        return
-    harness.run_cwcli("stop", project)
-    result = harness.run_cwcli("start", project, "--yes")
-    assert result.returncode == 0, (
-        f"`cwcli start {project}` from a stopped state should exit 0 and start "
-        f"bench.\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
-    )
-    _wait_web_ready(project)
+    if not _web_reachable(project):
+        harness.run_cwcli("stop", project)
+        result = harness.run_cwcli("start", project, "--yes")
+        assert result.returncode == 0, (
+            f"`cwcli start {project}` from a stopped state should exit 0 and start "
+            f"bench.\n--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
+        )
+        _wait_web_ready(project)
+    _wait_supervised_stack(project)
 
 
 def _frappe_image(project: str) -> str:
@@ -197,6 +325,7 @@ def test_start_rerun_leaves_instance_serving(running_instance):
     assert _web_reachable(inst.name), "re-running start must leave the site serving"
 
 
+@pytest.mark.standalone
 def test_start_nonexistent_fails_honestly():
     """1.4 Honest failure: starting a project that does not exist exits non-zero and
     never reports it as started."""
@@ -275,6 +404,7 @@ def test_start_interactive_port_conflict_prompt_is_driven(running_instance):
 # --------------------------------------------------------------------------- #
 # 2. status (lifecycle-state discrimination)
 # --------------------------------------------------------------------------- #
+@pytest.mark.standalone
 def test_status_nonexistent_fails_honestly():
     """2.1 A truly-nonexistent project (never created - no containers at all) is NOT
     ``offline``: it exits non-zero with a "no such project" error, distinct from a
@@ -387,6 +517,7 @@ def test_status_containers_up_bench_down_is_distinct_from_running(running_instan
     assert not _web_reachable(inst.name), "site must not be answering in this state"
 
 
+@pytest.mark.standalone
 def test_restart_nonexistent_fails_honestly():
     """3.3 Honest failure: restarting a project that does not exist exits non-zero
     and never reports it as started."""

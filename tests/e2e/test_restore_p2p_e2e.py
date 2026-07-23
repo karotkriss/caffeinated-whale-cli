@@ -47,7 +47,9 @@ from .test_restore_e2e import DB_PW, _mutate_marker, _read_marker, _seed_marker
 # runs them); `e2e_p2p` makes the P2P marker non-empty and lets a targeted
 # `-m e2e_p2p` run select them alone. Each test is version-gated below so the
 # generic transport proof runs ONCE (v16) while the v14 reproduction runs on v14.
-pytestmark = [pytest.mark.e2e, pytest.mark.e2e_p2p]
+# `standalone`: `p2p_instance` is this module's own instance; nothing here touches
+# the shared session instance (see the marker's entry in pyproject.toml).
+pytestmark = [pytest.mark.e2e, pytest.mark.e2e_p2p, pytest.mark.standalone]
 
 v16_only = pytest.mark.skipif(
     harness.FRAPPE_MAJOR != 16,

@@ -158,7 +158,7 @@ jobs:
       # continue-on-error. (If you ever need to make a step non-blocking again,
       # continue-on-error MUST go on the step, not the job: a job-level setting
       # still reports the job's conclusion as "failure" on the PR check.)
-      # "Mypy" is a required develop branch-protection check, so a failure blocks
-      # merges.
+      # Branch-protection state and required contexts are documented in
+      # docs/contributing/ci-cd.md.
       - name: Type-check with Mypy
         run: uv run mypy src/

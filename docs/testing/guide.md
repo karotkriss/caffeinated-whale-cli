@@ -346,6 +346,7 @@ CI is two-tiered. The fast `unit` tier runs on every push and PR via `.github/wo
 ```
 
 The real-Docker `e2e` tier runs via `.github/workflows/e2e.yml` on a v14/v15/v16 Frappe matrix, on PRs into `develop`/`master` and on-demand via the `e2e` PR label.
+Each version leg is split into a `shared` and a `standalone` job by the `standalone` marker, which roughly halves the workflow's wall clock without dropping a single test; see the [CI/CD Workflows guide](../contributing/ci-cd.md#e2e-githubworkflowse2eyml).
 
 See the [CI/CD Workflows guide](../contributing/ci-cd.md) for the full job list and current required checks.
 

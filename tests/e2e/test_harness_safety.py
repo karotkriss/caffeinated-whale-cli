@@ -14,7 +14,9 @@ import pytest
 
 from . import harness
 
-pytestmark = pytest.mark.e2e
+# `standalone`: none of these needs the shared session instance (see the marker's
+# entry in pyproject.toml).
+pytestmark = [pytest.mark.e2e, pytest.mark.standalone]
 
 
 def test_name_rail_refuses_unprefixed():
@@ -84,6 +86,80 @@ def test_port_allocator_spacing():
     # and the next instance's web range clears this instance's socketio range.
     assert p0 + 5 < p0 + 1000
     assert p1 > p0 + 1005
+
+
+def test_supervised_program_parsing_is_not_silently_permissive():
+    """The stack-settle read must not degrade to "everything is fine".
+
+    `_ensure_serving` waits for the supervised stack by parsing `supervisorctl
+    status`. If that parse silently yielded nothing, every caller would sail past
+    a half-started stack again - the exact race the per-group CI split exposed,
+    back but invisible. Pure logic, so it is checked here rather than against a
+    real bench.
+    """
+    from .test_start_status_e2e import _parse_supervised_programs
+
+    parsed = _parse_supervised_programs(
+        "web                    RUNNING   pid 191, uptime 0:01:23\n"
+        "schedule               BACKOFF   Exited too quickly (process log may have details)\n"
+        "watch                  STARTING\n"
+        "worker_default         FATAL     Exited too quickly (process log may have details)\n"
+        "veteran                RUNNING   pid 5, uptime 1 day, 2:03:04\n"
+        "unix:///tmp/x.sock refused connection\n"
+    )
+    assert parsed == {
+        "web": ("RUNNING", 83),
+        "schedule": ("BACKOFF", 0),
+        "watch": ("STARTING", 0),
+        "worker_default": ("FATAL", 0),
+        "veteran": ("RUNNING", 93784),
+    }, parsed
+
+    # A daemon that is not running yields NO programs (a honcho bench, or a
+    # Procfile with no schedule): "nothing to wait for", never a false program.
+    assert _parse_supervised_programs("error: could not connect\n") == {}
+
+
+def test_supervised_program_read_fails_closed_for_a_live_daemon(monkeypatch):
+    from .test_start_status_e2e import _supervised_programs
+
+    def failed_live_read(project, script, workdir=None):
+        return (
+            1,
+            "unix:///tmp/x.sock refused connection\n" "__CWCLI_MANAGER_PROVENANCE__=supervisord\n",
+        )
+
+    monkeypatch.setattr(harness, "exec_in_frappe", failed_live_read)
+    with pytest.raises(AssertionError, match="could not read supervisor status"):
+        _supervised_programs("cwe2e-test-live")
+
+
+@pytest.mark.parametrize("provenance", ["honcho", "absent"])
+def test_supervised_program_read_allows_an_absent_daemon(monkeypatch, provenance):
+    from .test_start_status_e2e import _supervised_programs
+
+    def failed_absent_read(project, script, workdir=None):
+        return (
+            1,
+            "unix:///tmp/x.sock no such file\n" f"__CWCLI_MANAGER_PROVENANCE__={provenance}\n",
+        )
+
+    monkeypatch.setattr(harness, "exec_in_frappe", failed_absent_read)
+    assert _supervised_programs("cwe2e-test-honcho") == {}
+
+
+def test_supervised_program_read_fails_closed_for_a_crashed_expected_daemon(monkeypatch):
+    from .test_start_status_e2e import _supervised_programs
+
+    def failed_expected_read(project, script, workdir=None):
+        return (
+            1,
+            "unix:///tmp/x.sock no such file\n" "__CWCLI_MANAGER_PROVENANCE__=expected\n",
+        )
+
+    monkeypatch.setattr(harness, "exec_in_frappe", failed_expected_read)
+    with pytest.raises(AssertionError, match="could not read supervisor status"):
+        _supervised_programs("cwe2e-test-crashed")
 
 
 def _create_fake_leaked_project(name: str) -> None:
