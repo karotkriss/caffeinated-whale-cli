@@ -122,6 +122,7 @@ markers = [
     "e2e: real-Docker end-to-end tests that drive the real `cwcli` binary against genuine throwaway instances (requires a Docker daemon).",
     "e2e_p2p: real-Docker P2P (sendme loopback) end-to-end tests (real bytes over sendme, no mock). These ALSO carry the `e2e` marker so they ride the existing per-version matrix, each version-gated: the generic send->receive transport proof runs once on the v16 leg, and the v14-only `--receive` bare-filename reproduction runs on the v14 leg. A targeted `-m e2e_p2p` run selects them alone; no separate CI job is needed. See tests/e2e/test_restore_p2p_e2e.py.",
     "e2e_pkg: real-Docker full-lifecycle test driven against a runtime-deps-only `uv tool install .` binary via CWCLI_BIN (the packaging-realism leg). Deliberately OFF the `-m e2e` matrix so it does not double the init cost there; selected only by the dedicated e2e.yml runtime-only job.",
+    "standalone: an `e2e` test that never touches the shared `session_instance`; it either builds its own uniquely named, port-disjoint instance or needs no instance at all.",
 ]
 
 [tool.coverage.run]
