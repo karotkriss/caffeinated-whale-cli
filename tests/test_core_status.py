@@ -242,8 +242,11 @@ class TestChoicesAndErrors:
             [{"path": "/w/b0"}, {"path": "/w/b1"}, {"path": "/w/b2"}],
         ):
             wire(FakeContainer(marker=_MARKER), benches=benches)
-            for kwargs in ({}, {"bench": "1"} if benches and len(benches) > 1 else {},
-                           {"probe_web": False}):
+            for kwargs in (
+                {},
+                {"bench": "1"} if benches and len(benches) > 1 else {},
+                {"probe_web": False},
+            ):
                 result = core_status.status("proj", **kwargs)
                 assert result.status is not Status.NEEDS_CHOICE
                 assert result.choice is None
@@ -307,9 +310,7 @@ _PS_TWO_BENCH = f"""\
 # Only bench 1 is up: bench 0 was never started, which is the audit's headline flow
 # (`cwcli start <p> --bench 1`).
 _PS_ONLY_B1 = "".join(
-    line + "\n"
-    for line in _PS_TWO_BENCH.splitlines()
-    if line.startswith(("1 0", "2"))
+    line + "\n" for line in _PS_TWO_BENCH.splitlines() if line.startswith(("1 0", "2"))
 )
 
 _TWO_BENCH_CONFIGS = {
@@ -391,9 +392,7 @@ class TestPerBenchWebProbe:
         )
         wire(c, benches=_TWO_BENCHES)
         core_status.status("proj")
-        probed = [
-            cmd[-1] for cmd in c.calls if isinstance(cmd, list) and cmd[0] == "curl"
-        ]
+        probed = [cmd[-1] for cmd in c.calls if isinstance(cmd, list) and cmd[0] == "curl"]
         assert probed == ["http://localhost:8000", "http://localhost:8001"]
 
 
@@ -429,9 +428,7 @@ class TestFailHonestPort:
         # would silently re-create the defect inside the change that removes it: a
         # bench past the first would report web_port 8000 / verified true and measure
         # bench 0's server.
-        c = FakeContainer(
-            marker=_MARKER, web_code="200", configs={BENCH: {"some_other_key": 1}}
-        )
+        c = FakeContainer(marker=_MARKER, web_code="200", configs={BENCH: {"some_other_key": 1}})
         wire(c, benches=[{"path": BENCH}])
         result = core_status.status("proj")
         bench = _bench(result.data)
@@ -499,9 +496,7 @@ class TestTheProbeNamesTheSite:
 
     def _sites(self, monkeypatch, mapping):
         """Stand in for the cached per-bench site lists the resolver reads."""
-        monkeypatch.setattr(
-            resolvers.db_utils, "get_default_site", lambda p, b=None: None
-        )
+        monkeypatch.setattr(resolvers.db_utils, "get_default_site", lambda p, b=None: None)
         monkeypatch.setattr(
             resolvers.db_utils,
             "get_all_site_configs",
@@ -555,9 +550,7 @@ class TestTheProbeNamesTheSite:
         assert "-H" not in curl
         assert _bench(report).web_site is None  # unknown, never guessed
 
-    def test_watch_mode_reports_no_site_because_it_probed_nothing(
-        self, wire, monkeypatch
-    ):
+    def test_watch_mode_reports_no_site_because_it_probed_nothing(self, wire, monkeypatch):
         # web_site describes a probe that happened. With the probe suppressed there
         # is no site to attribute, and claiming one would imply a request was made.
         self._sites(monkeypatch, {BENCH: ["one.localhost"]})
