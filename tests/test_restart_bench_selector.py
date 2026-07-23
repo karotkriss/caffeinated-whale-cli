@@ -23,6 +23,11 @@ def wired(monkeypatch):
     monkeypatch.setattr(
         restart_mod, "get_project_containers", lambda name: [_RunningContainer()]
     )
+    monkeypatch.setattr(
+        restart_mod,
+        "resolve_bench_path",
+        lambda name, selector, *a, **k: "/w/b1" if selector == "1" else "/w/b0",
+    )
     monkeypatch.setattr(restart_mod, "stop_project_best_effort", lambda name, verbose=False: 1)
     seen: list[dict] = []
 
@@ -45,7 +50,7 @@ def test_the_named_bench_is_the_one_relaunched(wired):
     )
 
     assert len(wired) == 1
-    assert wired[0]["bench_selector"] == "1"
+    assert wired[0]["bench_path_override"] == "/w/b1"
 
 
 def test_the_selector_survives_being_written_after_the_project_name(wired):
@@ -55,7 +60,7 @@ def test_the_selector_survives_being_written_after_the_project_name(wired):
         ctx=None, verbose=False, process=None, bench=None, project_name=["proj", "--bench", "1"]
     )
 
-    assert wired[0]["bench_selector"] == "1"
+    assert wired[0]["bench_path_override"] == "/w/b1"
 
 
 def test_no_selector_still_leaves_the_resolver_to_choose(wired):
@@ -64,4 +69,46 @@ def test_no_selector_still_leaves_the_resolver_to_choose(wired):
         ctx=None, verbose=False, process=None, bench=None, project_name=["proj"]
     )
 
-    assert wired[0]["bench_selector"] is None
+    assert wired[0]["bench_path_override"] == "/w/b0"
+
+
+def test_an_invalid_selector_is_rejected_before_the_project_is_stopped(monkeypatch):
+    monkeypatch.setattr(
+        restart_mod, "get_project_containers", lambda name: [_RunningContainer()]
+    )
+    monkeypatch.setattr(
+        restart_mod,
+        "resolve_bench_path",
+        lambda *a, **k: (_ for _ in ()).throw(restart_mod.typer.Exit(code=1)),
+    )
+    monkeypatch.setattr(
+        restart_mod,
+        "stop_project_best_effort",
+        lambda *a, **k: pytest.fail("selector validation must precede teardown"),
+    )
+
+    with pytest.raises(restart_mod.typer.Exit):
+        restart_mod._restart_project("proj", bench="nope")
+
+
+@pytest.mark.parametrize(
+    "option", ["--bench", "--bench=", "--process", "--process=", "-p"]
+)
+def test_a_trailing_value_option_is_a_usage_error(option, monkeypatch):
+    monkeypatch.setattr(restart_mod.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(
+        restart_mod,
+        "_restart_project",
+        lambda *a, **k: pytest.fail("malformed options must not restart anything"),
+    )
+
+    with pytest.raises(restart_mod.typer.Exit) as exc:
+        restart_mod.restart(
+            ctx=None,
+            verbose=False,
+            process=None,
+            bench=None,
+            project_name=["proj", option],
+        )
+
+    assert exc.value.exit_code == 2
