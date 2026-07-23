@@ -60,9 +60,10 @@ The captain ruled on the Lavish review surface, which he ended himself after sub
 - [x] 5.3 `commands/status.py`: DELETE `_fetch`'s prompt-and-retry loop, now dead. `commands/axi.py:axi_status`: DELETE the `emit_axi_choice_as_usage_error` branch, now unreachable. A retained-but-unreachable prompt is how the refusal comes back (`design.md` Decision 8).
 - [x] 5.4 **ANSWERED before implementation:** no encoder change is required. Proven by running the SHIPPED `utils/toon.py` on this proposal's own sample shape - it emits the `- ` item form with the nested compact `processes` table, matching the sample exactly (the `axi inspect` precedent, already pinned by `tests/test_axi_inspect.py:80-87`).
 - [x] 5.5 Instance-wide latency measured on a real 2-bench and 6-bench instance (`design.md` Decision 7), both with every bench genuinely serving.
-      2-bench: `tests/e2e/test_multibench_serving_e2e.py::test_instance_wide_status_latency_on_two_serving_benches`, on the two-serving-bench fixture, so it runs on every v16 leg at no extra instance cost.
-      6-bench: `tests/e2e/test_multibench_latency_e2e.py`, which grows a real instance one serving bench at a time and re-measures after each, yielding the whole 1..6 curve from one instance. OPT-IN (`CWE2E_LATENCY_BENCHES=6`, or the `latency_benches` input on the E2E workflow) because six real benches are roughly 9 GB and a dozen minutes of bench build - too much for every PR, for a number that only needs retaking when the probe changes.
-      Recorded numbers: `docs/e2e/multibench-serving-status.md`.
+      2-bench: `tests/e2e/test_multibench_serving_e2e.py::test_instance_wide_status_latency_on_two_serving_benches`, on the two-serving-bench fixture, so it runs on the v16 standalone leg at no extra instance cost.
+      6-bench: `tests/e2e/test_multibench_latency_e2e.py`, which grows a real instance one serving bench at a time and re-measures after each, yielding the whole 1..6 curve from one instance.
+      It is opt-in through `CWE2E_LATENCY_BENCHES=6` or the E2E workflow's `latency_benches` input because each point requires another real bench build.
+      Recorded timings and resource evidence: `docs/e2e/multibench-serving-status.md`.
       The `discover_stack` `ps` hoist stays undone; the measurement is what a future proposal to do it must cite.
 
 ## 6. Tests
@@ -87,11 +88,11 @@ That skeleton could pin the document shape and nothing about the probe, because 
 
 The skeleton test survives, unweakened, renamed `test_multibench_document_structure_over_a_bench_skeleton`, and its docstring now states plainly that it covers structure only.
 
-Every test in the serving module asserts the POSITIVE before the negative (the bench genuinely serves before it is claimed not to be misreported) and asserts the DISCRIMINATOR: the value the removed bench-blind probe would have read, shown to differ from the value `status` reports. That is what makes the assertions fail if the defect returns.
+The proof details and mutation results live in `docs/e2e/multibench-serving-status.md`.
 
-- [x] 7.1 F3 proven against two genuinely serving benches: with only the second bench up, it reports `running` with its own port, site and a live `200`, and the instance folds to `running`. The discriminator asserted alongside: the first bench's port - what the old probe hardcoded - answers `000` at that moment.
-- [x] 7.2 F4 proven the same way: with the second bench stopped while the first serves `200`, the second reports `000`/null on ITS port and never the sibling's live code, in the same document that reports the sibling's `200` correctly.
-- [x] 7.3 F5 proven: with BOTH benches down (so nothing answers the first bench's port at all), `axi start --bench <second>` reports `web_ready: true` with no `start.web_not_ready` warning, and afterwards the second bench serves while the first bench's port is still dead - so the wait cannot have been satisfied there.
+- [x] 7.1 F3 proven against two genuinely serving benches by `test_f3_a_healthy_second_bench_is_not_reported_degraded`.
+- [x] 7.2 F4 proven against two genuinely serving benches by `test_f4_a_stopped_bench_never_borrows_its_neighbours_http_code`.
+- [x] 7.3 F5 proven against two genuinely serving benches by `test_f5_starting_a_non_first_bench_waits_on_its_own_port`.
 
 - [x] 7.4 `tests/e2e/test_start_status_new_behavior_e2e.py` - the multi-bench test is rewritten from `test_multibench_no_selector_refuses_noninteractively` to `test_multibench_document_structure_over_a_bench_skeleton`: `axi start` still refuses with exit 2 naming `--bench` (it mutates one bench), while bare `axi status` reports `benches[2]:` at exit 0 with both benches named, human `status` prints exactly one token at exit 0 from a non-TTY, and `--bench 0` still narrows to `benches[1]:`.
 - [x] 7.5 Both modes: the verb is now NON-PROMPTING on every path, so there is nothing to drive through a pty. That is a strict reduction in prompting and satisfies the both-modes standard trivially; `--bench` remains the non-interactive selector it already was. Asserted rather than assumed by `test_status_never_returns_needs_choice` (core) and the non-TTY E2E above.

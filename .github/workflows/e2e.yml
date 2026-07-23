@@ -15,9 +15,9 @@ on:
         description: >-
           Bench count for the multibench `cwcli status` latency measurement
           (report-status-per-bench task 5.5). Empty skips it. 6 builds a real
-          six-bench serving instance on the v16 standalone leg - roughly 1.5 GB
-          and a couple of minutes of bench build per bench, which is why it is
-          not part of the per-PR matrix.
+          six-bench serving instance on the v16 standalone leg. Each point
+          requires another real bench build, so it is not part of the per-PR
+          matrix.
         required: false
         default: ''
 

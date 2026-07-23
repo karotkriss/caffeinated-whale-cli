@@ -24,11 +24,11 @@ own site, its own Procfile, its own supervisord, and the port bench's own
 **Every test asserts the positive before the negative.** Before asserting that a
 bench is not misreported it proves that bench is genuinely serving, because a
 "no wrong answer" check passes just as happily against a bench that is not there.
-Each test also asserts the DISCRIMINATOR: the value the removed bench-blind probe
-would have read, shown to differ from the value ``status`` reports. That is what
-makes these tests fail if the defect returns rather than merely describe it - a
-probe that went back to ``:8000`` would read the discriminator, and the assertion
-on the reported value would fail.
+F3 and F5 also assert the exact DISCRIMINATOR: the value the removed bench-blind
+probe would have read, shown to differ from the correct target. F4 establishes
+that the neighbouring bench is genuinely live and that the stopped bench's own
+port is dead; its mutation evidence is recorded in
+``docs/e2e/multibench-serving-status.md``.
 
 Multibench port assignment and the probe are version-agnostic, so this runs once
 on the v16 leg (the ``v16_only`` precedent from ``test_scale_e2e``). It builds and
