@@ -18,8 +18,17 @@ from caffeinated_whale_cli.core.supervision import ProcessHealth
 from caffeinated_whale_cli.utils import docker_utils
 
 
-def _bench(overall, processes=None, *, index=0, path="/w/b0", not_cwcli_supervised=False,
-           web_port=8000, web_port_verified=True, web_site="site.localhost"):
+def _bench(
+    overall,
+    processes=None,
+    *,
+    index=0,
+    path="/w/b0",
+    not_cwcli_supervised=False,
+    web_port=8000,
+    web_port_verified=True,
+    web_site="site.localhost",
+):
     return BenchStatus(
         index=index,
         bench_path=path,
@@ -171,9 +180,7 @@ def test_the_web_line_names_the_port_and_site_it_probed(monkeypatch, capsys):
     # Frappe answers per Host and the code is that site's code.
     report = _report(
         "running",
-        benches=[
-            _bench("running", index=1, path="/w/b1", web_port=8001, web_site="two.localhost")
-        ],
+        benches=[_bench("running", index=1, path="/w/b1", web_port=8001, web_site="two.localhost")],
     )
     captured = _run(monkeypatch, capsys, report)
     assert "web two.localhost:8001 -> 200" in captured.err
@@ -188,9 +195,7 @@ def test_the_web_line_still_names_the_port_when_no_site_is_known(monkeypatch, ca
 
 
 def test_an_unknown_port_says_so_rather_than_implying_8000(monkeypatch, capsys):
-    report = _report(
-        "running", benches=[_bench("running", path="/w/b1", web_port_verified=False)]
-    )
+    report = _report("running", benches=[_bench("running", path="/w/b1", web_port_verified=False)])
     captured = _run(monkeypatch, capsys, report)
     assert "port unknown" in captured.err
     assert "8000" not in captured.err

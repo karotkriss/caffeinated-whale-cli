@@ -275,13 +275,16 @@ class TestResolveBenchPathWrapper:
 class _PortContainer:
     """A frappe container with a readable bench config and published port bindings."""
 
-    def __init__(self, *, config='{"webserver_port": 8001, "socketio_port": 9001}',
-                 ports=None):
+    def __init__(self, *, config='{"webserver_port": 8001, "socketio_port": 9001}', ports=None):
         self.config = config
-        self.ports = ports if ports is not None else {
-            "8000/tcp": [{"HostIp": "0.0.0.0", "HostPort": "21000"}],
-            "8001/tcp": [{"HostIp": "0.0.0.0", "HostPort": "21001"}],
-        }
+        self.ports = (
+            ports
+            if ports is not None
+            else {
+                "8000/tcp": [{"HostIp": "0.0.0.0", "HostPort": "21000"}],
+                "8001/tcp": [{"HostIp": "0.0.0.0", "HostPort": "21001"}],
+            }
+        )
 
     def exec_run(self, cmd, **kwargs):
         if self.config is None:
@@ -298,9 +301,7 @@ class TestResolveHostWebUrl:
     """
 
     def test_the_container_port_is_mapped_through_the_published_bindings(self):
-        url = resolvers.resolve_host_web_url(
-            _PortContainer(), "/w/b1", site="two.localhost"
-        )
+        url = resolvers.resolve_host_web_url(_PortContainer(), "/w/b1", site="two.localhost")
         # bench 1 serves 8001 INSIDE and is published on 21001 OUTSIDE.
         assert url == "http://two.localhost:21001"
 

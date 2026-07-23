@@ -43,7 +43,12 @@ def _stop_result(project="other-proj"):
 
 
 def _bench_status(
-    overall="running", processes=None, *, index=0, path="/w/b0", web_port=8000,
+    overall="running",
+    processes=None,
+    *,
+    index=0,
+    path="/w/b0",
+    web_port=8000,
     not_cwcli_supervised=False,
 ):
     return BenchStatus(
