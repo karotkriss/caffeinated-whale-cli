@@ -151,6 +151,22 @@ class _RunningFrappe:
 
 
 class TestStopHonesty:
+    @pytest.mark.parametrize("tokens", [["good", "--bench"], ["good", "--bench="]])
+    def test_a_missing_bench_value_cannot_expand_to_project_stop(
+        self, tokens, monkeypatch
+    ):
+        monkeypatch.setattr(stop_mod.sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(
+            core_stop,
+            "stop",
+            lambda name: pytest.fail("malformed --bench must not stop the project"),
+        )
+
+        with pytest.raises(typer.Exit) as exc:
+            stop_mod.stop(ctx=None, verbose=False, bench=None, project_name=tokens)
+
+        assert exc.value.exit_code == 2
+
     def test_nonexistent_project_exits_one(self, monkeypatch, capsys):
         _neutralize_docker(monkeypatch)
         monkeypatch.setattr(stop_mod.sys.stdin, "isatty", lambda: True)
