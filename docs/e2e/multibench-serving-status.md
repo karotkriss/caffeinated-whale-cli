@@ -49,9 +49,8 @@ The fixture asserts those two ports **differ** before yielding: if bench ever ha
   Before asserting a bench is not misreported, the test proves that bench is genuinely serving - its own site, on its own port, answering 200.
   A "no wrong answer" check passes just as happily against a bench that was never up.
 - **Assert the discriminator.**
-  F3 and F5 assert the exact value the removed bench-blind probe would have read, shown to differ from the correct target.
-  F4 establishes that the neighbouring bench is genuinely live and that the stopped bench reports no response from its own port.
-  The mutation run below proves that F4 still fails when the probe is pinned back to the neighbouring port, but the test does not separately assert that wrong-target request's exact host-routed response.
+  F3, F4, and F5 assert the exact value the removed bench-blind probe would have read, shown to differ from the correct target.
+  For F4, the test captures the first bench's response to the second site's Host header at runtime, proves that response is live, and asserts that neither the bench-narrowed nor instance-wide status reports it for the stopped bench.
 
 ## Proof that the assertions bite
 
