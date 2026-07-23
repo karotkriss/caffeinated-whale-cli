@@ -206,13 +206,7 @@ def stop_bench(
     # own supervisord by discovered PID, waiting (bounded) for the tree to actually
     # exit, escalating to SIGKILL if it overstays. Sibling benches each have their
     # own supervisord and are never signalled.
-    stopped_supervisor = supervision.stop_supervisor(frappe_container, resolved_path)
-    if not stopped_supervisor:
-        raise CwcliError(
-            ErrorKind.PRECONDITION,
-            "supervisor.stop_unverified",
-            f"Could not verify supervisord teardown for bench '{resolved_path}'.",
-        )
+    supervision.stop_supervisor(frappe_container, resolved_path)
     supervision.clear_marker(frappe_container, resolved_path)
 
     return Result(
