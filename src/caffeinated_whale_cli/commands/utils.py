@@ -12,6 +12,7 @@ import sys
 from collections.abc import Mapping, Sequence
 from typing import NoReturn
 
+import click
 import questionary
 import typer
 
@@ -368,6 +369,8 @@ def _start_containers_for_command(project_name: str, verbose: bool = False):
 # One splitter, used by all four, so the swallow cannot come back one command at
 # a time.
 
+_HELP_OPTIONS = frozenset({"-h", "--help"})
+
 
 def _inline_value(token: str, values: Mapping[str, str]) -> tuple[str, str] | None:
     """Split a ``--option=value`` token into its option and value, if it is one."""
@@ -381,7 +384,18 @@ def _is_recognised_option(
     token: str, flags: Mapping[str, tuple[str, bool]], values: Mapping[str, str]
 ) -> bool:
     """True when the token is an option THIS command defines."""
-    return token in flags or token in values or _inline_value(token, values) is not None
+    return (
+        token in _HELP_OPTIONS
+        or token in flags
+        or token in values
+        or _inline_value(token, values) is not None
+    )
+
+
+def _show_command_help() -> NoReturn:
+    context = click.get_current_context()
+    click.echo(context.get_help())
+    raise typer.Exit()
 
 
 def _usage_error(message: str, hint: str | None = None) -> NoReturn:
@@ -426,11 +440,15 @@ def split_trailing_options(
     i = 0
     while i < len(items):
         token = items[i]
-        if token in flags:
+        if token in _HELP_OPTIONS:
+            _show_command_help()
+        elif token in flags:
             destination, value = flags[token]
             recovered_flags[destination] = value
         elif token in values:
             following = items[i + 1] if i + 1 < len(items) else None
+            if following in _HELP_OPTIONS:
+                _show_command_help()
             if following is None or _is_recognised_option(following, flags, values):
                 _usage_error(f"Option '{token}' requires a value.")
             recovered_values[values[token]] = following

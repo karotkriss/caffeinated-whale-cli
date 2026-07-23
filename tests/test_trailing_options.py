@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import pytest
 import typer
+from typer.testing import CliRunner
 
 from caffeinated_whale_cli.commands import restart as restart_mod
 from caffeinated_whale_cli.commands import rm as rm_mod
@@ -87,6 +88,18 @@ class TestStop:
             )
 
         assert exc.value.exit_code == 2
+        assert stopped == []
+
+    @pytest.mark.parametrize("help_option", ["-h", "--help"])
+    def test_trailing_help_shows_stop_help_and_stops_nothing(
+        self, monkeypatch, help_option
+    ):
+        stopped = self._wire(monkeypatch)
+
+        result = CliRunner().invoke(stop_mod.app, ["proj", help_option])
+
+        assert result.exit_code == 0
+        assert "Stop a Frappe project's containers." in result.output
         assert stopped == []
 
     def test_the_refusal_names_the_option_and_says_nothing_changed(self, monkeypatch, capsys):
@@ -174,6 +187,18 @@ class TestRestart:
         assert exc.value.exit_code == 2
         assert restarted == []
 
+    @pytest.mark.parametrize("help_option", ["-h", "--help"])
+    def test_trailing_help_shows_restart_help_and_restarts_nothing(
+        self, monkeypatch, help_option
+    ):
+        restarted = self._wire(monkeypatch)
+
+        result = CliRunner().invoke(restart_mod.app, ["proj", help_option])
+
+        assert result.exit_code == 0
+        assert "Restart a Frappe project's containers." in result.output
+        assert restarted == []
+
     def test_a_dash_leading_process_label_is_still_a_value(self, monkeypatch):
         self._wire(monkeypatch)
         seen: list[tuple] = []
@@ -233,6 +258,18 @@ class TestStart:
             )
 
         assert exc.value.exit_code == 2
+        assert started == []
+
+    @pytest.mark.parametrize("help_option", ["-h", "--help"])
+    def test_trailing_help_shows_start_help_and_starts_nothing(
+        self, monkeypatch, help_option
+    ):
+        started = self._wire(monkeypatch)
+
+        result = CliRunner().invoke(start_mod.app, ["proj", help_option])
+
+        assert result.exit_code == 0
+        assert "Start a Frappe project's containers." in result.output
         assert started == []
 
     def test_recognised_trailing_flags_and_a_dash_leading_label_still_work(self, monkeypatch):
@@ -311,6 +348,18 @@ class TestRm:
             )
 
         assert exc.value.exit_code == 2
+        assert removed == []
+
+    @pytest.mark.parametrize("help_option", ["-h", "--help"])
+    def test_trailing_help_shows_rm_help_and_removes_nothing(
+        self, monkeypatch, help_option
+    ):
+        removed = self._wire(monkeypatch)
+
+        result = CliRunner().invoke(rm_mod.app, ["proj", help_option])
+
+        assert result.exit_code == 0
+        assert "Remove a Frappe project and its containers." in result.output
         assert removed == []
 
     def test_the_refusal_holds_non_interactively(self, monkeypatch):
