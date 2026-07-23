@@ -8,6 +8,14 @@ Everything here was produced by the repository's own CI Docker matrix on
 GitHub-hosted runners, not by hand on a developer's machine. The tests are
 `tests/e2e/test_multibench_serving_e2e.py` and `tests/e2e/test_multibench_latency_e2e.py`.
 
+Three CI runs produced the evidence below, each on a throwaway branch:
+
+| Run | What it establishes |
+| --- | --- |
+| Serving suite with the defect reintroduced | The new assertions fail when the defect returns - 4 of 5 red |
+| Serving suite + six-bench latency, unmodified | The suite is green and the 1-to-6-bench cost curve |
+| The same, driven through the `latency_benches` dispatch input | The opt-in path works end to end, and the curve reproduces |
+
 ## Why a new fixture existed at all
 
 The multibench E2E that shipped with the change built a bench **skeleton**: a
@@ -177,11 +185,19 @@ in-container execs per bench, so hoisting it addresses something on the order of
 fifth of that 0.5s, and this measurement is what a proposal to do it should cite.
 This document reports the cost; it does not decide the optimisation.
 
+**Reproduced.** The curve was measured twice, on two separate runners, and the two
+agree: 1.03/1.57/1.90/2.47/2.97/**3.58**s and 1.00/1.58/1.84/2.32/2.76/**3.21**s.
+The second run is the one that also exercised the `latency_benches` dispatch
+input, and it ran the full v16 `standalone` group alongside the six-bench
+instance: **27 passed, 1 skipped in 28m 46s**, finishing with 108 GB of disk free.
+That is why the opt-in path raises the job timeout and does nothing about disk -
+the bench trees are not close to a constraint, though the wall clock is.
+
 **What the measurement covers, and what it does not.** Every bench was asserted to
 be genuinely serving 200 for its own site on its own distinct port before it
 counted toward a data point, so this is the real probe cost and not the cheaper
-path a stopped bench takes. It is one run on one runner class at one Frappe major;
-it is a cost profile, not a benchmark with error bars.
+path a stopped bench takes. Two runs on one runner class at one Frappe major; it
+is a cost profile, not a benchmark with error bars.
 
 ## What runs where
 
@@ -193,6 +209,23 @@ it is a cost profile, not a benchmark with error bars.
 The two-bench half is deliberately not opt-in: F3/F4/F5 are regression guards and
 must run unconditionally, and the fixture they need is the same one the two-bench
 measurement rides for free.
+
+## Fidelity of the proof runs to the shipped code
+
+Two differences, both disclosed rather than glossed:
+
+- The first two runs carried an earlier revision of the helper that parses a bench
+  out of an `axi status` document. It differed only in also collecting a nested
+  process row as a spurious key that no assertion reads. The third run carries the
+  shipped version, and it is green.
+- The third run's workflow additionally dropped the runner's preinstalled
+  toolchains before starting, on the assumption that six bench trees would not fit.
+  That run measured 108 GB free and disproved the assumption, so the step was
+  removed afterwards. Its absence leaves the run with *more* preinstalled software
+  and the same enormous headroom; it cannot turn a pass into a failure.
+
+Everything else - the tests, the fixture, the workflow's input plumbing and
+timeout - is what ships.
 
 ## Safety
 

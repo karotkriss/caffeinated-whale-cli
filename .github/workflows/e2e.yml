@@ -192,21 +192,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Reclaim runner disk for the latency measurement
-        # ONLY for the opt-in task 5.5 run: six real benches are roughly 9 GB of
-        # bind-mounted bench trees on top of the images and the rest of the leg,
-        # which does not fit the runner's default free space. Dropping the
-        # preinstalled toolchains this job never touches frees well over that.
-        # Not run on the ordinary matrix, which has plenty of headroom.
-        if: >-
-          needs.changes.outputs.run == 'true' &&
-          inputs.latency_benches != '' &&
-          matrix.group == 'standalone'
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
-          df -h /
-
       - name: Install uv
         if: needs.changes.outputs.run == 'true'
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990  # v8.3.2
