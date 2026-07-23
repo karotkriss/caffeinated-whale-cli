@@ -69,13 +69,32 @@ jobs:
             fi
           fi
 
+      - name: Compose release body
+        id: body
+        if: startsWith(github.ref, 'refs/tags/v')
+        # Runs BEFORE the build and the PyPI publish: a missing release note
+        # must stop the release while stopping it is still free, not after a
+        # version has been consumed on PyPI.
+        run: |
+          .github/scripts/release-body.sh \
+            "${{ steps.version.outputs.version }}" \
+            "${{ github.repository }}" > "$RUNNER_TEMP/release-body.md"
+          echo "path=$RUNNER_TEMP/release-body.md" >> $GITHUB_OUTPUT
+
+          echo "Release body:"
+          cat "$RUNNER_TEMP/release-body.md"
+
       - name: Build package
         run: |
           echo "Building caffeinated-whale-cli v${{ steps.version.outputs.version }}"
-          uv build
+          # --no-create-gitignore: uv otherwise drops a .gitignore into dist/,
+          # which the release upload glob swept up and GitHub published as an
+          # asset named "default.gitignore" (it renames leading-dot uploads).
+          # Everything in dist/ is a distributable.
+          uv build --no-create-gitignore
 
           echo "Build artifacts:"
-          ls -lh dist/
+          ls -lah dist/
 
       - name: Verify package contents
         run: |
@@ -108,19 +127,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-          generate_release_notes: true
-          body: |
-            ## caffeinated-whale-cli v${{ steps.version.outputs.version }}
-
-            ### Installation
-            ```bash
-            pip install --upgrade caffeinated-whale-cli
-            ```
-
-            ### What's Changed
-            See the [CHANGELOG](https://github.com/${{ github.repository }}/blob/master/CHANGELOG.md) for detailed changes.
-
-            **Full Changelog**: https://github.com/${{ github.repository }}/compare/v${{ steps.version.outputs.version }}...HEAD
+          # generate_release_notes is deliberately off: it appends a raw commit
+          # list, which is not what the card is for. The body is composed by
+          # .github/scripts/release-body.sh - hand-written What's Changed copy
+          # plus a generated footer. See .github/release-notes/README.md.
+          name: "caffeinated-whale-cli: v${{ steps.version.outputs.version }}"
+          body_path: ${{ steps.body.outputs.path }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
