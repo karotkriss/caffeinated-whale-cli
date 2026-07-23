@@ -370,6 +370,23 @@ class TestStopSupervisor:
         assert supervision.stop_supervisor(c, BENCH, timeout=2) is False
         assert c.killed == []
 
+    def test_an_unreadable_process_check_fails_closed(self):
+        c = FakeContainer()
+        original = c.exec_run
+
+        def fail_ps(cmd, **kwargs):
+            if cmd[0] == "ps":
+                return (1, b"ps unavailable")
+            return original(cmd, **kwargs)
+
+        c.exec_run = fail_ps
+
+        with pytest.raises(CwcliError) as exc:
+            supervision.stop_supervisor(c, BENCH, timeout=1)
+
+        assert exc.value.kind is ErrorKind.PRECONDITION
+        assert exc.value.code == "supervisor.process_state_unknown"
+
     def test_a_supervisor_still_alive_after_sigkill_fails_closed(self, monkeypatch):
         c = FakeContainer()
         original = c.exec_run
@@ -654,8 +671,11 @@ class TestWebProbe:
         # written for a single-bench world, and every later caller correctly passed
         # nothing. With no default the bug is unrepresentable, so re-adding one must
         # be a test failure rather than a silent re-arming.
-        for fn in (supervision.web_http_code, supervision.web_is_serving,
-                   supervision.wait_web_ready):
+        for fn in (
+            supervision.web_http_code,
+            supervision.web_is_serving,
+            supervision.wait_web_ready,
+        ):
             param = inspect.signature(fn).parameters["port"]
             assert param.default is inspect.Parameter.empty, fn.__name__
             assert param.kind is inspect.Parameter.KEYWORD_ONLY, fn.__name__
