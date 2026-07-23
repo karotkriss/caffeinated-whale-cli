@@ -370,6 +370,53 @@ class TestStopSupervisor:
         assert supervision.stop_supervisor(c, BENCH, timeout=2) is False
         assert c.killed == []
 
+    def test_a_supervisor_still_alive_after_sigkill_fails_closed(self, monkeypatch):
+        c = FakeContainer()
+        original = c.exec_run
+
+        def fail_signals(cmd, **kwargs):
+            if cmd[0] == "sh" and "kill" in cmd[2]:
+                c.calls.append(cmd)
+                return (1, b"signal failed")
+            return original(cmd, **kwargs)
+
+        c.exec_run = fail_signals
+        monkeypatch.setattr(supervision.time, "sleep", lambda _: None)
+        ticks = iter([0.0, 1.0, 2.0, 3.0, 4.0])
+        monkeypatch.setattr(supervision.time, "time", lambda: next(ticks, 5.0))
+
+        with pytest.raises(CwcliError) as exc:
+            supervision.stop_supervisor(c, BENCH, timeout=1)
+
+        assert exc.value.kind is ErrorKind.PRECONDITION
+        assert exc.value.code == "supervisor.stop_failed"
+
+
+class TestClearMarker:
+    def test_removal_is_verified(self):
+        c = FakeContainer()
+
+        supervision.clear_marker(c, BENCH)
+
+        assert ["rm", "-f", supervision._marker_path(BENCH)] in c.calls
+        assert ["test", "!", "-e", supervision._marker_path(BENCH)] in c.calls
+
+    def test_failed_removal_raises(self):
+        c = FakeContainer()
+        original = c.exec_run
+
+        def fail_remove(cmd, **kwargs):
+            if cmd[:2] == ["rm", "-f"]:
+                return (1, b"permission denied")
+            return original(cmd, **kwargs)
+
+        c.exec_run = fail_remove
+
+        with pytest.raises(CwcliError) as exc:
+            supervision.clear_marker(c, BENCH)
+
+        assert exc.value.code == "supervisor.marker_clear_failed"
+
 
 class TestProcfile:
     def test_expected_reflects_the_procfile(self):

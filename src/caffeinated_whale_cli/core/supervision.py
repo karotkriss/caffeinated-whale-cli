@@ -469,13 +469,14 @@ def stop_supervisor(container, bench_path: str, *, timeout: float = 15.0) -> boo
     honcho's panic teardown). Waits (bounded) for the tree to actually exit before
     returning, so a caller relaunching does not race a still-running supervisord on
     the container ports; escalates to ``SIGKILL`` if it overstays. Keyed to the
-    bench's supervisord PID. Returns True if a supervisor was found and signalled.
+    bench's supervisord PID. Returns True if a supervisor was found and verified
+    stopped. Raises ``CwcliError`` if it remains alive after both signals.
     """
     pids = _supervisord_pids_for_bench(container, _ps_rows(container), bench_path)
     if not pids:
         return False
     joined = " ".join(str(p) for p in pids)
-    container.exec_run(["sh", "-c", f"kill -TERM {joined} 2>/dev/null || true"])
+    container.exec_run(["sh", "-c", f"kill -TERM {joined} 2>/dev/null"])
 
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -483,8 +484,21 @@ def stop_supervisor(container, bench_path: str, *, timeout: float = 15.0) -> boo
             return True
         time.sleep(0.5)
 
-    container.exec_run(["sh", "-c", f"kill -KILL {joined} 2>/dev/null || true"])
-    return True
+    container.exec_run(["sh", "-c", f"kill -KILL {joined} 2>/dev/null"])
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _supervisord_pids_for_bench(container, _ps_rows(container), bench_path):
+            return True
+        time.sleep(0.5)
+
+    from .errors import CwcliError, ErrorKind
+
+    raise CwcliError(
+        ErrorKind.PRECONDITION,
+        "supervisor.stop_failed",
+        f"Could not stop supervisord for bench '{bench_path}'.",
+    )
 
 
 # ------------------------------------------------------------------ Procfile parse
@@ -817,7 +831,21 @@ def clear_marker(container, bench_path: str) -> None:
     per-bench stop clears it - a supervisord that died on its own leaves it in place,
     which is exactly the state it exists to report.
     """
-    container.exec_run(["rm", "-f", _marker_path(bench_path)])
+    marker_path = _marker_path(bench_path)
+    exit_code, output = container.exec_run(["rm", "-f", marker_path])
+    verify_code, verify_output = container.exec_run(["test", "!", "-e", marker_path])
+    if exit_code not in (0, None) or verify_code not in (0, None):
+        from .errors import CwcliError, ErrorKind
+
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "supervisor.marker_clear_failed",
+            f"Could not clear the launch marker for bench '{bench_path}'.",
+            detail={
+                "output": _decode(output)[-2000:],
+                "verification_output": _decode(verify_output)[-2000:],
+            },
+        )
 
 
 def _self_check() -> None:

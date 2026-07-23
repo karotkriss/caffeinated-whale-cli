@@ -201,6 +201,7 @@ class TestStopBench:
         assert result.data.already_stopped is True
         assert result.data.stopped_processes == []
         assert calls["stopped"] == []  # nothing was signalled
+        assert calls["cleared"] == ["/w/b0"]
 
     def test_the_launch_marker_is_cleared_so_a_stop_does_not_read_as_a_fault(
         self, bench_wire
@@ -239,3 +240,30 @@ class TestStopBench:
         captured = capsys.readouterr()
         assert captured.out == ""
         assert captured.err == ""
+
+    def test_an_unverified_teardown_fails_closed(self, bench_wire, monkeypatch):
+        bench_wire(processes=[("web", True)])
+        monkeypatch.setattr(core_stop.supervision, "stop_supervisor", lambda c, p: False)
+
+        with pytest.raises(CwcliError) as exc:
+            core_stop.stop_bench("proj", bench="0")
+
+        assert exc.value.kind is ErrorKind.PRECONDITION
+        assert exc.value.code == "supervisor.stop_unverified"
+
+    def test_a_marker_clear_failure_prevents_success(self, bench_wire, monkeypatch):
+        bench_wire(processes=[("web", True)])
+
+        def fail_clear(c, p):
+            raise CwcliError(
+                ErrorKind.PRECONDITION,
+                "supervisor.marker_clear_failed",
+                "marker remains",
+            )
+
+        monkeypatch.setattr(core_stop.supervision, "clear_marker", fail_clear)
+
+        with pytest.raises(CwcliError) as exc:
+            core_stop.stop_bench("proj", bench="0")
+
+        assert exc.value.code == "supervisor.marker_clear_failed"
