@@ -29,51 +29,69 @@ def _installed_apps(inst) -> list[str]:
 
 def test_axi_apps_install_permitted_then_refused_on_rerun(running_instance):
     """The full arc against a real bench: fetch+install lands, state genuinely
-    changes, and the exact same command re-run is refused before any fetch."""
+    changes, and the exact same command re-run is refused before any fetch.
+
+    Installs onto the SHARED session site, so it uninstalls again in a ``finally``.
+    Every other shared-instance test that mutates state restores it - see
+    ``_ensure_serving``'s "order-independently" and
+    ``test_workspace_persistence_e2e``'s "regardless of collection order" - and
+    this one did not, leaving an app on the site for every later test in the job.
+    """
     inst = running_instance
     assert _APP not in _installed_apps(inst), "fixture already has payments installed"
 
-    result = harness.run_cwcli(
-        "axi",
-        "apps",
-        "install",
-        inst.name,
-        _APP,
-        "--site",
-        inst.site,
-        "--branch",
-        harness.FRAPPE_BRANCH,
-    )
+    try:
+        result = harness.run_cwcli(
+            "axi",
+            "apps",
+            "install",
+            inst.name,
+            _APP,
+            "--site",
+            inst.site,
+            "--branch",
+            harness.FRAPPE_BRANCH,
+        )
 
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert f"project: {inst.name}" in result.stdout
-    assert "get-app" in result.stdout and "install-app" in result.stdout
-    assert "ok: true" in result.stdout
-    assert not result.stdout.lstrip().startswith("{")  # TOON, never JSON
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert f"project: {inst.name}" in result.stdout
+        assert "get-app" in result.stdout and "install-app" in result.stdout
+        assert "ok: true" in result.stdout
+        assert not result.stdout.lstrip().startswith("{")  # TOON, never JSON
 
-    # bench's own output narrates to stderr, stdout stays one document.
-    assert "get-app" in result.stderr
+        # bench's own output narrates to stderr, stdout stays one document.
+        assert "get-app" in result.stderr
 
-    # The state genuinely changed.
-    assert _APP in _installed_apps(inst)
+        # The state genuinely changed.
+        assert _APP in _installed_apps(inst)
 
-    # Re-running the EXACT same command is refused, before anything is fetched.
-    rerun = harness.run_cwcli(
-        "axi",
-        "apps",
-        "install",
-        inst.name,
-        _APP,
-        "--site",
-        inst.site,
-        "--branch",
-        harness.FRAPPE_BRANCH,
-    )
-    assert rerun.returncode == 1, rerun.stdout + rerun.stderr
-    assert rerun.stdout.startswith("error:")
-    assert "already installed" in rerun.stdout
-    assert "apps checkout" in rerun.stdout
-    assert "apps update" in rerun.stdout
+        # Re-running the EXACT same command is refused, before anything is fetched.
+        rerun = harness.run_cwcli(
+            "axi",
+            "apps",
+            "install",
+            inst.name,
+            _APP,
+            "--site",
+            inst.site,
+            "--branch",
+            harness.FRAPPE_BRANCH,
+        )
+        assert rerun.returncode == 1, rerun.stdout + rerun.stderr
+        assert rerun.stdout.startswith("error:")
+        assert "already installed" in rerun.stdout
+        assert "apps checkout" in rerun.stdout
+        assert "apps update" in rerun.stdout
+    finally:
+        # Best-effort, and deliberately unasserted here: raising inside `finally`
+        # would replace whatever the body failed on, hiding the real error.
+        harness.run_cwcli("apps", "uninstall", inst.name, _APP, "--site", inst.site, "--yes")
+
+    # Reached only when the body passed, so this cannot mask a failure above: the
+    # restore has to have genuinely taken, or the next test inherits the app.
+    assert _APP not in _installed_apps(
+        inst
+    ), f"{_APP} must be uninstalled again so the shared site is left as it was found"
 
 
 def test_axi_apps_install_refuses_the_git_url_spelling_of_an_installed_app(running_instance):
