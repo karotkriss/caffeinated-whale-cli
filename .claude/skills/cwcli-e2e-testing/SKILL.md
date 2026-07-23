@@ -16,7 +16,8 @@ metadata:
 # cwcli end-to-end testing
 
 This is the detailed protocol for validating cwcli against genuine throwaway Frappe instances.
-The standing captain-standards that motivate it (support+test BOTH modes; re-run E2E after no-mistakes/review fixes; full-lifecycle validation of dangerous-delete work) live in the always-loaded `AGENTS.md` "Captain standards" section - read those too when the change is a prompting or destructive-delete command.
+The authoritative validation policy lives in `docs/testing/guide.md#gate-policy`, and the always-loaded `AGENTS.md` "Captain standards" section applies it to prompting and destructive-delete commands.
+CI owns post-validation E2E runs; use the manual recipe below only for one development instance when the behavior cannot otherwise be observed.
 
 There is now an automated, CI-run E2E harness in `tests/e2e/` (the `e2e` / `e2e_p2p` / `e2e_pkg` marker tier) that codifies the manual recipe below; it drives the real `cwcli` binary against genuine throwaway Frappe instances, on a v14/v15/v16 matrix (`.github/workflows/e2e.yml`).
 It is being filled in per command (see the open change `openspec/changes/rebuild-e2e-test-suite`); the harness contract - the `cwe2e-` name prefix, the `CWCLI_HOME` isolation seam plus temp `HOME`, the hard rails (`enforce_isolation`, name prefix) and the unconditional `sweep_cwe2e` backstop, a root-owned-path reclaim (`reclaim_root_owned`, run before a session's temp `HOME` is deleted so a Docker-daemon-created root-owned path can never survive teardown into shared `/tmp`), the port allocator (`CWE2E_PORT_BASE` override, since the harness also runs on operators' own machines), the `CWCLI_BIN` override to aim the harness at any binary (a runtime-deps-only `uv tool install .` build for the `e2e_pkg` leg below), real-readiness waits, and the `pexpect`/`ESC[?2004h` helper - lives in `tests/e2e/harness.py`; read `tests/README.md` before extending it.
@@ -28,7 +29,8 @@ When validating a behavior change by hand, follow the same procedure and point b
    NEVER touch the captain's real projects or real `~/.cwcli`.
 2. **Build genuine benches.**
    Use `cwcli init` + `bench init` to create real benches, not fixtures.
-   Build BOTH Frappe `version-14` and `version-15` when the behavior is version-sensitive; some bugs only reproduce on v14 (for example the receive-mode bare-filename `Invalid path` bug, which v15's alternative-directory fallback masks).
+   Local hand validation uses one throwaway Frappe v16 instance.
+   For version-sensitive behavior, encode the coverage in a version-gated E2E test and let CI run the v14/v15/v16 matrix.
 3. **Drive interactive prompts through a real pty (pexpect).**
    Await prompt_toolkit's raw-mode readiness marker `ESC[?2004h` before each keystroke so nothing races the prompt.
    For a confirm-then-prompt flow, press `y` THEN Enter, the way a human types it, so the confirm consumes its own trailing Enter (see the `auto_enter=False` credential note in the `cwcli-lifecycle` skill (references/restore.md)).
