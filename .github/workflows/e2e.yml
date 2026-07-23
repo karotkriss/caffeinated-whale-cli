@@ -24,10 +24,10 @@ jobs:
   # the exact opposite of the goal. So we do NOT gate the heavy jobs out of
   # existence with a top-level `paths:` filter (that leaves the contexts
   # pending); instead this cheap job decides ONCE whether the diff touches real
-  # application logic or dependencies, and each heavy leg keeps its SAME context
-  # name but short-circuits every Frappe step to an immediate success when the
-  # answer is no. A docs-only / CI-config-only / changelog-only / pure-rebase
-  # push therefore reports the required E2E contexts green in seconds without a
+  # application logic or dependencies. Each heavy job still enters and
+  # short-circuits every Frappe step to an immediate success when the answer is
+  # no. A docs-only / CI-config-only / changelog-only / pure-rebase push
+  # therefore reports the required E2E contexts green in seconds without a
   # multi-minute real-Docker matrix, while a real src/dep change still runs the
   # full matrix. Governing rule: E2E runs only on a real logic/dep change.
   changes:

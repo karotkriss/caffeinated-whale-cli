@@ -120,6 +120,35 @@ def test_supervised_program_parsing_is_not_silently_permissive():
     assert _parse_supervised_programs("error: could not connect\n") == {}
 
 
+def test_supervised_program_read_fails_closed_for_a_live_daemon(monkeypatch):
+    from .test_start_status_e2e import _supervised_programs
+
+    def failed_live_read(project, script, workdir=None):
+        return (
+            1,
+            "unix:///tmp/x.sock refused connection\n"
+            "__CWCLI_SUPERVISORD_LIVENESS__=running\n",
+        )
+
+    monkeypatch.setattr(harness, "exec_in_frappe", failed_live_read)
+    with pytest.raises(AssertionError, match="could not read supervisor status"):
+        _supervised_programs("cwe2e-test-live")
+
+
+def test_supervised_program_read_allows_an_absent_daemon(monkeypatch):
+    from .test_start_status_e2e import _supervised_programs
+
+    def failed_absent_read(project, script, workdir=None):
+        return (
+            1,
+            "unix:///tmp/x.sock no such file\n"
+            "__CWCLI_SUPERVISORD_LIVENESS__=absent\n",
+        )
+
+    monkeypatch.setattr(harness, "exec_in_frappe", failed_absent_read)
+    assert _supervised_programs("cwe2e-test-honcho") == {}
+
+
 def _create_fake_leaked_project(name: str) -> None:
     label = f"com.docker.compose.project={name}"
     subprocess.run(
