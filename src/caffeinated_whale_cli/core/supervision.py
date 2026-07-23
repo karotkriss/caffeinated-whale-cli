@@ -193,10 +193,19 @@ def _decode(output) -> str:
 # ---------------------------------------------------------------------- discovery
 
 
-def _ps_rows(container) -> list[_PsRow]:
+def _ps_rows(container, *, required: bool = False) -> list[_PsRow]:
     """One ``ps`` in the container -> parsed rows (pid, ppid, etimes, cpu, rss, args)."""
     exit_code, output = container.exec_run(["ps", "-eo", "pid=,ppid=,etimes=,pcpu=,rss=,args="])
     if exit_code not in (0, None):
+        if required:
+            from .errors import CwcliError, ErrorKind
+
+            raise CwcliError(
+                ErrorKind.PRECONDITION,
+                "supervisor.process_state_unknown",
+                "Could not verify the supervisord process state.",
+                detail={"output": _decode(output)[-2000:]},
+            )
         return []
     rows: list[_PsRow] = []
     for line in _decode(output).splitlines():
@@ -221,6 +230,15 @@ def _ps_rows(container) -> list[_PsRow]:
                 rss=_int_or_none(rss_s),
                 args=args,
             )
+        )
+    if required and not rows:
+        from .errors import CwcliError, ErrorKind
+
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "supervisor.process_state_unknown",
+            "Could not verify the supervisord process state.",
+            detail={"output": _decode(output)[-2000:]},
         )
     return rows
 
@@ -472,7 +490,7 @@ def stop_supervisor(container, bench_path: str, *, timeout: float = 15.0) -> boo
     bench's supervisord PID. Returns True if a supervisor was found and verified
     stopped. Raises ``CwcliError`` if it remains alive after both signals.
     """
-    pids = _supervisord_pids_for_bench(container, _ps_rows(container), bench_path)
+    pids = _supervisord_pids_for_bench(container, _ps_rows(container, required=True), bench_path)
     if not pids:
         return False
     joined = " ".join(str(p) for p in pids)
@@ -480,7 +498,9 @@ def stop_supervisor(container, bench_path: str, *, timeout: float = 15.0) -> boo
 
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if not _supervisord_pids_for_bench(container, _ps_rows(container), bench_path):
+        if not _supervisord_pids_for_bench(
+            container, _ps_rows(container, required=True), bench_path
+        ):
             return True
         time.sleep(0.5)
 
@@ -488,7 +508,9 @@ def stop_supervisor(container, bench_path: str, *, timeout: float = 15.0) -> boo
 
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if not _supervisord_pids_for_bench(container, _ps_rows(container), bench_path):
+        if not _supervisord_pids_for_bench(
+            container, _ps_rows(container, required=True), bench_path
+        ):
             return True
         time.sleep(0.5)
 

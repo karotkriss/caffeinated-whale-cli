@@ -146,12 +146,8 @@ class TestStopBench:
             )
             snapshot = MagicMock()
             snapshot.supervisor_up = supervisor_up
-            snapshot.processes = [
-                MagicMock(label=label, up=up) for label, up in processes
-            ]
-            monkeypatch.setattr(
-                core_stop.supervision, "discover_stack", lambda c, p: snapshot
-            )
+            snapshot.processes = [MagicMock(label=label, up=up) for label, up in processes]
+            monkeypatch.setattr(core_stop.supervision, "discover_stack", lambda c, p: snapshot)
             calls: dict[str, list] = {"stopped": [], "cleared": []}
             monkeypatch.setattr(
                 core_stop.supervision,
@@ -203,9 +199,7 @@ class TestStopBench:
         assert calls["stopped"] == []  # nothing was signalled
         assert calls["cleared"] == ["/w/b0"]
 
-    def test_the_launch_marker_is_cleared_so_a_stop_does_not_read_as_a_fault(
-        self, bench_wire
-    ):
+    def test_the_launch_marker_is_cleared_so_a_stop_does_not_read_as_a_fault(self, bench_wire):
         """The marker is what tells "started, supervisor died" (degraded) from
         "never started" (online). A DELIBERATE stop must clear it, or every
         stopped bench leaves the instance permanently `degraded` with nothing
@@ -241,15 +235,15 @@ class TestStopBench:
         assert captured.out == ""
         assert captured.err == ""
 
-    def test_an_unverified_teardown_fails_closed(self, bench_wire, monkeypatch):
-        bench_wire(processes=[("web", True)])
+    def test_a_supervisor_exit_race_is_a_success(self, bench_wire, monkeypatch):
+        _frappe, calls = bench_wire(processes=[("web", True)])
         monkeypatch.setattr(core_stop.supervision, "stop_supervisor", lambda c, p: False)
 
-        with pytest.raises(CwcliError) as exc:
-            core_stop.stop_bench("proj", bench="0")
+        result = core_stop.stop_bench("proj", bench="0")
 
-        assert exc.value.kind is ErrorKind.PRECONDITION
-        assert exc.value.code == "supervisor.stop_unverified"
+        assert result.status is Status.OK
+        assert result.data.already_stopped is False
+        assert calls["cleared"] == ["/w/b0"]
 
     def test_a_marker_clear_failure_prevents_success(self, bench_wire, monkeypatch):
         bench_wire(processes=[("web", True)])
