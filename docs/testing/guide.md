@@ -13,8 +13,8 @@ Where a norm refers to mechanics, this section points at where they already live
 
 ### Gate scope: fast tests only; CI owns E2E
 
-The validation gate runs only the tests relevant to your change, on the fast `unit` tier.
-A bare `pytest` already deselects the real-Docker tiers - `addopts` in `pyproject.toml` ends in `-m "not e2e and not e2e_p2p and not e2e_pkg"`, and `tests/conftest.py` auto-marks any unmarked test `unit` - so the gate runs the fast tier by design.
+The validation gate runs the complete fast `unit` tier.
+A bare `pytest` also deselects the real-Docker tiers for ordinary local development: `addopts` in `pyproject.toml` ends in `-m "not e2e and not e2e_p2p and not e2e_pkg"`, and `tests/conftest.py` auto-marks any unmarked test `unit`.
 Do not spin up or run the E2E suite as part of local validation: the v14/v15/v16 real-Docker matrix in [`.github/workflows/e2e.yml`](../../.github/workflows/e2e.yml) is CI's job, and CI catches the rest.
 When a change needs E2E coverage, write or adjust the relevant test and let CI run it.
 `commands.test` in [`.no-mistakes.yaml`](../../.no-mistakes.yaml) pins the gate to that fast tier in configuration, so this norm holds without depending on whoever runs the gate having read it.
@@ -347,7 +347,7 @@ CI is two-tiered. The fast `unit` tier runs on every push and PR via `.github/wo
 
 The real-Docker `e2e` tier runs via `.github/workflows/e2e.yml` on a v14/v15/v16 Frappe matrix, on PRs into `develop`/`master` and on-demand via the `e2e` PR label.
 
-The `Pytest` (unit) job is the always-required gate; a `Mypy` job runs `uv run mypy src/` as a zero-error gate (it fails on any type error), and a `Clean install smoke` job guards against undeclared runtime dependencies. See the [CI/CD Workflows guide](../contributing/ci-cd.md) for the full job list.
+See the [CI/CD Workflows guide](../contributing/ci-cd.md) for the full job list and current required checks.
 
 ### The Windows job: why it exists and why it is narrow
 

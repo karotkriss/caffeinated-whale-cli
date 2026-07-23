@@ -9,7 +9,7 @@ The authoritative team norms for validating a change - gate scope, both-modes te
 The suite is split into two tiers by pytest marker (registered in `pyproject.toml`; `tests/conftest.py` auto-applies `unit` to anything not marked `e2e`/`e2e_p2p`).
 
 - **`unit`** - fast, needs no Docker daemon, and is the default tier a bare `pytest` runs.
-  It verifies pure logic and command wiring against fakes and runs inside the uv container in CI (`test.yml`, `-m unit`, the always-required gate).
+  It verifies pure logic and command wiring against fakes and runs inside the uv container in CI (`test.yml`, `-m unit`).
   It stays green even with a dead Docker endpoint - that is the proof it is mock-free (`DOCKER_HOST=tcp://127.0.0.1:1 uv run pytest -m unit`).
 - **`e2e` / `e2e_p2p` / `e2e_pkg`** - real Docker, under `tests/e2e/`.
   These drive the real `cwcli` binary against genuine throwaway Frappe instances (real `cwcli init` up, real side-effect assertions, `cwcli rm` down), are excluded by default, and run on GitHub-hosted `ubuntu-latest` in a v14/v15/v16 matrix (`e2e.yml`).
@@ -286,7 +286,7 @@ CI is two-tiered. The fast `unit` tier runs on every push and PR via `.github/wo
 
 The real-Docker `e2e` tier runs via `.github/workflows/e2e.yml` on a v14/v15/v16 Frappe matrix, on PRs into `develop`/`master` and on-demand via the `e2e` PR label.
 
-The `Pytest` (unit) job is the always-required gate. See the [CI/CD Workflows guide](../contributing/ci-cd.md) for the full setup.
+See the [CI/CD Workflows guide](../contributing/ci-cd.md) for the full setup and current required checks.
 
 ## Future Test Priorities
 
