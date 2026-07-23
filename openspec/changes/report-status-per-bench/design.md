@@ -128,7 +128,9 @@ On a two-bench instance that is twice today's work.
 
 **It is not specified here.** The bench count is bounded in practice by the published-port range (six, before `cwcli scale` is needed), `--watch` already suppresses the curls via `probe_web=False`, and optimizing a cost nobody has measured is how a small change acquires a second mechanism.
 
-Task 5.4 measures the real 2-bench and 6-bench latency and reports it. If it is material, the hoist is a follow-up with a number attached.
+Task 5.5 measured the real 2-bench and 6-bench latency.
+The results live in `docs/e2e/multibench-serving-status.md`.
+If the cost warrants a `ps` hoist, that optimization remains a follow-up with measured evidence attached.
 
 ## Decision 8: `core.start` is in scope; the human prompt is removed
 

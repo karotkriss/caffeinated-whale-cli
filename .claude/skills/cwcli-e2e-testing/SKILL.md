@@ -26,6 +26,16 @@ A test that requests `session_instance` or `running_instance` belongs to the `sh
 `tests/e2e/conftest.py` checks this at collection and FAILS the run if the marker and the fixtures disagree either way, so a wrong choice is caught immediately rather than quietly making a job do the wrong work.
 The split is what keeps the workflow's wall clock near half a leg: the `standalone` job never pays the session `cwcli init`, and the groups are isolated by being separate runners with separate Docker daemons, not by anything inside the suite.
 
+**A multibench test needs a bench that genuinely SERVES, not a directory skeleton.**
+`inspect`'s bench detector recognises any dir holding `apps/`, `sites/` and a `sites/common_site_config.json`, so a second "bench" is one `mkdir` away.
+That skeleton is a legitimate fixture for the shape of a document that lists more than one bench and the unresolved-port path when its config names no port.
+It proves nothing about behaviour, because it has no virtualenv, no Procfile, no supervisord and nothing bound to a port.
+Runtime probe behavior requires a second bench genuinely answering on a port of its own, so a skeleton-based test passes over those defects in silence.
+The real fixture is `tests/e2e/test_multibench_serving_e2e.py`, which runs a second `cwcli init` against the already-running instance.
+Copy its proof pattern: establish that the bench genuinely serves on its own port before checking its report, then assert the value that distinguishes the correct probe target from the defective one.
+It costs a second real bench build, which is why it is `standalone` and v16-only.
+The worked evidence and latency measurements live in `docs/e2e/multibench-serving-status.md`.
+
 **A shared-group test MUST restore whatever it mutates**, in a `finally`. This is the suite's oldest convention (`_ensure_serving` restores the running state "order-independently"; `test_workspace_persistence_e2e` leaves the instance healthy "regardless of collection order") and nothing enforces it, so it rots silently.
 The app-install E2E once left an app on the shared site, and the shorter split exposed scheduler self-exits that could land inside a later sibling-process PID assertion.
 Cleanup prevents that mutation from contaminating the rest of the job, but it does not eliminate the underlying scheduler problem: post-fix shared jobs still recorded 2 self-exits on v14, 1 on v15, and 2 on v16.
