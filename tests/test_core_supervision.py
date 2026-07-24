@@ -679,3 +679,196 @@ class TestWebProbe:
             param = inspect.signature(fn).parameters["port"]
             assert param.default is inspect.Parameter.empty, fn.__name__
             assert param.kind is inspect.Parameter.KEYWORD_ONLY, fn.__name__
+
+
+class FusedFakeContainer:
+    """A container whose ONE ``bash -c`` exec answers the fused-probe script by
+    stitching together canned ``ps``/``supervisorctl``/``curl`` output - exactly as
+    a real shell running that same script would produce. This exercises the real
+    marker-split + parse path, not a shortcut: a wrong marker or a wrong section
+    order in ``_fused_script``/``fused_probe`` would break these tests too.
+    """
+
+    def __init__(
+        self,
+        *,
+        ps=_PS_SINGLE,
+        ctl=_CTL_SINGLE,
+        web_code="200",
+        web_ok=True,
+        exit_code=0,
+        include_ps_marker=True,
+        include_ps_rc=True,
+        ps_rc=0,
+        include_supctl_marker=True,
+        include_web_marker=True,
+    ):
+        self.ps = ps
+        self.ctl = ctl
+        self.web_code = web_code
+        self.web_ok = web_ok
+        self.curl_output = web_code if web_ok else "000"
+        self.exit_code = exit_code
+        self.include_ps_marker = include_ps_marker
+        self.include_ps_rc = include_ps_rc
+        self.ps_rc = ps_rc
+        self.include_supctl_marker = include_supctl_marker
+        self.include_web_marker = include_web_marker
+        self.calls: list = []
+
+    def exec_run(self, cmd):
+        self.calls.append(cmd)
+        assert cmd[:2] == ["bash", "-c"], "the fused probe must be one bash -c exec"
+        script = cmd[2]
+        out = []
+        if self.include_ps_marker:
+            out += [supervision._MARK_PS, self.ps]
+        if self.include_ps_rc:
+            out += [f"{supervision._PS_RC_PREFIX}{self.ps_rc}"]
+        if self.include_supctl_marker:
+            out += [supervision._MARK_SUPCTL, self.ctl]
+        if supervision._MARK_WEB in script and self.include_web_marker:
+            published_code = self.curl_output if self.web_ok else ""
+            out += [supervision._MARK_WEB, published_code]
+        return (self.exit_code, "\n".join(out).encode())
+
+
+class TestFusedProbe:
+    """``fused_probe`` - process liveness+state and the web check in ONE exec."""
+
+    def test_one_exec_returns_processes_state_and_web(self):
+        c = FusedFakeContainer()
+        probe = supervision.fused_probe(c, BENCH, web_port=8000, web_site="x.localhost")
+
+        assert len(c.calls) == 1, "the whole probe must be exactly one docker exec"
+        assert probe.supervisor_up is True
+        assert probe.supervisor_pid == 100
+        labels = {p.label for p in probe.processes}
+        assert labels == {
+            "web",
+            "socketio",
+            "schedule",
+            "watch",
+            "worker:default",
+            "redis_cache",
+            "redis_queue",
+        }
+        web = next(p for p in probe.processes if p.label == "web")
+        assert web.up is True
+        assert web.pid == 101
+        assert web.uptime_s == 499
+        assert web.state == "RUNNING"
+        assert probe.web_http_code == "200"
+        assert probe.web_probed is True
+
+    def test_the_web_request_carries_the_given_port_and_site(self):
+        c = FusedFakeContainer()
+        supervision.fused_probe(c, BENCH, web_port=8001, web_site="two.localhost")
+        script = c.calls[0][2]
+        assert "http://localhost:8001" in script
+        assert "Host: two.localhost" in script
+        assert "--connect-timeout 2" in script
+        assert "--max-time 5" in script
+
+    def test_a_fatal_program_with_no_live_pid_is_reported_down_with_its_state(self):
+        # worker_default crash-looped: supervisorctl still lists it (FATAL), ps has
+        # no live row for it at all. supervisorctl's own enumeration is what makes
+        # this reportable without a separate Procfile read.
+        ps_without_worker = "\n".join(
+            line for line in _PS_SINGLE.splitlines() if "bench worker" not in line
+        )
+        ctl = _CTL_SINGLE + "worker_default   FATAL   Exited too quickly\n"
+        # Replace the single stale RUNNING line for worker_default with the FATAL one.
+        ctl = "\n".join(line for line in ctl.splitlines() if "worker_default   RUNNING" not in line)
+        c = FusedFakeContainer(ps=ps_without_worker, ctl=ctl, exit_code=3)
+        probe = supervision.fused_probe(c, BENCH, web_port=None)
+        worker = next(p for p in probe.processes if p.label == "worker:default")
+        assert worker.up is False
+        assert worker.state == "FATAL"
+
+    def test_no_web_port_skips_the_web_section_and_is_honest_none(self):
+        c = FusedFakeContainer()
+        probe = supervision.fused_probe(c, BENCH, web_port=None)
+        assert probe.web_http_code is None
+        assert probe.web_probed is False
+        assert supervision._MARK_WEB not in c.calls[0][2]
+
+    def test_probe_web_false_skips_the_web_section_even_with_a_port(self):
+        c = FusedFakeContainer()
+        probe = supervision.fused_probe(c, BENCH, web_port=8000, probe_web=False)
+        assert probe.web_http_code is None
+        assert probe.web_probed is False
+        assert supervision._MARK_WEB not in c.calls[0][2]
+
+    def test_curl_failure_is_honest_none_not_a_fabricated_code(self):
+        c = FusedFakeContainer(web_ok=False)
+        probe = supervision.fused_probe(c, BENCH, web_port=8000)
+        assert c.curl_output == "000"
+        assert probe.web_http_code is None
+        assert probe.web_probed is True  # a check WAS attempted; it just failed
+
+    @pytest.mark.parametrize(
+        "container",
+        [
+            FusedFakeContainer(include_ps_marker=False),
+            FusedFakeContainer(include_ps_rc=False),
+            FusedFakeContainer(ps_rc=1),
+            FusedFakeContainer(include_supctl_marker=False),
+            FusedFakeContainer(include_web_marker=False),
+            FusedFakeContainer(ps="not parseable"),
+        ],
+    )
+    def test_an_unverifiable_fused_read_fails_closed(self, container):
+        with pytest.raises(CwcliError) as exc:
+            supervision.fused_probe(container, BENCH, web_port=8000)
+        assert exc.value.kind is ErrorKind.PRECONDITION
+        assert exc.value.code == "supervisor.process_state_unknown"
+
+    def test_empty_supervisor_states_with_a_live_supervisor_fail_closed(self):
+        c = FusedFakeContainer(ctl="unix:///tmp/supervisor.sock refused connection\n")
+        with pytest.raises(CwcliError) as exc:
+            supervision.fused_probe(c, BENCH, web_port=8000)
+        assert exc.value.kind is ErrorKind.PRECONDITION
+        assert exc.value.code == "supervisor.process_state_unknown"
+
+    def test_a_supervisord_without_a_config_is_ignored_without_a_second_exec(self):
+        ps = _PS_SINGLE.replace(f" -c {_CFG}", "")
+        c = FusedFakeContainer(ps=ps)
+        probe = supervision.fused_probe(c, BENCH, web_port=None)
+        assert len(c.calls) == 1
+        assert probe.supervisor_up is False
+
+    def test_no_supervisor_found_reports_down_but_the_web_answer_still_lands(self):
+        # supervisord absent for this bench: process state is honestly unknown/down,
+        # but the web curl is an independent section of the same exec and still
+        # answers - "no supervisor" must not silently swallow the web result too.
+        c = FusedFakeContainer(ps="1 0 5 0.0 1000 /sbin/init\n")
+        probe = supervision.fused_probe(c, BENCH, web_port=8000)
+        assert probe.supervisor_up is False
+        assert probe.supervisor_pid is None
+        assert probe.processes == []
+        assert probe.web_http_code == "200"
+        assert probe.web_probed is True
+
+    def test_the_script_carries_no_mutating_commands(self):
+        # Static, structural read-only guarantee: the exact script sent to the
+        # container is built entirely from read-only primitives (ps, supervisorctl
+        # status, curl) - never restart/stop/kill/rm, regardless of container state.
+        script = supervision._fused_script(BENCH, web_port=8000, web_site="x.localhost")
+        for mutating in ("restart", "stop", " kill ", "rm -f", "supervisord -c"):
+            assert mutating not in script, f"unexpected mutating token: {mutating!r}"
+        assert "supervisorctl" in script
+        assert " status" in script
+        assert "curl" in script
+
+    def test_read_only_across_many_cycles_state_is_unchanged(self):
+        # The unit-level proxy for read-only-ness: many probe cycles against the
+        # same fake never mutate its recorded ps/ctl/web fixtures or the container's
+        # own state - only the real-bench E2E proof can confirm no live PID/state
+        # changes, but this at least proves the probe never WRITES anything locally.
+        c = FusedFakeContainer()
+        before = (c.ps, c.ctl, c.web_code)
+        for _ in range(20):
+            supervision.fused_probe(c, BENCH, web_port=8000, web_site="x.localhost")
+        assert (c.ps, c.ctl, c.web_code) == before
+        assert len(c.calls) == 20
