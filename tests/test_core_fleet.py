@@ -599,6 +599,43 @@ class TestProbeLoop:
 class TestProbeAndModelStayConsistent:
     """A probe that outruns the event stream must not publish a self-contradicting row."""
 
+    def test_publications_follow_the_order_the_model_commits_changes(self, listing, probing):
+        listing(("p", "running", ["8000"]))
+        probing(lambda project, **kw: _report())
+        fast_publishing = threading.Event()
+        release_fast = threading.Event()
+        instant_published = threading.Event()
+        published = []
+
+        def _publish(tier, project, state, cause):
+            if tier == "fast":
+                fast_publishing.set()
+                assert release_fast.wait(2)
+            else:
+                instant_published.set()
+            published.append((tier, state.overall))
+
+        f = core_fleet.Fleet(publish=_publish)
+        f.bootstrap()
+        published.clear()
+        instant_published.clear()
+        probe = threading.Thread(target=f.probe, args=("p",))
+        probe.start()
+        assert fast_publishing.wait(2)
+
+        listing(("p", "exited", []))
+        lifecycle = threading.Thread(target=f.bootstrap)
+        lifecycle.start()
+        assert not instant_published.wait(0.1)
+
+        release_fast.set()
+        probe.join(2)
+        lifecycle.join(2)
+
+        assert not probe.is_alive()
+        assert not lifecycle.is_alive()
+        assert published == [("fast", "running"), ("instant", core_status.OFFLINE)]
+
     def test_a_probe_that_finds_the_container_gone_publishes_one_consistent_row(
         self, listing, probing
     ):
