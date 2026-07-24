@@ -254,9 +254,7 @@ class TestFocus:
         finally:
             stream.close()
 
-    def test_a_disconnect_retracts_focus_without_waiting_for_keepalive(
-        self, daemon, monkeypatch
-    ):
+    def test_a_disconnect_retracts_focus_without_waiting_for_keepalive(self, daemon, monkeypatch):
         monkeypatch.setattr(serve_cmd, "KEEPALIVE_S", 60.0)
         stream = _Stream(daemon.base + "/api/events?focus=p")
         stream.next_frame()
