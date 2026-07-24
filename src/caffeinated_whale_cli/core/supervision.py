@@ -68,6 +68,9 @@ _SUPERVISORD_PID_NAME = ".cwcli-supervisord.pid"
 _PROC_LOG_SUFFIX = ".supervisor.log"
 
 SUPERVISOR = "supervisord"
+_SUPERVISOR_STATES = frozenset(
+    {"STOPPED", "STARTING", "RUNNING", "BACKOFF", "STOPPING", "EXITED", "FATAL", "UNKNOWN"}
+)
 
 # Per-program supervisord log rotation (built into supervisord, no cwcli daemon).
 _PROC_LOG_MAXBYTES = "5MB"
@@ -445,6 +448,7 @@ def discover_stack(container, bench_path: str) -> StackSnapshot:
 _MARK_PS = "@@CWCLI-PS@@"
 _MARK_SUPCTL = "@@CWCLI-SUPCTL@@"
 _MARK_WEB = "@@CWCLI-WEB@@"
+_PS_RC_PREFIX = "PSRC:"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -489,6 +493,7 @@ def _fused_script(bench_path: str, *, web_port: int | None, web_site: str | None
     lines = [
         f"echo {_MARK_PS}",
         "ps -eo pid=,ppid=,etimes=,pcpu=,rss=,args=",
+        f"echo {_PS_RC_PREFIX}$?",
         f"echo {_MARK_SUPCTL}",
         f"{py} -m supervisor.supervisorctl -c {cfg} status 2>&1",
     ]
@@ -553,10 +558,8 @@ def fused_probe(
     """
     probed = probe_web and web_port is not None
     script = _fused_script(bench_path, web_port=web_port if probed else None, web_site=web_site)
-    exit_code, output = container.exec_run(["bash", "-c", script])
+    _exit_code, output = container.exec_run(["bash", "-c", script])
     text = _decode(output)
-    if exit_code not in (0, None):
-        _raise_process_state_unknown(output)
 
     _, ps_found, after_ps = text.partition(_MARK_PS + "\n")
     ps_text, supctl_found, after_supctl = after_ps.partition(_MARK_SUPCTL + "\n")
@@ -571,6 +574,15 @@ def fused_probe(
 
     web_code = (web_text.strip() or None) if probed else None
 
+    ps_lines = ps_text.splitlines()
+    ps_rc = [
+        line.strip().removeprefix(_PS_RC_PREFIX)
+        for line in ps_lines
+        if line.strip().startswith(_PS_RC_PREFIX)
+    ]
+    if ps_rc != ["0"]:
+        _raise_process_state_unknown(output)
+    ps_text = "\n".join(line for line in ps_lines if not line.strip().startswith(_PS_RC_PREFIX))
     rows = _parse_ps_rows(ps_text)
     if not rows:
         _raise_process_state_unknown(output)
@@ -590,6 +602,8 @@ def fused_probe(
         )
 
     raw_states = _parse_supervisorctl_status(supctl_text)
+    if not raw_states:
+        _raise_process_state_unknown(output)
     tree = _descendants(rows, set(sup_pids))
     live_by_label: dict[str, _PsRow] = {}
     for r in rows:
@@ -1044,6 +1058,8 @@ def _parse_supervisorctl_status(text: str) -> dict[str, tuple[str, int | None]]:
         if len(parts) < 2:
             continue
         program, state = parts[0], parts[1]
+        if state not in _SUPERVISOR_STATES:
+            continue
         pid: int | None = None
         # "... pid 123, uptime ..." -> capture the pid when present.
         for i, tok in enumerate(parts):
@@ -1180,7 +1196,7 @@ def _self_check() -> None:
             self.calls += 1
             script = cmd[2]
             assert cmd[:2] == ["bash", "-c"]
-            out = [_MARK_PS, ps_text, _MARK_SUPCTL, ctl_text]
+            out = [_MARK_PS, ps_text, f"{_PS_RC_PREFIX}0", _MARK_SUPCTL, ctl_text]
             if _MARK_WEB in script:
                 out += [_MARK_WEB, "200"]
             return (0, "\n".join(out).encode())
