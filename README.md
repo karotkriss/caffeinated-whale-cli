@@ -10,6 +10,7 @@ A command-line interface (CLI) for managing Frappe/ERPNext Docker instances duri
 - **Cross-Project Search** - Find apps and sites across all instances with `cwcli where`
 - **Container Lifecycle** - Start, stop, and restart projects with ease
 - **Scale Beyond Six Benches** - Widen an instance's published port range on demand with `cwcli scale` so more than six benches are reachable from the host - database-safe (only the frappe service is recreated)
+- **Live Fleet Stream** - `cwcli serve` streams every instance's health to a browser over plain HTTP + SSE, pushing only genuine changes (reachable from a Windows browser when running under WSL)
 - **Development Tools** - VS Code integration, log viewing, and command execution
 - **Cache System** - Fast project inspection with SQLite-based caching and configuration storage
 - **Multi-Bench Support** - Address individual benches in a multi-bench instance by numeric index or a durable label with `--bench`
@@ -1716,6 +1717,89 @@ cwcli status frappe-one --bench 1    # -> running (just that bench)
 cwcli status frappe-one -v           # token on stdout, per-bench detail on stderr
 cwcli status --watch frappe-one      # live table, no web-log spam; Ctrl-C to exit
 cwcli status -w --interval 5 frappe-one   # refresh every 5s
+```
+
+---
+
+### `serve` - Live Fleet Stream Over HTTP
+
+Serves a live, streaming view of every instance on this Docker daemon over plain
+HTTP + Server-Sent Events, so a browser can watch the fleet instead of re-running
+`cwcli status` in a loop.
+The bundled page is a minimal test view; the Console browser UI is a later phase.
+
+It is an ordinary **foreground** command: you start it when you want the
+live view and stop it with Ctrl-C. There is no background service, no auto-start
+and no boot unit. Every endpoint is a read - `serve` cannot start, stop, or
+delete anything.
+
+**Usage:**
+
+```bash
+cwcli serve [--port 8765] [--host 0.0.0.0] [--interval 2.5]
+```
+
+| Option | Description |
+| --- | --- |
+| `--port`, `-p` | Port to listen on. Default `8765`. |
+| `--host` | Address to bind. Default `0.0.0.0`, which is what lets a browser outside WSL reach the daemon; use `127.0.0.1` to keep it to this machine. |
+| `--interval` | Seconds between health probes of each running instance. Default `2.5`. |
+
+**Endpoints:**
+
+| Endpoint | What it serves |
+| --- | --- |
+| `GET /` | A minimal test page with a live `EventSource` |
+| `GET /api/snapshot` | The whole fleet model as JSON (in-memory; no Docker call) |
+| `GET /api/events` | SSE: one `snapshot` event, then `delta` events tagged `tier: instant` or `tier: fast` |
+| `GET /api/instance/<project>/detail` | A cache-backed `inspect` read for one instance, preserving `served_from` and `installed_apps_verified` |
+
+Add `?focus=<project>` to `/api/events` to say which instance the browser
+currently has open. That is what turns the web HTTP health check on for that
+instance: process-level health is polled for everything on the normal cadence,
+but the HTTP check writes a line into that bench's access log every cycle, so it
+runs only for an instance somebody is actually looking at (plus a short window
+after a lifecycle event, when the instance is running).
+Closing the tab turns it back off.
+
+**Health tokens** are `status`'s own - `running`, `degraded`, `online`,
+`offline` - plus `unknown`, which means exactly what it says: nothing has probed
+this instance yet, or the probe could not find out.
+An unreadable port stays `null`.
+For a `null` HTTP code, `web_probed: false` means the check was not requested,
+while `web_probed: true` means it was attempted and got no answer.
+None of these unknowns means "probably fine".
+`probed_at` and `probe_ms` describe the last successful health read.
+When a later read fails, its time is recorded separately as `probe_failed_at`,
+so retained bench and process evidence keeps the timestamp that actually
+produced it.
+
+A container starting is reported as the container being up, never as the bench
+being healthy - those are seconds apart, and the health tier is what fills the
+gap in.
+
+**Reaching it from Windows (WSL):**
+
+With the default `--host 0.0.0.0`, both routes work:
+
+```
+http://localhost:8765            # via WSL's localhost forwarding
+http://172.24.87.141:8765        # the WSL IP, printed in the startup banner
+```
+
+The banner prints the address the daemon is reachable at when it binds all
+interfaces, so you can copy it straight into a browser on the host.
+
+**Example:**
+
+```bash
+cwcli serve                        # listens on all interfaces, probes every 2.5s
+cwcli serve --port 9000            # a different port
+cwcli serve --host 127.0.0.1       # this machine only
+cwcli serve --interval 5           # a quieter probe cadence
+
+curl -s http://127.0.0.1:8765/api/snapshot | jq '.instances[].overall'
+curl -N http://127.0.0.1:8765/api/events    # watch the live delta stream
 ```
 
 ---
