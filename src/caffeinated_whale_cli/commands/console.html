@@ -720,23 +720,29 @@ td.code, .code {
   function connectEvents() {
     if (source) source.close();
     const url = "/api/events" + (activeFocus ? `?focus=${encodeURIComponent(activeFocus)}` : "");
-    source = new EventSource(url);
+    const es = new EventSource(url);
+    source = es;
     setConnection("connecting");
-    source.addEventListener("open", () => setConnection("open"));
-    source.addEventListener("snapshot", event => {
-      bootstrapped = true;
+    es.addEventListener("open", () => {
+      if (source !== es) return;
+      setConnection("connecting");
+    });
+    es.addEventListener("snapshot", event => {
+      if (source !== es) return;
       model.clear();
       JSON.parse(event.data).instances.forEach(instance => {
         model.set(instance.project, instance);
         if (!expanded.has(instance.project)) expanded.add(instance.project);
       });
+      bootstrapped = true;
       ensureSelection();
       addEvent("instant", `SNAPSHOT ${model.size} instances`);
-      setConnection("open");
       render();
+      setConnection("open");
       syncFocus();
     });
-    source.addEventListener("delta", event => {
+    es.addEventListener("delta", event => {
+      if (source !== es) return;
       const delta = JSON.parse(event.data);
       if (delta.removed) {
         model.delete(delta.project);
@@ -750,16 +756,17 @@ td.code, .code {
       ensureSelection();
       render();
     });
-    source.onerror = () => {
+    es.onerror = () => {
+      if (source !== es) return;
       setConnection("reconnecting");
       // A network-level failure keeps EventSource retrying on its own, but a
       // hard failure (non-200, wrong content type) CLOSES it permanently -
       // without this the page would say "reconnecting" forever while nothing
       // retried. Reconnecting from scratch re-bootstraps (the first frame of
       // every connection is a full snapshot), never a replay.
-      if (source.readyState === EventSource.CLOSED) {
+      if (es.readyState === EventSource.CLOSED) {
         setTimeout(() => {
-          if (source && source.readyState === EventSource.CLOSED) connectEvents();
+          if (source === es && es.readyState === EventSource.CLOSED) connectEvents();
         }, 3000);
       }
     };
