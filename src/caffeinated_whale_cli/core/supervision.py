@@ -38,6 +38,7 @@ What lives here:
   (supervisord ``stdout_logfile`` + built-in rotation, replacing honcho's
   combined-stream capper); ``commands/logs.py`` tails one or all of them (the
   multi-file tail is the combined view).
+- :func:`fused_probe` - one-exec process, supervisord-state, and web health read.
 
 No ``rich``/``questionary``/``typer`` (a unit test enforces the ban), and the
 frappe ``Container`` object stays INTERNAL - it is passed in for exec calls and is
@@ -64,6 +65,9 @@ _SUPERVISORD_PID_NAME = ".cwcli-supervisord.pid"
 _PROC_LOG_SUFFIX = ".supervisor.log"
 
 SUPERVISOR = "supervisord"
+_SUPERVISOR_STATES = frozenset(
+    {"STOPPED", "STARTING", "RUNNING", "BACKOFF", "STOPPING", "EXITED", "FATAL", "UNKNOWN"}
+)
 
 # Per-program supervisord log rotation (built into supervisord, no cwcli daemon).
 _PROC_LOG_MAXBYTES = "5MB"
@@ -193,22 +197,14 @@ def _decode(output) -> str:
 # ---------------------------------------------------------------------- discovery
 
 
-def _ps_rows(container, *, required: bool = False) -> list[_PsRow]:
-    """One ``ps`` in the container -> parsed rows (pid, ppid, etimes, cpu, rss, args)."""
-    exit_code, output = container.exec_run(["ps", "-eo", "pid=,ppid=,etimes=,pcpu=,rss=,args="])
-    if exit_code not in (0, None):
-        if required:
-            from .errors import CwcliError, ErrorKind
+def _parse_ps_rows(text: str) -> list[_PsRow]:
+    """Pure parse of ``ps -eo pid=,ppid=,etimes=,pcpu=,rss=,args=`` output into rows.
 
-            raise CwcliError(
-                ErrorKind.PRECONDITION,
-                "supervisor.process_state_unknown",
-                "Could not verify the supervisord process state.",
-                detail={"output": _decode(output)[-2000:]},
-            )
-        return []
+    Extracted from :func:`_ps_rows` so :func:`fused_probe` can parse a ``ps``
+    section pulled out of a combined multi-command exec, not just a standalone one.
+    """
     rows: list[_PsRow] = []
-    for line in _decode(output).splitlines():
+    for line in text.splitlines():
         line = line.strip()
         if not line:
             continue
@@ -231,15 +227,30 @@ def _ps_rows(container, *, required: bool = False) -> list[_PsRow]:
                 args=args,
             )
         )
-    if required and not rows:
-        from .errors import CwcliError, ErrorKind
+    return rows
 
-        raise CwcliError(
-            ErrorKind.PRECONDITION,
-            "supervisor.process_state_unknown",
-            "Could not verify the supervisord process state.",
-            detail={"output": _decode(output)[-2000:]},
-        )
+
+def _raise_process_state_unknown(output) -> None:
+    from .errors import CwcliError, ErrorKind
+
+    raise CwcliError(
+        ErrorKind.PRECONDITION,
+        "supervisor.process_state_unknown",
+        "Could not verify the supervisord process state.",
+        detail={"output": _decode(output)[-2000:]},
+    )
+
+
+def _ps_rows(container, *, required: bool = False) -> list[_PsRow]:
+    """One ``ps`` in the container -> parsed rows (pid, ppid, etimes, cpu, rss, args)."""
+    exit_code, output = container.exec_run(["ps", "-eo", "pid=,ppid=,etimes=,pcpu=,rss=,args="])
+    if exit_code not in (0, None):
+        if required:
+            _raise_process_state_unknown(output)
+        return []
+    rows = _parse_ps_rows(_decode(output))
+    if required and not rows:
+        _raise_process_state_unknown(output)
     return rows
 
 
@@ -423,6 +434,211 @@ def discover_stack(container, bench_path: str) -> StackSnapshot:
             )
         )
     return StackSnapshot(supervisor_up=True, supervisor_pid=sup_pids[0], processes=processes)
+
+
+# --------------------------------------------------------------- fused health probe
+
+# Markers delimiting each section's output inside the ONE fused exec. ``ps``,
+# ``supervisorctl status``, and ``curl -w %{http_code}`` never emit an
+# ``@@CWCLI-...@@``-shaped token, so a plain ``str.partition`` split is enough -
+# no real parser needed for the substrate underneath.
+_MARK_PS = "@@CWCLI-PS@@"
+_MARK_SUPCTL = "@@CWCLI-SUPCTL@@"
+_MARK_WEB = "@@CWCLI-WEB@@"
+_PS_RC_PREFIX = "PSRC:"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class FusedProbe:
+    """Serializable result from :func:`fused_probe`."""
+
+    supervisor_up: bool
+    supervisor_pid: int | None
+    processes: list[ProcessHealth]
+    web_http_code: str | None
+    web_probed: bool
+
+
+def _fused_script(bench_path: str, *, web_port: int | None, web_site: str | None) -> str:
+    """The single ``bash -c`` script fusing ``ps`` + ``supervisorctl status`` + curl.
+
+    Plain newline/``;``-separated commands - no ``&&``, no ``set -e``.
+    ``supervisorctl`` routinely exits non-zero when a program is not RUNNING (see
+    :func:`supervisorctl_states`), so a fused script could never treat the overall
+    exit code as a success signal anyway; each section is parsed from its own
+    marked slice of output regardless of the whole script's exit status.
+    """
+    py = shlex.quote(_venv_python(bench_path))
+    cfg = shlex.quote(_config_path(bench_path))
+    lines = [
+        f"echo {_MARK_PS}",
+        "ps -eo pid=,ppid=,etimes=,pcpu=,rss=,args=",
+        f"echo {_PS_RC_PREFIX}$?",
+        f"echo {_MARK_SUPCTL}",
+        f"{py} -m supervisor.supervisorctl -c {cfg} status 2>&1",
+    ]
+    if web_port is not None:
+        curl_cmd = [
+            "curl",
+            "-s",
+            "--connect-timeout",
+            "2",
+            "--max-time",
+            "5",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+        ]
+        if web_site:
+            curl_cmd += ["-H", f"Host: {web_site}"]
+        curl_cmd += [f"http://localhost:{web_port}"]
+        curl = " ".join(shlex.quote(c) for c in curl_cmd)
+        lines += [
+            f"web_code=$({curl})",
+            "web_status=$?",
+            f"echo {_MARK_WEB}",
+            (
+                'if [ "$web_status" -eq 0 ] && [ "$web_code" != "000" ]; '
+                "then printf '%s\\n' \"$web_code\"; fi"
+            ),
+        ]
+    return "\n".join(lines) + "\n"
+
+
+def fused_probe(
+    container,
+    bench_path: str,
+    *,
+    web_port: int | None = None,
+    web_site: str | None = None,
+    probe_web: bool = True,
+) -> FusedProbe:
+    """Supervisord state + process liveness + the web check, in ONE ``docker exec``.
+
+    This runs ``ps``, ``supervisorctl status``, and the optional ``curl`` inside
+    one marker-delimited ``bash -c`` script, then reuses the standalone readers'
+    pure parsers. Every command is read-only. The no-mutation regression guard is
+    ``tests/test_core_supervision.py::TestFusedProbe``.
+
+    ``web_port=None`` (unresolved, or the caller has no port to give) and
+    ``probe_web=False`` (a caller suppressing the web check, the ``status
+    --watch`` precedent) both skip the web section of the script entirely -
+    ``web_http_code`` then comes back ``None`` and ``web_probed`` is False, so a
+    caller can tell "not asked" apart from "asked, unreachable". This is NOT the
+    same relaxation :func:`web_http_code` refuses (a bare default that silently
+    re-introduces the "measured bench 0's port" bug): here ``None`` is an
+    explicit, already-resolved absence the CALLER decided, never a fallback this
+    function invents.
+
+    ``supervisorctl status`` enumerates every program IT manages, so unlike
+    :func:`discover_stack` this needs no separate ``Procfile`` read to know which
+    programs are "expected" - a program supervisord manages but ``ps`` did not
+    catch alive (e.g. a FATAL crash loop) is still reported, down, with its state.
+    """
+    probed = probe_web and web_port is not None
+    script = _fused_script(bench_path, web_port=web_port if probed else None, web_site=web_site)
+    _exit_code, output = container.exec_run(["bash", "-c", script])
+    text = _decode(output)
+
+    _, ps_found, after_ps = text.partition(_MARK_PS + "\n")
+    ps_text, supctl_found, after_supctl = after_ps.partition(_MARK_SUPCTL + "\n")
+    if not ps_found or not supctl_found:
+        _raise_process_state_unknown(output)
+    if probed:
+        supctl_text, web_found, web_text = after_supctl.partition(_MARK_WEB + "\n")
+        if not web_found:
+            _raise_process_state_unknown(output)
+    else:
+        supctl_text, web_text = after_supctl, ""
+
+    web_code = (web_text.strip() or None) if probed else None
+
+    ps_lines = ps_text.splitlines()
+    ps_rc = [
+        line.strip().removeprefix(_PS_RC_PREFIX)
+        for line in ps_lines
+        if line.strip().startswith(_PS_RC_PREFIX)
+    ]
+    if ps_rc != ["0"]:
+        _raise_process_state_unknown(output)
+    ps_text = "\n".join(line for line in ps_lines if not line.strip().startswith(_PS_RC_PREFIX))
+    rows = _parse_ps_rows(ps_text)
+    if not rows:
+        _raise_process_state_unknown(output)
+    want = _config_path(bench_path)
+    sup_pids = [
+        row.pid
+        for row in rows
+        if _is_supervisord(row.args) and _same_path(_config_from_args(row.args), want)
+    ]
+    if not sup_pids:
+        return FusedProbe(
+            supervisor_up=False,
+            supervisor_pid=None,
+            processes=[],
+            web_http_code=web_code,
+            web_probed=probed,
+        )
+
+    raw_states = _parse_supervisorctl_status(supctl_text)
+    if not raw_states:
+        _raise_process_state_unknown(output)
+    tree = _descendants(rows, set(sup_pids))
+    live_by_label: dict[str, _PsRow] = {}
+    for r in rows:
+        if r.pid not in tree or r.pid in sup_pids:
+            continue
+        label = label_for(r.args)
+        if label is not None:
+            live_by_label[label] = r
+
+    processes: list[ProcessHealth] = []
+    seen: set[str] = set()
+    for raw_program, (state, _ctl_pid) in raw_states.items():
+        label = _normalize_procfile_key(raw_program)
+        if label in seen:
+            continue
+        seen.add(label)
+        row = live_by_label.get(label)
+        if row is not None:
+            processes.append(
+                ProcessHealth(
+                    label=label,
+                    up=True,
+                    pid=row.pid,
+                    uptime_s=row.etimes,
+                    cpu_pct=row.cpu,
+                    rss_kb=row.rss,
+                    state=state,
+                )
+            )
+        else:
+            processes.append(ProcessHealth(label=label, up=False, state=state))
+    # A live process ps found that supervisorctl did not enumerate should not
+    # normally happen (supervisorctl owns every program it launched), but report it
+    # rather than silently drop it - the same completeness discover_stack keeps.
+    for label, row in live_by_label.items():
+        if label in seen:
+            continue
+        processes.append(
+            ProcessHealth(
+                label=label,
+                up=True,
+                pid=row.pid,
+                uptime_s=row.etimes,
+                cpu_pct=row.cpu,
+                rss_kb=row.rss,
+            )
+        )
+
+    return FusedProbe(
+        supervisor_up=True,
+        supervisor_pid=sup_pids[0],
+        processes=processes,
+        web_http_code=web_code,
+        web_probed=probed,
+    )
 
 
 def _is_process_manager(args: str) -> bool:
@@ -805,24 +1021,25 @@ def _supervisorctl(container, bench_path: str, *args: str) -> tuple[int | None, 
     return exit_code, _decode(output)
 
 
-def supervisorctl_states(container, bench_path: str) -> dict[str, tuple[str, int | None]]:
-    """Per-program supervisord state + PID keyed by the RAW program name (Procfile key).
+def _parse_supervisorctl_status(text: str) -> dict[str, tuple[str, int | None]]:
+    """Pure parse of ``supervisorctl status`` output into ``{program: (state, pid)}``.
 
-    Parses ``supervisorctl status`` lines like ``web RUNNING pid 123, uptime ...``
-    or ``worker_default FATAL Exited too quickly``. Keyed by the raw program name
-    supervisord prints (the source of truth for what is actually supervised);
-    callers normalize to the discovery label (``worker_default`` ->
-    ``worker:default``) via :func:`_normalize_procfile_key` where they need it.
+    Parses lines like ``web RUNNING pid 123, uptime ...`` or ``worker_default FATAL
+    Exited too quickly``. Keyed by the raw program name supervisord prints (the
+    source of truth for what is actually supervised); callers normalize to the
+    discovery label (``worker_default`` -> ``worker:default``) via
+    :func:`_normalize_procfile_key` where they need it. Extracted from
+    :func:`supervisorctl_states` so :func:`fused_probe` can parse a status section
+    pulled out of a combined multi-command exec, not just a standalone one.
     """
-    exit_code, text = _supervisorctl(container, bench_path, "status")
-    # supervisorctl exits non-zero when any program is not RUNNING; still parse the
-    # body (the state tokens are what we want), so do not bail on the exit code.
     states: dict[str, tuple[str, int | None]] = {}
     for line in text.splitlines():
         parts = line.split()
         if len(parts) < 2:
             continue
         program, state = parts[0], parts[1]
+        if state not in _SUPERVISOR_STATES:
+            continue
         pid: int | None = None
         # "... pid 123, uptime ..." -> capture the pid when present.
         for i, tok in enumerate(parts):
@@ -831,6 +1048,16 @@ def supervisorctl_states(container, bench_path: str) -> dict[str, tuple[str, int
                 break
         states[program] = (state, pid)
     return states
+
+
+def supervisorctl_states(container, bench_path: str) -> dict[str, tuple[str, int | None]]:
+    """Per-program supervisord state + PID keyed by the RAW program name (Procfile key).
+
+    supervisorctl exits non-zero when any program is not RUNNING; still parse the
+    body (the state tokens are what we want), so do not bail on the exit code.
+    """
+    _exit_code, text = _supervisorctl(container, bench_path, "status")
+    return _parse_supervisorctl_status(text)
 
 
 def states_by_label(states: dict[str, tuple[str, int | None]]) -> dict[str, tuple[str, int | None]]:
@@ -931,6 +1158,45 @@ def _self_check() -> None:
     assert states["worker_short"] == ("FATAL", None)
     by_label = states_by_label(states)
     assert by_label["worker:short"] == ("FATAL", None)
+
+    # Fused probe: one exec, marked sections, honest-unknown on a skipped web check.
+    bench = "/w/b"
+    cfg_path = _config_path(bench)
+    ps_text = (
+        f"100 1 500 0.1 2000 /env/bin/python /env/bin/supervisord -c {cfg_path}\n"
+        "101 100 499 0.5 80000 /env/bin/python /env/bin/bench serve --port 8000\n"
+    )
+    ctl_text = "web   RUNNING   pid 101, uptime 0:05:00\n"
+
+    class _Fused:
+        def __init__(self):
+            self.calls = 0
+
+        def exec_run(self, cmd):
+            self.calls += 1
+            script = cmd[2]
+            assert cmd[:2] == ["bash", "-c"]
+            out = [_MARK_PS, ps_text, f"{_PS_RC_PREFIX}0", _MARK_SUPCTL, ctl_text]
+            if _MARK_WEB in script:
+                out += [_MARK_WEB, "200"]
+            return (0, "\n".join(out).encode())
+
+    c = _Fused()
+    probe = fused_probe(c, bench, web_port=8000, web_site="x.localhost")
+    assert c.calls == 1, "the fused probe must be exactly one docker exec"
+    assert probe.supervisor_up is True
+    assert probe.supervisor_pid == 100
+    web = next(p for p in probe.processes if p.label == "web")
+    assert web.up is True and web.pid == 101 and web.state == "RUNNING"
+    assert probe.web_http_code == "200"
+    assert probe.web_probed is True
+
+    # No port to give -> web section skipped, honest None rather than a guess.
+    c2 = _Fused()
+    probe2 = fused_probe(c2, bench, web_port=None)
+    assert probe2.web_http_code is None
+    assert probe2.web_probed is False
+    assert _MARK_WEB not in _fused_script(bench, web_port=None, web_site=None)
 
     print("supervision self-check OK")
 
