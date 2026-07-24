@@ -20,7 +20,6 @@ import typer
 
 import caffeinated_whale_cli.commands.init as init_mod
 from caffeinated_whale_cli.commands.init import _resolve_frappe_branch
-from caffeinated_whale_cli.core import init as core_init
 from caffeinated_whale_cli.core.envelope import Result, Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from caffeinated_whale_cli.core.init import (
