@@ -81,6 +81,10 @@ class InstanceState:
     asked and got no answer. Without it a reader cannot tell "not measured" from
     "measured, dead", which is exactly the honest-unknown collapse this model
     refuses.
+
+    ``probed_at`` and ``probe_ms`` describe the last successful health read.
+    ``probe_failed_at`` records the latest failed attempt separately, so retained
+    bench evidence never receives a timestamp from a read that did not produce it.
     """
 
     project: str
@@ -93,6 +97,7 @@ class InstanceState:
     probe_error: str | None = None
     probed_at: float | None = None
     probe_ms: float | None = None
+    probe_failed_at: float | None = None
 
 
 def health_key(state: InstanceState) -> tuple:
@@ -101,9 +106,9 @@ def health_key(state: InstanceState) -> tuple:
     Every field here is one a human would call a state change. Every VOLATILE
     field is excluded by construction and by test
     (``tests/test_core_fleet.py::TestHealthKey``): ``probe_ms``, ``probed_at``,
-    and each process's ``uptime_s``, ``cpu_pct`` and ``rss_kb`` all differ on
-    every single cycle of a perfectly steady instance, so including any one of
-    them publishes a delta per tick forever.
+    ``probe_failed_at``, and each process's ``uptime_s``, ``cpu_pct`` and
+    ``rss_kb`` all differ on every single cycle of a perfectly steady instance,
+    so including any one of them publishes a delta per tick forever.
 
     ``pid`` IS included and is not volatile: a stable process keeps its pid, and
     a changed one means the process died and was restarted between two probes -
@@ -159,6 +164,7 @@ class Fleet:
         self._mutation_lock = threading.Lock()
         self._instances: dict[str, InstanceState] = {}
         self._keys: dict[str, tuple] = {}
+        self._generations: dict[str, int] = {}
         self._focus: set[str] = set()
         self._web_until: dict[str, float] = {}
         self._window = web_probe_window_s
@@ -226,17 +232,32 @@ class Fleet:
         with self._mutation_lock:
             rows = list_instances().data or []
             with self._lock:
+                event_project = cause.get("project") if cause else None
                 seen = set()
                 for dto in rows:
                     seen.add(dto.project_name)
+                    previous = self._instances.get(dto.project_name)
                     new = self._reconcile(dto.project_name, dto.status, list(dto.ports))
+                    if (
+                        previous is None
+                        or previous.docker_status != new.docker_status
+                        or previous.container_running != new.container_running
+                        or previous.ports != new.ports
+                        or dto.project_name == event_project
+                    ):
+                        self._generations[dto.project_name] = (
+                            self._generations.get(dto.project_name, 0) + 1
+                        )
                     if self._store(new):
                         deltas.append((new.project, new))
                 for gone in sorted(set(self._instances) - seen):
                     del self._instances[gone]
                     self._keys.pop(gone, None)
                     self._web_until.pop(gone, None)
+                    self._generations[gone] = self._generations.get(gone, 0) + 1
                     deltas.append((gone, None))
+                if event_project in self._instances:
+                    self._web_until[event_project] = time.monotonic() + self._window
 
             # Always the INSTANT tier: a bootstrap only ever reports container-lifecycle
             # facts, whether triggered at startup, by an event, or by a reconnect.
@@ -246,10 +267,14 @@ class Fleet:
 
     def probe(self, project: str) -> None:
         """The FAST tier for one instance: one fused read, published only if changed."""
-        state = self.get(project)
-        if state is None or not state.container_running:
-            return
-        probe_web = self.should_probe_web(project)
+        with self._lock:
+            state = self._instances.get(project)
+            if state is None or not state.container_running:
+                return
+            generation = self._generations.get(project, 0)
+            probe_web = project in self._focus or time.monotonic() < self._web_until.get(
+                project, 0.0
+            )
 
         started = time.monotonic()
         try:
@@ -268,10 +293,8 @@ class Fleet:
             new = replace(
                 state,
                 overall=UNKNOWN,
-                web_probed=probe_web,
                 probe_error=f"{e.code}: {e.message}",
-                probed_at=time.time(),
-                probe_ms=(time.monotonic() - started) * 1000,
+                probe_failed_at=time.time(),
             )
         else:
             assert report is not None
@@ -293,22 +316,16 @@ class Fleet:
                 probe_error=None,
                 probed_at=time.time(),
                 probe_ms=(time.monotonic() - started) * 1000,
+                probe_failed_at=None,
             )
 
         with self._mutation_lock:
             changed = False
             with self._lock:
-                # Re-read under the lock: a lifecycle event may have landed mid-probe,
-                # and its container state is fresher than what this probe started with.
                 current = self._instances.get(project)
-                if current is not None:
-                    new = replace(
-                        new,
-                        docker_status=current.docker_status,
-                        container_running=current.container_running,
-                        ports=current.ports,
-                    )
-                    changed = self._store(new)
+                if current is None or self._generations.get(project, 0) != generation:
+                    return
+                changed = self._store(new)
             if changed:
                 self._publish("fast", project, new, None)
 
@@ -326,7 +343,6 @@ class Fleet:
         project = attrs.get("com.docker.compose.project")
         if not project:
             return
-        self.note_lifecycle(project)
         self.bootstrap(
             cause={
                 "project": project,
@@ -367,6 +383,7 @@ class Fleet:
                 probe_error=None,
                 probed_at=None,
                 probe_ms=None,
+                probe_failed_at=None,
             )
         if not prev.container_running:
             # Just came up. A container being up is NOT a healthy bench (measured

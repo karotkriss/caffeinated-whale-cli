@@ -33,8 +33,7 @@ def daemon(monkeypatch):
     monkeypatch.setattr(
         core_fleet, "list_instances", lambda: Result(status=Status.OK, data=list(rows))
     )
-    # A short keepalive so the idle path (and the disconnect it discovers) is
-    # reachable inside a test rather than 15 seconds later.
+    # A short keepalive keeps the idle transport path reachable inside a test.
     monkeypatch.setattr(serve_cmd, "KEEPALIVE_S", 0.05)
 
     fleet = core_fleet.Fleet()
@@ -101,6 +100,7 @@ class TestSnapshot:
         # Nothing has probed yet, and the snapshot says so rather than guessing.
         assert body["instances"][0]["overall"] == core_fleet.UNKNOWN
         assert body["instances"][0]["probe_ms"] is None
+        assert body["instances"][0]["probe_failed_at"] is None
 
     def test_an_unknown_path_is_404(self, daemon):
         with pytest.raises(urllib.error.HTTPError) as e:
@@ -213,6 +213,34 @@ class TestEventStream:
 
 
 class TestFocus:
+    def test_concurrent_client_changes_deliver_the_latest_focus_snapshot(self):
+        delivered = []
+        empty_started = threading.Event()
+        release_empty = threading.Event()
+        block_empty = False
+
+        def _on_focus(focused):
+            if block_empty and not focused:
+                empty_started.set()
+                assert release_empty.wait(2)
+            delivered.append(focused)
+
+        hub = serve_cmd._Hub(_on_focus)
+        client_id, _q = hub.subscribe("p")
+        block_empty = True
+        disconnect = threading.Thread(target=hub.unsubscribe, args=(client_id,))
+        disconnect.start()
+        assert empty_started.wait(2)
+        connect = threading.Thread(target=hub.subscribe, args=("q",))
+        connect.start()
+        release_empty.set()
+        disconnect.join(2)
+        connect.join(2)
+
+        assert not disconnect.is_alive()
+        assert not connect.is_alive()
+        assert delivered[-1] == {"q"}
+
     def test_the_connection_itself_carries_which_instance_is_open(self, daemon):
         assert daemon.fleet.should_probe_web("p") is False
 
@@ -226,15 +254,16 @@ class TestFocus:
         finally:
             stream.close()
 
-    def test_a_disconnect_retracts_focus_with_no_heartbeat(self, daemon):
+    def test_a_disconnect_retracts_focus_without_waiting_for_keepalive(
+        self, daemon, monkeypatch
+    ):
+        monkeypatch.setattr(serve_cmd, "KEEPALIVE_S", 60.0)
         stream = _Stream(daemon.base + "/api/events?focus=p")
         stream.next_frame()
         _wait_for(lambda: daemon.fleet.should_probe_web("p"), "focus never reached the fleet")
 
         stream.close()
 
-        # The keepalive write is what discovers the dead socket, so this is also
-        # the client-disconnect cleanup path.
         _wait_for(
             lambda: not daemon.fleet.should_probe_web("p") and daemon.hub.client_count() == 0,
             "a closed client left its focus and its queue behind",

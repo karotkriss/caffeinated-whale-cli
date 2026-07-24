@@ -204,6 +204,9 @@ Pinned by `tests/test_core_fleet.py::TestProbeAndModelStayConsistent`.
 
 **A probe timing on an instance nothing probed.** A stopped instance kept the `probe_ms`/`probed_at` of its last live read, date-stamping an answer no probe had produced. Both are now cleared with the bench rows.
 
+On a failed read, retained bench and process rows keep the `probed_at` and `probe_ms` of the successful read that produced them.
+The failed attempt has its own `probe_failed_at` timestamp alongside `overall: unknown` and `probe_error`.
+
 ## 7. Not a cwcli defect: `start`/`stop`/`restart` appearing to hang
 
 Several times during this run, `cwcli start`, `cwcli stop` and `cwcli restart --process` hung indefinitely while `cwcli status` returned instantly.

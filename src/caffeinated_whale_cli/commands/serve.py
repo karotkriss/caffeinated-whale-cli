@@ -53,6 +53,7 @@ DEFAULT_PORT = 8765
 DEFAULT_HOST = "0.0.0.0"  # noqa: S104 - see the module docstring's "Binding" note
 DEFAULT_INTERVAL = 2.5
 KEEPALIVE_S = 15.0
+_DISCONNECTED = object()
 
 # A read-only frontend, so the only failures are "cannot answer": map the core's
 # closed error kinds onto the HTTP statuses that mean the same thing.
@@ -71,11 +72,12 @@ class _Hub:
     blocking the probe thread on a stalled browser and silently dropping a delta,
     and a dropped delta is a UI that is quietly wrong. The FAST tier only speaks
     when state actually changes, so a queue that grows without bound means the
-    client is gone - which the write itself then discovers.
+    client is stalled rather than ordinary steady-state traffic.
     """
 
     def __init__(self, on_focus) -> None:
         self._lock = threading.Lock()
+        self._focus_lock = threading.Lock()
         self._clients: dict[int, tuple[queue.Queue, str | None]] = {}
         self._next = 0
         self._on_focus = on_focus
@@ -91,13 +93,15 @@ class _Hub:
 
     def unsubscribe(self, client_id: int) -> None:
         with self._lock:
-            self._clients.pop(client_id, None)
-        self._sync_focus()
+            removed = self._clients.pop(client_id, None) is not None
+        if removed:
+            self._sync_focus()
 
     def _sync_focus(self) -> None:
-        with self._lock:
-            focused = {f for _q, f in self._clients.values() if f}
-        self._on_focus(focused)
+        with self._focus_lock:
+            with self._lock:
+                focused = {f for _q, f in self._clients.values() if f}
+            self._on_focus(focused)
 
     def publish(self, tier, project, state, cause) -> None:
         payload = {
@@ -202,17 +206,33 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(_sse_frame("snapshot", {"instances": self.fleet.snapshot()}))
             self.wfile.flush()
+            threading.Thread(
+                target=self._watch_disconnect,
+                args=(client_id, q),
+                daemon=True,
+            ).start()
             while True:
                 try:
                     frame = q.get(timeout=KEEPALIVE_S)
                 except queue.Empty:
                     frame = b": keepalive\n\n"
+                if frame is _DISCONNECTED:
+                    return
                 self.wfile.write(frame)
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass  # the client went away; the finally below is the whole cleanup
         finally:
             self.hub.unsubscribe(client_id)
+
+    def _watch_disconnect(self, client_id: int, q: queue.Queue) -> None:
+        try:
+            disconnected = self.connection.recv(1, socket.MSG_PEEK) == b""
+        except OSError:
+            disconnected = True
+        if disconnected:
+            self.hub.unsubscribe(client_id)
+            q.put(_DISCONNECTED)
 
 
 def make_server(host: str, port: int, fleet: core_fleet.Fleet, hub: _Hub) -> ThreadingHTTPServer:
