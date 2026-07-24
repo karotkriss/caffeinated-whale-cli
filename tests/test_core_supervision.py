@@ -698,6 +698,8 @@ class FusedFakeContainer:
         web_ok=True,
         exit_code=0,
         include_ps_marker=True,
+        include_ps_rc=True,
+        ps_rc=0,
         include_supctl_marker=True,
         include_web_marker=True,
     ):
@@ -708,6 +710,8 @@ class FusedFakeContainer:
         self.curl_output = web_code if web_ok else "000"
         self.exit_code = exit_code
         self.include_ps_marker = include_ps_marker
+        self.include_ps_rc = include_ps_rc
+        self.ps_rc = ps_rc
         self.include_supctl_marker = include_supctl_marker
         self.include_web_marker = include_web_marker
         self.calls: list = []
@@ -719,6 +723,8 @@ class FusedFakeContainer:
         out = []
         if self.include_ps_marker:
             out += [supervision._MARK_PS, self.ps]
+        if self.include_ps_rc:
+            out += [f"{supervision._PS_RC_PREFIX}{self.ps_rc}"]
         if self.include_supctl_marker:
             out += [supervision._MARK_SUPCTL, self.ctl]
         if supervision._MARK_WEB in script and self.include_web_marker:
@@ -774,7 +780,7 @@ class TestFusedProbe:
         ctl = _CTL_SINGLE + "worker_default   FATAL   Exited too quickly\n"
         # Replace the single stale RUNNING line for worker_default with the FATAL one.
         ctl = "\n".join(line for line in ctl.splitlines() if "worker_default   RUNNING" not in line)
-        c = FusedFakeContainer(ps=ps_without_worker, ctl=ctl)
+        c = FusedFakeContainer(ps=ps_without_worker, ctl=ctl, exit_code=3)
         probe = supervision.fused_probe(c, BENCH, web_port=None)
         worker = next(p for p in probe.processes if p.label == "worker:default")
         assert worker.up is False
@@ -804,8 +810,9 @@ class TestFusedProbe:
     @pytest.mark.parametrize(
         "container",
         [
-            FusedFakeContainer(exit_code=127),
             FusedFakeContainer(include_ps_marker=False),
+            FusedFakeContainer(include_ps_rc=False),
+            FusedFakeContainer(ps_rc=1),
             FusedFakeContainer(include_supctl_marker=False),
             FusedFakeContainer(include_web_marker=False),
             FusedFakeContainer(ps="not parseable"),
@@ -814,6 +821,13 @@ class TestFusedProbe:
     def test_an_unverifiable_fused_read_fails_closed(self, container):
         with pytest.raises(CwcliError) as exc:
             supervision.fused_probe(container, BENCH, web_port=8000)
+        assert exc.value.kind is ErrorKind.PRECONDITION
+        assert exc.value.code == "supervisor.process_state_unknown"
+
+    def test_empty_supervisor_states_with_a_live_supervisor_fail_closed(self):
+        c = FusedFakeContainer(ctl="unix:///tmp/supervisor.sock refused connection\n")
+        with pytest.raises(CwcliError) as exc:
+            supervision.fused_probe(c, BENCH, web_port=8000)
         assert exc.value.kind is ErrorKind.PRECONDITION
         assert exc.value.code == "supervisor.process_state_unknown"
 
