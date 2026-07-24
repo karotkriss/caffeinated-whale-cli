@@ -144,6 +144,7 @@ button { color: inherit; }
   outline-offset: 2px;
 }
 .tree-label {
+  display: block;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -151,12 +152,16 @@ button { color: inherit; }
   font-weight: 650;
 }
 .tree-meta {
+  display: block;
   min-width: 0;
   color: var(--muted);
   font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.tree-row > span:first-child {
+  min-width: 0;
 }
 .children {
   margin-left: 28px;
