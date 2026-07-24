@@ -214,9 +214,7 @@ class TestFastTier:
 
             # Restores itself: `restart --process` leaves the program RUNNING, so
             # the shared instance ends this test exactly as it started it.
-            result = harness.run_cwcli(
-                "restart", daemon.project, "--process", "web", timeout=180
-            )
+            result = harness.run_cwcli("restart", daemon.project, "--process", "web", timeout=180)
             assert result.returncode == 0, result.stdout + result.stderr
 
             _wait_for(lambda: client.deltas("fast"), desc="a FAST delta for the restart")

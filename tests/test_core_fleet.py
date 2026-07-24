@@ -863,9 +863,7 @@ class TestProbeAndModelStayConsistent:
         assert state.docker_status == "exited"
         assert state.benches == []
 
-    def test_a_probe_is_discarded_when_lifecycle_changes_while_it_runs(
-        self, listing, probing
-    ):
+    def test_a_probe_is_discarded_when_lifecycle_changes_while_it_runs(self, listing, probing):
         listing(("p", "running", ["8000"]))
         probe_started = threading.Event()
         release_probe = threading.Event()
