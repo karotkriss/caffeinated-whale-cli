@@ -77,6 +77,7 @@ _HTTP_FOR_KIND = {
     ErrorKind.DOCKER: 503,
 }
 _MAX_ACTION_BODY = 64 * 1024
+_ACTION_LOCK_STRIPES = 64
 CONSOLE_PAGE = (
     files("caffeinated_whale_cli.commands").joinpath("console.html").read_text(encoding="utf-8")
 )
@@ -159,8 +160,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     fleet: core_fleet.Fleet
     hub: _Hub
-    action_locks: dict[str, threading.Lock]
-    action_locks_guard: threading.Lock
+    action_locks: tuple[threading.Lock, ...]
 
     def log_message(self, fmt, *args):  # noqa: A003 - stdlib hook name
         """Silence per-request logging; a dashboard polls, and the noise buries the banner."""
@@ -370,8 +370,7 @@ class _Handler(BaseHTTPRequestHandler):
             return _result_response(action, project, result)
 
     def _action_lock(self, project: str) -> threading.Lock:
-        with self.action_locks_guard:
-            return self.action_locks.setdefault(project, threading.Lock())
+        return self.action_locks[hash(project) % len(self.action_locks)]
 
     def _restart_instance(self, project: str, bench: str | None) -> tuple[int, dict]:
         _check_start_port_conflicts(project)
@@ -591,8 +590,7 @@ def make_server(host: str, port: int, fleet: core_fleet.Fleet, hub: _Hub) -> Thr
         {
             "fleet": fleet,
             "hub": hub,
-            "action_locks": {},
-            "action_locks_guard": threading.Lock(),
+            "action_locks": tuple(threading.Lock() for _ in range(_ACTION_LOCK_STRIPES)),
         },
     )
     httpd = ThreadingHTTPServer((host, port), handler)

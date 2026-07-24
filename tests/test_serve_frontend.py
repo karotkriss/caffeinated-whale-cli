@@ -55,7 +55,11 @@ def daemon(monkeypatch):
     thread.start()
     base = f"http://127.0.0.1:{httpd.server_address[1]}"
     try:
-        yield type("Daemon", (), {"base": base, "fleet": fleet, "hub": hub, "rows": rows})
+        yield type(
+            "Daemon",
+            (),
+            {"base": base, "fleet": fleet, "hub": hub, "rows": rows, "httpd": httpd},
+        )
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -172,7 +176,14 @@ class TestSnapshot:
         assert "start_instance" in body
         assert "restart_process" in body
         assert 'role="status" aria-live="polite"' in body
-        assert "focusAction(action)" in body
+        assert "restoreControlFocus" in body
+        assert 'role="tablist" aria-label="Instance details"' in body
+        assert 'role="tabpanel"' in body
+        assert 'aria-selected="${selectedTab ? "true" : "false"}"' in body
+        assert 'aria-controls="detail"' in body
+        assert 'event.key === "ArrowRight"' in body
+        assert 'role="${lastAction.ok' not in body
+        assert 'textContent = lastAction ? lastAction.text : ""' in body
         assert "throwaway test page" not in body
         assert "rm-site" not in body
         assert "Delete instance" not in body
@@ -716,6 +727,18 @@ class TestActions:
         assert not first.is_alive()
         assert not second.is_alive()
         assert not errors
+
+    def test_action_lock_storage_is_bounded(self, daemon):
+        handler = daemon.httpd.RequestHandlerClass
+        request = object.__new__(handler)
+        locks = handler.action_locks
+
+        for index in range(10_000):
+            request._action_lock(f"unknown-{index}")
+
+        assert len(locks) == serve_cmd._ACTION_LOCK_STRIPES
+        assert handler.action_locks is locks
+        assert request._action_lock("p") is request._action_lock("p")
 
     def test_unsupported_actions_are_rejected(self, daemon):
         with pytest.raises(urllib.error.HTTPError) as e:

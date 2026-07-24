@@ -524,8 +524,8 @@ td.code, .code {
   </aside>
   <main class="main">
     <header id="topbar" class="topbar"></header>
-    <div id="tabs" class="tabs" role="tablist"></div>
-    <section id="detail" class="detail"></section>
+    <div id="tabs" class="tabs" role="tablist" aria-label="Instance details"></div>
+    <section id="detail" class="detail" role="tabpanel" tabindex="0" aria-labelledby="tab-processes"></section>
   </main>
   <aside class="rail" aria-label="Actions">
     <div class="rail-head"><h2>Actions</h2></div>
@@ -561,6 +561,25 @@ td.code, .code {
   const unknown = text => `<span class="unknown-text">${esc(text || "unknown")}</span>`;
   const safeKey = value => encodeURIComponent(String(value ?? ""));
   const parseKey = value => decodeURIComponent(value || "");
+
+  function controlFocusKey(node) {
+    if (!node || !node.dataset) return null;
+    if (node.dataset.toggle !== undefined) return `toggle:${node.dataset.toggle}`;
+    if (node.dataset.select !== undefined) {
+      return ["select", node.dataset.select, node.dataset.project, node.dataset.bench, node.dataset.process].join(":");
+    }
+    if (node.dataset.tab !== undefined) return `tab:${node.dataset.tab}`;
+    if (node.dataset.action !== undefined) return `action:${node.dataset.action}`;
+    return null;
+  }
+
+  function restoreControlFocus(container, focusKey) {
+    if (!focusKey) return;
+    const control = [...container.querySelectorAll("button")].find(
+      candidate => controlFocusKey(candidate) === focusKey
+    );
+    if (control) control.focus();
+  }
 
   function statusText(token) {
     return ({
@@ -742,6 +761,7 @@ td.code, .code {
   }
 
   function renderTree() {
+    const focusKey = controlFocusKey(document.activeElement);
     const instances = sortedInstances();
     if (!instances.length) {
       el("tree").innerHTML = `<div class="tree-empty">No instances found</div>`;
@@ -764,6 +784,7 @@ td.code, .code {
         ${open ? `<div class="children">${benches || renderNoBenchNode(instance)}</div>` : ""}
       </div>`;
     }).join("");
+    restoreControlFocus(el("tree"), focusKey);
   }
 
   function renderBenchNode(instance, bench) {
@@ -869,10 +890,14 @@ td.code, .code {
   }
 
   function renderTabs() {
+    const focusKey = controlFocusKey(document.activeElement);
     el("tabs").innerHTML = tabs.map(tab => {
       const label = tab === "sites" ? "Sites <small>cached</small>" : tab === "apps" ? "Apps <small>cached</small>" : "Processes";
-      return `<button class="tab ${activeTab === tab ? "active" : ""}" role="tab" data-tab="${tab}">${label}</button>`;
+      const selectedTab = activeTab === tab;
+      return `<button id="tab-${tab}" class="tab ${selectedTab ? "active" : ""}" role="tab" data-tab="${tab}" aria-selected="${selectedTab ? "true" : "false"}" aria-controls="detail" tabindex="${selectedTab ? "0" : "-1"}">${label}</button>`;
     }).join("");
+    el("detail").setAttribute("aria-labelledby", `tab-${activeTab}`);
+    restoreControlFocus(el("tabs"), focusKey);
   }
 
   function renderDetail() {
@@ -1033,7 +1058,7 @@ td.code, .code {
   }
 
   function renderRail() {
-    const focusedAction = document.activeElement?.dataset.action || null;
+    const focusKey = controlFocusKey(document.activeElement);
     const inst = selectedInstance();
     if (!inst) {
       el("rail-body").innerHTML = `<div class="target"><div class="target-name">No target</div><div class="target-meta">unknown</div></div>`;
@@ -1045,7 +1070,7 @@ td.code, .code {
     const targetMeta = process ? `${inst.project} / ${bench ? bench.bench_path : "bench unknown"}` : bench ? inst.project : "instance";
     const busy = pendingAction !== null;
     const processDisabled = busy || !process;
-    const message = lastAction ? `<div class="notice ${lastAction.ok ? "" : "error"}" role="${lastAction.ok ? "status" : "alert"}">${esc(lastAction.text)}</div>` : "";
+    const message = lastAction ? `<div class="notice ${lastAction.ok ? "" : "error"}">${esc(lastAction.text)}</div>` : "";
     el("rail-body").innerHTML = `<div>
       <div class="target"><div class="target-name">${esc(targetName)}</div><div class="target-meta">${esc(targetMeta)}</div></div>
       <div class="action-group">
@@ -1060,7 +1085,7 @@ td.code, .code {
       </div>
       ${message}
     </div>`;
-    if (focusedAction) focusAction(focusedAction);
+    restoreControlFocus(el("rail-body"), focusKey);
   }
 
   function actionButton(action, label, cost, disabled) {
@@ -1068,11 +1093,6 @@ td.code, .code {
     return `<button class="action-button" data-action="${action}" aria-disabled="${disabled ? "true" : "false"}">
       <span>${esc(label)}</span><span class="action-cost">${esc(busy)}</span>
     </button>`;
-  }
-
-  function focusAction(action) {
-    const button = el("rail-body").querySelector(`[data-action="${action}"]`);
-    if (button) button.focus();
   }
 
   async function runAction(action) {
@@ -1113,7 +1133,7 @@ td.code, .code {
     } finally {
       pendingAction = null;
       renderRail();
-      el("action-status").textContent = "";
+      el("action-status").textContent = lastAction ? lastAction.text : "";
     }
   }
 
@@ -1142,12 +1162,31 @@ td.code, .code {
     }
   });
 
+  function activateTab(tab, focus) {
+    activeTab = tab;
+    if (selected.project) ensureDetail(selected.project);
+    render();
+    if (focus) restoreControlFocus(el("tabs"), `tab:${tab}`);
+  }
+
   el("tabs").addEventListener("click", event => {
     const tab = event.target.closest("[data-tab]");
     if (!tab) return;
-    activeTab = tab.dataset.tab;
-    if (selected.project) ensureDetail(selected.project);
-    render();
+    activateTab(tab.dataset.tab, false);
+  });
+
+  el("tabs").addEventListener("keydown", event => {
+    const tab = event.target.closest("[data-tab]");
+    if (!tab) return;
+    const current = tabs.indexOf(tab.dataset.tab);
+    let next = current;
+    if (event.key === "ArrowRight") next = (current + 1) % tabs.length;
+    else if (event.key === "ArrowLeft") next = (current - 1 + tabs.length) % tabs.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = tabs.length - 1;
+    else return;
+    event.preventDefault();
+    activateTab(tabs[next], true);
   });
 
   el("rail-body").addEventListener("click", event => {
