@@ -7,6 +7,7 @@ the shipped ones - the parts a mocked handler would never catch.
 
 from __future__ import annotations
 
+import http.client
 import json
 import socket
 import threading
@@ -164,10 +165,14 @@ class TestSnapshot:
         with urllib.request.urlopen(daemon.base + "/", timeout=_TIMEOUT) as resp:  # noqa: S310
             body = resp.read().decode()
         assert resp.status == 200
+        assert resp.headers["Content-Security-Policy"] == "frame-ancestors 'none'"
+        assert resp.headers["X-Frame-Options"] == "DENY"
         assert 'data-app="cw-console"' in body
         assert "EventSource" in body
         assert "start_instance" in body
         assert "restart_process" in body
+        assert 'role="status" aria-live="polite"' in body
+        assert "focusAction(action)" in body
         assert "throwaway test page" not in body
         assert "rm-site" not in body
         assert "Delete instance" not in body
@@ -492,6 +497,21 @@ class TestActions:
         body = json.loads(e.value.read())
         assert body["error"]["code"] == "request.content_type_invalid"
 
+    def test_negative_content_length_is_rejected_before_reading(self, daemon):
+        host, port = daemon.base.removeprefix("http://").split(":", 1)
+        connection = http.client.HTTPConnection(host, int(port), timeout=_TIMEOUT)
+        connection.putrequest("POST", "/api/action")
+        connection.putheader("Content-Type", "application/json")
+        connection.putheader("Content-Length", "-1")
+        connection.endheaders()
+
+        response = connection.getresponse()
+        body = json.loads(response.read())
+        connection.close()
+
+        assert response.status == 400
+        assert body["error"]["code"] == "request.length_invalid"
+
     def test_start_instance_dispatches_to_the_core(self, daemon, monkeypatch):
         called = {}
         monkeypatch.setattr(serve_cmd.start_cmd, "_frappe_running", lambda project: True)
@@ -576,7 +596,9 @@ class TestActions:
             )
 
         monkeypatch.setattr(serve_cmd.core_restart, "restart_process", _restart_process)
-        monkeypatch.setattr(daemon.fleet, "probe", lambda project: called.update({"probe": project}))
+        monkeypatch.setattr(
+            daemon.fleet, "probe", lambda project: called.update({"probe": project})
+        )
 
         status, body = _post(
             daemon.base + "/api/action",
@@ -639,6 +661,61 @@ class TestActions:
         body = json.loads(e.value.read())
         assert body["error"]["code"] == "select_bench"
         assert body["choice"]["options"][0]["value"] == "0"
+
+    def test_same_project_actions_are_serialized(self, daemon, monkeypatch):
+        entered = threading.Event()
+        release = threading.Event()
+        overlap = threading.Event()
+        state_lock = threading.Lock()
+        active = 0
+
+        def _stop(project):
+            nonlocal active
+            with state_lock:
+                active += 1
+                if active > 1:
+                    overlap.set()
+            entered.set()
+            assert release.wait(_TIMEOUT)
+            with state_lock:
+                active -= 1
+            return Result(
+                status=Status.OK,
+                data=StopOutcome(
+                    project=project,
+                    stopped=1,
+                    already_stopped=False,
+                    containers=["p-frappe-1"],
+                ),
+            )
+
+        monkeypatch.setattr(serve_cmd.core_stop, "stop", _stop)
+        errors = []
+
+        def _request():
+            try:
+                _post(
+                    daemon.base + "/api/action",
+                    {"action": "stop_instance", "project": "p"},
+                )
+            except Exception as error:
+                errors.append(error)
+
+        first = threading.Thread(target=_request)
+        second = threading.Thread(target=_request)
+        first.start()
+        assert entered.wait(_TIMEOUT)
+        second.start()
+        try:
+            assert not overlap.wait(0.2)
+        finally:
+            release.set()
+            first.join(_TIMEOUT)
+            second.join(_TIMEOUT)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert not errors
 
     def test_unsupported_actions_are_rejected(self, daemon):
         with pytest.raises(urllib.error.HTTPError) as e:

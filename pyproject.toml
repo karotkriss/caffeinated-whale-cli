@@ -153,3 +153,6 @@ Issues = "https://github.com/karotkriss/caffeinated-whale-cli/issues"
 [project.scripts]
 caffeinated-whale-cli = "caffeinated_whale_cli.main:cli"
 cwcli = "caffeinated_whale_cli.main:cli"
+
+[tool.setuptools.package-data]
+"caffeinated_whale_cli.commands" = ["console.html"]
