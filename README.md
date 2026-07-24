@@ -1757,7 +1757,7 @@ cwcli serve [--port 8765] [--host 0.0.0.0] [--interval 2.5]
 | `GET /api/snapshot` | The whole fleet model as JSON (in-memory; no Docker call) |
 | `GET /api/events` | SSE: one `snapshot` event, then `delta` events tagged `tier: instant` or `tier: fast` |
 | `GET /api/instance/<project>/detail` | A cache-backed `inspect` read for one instance, preserving `served_from` and `installed_apps_verified` |
-| `POST /api/action` | Same-origin Console actions: `start_instance`, `stop_instance`, `restart_instance`, `restart_process` |
+| `POST /api/action` | Console actions: `start_instance`, `stop_instance`, `restart_instance`, `restart_process`; cross-origin browser requests are refused |
 
 Add `?focus=<project>` to `/api/events` to say which instance the browser
 currently has open. That is what turns the web HTTP health check on for that
@@ -1765,7 +1765,8 @@ instance: process-level health is polled for everything on the normal cadence,
 but the HTTP check writes a line into that bench's access log every cycle, so it
 runs only for an instance somebody is actually looking at (plus a short window
 after a lifecycle event, when the instance is running).
-Closing the tab turns it back off.
+Closing the tab turns it back off when the next delta or keepalive detects the
+closed stream.
 
 **Health tokens** are `status`'s own - `running`, `degraded`, `online`,
 `offline` - plus `unknown`, which means exactly what it says: nothing has probed
@@ -1783,9 +1784,11 @@ A container starting is reported as the container being up, never as the bench
 being healthy - those are seconds apart, and the health tier is what fills the
 gap in.
 
-The mutating action endpoint is same-origin only.
+The mutating action endpoint refuses cross-origin browser requests.
 The read endpoints keep open CORS for external inspection tools, but browsers
 must load the bundled Console page from this daemon to drive lifecycle actions.
+This browser boundary is not authentication: any direct client that can reach
+the daemon can submit an action, so bind to `127.0.0.1` on an untrusted network.
 
 **Reaching it from Windows (WSL):**
 
