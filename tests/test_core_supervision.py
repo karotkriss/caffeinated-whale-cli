@@ -689,22 +689,42 @@ class FusedFakeContainer:
     order in ``_fused_script``/``fused_probe`` would break these tests too.
     """
 
-    def __init__(self, *, ps=_PS_SINGLE, ctl=_CTL_SINGLE, web_code="200", web_ok=True):
+    def __init__(
+        self,
+        *,
+        ps=_PS_SINGLE,
+        ctl=_CTL_SINGLE,
+        web_code="200",
+        web_ok=True,
+        exit_code=0,
+        include_ps_marker=True,
+        include_supctl_marker=True,
+        include_web_marker=True,
+    ):
         self.ps = ps
         self.ctl = ctl
         self.web_code = web_code
         self.web_ok = web_ok
+        self.curl_output = web_code if web_ok else "000"
+        self.exit_code = exit_code
+        self.include_ps_marker = include_ps_marker
+        self.include_supctl_marker = include_supctl_marker
+        self.include_web_marker = include_web_marker
         self.calls: list = []
 
     def exec_run(self, cmd):
         self.calls.append(cmd)
         assert cmd[:2] == ["bash", "-c"], "the fused probe must be one bash -c exec"
         script = cmd[2]
-        out = [supervision._MARK_PS, self.ps, supervision._MARK_SUPCTL, self.ctl]
-        if supervision._MARK_WEB in script:
-            code = self.web_code if self.web_ok else ""
-            out += [supervision._MARK_WEB, code]
-        return (0, "\n".join(out).encode())
+        out = []
+        if self.include_ps_marker:
+            out += [supervision._MARK_PS, self.ps]
+        if self.include_supctl_marker:
+            out += [supervision._MARK_SUPCTL, self.ctl]
+        if supervision._MARK_WEB in script and self.include_web_marker:
+            published_code = self.curl_output if self.web_ok else ""
+            out += [supervision._MARK_WEB, published_code]
+        return (self.exit_code, "\n".join(out).encode())
 
 
 class TestFusedProbe:
@@ -741,6 +761,8 @@ class TestFusedProbe:
         script = c.calls[0][2]
         assert "http://localhost:8001" in script
         assert "Host: two.localhost" in script
+        assert "--connect-timeout 2" in script
+        assert "--max-time 5" in script
 
     def test_a_fatal_program_with_no_live_pid_is_reported_down_with_its_state(self):
         # worker_default crash-looped: supervisorctl still lists it (FATAL), ps has
@@ -775,8 +797,32 @@ class TestFusedProbe:
     def test_curl_failure_is_honest_none_not_a_fabricated_code(self):
         c = FusedFakeContainer(web_ok=False)
         probe = supervision.fused_probe(c, BENCH, web_port=8000)
+        assert c.curl_output == "000"
         assert probe.web_http_code is None
         assert probe.web_probed is True  # a check WAS attempted; it just failed
+
+    @pytest.mark.parametrize(
+        "container",
+        [
+            FusedFakeContainer(exit_code=127),
+            FusedFakeContainer(include_ps_marker=False),
+            FusedFakeContainer(include_supctl_marker=False),
+            FusedFakeContainer(include_web_marker=False),
+            FusedFakeContainer(ps="not parseable"),
+        ],
+    )
+    def test_an_unverifiable_fused_read_fails_closed(self, container):
+        with pytest.raises(CwcliError) as exc:
+            supervision.fused_probe(container, BENCH, web_port=8000)
+        assert exc.value.kind is ErrorKind.PRECONDITION
+        assert exc.value.code == "supervisor.process_state_unknown"
+
+    def test_a_supervisord_without_a_config_is_ignored_without_a_second_exec(self):
+        ps = _PS_SINGLE.replace(f" -c {_CFG}", "")
+        c = FusedFakeContainer(ps=ps)
+        probe = supervision.fused_probe(c, BENCH, web_port=None)
+        assert len(c.calls) == 1
+        assert probe.supervisor_up is False
 
     def test_no_supervisor_found_reports_down_but_the_web_answer_still_lands(self):
         # supervisord absent for this bench: process state is honestly unknown/down,

@@ -230,30 +230,27 @@ def _parse_ps_rows(text: str) -> list[_PsRow]:
     return rows
 
 
+def _raise_process_state_unknown(output) -> None:
+    from .errors import CwcliError, ErrorKind
+
+    raise CwcliError(
+        ErrorKind.PRECONDITION,
+        "supervisor.process_state_unknown",
+        "Could not verify the supervisord process state.",
+        detail={"output": _decode(output)[-2000:]},
+    )
+
+
 def _ps_rows(container, *, required: bool = False) -> list[_PsRow]:
     """One ``ps`` in the container -> parsed rows (pid, ppid, etimes, cpu, rss, args)."""
     exit_code, output = container.exec_run(["ps", "-eo", "pid=,ppid=,etimes=,pcpu=,rss=,args="])
     if exit_code not in (0, None):
         if required:
-            from .errors import CwcliError, ErrorKind
-
-            raise CwcliError(
-                ErrorKind.PRECONDITION,
-                "supervisor.process_state_unknown",
-                "Could not verify the supervisord process state.",
-                detail={"output": _decode(output)[-2000:]},
-            )
+            _raise_process_state_unknown(output)
         return []
     rows = _parse_ps_rows(_decode(output))
     if required and not rows:
-        from .errors import CwcliError, ErrorKind
-
-        raise CwcliError(
-            ErrorKind.PRECONDITION,
-            "supervisor.process_state_unknown",
-            "Could not verify the supervisord process state.",
-            detail={"output": _decode(output)[-2000:]},
-        )
+        _raise_process_state_unknown(output)
     return rows
 
 
@@ -496,11 +493,31 @@ def _fused_script(bench_path: str, *, web_port: int | None, web_site: str | None
         f"{py} -m supervisor.supervisorctl -c {cfg} status 2>&1",
     ]
     if web_port is not None:
-        curl_cmd = ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}"]
+        curl_cmd = [
+            "curl",
+            "-s",
+            "--connect-timeout",
+            "2",
+            "--max-time",
+            "5",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+        ]
         if web_site:
             curl_cmd += ["-H", f"Host: {web_site}"]
         curl_cmd += [f"http://localhost:{web_port}"]
-        lines += [f"echo {_MARK_WEB}", " ".join(shlex.quote(c) for c in curl_cmd)]
+        curl = " ".join(shlex.quote(c) for c in curl_cmd)
+        lines += [
+            f"web_code=$({curl})",
+            "web_status=$?",
+            f"echo {_MARK_WEB}",
+            (
+                'if [ "$web_status" -eq 0 ] && [ "$web_code" != "000" ]; '
+                "then printf '%s\\n' \"$web_code\"; fi"
+            ),
+        ]
     return "\n".join(lines) + "\n"
 
 
@@ -536,20 +553,33 @@ def fused_probe(
     """
     probed = probe_web and web_port is not None
     script = _fused_script(bench_path, web_port=web_port if probed else None, web_site=web_site)
-    _exit_code, output = container.exec_run(["bash", "-c", script])
+    exit_code, output = container.exec_run(["bash", "-c", script])
     text = _decode(output)
+    if exit_code not in (0, None):
+        _raise_process_state_unknown(output)
 
-    _, _, after_ps = text.partition(_MARK_PS + "\n")
-    ps_text, _, after_supctl = after_ps.partition(_MARK_SUPCTL + "\n")
+    _, ps_found, after_ps = text.partition(_MARK_PS + "\n")
+    ps_text, supctl_found, after_supctl = after_ps.partition(_MARK_SUPCTL + "\n")
+    if not ps_found or not supctl_found:
+        _raise_process_state_unknown(output)
     if probed:
-        supctl_text, _, web_text = after_supctl.partition(_MARK_WEB + "\n")
+        supctl_text, web_found, web_text = after_supctl.partition(_MARK_WEB + "\n")
+        if not web_found:
+            _raise_process_state_unknown(output)
     else:
         supctl_text, web_text = after_supctl, ""
 
     web_code = (web_text.strip() or None) if probed else None
 
     rows = _parse_ps_rows(ps_text)
-    sup_pids = _supervisord_pids_for_bench(container, rows, bench_path)
+    if not rows:
+        _raise_process_state_unknown(output)
+    want = _config_path(bench_path)
+    sup_pids = [
+        row.pid
+        for row in rows
+        if _is_supervisord(row.args) and _same_path(_config_from_args(row.args), want)
+    ]
     if not sup_pids:
         return FusedProbe(
             supervisor_up=False,
