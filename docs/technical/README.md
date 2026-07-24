@@ -51,7 +51,7 @@ caffeinated-whale-cli/
 │   │   ├── run.py              # core.run_plan/run_stream - the default run path's exec-stream reference slice
 │   │   ├── apps.py             # core.list_apps/install_apps/uninstall_apps - per-bench and multi-site app management
 │   │   ├── update.py           # core.update - the app-update state machine (fan-out, maintenance mode, migrations)
-│   │   ├── supervision.py      # Shared tracked-state contract for start+status+restart (supervisord discovery, config/launcher generation, marker, per-process logs)
+│   │   ├── supervision.py      # Shared tracked-state contract plus the Console's one-exec health probe
 │   │   ├── start.py            # core.start - idempotent bench start under supervisord (discovered-PID no-op, --autorestart, blocks on web-readiness before reporting running)
 │   │   ├── status.py           # core.status - per-process health + pre-computed overall
 │   │   ├── restart.py          # core.restart_process - restart ONE supervised program, siblings untouched

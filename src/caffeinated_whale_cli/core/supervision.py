@@ -38,10 +38,7 @@ What lives here:
   (supervisord ``stdout_logfile`` + built-in rotation, replacing honcho's
   combined-stream capper); ``commands/logs.py`` tails one or all of them (the
   multi-file tail is the combined view).
-- :func:`fused_probe` - the Console dashboard's FAST-tier health check: the same
-  three answers as ``discover_stack`` + ``supervisorctl_states`` + ``web_http_code``
-  combined, fused into ONE ``docker exec`` (758ms median -> 252ms; captain de-risk
-  spike recommendation R1). Read-only, honest-unknown (see its own docstring).
+- :func:`fused_probe` - one-exec process, supervisord-state, and web health read.
 
 No ``rich``/``questionary``/``typer`` (a unit test enforces the ban), and the
 frappe ``Container`` object stays INTERNAL - it is passed in for exec calls and is
@@ -453,24 +450,7 @@ _PS_RC_PREFIX = "PSRC:"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class FusedProbe:
-    """One-exec answer to "is this bench healthy": liveness, state, and the web check.
-
-    ``core.status`` gets the same three answers from THREE separate ``docker exec``
-    round trips - :func:`discover_stack`'s ``ps``, :func:`supervisorctl_states`,
-    and :func:`web_http_code`'s ``curl`` - each measured at ~84ms floor on WSL2.
-    :func:`fused_probe` runs all three inside ONE ``bash -c`` script and parses the
-    (uniquely-marked) sections back out of its single output, cutting a
-    758ms-median read to ~252ms (captain de-risk spike, recommendation R1) for
-    IDENTICAL information - nothing here changes what ``ps``/``supervisorctl``/
-    ``curl`` mean, only how many container round trips it costs to read them.
-
-    Honest-unknown, never a flattened default: ``supervisor_up=False`` means "no
-    cwcli supervisord found for this bench" (a real, known state - see
-    :func:`discover_stack`), ``web_http_code=None`` means "not probed, or probed
-    and unreachable" (never a fabricated ``000``/``200``), and ``web_probed`` says
-    whether a web check was attempted at all, so a caller can tell "we don't know"
-    apart from "we asked, and it is genuinely down".
-    """
+    """Serializable result from :func:`fused_probe`."""
 
     supervisor_up: bool
     supervisor_pid: int | None
@@ -536,10 +516,10 @@ def fused_probe(
 ) -> FusedProbe:
     """Supervisord state + process liveness + the web check, in ONE ``docker exec``.
 
-    Read-only: every underlying command is a read (``ps``, ``supervisorctl
-    status``, ``curl``) - no mutation, no restart, no PID/state change (verified
-    against a real bench over many probe cycles; see the ``cwcli-core-axi`` skill
-    for the method).
+    This runs ``ps``, ``supervisorctl status``, and the optional ``curl`` inside
+    one marker-delimited ``bash -c`` script, then reuses the standalone readers'
+    pure parsers. Every command is read-only. The no-mutation regression guard is
+    ``tests/test_core_supervision.py::TestFusedProbe``.
 
     ``web_port=None`` (unresolved, or the caller has no port to give) and
     ``probe_web=False`` (a caller suppressing the web check, the ``status
