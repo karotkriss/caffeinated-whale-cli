@@ -221,10 +221,10 @@ class Fleet:
         Raises ``CwcliError(DOCKER)`` when the daemon is unreachable; the callers
         that run in a loop catch it and retry.
         """
-        rows = list_instances().data or []
         deltas: list[tuple[str, InstanceState | None]] = []
 
         with self._mutation_lock:
+            rows = list_instances().data or []
             with self._lock:
                 seen = set()
                 for dto in rows:
@@ -241,7 +241,8 @@ class Fleet:
             # Always the INSTANT tier: a bootstrap only ever reports container-lifecycle
             # facts, whether triggered at startup, by an event, or by a reconnect.
             for project, state in deltas:
-                self._publish("instant", project, state, cause)
+                project_cause = cause if cause and cause.get("project") == project else None
+                self._publish("instant", project, state, project_cause)
 
     def probe(self, project: str) -> None:
         """The FAST tier for one instance: one fused read, published only if changed."""

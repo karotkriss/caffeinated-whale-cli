@@ -370,6 +370,47 @@ class TestWebProbeCadence:
 
 
 class TestReBootstrap:
+    def test_concurrent_bootstraps_commit_observations_in_read_order(self, monkeypatch):
+        first_read = threading.Event()
+        second_read = threading.Event()
+        release_first = threading.Event()
+        call_lock = threading.Lock()
+        calls = 0
+
+        def _listing():
+            nonlocal calls
+            with call_lock:
+                calls += 1
+                call = calls
+            if call == 1:
+                first_read.set()
+                assert release_first.wait(2)
+                status = "running"
+            else:
+                second_read.set()
+                status = "exited"
+            return Result(
+                status=Status.OK,
+                data=[InstanceDTO(project_name="p", status=status, ports=[])],
+            )
+
+        monkeypatch.setattr(core_fleet, "list_instances", _listing)
+        f = core_fleet.Fleet()
+        older = threading.Thread(target=f.bootstrap)
+        newer = threading.Thread(target=f.bootstrap)
+        older.start()
+        assert first_read.wait(2)
+        newer.start()
+        observations_overlapped = second_read.wait(0.1)
+        release_first.set()
+        older.join(2)
+        newer.join(2)
+
+        assert not older.is_alive()
+        assert not newer.is_alive()
+        assert not observations_overlapped
+        assert f.get("p").docker_status == "exited"
+
     def test_an_unchanged_re_bootstrap_publishes_nothing(self, listing, probing):
         listing(("p", "running", ["8000"]))
         probing(lambda project, **kw: _report())
@@ -463,6 +504,31 @@ class TestApplyEvent:
         assert (tier, project) == ("instant", "p")
         assert state.overall == core_fleet.UNKNOWN, "container up is not bench healthy"
         assert cause == {"project": "p", "action": "start", "service": "frappe"}
+
+    def test_an_event_cause_is_attached_only_to_its_project(self, listing):
+        listing(("p", "exited", []), ("q", "exited", []))
+        rec = _Recorder()
+        f = core_fleet.Fleet(publish=rec)
+        f.bootstrap()
+        rec.deltas.clear()
+
+        listing(("p", "running", ["8000"]), ("q", "running", ["8100"]))
+        f.apply_event(
+            {
+                "Action": "start",
+                "Actor": {
+                    "Attributes": {
+                        "com.docker.compose.project": "p",
+                        "com.docker.compose.service": "frappe",
+                    }
+                },
+            }
+        )
+
+        assert [(project, cause) for _tier, project, _state, cause in rec.deltas] == [
+            ("p", {"project": "p", "action": "start", "service": "frappe"}),
+            ("q", None),
+        ]
 
     def test_an_event_opens_the_web_probe_window(self, listing):
         listing(("p", "running", ["8000"]))
