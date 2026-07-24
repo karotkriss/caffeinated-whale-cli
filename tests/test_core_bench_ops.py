@@ -22,9 +22,8 @@ from __future__ import annotations
 
 import pytest
 
-from caffeinated_whale_cli.core import bench_ops
+from caffeinated_whale_cli.core import bench_ops, resolvers
 from caffeinated_whale_cli.core import docker as core_docker
-from caffeinated_whale_cli.core import resolvers
 from caffeinated_whale_cli.core.envelope import Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 
