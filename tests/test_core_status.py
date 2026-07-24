@@ -14,7 +14,13 @@ from caffeinated_whale_cli.core import resolvers
 from caffeinated_whale_cli.core import status as core_status
 from caffeinated_whale_cli.core.envelope import Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
-from tests.test_core_supervision import _CTL_SINGLE, _PS_HONCHO, _PS_SINGLE, BENCH, FakeContainer
+from tests.test_core_supervision import (
+    _CTL_SINGLE,
+    _PS_HONCHO,
+    _PS_SINGLE,
+    BENCH,
+    FakeContainer,
+)
 
 _MARKER = {"supervisor": "supervisord", "started_at": "t", "config_path": "p"}
 
@@ -560,3 +566,90 @@ class TestTheProbeNamesTheSite:
 
         assert _bench(report).web_site is None
         assert _bench(report).web_http_code is None
+
+
+class TestFusedFastPath:
+    """``fused=True`` - the exec-budget option ``cwcli serve``'s FAST tier polls on.
+
+    The contract it must NOT break: the same report shape, the same tokens, and no
+    honesty traded for round trips. Each test below pins one half of that.
+    """
+
+    def test_supervised_bench_is_one_exec_and_agrees_with_the_default_path(self, wire):
+        wire(FakeContainer(marker=_MARKER, web_code="200"), benches=[{"path": BENCH}])
+        slow = core_status.status("proj").data
+        wire(FakeContainer(marker=_MARKER, web_code="200"), benches=[{"path": BENCH}])
+        fast = core_status.status("proj", fused=True).data
+
+        assert fast.overall == slow.overall == "running"
+        b_fast, b_slow = _bench(fast), _bench(slow)
+        assert b_fast.supervisor_up == b_slow.supervisor_up
+        assert b_fast.web_http_code == b_slow.web_http_code == "200"
+        assert b_fast.web_port == b_slow.web_port == 8000
+        assert {p.label for p in b_fast.processes} == {p.label for p in b_slow.processes}
+
+    def test_the_health_read_itself_is_a_single_exec(self, wire):
+        c = FakeContainer(marker=_MARKER, web_code="200")
+        wire(c, benches=[{"path": BENCH}])
+        core_status.status("proj", fused=True)
+
+        # ps / supervisorctl / curl / Procfile / marker collapse into one bash -c.
+        bash = [cmd for cmd in c.calls if isinstance(cmd, list) and cmd[0] == "bash"]
+        assert len(bash) == 1
+        assert not [cmd for cmd in c.calls if isinstance(cmd, list) and cmd[0] in ("ps", "curl")]
+
+    def test_a_fatal_program_still_degrades(self, wire):
+        # supervisorctl enumerates every program it manages, so the fused read sees
+        # a crash-looping program with no live process WITHOUT the Procfile read.
+        ps = _PS_SINGLE.replace(
+            "105 100 499 0.3 70000 /env/bin/python /env/bin/bench worker --queue default\n", ""
+        )
+        ctl = _CTL_SINGLE.replace(
+            "worker_default   RUNNING   pid 105, uptime 0:05:00\n",
+            "worker_default   FATAL   Exited too quickly\n",
+        )
+        wire(
+            FakeContainer(marker=_MARKER, ps=ps, ctl_status=ctl, web_code="200"),
+            benches=[{"path": BENCH}],
+        )
+        report = core_status.status("proj", fused=True).data
+
+        assert report.overall == "degraded"
+        worker = next(p for p in _bench(report).processes if p.label == "worker:default")
+        assert worker.state == "FATAL" and worker.up is False
+
+    def test_never_started_still_reads_online_not_offline(self, wire):
+        # The marker distinction the fused script cannot make: an unsupervised bench
+        # DELEGATES to the full read rather than guessing. Speed never buys a
+        # never-started bench being reported as a crashed one.
+        c = FakeContainer(marker=None, ps="1 0 5 0.0 1000 /sbin/init\n", cwds={})
+        wire(c, benches=[{"path": BENCH}])
+        assert core_status.status("proj", fused=True).data.overall == "online"
+
+    def test_supervisor_died_still_reads_degraded(self, wire):
+        c = FakeContainer(marker=_MARKER, ps="1 0 5 0.0 1000 /sbin/init\n", cwds={})
+        wire(c, benches=[{"path": BENCH}])
+        assert core_status.status("proj", fused=True).data.overall == "degraded"
+
+    def test_a_honcho_bench_still_gets_the_unsupervised_fallback(self, wire):
+        # The regression the fallback exists for: a bench genuinely serving under
+        # `bench start` must not read as all-down just because the caller asked for
+        # the cheap path.
+        c = FakeContainer(marker=None, ps=_PS_HONCHO, cwds={200: BENCH}, web_code="200")
+        wire(c, benches=[{"path": BENCH}])
+        report = core_status.status("proj", fused=True).data
+
+        assert _bench(report).not_cwcli_supervised is True
+        assert all(p.up for p in _bench(report).processes)
+        assert report.overall == "running"
+
+    def test_probe_web_false_leaves_no_http_trace(self, wire):
+        c = FakeContainer(marker=_MARKER, web_code="200")
+        wire(c, benches=[{"path": BENCH}])
+        report = core_status.status("proj", fused=True, probe_web=False).data
+
+        script = next(cmd for cmd in c.calls if isinstance(cmd, list) and cmd[0] == "bash")[2]
+        assert "curl" not in script
+        assert _bench(report).web_http_code is None
+        assert _bench(report).web_site is None
+        assert report.overall == "running"  # no web signal must not degrade it

@@ -14,6 +14,7 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import re
 
 import pytest
 
@@ -205,6 +206,11 @@ class FakeContainer:
         return (0, b"")
 
     def _exec_bash(self, script, detach):
+        if supervision._MARK_PS in script:
+            # The fused single-exec probe. Answered here rather than in a second
+            # fake so a caller that mixes the fused read with the ordinary config
+            # /marker reads (``core.status(fused=True)``) needs only ONE container.
+            return self._exec_fused(script)
         if "import supervisor" in script:
             return (0, b"") if self.supervisor_present else (1, b"")
         if "pip install supervisor" in script:
@@ -229,6 +235,27 @@ class FakeContainer:
             self.launches.append(script)
             return (None, None) if detach else (0, b"")
         return (0, b"")
+
+    def _exec_fused(self, script):
+        """Stitch the fused script's marked sections exactly as a real shell would."""
+        bench = (
+            next((b for b in (self.ctl_status or {}) if b in script), None)
+            if isinstance(self.ctl_status, dict)
+            else None
+        )
+        ctl = self._per_key(self.ctl_status, bench)
+        out = [
+            supervision._MARK_PS,
+            self.ps,
+            f"{supervision._PS_RC_PREFIX}0",
+            supervision._MARK_SUPCTL,
+            ctl if ctl is not None else _CTL_SINGLE,
+        ]
+        if supervision._MARK_WEB in script:
+            port = int(re.search(r"http://localhost:(\d+)", script).group(1))
+            code = self._per_key(self.web_code, port)
+            out += [supervision._MARK_WEB, "" if (not self.web_ok or code is None) else code]
+        return (0, "\n".join(out).encode())
 
 
 class TestDiscovery:

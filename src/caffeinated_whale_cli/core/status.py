@@ -198,6 +198,7 @@ def status(
     bench: str | None = None,
     bench_path: str | None = None,
     probe_web: bool = True,
+    fused: bool = False,
 ) -> Result[StatusReport]:
     """Report a project's per-bench health. See module docstring.
 
@@ -211,6 +212,16 @@ def status(
     Per-program liveness + state still come from the ``ps`` read and
     ``supervisorctl`` (neither touches the web port), so ``overall`` stays honest:
     with no web signal it is driven by supervisor-up + every program healthy.
+
+    ``fused=True`` reads each SUPERVISED bench through
+    :func:`supervision.fused_probe` - ONE ``docker exec`` instead of the default
+    path's five - for a repeating caller that cannot afford the round trips
+    (``cwcli serve``'s FAST tier polls every RUNNING instance every few seconds;
+    measured 758ms -> 252ms per instance). It is an exec-budget choice ONLY: the
+    returned :class:`StatusReport` is the same shape with the same tokens, and an
+    UNSUPERVISED bench falls back to the full read per bench, so the never-started
+    vs supervisor-died distinction and the honcho fallback are never traded away.
+    Defaults False, so every existing caller is byte-unchanged.
     """
     warnings: list[Message] = []
 
@@ -273,8 +284,9 @@ def status(
                     f"not probed. Run 'cwcli inspect {project_name}' to refresh.",
                 )
             )
+        read = _bench_status_fused if fused else _bench_status
         benches.append(
-            _bench_status(
+            read(
                 frappe_container,
                 index=index,
                 bench_path=path,
@@ -443,6 +455,73 @@ def _bench_status(
         web_http_code=web_code,
         processes=processes,
         not_cwcli_supervised=not_cwcli_supervised,
+    )
+
+
+def _bench_status_fused(
+    frappe_container,
+    *,
+    index: int | None,
+    bench_path: str,
+    label: str | None,
+    web_port: int | None,
+    web_site: str | None,
+    probe_web: bool,
+    warnings: list[Message],
+) -> BenchStatus:
+    """:func:`_bench_status`'s one-exec twin for a repeating caller (``fused=True``).
+
+    ``supervisorctl status`` enumerates every program supervisord manages, so a
+    FATAL crash-loop with no live process is still reported down WITH its state -
+    the completeness ``_merge_health`` buys from the extra ``Procfile`` read on the
+    default path. That is why this path needs neither ``expected_labels`` nor
+    ``_merge_health``.
+
+    An UNSUPERVISED bench DELEGATES to the full :func:`_bench_status`. The marker
+    read (never-started ``online`` vs supervisor-died ``degraded``) and the honcho
+    fallback (a bench genuinely serving under ``bench start`` must not read as
+    all-down) are exactly the answers the fused script cannot give, and they are
+    honesty properties, not speed ones - so the exec budget yields to them rather
+    than the other way round. The cost lands only OFF the supervised steady state,
+    which is the case the fused path exists for.
+    """
+    probed = probe_web and web_port is not None
+    fused = supervision.fused_probe(
+        frappe_container,
+        bench_path,
+        web_port=web_port,
+        web_site=web_site,
+        probe_web=probe_web,
+    )
+    if not fused.supervisor_up:
+        return _bench_status(
+            frappe_container,
+            index=index,
+            bench_path=bench_path,
+            label=label,
+            web_port=web_port,
+            web_site=web_site,
+            probe_web=probe_web,
+            warnings=warnings,
+        )
+
+    return BenchStatus(
+        index=index,
+        bench_path=bench_path,
+        label=label,
+        overall=_overall(
+            started=True,
+            supervisor_up=True,
+            all_healthy=_all_healthy(fused.processes),
+            web_code=fused.web_http_code,
+            web_probed=probed,
+        ),
+        supervisor_up=True,
+        web_port=web_port,
+        web_port_verified=web_port is not None,
+        web_site=web_site if probed else None,
+        web_http_code=fused.web_http_code,
+        processes=fused.processes,
     )
 
 
