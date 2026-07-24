@@ -223,3 +223,33 @@ Two things stay here rather than in CI:
 
 - **The Windows browser.** CI runners are Linux; there is no Windows host and no WSL boundary to cross.
 - **The reconnect re-bootstrap.** Inducing a Docker event-stream drop means breaking the daemon's own socket, which no supported API exposes. Faking it in the E2E tier would test the fake, so the rule is pinned by unit tests instead (`tests/test_core_fleet.py::TestEventLoop` asserts one full rebuild per connect and the absence of `since=`/`until=` on the call), and measured against real Docker in section 5.
+
+## Phase 4 tightening audit (2026-07-24)
+
+An audit-then-fix pass over the shipped Console, driven hand-on against ONE throwaway Frappe v16 instance (`cwp4con`, ports 14000/15000, isolated `CWCLI_HOME`) built and destroyed inside the task.
+Browser evidence is Linux Chrome via chrome-devtools-axi; Windows interop was unavailable on the box during this pass, so no Windows-browser claims are made here (section 2 above remains the Windows evidence).
+One difference from the phase-2 run: the captain's `gcaa` instance was already running throughout, so the daemon passively health-probed it exactly as `cwcli serve` probes any running instance; no action, focus, or detail read ever targeted it.
+
+**Daemon properties re-verified live, unchanged:**
+
+- Delta suppression: 62 seconds connected to the steady instance produced ZERO deltas and 4 keepalives (the 15s cadence exactly), with the web probe running every cycle for the focused instance.
+- Client disconnects: 30 rapid open/drop cycles against `/api/events` left the daemon healthy and the handler threads drained back to baseline (4) within two keepalive cycles; focus retracted (the closed tab's instance returned to `web_probed: false`).
+- Action serialization: two simultaneous `restart_process` POSTs for the same project ran strictly one-after-the-other (4.7s and 10.0s wall for identical ~5s restarts), both 200.
+- Reconnect: killing and restarting the daemon under an open page re-bootstrapped through a fresh full snapshot; the browser's own retry loop covers network-level failure.
+- Honest unknowns rendered on real state: a running-but-never-`cwcli start`ed instance shows "never started" / "port unknown, not probed" / "processes unknown"; a bench whose supervisor died shows `degraded` with `site:port -> no answer` (`web_http_code: null` under `web_probed: true`); a cached app list shows "remembered - could not verify"; never 0, a dash, or a green pill from container-up alone.
+- Keyboard walk under churn: tablist arrows wrap correctly at both edges; focus survived select-triggered re-renders, SSE delta re-renders mid-action, and the full stop -> container-only-start -> start round-trip driven entirely from the rail; the sr-only status region announced "in progress" and "accepted" exactly once each.
+
+**Frontend gaps the audit found, fixed in this pass (each pinned by `tests/test_serve_frontend.py::TestSnapshot::test_the_console_ui_keeps_its_tightening_invariants`):**
+
+- The app shell was `min-height: 100vh`, so the panel `overflow: auto` rules were dead: the page scrolled as a whole, the event log sat off-screen, and the action rail scrolled away.
+  Now `height: 100vh` with explicit grid rows (page-scroll behavior is kept below 760px, and the mid-width rail band is capped at 42vh so it cannot squeeze the tree out).
+- A lost connection was an 8px amber dot while every pill stayed brightly "live": stale data presented as live.
+  Now a visible banner names the loss and the last-known-state timestamp, pills desaturate while stale, and a dedicated live region announces the loss and the recovery once each; a deliberate refocus reconnect shows none of this.
+- A hard-closed `EventSource` (non-200/wrong content type; the browser does NOT retry those) left "reconnecting" on screen forever with nothing retrying.
+  Now a closed source schedules a fresh `connectEvents()`, which is by construction a full re-bootstrap, never a replay.
+- Nothing rendered before the first snapshot, and the empty-tree message claimed "No instances found" when the truth was "never asked".
+  The shell now renders honest empty states at boot, and the no-instances claim requires a snapshot to back it.
+- The event log was an `aria-live` region rewritten wholesale on every delta - a screen reader re-announced the whole log each time.
+  It is a visual feed now; announcements go through the two dedicated status regions only.
+- Tree twisties exposed no `aria-expanded`, and the selected tree row was styled but not exposed (`aria-current` now set).
+- A removed instance could silently drop keyboard focus to `<body>`; the tree now falls back to its first row, guarded so it never steals focus that belongs to another pane.
