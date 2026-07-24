@@ -188,6 +188,62 @@ class TestSnapshot:
         assert "rm-site" not in body
         assert "Delete instance" not in body
 
+    def test_the_console_ui_keeps_its_tightening_invariants(self, daemon):
+        """The phase-4 hardening pins: connection honesty, honest boot state,
+        screen-reader churn control, and exposed tree semantics."""
+        with urllib.request.urlopen(daemon.base + "/", timeout=_TIMEOUT) as resp:  # noqa: S310
+            body = resp.read().decode()
+        # A lost connection is shown, not whispered: a visible banner names the
+        # stale data and its timestamp, and a dedicated live region announces
+        # the loss and the recovery exactly once each.
+        assert 'id="conn-banner"' in body
+        assert "Connection lost - reconnecting. Showing last known state" in body
+        assert "Connection restored - live again." in body
+        assert 'id="conn-status"' in body
+        # A hard-closed EventSource self-reconnects; every reconnect re-opens
+        # /api/events whose first frame is a full snapshot - never a replay.
+        assert "EventSource.CLOSED" in body
+        assert "since=" not in body
+        # Transport readiness is not data readiness: only an applied snapshot
+        # restores live state, and callbacks from a replaced source do nothing.
+        assert "const es = new EventSource(url);" in body
+        assert body.count("if (source !== es) return;") == 4
+        open_handler = body.split('es.addEventListener("open"', 1)[1].split(
+            'es.addEventListener("snapshot"', 1
+        )[0]
+        assert 'setConnection("open")' not in open_handler
+        snapshot_handler = body.split('es.addEventListener("snapshot"', 1)[1].split(
+            'es.addEventListener("delta"', 1
+        )[0]
+        assert snapshot_handler.index("render();") < snapshot_handler.index(
+            'setConnection("open");'
+        )
+        # A removal delta can replace the selected instance, so the visible
+        # selection and the daemon's per-tab probe focus must move together.
+        delta_handler = body.split('es.addEventListener("delta"', 1)[1].split("es.onerror", 1)[0]
+        assert delta_handler.index("render();") < delta_handler.index("syncFocus();")
+        # "No instances found" is a claim only a snapshot can back; before one
+        # arrives the page says it is still waiting.
+        assert "Waiting for the daemon - no fleet data yet" in body
+        # The event log is a visual feed, NOT a live region: it is re-rendered
+        # wholesale on every delta, which a polite region re-announces in full.
+        assert '<div id="event-log" class="event-log"></div>' in body
+        # Tree semantics are exposed, not just styled.
+        assert "aria-expanded" in body
+        assert 'aria-current="true"' in body
+        # Above 760px the viewport-fixed shell makes panels scroll; the narrow
+        # layout deliberately restores page scrolling.
+        assert "height: 100vh" in body
+        assert ".rail {\n    max-height: none;\n  }" in body
+        # The summary reflows when the action rail becomes a bottom band, so
+        # long values do not leave a one-letter orphan in the narrow detail pane.
+        mid_width_rules = body.split("@media (max-width: 1050px)", 1)[1].split(
+            "@media (max-width: 760px)", 1
+        )[0]
+        assert (
+            ".summary-grid {\n" "    grid-template-columns: repeat(2, minmax(0, 1fr));\n" "  }"
+        ) in mid_width_rules
+
 
 class TestEventStream:
     def test_the_first_frame_is_a_full_snapshot(self, daemon):
