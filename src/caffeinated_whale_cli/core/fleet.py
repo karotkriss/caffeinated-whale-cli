@@ -147,15 +147,16 @@ def as_json(state: InstanceState) -> dict:
 class Fleet:
     """The shared model. Every mutation diffs :func:`health_key` and publishes.
 
-    ``publish(tier, project, state, cause)`` is called OUTSIDE the lock, with
-    ``state=None`` meaning the instance is gone and ``cause`` naming the Docker
-    action/service behind an INSTANT delta (None otherwise). A single lock is
-    deliberate: the model is a handful of instances and every critical section is
-    a dict update, so per-instance locking would buy nothing and cost a class of bug.
+    ``publish(tier, project, state, cause)`` is called outside the model lock but
+    inside the mutation lock, so callbacks may read the model while concurrent
+    mutations and their publications remain ordered. ``state=None`` means the
+    instance is gone and ``cause`` names the Docker action/service behind an
+    INSTANT delta (None otherwise).
     """
 
     def __init__(self, *, publish=None, web_probe_window_s: float = WEB_PROBE_WINDOW_S) -> None:
         self._lock = threading.Lock()
+        self._mutation_lock = threading.Lock()
         self._instances: dict[str, InstanceState] = {}
         self._keys: dict[str, tuple] = {}
         self._focus: set[str] = set()
@@ -165,7 +166,8 @@ class Fleet:
 
     def set_publish(self, publish) -> None:
         """Bind the delta sink after construction (the fan-out needs the fleet first)."""
-        self._publish = publish
+        with self._mutation_lock:
+            self._publish = publish
 
     # ---------------------------------------------------------------- reads
 
@@ -222,23 +224,24 @@ class Fleet:
         rows = list_instances().data or []
         deltas: list[tuple[str, InstanceState | None]] = []
 
-        with self._lock:
-            seen = set()
-            for dto in rows:
-                seen.add(dto.project_name)
-                new = self._reconcile(dto.project_name, dto.status, list(dto.ports))
-                if self._store(new):
-                    deltas.append((new.project, new))
-            for gone in sorted(set(self._instances) - seen):
-                del self._instances[gone]
-                self._keys.pop(gone, None)
-                self._web_until.pop(gone, None)
-                deltas.append((gone, None))
+        with self._mutation_lock:
+            with self._lock:
+                seen = set()
+                for dto in rows:
+                    seen.add(dto.project_name)
+                    new = self._reconcile(dto.project_name, dto.status, list(dto.ports))
+                    if self._store(new):
+                        deltas.append((new.project, new))
+                for gone in sorted(set(self._instances) - seen):
+                    del self._instances[gone]
+                    self._keys.pop(gone, None)
+                    self._web_until.pop(gone, None)
+                    deltas.append((gone, None))
 
-        # Always the INSTANT tier: a bootstrap only ever reports container-lifecycle
-        # facts, whether it was triggered at startup, by an event, or by a reconnect.
-        for project, state in deltas:
-            self._publish("instant", project, state, cause)
+            # Always the INSTANT tier: a bootstrap only ever reports container-lifecycle
+            # facts, whether triggered at startup, by an event, or by a reconnect.
+            for project, state in deltas:
+                self._publish("instant", project, state, cause)
 
     def probe(self, project: str) -> None:
         """The FAST tier for one instance: one fused read, published only if changed."""
@@ -291,21 +294,22 @@ class Fleet:
                 probe_ms=(time.monotonic() - started) * 1000,
             )
 
-        changed = False
-        with self._lock:
-            # Re-read under the lock: a lifecycle event may have landed mid-probe,
-            # and its container state is fresher than what this probe started with.
-            current = self._instances.get(project)
-            if current is not None:
-                new = replace(
-                    new,
-                    docker_status=current.docker_status,
-                    container_running=current.container_running,
-                    ports=current.ports,
-                )
-                changed = self._store(new)
-        if changed:
-            self._publish("fast", project, new, None)
+        with self._mutation_lock:
+            changed = False
+            with self._lock:
+                # Re-read under the lock: a lifecycle event may have landed mid-probe,
+                # and its container state is fresher than what this probe started with.
+                current = self._instances.get(project)
+                if current is not None:
+                    new = replace(
+                        new,
+                        docker_status=current.docker_status,
+                        container_running=current.container_running,
+                        ports=current.ports,
+                    )
+                    changed = self._store(new)
+            if changed:
+                self._publish("fast", project, new, None)
 
     def apply_event(self, event: dict) -> None:
         """Fold one Docker lifecycle event into the model (the INSTANT tier).
