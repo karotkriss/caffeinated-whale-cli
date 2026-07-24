@@ -1764,6 +1764,8 @@ after the instance starts or stops). Closing the tab turns it back off.
 `offline` - plus `unknown`, which means exactly what it says: nothing has probed
 this instance yet, or the probe could not find out. A `null` port or HTTP code
 means the same thing. None of them mean "probably fine".
+`probed_at` and `probe_ms` describe the last successful health read.
+When a later read fails, its time is recorded separately as `probe_failed_at`, so retained bench and process evidence keeps the timestamp that actually produced it.
 
 A container starting is reported as the container being up, never as the bench
 being healthy - those are seconds apart, and the health tier is what fills the

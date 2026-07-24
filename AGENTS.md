@@ -45,6 +45,11 @@ Use **instance** as the top-level term throughout.
 
 Each entry is the contract; the linked source file is authoritative and the named deep-dive skill holds the root-cause detail.
 
+- **`cwcli serve` concurrency and freshness** (`core/fleet.py`, `commands/serve.py`) - FAST results carry a per-instance lifecycle generation and are discarded if Docker lifecycle state changes while the probe is running.
+  Lifecycle event windows are folded into the same serialized bootstrap transaction.
+  Failed reads retain `probed_at` and `probe_ms` from the successful read that produced the bench evidence, while `probe_failed_at` records the failed attempt separately.
+  SSE disconnects retract focus through direct socket-close detection; the 15-second keepalive remains transport-only and does not drive cleanup.
+
 - **`init` version gating** (`core/init.py`; `commands/init.py` is a renderer) - default branch `version-16`; `--version <N|X.Y.Z>` alias resolves to a `version-N` branch or `vX.Y.Z` tag via the core's `resolve_frappe_ref` (`--frappe-branch` still takes a raw ref; the mutual-exclusion error stays frontend flag UX). `bench new-site` MariaDB flag, Python/Node versions, and `setuptools` pin gate on the major version parsed from the ref, all in the core.
   Existing-bench decline continues on a fresh name instead of dead-ending (`confirm_reuse_bench` + the frontend rename loop - see the migrated entry under "UI-pure logic core").
   See skill: `cwcli-lifecycle`.

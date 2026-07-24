@@ -62,6 +62,7 @@ def _state(**kw):
         probe_error=None,
         probed_at=1.0,
         probe_ms=250.0,
+        probe_failed_at=None,
     )
     return core_fleet.InstanceState(**{**base, **kw})
 
@@ -127,7 +128,14 @@ def _report(overall="running", benches=None):
 class TestHealthKey:
     """The stable-fields-only digest. Volatile in = firehose out."""
 
-    @pytest.mark.parametrize("field,value", [("probe_ms", 999.9), ("probed_at", 123456.0)])
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("probe_ms", 999.9),
+            ("probed_at", 123456.0),
+            ("probe_failed_at", 123456.0),
+        ],
+    )
     def test_volatile_instance_fields_are_excluded(self, field, value):
         assert core_fleet.health_key(_state()) == core_fleet.health_key(_state(**{field: value}))
 
@@ -261,6 +269,28 @@ class TestHonestUnknown:
         state = f.get("p")
         assert state.overall == core_fleet.UNKNOWN, "a dead read must not keep the last green token"
         assert state.probe_error == "docker.unreachable: no daemon"
+
+    def test_a_failed_probe_keeps_success_evidence_at_its_success_time(self, listing, probing):
+        listing(("p", "running", ["8000"]))
+        probing(lambda project, **kw: _report())
+        f = core_fleet.Fleet()
+        f.bootstrap()
+        f.set_focus({"p"})
+        f.probe("p")
+        successful = f.get("p")
+
+        f.set_focus(set())
+        probing(CwcliError(ErrorKind.DOCKER, "docker.unreachable", "no daemon"))
+        f.probe("p")
+
+        failed = f.get("p")
+        assert failed.overall == core_fleet.UNKNOWN
+        assert failed.benches == successful.benches
+        assert failed.web_probed is successful.web_probed is True
+        assert failed.probed_at == successful.probed_at
+        assert failed.probe_ms == successful.probe_ms
+        assert failed.probe_failed_at is not None
+        assert successful.probe_failed_at is None
 
     def test_a_stopped_instance_is_offline_with_no_bench_claims(self, listing, probing):
         listing(("p", "running", ["8000"]))
@@ -542,6 +572,23 @@ class TestApplyEvent:
 
         assert f.should_probe_web("p") is True
 
+    def test_the_event_window_is_folded_by_the_event_bootstrap(self, listing, monkeypatch):
+        listing(("p", "exited", []))
+        f = core_fleet.Fleet()
+        f.bootstrap()
+        listing(("p", "running", ["8000"]))
+        monkeypatch.setattr(
+            f,
+            "note_lifecycle",
+            lambda project: pytest.fail("event window was recorded outside bootstrap"),
+        )
+
+        f.apply_event(
+            {"Action": "start", "Actor": {"Attributes": {"com.docker.compose.project": "p"}}}
+        )
+
+        assert f.should_probe_web("p") is True
+
     def test_an_event_without_a_compose_project_is_ignored(self, listing):
         listing(("p", "running", ["8000"]))
         rec = _Recorder()
@@ -729,6 +776,40 @@ class TestProbeAndModelStayConsistent:
         assert state.container_running is False, "offline with container_running true is a lie"
         assert state.docker_status == "exited"
         assert state.benches == []
+
+    def test_a_probe_is_discarded_when_lifecycle_changes_while_it_runs(
+        self, listing, probing
+    ):
+        listing(("p", "running", ["8000"]))
+        probe_started = threading.Event()
+        release_probe = threading.Event()
+
+        def _answer(project, **kwargs):
+            probe_started.set()
+            assert release_probe.wait(2)
+            return _report()
+
+        probing(_answer)
+        rec = _Recorder()
+        f = core_fleet.Fleet(publish=rec)
+        f.bootstrap()
+        rec.deltas.clear()
+        thread = threading.Thread(target=f.probe, args=("p",))
+        thread.start()
+        assert probe_started.wait(2)
+
+        listing(("p", "exited", []))
+        f.bootstrap()
+        release_probe.set()
+        thread.join(2)
+
+        assert not thread.is_alive()
+        assert f.get("p").overall == core_status.OFFLINE
+        assert f.get("p").container_running is False
+        assert f.get("p").benches == []
+        assert [(tier, state.overall) for tier, _project, state, _cause in rec.deltas] == [
+            ("instant", core_status.OFFLINE)
+        ]
 
     def test_the_event_that_follows_is_then_suppressed_as_no_change(self, listing, probing):
         listing(("p", "running", ["8000"]))
