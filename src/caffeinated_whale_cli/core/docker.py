@@ -189,7 +189,13 @@ def align_container_user_to_host(container, *, chown_home: bool = False) -> tupl
     string when a step failed (the caller surfaces it as a warning and the bench
     still builds owned by the original uid, exactly as before this remap existed);
     ``remapped`` is True only when the ids were actually changed.
+
+    A clean no-op on a platform without ``os.getuid`` (Windows): there is no host
+    uid to align to, and Docker Desktop handles bind-mount ownership itself, so
+    the host never hits the Linux permission error this remap exists to prevent.
     """
+    if not hasattr(os, "getuid"):
+        return (False, None)
     host_uid, host_gid = os.getuid(), os.getgid()
     cur_uid = _read_frappe_id(container, "-u")
     cur_gid = _read_frappe_id(container, "-g")
