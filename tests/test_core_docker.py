@@ -1,10 +1,4 @@
-"""``core.docker.align_container_user_to_host`` - the host-uid alignment.
-
-Bench commands run as the image's ``frappe`` user (uid 1000), so files they write
-to the bind-mounted workspace are owned by 1000 on the host; a host on a different
-uid (CI = 1001) then cannot ``cwcli rm`` them. This pins the remap that makes the
-workspace host-owned on any host uid, and its no-op-when-matched fast path.
-"""
+"""Regression tests for host-uid alignment and its matching-id/platform no-op paths."""
 
 from __future__ import annotations
 
@@ -81,3 +75,12 @@ def test_unreadable_ids_are_a_soft_warning(monkeypatch):
     assert remapped is False
     assert err is not None
     assert c.remap_scripts == []  # never attempted the remap on unknown ids
+
+
+def test_no_op_on_a_platform_without_getuid(monkeypatch):
+    """Windows Python has no os.getuid/getgid; must no-op, never AttributeError."""
+    monkeypatch.delattr(core_docker.os, "getuid", raising=False)
+    monkeypatch.delattr(core_docker.os, "getgid", raising=False)
+    c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
+    assert core_docker.align_container_user_to_host(c, chown_home=True) == (False, None)
+    assert c.remap_scripts == []
