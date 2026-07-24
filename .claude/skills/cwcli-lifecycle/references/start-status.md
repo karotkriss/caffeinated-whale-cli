@@ -107,13 +107,11 @@ are now the whole point. Each note below guards a real bug.
   CLI-frontend host-side pre-step (D6); `core.start` assumes ports are clear. The human frontend skips the
   port check when the frappe container is already up, which lets an idempotent re-run reach the no-op
   instead of self-conflicting on its own ports.
-- **Re-aligns the container's `frappe` user to the host uid/gid on every launch** (`align_container_user_to_host`,
-  no `chown_home` - cheap `usermod`/`groupmod` only). A container recreation resets `frappe` back to the
-  image's default uid 1000, so re-aligning here keeps the bind-mounted workspace host-owned across restarts -
-  the root-cause fix for `cwcli rm`'s CI-only `[Errno 13] Permission denied`; see the host-uid alignment note
-  in `references/init.md`. A no-op when the ids already match; a failed remap degrades to a
-  `start.uid_align_failed` warning (rendered unconditionally by `commands/start.py`, not just under
-  `--verbose`) and start still proceeds.
+- **Re-aligns the container's `frappe` user to the host uid/gid on every launch** (`align_container_user_to_host`, with no `chown_home`, so only cheap `usermod`/`groupmod` runs on capable hosts).
+  A container recreation resets `frappe` back to the image's default uid 1000, so re-aligning here keeps the bind-mounted workspace host-owned across restarts on hosts with uid/gid information.
+  This is the root-cause fix for `cwcli rm`'s CI-only `[Errno 13] Permission denied`.
+  See the host-uid alignment note in `references/init.md` for the no-op paths.
+  A failed attempted remap degrades to a `start.uid_align_failed` warning (rendered unconditionally by `commands/start.py`, not just under `--verbose`) and start still proceeds.
 - **Blocks until the web server actually binds THE BENCH'S OWN PORT before reporting running** (`fm/cwcli-start-web-readiness-w3`; the port became explicit in `report-status-per-bench`).
   supervisord reports its programs up a beat before `bench serve` binds the port, so a caller that declared
   "running" the instant the launch returned raced the web - a scripted `cwcli start && cwcli status` (or `cwcli
