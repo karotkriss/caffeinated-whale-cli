@@ -14,8 +14,7 @@ from typer.testing import CliRunner
 
 from caffeinated_whale_cli.main import app
 
-# The shared storage/process-layer fixture; importing it registers it here.
-from tests.test_config_characterization import cfg  # noqa: F401
+pytest_plugins = ("tests.test_config_characterization",)
 
 runner = CliRunner()
 

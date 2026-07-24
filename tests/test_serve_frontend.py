@@ -8,6 +8,7 @@ the shipped ones - the parts a mocked handler would never catch.
 from __future__ import annotations
 
 import json
+import socket
 import threading
 import time
 import urllib.error
@@ -18,10 +19,13 @@ import pytest
 from caffeinated_whale_cli.commands import serve as serve_cmd
 from caffeinated_whale_cli.core import fleet as core_fleet
 from caffeinated_whale_cli.core import inspect as core_inspect
-from caffeinated_whale_cli.core.envelope import Result, Status
+from caffeinated_whale_cli.core.envelope import Choice, Result, Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from caffeinated_whale_cli.core.inspect import BenchInfo, InspectReport, SiteInfo
 from caffeinated_whale_cli.core.list import InstanceDTO
+from caffeinated_whale_cli.core.restart import ProcessRestartOutcome
+from caffeinated_whale_cli.core.start import ProcessLaunch, StartOutcome
+from caffeinated_whale_cli.core.stop import StopOutcome
 
 _TIMEOUT = 5.0
 
@@ -61,6 +65,20 @@ def _get(url):
         return resp.status, json.loads(resp.read())
 
 
+def _post(url, payload, headers=None):
+    request_headers = {"Content-Type": "application/json"}
+    if headers:
+        request_headers.update(headers)
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        headers=request_headers,
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:  # noqa: S310 - fixed localhost
+        return resp.status, json.loads(resp.read())
+
+
 class _Stream:
     """Reads SSE frames off a live connection; each frame is ``(event, data)``."""
 
@@ -81,6 +99,41 @@ class _Stream:
 
     def close(self):
         self.resp.close()
+
+
+class _RawSseSocket:
+    """A browser-style SSE socket that closes request writes but keeps reading."""
+
+    def __init__(self, base, path):
+        host, port_s = base.removeprefix("http://").split(":", 1)
+        self.sock = socket.create_connection((host, int(port_s)), timeout=_TIMEOUT)
+        self.file = self.sock.makefile("rb")
+        request = (
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {host}:{port_s}\r\n"
+            "Accept: text/event-stream\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+        )
+        self.sock.sendall(request.encode())
+        self.sock.shutdown(socket.SHUT_WR)
+        status = self.file.readline().decode()
+        assert " 200 " in status
+        while self.file.readline() not in {b"\r\n", b""}:
+            pass
+
+    def next_frame(self):
+        event = None
+        while True:
+            line = self.file.readline().decode().rstrip("\n")
+            if line.startswith("event: "):
+                event = line[len("event: ") :]
+            elif line.startswith("data: "):
+                return event, json.loads(line[len("data: ") :])
+
+    def close(self):
+        self.file.close()
+        self.sock.close()
 
 
 def _wait_for(predicate, message):
@@ -107,11 +160,17 @@ class TestSnapshot:
             _get(daemon.base + "/api/nope")
         assert e.value.code == 404
 
-    def test_the_root_serves_the_test_page(self, daemon):
+    def test_the_root_serves_the_console_ui(self, daemon):
         with urllib.request.urlopen(daemon.base + "/", timeout=_TIMEOUT) as resp:  # noqa: S310
             body = resp.read().decode()
         assert resp.status == 200
+        assert 'data-app="cw-console"' in body
         assert "EventSource" in body
+        assert "start_instance" in body
+        assert "restart_process" in body
+        assert "throwaway test page" not in body
+        assert "rm-site" not in body
+        assert "Delete instance" not in body
 
 
 class TestEventStream:
@@ -211,6 +270,22 @@ class TestEventStream:
         finally:
             stream.close()
 
+    def test_a_browser_half_closed_request_still_receives_deltas(self, daemon):
+        stream = _RawSseSocket(daemon.base, "/api/events?focus=p")
+        try:
+            stream.next_frame()
+            _wait_for(lambda: daemon.hub.client_count() == 1, "client never registered")
+
+            daemon.hub.publish("fast", "p", daemon.fleet.get("p"), None)
+
+            event, data = stream.next_frame()
+            assert event == "delta"
+            assert data["tier"] == "fast"
+            assert data["project"] == "p"
+            assert daemon.fleet.should_probe_web("p") is True
+        finally:
+            stream.close()
+
 
 class TestFocus:
     def test_concurrent_client_changes_deliver_the_latest_focus_snapshot(self):
@@ -254,8 +329,10 @@ class TestFocus:
         finally:
             stream.close()
 
-    def test_a_disconnect_retracts_focus_without_waiting_for_keepalive(self, daemon, monkeypatch):
-        monkeypatch.setattr(serve_cmd, "KEEPALIVE_S", 60.0)
+    def test_a_disconnect_retracts_focus_when_a_write_observes_the_closed_stream(
+        self, daemon, monkeypatch
+    ):
+        monkeypatch.setattr(serve_cmd, "KEEPALIVE_S", 0.05)
         stream = _Stream(daemon.base + "/api/events?focus=p")
         stream.next_frame()
         _wait_for(lambda: daemon.fleet.should_probe_web("p"), "focus never reached the fleet")
@@ -264,7 +341,7 @@ class TestFocus:
 
         _wait_for(
             lambda: not daemon.fleet.should_probe_web("p") and daemon.hub.client_count() == 0,
-            "a closed client left its focus and its queue behind",
+            "a closed client left its focus and its queue behind after the stream wrote",
         )
 
 
@@ -351,3 +428,222 @@ class TestDetail:
             _get(daemon.base + "/api/instance/p/detail")
         assert e.value.code == expected
         assert json.loads(e.value.read())["error"]["code"] == "some.code"
+
+
+class TestActions:
+    """The Console rail exposes only the approved narrow action set."""
+
+    def test_action_preflight_does_not_grant_cross_origin_access(self, daemon):
+        req = urllib.request.Request(
+            daemon.base + "/api/action",
+            method="OPTIONS",
+            headers={
+                "Origin": "https://example.invalid",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+
+        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:  # noqa: S310
+            assert resp.status == 204
+            assert resp.headers.get("Access-Control-Allow-Origin") is None
+
+    def test_cross_origin_simple_post_is_rejected_before_dispatch(self, daemon, monkeypatch):
+        monkeypatch.setattr(
+            serve_cmd.core_stop,
+            "stop",
+            lambda project: pytest.fail("cross-origin action must not dispatch"),
+        )
+        req = urllib.request.Request(
+            daemon.base + "/api/action",
+            data=b'{"action": "stop_instance", "project": "p"}',
+            method="POST",
+            headers={
+                "Origin": "https://example.invalid",
+                "Sec-Fetch-Site": "cross-site",
+                "Content-Type": "text/plain",
+            },
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(req, timeout=_TIMEOUT)  # noqa: S310 - fixed localhost
+
+        assert e.value.code == 403
+        body = json.loads(e.value.read())
+        assert body["error"]["code"] == "action.origin_forbidden"
+
+    def test_action_body_must_be_json_before_dispatch(self, daemon, monkeypatch):
+        monkeypatch.setattr(
+            serve_cmd.core_stop,
+            "stop",
+            lambda project: pytest.fail("non-JSON action must not dispatch"),
+        )
+        req = urllib.request.Request(
+            daemon.base + "/api/action",
+            data=b'{"action": "stop_instance", "project": "p"}',
+            method="POST",
+            headers={"Content-Type": "text/plain"},
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(req, timeout=_TIMEOUT)  # noqa: S310 - fixed localhost
+
+        assert e.value.code == 415
+        body = json.loads(e.value.read())
+        assert body["error"]["code"] == "request.content_type_invalid"
+
+    def test_start_instance_dispatches_to_the_core(self, daemon, monkeypatch):
+        called = {}
+        monkeypatch.setattr(serve_cmd.start_cmd, "_frappe_running", lambda project: True)
+
+        def _start(project, **kwargs):
+            called.update({"project": project, **kwargs})
+            return Result(
+                status=Status.OK,
+                data=StartOutcome(
+                    project=project,
+                    container="p-frappe-1",
+                    bench_path="/workspace/frappe-bench",
+                    supervisor="supervisord",
+                    log_path="/workspace/frappe-bench/logs",
+                    already_running=False,
+                    processes=[ProcessLaunch(label="web", pid=11)],
+                    web_ready=True,
+                ),
+            )
+
+        monkeypatch.setattr(serve_cmd.core_start, "start", _start)
+
+        status, body = _post(
+            daemon.base + "/api/action",
+            {"action": "start_instance", "project": "p", "bench": "0"},
+        )
+
+        assert status == 200
+        assert body["ok"] is True
+        assert body["outcome"]["bench_path"] == "/workspace/frappe-bench"
+        assert called["project"] == "p"
+        assert called["bench"] == "0"
+
+    def test_stop_instance_dispatches_to_the_core(self, daemon, monkeypatch):
+        called = {}
+
+        def _stop(project):
+            called["project"] = project
+            return Result(
+                status=Status.OK,
+                data=StopOutcome(
+                    project=project,
+                    stopped=3,
+                    already_stopped=False,
+                    containers=["p-frappe-1", "p-db-1", "p-redis-1"],
+                ),
+            )
+
+        monkeypatch.setattr(serve_cmd.core_stop, "stop", _stop)
+
+        status, body = _post(
+            daemon.base + "/api/action",
+            {"action": "stop_instance", "project": "p"},
+            headers={
+                "Origin": daemon.base,
+                "Sec-Fetch-Site": "same-origin",
+            },
+        )
+
+        assert status == 200
+        assert body["ok"] is True
+        assert body["outcome"]["stopped"] == 3
+        assert called["project"] == "p"
+
+    def test_restart_process_dispatches_to_the_core_and_refreshes_fast_tier(
+        self, daemon, monkeypatch
+    ):
+        called = {}
+
+        def _restart_process(project, process, **kwargs):
+            called.update({"project": project, "process": process, **kwargs})
+            return Result(
+                status=Status.OK,
+                data=ProcessRestartOutcome(
+                    project=project,
+                    bench_path="/workspace/frappe-bench",
+                    label=process,
+                    old_pid=11,
+                    new_pid=12,
+                    supervisor_state="RUNNING",
+                ),
+            )
+
+        monkeypatch.setattr(serve_cmd.core_restart, "restart_process", _restart_process)
+        monkeypatch.setattr(daemon.fleet, "probe", lambda project: called.update({"probe": project}))
+
+        status, body = _post(
+            daemon.base + "/api/action",
+            {"action": "restart_process", "project": "p", "bench": "0", "process": "web"},
+        )
+
+        assert status == 200
+        assert body["ok"] is True
+        assert body["outcome"]["old_pid"] == 11
+        assert body["outcome"]["new_pid"] == 12
+        assert called == {"project": "p", "process": "web", "bench": "0", "probe": "p"}
+
+    def test_start_refuses_port_conflicts_without_stopping_other_instances(
+        self, daemon, monkeypatch
+    ):
+        monkeypatch.setattr(serve_cmd.start_cmd, "_frappe_running", lambda project: False)
+        monkeypatch.setattr(
+            serve_cmd.start_cmd,
+            "detect_port_conflicts",
+            lambda project: (["other"], [8100]),
+        )
+        monkeypatch.setattr(
+            serve_cmd.core_start,
+            "start",
+            lambda *a, **kw: pytest.fail("start must not run when ports conflict"),
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _post(daemon.base + "/api/action", {"action": "start_instance", "project": "p"})
+
+        assert e.value.code == 409
+        body = json.loads(e.value.read())
+        assert body["error"]["code"] == "start.port_conflict"
+        assert "other" in body["error"]["message"]
+        assert "8100" in body["error"]["message"]
+
+    def test_restart_instance_resolves_bench_before_stopping(self, daemon, monkeypatch):
+        choice = Choice(
+            kind="select_bench",
+            param="bench",
+            prompt="Project 'p' has multiple benches; select one.",
+            options=[{"value": "0", "label": "/workspace/frappe-bench"}],
+        )
+        monkeypatch.setattr(serve_cmd.start_cmd, "_frappe_running", lambda project: True)
+        monkeypatch.setattr(
+            serve_cmd.core_resolvers,
+            "resolve_bench",
+            lambda project, bench, path: Result(status=Status.NEEDS_CHOICE, choice=choice),
+        )
+        monkeypatch.setattr(
+            serve_cmd.core_stop,
+            "stop",
+            lambda project: pytest.fail("stop must not run before a bench choice is resolved"),
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _post(daemon.base + "/api/action", {"action": "restart_instance", "project": "p"})
+
+        assert e.value.code == 409
+        body = json.loads(e.value.read())
+        assert body["error"]["code"] == "select_bench"
+        assert body["choice"]["options"][0]["value"] == "0"
+
+    def test_unsupported_actions_are_rejected(self, daemon):
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _post(daemon.base + "/api/action", {"action": "rm_instance", "project": "p"})
+
+        assert e.value.code == 400
+        body = json.loads(e.value.read())
+        assert body["error"]["code"] == "action.unsupported"
