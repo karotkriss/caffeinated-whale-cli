@@ -220,9 +220,7 @@ class TestSnapshot:
         )
         # A removal delta can replace the selected instance, so the visible
         # selection and the daemon's per-tab probe focus must move together.
-        delta_handler = body.split('es.addEventListener("delta"', 1)[1].split(
-            "es.onerror", 1
-        )[0]
+        delta_handler = body.split('es.addEventListener("delta"', 1)[1].split("es.onerror", 1)[0]
         assert delta_handler.index("render();") < delta_handler.index("syncFocus();")
         # "No instances found" is a claim only a snapshot can back; before one
         # arrives the page says it is still waiting.
@@ -233,7 +231,8 @@ class TestSnapshot:
         # Tree semantics are exposed, not just styled.
         assert "aria-expanded" in body
         assert 'aria-current="true"' in body
-        # The shell is viewport-fixed so panels scroll, never the whole page.
+        # Above 760px the viewport-fixed shell makes panels scroll; the narrow
+        # layout deliberately restores page scrolling.
         assert "height: 100vh" in body
         assert ".rail {\n    max-height: none;\n  }" in body
         # The summary reflows when the action rail becomes a bottom band, so
@@ -242,9 +241,7 @@ class TestSnapshot:
             "@media (max-width: 760px)", 1
         )[0]
         assert (
-            ".summary-grid {\n"
-            "    grid-template-columns: repeat(2, minmax(0, 1fr));\n"
-            "  }"
+            ".summary-grid {\n" "    grid-template-columns: repeat(2, minmax(0, 1fr));\n" "  }"
         ) in mid_width_rules
 
 

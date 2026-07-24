@@ -39,9 +39,9 @@ body {
 button, input { font: inherit; }
 button { color: inherit; }
 .app {
-  /* A fixed-viewport shell: the tree, detail pane, and event log each scroll
-     inside their own panel, so the action rail and connection state never
-     scroll out of view. */
+  /* Above 760px, use a fixed-viewport shell so the tree, detail pane, and
+     event log scroll inside their own panels while the action rail and
+     connection state stay visible. Narrow screens restore page scrolling. */
   height: 100vh;
   display: grid;
   grid-template-columns: minmax(260px, 320px) minmax(0, 1fr) minmax(260px, 300px);
