@@ -45,6 +45,7 @@ import socket
 import threading
 from dataclasses import asdict, dataclass, is_dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib.resources import files
 from urllib.parse import parse_qs, unquote, urlparse
 
 import typer
@@ -76,6 +77,9 @@ _HTTP_FOR_KIND = {
     ErrorKind.DOCKER: 503,
 }
 _MAX_ACTION_BODY = 64 * 1024
+CONSOLE_PAGE = (
+    files("caffeinated_whale_cli.commands").joinpath("console.html").read_text(encoding="utf-8")
+)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -155,6 +159,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     fleet: core_fleet.Fleet
     hub: _Hub
+    action_locks: dict[str, threading.Lock]
+    action_locks_guard: threading.Lock
 
     def log_message(self, fmt, *args):  # noqa: A003 - stdlib hook name
         """Silence per-request logging; a dashboard polls, and the noise buries the banner."""
@@ -181,6 +187,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+        self.send_header("X-Frame-Options", "DENY")
         self.end_headers()
         self.wfile.write(raw)
 
@@ -273,9 +281,10 @@ class _Handler(BaseHTTPRequestHandler):
         if not origin:
             return True
         parsed = urlparse(origin)
-        return parsed.scheme == "http" and parsed.netloc.lower() == (
-            self.headers.get("Host") or ""
-        ).lower()
+        return (
+            parsed.scheme == "http"
+            and parsed.netloc.lower() == (self.headers.get("Host") or "").lower()
+        )
 
     def _action_json_content_type(self) -> bool:
         media_type = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
@@ -291,6 +300,12 @@ class _Handler(BaseHTTPRequestHandler):
                 "request.length_invalid",
                 "Invalid Content-Length for action request.",
             ) from e
+        if length < 0:
+            raise CwcliError(
+                ErrorKind.USAGE,
+                "request.length_invalid",
+                "Invalid Content-Length for action request.",
+            )
         if length > _MAX_ACTION_BODY:
             raise CwcliError(
                 ErrorKind.USAGE,
@@ -318,30 +333,45 @@ class _Handler(BaseHTTPRequestHandler):
         action = _required_str(payload, "action")
         project = _required_str(payload, "project")
         bench = _optional_str(payload.get("bench"))
+        allowed = {
+            "start_instance",
+            "stop_instance",
+            "restart_instance",
+            "restart_process",
+        }
+        if action not in allowed:
+            raise CwcliError(
+                ErrorKind.USAGE,
+                "action.unsupported",
+                f"Unsupported Console action '{action}'.",
+                hint=(
+                    "Allowed actions are start_instance, stop_instance, "
+                    "restart_instance, restart_process."
+                ),
+            )
+        process = _required_str(payload, "process") if action == "restart_process" else None
 
-        if action == "start_instance":
-            _check_start_port_conflicts(project)
-            result = core_start.start(project, bench=bench)
-            self._refresh_lifecycle(project, result.warnings)
-            return _result_response(action, project, result)
-        if action == "stop_instance":
-            result = core_stop.stop(project)
-            self._refresh_lifecycle(project, result.warnings)
-            return _result_response(action, project, result)
-        if action == "restart_instance":
-            return self._restart_instance(project, bench)
-        if action == "restart_process":
-            process = _required_str(payload, "process")
+        with self._action_lock(project):
+            if action == "start_instance":
+                _check_start_port_conflicts(project)
+                result = core_start.start(project, bench=bench)
+                self._refresh_lifecycle(project, result.warnings)
+                return _result_response(action, project, result)
+            if action == "stop_instance":
+                result = core_stop.stop(project)
+                self._refresh_lifecycle(project, result.warnings)
+                return _result_response(action, project, result)
+            if action == "restart_instance":
+                return self._restart_instance(project, bench)
+
+            assert process is not None
             result = core_restart.restart_process(project, process, bench=bench)
             self._refresh_process(project, result.warnings)
             return _result_response(action, project, result)
 
-        raise CwcliError(
-            ErrorKind.USAGE,
-            "action.unsupported",
-            f"Unsupported Console action '{action}'.",
-            hint="Allowed actions are start_instance, stop_instance, restart_instance, restart_process.",
-        )
+    def _action_lock(self, project: str) -> threading.Lock:
+        with self.action_locks_guard:
+            return self.action_locks.setdefault(project, threading.Lock())
 
     def _restart_instance(self, project: str, bench: str | None) -> tuple[int, dict]:
         _check_start_port_conflicts(project)
@@ -534,9 +564,7 @@ def _check_start_port_conflicts(project: str) -> None:
     parts = []
     if conflicting_projects:
         parts.append(
-            "Frappe instances already hold required ports: "
-            + ", ".join(conflicting_projects)
-            + "."
+            "Frappe instances already hold required ports: " + ", ".join(conflicting_projects) + "."
         )
     if blocking_ports:
         parts.append(
@@ -557,7 +585,16 @@ def _check_start_port_conflicts(project: str) -> None:
 
 def make_server(host: str, port: int, fleet: core_fleet.Fleet, hub: _Hub) -> ThreadingHTTPServer:
     """Bind the HTTP server, handing the handler class its fleet and hub."""
-    handler = type("Handler", (_Handler,), {"fleet": fleet, "hub": hub})
+    handler = type(
+        "Handler",
+        (_Handler,),
+        {
+            "fleet": fleet,
+            "hub": hub,
+            "action_locks": {},
+            "action_locks_guard": threading.Lock(),
+        },
+    )
     httpd = ThreadingHTTPServer((host, port), handler)
     httpd.daemon_threads = True
     return httpd
@@ -664,1149 +701,3 @@ def serve(
         stop.set()
         httpd.shutdown()
         httpd.server_close()
-
-
-CONSOLE_PAGE = """<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>cwcli Console</title>
-<style>
-:root {
-  color-scheme: dark;
-  --bg: #11110f;
-  --panel: #181816;
-  --panel-2: #20201d;
-  --line: #33342f;
-  --line-soft: #282923;
-  --text: #eee9dd;
-  --muted: #b3ad9e;
-  --quiet: #827d72;
-  --green: #80d89d;
-  --green-bg: #153424;
-  --amber: #f0b66d;
-  --amber-bg: #3f2a16;
-  --red: #ff8f78;
-  --red-bg: #3d201a;
-  --blue: #91c5ff;
-  --blue-bg: #1b2d3f;
-  --violet: #d2a7ff;
-  --violet-bg: #32233f;
-  --focus: #f6c05f;
-  --shadow: 0 18px 50px rgba(0, 0, 0, 0.36);
-}
-* { box-sizing: border-box; }
-html, body { min-height: 100%; }
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-}
-button, input { font: inherit; }
-button { color: inherit; }
-.app {
-  min-height: 100vh;
-  display: grid;
-  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr) minmax(260px, 300px);
-  background:
-    linear-gradient(180deg, rgba(246, 192, 95, 0.05), transparent 18rem),
-    var(--bg);
-}
-.sidebar, .rail {
-  min-width: 0;
-  background: rgba(24, 24, 22, 0.96);
-  border-color: var(--line);
-  border-style: solid;
-}
-.sidebar {
-  border-width: 0 1px 0 0;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-}
-.rail {
-  border-width: 0 0 0 1px;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-}
-.brand, .rail-head {
-  padding: 18px 18px 14px;
-  border-bottom: 1px solid var(--line-soft);
-}
-.brand h1, .rail-head h2 {
-  margin: 0;
-  font-size: 16px;
-  line-height: 1.2;
-  font-weight: 700;
-  letter-spacing: 0;
-}
-.connection {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 9px;
-  color: var(--muted);
-  font-size: 12px;
-}
-.dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: var(--quiet);
-  flex: 0 0 auto;
-}
-.dot.open { background: var(--green); }
-.dot.reconnecting { background: var(--amber); }
-.tree {
-  min-width: 0;
-  overflow: auto;
-  padding: 10px;
-}
-.tree-empty, .empty {
-  color: var(--muted);
-  padding: 18px;
-  border: 1px solid var(--line-soft);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.02);
-}
-.instance-group { margin-bottom: 6px; }
-.tree-line {
-  display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
-  align-items: stretch;
-  gap: 2px;
-}
-.tree-row, .twisty, .tab, .action-button {
-  border: 0;
-  background: transparent;
-}
-.twisty {
-  width: 24px;
-  min-height: 34px;
-  color: var(--quiet);
-  border-radius: 6px;
-  cursor: pointer;
-}
-.twisty:hover { background: var(--panel-2); color: var(--text); }
-.tree-row {
-  width: 100%;
-  min-width: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 9px;
-  border-radius: 7px;
-  color: var(--text);
-  text-align: left;
-  cursor: pointer;
-}
-.tree-row:hover { background: rgba(255, 255, 255, 0.04); }
-.tree-row.selected {
-  background: rgba(246, 192, 95, 0.13);
-  box-shadow: inset 0 0 0 1px rgba(246, 192, 95, 0.45);
-}
-.tree-row:focus-visible, .tab:focus-visible, .action-button:focus-visible, .twisty:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-}
-.tree-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 650;
-}
-.tree-meta {
-  min-width: 0;
-  color: var(--muted);
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.children {
-  margin-left: 28px;
-  padding-left: 10px;
-  border-left: 1px solid var(--line-soft);
-}
-.tree-row.bench, .tree-row.process {
-  grid-template-columns: minmax(0, 1fr) auto;
-  padding-top: 7px;
-  padding-bottom: 7px;
-}
-.tree-row.process .tree-label {
-  font-weight: 520;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
-}
-.pill {
-  display: inline-flex;
-  align-items: center;
-  max-width: 100%;
-  min-height: 22px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-.pill.running, .pill.up { color: var(--green); background: var(--green-bg); }
-.pill.degraded, .pill.down { color: var(--red); background: var(--red-bg); }
-.pill.offline { color: var(--muted); background: #292925; }
-.pill.online { color: var(--blue); background: var(--blue-bg); }
-.pill.unknown { color: var(--violet); background: var(--violet-bg); }
-.pill.neutral { color: var(--muted); background: #282923; }
-.main {
-  min-width: 0;
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
-}
-.topbar {
-  min-width: 0;
-  padding: 20px 24px 16px;
-  border-bottom: 1px solid var(--line-soft);
-  background: rgba(17, 17, 15, 0.9);
-}
-.crumb {
-  color: var(--muted);
-  font-size: 12px;
-  margin-bottom: 8px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.title-row {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  min-width: 0;
-}
-.title-row h2 {
-  margin: 0;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  font-size: 28px;
-  line-height: 1.1;
-  letter-spacing: 0;
-}
-.subtitle {
-  margin-top: 8px;
-  color: var(--muted);
-  max-width: 78ch;
-}
-.tabs {
-  display: flex;
-  gap: 2px;
-  padding: 10px 24px 0;
-  border-bottom: 1px solid var(--line-soft);
-  overflow-x: auto;
-}
-.tab {
-  padding: 10px 12px;
-  color: var(--muted);
-  border-radius: 7px 7px 0 0;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.tab.active {
-  color: var(--text);
-  background: var(--panel);
-  box-shadow: inset 0 -2px 0 var(--focus);
-}
-.tab small {
-  color: var(--quiet);
-  margin-left: 4px;
-  font-size: 11px;
-}
-.detail {
-  min-width: 0;
-  overflow: auto;
-  padding: 22px 24px 28px;
-}
-.summary-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-  margin-bottom: 20px;
-}
-.metric {
-  min-width: 0;
-  background: var(--panel);
-  border: 1px solid var(--line-soft);
-  border-radius: 8px;
-  padding: 13px;
-}
-.metric .label {
-  color: var(--muted);
-  font-size: 12px;
-  margin-bottom: 5px;
-}
-.metric .value {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  font-size: 18px;
-  font-weight: 700;
-}
-.section {
-  margin-top: 22px;
-}
-.section h3 {
-  margin: 0 0 10px;
-  font-size: 15px;
-  letter-spacing: 0;
-}
-.table-wrap {
-  overflow-x: auto;
-  border: 1px solid var(--line-soft);
-  border-radius: 8px;
-  background: var(--panel);
-}
-table {
-  width: 100%;
-  border-collapse: collapse;
-  min-width: 620px;
-}
-th, td {
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--line-soft);
-  text-align: left;
-  vertical-align: top;
-}
-th {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 650;
-}
-tr:last-child td { border-bottom: 0; }
-td.code, .code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
-}
-.muted { color: var(--muted); }
-.unknown-text { color: var(--violet); }
-.site-apps {
-  display: grid;
-  gap: 12px;
-}
-.inventory-block {
-  border: 1px solid var(--line-soft);
-  border-radius: 8px;
-  background: var(--panel);
-  padding: 14px;
-  min-width: 0;
-}
-.inventory-title {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  min-width: 0;
-  margin-bottom: 10px;
-  font-weight: 700;
-}
-.inventory-title span:first-child {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.chip {
-  max-width: 100%;
-  min-width: 0;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 5px 8px;
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.03);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-.rail-body {
-  min-width: 0;
-  overflow: auto;
-  padding: 16px;
-}
-.target {
-  min-width: 0;
-  padding: 13px;
-  border: 1px solid var(--line-soft);
-  border-radius: 8px;
-  background: var(--panel);
-  box-shadow: var(--shadow);
-}
-.target-name {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  font-weight: 700;
-}
-.target-meta {
-  margin-top: 5px;
-  color: var(--muted);
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-.action-group {
-  margin-top: 18px;
-}
-.action-group h3 {
-  margin: 0 0 8px;
-  color: var(--muted);
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-.action-button {
-  width: 100%;
-  min-height: 40px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 10px;
-  margin-top: 8px;
-  padding: 9px 11px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel-2);
-  cursor: pointer;
-}
-.action-button:hover:not(:disabled) {
-  border-color: rgba(246, 192, 95, 0.65);
-  background: #282821;
-}
-.action-button:disabled {
-  color: var(--quiet);
-  cursor: not-allowed;
-  background: #171714;
-}
-.action-cost {
-  color: var(--muted);
-  font-size: 12px;
-  white-space: nowrap;
-}
-.event-log {
-  padding: 12px;
-  border-top: 1px solid var(--line-soft);
-  color: var(--muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
-  max-height: 180px;
-  overflow: auto;
-}
-.event-log div { margin-bottom: 5px; overflow-wrap: anywhere; }
-.event-log .instant { color: var(--blue); }
-.event-log .fast { color: var(--green); }
-.event-log .error { color: var(--red); }
-.notice {
-  margin-top: 12px;
-  padding: 10px;
-  border-radius: 8px;
-  border: 1px solid var(--line-soft);
-  color: var(--muted);
-  background: rgba(255, 255, 255, 0.025);
-  overflow-wrap: anywhere;
-}
-.notice.error {
-  color: var(--red);
-  border-color: rgba(255, 143, 120, 0.45);
-  background: rgba(255, 143, 120, 0.08);
-}
-@media (max-width: 1050px) {
-  .app {
-    grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
-    grid-template-areas:
-      "sidebar main"
-      "rail rail";
-  }
-  .sidebar { grid-area: sidebar; }
-  .main { grid-area: main; }
-  .rail {
-    grid-area: rail;
-    border-width: 1px 0 0;
-  }
-  .rail-body {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
-    gap: 16px;
-  }
-}
-@media (max-width: 760px) {
-  .app {
-    display: block;
-  }
-  .sidebar, .rail {
-    border-width: 0 0 1px;
-  }
-  .tree {
-    max-height: 42vh;
-  }
-  .topbar, .detail {
-    padding-left: 16px;
-    padding-right: 16px;
-  }
-  .tabs {
-    padding-left: 16px;
-    padding-right: 16px;
-  }
-  .summary-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .rail-body {
-    display: block;
-  }
-}
-@media (max-width: 460px) {
-  .summary-grid {
-    grid-template-columns: 1fr;
-  }
-  .title-row h2 {
-    font-size: 22px;
-  }
-}
-</style>
-</head>
-<body>
-<div class="app" data-app="cw-console">
-  <aside class="sidebar" aria-label="Fleet tree">
-    <div class="brand">
-      <h1>cwcli Console</h1>
-      <div class="connection"><span id="conn-dot" class="dot"></span><span id="conn-text">connecting</span></div>
-    </div>
-    <nav id="tree" class="tree"></nav>
-    <div id="event-log" class="event-log" aria-live="polite"></div>
-  </aside>
-  <main class="main">
-    <header id="topbar" class="topbar"></header>
-    <div id="tabs" class="tabs" role="tablist"></div>
-    <section id="detail" class="detail"></section>
-  </main>
-  <aside class="rail" aria-label="Actions">
-    <div class="rail-head"><h2>Actions</h2></div>
-    <div id="rail-body" class="rail-body"></div>
-  </aside>
-</div>
-<script>
-(() => {
-  "use strict";
-
-  const model = new Map();
-  const detailCache = new Map();
-  const expanded = new Set();
-  const eventRows = [];
-  const tabs = ["processes", "sites", "apps"];
-  const initialFocus = new URLSearchParams(location.search).get("focus");
-  let selected = initialFocus ? {type: "instance", project: initialFocus} : {type: "empty"};
-  let activeTab = "processes";
-  let source = null;
-  let activeFocus = null;
-  let pendingAction = null;
-  let lastAction = null;
-
-  const el = id => document.getElementById(id);
-  const esc = value => String(value ?? "").replace(/[&<>"']/g, ch => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;"
-  })[ch]);
-  const unknown = text => `<span class="unknown-text">${esc(text || "unknown")}</span>`;
-  const safeKey = value => encodeURIComponent(String(value ?? ""));
-  const parseKey = value => decodeURIComponent(value || "");
-
-  function statusText(token) {
-    return ({
-      running: "running",
-      degraded: "degraded",
-      offline: "offline",
-      online: "never started",
-      unknown: "unknown"
-    })[token] || "unknown";
-  }
-
-  function statusPill(token) {
-    const safe = ["running", "degraded", "offline", "online", "unknown"].includes(token) ? token : "unknown";
-    return `<span class="pill ${safe}">${esc(statusText(token))}</span>`;
-  }
-
-  function processPill(process) {
-    if (!process) return `<span class="pill unknown">unknown</span>`;
-    if (process.state && process.state !== "RUNNING" && process.state !== "STARTING") {
-      return `<span class="pill down">${esc(process.state)}</span>`;
-    }
-    if (process.up) return `<span class="pill up">${esc(process.state || "up")}</span>`;
-    return `<span class="pill down">${esc(process.state || "down")}</span>`;
-  }
-
-  function sortedInstances() {
-    return [...model.values()].sort((a, b) => a.project.localeCompare(b.project));
-  }
-
-  function benchKey(bench) {
-    if (!bench) return "";
-    return bench.index === null || bench.index === undefined
-      ? `path:${bench.bench_path}`
-      : `index:${bench.index}`;
-  }
-
-  function benchSelector(bench) {
-    if (!bench) return null;
-    if (bench.label) return bench.label;
-    if (bench.index !== null && bench.index !== undefined) return String(bench.index);
-    return null;
-  }
-
-  function selectedInstance() {
-    return selected.project ? model.get(selected.project) || null : null;
-  }
-
-  function selectedBench() {
-    const inst = selectedInstance();
-    if (!inst || !selected.benchKey) return null;
-    return inst.benches.find(b => benchKey(b) === selected.benchKey) || null;
-  }
-
-  function selectedProcess() {
-    const bench = selectedBench();
-    if (!bench || !selected.process) return null;
-    return bench.processes.find(p => p.label === selected.process) || null;
-  }
-
-  function select(next) {
-    selected = next;
-    activeTab = "processes";
-    if (selected.project) {
-      expanded.add(selected.project);
-      ensureDetail(selected.project);
-    }
-    render();
-    syncFocus();
-  }
-
-  function ensureSelection() {
-    const instances = sortedInstances();
-    if (!instances.length) {
-      selected = {type: "empty"};
-      return;
-    }
-    if (!selected.project || !model.has(selected.project)) {
-      selected = {type: "instance", project: instances[0].project};
-      expanded.add(instances[0].project);
-      ensureDetail(instances[0].project);
-      return;
-    }
-    const inst = selectedInstance();
-    if (selected.benchKey && !inst.benches.some(b => benchKey(b) === selected.benchKey)) {
-      selected = {type: "instance", project: selected.project};
-    }
-  }
-
-  function syncFocus() {
-    const focus = selected.project || "";
-    if (focus === activeFocus && source) return;
-    activeFocus = focus;
-    connectEvents();
-  }
-
-  function connectEvents() {
-    if (source) source.close();
-    const url = "/api/events" + (activeFocus ? `?focus=${encodeURIComponent(activeFocus)}` : "");
-    source = new EventSource(url);
-    setConnection("connecting");
-    source.addEventListener("open", () => setConnection("open"));
-    source.addEventListener("snapshot", event => {
-      model.clear();
-      JSON.parse(event.data).instances.forEach(instance => {
-        model.set(instance.project, instance);
-        if (!expanded.has(instance.project)) expanded.add(instance.project);
-      });
-      ensureSelection();
-      addEvent("instant", `SNAPSHOT ${model.size} instances`);
-      setConnection("open");
-      render();
-      syncFocus();
-    });
-    source.addEventListener("delta", event => {
-      const delta = JSON.parse(event.data);
-      if (delta.removed) {
-        model.delete(delta.project);
-        detailCache.delete(delta.project);
-        addEvent(delta.tier, `${delta.tier.toUpperCase()} ${delta.project} removed`);
-      } else {
-        model.set(delta.project, delta.instance);
-        const cause = delta.cause ? ` ${delta.cause.action}(${delta.cause.service || "container"})` : "";
-        addEvent(delta.tier, `${delta.tier.toUpperCase()} ${delta.project}${cause} -> ${delta.instance.overall}`);
-      }
-      ensureSelection();
-      render();
-    });
-    source.onerror = () => setConnection("reconnecting");
-  }
-
-  function setConnection(state) {
-    el("conn-text").textContent = activeFocus ? `${state} - focus ${activeFocus}` : state;
-    el("conn-dot").className = `dot ${state === "open" ? "open" : "reconnecting"}`;
-  }
-
-  function addEvent(kind, text) {
-    if (eventRows[0] && eventRows[0].kind === kind && eventRows[0].text === text) return;
-    eventRows.unshift({kind, text, at: new Date().toLocaleTimeString()});
-    eventRows.splice(60);
-    renderEvents();
-  }
-
-  function renderEvents() {
-    el("event-log").innerHTML = eventRows.length
-      ? eventRows.map(row => `<div class="${esc(row.kind)}">${esc(row.at)} ${esc(row.text)}</div>`).join("")
-      : `<div class="muted">No stream events yet</div>`;
-  }
-
-  function ensureDetail(project) {
-    const cached = detailCache.get(project);
-    if (cached && cached.state !== "error") return;
-    detailCache.set(project, {state: "loading"});
-    fetch(`/api/instance/${encodeURIComponent(project)}/detail`)
-      .then(async response => {
-        const body = await response.json();
-        if (!response.ok) throw body;
-        detailCache.set(project, {state: "ready", data: body});
-        render();
-      })
-      .catch(error => {
-        const message = error && error.error ? error.error.message : "could not find out";
-        detailCache.set(project, {state: "error", message});
-        render();
-      });
-  }
-
-  function currentDetail() {
-    return selected.project ? detailCache.get(selected.project) || null : null;
-  }
-
-  function render() {
-    ensureSelection();
-    renderTree();
-    renderTopbar();
-    renderTabs();
-    renderDetail();
-    renderRail();
-    renderEvents();
-  }
-
-  function renderTree() {
-    const instances = sortedInstances();
-    if (!instances.length) {
-      el("tree").innerHTML = `<div class="tree-empty">No instances found</div>`;
-      return;
-    }
-    el("tree").innerHTML = instances.map(instance => {
-      const open = expanded.has(instance.project);
-      const instanceSelected = selected.type === "instance" && selected.project === instance.project;
-      const benches = open ? instance.benches.map(bench => renderBenchNode(instance, bench)).join("") : "";
-      const pending = instance.overall === "unknown" ? " - could not find out yet" : "";
-      return `<div class="instance-group">
-        <div class="tree-line">
-          <button class="twisty" data-toggle="${safeKey(instance.project)}" aria-label="${open ? "Collapse" : "Expand"} ${esc(instance.project)}">${open ? "v" : ">"}</button>
-          <button class="tree-row ${instanceSelected ? "selected" : ""}" data-select="instance" data-project="${safeKey(instance.project)}">
-            <span class="tree-label">${esc(instance.project)}</span>
-            ${statusPill(instance.overall)}
-            <span class="tree-meta">${esc(instance.docker_status)}${esc(pending)}</span>
-          </button>
-        </div>
-        ${open ? `<div class="children">${benches || renderNoBenchNode(instance)}</div>` : ""}
-      </div>`;
-    }).join("");
-  }
-
-  function renderBenchNode(instance, bench) {
-    const key = benchKey(bench);
-    const selectedRow = selected.project === instance.project && selected.benchKey === key && selected.type === "bench";
-    const meta = bench.not_cwcli_supervised ? "not cwcli supervised" : webSummary(bench, instance.web_probed);
-    const processes = (bench.processes || []).map(process => renderProcessNode(instance, bench, process)).join("");
-    return `<div>
-      <button class="tree-row bench ${selectedRow ? "selected" : ""}" data-select="bench" data-project="${safeKey(instance.project)}" data-bench="${safeKey(key)}">
-        <span>
-          <span class="tree-label">${esc(bench.label || bench.bench_path)}</span>
-          <span class="tree-meta">${esc(meta)}</span>
-        </span>
-        ${statusPill(bench.overall)}
-      </button>
-      <div class="children">${processes || `<div class="tree-meta">processes unknown</div>`}</div>
-    </div>`;
-  }
-
-  function renderProcessNode(instance, bench, process) {
-    const selectedRow = selected.project === instance.project
-      && selected.benchKey === benchKey(bench)
-      && selected.process === process.label
-      && selected.type === "process";
-    return `<button class="tree-row process ${selectedRow ? "selected" : ""}" data-select="process" data-project="${safeKey(instance.project)}" data-bench="${safeKey(benchKey(bench))}" data-process="${safeKey(process.label)}">
-      <span>
-        <span class="tree-label">PROCESS ${esc(process.label)}</span>
-        <span class="tree-meta">${esc(process.pid == null ? "pid unknown" : "pid " + process.pid)}</span>
-      </span>
-      ${processPill(process)}
-    </button>`;
-  }
-
-  function renderNoBenchNode(instance) {
-    const text = instance.container_running ? "health unknown - no bench probed" : "instance offline";
-    return `<div class="tree-meta">${esc(text)}</div>`;
-  }
-
-  function renderTopbar() {
-    const inst = selectedInstance();
-    if (!inst) {
-      el("topbar").innerHTML = `<div class="crumb">fleet</div><div class="title-row"><h2>No instance selected</h2>${statusPill("unknown")}</div>`;
-      return;
-    }
-    const bench = selectedBench();
-    const process = selectedProcess();
-    let title = inst.project;
-    let crumb = "fleet / " + inst.project;
-    let token = inst.overall;
-    let subtitle = instanceSubtitle(inst);
-    if (bench) {
-      title = bench.label || bench.bench_path;
-      crumb += " / " + title;
-      token = bench.overall;
-      subtitle = benchSubtitle(bench, inst);
-    }
-    if (process) {
-      title = "PROCESS " + process.label;
-      crumb += " / PROCESS " + process.label;
-      subtitle = processSubtitle(process, bench);
-    }
-    el("topbar").innerHTML = `<div class="crumb">${esc(crumb)}</div>
-      <div class="title-row"><h2>${esc(title)}</h2>${process ? processPill(process) : statusPill(token)}</div>
-      <div class="subtitle">${subtitle}</div>`;
-  }
-
-  function instanceSubtitle(instance) {
-    const bits = [
-      `Docker ${instance.docker_status}`,
-      instance.container_running ? "container running" : "container stopped",
-      instance.probe_ms == null ? "probe never completed" : `last probe ${Math.round(instance.probe_ms)}ms`
-    ];
-    if (instance.probe_error) bits.push("probe error: " + instance.probe_error);
-    return bits.map(esc).join(" · ");
-  }
-
-  function benchSubtitle(bench, instance) {
-    const bits = [benchStatusSentence(bench), webSummary(bench, instance.web_probed)];
-    if (bench.not_cwcli_supervised) bits.push("not cwcli supervised");
-    return bits.map(esc).join(" · ");
-  }
-
-  function processSubtitle(process, bench) {
-    const state = process.state || (bench && bench.not_cwcli_supervised ? "supervisord state unknown" : "state unknown");
-    const pid = process.pid == null ? "pid unknown" : "pid " + process.pid;
-    return [state, pid, process.up ? "process up" : "process down"].map(esc).join(" · ");
-  }
-
-  function benchStatusSentence(bench) {
-    if (bench.overall === "online") return "never started";
-    if (bench.overall === "unknown") return "could not find out";
-    return bench.overall;
-  }
-
-  function webSummary(bench, instanceWebProbed) {
-    if (!bench.web_port_verified) return "port unknown, not probed";
-    if (bench.web_port === null || bench.web_port === undefined) return "port unknown, not probed";
-    if (!instanceWebProbed) return `:${bench.web_port} not probed`;
-    if (bench.web_http_code === null || bench.web_http_code === undefined) {
-      return `${bench.web_site || "site unknown"}:${bench.web_port} -> no answer`;
-    }
-    return `${bench.web_site || "site unknown"}:${bench.web_port} -> ${bench.web_http_code}`;
-  }
-
-  function renderTabs() {
-    el("tabs").innerHTML = tabs.map(tab => {
-      const label = tab === "sites" ? "Sites <small>cached</small>" : tab === "apps" ? "Apps <small>cached</small>" : "Processes";
-      return `<button class="tab ${activeTab === tab ? "active" : ""}" role="tab" data-tab="${tab}">${label}</button>`;
-    }).join("");
-  }
-
-  function renderDetail() {
-    if (activeTab === "sites") {
-      renderSites();
-    } else if (activeTab === "apps") {
-      renderApps();
-    } else {
-      renderProcesses();
-    }
-  }
-
-  function renderProcesses() {
-    const inst = selectedInstance();
-    if (!inst) {
-      el("detail").innerHTML = `<div class="empty">No live fleet data</div>`;
-      return;
-    }
-    const benches = selectedBench() ? [selectedBench()] : inst.benches;
-    const process = selectedProcess();
-    const summary = `<div class="summary-grid">
-      ${metric("Instance", inst.project)}
-      ${metric("Health", statusText(inst.overall))}
-      ${metric("Docker", inst.docker_status)}
-      ${metric("Probe", inst.probe_ms == null ? "never completed" : Math.round(inst.probe_ms) + "ms")}
-    </div>`;
-    if (process) {
-      el("detail").innerHTML = summary + renderProcessCard(process, selectedBench());
-      return;
-    }
-    if (!benches.length) {
-      el("detail").innerHTML = summary + `<div class="empty">${inst.container_running ? "Health unknown - no bench probed yet" : "Instance offline"}</div>`;
-      return;
-    }
-    const rows = benches.flatMap(bench => (bench.processes || []).map(process => ({bench, process})));
-    if (!rows.length) {
-      el("detail").innerHTML = summary + `<div class="empty">Process state unknown - could not find out</div>`;
-      return;
-    }
-    el("detail").innerHTML = summary + `<div class="section"><h3>Processes</h3><div class="table-wrap"><table>
-      <thead><tr><th>Bench</th><th>Process</th><th>State</th><th>PID</th><th>CPU</th><th>Memory</th><th>Uptime</th></tr></thead>
-      <tbody>${rows.map(({bench, process}) => `<tr>
-        <td class="code">${esc(bench.label || bench.bench_path)}</td>
-        <td class="code">PROCESS ${esc(process.label)}</td>
-        <td>${processPill(process)}</td>
-        <td>${process.pid == null ? unknown("unknown") : esc(process.pid)}</td>
-        <td>${process.cpu_pct == null ? unknown("unknown") : esc(process.cpu_pct + "%")}</td>
-        <td>${process.rss_kb == null ? unknown("unknown") : esc(Math.round(process.rss_kb / 1024) + " MB")}</td>
-        <td>${process.uptime_s == null ? unknown("unknown") : esc(formatDuration(process.uptime_s))}</td>
-      </tr>`).join("")}</tbody>
-    </table></div></div>`;
-  }
-
-  function renderProcessCard(process, bench) {
-    return `<div class="summary-grid">
-      ${metric("Process", "PROCESS " + process.label)}
-      ${metric("State", process.state || "unknown")}
-      ${metric("PID", process.pid == null ? "unknown" : process.pid)}
-      ${metric("Bench", bench ? (bench.label || bench.bench_path) : "unknown")}
-    </div>`;
-  }
-
-  function metric(label, value) {
-    const text = value === null || value === undefined || value === "" ? "unknown" : String(value);
-    return `<div class="metric"><div class="label">${esc(label)}</div><div class="value">${esc(text)}</div></div>`;
-  }
-
-  function formatDuration(seconds) {
-    if (seconds < 60) return `${seconds}s`;
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes}m`;
-    const hours = Math.floor(minutes / 60);
-    return `${hours}h ${minutes % 60}m`;
-  }
-
-  function detailBenches() {
-    const detail = currentDetail();
-    if (!detail || detail.state !== "ready") return [];
-    if (!selected.benchKey) return detail.data.benches || [];
-    return (detail.data.benches || []).filter(bench => {
-      const key = bench.index === null || bench.index === undefined ? `path:${bench.path}` : `index:${bench.index}`;
-      return key === selected.benchKey;
-    });
-  }
-
-  function renderDetailState(kind) {
-    const detail = currentDetail();
-    if (!selected.project) return `<div class="empty">No instance selected</div>`;
-    if (!detail || detail.state === "loading") return `<div class="empty">Loading cached ${kind}</div>`;
-    if (detail.state === "error") return `<div class="empty">${esc(detail.message || "could not find out")}</div>`;
-    return null;
-  }
-
-  function renderSites() {
-    const state = renderDetailState("sites");
-    if (state) {
-      el("detail").innerHTML = state;
-      return;
-    }
-    const detail = currentDetail().data;
-    const benches = detailBenches();
-    const freshness = metric("Inspect freshness", detail.served_from || "unknown");
-    const blocks = benches.map(bench => {
-      const sites = bench.sites || [];
-      return `<div class="inventory-block">
-        <div class="inventory-title"><span>${esc(bench.label || bench.path)}</span><span class="pill neutral">cached</span></div>
-        ${sites.length ? `<div class="table-wrap"><table><thead><tr><th>Site</th><th>Default</th><th>Config</th><th>Apps</th></tr></thead><tbody>
-          ${sites.map(site => `<tr>
-            <td class="code">${esc(site.name)}</td>
-            <td>${site.name === bench.default_site ? "default" : `<span class="muted">not default</span>`}</td>
-            <td>${site.has_site_config ? "present" : unknown("unknown")}</td>
-            <td>${site.installed_apps_verified ? "verified" : unknown("remembered - could not verify")}</td>
-          </tr>`).join("")}
-        </tbody></table></div>` : `<div class="empty">No sites in cached inspect result</div>`}
-      </div>`;
-    }).join("");
-    el("detail").innerHTML = `<div class="summary-grid">${freshness}${metric("Project", detail.project)}${metric("Benches", benches.length)}${metric("State", detail.degraded ? "degraded" : "cached")}</div>
-      <div class="site-apps">${blocks || `<div class="empty">No cached bench detail</div>`}</div>`;
-  }
-
-  function renderApps() {
-    const state = renderDetailState("apps");
-    if (state) {
-      el("detail").innerHTML = state;
-      return;
-    }
-    const detail = currentDetail().data;
-    const benches = detailBenches();
-    const blocks = benches.map(bench => {
-      const available = bench.available_apps || [];
-      const sites = bench.sites || [];
-      const installedRows = sites.flatMap(site => (site.installed_apps || []).map(app => ({site, app})));
-      return `<div class="inventory-block">
-        <div class="inventory-title"><span>${esc(bench.label || bench.path)}</span><span class="pill neutral">cached</span></div>
-        <div class="section"><h3>Available apps</h3><div class="chips">${available.length ? available.map(app => `<span class="chip">${esc(app)}</span>`).join("") : unknown("could not find out")}</div></div>
-        <div class="section"><h3>Installed apps</h3>
-          ${installedRows.length ? `<div class="table-wrap"><table><thead><tr><th>Site</th><th>App</th><th>Verification</th></tr></thead><tbody>
-            ${installedRows.map(row => `<tr>
-              <td class="code">${esc(row.site.name)}</td>
-              <td class="code">${esc(row.app)}</td>
-              <td>${row.site.installed_apps_verified ? "verified" : unknown("remembered - could not verify")}</td>
-            </tr>`).join("")}
-          </tbody></table></div>` : `<div class="empty">No installed apps in cached inspect result</div>`}
-        </div>
-      </div>`;
-    }).join("");
-    el("detail").innerHTML = `<div class="summary-grid">${metric("Inspect freshness", detail.served_from || "unknown")}${metric("Project", detail.project)}${metric("Benches", benches.length)}${metric("Apps", countApps(benches))}</div>
-      <div class="site-apps">${blocks || `<div class="empty">No cached app detail</div>`}</div>`;
-  }
-
-  function countApps(benches) {
-    const names = new Set();
-    benches.forEach(bench => {
-      (bench.available_apps || []).forEach(name => names.add(name));
-      (bench.sites || []).forEach(site => (site.installed_apps || []).forEach(name => names.add(name)));
-    });
-    return names.size;
-  }
-
-  function renderRail() {
-    const inst = selectedInstance();
-    if (!inst) {
-      el("rail-body").innerHTML = `<div class="target"><div class="target-name">No target</div><div class="target-meta">unknown</div></div>`;
-      return;
-    }
-    const bench = selectedBench();
-    const process = selectedProcess();
-    const targetName = process ? `PROCESS ${process.label}` : bench ? (bench.label || bench.bench_path) : inst.project;
-    const targetMeta = process ? `${inst.project} / ${bench ? bench.bench_path : "bench unknown"}` : bench ? inst.project : "instance";
-    const busy = pendingAction !== null;
-    const processDisabled = busy || !process;
-    const message = lastAction ? `<div class="notice ${lastAction.ok ? "" : "error"}">${esc(lastAction.text)}</div>` : "";
-    el("rail-body").innerHTML = `<div>
-      <div class="target"><div class="target-name">${esc(targetName)}</div><div class="target-meta">${esc(targetMeta)}</div></div>
-      <div class="action-group">
-        <h3>Instance</h3>
-        ${actionButton("start_instance", "Start instance", "starts bench", busy)}
-        ${actionButton("stop_instance", "Stop instance", "stops containers", busy)}
-        ${actionButton("restart_instance", "Restart instance", "stop then start", busy)}
-      </div>
-      <div class="action-group">
-        <h3>Process</h3>
-        ${actionButton("restart_process", "Restart process", process ? "one process" : "select process", processDisabled)}
-      </div>
-      ${message}
-    </div>`;
-  }
-
-  function actionButton(action, label, cost, disabled) {
-    const busy = pendingAction === action ? "working" : cost;
-    return `<button class="action-button" data-action="${action}" ${disabled ? "disabled" : ""}>
-      <span>${esc(label)}</span><span class="action-cost">${esc(busy)}</span>
-    </button>`;
-  }
-
-  async function runAction(action) {
-    const inst = selectedInstance();
-    if (!inst || pendingAction) return;
-    const bench = selectedBench();
-    const process = selectedProcess();
-    const payload = {action, project: inst.project};
-    const selector = benchSelector(bench);
-    if (selector && (action === "start_instance" || action === "restart_instance" || action === "restart_process")) {
-      payload.bench = selector;
-    }
-    if (action === "restart_process") {
-      if (!process) return;
-      payload.process = process.label;
-    }
-    pendingAction = action;
-    lastAction = null;
-    renderRail();
-    try {
-      const response = await fetch("/api/action", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify(payload)
-      });
-      const body = await response.json();
-      if (!response.ok || !body.ok) {
-        const error = body.error || {};
-        const choice = body.choice && body.choice.options ? " Options: " + body.choice.options.map(o => o.label || o.value).join(", ") : "";
-        throw new Error((error.message || "action failed") + choice);
-      }
-      lastAction = {ok: true, text: `${action.replaceAll("_", " ")} accepted for ${inst.project}`};
-      addEvent("fast", `ACTION ${action.replaceAll("_", " ")} ${inst.project}`);
-    } catch (error) {
-      lastAction = {ok: false, text: error.message || "action failed"};
-      addEvent("error", `ACTION ${action} failed`);
-    } finally {
-      pendingAction = null;
-      renderRail();
-    }
-  }
-
-  el("tree").addEventListener("click", event => {
-    const toggle = event.target.closest("[data-toggle]");
-    if (toggle) {
-      const project = parseKey(toggle.dataset.toggle);
-      if (expanded.has(project)) expanded.delete(project);
-      else expanded.add(project);
-      renderTree();
-      return;
-    }
-    const row = event.target.closest("[data-select]");
-    if (!row) return;
-    const project = parseKey(row.dataset.project);
-    const type = row.dataset.select;
-    if (type === "instance") select({type, project});
-    if (type === "bench") select({type, project, benchKey: parseKey(row.dataset.bench)});
-    if (type === "process") {
-      select({
-        type,
-        project,
-        benchKey: parseKey(row.dataset.bench),
-        process: parseKey(row.dataset.process)
-      });
-    }
-  });
-
-  el("tabs").addEventListener("click", event => {
-    const tab = event.target.closest("[data-tab]");
-    if (!tab) return;
-    activeTab = tab.dataset.tab;
-    if (selected.project) ensureDetail(selected.project);
-    render();
-  });
-
-  el("rail-body").addEventListener("click", event => {
-    const button = event.target.closest("[data-action]");
-    if (!button || button.disabled) return;
-    runAction(button.dataset.action);
-  });
-
-  renderEvents();
-  connectEvents();
-})();
-</script>
-</body>
-</html>
-"""
