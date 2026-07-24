@@ -36,7 +36,6 @@ import pytest
 import typer
 
 from caffeinated_whale_cli.commands import apps as apps_mod
-from caffeinated_whale_cli.core import apps as core_apps
 from caffeinated_whale_cli.core import docker as core_docker
 
 from .test_apps import FakeFrappeContainer, _set_tty, wired  # noqa: F401
@@ -126,7 +125,7 @@ def test_install_streams_bench_output_to_stdout_in_human_mode(
     wired, monkeypatch, capsys  # noqa: F811
 ):
     """Human (non-JSON) mode streams bench's own output through to stdout."""
-    container = _wire_container(
+    _wire_container(
         monkeypatch,
         FakeFrappeContainer(available_apps=["frappe"], fail_on=["get-app"]),
     )
@@ -201,7 +200,7 @@ def test_install_partial_failure_prints_completed_with_errors_and_no_banner(
     wired, monkeypatch, capsys  # noqa: F811
 ):
     """One site failing: report all, say "Completed with errors.", exit 1, no banner."""
-    container = _wire_container(
+    _wire_container(
         monkeypatch,
         FakeFrappeContainer(
             available_apps=["frappe"],

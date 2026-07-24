@@ -1726,12 +1726,16 @@ cwcli status -w --interval 5 frappe-one   # refresh every 5s
 Serves a live, streaming view of every instance on this Docker daemon over plain
 HTTP + Server-Sent Events, so a browser can watch the fleet instead of re-running
 `cwcli status` in a loop.
-The bundled page is a minimal test view; the Console browser UI is a later phase.
+The bundled page is the Console UI: a left fleet tree, a single central detail
+pane, and a persistent right action rail.
 
 It is an ordinary **foreground** command: you start it when you want the
 live view and stop it with Ctrl-C. There is no background service, no auto-start
-and no boot unit. Every endpoint is a read - `serve` cannot start, stop, or
-delete anything.
+and no boot unit.
+The Console action rail is deliberately narrow: it can start, stop, or restart
+one instance, and restart one supervised process.
+It cannot delete, restore, migrate, back up, unlock, build, set labels, or drop
+sites.
 
 **Usage:**
 
@@ -1749,10 +1753,11 @@ cwcli serve [--port 8765] [--host 0.0.0.0] [--interval 2.5]
 
 | Endpoint | What it serves |
 | --- | --- |
-| `GET /` | A minimal test page with a live `EventSource` |
+| `GET /` | The Console browser UI |
 | `GET /api/snapshot` | The whole fleet model as JSON (in-memory; no Docker call) |
 | `GET /api/events` | SSE: one `snapshot` event, then `delta` events tagged `tier: instant` or `tier: fast` |
 | `GET /api/instance/<project>/detail` | A cache-backed `inspect` read for one instance, preserving `served_from` and `installed_apps_verified` |
+| `POST /api/action` | Console actions: `start_instance`, `stop_instance`, `restart_instance`, `restart_process`; cross-origin browser requests are refused |
 
 Add `?focus=<project>` to `/api/events` to say which instance the browser
 currently has open. That is what turns the web HTTP health check on for that
@@ -1760,7 +1765,8 @@ instance: process-level health is polled for everything on the normal cadence,
 but the HTTP check writes a line into that bench's access log every cycle, so it
 runs only for an instance somebody is actually looking at (plus a short window
 after a lifecycle event, when the instance is running).
-Closing the tab turns it back off.
+Closing the tab turns it back off when the next delta or keepalive detects the
+closed stream.
 
 **Health tokens** are `status`'s own - `running`, `degraded`, `online`,
 `offline` - plus `unknown`, which means exactly what it says: nothing has probed
@@ -1777,6 +1783,12 @@ produced it.
 A container starting is reported as the container being up, never as the bench
 being healthy - those are seconds apart, and the health tier is what fills the
 gap in.
+
+The mutating action endpoint refuses cross-origin browser requests.
+The read endpoints keep open CORS for external inspection tools, but browsers
+must load the bundled Console page from this daemon to drive lifecycle actions.
+This browser boundary is not authentication: any direct client that can reach
+the daemon can submit an action, so bind to `127.0.0.1` on an untrusted network.
 
 **Reaching it from Windows (WSL):**
 

@@ -116,6 +116,17 @@ def _get(url: str):
         return json.loads(resp.read())
 
 
+def _post(url: str, payload: dict):
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=180) as resp:  # noqa: S310
+        return json.loads(resp.read())
+
+
 def _instance(base: str, project: str) -> dict:
     body = _get(base + "/api/snapshot")
     return next(i for i in body["instances"] if i["project"] == project)
@@ -212,10 +223,13 @@ class TestFastTier:
         try:
             _wait_for(lambda: client.frames, desc="the opening snapshot")
 
-            # Restores itself: `restart --process` leaves the program RUNNING, so
-            # the shared instance ends this test exactly as it started it.
-            result = harness.run_cwcli("restart", daemon.project, "--process", "web", timeout=180)
-            assert result.returncode == 0, result.stdout + result.stderr
+            # Restores itself: the Console rail's process restart leaves the program
+            # RUNNING, so the shared instance ends this test exactly as it started it.
+            result = _post(
+                daemon.base + "/api/action",
+                {"action": "restart_process", "project": daemon.project, "process": "web"},
+            )
+            assert result["ok"] is True
 
             _wait_for(lambda: client.deltas("fast"), desc="a FAST delta for the restart")
 

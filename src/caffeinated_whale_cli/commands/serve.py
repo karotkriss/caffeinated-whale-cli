@@ -10,25 +10,30 @@ no new dependency. Browser-native SSE over plain HTTP is what keeps this
 cross-platform down to "any browser", including the case this was built for: a
 **Windows** browser reaching a daemon bound inside **WSL**.
 
-Endpoints (all read-only; this frontend can start, stop, or delete nothing):
+Endpoints:
 
-* ``GET /``                            - a throwaway test page with an EventSource
+* ``GET /``                            - the Console browser UI
 * ``GET /api/snapshot``                - the whole fleet model as JSON
 * ``GET /api/events[?focus=<project>]``- SSE: one ``snapshot`` event, then
   ``delta`` events tagged ``tier: instant|fast``
 * ``GET /api/instance/<project>/detail``- the LAZY tier: cache-backed
   ``core.inspect``, carrying its ``served_from`` and ``installed_apps_verified``
   freshness labels through unchanged
+* ``POST /api/action``                 - the v1 Console rail's narrow safe set:
+  start/stop/restart one instance, or restart one supervised process
 
 ``?focus=<project>`` is how the browser says which instance it currently has
-open, and it is the whole mechanism behind the web-probe cadence: the connection
-itself carries the answer, so a closed tab retracts focus with no heartbeat, no
-timeout, and no extra endpoint. See ``core.fleet.Fleet.set_focus``.
+open, and it is the whole mechanism behind the web-probe cadence: the SSE
+connection itself carries the answer, so closing the tab retracts focus when a
+later delta or keepalive discovers the closed response stream. See
+``core.fleet.Fleet.set_focus``.
 
 **Binding.** The default is ``0.0.0.0`` because the primary environment is WSL
 and a Windows browser cannot reach a WSL-only ``127.0.0.1`` listener. Every
-endpoint is a read, but the fleet model does name projects, ports and sites, so
-``--host 127.0.0.1`` is there for anyone on an untrusted network.
+endpoint names local projects, ports and sites, and the action endpoint can drive
+non-destructive lifecycle operations, so ``--host 127.0.0.1`` is there for anyone
+on an untrusted network. CORS remains open only for the read endpoints;
+cross-origin browser actions are refused, but this is not client authentication.
 """
 
 from __future__ import annotations
@@ -38,31 +43,52 @@ import platform
 import queue
 import socket
 import threading
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, is_dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib.resources import files
 from urllib.parse import parse_qs, unquote, urlparse
 
 import typer
 
 from ..core import fleet as core_fleet
 from ..core import inspect as core_inspect
+from ..core import resolvers as core_resolvers
+from ..core import restart as core_restart
+from ..core import start as core_start
+from ..core import stop as core_stop
+from ..core.envelope import Message, Result, Status
 from ..core.errors import CwcliError, ErrorKind
 from ..utils.console import console, stderr_console
+from . import start as start_cmd
 
 DEFAULT_PORT = 8765
 DEFAULT_HOST = "0.0.0.0"  # noqa: S104 - see the module docstring's "Binding" note
 DEFAULT_INTERVAL = 2.5
 KEEPALIVE_S = 15.0
-_DISCONNECTED = object()
 
-# A read-only frontend, so the only failures are "cannot answer": map the core's
-# closed error kinds onto the HTTP statuses that mean the same thing.
+# Map the core's closed error kinds onto equivalent HTTP statuses.
 _HTTP_FOR_KIND = {
     ErrorKind.NOT_FOUND: 404,
     ErrorKind.NOT_RUNNING: 409,
+    ErrorKind.CONFLICT: 409,
+    ErrorKind.PRECONDITION: 412,
     ErrorKind.USAGE: 400,
     ErrorKind.DOCKER: 503,
 }
+_MAX_ACTION_BODY = 64 * 1024
+_ACTION_LOCK_STRIPES = 64
+CONSOLE_PAGE = (
+    files("caffeinated_whale_cli.commands").joinpath("console.html").read_text(encoding="utf-8")
+)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InstanceRestartOutcome:
+    """The narrow Console action result for stop-then-start instance restart."""
+
+    project: str
+    stopped: core_stop.StopOutcome
+    started: core_start.StartOutcome | None
 
 
 class _Hub:
@@ -133,31 +159,47 @@ class _Handler(BaseHTTPRequestHandler):
 
     fleet: core_fleet.Fleet
     hub: _Hub
+    action_locks: tuple[threading.Lock, ...]
 
     def log_message(self, fmt, *args):  # noqa: A003 - stdlib hook name
         """Silence per-request logging; a dashboard polls, and the noise buries the banner."""
 
     # ------------------------------------------------------------- responses
 
-    def _send_json(self, payload: dict, status: int = 200) -> None:
+    def _send_json(self, payload: dict, status: int = 200, *, cors: bool = False) -> None:
         body = json.dumps(payload).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
-        # ponytail: open CORS because every endpoint is a read and the phase-3 UI
-        # may well be served from a dev server on another port. Tighten if a
-        # mutating endpoint is ever added here.
-        self.send_header("Access-Control-Allow-Origin", "*")
+        if cors:
+            self._send_cors_headers(methods="GET, OPTIONS")
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_cors_headers(self, *, methods: str) -> None:
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", methods)
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
     def _send_html(self, body: str) -> None:
         raw = body.encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+        self.send_header("X-Frame-Options", "DENY")
         self.end_headers()
         self.wfile.write(raw)
+
+    def do_OPTIONS(self):  # noqa: N802 - stdlib hook name
+        if urlparse(self.path).path == "/api/action":
+            self.send_response(204)
+            self.send_header("Allow", "POST, OPTIONS")
+            self.end_headers()
+            return
+        self.send_response(204)
+        self._send_cors_headers(methods="GET, OPTIONS")
+        self.end_headers()
 
     # ---------------------------------------------------------------- routes
 
@@ -165,9 +207,9 @@ class _Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         if path == "/":
-            self._send_html(TEST_PAGE)
+            self._send_html(CONSOLE_PAGE)
         elif path == "/api/snapshot":
-            self._send_json({"instances": self.fleet.snapshot()})
+            self._send_json({"instances": self.fleet.snapshot()}, cors=True)
         elif path == "/api/events":
             focus = (parse_qs(parsed.query).get("focus") or [None])[0]
             self._stream_events(focus)
@@ -175,12 +217,229 @@ class _Handler(BaseHTTPRequestHandler):
             project = unquote(path[len("/api/instance/") : -len("/detail")])
             self._send_detail(project)
         else:
-            self._send_json({"error": "not found"}, status=404)
+            self._send_json({"error": "not found"}, status=404, cors=True)
+
+    def do_POST(self):  # noqa: N802 - stdlib hook name
+        parsed = urlparse(self.path)
+        if parsed.path != "/api/action":
+            self._send_json({"ok": False, "error": {"message": "not found"}}, status=404)
+            return
+        if not self._action_same_origin():
+            self._send_json(
+                {
+                    "ok": False,
+                    "error": {
+                        "kind": ErrorKind.PRECONDITION.value,
+                        "code": "action.origin_forbidden",
+                        "message": "Console actions must be sent from this daemon's own page.",
+                    },
+                },
+                status=403,
+            )
+            return
+        if not self._action_json_content_type():
+            self._send_json(
+                {
+                    "ok": False,
+                    "error": {
+                        "kind": ErrorKind.USAGE.value,
+                        "code": "request.content_type_invalid",
+                        "message": "Console action request body must be application/json.",
+                    },
+                },
+                status=415,
+            )
+            return
+        try:
+            payload = self._read_action_body()
+            status, body = self._dispatch_action(payload)
+        except CwcliError as e:
+            self._send_core_error(e)
+            return
+        except Exception as e:  # pragma: no cover - defensive HTTP boundary
+            self._send_json(
+                {
+                    "ok": False,
+                    "error": {
+                        "kind": ErrorKind.INTERNAL.value,
+                        "code": "action.internal_error",
+                        "message": str(e),
+                    },
+                },
+                status=500,
+            )
+            return
+        self._send_json(body, status=status)
+
+    def _action_same_origin(self) -> bool:
+        sec_fetch_site = (self.headers.get("Sec-Fetch-Site") or "").lower()
+        if sec_fetch_site and sec_fetch_site not in {"same-origin", "none"}:
+            return False
+
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        parsed = urlparse(origin)
+        return (
+            parsed.scheme == "http"
+            and parsed.netloc.lower() == (self.headers.get("Host") or "").lower()
+        )
+
+    def _action_json_content_type(self) -> bool:
+        media_type = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        return media_type == "application/json"
+
+    def _read_action_body(self) -> dict:
+        raw_length = self.headers.get("Content-Length") or "0"
+        try:
+            length = int(raw_length)
+        except ValueError as e:
+            raise CwcliError(
+                ErrorKind.USAGE,
+                "request.length_invalid",
+                "Invalid Content-Length for action request.",
+            ) from e
+        if length < 0:
+            raise CwcliError(
+                ErrorKind.USAGE,
+                "request.length_invalid",
+                "Invalid Content-Length for action request.",
+            )
+        if length > _MAX_ACTION_BODY:
+            raise CwcliError(
+                ErrorKind.USAGE,
+                "request.too_large",
+                "Action request body is too large.",
+            )
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            body = json.loads(raw.decode("utf-8") or "{}")
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            raise CwcliError(
+                ErrorKind.USAGE,
+                "request.json_invalid",
+                "Action request body must be JSON.",
+            ) from e
+        if not isinstance(body, dict):
+            raise CwcliError(
+                ErrorKind.USAGE,
+                "request.json_object_required",
+                "Action request body must be a JSON object.",
+            )
+        return body
+
+    def _dispatch_action(self, payload: dict) -> tuple[int, dict]:
+        action = _required_str(payload, "action")
+        project = _required_str(payload, "project")
+        bench = _optional_str(payload.get("bench"))
+        allowed = {
+            "start_instance",
+            "stop_instance",
+            "restart_instance",
+            "restart_process",
+        }
+        if action not in allowed:
+            raise CwcliError(
+                ErrorKind.USAGE,
+                "action.unsupported",
+                f"Unsupported Console action '{action}'.",
+                hint=(
+                    "Allowed actions are start_instance, stop_instance, "
+                    "restart_instance, restart_process."
+                ),
+            )
+        process = _required_str(payload, "process") if action == "restart_process" else None
+
+        with self._action_lock(project):
+            if action == "start_instance":
+                _check_start_port_conflicts(project)
+                start_result = core_start.start(project, bench=bench)
+                self._refresh_lifecycle(project, start_result.warnings)
+                return _result_response(action, project, start_result)
+            if action == "stop_instance":
+                stop_result = core_stop.stop(project)
+                self._refresh_lifecycle(project, stop_result.warnings)
+                return _result_response(action, project, stop_result)
+            if action == "restart_instance":
+                return self._restart_instance(project, bench)
+
+            assert process is not None
+            process_result = core_restart.restart_process(project, process, bench=bench)
+            self._refresh_process(project, process_result.warnings)
+            return _result_response(action, project, process_result)
+
+    def _action_lock(self, project: str) -> threading.Lock:
+        return self.action_locks[hash(project) % len(self.action_locks)]
+
+    def _restart_instance(self, project: str, bench: str | None) -> tuple[int, dict]:
+        _check_start_port_conflicts(project)
+        bench_result = core_resolvers.resolve_bench(project, bench, None)
+        if bench_result is None:
+            bench_path = core_resolvers.DEFAULT_BENCH_PATH
+            bench_warnings: list[Message | dict[str, str]] = [
+                {"code": "bench.default_used", "text": f"Using default: {bench_path}"}
+            ]
+        elif bench_result.status is Status.NEEDS_CHOICE:
+            return _choice_response("restart_instance", project, bench_result)
+        else:
+            assert bench_result.data is not None
+            bench_path = bench_result.data
+            bench_warnings = list(bench_result.warnings)
+
+        stop_result = core_stop.stop(project)
+        start_result = core_start.start(project, bench_path=bench_path)
+        assert stop_result.data is not None
+        assert start_result.data is not None
+        warnings = [*bench_warnings, *stop_result.warnings, *start_result.warnings]
+        self._refresh_lifecycle(project, warnings)
+        outcome = InstanceRestartOutcome(
+            project=project,
+            stopped=stop_result.data,
+            started=start_result.data,
+        )
+        return (
+            200,
+            {
+                "ok": True,
+                "action": "restart_instance",
+                "project": project,
+                "status": Status.OK.value,
+                "outcome": _plain(outcome),
+                "warnings": [_plain(w) for w in warnings],
+            },
+        )
+
+    def _refresh_lifecycle(self, project: str, warnings: list) -> None:
+        try:
+            self.fleet.bootstrap()
+        except CwcliError as e:
+            warnings.append({"code": "fleet.refresh_failed", "text": e.message})
+
+    def _refresh_process(self, project: str, warnings: list) -> None:
+        try:
+            self.fleet.probe(project)
+        except (CwcliError, OSError) as e:
+            warnings.append({"code": "fleet.refresh_failed", "text": str(e)})
+
+    def _send_core_error(self, e: CwcliError) -> None:
+        self._send_json(
+            {
+                "ok": False,
+                "error": {
+                    "kind": e.kind.value,
+                    "code": e.code,
+                    "message": e.message,
+                    "hint": e.hint,
+                    "detail": e.detail,
+                },
+            },
+            status=_HTTP_FOR_KIND.get(e.kind, 500),
+        )
 
     def _send_detail(self, project: str) -> None:
         """The LAZY tier. Cache-backed, never auto-starts, freshness labels intact."""
         if not project:
-            self._send_json({"error": "no project"}, status=400)
+            self._send_json({"error": "no project"}, status=400, cors=True)
             return
         try:
             report = core_inspect.inspect(project, refresh="auto", offer_choice=False).data
@@ -188,10 +447,11 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(
                 {"error": {"kind": e.kind.value, "code": e.code, "message": e.message}},
                 status=_HTTP_FOR_KIND.get(e.kind, 500),
+                cors=True,
             )
             return
         assert report is not None
-        self._send_json(asdict(report))
+        self._send_json(asdict(report), cors=True)
 
     def _stream_events(self, focus: str | None) -> None:
         client_id, q = self.hub.subscribe(focus)
@@ -206,18 +466,11 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(_sse_frame("snapshot", {"instances": self.fleet.snapshot()}))
             self.wfile.flush()
-            threading.Thread(
-                target=self._watch_disconnect,
-                args=(client_id, q),
-                daemon=True,
-            ).start()
             while True:
                 try:
                     frame = q.get(timeout=KEEPALIVE_S)
                 except queue.Empty:
                     frame = b": keepalive\n\n"
-                if frame is _DISCONNECTED:
-                    return
                 self.wfile.write(frame)
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError):
@@ -225,19 +478,120 @@ class _Handler(BaseHTTPRequestHandler):
         finally:
             self.hub.unsubscribe(client_id)
 
-    def _watch_disconnect(self, client_id: int, q: queue.Queue) -> None:
-        try:
-            disconnected = self.connection.recv(1, socket.MSG_PEEK) == b""
-        except OSError:
-            disconnected = True
-        if disconnected:
-            self.hub.unsubscribe(client_id)
-            q.put(_DISCONNECTED)
+
+def _required_str(payload: dict, key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise CwcliError(
+            ErrorKind.USAGE,
+            f"action.{key}_required",
+            f"Console action requires a non-empty '{key}' string.",
+        )
+    return value.strip()
+
+
+def _optional_str(value) -> str | None:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise CwcliError(
+            ErrorKind.USAGE,
+            "action.bench_invalid",
+            "Console action 'bench' must be a string when present.",
+        )
+    return value.strip() or None
+
+
+def _plain(value):
+    if is_dataclass(value):
+        return asdict(value)
+    if isinstance(value, list):
+        return [_plain(v) for v in value]
+    if isinstance(value, tuple):
+        return [_plain(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _plain(v) for k, v in value.items()}
+    return value
+
+
+def _result_response(action: str, project: str, result: Result) -> tuple[int, dict]:
+    if result.status is Status.NEEDS_CHOICE:
+        return _choice_response(action, project, result)
+    return (
+        200,
+        {
+            "ok": True,
+            "action": action,
+            "project": project,
+            "status": result.status.value,
+            "outcome": _plain(result.data),
+            "warnings": [_plain(w) for w in result.warnings],
+        },
+    )
+
+
+def _choice_response(action: str, project: str, result: Result) -> tuple[int, dict]:
+    choice = result.choice
+    message = choice.prompt if choice is not None else "Console action requires a choice."
+    code = choice.kind if choice is not None else "choice_required"
+    return (
+        409,
+        {
+            "ok": False,
+            "action": action,
+            "project": project,
+            "error": {
+                "kind": "needs_choice",
+                "code": code,
+                "message": message,
+                "hint": "Select a single bench or process, then retry.",
+            },
+            "choice": _plain(choice) if choice is not None else None,
+            "warnings": [_plain(w) for w in result.warnings],
+        },
+    )
+
+
+def _check_start_port_conflicts(project: str) -> None:
+    if start_cmd._frappe_running(project):
+        return
+    conflicting_projects, blocking_ports = start_cmd.detect_port_conflicts(project)
+    if not conflicting_projects and not blocking_ports:
+        return
+
+    parts = []
+    if conflicting_projects:
+        parts.append(
+            "Frappe instances already hold required ports: " + ", ".join(conflicting_projects) + "."
+        )
+    if blocking_ports:
+        parts.append(
+            "Host processes already hold required ports: "
+            + ", ".join(str(p) for p in blocking_ports)
+            + "."
+        )
+    raise CwcliError(
+        ErrorKind.CONFLICT,
+        "start.port_conflict",
+        " ".join(parts),
+        hint=(
+            "Free those ports first. Use the terminal `cwcli start` command if you "
+            "want interactive conflict resolution."
+        ),
+    )
 
 
 def make_server(host: str, port: int, fleet: core_fleet.Fleet, hub: _Hub) -> ThreadingHTTPServer:
     """Bind the HTTP server, handing the handler class its fleet and hub."""
-    handler = type("Handler", (_Handler,), {"fleet": fleet, "hub": hub})
+    handler = type(
+        "Handler",
+        (_Handler,),
+        {
+            "fleet": fleet,
+            "hub": hub,
+            "action_locks": tuple(threading.Lock() for _ in range(_ACTION_LOCK_STRIPES)),
+        },
+    )
     httpd = ThreadingHTTPServer((host, port), handler)
     httpd.daemon_threads = True
     return httpd
@@ -344,77 +698,3 @@ def serve(
         stop.set()
         httpd.shutdown()
         httpd.server_close()
-
-
-TEST_PAGE = """<!doctype html>
-<html><head><meta charset="utf-8"><title>cwcli serve</title>
-<style>
- body{font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;background:#12141a;color:#d8dee9;margin:0;padding:20px}
- h1{font-size:15px;margin:0 0 4px}
- .sub{color:#7a8494;margin-bottom:16px}
- table{border-collapse:collapse;width:100%;margin-bottom:20px}
- th,td{text-align:left;padding:4px 10px;border-bottom:1px solid #232733}
- th{color:#7a8494;font-weight:400}
- .pill{padding:1px 7px;border-radius:9px;font-size:11px}
- .running{background:#1c3a2a;color:#7ee2a8}
- .degraded{background:#4a2a1c;color:#f0a868}
- .offline{background:#2a2d36;color:#8b93a3}
- .online{background:#1c2f4a;color:#78b4f0}
- .unknown{background:#3a2a4a;color:#c79ae8}
- #log{white-space:pre-wrap;color:#8b93a3;max-height:40vh;overflow:auto}
- .instant{color:#78b4f0}.fast{color:#7ee2a8}
-</style></head><body>
-<h1>cwcli serve <span id="state">connecting</span></h1>
-<div class="sub">throwaway test page - the Console UI is phase 3</div>
-<table><thead><tr><th>instance</th><th>docker</th><th>health</th><th>web</th>
-<th>processes</th><th>probe</th></tr></thead><tbody id="rows"></tbody></table>
-<div id="log"></div>
-<script>
-const model = new Map();
-const focus = new URLSearchParams(location.search).get('focus');
-const es = new EventSource('/api/events' + (focus ? '?focus=' + encodeURIComponent(focus) : ''));
-const log = (cls, msg) => {
-  const d = document.getElementById('log');
-  d.innerHTML = `<span class="${cls}">${new Date().toLocaleTimeString()} ${msg}</span>\\n` + d.innerHTML;
-};
-// A null is "could not find out" and must never render as 0 or a healthy dash.
-const unknown = t => `<span style="color:#6b7280">${t}</span>`;
-const web = i => {
-  if (!i.container_running) return unknown('-');
-  const b = i.benches[0];
-  if (!b) return unknown('no bench probed');
-  if (!b.web_port_verified) return unknown('port unknown, not probed');
-  if (!i.web_probed) return unknown(`:${b.web_port} not probed`);
-  if (b.web_http_code === null) return unknown(`:${b.web_port} no answer`);
-  return `${b.web_http_code} :${b.web_port} ${b.web_site || unknown('(no site)')}`;
-};
-const procs = i => i.benches.flatMap(b => b.processes.map(p =>
-  `${p.label}${p.up ? '' : '!'}${p.state && p.state !== 'RUNNING' ? ':' + p.state : ''}`)).join(' ') || unknown('-');
-const render = () => {
-  document.getElementById('rows').innerHTML = [...model.values()].sort((a, b) =>
-    a.project.localeCompare(b.project)).map(i => `<tr>
-      <td>${i.project}</td><td>${i.docker_status}</td>
-      <td><span class="pill ${i.overall}">${i.overall}</span></td>
-      <td>${web(i)}</td><td>${procs(i)}</td>
-      <td>${i.probe_ms === null ? unknown('never') : i.probe_ms.toFixed(0) + 'ms'}</td></tr>`).join('');
-};
-es.addEventListener('snapshot', e => {
-  model.clear();
-  JSON.parse(e.data).instances.forEach(i => model.set(i.project, i));
-  document.getElementById('state').textContent = 'open' + (focus ? ' focus=' + focus : '');
-  log('instant', `SNAPSHOT ${model.size} instances`);
-  render();
-});
-es.addEventListener('delta', e => {
-  const d = JSON.parse(e.data);
-  if (d.removed) { model.delete(d.project); log(d.tier, `${d.tier.toUpperCase()} ${d.project} removed`); }
-  else {
-    model.set(d.project, d.instance);
-    const c = d.cause ? ` ${d.cause.action}(${d.cause.service})` : '';
-    log(d.tier, `${d.tier.toUpperCase()} ${d.project}${c} -> ${d.instance.overall}`);
-  }
-  render();
-});
-es.onerror = () => { document.getElementById('state').textContent = 'reconnecting'; };
-</script></body></html>
-"""

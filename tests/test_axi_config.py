@@ -5,10 +5,9 @@ from typer.testing import CliRunner
 
 from caffeinated_whale_cli.commands import axi as axi_mod
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
-
-# The shared storage/process-layer fixture; importing it registers it here.
-from tests.test_config_characterization import cfg  # noqa: F401
 from tests.test_axi import assert_is_one_toon_document
+
+pytest_plugins = ("tests.test_config_characterization",)
 
 runner = CliRunner()
 
