@@ -501,6 +501,9 @@ td.code, .code {
   .event-log {
     max-height: 120px;
   }
+  .summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 @media (max-width: 760px) {
   .app {
@@ -524,9 +527,6 @@ td.code, .code {
   .tabs {
     padding-left: 16px;
     padding-right: 16px;
-  }
-  .summary-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 @media (max-width: 460px) {

@@ -236,6 +236,16 @@ class TestSnapshot:
         # The shell is viewport-fixed so panels scroll, never the whole page.
         assert "height: 100vh" in body
         assert ".rail {\n    max-height: none;\n  }" in body
+        # The summary reflows when the action rail becomes a bottom band, so
+        # long values do not leave a one-letter orphan in the narrow detail pane.
+        mid_width_rules = body.split("@media (max-width: 1050px)", 1)[1].split(
+            "@media (max-width: 760px)", 1
+        )[0]
+        assert (
+            ".summary-grid {\n"
+            "    grid-template-columns: repeat(2, minmax(0, 1fr));\n"
+            "  }"
+        ) in mid_width_rules
 
 
 class TestEventStream:
