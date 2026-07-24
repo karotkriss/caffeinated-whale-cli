@@ -32,8 +32,8 @@ later delta or keepalive discovers the closed response stream. See
 and a Windows browser cannot reach a WSL-only ``127.0.0.1`` listener. Every
 endpoint names local projects, ports and sites, and the action endpoint can drive
 non-destructive lifecycle operations, so ``--host 127.0.0.1`` is there for anyone
-on an untrusted network. CORS remains open only for the read endpoints; the action
-endpoint is same-origin only.
+on an untrusted network. CORS remains open only for the read endpoints;
+cross-origin browser actions are refused, but this is not client authentication.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ from ..core import resolvers as core_resolvers
 from ..core import restart as core_restart
 from ..core import start as core_start
 from ..core import stop as core_stop
-from ..core.envelope import Result, Status
+from ..core.envelope import Message, Result, Status
 from ..core.errors import CwcliError, ErrorKind
 from ..utils.console import console, stderr_console
 from . import start as start_cmd
@@ -66,8 +66,7 @@ DEFAULT_HOST = "0.0.0.0"  # noqa: S104 - see the module docstring's "Binding" no
 DEFAULT_INTERVAL = 2.5
 KEEPALIVE_S = 15.0
 
-# A read-only frontend, so the only failures are "cannot answer": map the core's
-# closed error kinds onto the HTTP statuses that mean the same thing.
+# Map the core's closed error kinds onto equivalent HTTP statuses.
 _HTTP_FOR_KIND = {
     ErrorKind.NOT_FOUND: 404,
     ErrorKind.NOT_RUNNING: 409,
@@ -354,20 +353,20 @@ class _Handler(BaseHTTPRequestHandler):
         with self._action_lock(project):
             if action == "start_instance":
                 _check_start_port_conflicts(project)
-                result = core_start.start(project, bench=bench)
-                self._refresh_lifecycle(project, result.warnings)
-                return _result_response(action, project, result)
+                start_result = core_start.start(project, bench=bench)
+                self._refresh_lifecycle(project, start_result.warnings)
+                return _result_response(action, project, start_result)
             if action == "stop_instance":
-                result = core_stop.stop(project)
-                self._refresh_lifecycle(project, result.warnings)
-                return _result_response(action, project, result)
+                stop_result = core_stop.stop(project)
+                self._refresh_lifecycle(project, stop_result.warnings)
+                return _result_response(action, project, stop_result)
             if action == "restart_instance":
                 return self._restart_instance(project, bench)
 
             assert process is not None
-            result = core_restart.restart_process(project, process, bench=bench)
-            self._refresh_process(project, result.warnings)
-            return _result_response(action, project, result)
+            process_result = core_restart.restart_process(project, process, bench=bench)
+            self._refresh_process(project, process_result.warnings)
+            return _result_response(action, project, process_result)
 
     def _action_lock(self, project: str) -> threading.Lock:
         return self.action_locks[hash(project) % len(self.action_locks)]
@@ -377,7 +376,7 @@ class _Handler(BaseHTTPRequestHandler):
         bench_result = core_resolvers.resolve_bench(project, bench, None)
         if bench_result is None:
             bench_path = core_resolvers.DEFAULT_BENCH_PATH
-            bench_warnings = [
+            bench_warnings: list[Message | dict[str, str]] = [
                 {"code": "bench.default_used", "text": f"Using default: {bench_path}"}
             ]
         elif bench_result.status is Status.NEEDS_CHOICE:
