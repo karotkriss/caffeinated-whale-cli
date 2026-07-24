@@ -188,6 +188,34 @@ class TestSnapshot:
         assert "rm-site" not in body
         assert "Delete instance" not in body
 
+    def test_the_console_ui_keeps_its_tightening_invariants(self, daemon):
+        """The phase-4 hardening pins: connection honesty, honest boot state,
+        screen-reader churn control, and exposed tree semantics."""
+        with urllib.request.urlopen(daemon.base + "/", timeout=_TIMEOUT) as resp:  # noqa: S310
+            body = resp.read().decode()
+        # A lost connection is shown, not whispered: a visible banner names the
+        # stale data and its timestamp, and a dedicated live region announces
+        # the loss and the recovery exactly once each.
+        assert 'id="conn-banner"' in body
+        assert "Connection lost - reconnecting. Showing last known state" in body
+        assert "Connection restored - live again." in body
+        assert 'id="conn-status"' in body
+        # A hard-closed EventSource self-reconnects; every reconnect re-opens
+        # /api/events whose first frame is a full snapshot - never a replay.
+        assert "EventSource.CLOSED" in body
+        assert "since=" not in body
+        # "No instances found" is a claim only a snapshot can back; before one
+        # arrives the page says it is still waiting.
+        assert "Waiting for the daemon - no fleet data yet" in body
+        # The event log is a visual feed, NOT a live region: it is re-rendered
+        # wholesale on every delta, which a polite region re-announces in full.
+        assert '<div id="event-log" class="event-log"></div>' in body
+        # Tree semantics are exposed, not just styled.
+        assert "aria-expanded" in body
+        assert 'aria-current="true"' in body
+        # The shell is viewport-fixed so panels scroll, never the whole page.
+        assert "height: 100vh" in body
+
 
 class TestEventStream:
     def test_the_first_frame_is_a_full_snapshot(self, daemon):

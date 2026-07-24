@@ -39,13 +39,30 @@ body {
 button, input { font: inherit; }
 button { color: inherit; }
 .app {
-  min-height: 100vh;
+  /* A fixed-viewport shell: the tree, detail pane, and event log each scroll
+     inside their own panel, so the action rail and connection state never
+     scroll out of view. */
+  height: 100vh;
   display: grid;
   grid-template-columns: minmax(260px, 320px) minmax(0, 1fr) minmax(260px, 300px);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    "banner banner banner"
+    "sidebar main rail";
   background:
     linear-gradient(180deg, rgba(246, 192, 95, 0.05), transparent 18rem),
     var(--bg);
 }
+.conn-banner {
+  grid-area: banner;
+  padding: 9px 24px;
+  background: var(--amber-bg);
+  color: var(--amber);
+  border-bottom: 1px solid rgba(240, 182, 109, 0.4);
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.app.stale .pill { filter: grayscale(0.55); }
 .sidebar, .rail {
   min-width: 0;
   background: rgba(24, 24, 22, 0.96);
@@ -53,11 +70,14 @@ button { color: inherit; }
   border-style: solid;
 }
 .sidebar {
+  grid-area: sidebar;
   border-width: 0 1px 0 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
 }
+.main { grid-area: main; }
 .rail {
+  grid-area: rail;
   border-width: 0 0 0 1px;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -466,25 +486,27 @@ td.code, .code {
 @media (max-width: 1050px) {
   .app {
     grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
     grid-template-areas:
+      "banner banner"
       "sidebar main"
       "rail rail";
   }
-  .sidebar { grid-area: sidebar; }
-  .main { grid-area: main; }
   .rail {
-    grid-area: rail;
     border-width: 1px 0 0;
+    /* The rail is a bottom band here; capping it keeps the tree and detail
+       pane usable while the rail scrolls internally past the cap. */
+    max-height: 42vh;
   }
-  .rail-body {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
-    gap: 16px;
+  .event-log {
+    max-height: 120px;
   }
 }
 @media (max-width: 760px) {
   .app {
     display: block;
+    height: auto;
+    min-height: 100vh;
   }
   .sidebar, .rail {
     border-width: 0 0 1px;
@@ -503,9 +525,6 @@ td.code, .code {
   .summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .rail-body {
-    display: block;
-  }
 }
 @media (max-width: 460px) {
   .summary-grid {
@@ -519,13 +538,14 @@ td.code, .code {
 </head>
 <body>
 <div class="app" data-app="cw-console">
+  <div id="conn-banner" class="conn-banner" hidden></div>
   <aside class="sidebar" aria-label="Fleet tree">
     <div class="brand">
       <h1>cwcli Console</h1>
       <div class="connection"><span id="conn-dot" class="dot"></span><span id="conn-text">connecting</span></div>
     </div>
     <nav id="tree" class="tree"></nav>
-    <div id="event-log" class="event-log" aria-live="polite"></div>
+    <div id="event-log" class="event-log"></div>
   </aside>
   <main class="main">
     <header id="topbar" class="topbar"></header>
@@ -536,6 +556,7 @@ td.code, .code {
     <div class="rail-head"><h2>Actions</h2></div>
     <div id="rail-body" class="rail-body"></div>
     <div id="action-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+    <div id="conn-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
   </aside>
 </div>
 <script>
@@ -554,6 +575,8 @@ td.code, .code {
   let activeFocus = null;
   let pendingAction = null;
   let lastAction = null;
+  let bootstrapped = false;
+  let staleSince = null;
 
   const el = id => document.getElementById(id);
   const esc = value => String(value ?? "").replace(/[&<>"']/g, ch => ({
@@ -578,12 +601,24 @@ td.code, .code {
     return null;
   }
 
-  function restoreControlFocus(container, focusKey) {
+  function restoreControlFocus(container, focusKey, fallbackSelector) {
     if (!focusKey) return;
     const control = [...container.querySelectorAll("button")].find(
       candidate => controlFocusKey(candidate) === focusKey
     );
-    if (control) control.focus();
+    if (control) {
+      control.focus();
+      return;
+    }
+    // The focused control disappeared (its instance was removed between two
+    // renders). Landing keyboard focus on the pane's first control keeps the
+    // user's place instead of silently dropping focus to the page body. The
+    // key-kind guard stops a pane from stealing focus that belongs to another
+    // pane's (still present) control.
+    if (fallbackSelector && /^(toggle|select):/.test(focusKey)) {
+      const fallback = container.querySelector(fallbackSelector);
+      if (fallback) fallback.focus();
+    }
   }
 
   function statusText(token) {
@@ -658,7 +693,9 @@ td.code, .code {
   function ensureSelection() {
     const instances = sortedInstances();
     if (!instances.length) {
-      selected = {type: "empty"};
+      // Before the first snapshot an empty model means "not asked yet", so a
+      // ?focus= selection from the URL must survive until data can answer it.
+      if (bootstrapped) selected = {type: "empty"};
       return;
     }
     if (!selected.project || !model.has(selected.project)) {
@@ -687,6 +724,7 @@ td.code, .code {
     setConnection("connecting");
     source.addEventListener("open", () => setConnection("open"));
     source.addEventListener("snapshot", event => {
+      bootstrapped = true;
       model.clear();
       JSON.parse(event.data).instances.forEach(instance => {
         model.set(instance.project, instance);
@@ -712,12 +750,41 @@ td.code, .code {
       ensureSelection();
       render();
     });
-    source.onerror = () => setConnection("reconnecting");
+    source.onerror = () => {
+      setConnection("reconnecting");
+      // A network-level failure keeps EventSource retrying on its own, but a
+      // hard failure (non-200, wrong content type) CLOSES it permanently -
+      // without this the page would say "reconnecting" forever while nothing
+      // retried. Reconnecting from scratch re-bootstraps (the first frame of
+      // every connection is a full snapshot), never a replay.
+      if (source.readyState === EventSource.CLOSED) {
+        setTimeout(() => {
+          if (source && source.readyState === EventSource.CLOSED) connectEvents();
+        }, 3000);
+      }
+    };
   }
 
   function setConnection(state) {
     el("conn-text").textContent = activeFocus ? `${state} - focus ${activeFocus}` : state;
     el("conn-dot").className = `dot ${state === "open" ? "open" : "reconnecting"}`;
+    // The stale banner distinguishes a LOST connection (was open, data on
+    // screen now frozen) from a deliberate refocus reconnect: only the former
+    // may present stale rows as if they were live, so only it gets the banner.
+    if (state === "open") {
+      if (staleSince !== null) el("conn-status").textContent = "Connection restored - live again.";
+      staleSince = null;
+    } else if (state === "reconnecting" && staleSince === null && model.size) {
+      staleSince = new Date().toLocaleTimeString();
+      el("conn-status").textContent =
+        "Connection to cwcli serve lost - showing last known state, not live.";
+    }
+    const stale = staleSince !== null;
+    el("conn-banner").hidden = !stale;
+    el("conn-banner").textContent = stale
+      ? `Connection lost - reconnecting. Showing last known state from ${staleSince}, not live data.`
+      : "";
+    document.querySelector(".app").classList.toggle("stale", stale);
   }
 
   function addEvent(kind, text) {
@@ -769,7 +836,12 @@ td.code, .code {
     const focusKey = controlFocusKey(document.activeElement);
     const instances = sortedInstances();
     if (!instances.length) {
-      el("tree").innerHTML = `<div class="tree-empty">No instances found</div>`;
+      // "No instances found" is a claim only a snapshot can back; before one
+      // arrives (or when the daemon was never reachable) the honest message
+      // is that we could not find out yet.
+      el("tree").innerHTML = bootstrapped
+        ? `<div class="tree-empty">No instances found</div>`
+        : `<div class="tree-empty">Waiting for the daemon - no fleet data yet</div>`;
       return;
     }
     el("tree").innerHTML = instances.map(instance => {
@@ -779,8 +851,8 @@ td.code, .code {
       const pending = instance.overall === "unknown" ? " - could not find out yet" : "";
       return `<div class="instance-group">
         <div class="tree-line">
-          <button class="twisty" data-toggle="${safeKey(instance.project)}" aria-label="${open ? "Collapse" : "Expand"} ${esc(instance.project)}">${open ? "v" : ">"}</button>
-          <button class="tree-row ${instanceSelected ? "selected" : ""}" data-select="instance" data-project="${safeKey(instance.project)}">
+          <button class="twisty" data-toggle="${safeKey(instance.project)}" aria-expanded="${open ? "true" : "false"}" aria-label="${open ? "Collapse" : "Expand"} ${esc(instance.project)}">${open ? "&#9662;" : "&#9656;"}</button>
+          <button class="tree-row ${instanceSelected ? "selected" : ""}" data-select="instance" data-project="${safeKey(instance.project)}"${instanceSelected ? ' aria-current="true"' : ""}>
             <span class="tree-label">${esc(instance.project)}</span>
             ${statusPill(instance.overall)}
             <span class="tree-meta">${esc(instance.docker_status)}${esc(pending)}</span>
@@ -789,7 +861,7 @@ td.code, .code {
         ${open ? `<div class="children">${benches || renderNoBenchNode(instance)}</div>` : ""}
       </div>`;
     }).join("");
-    restoreControlFocus(el("tree"), focusKey);
+    restoreControlFocus(el("tree"), focusKey, ".tree-row");
   }
 
   function renderBenchNode(instance, bench) {
@@ -798,7 +870,7 @@ td.code, .code {
     const meta = bench.not_cwcli_supervised ? "not cwcli supervised" : webSummary(bench, instance.web_probed);
     const processes = (bench.processes || []).map(process => renderProcessNode(instance, bench, process)).join("");
     return `<div>
-      <button class="tree-row bench ${selectedRow ? "selected" : ""}" data-select="bench" data-project="${safeKey(instance.project)}" data-bench="${safeKey(key)}">
+      <button class="tree-row bench ${selectedRow ? "selected" : ""}" data-select="bench" data-project="${safeKey(instance.project)}" data-bench="${safeKey(key)}"${selectedRow ? ' aria-current="true"' : ""}>
         <span>
           <span class="tree-label">${esc(bench.label || bench.bench_path)}</span>
           <span class="tree-meta">${esc(meta)}</span>
@@ -814,7 +886,7 @@ td.code, .code {
       && selected.benchKey === benchKey(bench)
       && selected.process === process.label
       && selected.type === "process";
-    return `<button class="tree-row process ${selectedRow ? "selected" : ""}" data-select="process" data-project="${safeKey(instance.project)}" data-bench="${safeKey(benchKey(bench))}" data-process="${safeKey(process.label)}">
+    return `<button class="tree-row process ${selectedRow ? "selected" : ""}" data-select="process" data-project="${safeKey(instance.project)}" data-bench="${safeKey(benchKey(bench))}" data-process="${safeKey(process.label)}"${selectedRow ? ' aria-current="true"' : ""}>
       <span>
         <span class="tree-label">PROCESS ${esc(process.label)}</span>
         <span class="tree-meta">${esc(process.pid == null ? "pid unknown" : "pid " + process.pid)}</span>
@@ -1200,7 +1272,10 @@ td.code, .code {
     runAction(button.dataset.action);
   });
 
-  renderEvents();
+  // First paint before any server data: honest empty states in every pane
+  // rather than a blank shell while the first snapshot (or a dead daemon's
+  // retry loop) is pending.
+  render();
   connectEvents();
 })();
 </script>
