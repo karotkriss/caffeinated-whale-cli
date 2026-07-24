@@ -233,11 +233,27 @@ class Fleet:
             rows = list_instances().data or []
             with self._lock:
                 event_project = cause.get("project") if cause else None
+                event_action = cause.get("action") if cause else None
                 seen = set()
                 for dto in rows:
                     seen.add(dto.project_name)
                     previous = self._instances.get(dto.project_name)
                     new = self._reconcile(dto.project_name, dto.status, list(dto.ports))
+                    if (
+                        dto.project_name == event_project
+                        and new.container_running
+                        and event_action != "destroy"
+                    ):
+                        new = replace(
+                            new,
+                            overall=UNKNOWN,
+                            web_probed=False,
+                            benches=[],
+                            probe_error=None,
+                            probed_at=None,
+                            probe_ms=None,
+                            probe_failed_at=None,
+                        )
                     if (
                         previous is None
                         or previous.docker_status != new.docker_status

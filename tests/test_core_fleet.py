@@ -510,6 +510,92 @@ class TestReBootstrap:
 
 
 class TestApplyEvent:
+    def test_a_start_event_invalidates_healthy_state_even_when_docker_already_says_running(
+        self, listing, probing
+    ):
+        listing(("p", "running", ["8000"]))
+        probing(lambda project, **kw: _report())
+        rec = _Recorder()
+        f = core_fleet.Fleet(publish=rec)
+        f.bootstrap()
+        f.probe("p")
+        rec.deltas.clear()
+
+        f.apply_event(
+            {
+                "Action": "start",
+                "Actor": {
+                    "Attributes": {
+                        "com.docker.compose.project": "p",
+                        "com.docker.compose.service": "frappe",
+                    }
+                },
+            }
+        )
+
+        assert f.get("p").overall == core_fleet.UNKNOWN
+        assert f.get("p").benches == []
+        assert [(tier, state.overall) for tier, _project, state, _cause in rec.deltas] == [
+            ("instant", core_fleet.UNKNOWN)
+        ]
+
+    def test_a_restart_event_invalidates_healthy_state_without_a_stopped_observation(
+        self, listing, probing
+    ):
+        listing(("p", "running", ["8000"]))
+        probing(lambda project, **kw: _report())
+        rec = _Recorder()
+        f = core_fleet.Fleet(publish=rec)
+        f.bootstrap()
+        f.probe("p")
+        rec.deltas.clear()
+
+        f.apply_event(
+            {
+                "Action": "restart",
+                "Actor": {
+                    "Attributes": {
+                        "com.docker.compose.project": "p",
+                        "com.docker.compose.service": "frappe",
+                    }
+                },
+            }
+        )
+
+        assert f.get("p").overall == core_fleet.UNKNOWN
+        assert f.get("p").benches == []
+        assert [(tier, state.overall) for tier, _project, state, _cause in rec.deltas] == [
+            ("instant", core_fleet.UNKNOWN)
+        ]
+
+    def test_a_service_event_burst_publishes_one_unknown_delta(self, listing, probing):
+        listing(("p", "running", ["8000"]))
+        probing(lambda project, **kw: _report())
+        rec = _Recorder()
+        f = core_fleet.Fleet(publish=rec)
+        f.bootstrap()
+        f.probe("p")
+        rec.deltas.clear()
+
+        for service in ("frappe", "mariadb", "redis-cache", "redis-queue"):
+            f.apply_event(
+                {
+                    "Action": "start",
+                    "Actor": {
+                        "Attributes": {
+                            "com.docker.compose.project": "p",
+                            "com.docker.compose.service": service,
+                        }
+                    },
+                }
+            )
+
+        assert f.get("p").overall == core_fleet.UNKNOWN
+        assert f.get("p").benches == []
+        assert [(tier, state.overall) for tier, _project, state, _cause in rec.deltas] == [
+            ("instant", core_fleet.UNKNOWN)
+        ]
+
     def test_an_event_rebuilds_the_model_and_carries_its_cause(self, listing):
         listing(("p", "exited", []))
         rec = _Recorder()
