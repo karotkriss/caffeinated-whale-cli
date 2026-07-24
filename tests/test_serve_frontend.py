@@ -229,6 +229,7 @@ class TestSnapshot:
         assert 'aria-current="true"' in body
         # The shell is viewport-fixed so panels scroll, never the whole page.
         assert "height: 100vh" in body
+        assert ".rail {\n    max-height: none;\n  }" in body
 
 
 class TestEventStream:
