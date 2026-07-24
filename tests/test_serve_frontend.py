@@ -204,6 +204,20 @@ class TestSnapshot:
         # /api/events whose first frame is a full snapshot - never a replay.
         assert "EventSource.CLOSED" in body
         assert "since=" not in body
+        # Transport readiness is not data readiness: only an applied snapshot
+        # restores live state, and callbacks from a replaced source do nothing.
+        assert "const es = new EventSource(url);" in body
+        assert body.count("if (source !== es) return;") == 4
+        open_handler = body.split('es.addEventListener("open"', 1)[1].split(
+            'es.addEventListener("snapshot"', 1
+        )[0]
+        assert 'setConnection("open")' not in open_handler
+        snapshot_handler = body.split('es.addEventListener("snapshot"', 1)[1].split(
+            'es.addEventListener("delta"', 1
+        )[0]
+        assert snapshot_handler.index("render();") < snapshot_handler.index(
+            'setConnection("open");'
+        )
         # "No instances found" is a claim only a snapshot can back; before one
         # arrives the page says it is still waiting.
         assert "Waiting for the daemon - no fleet data yet" in body
