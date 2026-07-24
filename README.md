@@ -167,7 +167,7 @@ cwcli init [OPTIONS] [PROJECT_NAME]
 4. Binds the bench workspace to a host `~/.cwcli/projects/{project_name}/data/` directory at `--bench-parent` inside the container (default `/workspace`), so bench files stay directly accessible on the host and survive container recreation
 5. Resolves the latest stable `frappe/bench` image tag from Docker Hub (never uses `:latest`)
 6. Pulls Docker images and starts containers
-7. Aligns the container's `frappe` user to the host user's uid/gid, so bench files written to the mounted workspace stay host-owned and removable by `cwcli rm` on any host (no-op when the ids already match; a failed remap degrades to a warning and bench creation still proceeds)
+7. On hosts that expose uid/gid information, aligns the container's `frappe` user to the host user so bench files written to the mounted workspace stay host-owned and removable by `cwcli rm` (no-op when the ids already match; platforms without `os.getuid`, such as Windows, cleanly skip alignment because Docker Desktop handles bind-mount ownership; a failed attempted remap degrades to a warning and bench creation still proceeds)
 8. Pins the correct Python version via `PYENV_VERSION` for the branch (installs via pyenv if missing)
 9. Pins the correct Node.js version via nvm for older branches (installs via nvm if missing)
 10. Installs `yarn` globally for the activated Node.js version (older branches only)

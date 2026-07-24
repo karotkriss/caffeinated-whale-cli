@@ -1,10 +1,4 @@
-"""``core.docker.align_container_user_to_host`` - the host-uid alignment.
-
-Bench commands run as the image's ``frappe`` user (uid 1000), so files they write
-to the bind-mounted workspace are owned by 1000 on the host; a host on a different
-uid (CI = 1001) then cannot ``cwcli rm`` them. This pins the remap that makes the
-workspace host-owned on any host uid, and its no-op-when-matched fast path.
-"""
+"""Regression tests for host-uid alignment and its matching-id/platform no-op paths."""
 
 from __future__ import annotations
 
