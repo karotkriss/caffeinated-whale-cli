@@ -218,6 +218,12 @@ class TestSnapshot:
         assert snapshot_handler.index("render();") < snapshot_handler.index(
             'setConnection("open");'
         )
+        # A removal delta can replace the selected instance, so the visible
+        # selection and the daemon's per-tab probe focus must move together.
+        delta_handler = body.split('es.addEventListener("delta"', 1)[1].split(
+            "es.onerror", 1
+        )[0]
+        assert delta_handler.index("render();") < delta_handler.index("syncFocus();")
         # "No instances found" is a claim only a snapshot can back; before one
         # arrives the page says it is still waiting.
         assert "Waiting for the daemon - no fleet data yet" in body

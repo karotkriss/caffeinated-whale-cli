@@ -758,6 +758,7 @@ td.code, .code {
       }
       ensureSelection();
       render();
+      syncFocus();
     });
     es.onerror = () => {
       if (source !== es) return;
