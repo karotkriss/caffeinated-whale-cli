@@ -39,6 +39,18 @@ def container(monkeypatch):
     monkeypatch.setattr(core_docker, "get_frappe_container", lambda _p: c)
     monkeypatch.setattr(core_apps.bench_sites, "list_sites", lambda *a, **k: ["a.localhost"])
     monkeypatch.setattr(resolvers, "cached_benches", lambda _p: [{"path": BENCH}])
+    monkeypatch.setattr(
+        core_apps.supervision,
+        "discover_stack",
+        lambda *a, **k: core_apps.supervision.StackSnapshot(
+            supervisor_up=False, supervisor_pid=None, processes=[]
+        ),
+    )
+    monkeypatch.setattr(
+        core_apps.supervision,
+        "discover_unsupervised_stack",
+        lambda *a, **k: core_apps.supervision.UnsupervisedStack(manager_up=False, processes=[]),
+    )
     return c
 
 
@@ -244,9 +256,7 @@ def test_install_over_an_already_installed_app_is_refused(container, monkeypatch
     ran = _record_steps(monkeypatch)
 
     with pytest.raises(typer.Exit) as exit_info:
-        axi_mod.axi_apps_install(
-            "proj", "payments", site="a.localhost", bench=None, branch=None
-        )
+        axi_mod.axi_apps_install("proj", "payments", site="a.localhost", bench=None, branch=None)
 
     assert exit_info.value.exit_code == 1
     # Refused BEFORE any mutation: not even the fetch ran.
