@@ -49,9 +49,7 @@ def container(monkeypatch):
     monkeypatch.setattr(
         core_apps.supervision,
         "discover_unsupervised_stack",
-        lambda *a, **k: core_apps.supervision.UnsupervisedStack(
-            manager_up=False, processes=[]
-        ),
+        lambda *a, **k: core_apps.supervision.UnsupervisedStack(manager_up=False, processes=[]),
     )
     return c
 
@@ -258,9 +256,7 @@ def test_install_over_an_already_installed_app_is_refused(container, monkeypatch
     ran = _record_steps(monkeypatch)
 
     with pytest.raises(typer.Exit) as exit_info:
-        axi_mod.axi_apps_install(
-            "proj", "payments", site="a.localhost", bench=None, branch=None
-        )
+        axi_mod.axi_apps_install("proj", "payments", site="a.localhost", bench=None, branch=None)
 
     assert exit_info.value.exit_code == 1
     # Refused BEFORE any mutation: not even the fetch ran.

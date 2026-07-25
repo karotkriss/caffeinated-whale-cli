@@ -102,7 +102,7 @@ class AppsAnnounce:
     internal ``apps/`` reads are echoed but never narrated.
     """
 
-    phase: str  # "get-app" | "install-app" | "uninstall-app"
+    phase: str  # "get-app" | "install-app" | "uninstall-app" | "restart-web"
     app: str | None = None
     site: str | None = None
 
@@ -324,10 +324,10 @@ def _restart_web_after_mutation(
 
     The defect this closes: ``bench install-app`` changes what is on disk, but the
     web process was started BEFORE it and keeps serving the interpreter it booted
-    with, so every request to the site 500s on a module the process cannot import
-    while the command reports plain success. Uninstall is the same fault mirrored -
-    the old process keeps serving an app whose files and tables are gone. So the
-    restart is ONE shared post-mutation step for both verbs, not two.
+    with, so requests can 500 on a module the process cannot import while the
+    command reports plain success. Uninstall is the same fault mirrored - the old
+    process keeps serving an app whose files and tables are gone. So the restart is
+    ONE shared post-mutation step for both verbs, not two.
 
     It is not enough to restart and say so: this whole defect is a command
     vouching for a state it never checked, and "supervisord reports the program

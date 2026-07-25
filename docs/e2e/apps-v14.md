@@ -1,4 +1,7 @@
-# E2E evidence: `cwcli apps` command group on Frappe version-14
+# Historical E2E evidence: `cwcli apps` on Frappe version-14
+
+This records the original app-management validation before the verified `restart-web` step was added.
+For the current serving guarantee, see the `apps` contract in the README and `tests/e2e/test_axi_apps_install_e2e.py`.
 
 Companion to [`apps-v15.md`](apps-v15.md): the same `cwcli apps` behaviors, verified on a real Frappe **version-14** instance to confirm they are not version-sensitive (some Frappe bugs only reproduce on v14).
 Isolated throwaway instance; the captain's real projects and `~/.cwcli` were never touched, and the instance was torn down afterwards.
