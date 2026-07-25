@@ -474,6 +474,7 @@ class TestTierAActions:
             assert [row["action"] for row in checked_out["outcome"]["results"]] == [
                 "fetch",
                 "checkout",
+                "restart-processes",
             ]
 
             marker = "cwe2e-serve-dirty-tree"
