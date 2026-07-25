@@ -1,9 +1,16 @@
 import datetime
 import json
-import os
 import sys
 
-from peewee import CharField, DateTimeField, ForeignKeyField, Model, SqliteDatabase, TextField
+from peewee import (
+    CharField,
+    DateTimeField,
+    ForeignKeyField,
+    IntegerField,
+    Model,
+    SqliteDatabase,
+    TextField,
+)
 
 from .config_utils import cwcli_home
 
@@ -48,8 +55,8 @@ class Bench(BaseModel):
     project = ForeignKeyField(Project, backref="benches")
     path = CharField()
     # Optional user-assigned label. NULL/empty means the bench has no user label
-    # and is addressed only by its numeric index (its position in stable, sorted
-    # discovery order). See utils/bench_labels.py for the label model. This column
+    # and is addressed only by its durable numeric identity. See
+    # utils/bench_labels.py for the label model. This column
     # was added after the initial schema, so initialize_database() migrates old
     # caches in place (see _migrate_bench_label_column).
     label = CharField(null=True)
@@ -60,6 +67,27 @@ class Bench(BaseModel):
     # has no `default_site` key. NULL when currentsite.txt is absent/unreadable.
     # Added after the initial schema (see _migrate_bench_current_site_column).
     current_site = CharField(null=True)
+
+
+class BenchIdentity(BaseModel):
+    """Durable numeric identity for one project/bench path.
+
+    This deliberately does not reference :class:`Project`. Project cache rows are
+    replaced on every full inspect and explicitly cleared by ``config cache
+    clear``. Bench identities must outlive both operations so a stored ``--bench
+    <index>`` selector can never be reassigned to a different path.
+    """
+
+    project_name = CharField()
+    path = CharField()
+    numeric_id = IntegerField()
+
+    class Meta:
+        table_name = "bench_identity"
+        indexes = (
+            (("project_name", "path"), True),
+            (("project_name", "numeric_id"), True),
+        )
 
 
 class Site(BaseModel):
@@ -266,6 +294,44 @@ def _migrate_bench_current_site_column():
         print(f"Warning: could not migrate bench.current_site column: {e}", file=sys.stderr)
 
 
+def _ensure_bench_identities(project_name: str, bench_paths: list[str]) -> dict[str, int]:
+    """Return durable numeric identities, assigning new paths monotonically.
+
+    Identity rows are tombstones as well as active mappings. A removed bench's
+    number is never reused for another path, which closes the same silent-retarget
+    hole for remove-then-add sequences as for an earlier-sorting add.
+
+    The caller owns the transaction. Paths are assigned in the order supplied so
+    an existing cache can be backfilled with its historical positional numbers.
+    """
+    rows = list(BenchIdentity.select().where(BenchIdentity.project_name == project_name))
+    identities = {row.path: row.numeric_id for row in rows}
+    next_id = max((row.numeric_id for row in rows), default=-1) + 1
+
+    for path in dict.fromkeys(bench_paths):
+        if path in identities:
+            continue
+        BenchIdentity.create(project_name=project_name, path=path, numeric_id=next_id)
+        identities[path] = next_id
+        next_id += 1
+
+    return identities
+
+
+def _backfill_bench_identities() -> None:
+    """Give pre-feature cached benches their existing positional numbers.
+
+    ``bench_identity`` is a new table, so ``create_tables(safe=True)`` creates it
+    for an old database but cannot populate it. Backfilling in ``Bench.id`` order
+    preserves every selector's meaning at upgrade time before future discoveries
+    can add an earlier-sorting path.
+    """
+    with db.atomic():
+        for project in Project.select():
+            paths = [bench.path for bench in project.benches.order_by(Bench.id)]
+            _ensure_bench_identities(project.name, paths)
+
+
 def _scrub_cached_config_secrets():
     """One-shot: strip secrets from config rows written before redaction shipped.
 
@@ -303,7 +369,16 @@ def initialize_database():
         db.connect()
     # Create tables if missing
     db.create_tables(
-        [Project, Bench, Site, AvailableApp, InstalledAppDetail, CommonSiteConfig, SiteConfig],
+        [
+            Project,
+            Bench,
+            BenchIdentity,
+            Site,
+            AvailableApp,
+            InstalledAppDetail,
+            CommonSiteConfig,
+            SiteConfig,
+        ],
         safe=True,
     )
     # Backward-compatible schema migration for caches created before the label
@@ -313,6 +388,9 @@ def initialize_database():
     # Same for the current_site column (added with the currentsite.txt default-site
     # resolution). Idempotent; NULL on old caches.
     _migrate_bench_current_site_column()
+    # Bench identities are durable addressing metadata rather than cache rows.
+    # Backfill old databases before any read can expose an index.
+    _backfill_bench_identities()
     # Retroactively strip secrets from configs cached before redaction shipped.
     # Idempotent no-op once every row is clean; must run after the tables exist.
     _scrub_cached_config_secrets()
@@ -322,6 +400,11 @@ def initialize_database():
 
 def clear_cache_for_project(project_name):
     initialize_database()
+    return _delete_cached_project(project_name)
+
+
+def _delete_cached_project(project_name):
+    """Delete one project's refreshable cache while retaining bench identities."""
     try:
         project = Project.get(Project.name == project_name)
         project.delete_instance(recursive=True)
@@ -331,23 +414,32 @@ def clear_cache_for_project(project_name):
 
 
 def clear_all_cache():
-    if not db.is_closed():
-        db.close()
-    if os.path.exists(DB_PATH):
-        os.remove(DB_PATH)
+    """Delete all refreshable cache rows while retaining bench identities.
+
+    A full inspect repopulates projects, benches, sites, apps, and configs. Stable
+    bench identities are not refreshable facts, so wiping them would let a later
+    add reuse a caller's stored reference for a different bench.
+    """
+    initialize_database()
+    with db.atomic():
+        for project in list(Project.select()):
+            project.delete_instance(recursive=True)
 
 
-def cache_project_data(project_name, bench_instances_data):
+def cache_project_data(project_name: str, bench_instances_data: list[dict]) -> dict[str, int]:
     initialize_database()
     # Clear + rewrite in ONE transaction so a crash mid-write rolls back to the
     # prior consistent cache instead of leaving a partial one that later reads
     # would serve as truth.
     with db.atomic():
-        _cache_project_data(project_name, bench_instances_data)
+        return _cache_project_data(project_name, bench_instances_data)
 
 
-def _cache_project_data(project_name, bench_instances_data):
-    clear_cache_for_project(project_name)
+def _cache_project_data(project_name: str, bench_instances_data: list[dict]) -> dict[str, int]:
+    identities = _ensure_bench_identities(
+        project_name, [bench_data["path"] for bench_data in bench_instances_data]
+    )
+    _delete_cached_project(project_name)
 
     project = Project.create(name=project_name, last_updated=datetime.datetime.now())
 
@@ -424,16 +516,27 @@ def _cache_project_data(project_name, bench_instances_data):
                     branch=branch,
                 )
 
+    return identities
+
 
 def get_cached_project_data(project_name):
     initialize_database()
     try:
         project = Project.get(Project.name == project_name)
 
+        identities = {
+            row.path: row.numeric_id
+            for row in BenchIdentity.select().where(BenchIdentity.project_name == project_name)
+        }
+
         bench_instances_data = []
-        # Order by primary key so benches come back in the same (sorted discovery)
-        # order they were cached in. This makes each bench's position - its numeric
-        # label / index - stable across reads (see utils/bench_labels.py).
+        # Numeric identity is read from BenchIdentity instead of inferred from list
+        # position, so adding an earlier-sorting path cannot renumber an existing
+        # bench. The rows are then SORTED BY that identity (below) rather than served
+        # in sorted-path discovery order, because a list position is itself a
+        # reference a caller can hold (`bench_instances[0]` in `--json`/TOON). New
+        # identities are always max+1, so identity order appends a new bench at the
+        # end and never shifts an existing row.
         for bench in project.benches.order_by(Bench.id):
             available_apps = [app.name for app in bench.available_apps]
 
@@ -462,6 +565,7 @@ def get_cached_project_data(project_name):
                 sites_info.append(site_data)
 
             bench_data = {
+                "index": identities[bench.path],
                 "path": bench.path,
                 "sites": sites_info,
                 "available_apps": available_apps,
@@ -481,6 +585,8 @@ def get_cached_project_data(project_name):
                 bench_data["common_site_config"] = common_config
 
             bench_instances_data.append(bench_data)
+
+        bench_instances_data.sort(key=lambda bench_data: bench_data["index"])
 
         return {
             "project_name": project_name,
