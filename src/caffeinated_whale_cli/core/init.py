@@ -9,8 +9,7 @@ decision lives - the existing-bench question needs a running container (stage
 1's own product) and fires on the COMMON interactive path (the devcontainer
 image ships ``/workspace/frappe-bench``) - so resolving that ``NEEDS_CHOICE``
 re-invokes ONLY stage 2, whose pre-decision work is a container resolve plus
-two subsecond probes, instead of re-running host setup, a Docker Hub query,
-``compose pull``, and ``compose up`` on every default interactive init.
+two subsecond probes, instead of re-running host setup and instance readiness.
 Neither prior two-call motivation applies (no generator laziness, nothing
 destructive to preview); this does NOT reopen plan/apply.
 
@@ -19,12 +18,9 @@ Both are plain functions with the optional typed-event ``on_event`` callback
 maintenance-mode/GC reasons. Progress rides the event family below; the
 terminal value is the returned envelope.
 
-There is deliberately NO ``axi init`` verb in this batch: whether an agent may
-create instances (gigabytes of images, host state, a required secret on the
-agent's argv, a 10-20 minute single-document wait) is a product decision the
-captain owns on its own evidence, DEFERRED as its own follow-up decision
-(design Decision 9) - not a structural refusal. The two-call shape here makes
-the verb thin whenever it is decided; a test pins the registry absence.
+``cwcli axi init`` is a thin non-interactive frontend over the same two core
+functions. It maps unresolved choices to typed errors and keeps the terminal
+result as one TOON document.
 
 Secrets (design Decision 3): ``bench new-site``'s two passwords ride the exec
 ``environment=`` and are referenced in the command string ONLY as unexpanded
