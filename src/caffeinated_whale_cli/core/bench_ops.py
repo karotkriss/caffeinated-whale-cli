@@ -59,6 +59,8 @@ from .envelope import Message, Result, Status
 from .errors import CwcliError, ErrorKind
 from .exec_stream import ExecChunk, exec_stream
 
+_MIGRATE_LOCK_CONFLICT_EXIT_CODE = 200
+
 # ------------------------------------------------------------------------------ DTOs
 
 
@@ -184,15 +186,15 @@ def _migrate_lock_held(container, bench_path: str, site: str) -> bool:
     stranded lock produces the exact same opaque failure on every later attempt,
     with nothing else running, until someone happens to know `cwcli unlock` exists.
 
-    This probes with ``flock -n`` - the SAME kernel primitive frappe's own
+    This probes with ``flock -n -E 200`` - the SAME kernel primitive frappe's own
     ``filelock()`` acquires - rather than checking whether the lock FILE exists.
     That distinction is load-bearing and verified against a real bench: an empty
     leftover ``bench_migrate.lock`` with no live holder is harmless (a plain
     ``bench migrate`` succeeds straight through it, and Python's ``filelock``
     package removes the file again on release), so gating on file presence would
-    refuse perfectly runnable migrates. Gating on ``flock -n`` instead can never be
-    a false positive: it fails only when something is holding the identical lock
-    frappe's own migrate would then also fail to acquire.
+    refuse perfectly runnable migrates. Exit 200 alone means the identical lock is
+    held. Exit 0 means it is free. Any other exit is an unreadable lock state and
+    raises ``CwcliError(PRECONDITION)`` rather than claiming a lock is held.
     """
     locks_dir = f"{bench_path}/sites/{site}/locks"
     exit_code, _ = container.exec_run(["test", "-d", locks_dir])
@@ -200,8 +202,31 @@ def _migrate_lock_held(container, bench_path: str, site: str) -> bool:
         return False  # never migrated yet: nothing to hold a lock
 
     lock_file = f"{locks_dir}/bench_migrate.lock"
-    exit_code, _ = container.exec_run(["flock", "-n", lock_file, "-c", "true"])
-    return bool(exit_code != 0)
+    exit_code, _ = container.exec_run(
+        [
+            "flock",
+            "-n",
+            "-E",
+            str(_MIGRATE_LOCK_CONFLICT_EXIT_CODE),
+            lock_file,
+            "-c",
+            "true",
+        ]
+    )
+    if exit_code == 0:
+        return False
+    if exit_code == _MIGRATE_LOCK_CONFLICT_EXIT_CODE:
+        return True
+    raise CwcliError(
+        ErrorKind.PRECONDITION,
+        "migrate.lock_probe_failed",
+        (
+            f"Could not determine whether migrate lock "
+            f"'sites/{site}/locks/bench_migrate.lock' is held "
+            f"(flock exited {exit_code})."
+        ),
+        hint="Check that flock is installed and the lock path is accessible, then retry.",
+    )
 
 
 def _resolve_site(
