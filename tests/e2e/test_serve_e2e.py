@@ -26,11 +26,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import subprocess
 import threading
 import time
 import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -367,14 +369,29 @@ class TestTierAActions:
         import urllib.error
 
         self._prime(daemon)
-        # to=8 makes expansion genuinely needed (init publishes 6 ports), and core
-        # answers NEEDS_CHOICE/confirm_scale BEFORE any mutation - so this is a
-        # read, safe on the shared instance, and the 409 payload is core's own
-        # warning text, not anything the page could have invented.
+        # Another shared-instance E2E may already have widened the init default of
+        # six ports. Request one beyond the live compose range so expansion is
+        # genuinely needed regardless of collection order. Core answers
+        # NEEDS_CHOICE/confirm_scale before any mutation, so this remains a read.
+        compose_path = (
+            Path(os.environ["CWCLI_HOME"])
+            / "projects"
+            / daemon.project
+            / "conf"
+            / "docker-compose.yml"
+        )
+        compose_text = compose_path.read_text()
+        web_range = re.search(r"\d+-\d+:8000-(\d+)", compose_text)
+        assert web_range is not None, compose_text
+        requested_count = int(web_range.group(1)) - 8000 + 2
         with pytest.raises(urllib.error.HTTPError) as e:
             _post(
                 daemon.base + "/api/action",
-                {"action": "scale_instance", "project": daemon.project, "to": 8},
+                {
+                    "action": "scale_instance",
+                    "project": daemon.project,
+                    "to": requested_count,
+                },
             )
 
         assert e.value.code == 409
