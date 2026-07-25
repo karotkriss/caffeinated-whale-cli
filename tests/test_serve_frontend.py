@@ -1372,12 +1372,17 @@ class TestTierAConsoleUi:
     def test_the_scale_confirm_is_core_driven_and_typed_name(self, page):
         # The modal opens ONLY off core's 409 confirm_scale, renders core's own
         # message, and the confirm button stays disabled until the project name
-        # is typed back exactly.
+        # is typed back exactly. Its retry stays bound to the project whose
+        # request produced that confirmation, even if selection changes.
         assert 'error.code === "confirm_scale"' in page
-        assert "openScaleConfirm(inst.project, error.message" in page
+        assert "openScaleConfirm(payload.project, error.message" in page
         assert "confirm.disabled = input.value !== project;" in page
         assert "Object.assign({consent: true}" in page
         assert "Object.assign({consent: false}" in page
+        assert "async function runAction(action, extra, targetProject)" in page
+        assert "targetProject ? model.get(targetProject)" in page
+        consent_retry = page.split('Object.assign({consent: true}', 1)[1].split(");", 1)[0]
+        assert "project" in consent_retry
 
     def test_the_checkout_form_sends_only_app_and_ref(self, page):
         assert 'runAction("checkout_app", {app, ref})' in page
