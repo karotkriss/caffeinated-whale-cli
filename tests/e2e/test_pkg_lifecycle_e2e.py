@@ -118,7 +118,7 @@ def test_all_axi_help_is_toon_on_runtime_only_binary():
     assert human.returncode == 0, human.stdout + human.stderr
     assert "Usage:" in human.stdout
     assert "Arguments" in human.stdout
-    assert "--to" in human.stdout
+    assert "--to" in click.unstyle(human.stdout)
     assert any("\u2500" <= char <= "\u257f" for char in human.stdout)
     assert not human.stdout.startswith("usage:")
 
