@@ -487,23 +487,36 @@ def _frappe_reset(
     # left the tree anywhere, and a bounded site wait is not what that run needs.
     resync: supervision.ResyncOutcome | None = None
     if code == 0:
-        bench_site_names = bench_sites.list_sites(frappe_container, bench_path)
-        if bench_site_names is None:
+        try:
+            bench_site_names = bench_sites.list_sites(frappe_container, bench_path)
+        except Exception as error:  # noqa: BLE001
+            detail = error.message if isinstance(error, CwcliError) else str(error)
             resync = supervision.ResyncOutcome(
                 attempted=False,
                 restarted=[],
                 unserved_sites=[],
-                error="cwcli could not list every site on the bench to verify the update.",
-            )
-        else:
-            resync = supervision.resync_after_code_change(
-                frappe_container,
-                bench_path,
-                sites=bench_site_names,
-                on_restart=lambda program: emit(
-                    UpdateStepStart(phase="resync", item=program)
+                error=(
+                    "cwcli could not list every site on the bench to verify the update "
+                    f"({detail or type(error).__name__})."
                 ),
             )
+        else:
+            if bench_site_names is None:
+                resync = supervision.ResyncOutcome(
+                    attempted=False,
+                    restarted=[],
+                    unserved_sites=[],
+                    error="cwcli could not list every site on the bench to verify the update.",
+                )
+            else:
+                resync = supervision.resync_after_code_change(
+                    frappe_container,
+                    bench_path,
+                    sites=bench_site_names,
+                    on_restart=lambda program: emit(
+                        UpdateStepStart(phase="resync", item=program)
+                    ),
+                )
         if resync.error:
             warnings.append(
                 Message("resync.failed", f"The frappe update completed, but {resync.error}")

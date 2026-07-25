@@ -837,6 +837,27 @@ def test_checkout_fails_resync_when_the_bench_site_set_is_unknown(monkeypatch, c
     assert any(w.code == "app.site_scope_unknown" for w in result.warnings)
 
 
+def test_checkout_preserves_its_report_when_site_enumeration_raises(monkeypatch, container):
+    _cache(monkeypatch, [{"path": BENCH}])
+    _bridge_spy(monkeypatch)
+    _wire_running_bench(monkeypatch)
+    monkeypatch.setattr(
+        core_apps.bench_sites,
+        "list_sites",
+        lambda *a, **k: (_ for _ in ()).throw(
+            CwcliError(ErrorKind.DOCKER, "sites.unreadable", "the site list was lost")
+        ),
+    )
+
+    result = core_apps.checkout_app("proj", "payments", "feature/x")
+
+    assert ("checkout", True) in [(r.action, r.ok) for r in result.data.results]
+    assert result.data.results[-1].action == "restart-processes"
+    assert result.data.results[-1].ok is False
+    assert result.data.ok is False
+    assert any(w.code == "app.site_scope_unknown" for w in result.warnings)
+
+
 def test_a_checkout_that_never_moved_the_tree_resynchronises_nothing(monkeypatch, container):
     """A failed ``git fetch`` writes only into ``.git``: no process is serving it."""
     container.fail_on = ["git fetch"]
