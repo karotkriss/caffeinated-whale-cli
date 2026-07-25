@@ -1,0 +1,28 @@
+# What ships in the sdist is PUBLISHED CONTENT, so it is stated here rather than
+# inherited from setuptools' default file list. That default swept the entire
+# test suite (102 files) into the published 1.1.0 sdist on PyPI, which is how a
+# private hostname committed to a test fixture ended up inside an artifact
+# anyone can download.
+#
+# Deny-all, then allow. A newly added tests/, fixtures/ or scaffolding directory
+# is out by construction rather than by somebody remembering to prune it - a
+# deny-list only excludes the directories that existed when it was written.
+#
+# The cost of an allow-list is the opposite failure: a file the package NEEDS
+# could be silently left out. tests/test_packaging_contents.py guards both
+# directions - it builds the real sdist and wheel and asserts the sdist carries
+# every package file the wheel does (so a new package-data entry cannot be
+# dropped here unnoticed) BEFORE asserting no test file is present.
+global-exclude *
+
+# The build inputs a consumer needs to turn this sdist back into a wheel.
+include pyproject.toml
+include README.md
+include LICENSE
+
+# The package itself. Extensions are listed explicitly: a bare `graft` would
+# also sweep in __pycache__ and any stray local artifact. A new package-data
+# file type must be added BOTH to [tool.setuptools.package-data] and here, and
+# the packaging test fails if only one of the two is done.
+recursive-include src/caffeinated_whale_cli *.py
+recursive-include src/caffeinated_whale_cli *.html
