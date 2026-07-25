@@ -395,6 +395,45 @@ class TestInitInstance:
         result = core_init.init_instance(PROJECT, port=18000)
         assert result.status is Status.OK
 
+    def test_pull_and_up_are_skipped_against_an_already_running_frappe(
+        self, monkeypatch, tmp_path, patched
+    ):
+        """Adding a bench to a live instance must not touch `compose pull`/`up -d`.
+
+        Both commands re-fetch and (without `--no-deps`) can silently RECREATE a
+        container whose image drifted upstream since this instance was created -
+        for the frappe service that kills every already-serving bench's
+        supervisord with nothing in the report to say so (the defect this pins).
+        Skipping them when frappe is already running makes a bench-add
+        structurally unable to trigger that recreate at all.
+        """
+        events: list = []
+        s = instance_setup(monkeypatch, tmp_path, running=True)
+        result = core_init.init_instance(PROJECT, port=18000, on_event=events.append)
+
+        assert result.status is Status.OK
+        assert s.host_calls == []
+        notices = [e for e in events if isinstance(e, core_init.InitNotice)]
+        assert any(n.code == "instance.already_running" for n in notices)
+
+    def test_pull_and_up_still_run_when_a_sibling_container_is_up_but_frappe_is_not(
+        self, monkeypatch, tmp_path, patched
+    ):
+        """The skip is scoped to the frappe SERVICE, not "any container up".
+
+        A stopped frappe beside a running mariadb/redis must still go through
+        compose to come back up - skipping there would leave frappe down.
+        """
+        s = instance_setup(monkeypatch, tmp_path)
+        sibling = SimpleNamespace(
+            status="running", labels={"com.docker.compose.service": "mariadb"}
+        )
+        monkeypatch.setattr(core_init.core_docker, "get_project_containers", lambda name: [sibling])
+        result = core_init.init_instance(PROJECT, port=18000)
+
+        assert result.status is Status.OK
+        assert [c["cmd"][-1] for c in s.host_calls] == ["--quiet", "-d"]
+
     def test_a_stopped_instance_still_gets_the_port_check(self, monkeypatch, tmp_path, patched):
         """The skip is scoped to a RUNNING project. A stopped one holds no ports, so
         a bound port there genuinely belongs to somebody else and must still refuse."""
