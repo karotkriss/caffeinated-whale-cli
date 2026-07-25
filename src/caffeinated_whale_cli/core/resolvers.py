@@ -169,7 +169,10 @@ def resolve_bench(
         return None
 
     # Multiple benches, no selector -> the frontend decides (error, or first-with-note).
-    options = [{"value": str(i), "label": _bench_option_label(b)} for i, b in enumerate(benches)]
+    options = [
+        {"value": str(b.get("index", position)), "label": _bench_option_label(b)}
+        for position, b in enumerate(benches)
+    ]
     return Result(
         status=Status.NEEDS_CHOICE,
         choice=Choice(

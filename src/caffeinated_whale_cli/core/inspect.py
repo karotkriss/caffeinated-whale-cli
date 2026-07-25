@@ -85,10 +85,10 @@ class SiteInfo:
 class BenchInfo:
     """One bench's inspected state (serializable, no live objects).
 
-    ``index`` is the bench's position in stable sorted-by-path discovery order -
-    the numeric label every ``--bench`` selector resolves against. ``default_site``
-    is resolved: ``common_site_config.default_site`` first, ``current_site``
-    (the ``currentsite.txt`` pointer) as the fallback.
+    ``index`` is the durable numeric identity every ``--bench`` selector resolves
+    against. It remains attached to the path when discovery order changes.
+    ``default_site`` is resolved: ``common_site_config.default_site`` first,
+    ``current_site`` (the ``currentsite.txt`` pointer) as the fallback.
     """
 
     index: int
@@ -270,10 +270,9 @@ def discover_benches(container, *, on_event: OnEvent | None = None) -> list[str]
                     if _is_bench_directory(container, bench_dir, emit):
                         benches_found.append(bench_dir)
 
-    # Sort for a STABLE discovery order. Each bench's position in this list is its
-    # numeric label / index (0, 1, 2, ...), so the ordering must be deterministic
-    # across runs - a bare ``set`` iteration order is not. Sorting by path is stable
-    # for a fixed set of benches (see utils/bench_labels.py for the label model).
+    # Sort for deterministic presentation and first-discovery identity assignment.
+    # Numeric identities are persisted separately, so an existing bench keeps its
+    # number even when a newly discovered path sorts before it.
     return sorted(set(benches_found))
 
 
@@ -452,6 +451,11 @@ def partial_refresh(
             "sites": sites_info,
             "available_apps": fresh_available,
         }
+        # Identity is cached addressing metadata, not a live filesystem fact.
+        # Carry it forward exactly like the user label so this helper continues
+        # to return the cache shape even when list order and identity differ.
+        if "index" in cached_bench:
+            bench_data["index"] = cached_bench["index"]
         # Carry the cached user label forward. T2 is a cheap freshness pass and does
         # not re-read the marker; the label is preserved so a partial refresh never
         # drops it (a real label change goes through `label`/`inspect -i`, which
@@ -669,8 +673,26 @@ def inspect_raw(
                 f"No Bench Instances found for project '{project_name}'.",
             )
 
-        db_utils.cache_project_data(project_name, gathered)
-        benches = gathered
+        identities = db_utils.cache_project_data(project_name, gathered)
+        # Keep the gathered/cache-write dicts untouched. The human renderer's
+        # gathered-vs-cache key order is a characterized contract, and a cache
+        # adapter may retain the objects it was handed. Add identity on fresh
+        # report copies only.
+        benches = [
+            {
+                **bench,
+                "index": (
+                    identities[bench["path"]]
+                    if identities is not None
+                    else bench.get("index", position)
+                ),
+            }
+            for position, bench in enumerate(gathered)
+        ]
+        # Serve in identity order, matching the cached read (db_utils
+        # get_cached_project_data): a list position is a reference a caller can
+        # hold, and identity order never shifts an existing row.
+        benches.sort(key=lambda bench: bench["index"])
         served_from = "full"
 
     return Result(
@@ -742,7 +764,8 @@ def inspect(
     # forward, so their per-site installed_apps are REMEMBERED, not verified.
     apps_verified = raw.data.served_from == "full"
     benches = [
-        _to_bench_info(i, b, apps_verified=apps_verified) for i, b in enumerate(raw.data.benches)
+        _to_bench_info(b.get("index", position), b, apps_verified=apps_verified)
+        for position, b in enumerate(raw.data.benches)
     ]
 
     warnings = list(raw.warnings)

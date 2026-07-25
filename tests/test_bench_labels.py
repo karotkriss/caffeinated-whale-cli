@@ -2,7 +2,7 @@
 per-bench marker file I/O (``utils/bench_labels.py``).
 
 These pin the label rules the captain approved:
-  - numeric labels are the positional index; user labels may NOT be purely numeric,
+  - numeric identities stay attached to bench paths; user labels may NOT be purely numeric,
   - ``--bench`` resolves a label first, then a numeric index,
   - the marker file round-trips a label as JSON and recovers safely from a
     missing/garbage marker.
@@ -65,6 +65,14 @@ class TestResolveBench:
         assert bench_labels.resolve_bench(b, "0")["path"] == "/a"
         assert bench_labels.resolve_bench(b, "2")["path"] == "/c"
 
+    def test_resolve_by_durable_index_not_list_position(self):
+        benches = [
+            {"index": 7, "path": "/sorts-first"},
+            {"index": 2, "path": "/original"},
+        ]
+        assert bench_labels.resolve_bench(benches, "2")["path"] == "/original"
+        assert bench_labels.resolve_bench(benches, "0") is None
+
     def test_resolve_by_label(self):
         """`resolve_bench` selects a bench by its user label."""
         assert bench_labels.resolve_bench(self._benches(), "staging")["path"] == "/b"
@@ -94,9 +102,14 @@ class TestResolveBench:
 
 class TestFormatBenchList:
     def test_shows_index_label_path(self):
-        out = bench_labels.format_bench_list([{"path": "/a"}, {"path": "/b", "label": "staging"}])
-        assert "[0]" in out and "/a" in out
-        assert "[1]" in out and "staging" in out and "/b" in out
+        out = bench_labels.format_bench_list(
+            [
+                {"index": 7, "path": "/a"},
+                {"index": 2, "path": "/b", "label": "staging"},
+            ]
+        )
+        assert "[7]" in out and "/a" in out
+        assert "[2]" in out and "staging" in out and "/b" in out
 
 
 class TestMarkerIO:

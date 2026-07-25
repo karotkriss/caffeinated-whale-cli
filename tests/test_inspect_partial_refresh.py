@@ -349,6 +349,7 @@ class TestPartialInspectHelper:
         )
         cached_benches = [
             {
+                "index": 7,
                 "path": BENCH,
                 "available_apps": ["frappe"],
                 "sites": [{"name": "dev.local", "installed_apps": ["frappe 15.0.0 version-15"]}],
@@ -359,6 +360,7 @@ class TestPartialInspectHelper:
 
         assert drift is True
         assert refreshed[0]["available_apps"] == ["frappe", "newapp"]
+        assert refreshed[0]["index"] == 7
         # Per-site installed list is CARRIED FORWARD (cheap pass does not deep-list).
         assert refreshed[0]["sites"][0]["installed_apps"] == ["frappe 15.0.0 version-15"]
         # It must not have re-discovered instances or booted bench per site.

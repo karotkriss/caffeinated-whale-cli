@@ -249,10 +249,11 @@ def _prompt_select_bench(project_name: str, benches: list[dict]) -> str:
 
     choice_map: dict[str, str] = {}
     choices: list[str] = []
-    for i, b in enumerate(benches):
+    for position, b in enumerate(benches):
+        index = b.get("index", position)
         label = b.get("label")
         prefix = f"'{label}' " if label else ""
-        text = f"[{i}] {prefix}{b.get('path', '?')}"
+        text = f"[{index}] {prefix}{b.get('path', '?')}"
         choices.append(text)
         choice_map[text] = str(b["path"])
 

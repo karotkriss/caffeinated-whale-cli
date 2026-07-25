@@ -15,9 +15,9 @@ Marker-file I/O (needs a running frappe container, exercised via a fake in tests
 
 Label model
 -----------
-Every discovered bench has a **numeric label** equal to its index in stable,
-sorted discovery order (0, 1, 2, ...). Numeric labels are positional: adding or
-removing a bench can renumber the rest, so a user label is the durable handle.
+Every discovered bench has a **numeric identity** assigned when its path is first
+cached. It is persisted independently of the refreshable project cache, so adding
+or removing benches never reassigns an existing number to another path.
 
 A bench may also have an optional **user label**. A ``--bench`` selector matches a
 user label first, then falls back to a numeric index. To keep that unambiguous a
@@ -92,7 +92,7 @@ def resolve_bench(bench_instances: list[dict], selector: str) -> dict | None:
 
     Resolution order (see module docstring):
       1. exact user-label match (case-sensitive),
-      2. else, if the selector is all digits, the bench at that numeric index,
+      2. else, if the selector is all digits, the bench with that numeric identity,
       3. else no match.
 
     Labels are tried before indices, so a labeled bench is reachable even if some
@@ -108,9 +108,12 @@ def resolve_bench(bench_instances: list[dict], selector: str) -> dict | None:
             return bench
 
     if is_numeric_label(selector):
-        index = int(selector)
-        if 0 <= index < len(bench_instances):
-            return bench_instances[index]
+        numeric_id = int(selector)
+        for position, bench in enumerate(bench_instances):
+            # The fallback keeps pure helper callers compatible with legacy dicts.
+            # Production cache reads always carry the durable ``index`` field.
+            if bench.get("index", position) == numeric_id:
+                return bench
 
     return None
 
@@ -118,7 +121,8 @@ def resolve_bench(bench_instances: list[dict], selector: str) -> dict | None:
 def format_bench_list(bench_instances: list[dict]) -> str:
     """Render benches as ``[index] label -> path`` lines for error/help messages."""
     lines = []
-    for index, bench in enumerate(bench_instances):
+    for position, bench in enumerate(bench_instances):
+        index = bench.get("index", position)
         label = bench.get("label")
         label_part = f"'{label}' " if label else ""
         lines.append(f"  [{index}] {label_part}{bench.get('path', '?')}")

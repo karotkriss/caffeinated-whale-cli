@@ -106,10 +106,11 @@ DEGRADED = "degraded"
 class BenchStatus:
     """One bench's health inside an instance report (serializable, no live object).
 
-    ``index`` is the bench's position in the stable cached order - the same number
-    ``--bench <index>`` takes and ``cwcli axi benches`` reports, so an index means the
-    same thing everywhere. It is None for a bench that is not in that list (a
-    ``--path`` override, or the synthetic default on a never-inspected project):
+    ``index`` is the bench's durable numeric identity - the same number ``--bench
+    <index>`` takes and ``cwcli axi benches`` reports, so an index means the same
+    thing everywhere and across later bench additions. It is None for a bench that
+    is not in that list (a ``--path`` override, or the synthetic default on a
+    never-inspected project):
     reporting 0 there would name a bench ``--bench 0`` resolves somewhere else, which
     is the attributed-lie class this change exists to remove.
 
@@ -316,8 +317,8 @@ def _targets(
     """The ``(index, bench_path, label)`` benches to report, plus resolver warnings.
 
     A selector narrows to one entry; without one, every cached bench is reported in
-    the stable cached order, so an index means the same thing as under ``--bench``
-    and as in ``cwcli axi benches``. That list is REMEMBERED, not verified, and
+    the cached discovery order, while each tuple carries its durable numeric
+    identity. That list is REMEMBERED, not verified, and
     deliberately carries no ``where``-style verification token: each bench's health
     is read LIVE, so a stale path self-corrects into a visible no-processes bench
     rather than a confident wrong answer (the repo's settled read-surface audit -
@@ -340,7 +341,10 @@ def _targets(
                 )
             )
             return [(None, resolvers.DEFAULT_BENCH_PATH, None)], warnings
-        return [(i, b["path"], b.get("label")) for i, b in enumerate(cached)], warnings
+        return [
+            (b.get("index", position), b["path"], b.get("label"))
+            for position, b in enumerate(cached)
+        ], warnings
 
     # A selector: resolve_bench raises USAGE on --bench + --path together and
     # NOT_FOUND on an unknown selector, exactly as before. It can no longer return
@@ -357,7 +361,10 @@ def _targets(
     assert resolved.data is not None
     path = resolved.data
     warnings.extend(resolved.warnings)
-    index = next((i for i, b in enumerate(cached) if b["path"] == path), None)
+    index = next(
+        (b.get("index", position) for position, b in enumerate(cached) if b["path"] == path),
+        None,
+    )
     label = next((b.get("label") for b in cached if b["path"] == path), None)
     return [(index, path, label)], warnings
 

@@ -11,11 +11,14 @@ import typer
 from caffeinated_whale_cli.commands import label as label_mod
 from caffeinated_whale_cli.core import docker as core_docker
 from caffeinated_whale_cli.core import label as core_label
+from caffeinated_whale_cli.core import resolvers
+from caffeinated_whale_cli.core.errors import CwcliError
 from caffeinated_whale_cli.utils import db_utils, docker_utils
 from tests.bench_fakes import MarkerFakeContainer
 
 BENCH_A = "/workspace/frappe-bench"
 BENCH_B = "/workspace/frappe-bench-2"
+BENCH_EARLIER = "/workspace/aaa-bench"
 MARKER_A = f"{BENCH_A}/.cwcli/.bench-label"
 MARKER_B = f"{BENCH_B}/.cwcli/.bench-label"
 
@@ -76,6 +79,129 @@ class TestLabelDB:
     def test_set_bench_label_unknown_returns_false(self, temp_db):
         _seed_two_benches()
         assert db_utils.set_bench_label("proj", "/nope", "x") is False
+
+    def test_prior_index_still_resolves_the_same_bench_after_an_earlier_add(self, temp_db):
+        """A stored numeric bench identity must never silently change targets."""
+        db_utils.cache_project_data(
+            "proj",
+            [{"path": BENCH_A, "sites": [], "available_apps": []}],
+        )
+        before = core_label.list_benches("proj")
+        assert before.data is not None
+        prior_index = before.data.benches[0].index
+
+        # This is the ordering that caused the live defect: full discovery returns
+        # sorted paths, so a newly-added earlier path is written before the bench
+        # whose numeric identity a caller already holds.
+        db_utils.cache_project_data(
+            "proj",
+            [
+                {"path": BENCH_EARLIER, "sites": [], "available_apps": []},
+                {"path": BENCH_A, "sites": [], "available_apps": []},
+            ],
+        )
+
+        # Positive first: the prior identity still selects the original bench.
+        resolved = resolvers.resolve_bench("proj", str(prior_index), None)
+        assert resolved is not None
+        assert resolved.data == BENCH_A
+
+        # The earlier path is really there, but it owns a different identity.
+        after = core_label.list_benches("proj")
+        assert after.data is not None
+        assert {b.path for b in after.data.benches} == {BENCH_A, BENCH_EARLIER}
+        earlier = next(b for b in after.data.benches if b.path == BENCH_EARLIER)
+        assert earlier.index != prior_index
+
+    def test_list_position_is_also_stable_across_an_earlier_add(self, temp_db):
+        """A held LIST POSITION must not retarget either.
+
+        ``inspect --json`` and the TOON bench rows are arrays, so ``benches[0]`` is
+        itself a reference a caller can hold. Serving in durable-identity order
+        (rather than sorted-path discovery order) makes a new bench append instead
+        of displacing the rows in front of it.
+        """
+        db_utils.cache_project_data(
+            "proj",
+            [{"path": BENCH_A, "sites": [], "available_apps": []}],
+        )
+
+        db_utils.cache_project_data(
+            "proj",
+            [
+                {"path": BENCH_EARLIER, "sites": [], "available_apps": []},
+                {"path": BENCH_A, "sites": [], "available_apps": []},
+            ],
+        )
+
+        # Positive first: position 0 is still the bench it was before the add.
+        served = db_utils.get_cached_project_data("proj")
+        assert served is not None
+        assert served["bench_instances"][0]["path"] == BENCH_A
+        # The earlier-sorting bench appended rather than displacing it.
+        assert served["bench_instances"][1]["path"] == BENCH_EARLIER
+        assert [b["index"] for b in served["bench_instances"]] == [0, 1]
+
+        listed = core_label.list_benches("proj").data
+        assert listed is not None
+        assert [b.path for b in listed.benches] == [BENCH_A, BENCH_EARLIER]
+
+    def test_removed_identity_is_never_reused_for_another_path(self, temp_db):
+        _seed_two_benches()
+        original = core_label.list_benches("proj").data
+        assert original is not None
+        removed_index = next(b.index for b in original.benches if b.path == BENCH_B)
+
+        db_utils.cache_project_data(
+            "proj",
+            [
+                {"path": BENCH_EARLIER, "sites": [], "available_apps": []},
+                {"path": BENCH_A, "sites": [], "available_apps": []},
+            ],
+        )
+
+        current = core_label.list_benches("proj").data
+        assert current is not None
+        earlier = next(b for b in current.benches if b.path == BENCH_EARLIER)
+        assert earlier.index != removed_index
+        with pytest.raises(CwcliError) as exc:
+            resolvers.resolve_bench("proj", str(removed_index), None)
+        assert "No bench" in str(exc.value)
+
+    @pytest.mark.parametrize("scope", ["project", "all"])
+    def test_identity_survives_explicit_cache_clear(self, temp_db, scope):
+        db_utils.cache_project_data(
+            "proj",
+            [{"path": BENCH_A, "sites": [], "available_apps": []}],
+        )
+        prior = core_label.list_benches("proj").data
+        assert prior is not None
+        prior_index = prior.benches[0].index
+
+        if scope == "project":
+            db_utils.clear_cache_for_project("proj")
+        else:
+            db_utils.clear_all_cache()
+        db_utils.cache_project_data(
+            "proj",
+            [
+                {"path": BENCH_EARLIER, "sites": [], "available_apps": []},
+                {"path": BENCH_A, "sites": [], "available_apps": []},
+            ],
+        )
+
+        resolved = resolvers.resolve_bench("proj", str(prior_index), None)
+        assert resolved is not None
+        assert resolved.data == BENCH_A
+
+    def test_upgrade_backfill_preserves_the_old_positional_meaning(self, temp_db):
+        _seed_two_benches()
+        db_utils.BenchIdentity.delete().execute()
+
+        db_utils._backfill_bench_identities()
+
+        identities = {row.path: row.numeric_id for row in db_utils.BenchIdentity.select()}
+        assert identities == {BENCH_A: 0, BENCH_B: 1}
 
     def test_migration_adds_label_column_to_old_cache(self, temp_db):
         # Simulate a pre-label cache: drop the column by recreating an old table.
