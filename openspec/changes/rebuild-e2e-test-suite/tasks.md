@@ -1,7 +1,12 @@
-This is a multi-PR rebuild; checked boxes record shipped work or validation evidence, while unchecked boxes are deferred to follow-up PRs.
-Items 4.3, 4.7, 4.8, 4.9, 5.4, and 8.5 remain deferred.
-The per-command checkboxes in §4 track the E2E coverage, not mock-suite retirement.
+This is a multi-PR rebuild.
+A `[x]` marks a checklist item ONLY when every clause it states is independently backed by real E2E evidence.
+A historical requirement that bundled several clauses, where some are proven and some are not, is split into a parent line plus per-clause sub-items, so an unproven clause is never presented as complete by riding a checked parent.
+
+The per-command items in §4 track E2E coverage, not mock-suite retirement.
 The retirement contract and its sequencing are owned by the [E2E test-suite specification](specs/e2e-test-suite/spec.md#requirement-parallel-run-transition-off-the-mock-suite); this checklist reconciliation does not retire any mock suite.
+As of this reconciliation, none of the container-mock suites `proposal.md`'s Impact section names for retirement (`tests/test_rm_safety.py`, `tests/test_restore_safety.py`, `tests/test_restore_inspect_fixes.py`, `tests/test_inspect_partial_refresh.py`, `tests/test_apps.py`, `tests/test_yes_flag.py`, plus the shared `tests/bench_fakes.py`/`tests/bench_fakes_mb.py` fakes) have been retired, even though `backup`, `init`, `restore`, `update`/`apps update`, and `unlock` each have real E2E landed below - retirement has not started.
+
+For the current, authoritative per-file test coverage, read [`tests/README.md`](../../../tests/README.md) and the [`tests/e2e/`](../../../tests/e2e/) tree directly rather than this file: restating which test file or test function proves which clause here would be a second, decaying copy of that ledger. This file instead records what was decided, why, and - per clause - whether real E2E proof exists yet.
 
 ## 1. CWCLI_HOME source hardening (decision #9 - lands first, its own PR)
 
@@ -34,25 +39,36 @@ The retirement contract and its sequencing are owned by the [E2E test-suite spec
 
 ## 4. Per-command E2E + mock retirement (parallel-run cadence)
 
-Each checked subgroup has shipped real-Docker coverage for the command.
-The specification linked above owns the separate mock-retirement follow-up; pure-logic tests are kept.
+A parent item below is checked only when every clause it once bundled has real E2E proof; where a clause is unproven or deliberately deferred to the unit tier, it is broken out as its own sub-item so the parent cannot read as fully done.
 
-- [x] 4.1 **init** - E2E: real `cwcli init` builds a genuine bench + site (already the harness fixture); assert both interactive and non-interactive (`--yes`, `--admin-password`, `--mariadb-root-password`) paths and the generated-admin-password print-once behavior. (init has no pure "mock behavior" suite to retire beyond resolver logic, which stays in unit.)
-- [x] 4.2 **backup** - E2E: assert a real, non-empty DB dump lands on the host; both modes; multi-bench `--bench`. Retire the mock backup assertions once green (`backup` has no dedicated mock suite today - this is net-new real coverage).
-- [ ] 4.3 **rm** - E2E: assert named volumes + `~/.cwcli/projects/<name>` are gone AND a verified non-empty DB dump existed first (C1 gate); the early-abort-before-container-removal on a failed backup; both modes. THEN retire the container-mock behavior tests in `tests/test_rm_safety.py` / `tests/bench_fakes_mb.py` (keep `test_rm_truth.py`'s pure-logic name/path validators in unit).
-- [x] 4.4 **restore** - `tests/e2e/test_restore_e2e.py` proves genuine data replacement through `--latest` and the interactive selector, then verifies the site boots after migrate + restart; both modes. The v14-only `--receive` bare-filename path is covered separately by §5.3. Selector and origin-mismatch branches remain covered in the unit tier.
-- [x] 4.5 **update / apps update** - `tests/e2e/test_apps_update_e2e.py` drives the real binary against a real instance in both modes: deterministic `bench update --reset` output and exit-code paths use a bench shim, while the missing-app refusal and auto-start prompts use the genuine bench. It also pins structured-output purity and the deprecated `cwcli update` warning/delegation contract. Pull/migrate, maintenance-mode, and `--site` branching remain covered in the unit tier.
-- [x] 4.6 **unlock** - `tests/e2e/test_unlock_e2e.py` creates real site locks and proves their removal through non-interactive, interactive, auto-start, and `axi` paths. Multi-bench `--bench` resolution remains covered in the unit tier.
+- [x] 4.1 **init** - both interactive and non-interactive (`--yes`, `--admin-password`, `--mariadb-root-password`) paths are E2E-proven, including the generated-admin-password print-once behavior. (init has no pure "mock behavior" suite to retire beyond resolver logic, which stays in unit.)
+- [ ] 4.2 **backup**
+  - [x] 4.2a A real, non-empty DB dump lands on the host, in both interactive and non-interactive modes.
+  - [ ] 4.2b Multi-bench `--bench` backup against a real instance - NOT E2E; only unit-tier (mocked container) coverage exists. `backup` has no dedicated mock suite to retire (net-new coverage).
+- [ ] 4.3 **rm** - named volumes + `~/.cwcli/projects/<name>` removal, and the verified non-empty DB dump that must exist first (the C1 gate), are now E2E-proven for the `cwcli axi rm --yes` path (`tests/e2e/test_axi_rm_e2e.py`, added after this checklist was first written). Still not E2E: the human `cwcli rm` verb's own interactive and non-interactive-without-`--yes` paths, and the early-abort-before-container-removal case on a failed backup. THEN retire the container-mock behavior tests in `tests/test_rm_safety.py` / `tests/bench_fakes_mb.py` (keep `test_rm_truth.py`'s pure-logic name/path validators in unit).
+- [ ] 4.4 **restore**
+  - [x] 4.4a Genuine data replacement through `--latest`, and through the interactive backup-selection menu, each followed by a site that boots (`bench migrate` + restart ran).
+  - [ ] 4.4b Explicit `--backup-file <name>` selection (as opposed to `--latest` or the interactive menu) - NOT E2E; unit-tier only.
+  - [ ] 4.4c Origin-mismatch handling - NOT E2E; unit-tier only.
+  - The v14-only `--receive` bare-filename path is covered separately by §5.3.
+- [ ] 4.5 **update / apps update**
+  - [x] 4.5a Both modes drive the real binary against a real instance for output-purity, exit-code, missing-app-refusal, and auto-start-prompt behavior, plus the deprecated `cwcli update` warning/delegation contract (`bench update --reset` itself is shimmed on the deterministic-output legs, matching `test_run_e2e.py`'s precedent, so what's proven there is cwcli's output routing and exit code, not bench's own reset).
+  - [ ] 4.5b Real pull + migrate of an app against a live instance - NOT E2E; unit-tier only.
+  - [ ] 4.5c Maintenance mode genuinely toggled on then off around the update - NOT E2E; unit-tier only.
+  - [ ] 4.5d `--site` narrowing - NOT E2E; unit-tier only.
+- [ ] 4.6 **unlock**
+  - [x] 4.6a Real site locks are created and their removal is proven through the non-interactive, interactive, auto-start, and `axi` paths.
+  - [ ] 4.6b Multi-bench `--bench` resolution against a real instance - NOT E2E; unit-tier only.
 - [ ] 4.7 **inspect** - E2E: assert the 3-tier freshness behavior against a real bench (T1 serve, T2 read-only drift detect, T3 re-cache on real drift); a freshly installed app becomes visible without `--update`. THEN retire the tier-assertion mock tests in `tests/test_inspect_partial_refresh.py` (keep any pure-logic in unit).
-- [ ] 4.8 **apps (list/install/uninstall)** - E2E: real `bench get-app`/`install-app`/`uninstall-app`, multi-site fan-out with honest aggregated exit codes, `--json` purity, post-mutation cache refresh reflected in `where`/`inspect`; both modes. Retire the remaining `tests/test_apps.py` container-mock tests once green.
-- [ ] 4.9 **yes-flag / auto-start contract** - fold the `ensure_containers_running` / `confirm_or_exit` non-TTY-refusal assertions into the per-command E2E (each command asserts non-TTY-without-flag refuses non-zero). Retire the container-mock parts of `tests/test_yes_flag.py`; keep any pure-logic there in unit.
+- [ ] 4.8 **apps (list/install/uninstall)** - `cwcli axi apps install`'s own scoped verb (a fresh install, not a reinstall) is now E2E-proven end to end (`tests/e2e/test_axi_apps_install_e2e.py`, added after this checklist was first written: the permitted install, the already-installed refusal on both a plain name and a git-URL spelling, a fail-closed unreadable site, and a missing-`--site` usage error). Still not E2E: the human `cwcli apps install`'s every-site fan-out and interactive/non-interactive confirm paths, and `cwcli apps list`/`uninstall` entirely - real `bench get-app`/`install-app`/`uninstall-app`, multi-site fan-out with honest aggregated exit codes, `--json` purity, post-mutation cache refresh reflected in `where`/`inspect`; both modes. Retire the remaining `tests/test_apps.py` container-mock tests once green.
+- [ ] 4.9 **yes-flag / auto-start contract** - each landed per-command E2E file above already asserts its own non-TTY-without-flag refusal (e.g. `test_restore_e2e.py::test_non_tty_without_selector_refuses`), but the cross-cutting fold-in this item describes - retiring `tests/test_yes_flag.py`'s container-mock parts once every command's own E2E covers the same ground - has not happened. Keep any pure-logic in `tests/test_yes_flag.py` in unit.
 
 ## 5. Version-sensitive matrix coverage (runs on all three legs)
 
 - [x] 5.1 MariaDB flag: assert `new-site` uses `--no-mariadb-socket` on v14 and `--mariadb-user-host-login-scope=%` on v15/v16, and that the site is actually created (the flag divergence is real - the 15+ flag breaks bench 14).
 - [x] 5.2 pyenv/nvm branches: assert v14 provisions python3.10 + node16 + yarn, v15 provisions python3.12, v16 uses image defaults (no pyenv/nvm step).
 - [x] 5.3 `--receive` bare-filename: assert the v14 leg reproduces-then-passes the full-container-path fix (v15/v16 mask it via alternative-directory fallback).
-- [ ] 5.4 apps behaviors on each version leg (per §4.8), plus the v16-first-ever real E2E coverage (no v16 manual evidence exists yet).
+- [ ] 5.4 apps behaviors on each version leg (per §4.8), plus the v16-first-ever real E2E coverage. `axi apps install`'s narrow slice (§4.8) runs on whichever leg `CWE2E_FRAPPE_MAJOR` selects in CI, but the full per-leg apps matrix this item describes is not built.
 
 ## 6. P2P (gated, single loopback)
 
@@ -68,7 +84,12 @@ The specification linked above owns the separate mock-retirement follow-up; pure
 ## 8. Validation (definition of done for the implementation phase)
 
 - [x] 8.1 Fast unit tier stays green with a broken Docker endpoint (proves it is still mock-free).
-- [x] 8.2 The full E2E matrix goes green on all three legs (v14/v15/v16) at least once; the P2P leg goes green.
+- [x] 8.2 The full E2E matrix goes green on all three legs (v14/v15/v16) at least once; the P2P leg goes green. (A one-time historical validation event from when the harness landed, not an ongoing coverage claim about the current test tree.)
 - [x] 8.3 Deliberately leak a container mid-test and confirm the `cwe2e-` backstop sweeps it; deliberately point `HOME` at the real home and confirm the rail refuses.
-- [x] 8.4 Confirm each destructive command's E2E asserts the REAL side effect (not a string match) and that both modes are exercised.
+- [ ] 8.4 Confirm each destructive command's E2E asserts the REAL side effect (not a string match) and that both modes are exercised.
+  - [x] 8.4a `backup` - real dump on the host, both modes.
+  - [x] 8.4b `restore` - genuine data replacement + migrate + restart, both modes.
+  - [x] 8.4c `unlock` - real lock removal, both modes.
+  - [ ] 8.4d `update` - both modes are exercised, but the real side effect (pull/migrate/maintenance toggle) is not E2E-asserted; see 4.5b/4.5c.
+  - [ ] 8.4e `rm` - the real side effect is E2E-proven, but only one mode (`cwcli axi rm --yes`) is exercised; see 4.3.
 - [ ] 8.5 Ship the tests + the `CWCLI_HOME` change + the `openspec/` specs through /no-mistakes per the gate rules (respond to gates, escalate ask-user findings, no `--yes`).
