@@ -42,9 +42,22 @@ _NOISE = "Updating apps… ✓ frappe updated ─────│└ ⚠"
 
 
 def _install_bench_shim(inst, *, exit_code: int) -> None:
-    """Shadow `bench` with a program that emits recognisable output on stdout."""
+    """Shim only ``bench update --reset`` and delegate every other bench command.
+
+    App updates now resynchronise the running Procfile programs before returning.
+    Those programs launch through this same executable, so a catch-all shim makes
+    web, schedule, and workers exit immediately and supervisord reports a spawn
+    error. Delegating every other argument preserves the real running bench while
+    keeping the reset output deterministic.
+    """
     script = (
-        "#!/usr/bin/env python3\n" "import sys\n" f'print("{_NOISE}")\n' f"sys.exit({exit_code})\n"
+        "#!/usr/bin/env python3\n"
+        "import os\n"
+        "import sys\n"
+        'if sys.argv[1:] == ["update", "--reset"]:\n'
+        f'    print("{_NOISE}")\n'
+        f"    sys.exit({exit_code})\n"
+        f'os.execv("{_REAL_BENCH}", ["{_REAL_BENCH}", *sys.argv[1:]])\n'
     )
     code, out = harness.exec_in_frappe(
         inst.name,

@@ -93,6 +93,15 @@ def _installed_apps(inst) -> list[str]:
     return [line.split()[0] for line in out.strip().splitlines() if line.strip()]
 
 
+def _remove_app_source(inst, *, required: bool = True) -> None:
+    """Remove the fetched app after it has been uninstalled from every site."""
+    code, out = harness.exec_in_frappe(
+        inst.name, f"cd {inst.bench} && bench remove-app --no-backup {_APP}"
+    )
+    if required:
+        assert code == 0, out
+
+
 def _assert_resynchronised(inst, before: dict[str, int], *, verb: str) -> dict[str, int]:
     """Every code-bearing program got a new PID, the untouched ones kept theirs, and
     the site genuinely serves. Returns the new PID map for the next leg."""
@@ -191,6 +200,7 @@ def test_every_app_code_change_resynchronises_the_whole_bench(running_instance):
         assert uninstall.returncode == 0, uninstall.stdout + uninstall.stderr
         assert _site_ping_code(inst) == "200"
         assert _APP not in _installed_apps(inst)
+        _remove_app_source(inst)
         restored = True
     finally:
         if not restored:
@@ -199,4 +209,5 @@ def test_every_app_code_change_resynchronises_the_whole_bench(running_instance):
                 harness.run_cwcli(
                     "apps", "uninstall", inst.name, _APP, "--site", inst.site, "--yes"
                 )
+            _remove_app_source(inst, required=False)
         _ensure_serving(inst.name)
