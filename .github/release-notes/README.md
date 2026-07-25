@@ -40,6 +40,30 @@ Rules the card must satisfy:
 
 The `CHANGELOG.md` entry is a different artifact and is usually much longer: it is the itemised record, while the card is the pitch. Condense, do not paste.
 
+## Naming the flagship entry
+
+A release often has one entry that matters more than the rest, and it must lead the change list rather than sit wherever it was written.
+Mark it by putting `<!-- flagship -->` on its own line, flush left, directly above that entry's bold sentence with no blank line in between:
+
+```markdown
+### What's Changed
+
+<!-- flagship -->
+**The flagship benefit, stated for the reader.**
+Why it matters.
+
+**A smaller change.**
+Context.
+```
+
+`.github/scripts/release-body.sh` enforces this before anything publishes:
+
+- The marker must be exactly `<!-- flagship -->` - no other casing or spacing - and it strips it from the published card, so it is authoring metadata, never reader-facing copy.
+- Only one marker is allowed; more than one, or one detached from an entry (a blank line on either side) or glued mid-entry, fails the release with an actionable error rather than guessing what you meant.
+- The marked entry must already be the first entry after the heading. A buried marker stops the release instead of being silently moved - a script that reorders hand-written Markdown risks mangling the prose it moves, so fix the note by hand and re-render.
+- A **major** release (`X.0.0`) requires the marker: `### What's New` is a headline announcement, so the headline must be named rather than assumed to be whichever entry was written first.
+- A minor or patch release has no such requirement. Most of them genuinely have no flagship entry, and an unmarked note publishes unchanged.
+
 ## Rendering it before you tag
 
 ```bash
