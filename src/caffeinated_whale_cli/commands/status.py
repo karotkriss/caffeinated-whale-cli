@@ -189,12 +189,17 @@ def _bench_heading(bench: BenchStatus) -> str:
             f"{name}: [bold red]GONE[/bold red] (directory no longer exists; "
             f"reported from cache - run `cwcli inspect --update`)"
         )
+    presence = (
+        " [yellow](cached, not verified)[/yellow]"
+        if bench.bench_present == resolvers.BENCH_UNVERIFIED
+        else ""
+    )
     if bench.not_cwcli_supervised:
         # Running under honcho / bench start: "supervisor down" would be a lie.
         supervisor = "not under cwcli supervision"
     else:
         supervisor = f"supervisor {'up' if bench.supervisor_up else 'down'}"
-    return f"{name}: [{style}]{bench.overall}[/{style}] ({supervisor})"
+    return f"{name}: [{style}]{bench.overall}[/{style}] ({supervisor}){presence}"
 
 
 def _up_mark(up: bool) -> str:

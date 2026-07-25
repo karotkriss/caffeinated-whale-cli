@@ -208,7 +208,18 @@ def test_a_live_bench_heading_carries_no_gone_marker(monkeypatch, capsys):
     # trusted earns ink.
     captured = _run(monkeypatch, capsys, _report("running"))
     assert "GONE" not in captured.err
+    assert "not verified" not in captured.err
     assert "running" in captured.err
+
+
+def test_an_unverified_bench_heading_labels_cache_without_hiding_health(monkeypatch, capsys):
+    report = _report("online", benches=[_bench("online", bench_present="unverified")])
+    captured = _run(monkeypatch, capsys, report)
+
+    assert "not verified" in captured.err
+    assert "online" in captured.err
+    assert "supervisor down" in captured.err
+    assert captured.out.strip() == "online"
 
 
 def test_a_removed_bench_heading_says_gone_before_its_health(monkeypatch, capsys):
