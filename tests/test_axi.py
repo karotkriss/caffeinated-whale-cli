@@ -695,6 +695,45 @@ class TestAxiHelpIsToon:
         assert init_examples.count('CWCLI_ADMIN_PASSWORD=\\"<password>\\"') == 2
         assert "--no-start" in init_examples
 
+    def test_scale_examples_include_the_runtime_required_consent_flag(self):
+        """Regression pin for D1: `--yes` is only conditionally required at
+        runtime (``core/scale.py``'s ``confirm_scale``), so it can never carry
+        the literal REQUIRED token without lying about the idempotent no-op -
+        both generated examples used to omit it and exit 2 for the operation
+        `scale` exists to perform."""
+        from caffeinated_whale_cli.main import app as root_app
+
+        scale = runner.invoke(root_app, ["axi", "scale", "--help"])
+        scale_examples = next(
+            line for line in scale.stdout.splitlines() if line.startswith("examples[")
+        )
+        assert scale_examples.count("--yes") == 2
+
+    def test_no_generated_example_omits_its_command_documented_consent_flag(self):
+        """General form of D1, not the `scale` instance: this codebase's convention
+        is that any flag gating a runtime ``NEEDS_CHOICE`` names itself in its own
+        help text with the word "consent" (``rm``, `rm-site`, `scale` all do). A
+        flag meeting that convention must appear in every one of its command's
+        generated examples - whether `_param_required` catches it via the literal
+        REQUIRED token (`rm`, `rm-site`) or a hand-written branch is needed because
+        the flag is only conditionally required (`scale`) - so an example is never
+        printed that exits 2 for the command's documented purpose. This class has
+        been reached twice by two different routes; this pins the class."""
+        for path, command in _axi_help_commands():
+            if isinstance(command, click.Group):
+                continue
+            ctx = click.Context(command)
+            consent_flags = [
+                option.opts[0]
+                for option in command.params
+                if isinstance(option, click.Option) and "consent" in (option.help or "").lower()
+            ]
+            if not consent_flags:
+                continue
+            for example in axi_mod._help_examples(command, ctx):
+                for flag in consent_flags:
+                    assert flag in example, (path, flag, example)
+
     def test_explicit_argument_metavars_are_preserved(self):
         """Usage and examples retain a command's explicit public argument shape."""
         from caffeinated_whale_cli.main import app as root_app
