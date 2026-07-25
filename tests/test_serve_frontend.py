@@ -20,13 +20,18 @@ import pytest
 from caffeinated_whale_cli.commands import serve as serve_cmd
 from caffeinated_whale_cli.core import fleet as core_fleet
 from caffeinated_whale_cli.core import inspect as core_inspect
+from caffeinated_whale_cli.core.apps import AppResult, AppsOutput, AppsReport
 from caffeinated_whale_cli.core.envelope import Choice, Result, Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from caffeinated_whale_cli.core.inspect import BenchInfo, InspectReport, SiteInfo
+from caffeinated_whale_cli.core.label import LabelOutcome
 from caffeinated_whale_cli.core.list import InstanceDTO
+from caffeinated_whale_cli.core.logs import LogsRead, ProcessLog
 from caffeinated_whale_cli.core.restart import ProcessRestartOutcome
 from caffeinated_whale_cli.core.start import ProcessLaunch, StartOutcome
 from caffeinated_whale_cli.core.stop import StopOutcome
+from caffeinated_whale_cli.core.unlock import UnlockOutcome
+from caffeinated_whale_cli.core.where import WhereMatch, WhereResult
 
 _TIMEOUT = 5.0
 
@@ -803,3 +808,604 @@ class TestActions:
         assert e.value.code == 400
         body = json.loads(e.value.read())
         assert body["error"]["code"] == "action.unsupported"
+
+    def test_the_action_set_is_exactly_tier_a(self, daemon):
+        """The allowed set is the captain's Tier A ruling and nothing more: no
+        long-running Tier B verb (init/backup/install/update/migrate/run-tests/
+        build/rm/rm-site) and no deferred Tier C verb (restore/uninstall/run/
+        open/config) may appear here without its own decision."""
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _post(daemon.base + "/api/action", {"action": "nope", "project": "p"})
+
+        hint = json.loads(e.value.read())["error"]["hint"]
+        named = set(hint.removeprefix("Allowed actions are ").removesuffix(".").split(", "))
+        assert named == {
+            "start_instance",
+            "stop_instance",
+            "restart_instance",
+            "restart_process",
+            "refresh_status",
+            "set_label",
+            "unlock_site",
+            "scale_instance",
+            "checkout_app",
+        }
+
+
+class TestTierAActions:
+    """The Tier A expansion: safe synchronous verbs, consent enforced in core."""
+
+    def test_set_label_dispatches_to_the_core_and_reprobes(self, daemon, monkeypatch):
+        called = {}
+
+        def _set_label(project, *, bench, label):
+            called.update({"project": project, "bench": bench, "label": label})
+            return Result(
+                status=Status.OK,
+                data=LabelOutcome(
+                    project=project,
+                    bench_path="/workspace/frappe-bench",
+                    label=label,
+                    previous_label=None,
+                    marker_path="/workspace/frappe-bench/.cwcli-bench",
+                    cleared=False,
+                ),
+            )
+
+        monkeypatch.setattr(serve_cmd.core_label, "set_label", _set_label)
+        monkeypatch.setattr(
+            daemon.fleet, "probe", lambda project: called.update({"probe": project})
+        )
+
+        status, body = _post(
+            daemon.base + "/api/action",
+            {"action": "set_label", "project": "p", "bench": "0", "label": "dev"},
+        )
+
+        assert status == 200
+        assert body["ok"] is True
+        assert body["outcome"]["label"] == "dev"
+        assert called == {"project": "p", "bench": "0", "label": "dev", "probe": "p"}
+
+    def test_set_label_requires_a_label(self, daemon):
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _post(daemon.base + "/api/action", {"action": "set_label", "project": "p"})
+
+        assert e.value.code == 400
+        assert json.loads(e.value.read())["error"]["code"] == "action.label_required"
+
+    def test_unlock_site_dispatches_to_the_core(self, daemon, monkeypatch):
+        called = {}
+
+        def _unlock(project, *, site, bench):
+            called.update({"project": project, "site": site, "bench": bench})
+            return Result(
+                status=Status.OK,
+                data=UnlockOutcome(
+                    site="a.localhost",
+                    bench_path="/workspace/frappe-bench",
+                    locks_path="/workspace/frappe-bench/sites/a.localhost/locks",
+                    removed=["a.lock"],
+                    already_unlocked=False,
+                ),
+            )
+
+        monkeypatch.setattr(serve_cmd.core_unlock, "unlock", _unlock)
+
+        status, body = _post(
+            daemon.base + "/api/action",
+            {"action": "unlock_site", "project": "p", "site": "a.localhost"},
+        )
+
+        assert status == 200
+        assert body["ok"] is True
+        assert body["outcome"]["removed"] == ["a.lock"]
+        # site omitted or blank means "the bench's default site", resolved by core.
+        assert called == {"project": "p", "site": "a.localhost", "bench": None}
+
+    def test_unlock_needs_choice_surfaces_as_409_not_an_auto_start(self, daemon, monkeypatch):
+        """A stopped instance comes back as core's confirm_start choice; the
+        daemon relays it and never starts anything on unlock's behalf."""
+        choice = Choice(
+            kind="confirm_start",
+            param="yes",
+            prompt="Container for 'p' is not running. Start it?",
+        )
+        monkeypatch.setattr(
+            serve_cmd.core_unlock,
+            "unlock",
+            lambda project, **kw: Result(status=Status.NEEDS_CHOICE, choice=choice),
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _post(daemon.base + "/api/action", {"action": "unlock_site", "project": "p"})
+
+        assert e.value.code == 409
+        body = json.loads(e.value.read())
+        assert body["error"]["kind"] == "needs_choice"
+        assert body["error"]["code"] == "confirm_start"
+
+    def test_scale_without_consent_relays_the_core_confirm(self, daemon, monkeypatch):
+        """The scale confirm is CORE-driven: core.scale answers NEEDS_CHOICE/
+        confirm_scale and the daemon renders it as 409 needs_choice, carrying
+        core's own warning text for the page's typed-name modal. No page-local
+        confirm could bypass this because the gate is in cwcli, not the page."""
+        called = {}
+
+        def _scale(project, **kwargs):
+            called.update({"project": project, **kwargs})
+            return Result(
+                status=Status.NEEDS_CHOICE,
+                choice=Choice(
+                    kind="confirm_scale",
+                    param="consent",
+                    prompt="Expanding project 'p' RESTARTS every serving bench. Continue?",
+                    default="false",
+                ),
+            )
+
+        monkeypatch.setattr(serve_cmd.core_scale, "scale", _scale)
+
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _post(daemon.base + "/api/action", {"action": "scale_instance", "project": "p"})
+
+        assert e.value.code == 409
+        body = json.loads(e.value.read())
+        assert body["error"]["kind"] == "needs_choice"
+        assert body["error"]["code"] == "confirm_scale"
+        assert "RESTARTS" in body["error"]["message"]
+        assert called == {"project": "p", "to": None, "consent": False}
+
+    def test_scale_consent_must_be_the_json_boolean_true(self, daemon, monkeypatch):
+        """Consent is strictly `true`; a truthy string does not count, and the
+        dispatch passes consent ONLY - nothing that could start a stopped
+        instance rides along with it (consent never fuses with auto-start)."""
+        calls = []
+
+        def _scale(project, **kwargs):
+            calls.append(kwargs)
+            return Result(
+                status=Status.NEEDS_CHOICE,
+                choice=Choice(kind="confirm_scale", param="consent", prompt="Continue?"),
+            )
+
+        monkeypatch.setattr(serve_cmd.core_scale, "scale", _scale)
+
+        with pytest.raises(urllib.error.HTTPError):
+            _post(
+                daemon.base + "/api/action",
+                {"action": "scale_instance", "project": "p", "consent": "yes"},
+            )
+        with pytest.raises(urllib.error.HTTPError):
+            _post(
+                daemon.base + "/api/action",
+                {"action": "scale_instance", "project": "p", "consent": 1},
+            )
+
+        assert calls == [{"to": None, "consent": False}, {"to": None, "consent": False}]
+
+    def test_scale_forwards_a_valid_to_and_refuses_a_non_integer_one(self, daemon, monkeypatch):
+        calls = []
+
+        def _scale(project, **kwargs):
+            calls.append(kwargs)
+            return Result(
+                status=Status.NEEDS_CHOICE,
+                choice=Choice(kind="confirm_scale", param="consent", prompt="Continue?"),
+            )
+
+        monkeypatch.setattr(serve_cmd.core_scale, "scale", _scale)
+
+        with pytest.raises(urllib.error.HTTPError):
+            _post(
+                daemon.base + "/api/action",
+                {"action": "scale_instance", "project": "p", "to": 8},
+            )
+        assert calls == [{"to": 8, "consent": False}]
+
+        # JSON true is an int subclass in Python and must not read as "1 bench";
+        # a string is not a count either. Both are refused before dispatch.
+        for bad in (True, "8"):
+            with pytest.raises(urllib.error.HTTPError) as e:
+                _post(
+                    daemon.base + "/api/action",
+                    {"action": "scale_instance", "project": "p", "to": bad},
+                )
+            assert e.value.code == 400
+            assert json.loads(e.value.read())["error"]["code"] == "action.to_invalid"
+        assert len(calls) == 1
+
+    def test_checkout_app_never_forwards_reset_or_auto_start(self, daemon, monkeypatch):
+        """Tier A ships checkout's no-reset form ONLY: a request smuggling
+        reset:true is dispatched without it (core's default False), and
+        auto_start is never passed. The CLI verbs are the way through a dirty
+        tree - the Console deliberately has no destructive opt-in to offer."""
+        called = {}
+
+        def _checkout(project, app, ref, **kwargs):
+            called.update({"project": project, "app": app, "ref": ref, **kwargs})
+            report = AppsReport(
+                project=project,
+                bench_path="/workspace/frappe-bench",
+                results=[
+                    AppResult(app=app, site=None, action="fetch", ok=True),
+                    AppResult(app=app, site=None, action="checkout", ok=True),
+                ],
+                ok=True,
+            )
+            return Result(status=Status.OK, data=report)
+
+        monkeypatch.setattr(serve_cmd.core_apps, "checkout_app", _checkout)
+        monkeypatch.setattr(serve_cmd.cache, "recache_project", lambda project: True)
+
+        status, body = _post(
+            daemon.base + "/api/action",
+            {
+                "action": "checkout_app",
+                "project": "p",
+                "app": "erpnext",
+                "ref": "feature-x",
+                "reset": True,
+                "auto_start": True,
+            },
+        )
+
+        assert status == 200
+        assert body["ok"] is True
+        assert called["project"] == "p"
+        assert called["app"] == "erpnext"
+        assert called["ref"] == "feature-x"
+        assert "reset" not in called
+        assert "auto_start" not in called
+
+    def test_checkout_app_rejects_path_traversal_before_dispatch(self, daemon, monkeypatch):
+        dispatched = []
+        monkeypatch.setattr(
+            serve_cmd.core_apps,
+            "checkout_app",
+            lambda *args, **kwargs: dispatched.append((args, kwargs)),
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(
+                daemon.base + "/api/action",
+                {
+                    "action": "checkout_app",
+                    "project": "p",
+                    "app": "../other",
+                    "ref": "main",
+                },
+            )
+
+        assert exc.value.code == 400
+        assert json.loads(exc.value.read())["error"]["code"] == "app.invalid_component"
+        assert dispatched == []
+
+    def test_a_failed_checkout_reports_failure_with_gits_own_words(self, daemon, monkeypatch):
+        """ok reads report.ok, not the envelope status (the exit-code precedent
+        in HTTP clothes), and the failure message carries a bounded tail of
+        git's bytes - the only place an unknown-ref or auth failure names
+        itself. Nothing succeeded, so no recache runs either."""
+        recached = []
+
+        def _checkout(project, app, ref, *, on_event=None, **kwargs):
+            if on_event:
+                on_event(
+                    AppsOutput(
+                        phase="fetch",
+                        app=app,
+                        site=None,
+                        stream="stderr",
+                        text="fatal: couldn't find remote ref nope",
+                    )
+                )
+            report = AppsReport(
+                project=project,
+                bench_path="/workspace/frappe-bench",
+                results=[AppResult(app=app, site=None, action="fetch", ok=False)],
+                ok=False,
+            )
+            return Result(status=Status.WARNING, data=report)
+
+        monkeypatch.setattr(serve_cmd.core_apps, "checkout_app", _checkout)
+        monkeypatch.setattr(
+            serve_cmd.cache, "recache_project", lambda project: recached.append(project) or True
+        )
+
+        status, body = _post(
+            daemon.base + "/api/action",
+            {"action": "checkout_app", "project": "p", "app": "erpnext", "ref": "nope"},
+        )
+
+        assert status == 200
+        assert body["ok"] is False
+        assert body["error"]["code"] == "app.step_failed"
+        assert "couldn't find remote ref" in body["error"]["message"]
+        assert recached == []
+
+    def test_a_successful_checkout_recaches_and_a_failed_recache_is_a_warning(
+        self, daemon, monkeypatch
+    ):
+        def _checkout(project, app, ref, **kwargs):
+            report = AppsReport(
+                project=project,
+                bench_path="/workspace/frappe-bench",
+                results=[AppResult(app=app, site=None, action="checkout", ok=True)],
+                ok=True,
+            )
+            return Result(status=Status.OK, data=report)
+
+        monkeypatch.setattr(serve_cmd.core_apps, "checkout_app", _checkout)
+        monkeypatch.setattr(serve_cmd.cache, "recache_project", lambda project: False)
+
+        status, body = _post(
+            daemon.base + "/api/action",
+            {"action": "checkout_app", "project": "p", "app": "erpnext", "ref": "main"},
+        )
+
+        assert status == 200
+        assert body["ok"] is True, "the checkout landed; a failed recache must not fail it"
+        assert any(w["code"] == "cache.recache_failed" for w in body["warnings"])
+
+    def test_refresh_status_rebootstraps_and_reprobes(self, daemon, monkeypatch):
+        called = []
+        monkeypatch.setattr(daemon.fleet, "bootstrap", lambda: called.append("bootstrap"))
+        monkeypatch.setattr(
+            daemon.fleet, "probe", lambda project: called.append(f"probe:{project}")
+        )
+
+        status, body = _post(
+            daemon.base + "/api/action", {"action": "refresh_status", "project": "p"}
+        )
+
+        assert status == 200
+        assert body["ok"] is True
+        assert body["outcome"]["project"] == "p"
+        assert called == ["bootstrap", "probe:p"]
+
+    def test_refresh_status_of_a_missing_project_is_404(self, daemon):
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _post(daemon.base + "/api/action", {"action": "refresh_status", "project": "ghost"})
+
+        assert e.value.code == 404
+
+
+class TestLogsEndpoint:
+    """GET /api/instance/<p>/logs - the bounded read, action-guarded."""
+
+    def _read(self, monkeypatch, result_or_exc, seen=None):
+        def _read_logs(project, **kwargs):
+            if seen is not None:
+                seen.update({"project": project, **kwargs})
+            if isinstance(result_or_exc, Exception):
+                raise result_or_exc
+            return result_or_exc
+
+        monkeypatch.setattr(serve_cmd.core_logs, "read_logs", _read_logs)
+
+    def test_it_dispatches_the_query_to_the_core_read(self, daemon, monkeypatch):
+        seen: dict = {}
+        self._read(
+            monkeypatch,
+            Result(
+                status=Status.OK,
+                data=LogsRead(
+                    project="p",
+                    container_name="p-frappe-1",
+                    bench_path="/workspace/frappe-bench",
+                    lines_requested=50,
+                    not_cwcli_supervised=False,
+                    logs=[
+                        ProcessLog(
+                            process="web",
+                            file="/workspace/frappe-bench/logs/web.supervisor.log",
+                            lines=["one", "two"],
+                        )
+                    ],
+                ),
+            ),
+            seen,
+        )
+
+        status, body = _get(daemon.base + "/api/instance/p/logs?lines=50&bench=0&process=web")
+
+        assert status == 200
+        assert body["ok"] is True
+        assert body["outcome"]["logs"][0]["lines"] == ["one", "two"]
+        assert seen == {"project": "p", "bench": "0", "process": "web", "lines": 50}
+
+    def test_it_is_not_cors_open_and_refuses_cross_origin_reads(self, daemon, monkeypatch):
+        self._read(monkeypatch, AssertionError("cross-origin read must not dispatch"))
+        req = urllib.request.Request(
+            daemon.base + "/api/instance/p/logs",
+            headers={"Origin": "https://example.invalid", "Sec-Fetch-Site": "cross-site"},
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(req, timeout=_TIMEOUT)  # noqa: S310 - fixed localhost
+
+        assert e.value.code == 403
+
+    def test_a_multi_bench_choice_is_409_with_the_options(self, daemon, monkeypatch):
+        self._read(
+            monkeypatch,
+            Result(
+                status=Status.NEEDS_CHOICE,
+                choice=Choice(
+                    kind="select_bench",
+                    param="bench",
+                    prompt="Project 'p' has multiple benches; select one.",
+                    options=[{"value": "0", "label": "/workspace/frappe-bench"}],
+                ),
+            ),
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _get(daemon.base + "/api/instance/p/logs")
+
+        assert e.value.code == 409
+        body = json.loads(e.value.read())
+        assert body["error"]["kind"] == "needs_choice"
+        assert body["choice"]["options"][0]["value"] == "0"
+
+    def test_bad_lines_values_are_400_without_dispatch(self, daemon, monkeypatch):
+        self._read(monkeypatch, AssertionError("an invalid lines value must not dispatch"))
+
+        for lines in ("abc", "0", "1001", "-5"):
+            with pytest.raises(urllib.error.HTTPError) as e:
+                _get(daemon.base + f"/api/instance/p/logs?lines={lines}")
+            assert e.value.code == 400
+            assert json.loads(e.value.read())["error"]["code"] == "logs.lines_invalid"
+
+
+class TestWhereEndpoint:
+    """GET /api/where - the cache search, verified/remembered tokens intact."""
+
+    def test_the_verified_and_project_state_tokens_pass_through(self, daemon, monkeypatch):
+        seen: dict = {}
+
+        def _where(term, **kwargs):
+            seen["term"] = term
+            return Result(
+                status=Status.WARNING,
+                data=WhereResult(
+                    matches=[
+                        WhereMatch(
+                            type="app",
+                            project="gone-project",
+                            bench="frappe-bench",
+                            name="erpnext",
+                            version="16.0.0",
+                            branch="version-16",
+                            installed=True,
+                            project_state="unverified",
+                        )
+                    ],
+                    verified=False,
+                ),
+            )
+
+        monkeypatch.setattr(serve_cmd.core_where, "where", _where)
+
+        status, body = _get(daemon.base + "/api/where?q=erp")
+
+        assert status == 200
+        assert seen["term"] == "erp"
+        assert body["verified"] is False, "an unreachable daemon must not read as verified"
+        assert body["matches"][0]["project_state"] == "unverified"
+
+    def test_an_empty_term_is_400(self, daemon, monkeypatch):
+        monkeypatch.setattr(
+            serve_cmd.core_where,
+            "where",
+            lambda term, **kw: pytest.fail("an empty search must not dispatch"),
+        )
+
+        for query in ("", "?q=", "?q=%20"):
+            with pytest.raises(urllib.error.HTTPError) as e:
+                _get(daemon.base + "/api/where" + query)
+            assert e.value.code == 400
+            assert json.loads(e.value.read())["error"]["code"] == "where.term_required"
+
+    def test_it_refuses_cross_origin_reads(self, daemon, monkeypatch):
+        monkeypatch.setattr(
+            serve_cmd.core_where,
+            "where",
+            lambda term, **kw: pytest.fail("cross-origin read must not dispatch"),
+        )
+        req = urllib.request.Request(
+            daemon.base + "/api/where?q=erp",
+            headers={"Origin": "https://example.invalid", "Sec-Fetch-Site": "cross-site"},
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(req, timeout=_TIMEOUT)  # noqa: S310 - fixed localhost
+
+        assert e.value.code == 403
+
+
+class TestTierAConsoleUi:
+    """The page's Tier A pins: exact button set, core-driven confirm, honest reads."""
+
+    @pytest.fixture
+    def page(self, daemon):
+        with urllib.request.urlopen(daemon.base + "/", timeout=_TIMEOUT) as resp:  # noqa: S310
+            return resp.read().decode()
+
+    def test_the_rail_renders_exactly_the_tier_a_buttons(self, page):
+        """A greyed-out or dead button for an excluded verb counts as building
+        it; the button set is pinned to exactly the allowed action set."""
+        import re
+
+        rendered = set(re.findall(r'actionButton\("([a-z_]+)"', page))
+        assert rendered == {
+            "start_instance",
+            "stop_instance",
+            "restart_instance",
+            "restart_process",
+            "refresh_status",
+            "set_label",
+            "unlock_site",
+            "scale_instance",
+            "checkout_app",
+        }
+
+    def test_no_excluded_tier_verb_has_a_surface(self, page):
+        # Tier B waits on the job backend; Tier C is deferred per-verb. None of
+        # them may appear as a button label or an action token.
+        for token in (
+            "Backup",
+            "Migrate",
+            "Restore",
+            "Uninstall",
+            "Install app",
+            "Update app",
+            "Run tests",
+            "Build assets",
+            "Remove instance",
+            "Drop site",
+            "rm-site",
+            "Delete instance",
+        ):
+            assert token not in page, f"excluded verb surfaced: {token}"
+
+    def test_the_scale_confirm_is_core_driven_and_typed_name(self, page):
+        # The modal opens ONLY off core's 409 confirm_scale, renders core's own
+        # message, and the confirm button stays disabled until the project name
+        # is typed back exactly. Its retry stays bound to the project whose
+        # request produced that confirmation, even if selection changes.
+        assert 'error.code === "confirm_scale"' in page
+        assert "openScaleConfirm(payload.project, error.message" in page
+        assert "confirm.disabled = input.value !== project;" in page
+        assert "Object.assign({consent: true}" in page
+        assert "Object.assign({consent: false}" in page
+        assert "async function runAction(action, extra, targetProject)" in page
+        assert "targetProject ? model.get(targetProject)" in page
+        consent_retry = page.split("Object.assign({consent: true}", 1)[1].split(");", 1)[0]
+        assert "project" in consent_retry
+
+    def test_the_checkout_form_sends_only_app_and_ref(self, page):
+        assert 'runAction("checkout_app", {app, ref})' in page
+        assert "reset: " not in page, "the page must never send a reset flag"
+
+    def test_the_new_read_surfaces_render_honest_unknowns(self, page):
+        # where: the three project_state tokens each have a distinct rendering,
+        # and an unverified sweep is announced rather than dressed as live.
+        assert "could not verify" in page
+        assert "instance gone" in page
+        assert "matches are remembered, not verified" in page
+        # logs: an empty read and a not-cwcli-supervised bench say what they are.
+        assert "No logs written yet" in page
+        assert "raw bench logs - not cwcli supervised" in page
+        # apps detail: a cache row missing version/branch says "not recorded".
+        assert "not recorded" in page
+
+    def test_the_fleet_search_lives_outside_the_rerendered_rail(self, page):
+        # The rail body re-renders on every delta; an input inside it would
+        # lose its text and focus mid-typing. The search panel is static.
+        rail_body_render = page.split('el("rail-body").innerHTML')[1].split("restoreControlFocus")[
+            0
+        ]
+        assert "where-input" not in rail_body_render
+        assert '<form id="where-form"' in page
+        assert 'id="where-input"' in page
