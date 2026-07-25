@@ -2031,7 +2031,8 @@ A single cwcli project (one Docker Compose instance) can hold more than one benc
 
 **How benches are addressed:**
 
-- **Numeric index** - Every bench discovered by `cwcli inspect` gets a durable per-project number (`0`, `1`, `2`, ...). `cwcli inspect` shows it next to each bench (for example `Bench [1] at /workspace/frappe-bench-2`). The number stays attached to that bench path when another bench is added or removed, so a stored or scripted `--bench 1` never quietly starts addressing a different bench.
+- **Numeric index** - Every bench discovered by `cwcli inspect` gets a durable per-project number. `cwcli inspect` shows it next to each bench (for example `Bench [1] at /workspace/frappe-bench-2`). The number stays attached to that bench path when another bench is added or removed, so a stored or scripted `--bench 1` never quietly starts addressing a different bench.
+  Removed numbers are not reused, so the available indices may be sparse, such as `0`, `2`, and `3`.
   Benches are listed in that numeric order, so a newly added bench appears at the end of the list even when its path sorts earlier.
 - **User label** - A durable, human-friendly handle you assign with the [`label`](#label---manage-bench-labels) command or `cwcli inspect -i`. Labels may not be purely numeric (that would collide with an index) and must be unique within a project.
 
