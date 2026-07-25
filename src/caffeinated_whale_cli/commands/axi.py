@@ -99,15 +99,56 @@ def _is_option(param) -> bool:
     return getattr(param, "param_type_name", None) == "option"
 
 
+_CODE_SPAN_RE = re.compile(r"(`+)(.+?)\1")
+_BOLD_RE = re.compile(r"\*\*([^*\n]+)\*\*")
+
+
+def _strip_prose_markup(text: str) -> str:
+    """Strip markdown/RST code-span (single `` `code` `` or double ``` ``code`` ```
+    backticks - both appear across these docstrings) and markdown bold
+    delimiters Rich rendered as plain styled text, so a TOON reader sees the
+    words without literal backtick/asterisk punctuation Rich never showed."""
+    return _BOLD_RE.sub(r"\1", _CODE_SPAN_RE.sub(r"\2", text))
+
+
+def _split_bullet_items(block: str) -> list[str]:
+    """Split a `- ` bullet-list block into one entry per item, folding each
+    continuation line into the item it wraps rather than joining the whole list
+    into a single run-on paragraph."""
+    items: list[list[str]] = []
+    for raw_line in block.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("- "):
+            items.append([line[2:]])
+        else:
+            items[-1].append(line)
+    return [" ".join(item) for item in items]
+
+
 def _help_paragraphs(text: str | None) -> list[str]:
-    """Collapse Click help prose into TOON-safe, unpadded paragraph values."""
+    """Collapse Click help prose into TOON-safe, unpadded paragraph values.
+
+    A block whose FIRST line is a `- ` bullet is a list, split into one entry
+    per item instead of joined into a run-on paragraph (matching the separate
+    bullets Rich used to render) - checking only the first line, not any line,
+    keeps a prose paragraph that merely word-wraps onto a "- ..." continuation
+    (e.g. "... has no rollback\\n    - a patch that fails partway...") from being
+    misread as a list.
+    """
     if not text:
         return []
-    return [
-        " ".join(paragraph.split())
-        for paragraph in re.split(r"\n\s*\n", text.strip())
-        if paragraph.strip()
-    ]
+    paragraphs: list[str] = []
+    for block in re.split(r"\n\s*\n", text.strip()):
+        if not block.strip():
+            continue
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if lines and lines[0].startswith("- "):
+            paragraphs.extend(_split_bullet_items(block))
+        else:
+            paragraphs.append(" ".join(block.split()))
+    return [_strip_prose_markup(paragraph) for paragraph in paragraphs]
 
 
 def _param_required(param: Any) -> bool:
@@ -143,11 +184,16 @@ def _option_default(option: Any, ctx: click.Context):
     return default
 
 
-def _argument_placeholder(argument: Any) -> str:
+def _argument_name(argument: Any) -> str:
+    """Resolve an explicit metavar over the raw param name, so the usage line,
+    the examples, and the arguments table all name one parameter the same way."""
     explicit = getattr(argument, "metavar", None)
-    name = str(explicit) if explicit else (argument.name or "arg").replace("_", "-")
+    return str(explicit) if explicit else (argument.name or "arg").replace("_", "-")
+
+
+def _argument_placeholder(argument: Any) -> str:
     suffix = "..." if argument.nargs == -1 else ""
-    value = f"<{name}>{suffix}"
+    value = f"<{_argument_name(argument)}>{suffix}"
     return value if argument.required else f"[{value}]"
 
 
@@ -214,16 +260,23 @@ def _help_examples(command: click.Command, ctx: click.Context) -> list[str]:
         yes = _option_placeholder(by_flag["--yes"], ctx)
         to = _option_placeholder(by_flag["--to"], ctx)
         return [f"{base} {yes}", f"{base} {to} {yes}"]
+    if command.name == "rm":
+        # `--volumes` is the default (`default: true`), so the first-declared
+        # non-required option is the MORE destructive half of the pair; the flag
+        # worth showing on the repo's most destructive verb is the one that
+        # preserves data, not the one that spells out what deletion already does.
+        by_flag = {flag: option for option in options for flag in option.opts}
+        no_volumes = by_flag["--volumes"].secondary_opts[0]
+        return [base, f"{base} {no_volumes}"]
     examples = [base]
     optional = next(
         (option for option in options if option.name != "help" and not _param_required(option)),
         None,
     )
-    examples.append(
-        f"{base} {_option_placeholder(optional, ctx)}"
-        if optional is not None
-        else f"{ctx.command_path} --help"
-    )
+    if optional is not None:
+        # No optional flag beyond --help: a second example would just spell out
+        # `--help`, which an agent already knows exists and teaches nothing.
+        examples.append(f"{base} {_option_placeholder(optional, ctx)}")
     return examples
 
 
@@ -240,8 +293,14 @@ def _render_help_as_toon(command: click.Command, ctx: click.Context) -> str:
         rows = []
         for name in names:
             child = cast(Any, command).get_command(ctx, name)
-            description = child.get_short_help_str() if child is not None else ""
-            rows.append({"name": name, "description": " ".join(description.split())})
+            # Click's default limit=45 cut every one of these mid-clause, dropping
+            # load-bearing words like READ-ONLY and ONE named site (+705 bytes at
+            # limit=100 removes all truncation on the root listing; still far
+            # below the old boxed help's size).
+            description = child.get_short_help_str(limit=100) if child is not None else ""
+            rows.append(
+                {"name": name, "description": _strip_prose_markup(" ".join(description.split()))}
+            )
         lines.append(
             toon.table(
                 "commands",
@@ -258,7 +317,7 @@ def _render_help_as_toon(command: click.Command, ctx: click.Context) -> str:
                 "arguments",
                 [
                     {
-                        "name": argument.name,
+                        "name": _argument_name(argument),
                         "value": _value_shape(argument, ctx),
                         "required": _param_required(argument),
                         "description": " ".join((getattr(argument, "help", "") or "").split()),
@@ -1875,7 +1934,7 @@ def axi_build(
 
 @app.command("config")
 def axi_config() -> None:
-    """Report the effective cwcli configuration; emit it as one TOON document. READ-ONLY.
+    """Report the effective cwcli configuration; emit it as one TOON document; READ-ONLY.
 
     The aggregate the AXI standard asks a read verb to be: search paths,
     auto-inspect state (config, live daemon, boot hook - three stores,
@@ -2447,7 +2506,7 @@ def axi_self_update(
         False, "--no-cache", help="Force a fresh PyPI lookup, ignoring the shared version cache."
     ),
 ) -> None:
-    """Report whether a newer cwcli is available; emit the check as TOON. READ-ONLY.
+    """Report whether a newer cwcli is available; emit the check as TOON; READ-ONLY.
 
     ``--check`` is REQUIRED: the mutating form is deliberately deferred, so this
     verb never upgrades anything. An agent upgrading the tool it is currently
