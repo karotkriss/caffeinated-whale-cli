@@ -1502,8 +1502,10 @@ def _install_narrate(event) -> None:
     which install emits and checkout does not.
     """
     if isinstance(event, core_apps.AppsAnnounce):
+        # `.rstrip()`: the post-mutation web restart names no app and no site (it is
+        # about the bench), so its line would otherwise carry a trailing space.
         target = " ".join(p for p in (event.app, event.site) if p)
-        print(f"[{event.phase}] {target}", file=sys.stderr, flush=True)
+        print(f"[{event.phase}] {target}".rstrip(), file=sys.stderr, flush=True)
     else:
         _checkout_narrate(event)
 

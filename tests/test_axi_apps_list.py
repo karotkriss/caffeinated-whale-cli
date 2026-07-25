@@ -39,6 +39,13 @@ def container(monkeypatch):
     monkeypatch.setattr(core_docker, "get_frappe_container", lambda _p: c)
     monkeypatch.setattr(core_apps.bench_sites, "list_sites", lambda *a, **k: ["a.localhost"])
     monkeypatch.setattr(resolvers, "cached_benches", lambda _p: [{"path": BENCH}])
+    monkeypatch.setattr(
+        core_apps.supervision,
+        "discover_stack",
+        lambda *a, **k: core_apps.supervision.StackSnapshot(
+            supervisor_up=False, supervisor_pid=None, processes=[]
+        ),
+    )
     return c
 
 
