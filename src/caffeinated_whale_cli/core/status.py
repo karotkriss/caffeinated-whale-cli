@@ -317,7 +317,7 @@ def _targets(
     """The ``(index, bench_path, label)`` benches to report, plus resolver warnings.
 
     A selector narrows to one entry; without one, every cached bench is reported in
-    the cached discovery order, while each tuple carries its durable numeric
+    durable identity order, while each tuple carries its durable numeric
     identity. That list is REMEMBERED, not verified, and
     deliberately carries no ``where``-style verification token: each bench's health
     is read LIVE, so a stale path self-corrects into a visible no-processes bench

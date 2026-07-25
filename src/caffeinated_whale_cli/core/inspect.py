@@ -270,7 +270,7 @@ def discover_benches(container, *, on_event: OnEvent | None = None) -> list[str]
                     if _is_bench_directory(container, bench_dir, emit):
                         benches_found.append(bench_dir)
 
-    # Sort for deterministic presentation and first-discovery identity assignment.
+    # Sort for deterministic first-discovery identity assignment.
     # Numeric identities are persisted separately, so an existing bench keeps its
     # number even when a newly discovered path sorts before it.
     return sorted(set(benches_found))
