@@ -8,7 +8,8 @@
 
 ## 2. core.label (the read and the two mutations)
 
-- [x] 2.1 Implement `core.list_benches(project) -> Result[BenchList]` in a new `core/label.py`: read via `resolvers.cached_benches`, return one `BenchInfo(index, path, label)` per bench in stable order. No container is touched. No cached benches raises `CwcliError(NOT_FOUND)` with a hint naming `cwcli inspect <project>` - NOT an empty list ("not inspected yet" and "zero benches" are different facts).
+- [x] 2.1 Implement `core.list_benches(project) -> Result[BenchList]` in a new `core/label.py`.
+  Its original cache-only behavior was superseded by the shared existence-verification contract in `core/resolvers.py:present_bench_paths`; see README.md for current behavior.
 - [x] 2.2 Define the `BenchInfo`, `BenchList`, and `LabelOutcome` DTOs (frozen, slots, kw_only; every field a builtin or None). `BenchList` wraps its list in a dataclass following `core/where.py:35`'s `WhereResult`, because `emit_result` serializes via `asdict` and needs a dataclass at the top. Document on `BenchInfo.index` that it is positional and NOT durable.
 - [x] 2.3 Implement `core.set_label(project, *, bench=None, label) -> Result[LabelOutcome]` and `core.clear_label(project, *, bench=None) -> Result[LabelOutcome]` as SEPARATE functions. Do NOT collapse them into one `label=None`-means-clear function: that is the sentinel batch 1 retired from `_stop_project`. `db_utils.set_bench_label` keeps its `None`-clears convention at the storage layer only.
 - [x] 2.4 Resolve the bench via `resolvers.resolve_bench(project, bench, None)` - the same primitive every other bench-scoped verb uses - and re-key the duplicate check from dict identity (`label.py:92`'s `other is not chosen`) to path (`other["path"] != chosen_path`). Path is the natural key: `db_utils.set_bench_label` keys on it and the marker lives at it.

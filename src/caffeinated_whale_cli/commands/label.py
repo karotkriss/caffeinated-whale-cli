@@ -32,13 +32,8 @@ def _state_part(state: str) -> str:
 
 
 def _bench_line(bench) -> str:
-    label_part = (
-        f" [magenta]'{bench.label}'[/magenta]" if bench.label else " [dim](no label)[/dim]"
-    )
-    return (
-        f"  [cyan]\\[{bench.index}][/cyan]{label_part}  {bench.path}"
-        f"{_state_part(bench.state)}"
-    )
+    label_part = f" [magenta]'{bench.label}'[/magenta]" if bench.label else " [dim](no label)[/dim]"
+    return f"  [cyan]\\[{bench.index}][/cyan]{label_part}  {bench.path}{_state_part(bench.state)}"
 
 
 def _print_bench_list(project_name: str, benches: list) -> None:
@@ -106,8 +101,9 @@ def label(
 
         cwcli label my-project 1 --clear       # remove bench 1's label
     """
-    # No selector -> list mode (read-only, no container needed). Not a NEEDS_CHOICE:
-    # omitting the selector is a legitimate request, not an ambiguity.
+    # No selector -> read-only list mode. It never starts a container, but verifies
+    # cached paths when one is already reachable. Not a NEEDS_CHOICE: omitting the
+    # selector is a legitimate request, not an ambiguity.
     if bench_selector is None:
         try:
             listing = core_label.list_benches(project_name)
