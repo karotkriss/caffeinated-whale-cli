@@ -49,10 +49,9 @@ _NOT_RUNNING_HINT = "Start the project first - the label marker is stored inside
 class BenchInfo:
     """One bench's addressing info (serializable, no live objects).
 
-    ``index`` is the bench's position in stable sorted-by-path order and is what
-    ``--bench`` accepts, but it is NOT durable: adding or removing a bench
-    renumbers the rest. That is precisely why ``label`` exists - a user label is
-    the durable handle.
+    ``index`` is the bench's durable numeric identity and is what ``--bench``
+    accepts. Discovery order may change when another path is added, but this value
+    remains attached to the same path. A user label remains the readable handle.
     """
 
     index: int
@@ -132,8 +131,12 @@ def list_benches(project_name: str) -> Result[BenchList]:
         data=BenchList(
             project=project_name,
             benches=[
-                BenchInfo(index=i, path=b["path"], label=b.get("label"))
-                for i, b in enumerate(benches)
+                BenchInfo(
+                    index=b.get("index", position),
+                    path=b["path"],
+                    label=b.get("label"),
+                )
+                for position, b in enumerate(benches)
             ],
         ),
     )

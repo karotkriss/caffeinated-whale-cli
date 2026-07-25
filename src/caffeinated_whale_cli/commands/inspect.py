@@ -185,7 +185,8 @@ def inspect(
             )
 
         assignments: list[tuple[str, str]] = []
-        for index, bench in enumerate(bench_instances_data):
+        for position, bench in enumerate(bench_instances_data):
+            index = bench.get("index", position)
             existing = bench.get("label")
             existing_hint = f" [current: '{existing}']" if existing else ""
             try:
@@ -229,19 +230,20 @@ def inspect(
                     )
 
     if json_output:
-        # Surface the positional numeric index alongside any user label so scripts
-        # can address a bench with --bench <index|label>.
+        # Surface the durable numeric identity alongside any user label so scripts
+        # can address a bench with --bench <index|label> across later additions.
         benches_out = [
-            {"index": index, **bench_instance}
-            for index, bench_instance in enumerate(bench_instances_data)
+            {"index": bench_instance.get("index", position), **bench_instance}
+            for position, bench_instance in enumerate(bench_instances_data)
         ]
         result_doc = {"project_name": project_name, "bench_instances": benches_out}
         print(json.dumps(result_doc, indent=2))
     else:
         tree = Tree(f"Project [bold cyan]{project_name}[/bold cyan]", guide_style="bright_blue")
-        for index, bench_instance in enumerate(bench_instances_data):
-            # Show the numeric index (its default label) and any user label, so the
-            # user knows exactly what to pass to --bench.
+        for position, bench_instance in enumerate(bench_instances_data):
+            index = bench_instance.get("index", position)
+            # Show the numeric identity and any user label, so the user knows
+            # exactly what to pass to --bench.
             path = bench_instance["path"]
             user_label = bench_instance.get("label")
             label_part = f" [magenta]'{user_label}'[/magenta]" if user_label else ""

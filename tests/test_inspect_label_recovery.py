@@ -165,6 +165,6 @@ def test_recovered_labels_are_addressable_by_selector(wired):
     benches = store["proj"]["bench_instances"]
     assert bench_labels.resolve_bench(benches, "staging")["path"] == BENCH_B
     assert bench_labels.resolve_bench(benches, "primary")["path"] == BENCH_A
-    # Numeric index still works and is stable (sorted discovery order).
+    # Numeric identity still works and remains attached to the recovered path.
     assert bench_labels.resolve_bench(benches, "0")["path"] == BENCH_A
     assert bench_labels.resolve_bench(benches, "1")["path"] == BENCH_B
