@@ -96,10 +96,10 @@ class FakeFrappeContainer:
         if cmd_str.startswith("ls -1") and cmd_str.rstrip().endswith("apps"):
             # Matches both "ls -1 <bench>/apps" and the workdir form "ls -1 apps".
             return 0, "\n".join(self.available_apps) + "\n"
-        if "list-apps" in cmd_str:
+        if "execute frappe.get_installed_apps" in cmd_str:
             parts = shlex.split(cmd_str)
             site = parts[parts.index("--site") + 1] if "--site" in parts else ""
-            return 0, "\n".join(self.installed.get(site, [])) + "\n"
+            return 0, json.dumps(self.installed.get(site, [])) + "\n"
         return 0, ""
 
     def exec_run(self, cmd, workdir=None, **kwargs):
@@ -248,7 +248,7 @@ def test_list_installed_read_failure_exits_nonzero_json(wired, monkeypatch, caps
     container = FakeFrappeContainer(
         available_apps=["frappe"],
         installed={"a.localhost": ["frappe"]},
-        fail_on=["--site b.localhost list-apps"],
+        fail_on=["--site b.localhost execute frappe.get_installed_apps"],
     )
     monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
 
@@ -273,7 +273,7 @@ def test_list_installed_read_failure_exits_nonzero_human(wired, monkeypatch, cap
     container = FakeFrappeContainer(
         available_apps=["frappe"],
         installed={"a.localhost": ["frappe"]},
-        fail_on=["--site b.localhost list-apps"],
+        fail_on=["--site b.localhost execute frappe.get_installed_apps"],
     )
     monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
 

@@ -80,7 +80,7 @@ def test_installed_per_site_reports_only_app_names(container, capsys):
 def test_a_failed_site_read_exits_one_and_still_emits_the_document(container, capsys):
     """Reads `ok`, not the envelope status: a partial read is a WARNING envelope,
     and WARNING maps to exit 0 on every other verb."""
-    container.fail_on = ["list-apps"]
+    container.fail_on = ["execute frappe.get_installed_apps"]
 
     with pytest.raises(typer.Exit) as exc:
         axi_mod.axi_apps_list("proj", bench=None, sites=None, installed=True)
@@ -274,7 +274,9 @@ def test_install_over_an_already_installed_app_is_refused(container, monkeypatch
 def test_install_refuses_when_the_sites_app_list_cannot_be_read(container, monkeypatch, capsys):
     """Fail closed: an unreadable site must never degrade to "nothing is installed"."""
     monkeypatch.setattr(
-        core_apps, "_installed_apps", lambda *a, **k: ("bench list-apps -> exit 1", False, [])
+        core_apps,
+        "_installed_apps",
+        lambda *a, **k: ("bench execute frappe.get_installed_apps -> exit 1", False, []),
     )
     ran = _record_steps(monkeypatch)
 

@@ -16,6 +16,7 @@ returns is plain serializable data.
 from __future__ import annotations
 
 import dataclasses
+import json
 
 import pytest
 
@@ -81,12 +82,13 @@ class FakeContainer:
             return 0, "\n".join(getattr(self, "remotes", ["upstream"])) + "\n"
         if cmd_str.startswith("ls -1") and cmd_str.rstrip().endswith("apps"):
             return 0, "\n".join(self.available) + "\n"
-        if "list-apps" in cmd_str:
+        if "execute frappe.get_installed_apps" in cmd_str:
             import shlex
 
             parts = shlex.split(cmd_str)
             site = parts[parts.index("--site") + 1] if "--site" in parts else ""
-            return 0, "\n".join(self.installed.get(site, [])) + "\n"
+            apps = [line.split()[0] for line in self.installed.get(site, [])]
+            return 0, json.dumps(apps) + "\n"
         return 0, ""
 
     def exec_run(self, cmd, workdir=None, **kwargs):
@@ -168,20 +170,20 @@ def test_a_missing_project_raises_rather_than_returning(monkeypatch):
 # ------------------------------------------------------------------------ list_apps
 
 
-def test_list_keeps_only_the_app_name_from_a_real_list_apps_line(monkeypatch, container):
-    """A real bench prints `<name> <version> <branch>`; only the name is an app."""
+def test_list_reads_the_authoritative_installed_app_names(monkeypatch, container):
     _cache(monkeypatch, [{"path": BENCH}])
 
     result = core_apps.list_apps("proj", installed=True)
 
     assert result.data.installed == {"a.localhost": ["frappe"]}
+    assert any("execute frappe.get_installed_apps" in call for call in container.calls)
     assert result.status is Status.OK
     assert result.data.ok is True
 
 
 def test_list_reports_a_failed_site_read_as_none_not_empty(monkeypatch, container):
     """ "no apps" and "could not tell" are different facts, and only one exits 1."""
-    container.fail_on = ["list-apps"]
+    container.fail_on = ["execute frappe.get_installed_apps"]
     _cache(monkeypatch, [{"path": BENCH}])
 
     result = core_apps.list_apps("proj", installed=True)
@@ -197,7 +199,27 @@ def test_list_does_not_read_sites_unless_asked(monkeypatch, container):
     result = core_apps.list_apps("proj")
 
     assert result.data.installed == {}
-    assert not any("list-apps" in c for c in container.calls)
+    assert not any("frappe.get_installed_apps" in c for c in container.calls)
+
+
+def test_installed_apps_rejects_the_stale_v14_list_surface(monkeypatch, container):
+    """The safety read uses the global that install updates, not v14's stale singleton."""
+    container.installed = {
+        "a.localhost": ["frappe 14.0.0 version-14", "payments 1.0.0 version-14"]
+    }
+    _cache(monkeypatch, [{"path": BENCH}])
+
+    with pytest.raises(CwcliError) as exc:
+        core_apps.install_apps(
+            "proj",
+            ["payments"],
+            sites=["a.localhost"],
+            require_absent=True,
+        )
+
+    assert exc.value.code == "app.already_installed"
+    assert any("execute frappe.get_installed_apps" in call for call in container.calls)
+    assert not any(call.startswith("bench get-app") for call in container.calls)
 
 
 # --------------------------------------------------------------------- install_apps
@@ -794,7 +816,7 @@ def test_checkout_skips_a_site_that_does_not_have_the_app(monkeypatch, container
 
 def test_checkout_reports_a_site_whose_installed_apps_it_could_not_read(monkeypatch, container):
     """Unreadable is REPORTED, never silently folded into "not affected"."""
-    container.fail_on = ["list-apps"]
+    container.fail_on = ["execute frappe.get_installed_apps"]
     _cache(monkeypatch, [{"path": BENCH}])
     _bridge_spy(monkeypatch)
     _wire_running_bench(monkeypatch)

@@ -34,6 +34,7 @@ Three things here are deliberate and load-bearing:
 
 from __future__ import annotations
 
+import json
 import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -204,18 +205,33 @@ def _available_apps(frappe_container, bench_path: str) -> tuple[str, list[str]]:
 
 
 def _installed_apps(frappe_container, bench_path: str, site: str) -> tuple[str, bool, list[str]]:
-    """Apps installed on ``site``. Returns ``(command_for_echo, ok, apps)``.
+    """Authoritative apps installed on ``site``.
 
-    ``ok`` distinguishes "read failed" from "no apps" - the whole basis of the
-    caller's exit code. Only the first token of each line is kept: a real bench
-    prints ``<name> <version> <branch>``.
+    ``bench list-apps`` prefers the ``Installed Applications`` singleton on Frappe
+    v14. That singleton can remain stale after an app is uninstalled, removed from
+    the bench, then installed again: the install updates the authoritative
+    ``installed_apps`` global, but not the singleton. The agent install guard must
+    read the global directly or it can miss an installed app and re-run its hooks.
+
+    ``bench execute`` emits the return value as JSON on every supported Frappe
+    version. ``ok`` distinguishes a failed or malformed read from no apps, which is
+    the basis of the fail-closed callers' exit code.
     """
-    cmd = f"bench --site {shlex.quote(site)} list-apps"
+    cmd = f"bench --site {shlex.quote(site)} execute frappe.get_installed_apps"
     exit_code, text = _capture(frappe_container, cmd, bench_path)
     command = f"{cmd} -> exit {exit_code}"
     if exit_code != 0:
         return command, False, []
-    return command, True, [line.split()[0] for line in text.split("\n") if line.strip()]
+    lines = [line for line in text.splitlines() if line.strip()]
+    if not lines:
+        return command, False, []
+    try:
+        apps = json.loads(lines[-1])
+    except (json.JSONDecodeError, TypeError):
+        return command, False, []
+    if not isinstance(apps, list) or not all(isinstance(app, str) for app in apps):
+        return command, False, []
+    return command, True, apps
 
 
 def _capture(frappe_container, cmd: str, workdir: str) -> tuple[int, str]:
