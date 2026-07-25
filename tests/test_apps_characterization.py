@@ -382,5 +382,5 @@ def test_list_verbose_echoes_its_reads_to_stderr_leaving_json_pure(
 
     captured = capsys.readouterr()
     assert "$ ls -1 apps" in captured.err
-    assert "list-apps -> exit 0" in captured.err
+    assert "execute frappe.get_installed_apps -> exit 0" in captured.err
     json.loads(captured.out)  # stdout is the document and nothing else

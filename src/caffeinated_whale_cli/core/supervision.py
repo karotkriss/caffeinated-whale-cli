@@ -39,6 +39,9 @@ What lives here:
   combined-stream capper); ``commands/logs.py`` tails one or all of them (the
   multi-file tail is the combined view).
 - :func:`fused_probe` - one-exec process, supervisord-state, and web health read.
+- :func:`resync_after_code_change` - THE shared "app code on disk just changed"
+  step: cycle the bench's code-bearing programs (web, scheduler, workers) and prove
+  the affected sites still serve. Every mutating apps verb routes through it.
 
 No ``rich``/``questionary``/``typer`` (a unit test enforces the ban), and the
 frappe ``Container`` object stays INTERNAL - it is passed in for exec calls and is
@@ -50,8 +53,11 @@ from __future__ import annotations
 import json
 import shlex
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+
+from . import resolvers
 
 # All cwcli supervision state lives under the bench's own ``logs/`` dir, which
 # sits on the frappe_docker workspace volume, so it survives a container restart.
@@ -1097,6 +1103,229 @@ def states_by_label(states: dict[str, tuple[str, int | None]]) -> dict[str, tupl
 def restart_program(container, bench_path: str, program: str) -> tuple[int | None, str]:
     """Restart ONE supervisord program (siblings untouched); return (code, text)."""
     return _supervisorctl(container, bench_path, "restart", program)
+
+
+# --------------------------------------------------- post-code-change resynchronise
+
+# The Procfile programs that run the BENCH'S OWN PYTHON, and so hold app code in
+# memory from the moment they booted. Everything else in a Frappe Procfile is
+# deliberately excluded: ``socketio`` and ``watch`` are node processes that import
+# no Frappe app, and ``redis_cache``/``redis_queue`` are redis servers whose restart
+# would drop the cache and the job queue for no gain at all.
+_CODE_BEARING_BASES = frozenset({"web", "schedule", "worker"})
+
+# A program in one of these states is serving; anything else was never started or
+# has stopped, and cwcli must not start it (see :func:`resync_after_code_change`).
+_LIVE_STATES = frozenset({"RUNNING", "STARTING"})
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ResyncOutcome:
+    """What a post-code-change resynchronisation did, and what it actually proved.
+
+    ``error`` is ONE line: ``axi`` renders it through ``toon.kv``, where an embedded
+    newline would split the document. It is context-free, so each caller prefixes
+    its own ("the install landed, but ...", "the update completed, but ...").
+    """
+
+    attempted: bool  # a live manager was found, so there was something to resync
+    restarted: list[str]  # the supervisord programs actually cycled, in Procfile order
+    unserved_sites: list[str]  # sites that never answered HTTP 200 within the budget
+    error: str | None  # why the resync could not be completed or proved
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None and not self.unserved_sites
+
+
+def code_bearing_programs(programs: list[str]) -> list[str]:
+    """Of ``programs``, those that run the bench's Python (``web``/``schedule``/workers).
+
+    Keyed off the discovery label's base, so every worker spelling a Procfile can use
+    (``worker``, ``worker_short``, ``worker_default``, normalized to ``worker:<queue>``)
+    is covered without listing them.
+    """
+    return [
+        program
+        for program in programs
+        if _normalize_procfile_key(program).split(":", 1)[0] in _CODE_BEARING_BASES
+    ]
+
+
+def _wait_for_serving_sites(
+    container,
+    *,
+    port: int,
+    sites: list[str],
+    timeout: float = 60.0,
+    interval: float = 1.0,
+) -> tuple[list[str], dict[str, str | None]]:
+    """Poll until every site answers Frappe's ping with HTTP 200.
+
+    ``/api/method/ping`` is the target rather than ``/`` because its 200 is
+    unambiguous: it is a whitelisted guest endpoint, so a healthy site cannot answer
+    it with a redirect the way a website route can, and reaching it at all means
+    Frappe booted that site's installed-app set. Bounded, because the code change has
+    already landed and a wait that never ends is worse than an honest "it did not
+    come back"; each probe gets only the remaining budget, so a server that accepts
+    the connection and never answers cannot outlive the deadline.
+    """
+    pending = set(sites)
+    codes: dict[str, str | None] = {site: None for site in sites}
+    deadline = time.monotonic() + timeout
+    while pending:
+        for site in list(pending):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return sorted(pending), codes
+            codes[site] = web_http_code(
+                container,
+                port=port,
+                site=site,
+                path="/api/method/ping",
+                max_time=min(10.0, remaining),
+            )
+            if codes[site] == "200":
+                pending.remove(site)
+        remaining = deadline - time.monotonic()
+        if not pending or remaining <= 0:
+            break
+        time.sleep(min(interval, remaining))
+    return sorted(pending), codes
+
+
+def _resync_failed(text: str, restarted: list[str]) -> ResyncOutcome:
+    return ResyncOutcome(attempted=True, restarted=list(restarted), unserved_sites=[], error=text)
+
+
+def resync_after_code_change(
+    container,
+    bench_path: str,
+    *,
+    sites: list[str],
+    on_restart: Callable[[str], None] | None = None,
+    timeout: float = 60.0,
+) -> ResyncOutcome:
+    """Cycle a running bench's code-bearing programs, then prove ``sites`` still serve.
+
+    THE ONE resynchronisation step, shared by every verb that changes app code on
+    disk: ``apps install``, ``apps uninstall``, ``apps checkout`` and ``apps update``.
+    They differ only in which sites they changed, so that is the only thing they pass;
+    everything else about "the code moved underneath processes that are already
+    running" is identical, and four private copies of it would drift the way install's
+    and uninstall's would have if the first fix had not already been shared.
+
+    It lives HERE rather than in ``core.apps`` because ``core.update`` is a separate
+    module that needs the same step, and this one already owns every primitive it
+    uses - discovery, per-program restart, and the site-routed health probe.
+
+    WHAT IS CYCLED: every code-bearing program (see :func:`code_bearing_programs`),
+    not just ``web``. A bench's workers and scheduler import the same app code the
+    web process does, so after an install they cannot import a new app, after an
+    uninstall they act on tables that are gone, and after a checkout they run the
+    branch the developer just moved off - silently, which is the worst of the three.
+    The honest cost, disclosed rather than hidden: ``supervisorctl restart`` stops a
+    worker, so a job in flight is interrupted (RQ shuts down warm on SIGTERM and
+    finishes the job it holds if it can do so inside supervisord's stop window). That
+    is the same disturbance ``cwcli restart`` causes and the one the README already
+    directs users to after an app mutation; running a worker on code that no longer
+    exists is not a safer state to leave behind.
+
+    Three properties, each guarding something specific:
+
+    - **A stopped bench stays stopped.** Programs are only restarted when a
+      ``required`` process read POSITIVELY establishes a live supervisord with a
+      serving ``web``; an unreadable read is a reported failure, never "assume nothing
+      is running" (``core.where``'s fail-honest rule). Only programs already in
+      ``RUNNING``/``STARTING`` are cycled, so a deliberately-stopped worker is not
+      started by an install. A manager cwcli does NOT own (honcho, plain ``bench
+      start``) is never restarted - only probed, with a manual-restart remedy.
+    - **Nothing here raises.** The code change has already landed by the time this
+      runs, so every failure comes back in the outcome. A raise would erase the record
+      of a change that genuinely happened, and an automation caller that retried would
+      run the mutation twice.
+    - **Restarting is not proof.** "supervisord reports the program RUNNING" is a
+      bound-port-shaped claim, and serving stale code is exactly the class of defect a
+      claim like that misses. Every site the caller names must answer a real
+      site-routed request before the outcome is ``ok``.
+    """
+    announce = on_restart or (lambda _program: None)
+    unique_sites = list(dict.fromkeys(sites))
+    quiet = ResyncOutcome(attempted=False, restarted=[], unserved_sites=[], error=None)
+    if not unique_sites:
+        # No site loads the changed code, so no running process is serving it.
+        return quiet
+
+    restarted: list[str] = []
+    supervised = False
+    try:
+        supervised = discover_stack(container, bench_path, required=True).supervisor_up
+        if supervised:
+            states = supervisorctl_states(container, bench_path)
+            web = program_for_label(list(states), "web")
+            if web is None:
+                return _resync_failed(
+                    "the running bench has no supervised web process that cwcli can restart",
+                    restarted,
+                )
+            # `web` is the proxy for "this bench is serving at all": with it down there
+            # is no site to verify against, and starting one is not this verb's job.
+            if states[web][0] not in _LIVE_STATES:
+                return quiet
+
+            for program in code_bearing_programs(list(states)):
+                if states[program][0] not in _LIVE_STATES:
+                    continue
+                announce(program)
+                # `not in (0, None)`: None means docker recorded no exit code, which is
+                # not evidence of failure - the site probe below is the real gate.
+                code, output = restart_program(container, bench_path, program)
+                if code not in (0, None):
+                    detail = output.strip()
+                    return _resync_failed(
+                        f"restarting the bench process '{program}' failed"
+                        + (f" ({detail})" if detail else ""),
+                        restarted,
+                    )
+                restarted.append(program)
+        elif not discover_unsupervised_stack(container, bench_path, required=True).manager_up:
+            return quiet
+
+        ports = resolvers.resolve_assigned_ports(container, [bench_path], fill_defaults=False).get(
+            bench_path
+        )
+        if ports is None:
+            return _resync_failed(
+                "the bench's assigned port could not be read, so cwcli could not confirm "
+                "the affected sites serve",
+                restarted,
+            )
+
+        pending, codes = _wait_for_serving_sites(
+            container, port=ports[0], sites=unique_sites, timeout=timeout
+        )
+        if pending:
+            observed = ", ".join(f"{site}={codes[site] or 'unreachable'}" for site in pending)
+            remedy = (
+                "" if supervised else " Restart the bench manually, then verify the sites again."
+            )
+            return ResyncOutcome(
+                attempted=True,
+                restarted=restarted,
+                unserved_sites=pending,
+                error=(
+                    f"these sites did not answer Frappe's ping with HTTP 200: {observed}.{remedy}"
+                ),
+            )
+        return ResyncOutcome(attempted=True, restarted=restarted, unserved_sites=[], error=None)
+    except Exception as error:  # noqa: BLE001
+        # `.message` is CwcliError's human text; imported lazily elsewhere in this
+        # module, so it is read by attribute rather than by isinstance.
+        detail = getattr(error, "message", None) or str(error) or type(error).__name__
+        return _resync_failed(
+            f"cwcli could not complete the process restart and verification: {detail}",
+            restarted,
+        )
 
 
 def clear_marker(container, bench_path: str) -> None:

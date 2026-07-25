@@ -76,6 +76,11 @@ _PHASES = {
         "ok": "[bold green]✓[/bold green] Maintenance mode disabled for '{item}'",
         "failed": "[bold red]✗[/bold red] Site '{item}' left in maintenance mode",
     },
+    "resync": {
+        "header": "[bold green]→[/bold green] Restarting bench process: [cyan]{item}[/cyan]",
+        "spinner": "Restarting bench process: {item}",
+        "ok": "[bold green]✓[/bold green] Updated sites verified serving",
+    },
 }
 
 # Printed once, before the phase's first step.
@@ -309,6 +314,18 @@ def _report_summary(report: UpdateReport) -> None:
         )
         for site in report.failed_website_cache_clears:
             console.print(f"  • {site}: Website cache clearing failed")
+
+    if report.unserved_sites or report.resync_error:
+        console.print(
+            "[bold red]✗[/bold red] The apps updated, but the bench could not be "
+            "confirmed serving the new code:"
+        )
+        console.print(f"  • {report.resync_error}")
+        for site in report.unserved_sites:
+            console.print(
+                f"  • {site}: check 'cwcli logs {shlex.quote(report.project)}', then "
+                f"'cwcli restart {shlex.quote(report.project)}'"
+            )
 
     # Unknown is reported APART from failed, and after it, because the two need
     # different actions: a failure can be retried, while something that may still be

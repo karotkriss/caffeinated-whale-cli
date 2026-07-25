@@ -96,10 +96,10 @@ class FakeFrappeContainer:
         if cmd_str.startswith("ls -1") and cmd_str.rstrip().endswith("apps"):
             # Matches both "ls -1 <bench>/apps" and the workdir form "ls -1 apps".
             return 0, "\n".join(self.available_apps) + "\n"
-        if "list-apps" in cmd_str:
+        if "execute frappe.get_installed_apps" in cmd_str:
             parts = shlex.split(cmd_str)
             site = parts[parts.index("--site") + 1] if "--site" in parts else ""
-            return 0, "\n".join(self.installed.get(site, [])) + "\n"
+            return 0, json.dumps(self.installed.get(site, [])) + "\n"
         return 0, ""
 
     def exec_run(self, cmd, workdir=None, **kwargs):
@@ -107,6 +107,30 @@ class FakeFrappeContainer:
         # passes demux=False.
         code, out = self._run(cmd, workdir)
         return code, out.encode() if isinstance(out, str) else out
+
+
+def _wire_stopped_bench(monkeypatch):
+    """No manager runs for this bench, so no post-mutation resync happens.
+
+    The default for every fake here: `core.supervision.resync_after_code_change`
+    reads process state with ``required=True`` and RAISES on an unreadable read
+    (fail-honest), so a fake that answers no ``ps`` would fail every mutating verb
+    rather than exercise it. Patching the two discovery entry points on the shared
+    ``supervision`` module covers ``core.apps`` and ``core.update`` at once - they
+    import the same module object.
+    """
+    monkeypatch.setattr(
+        core_apps.supervision,
+        "discover_stack",
+        lambda *a, **k: core_apps.supervision.StackSnapshot(
+            supervisor_up=False, supervisor_pid=None, processes=[]
+        ),
+    )
+    monkeypatch.setattr(
+        core_apps.supervision,
+        "discover_unsupervised_stack",
+        lambda *a, **k: core_apps.supervision.UnsupervisedStack(manager_up=False, processes=[]),
+    )
 
 
 @pytest.fixture()
@@ -120,18 +144,7 @@ def wired(monkeypatch):
     monkeypatch.setattr(apps_mod, "ensure_containers_running", lambda *a, **k: True)
     monkeypatch.setattr(apps_mod, "resolve_bench_path", lambda *a, **k: state.bench)
     monkeypatch.setattr(core_apps.bench_sites, "list_sites", lambda *a, **k: list(state.sites))
-    monkeypatch.setattr(
-        core_apps.supervision,
-        "discover_stack",
-        lambda *a, **k: core_apps.supervision.StackSnapshot(
-            supervisor_up=False, supervisor_pid=None, processes=[]
-        ),
-    )
-    monkeypatch.setattr(
-        core_apps.supervision,
-        "discover_unsupervised_stack",
-        lambda *a, **k: core_apps.supervision.UnsupervisedStack(manager_up=False, processes=[]),
-    )
+    _wire_stopped_bench(monkeypatch)
 
     def fake_recache(project_name, verbose=False):
         state.recache_calls.append(project_name)
@@ -235,7 +248,7 @@ def test_list_installed_read_failure_exits_nonzero_json(wired, monkeypatch, caps
     container = FakeFrappeContainer(
         available_apps=["frappe"],
         installed={"a.localhost": ["frappe"]},
-        fail_on=["--site b.localhost list-apps"],
+        fail_on=["--site b.localhost execute frappe.get_installed_apps"],
     )
     monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
 
@@ -260,7 +273,7 @@ def test_list_installed_read_failure_exits_nonzero_human(wired, monkeypatch, cap
     container = FakeFrappeContainer(
         available_apps=["frappe"],
         installed={"a.localhost": ["frappe"]},
-        fail_on=["--site b.localhost list-apps"],
+        fail_on=["--site b.localhost execute frappe.get_installed_apps"],
     )
     monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
 
@@ -645,6 +658,7 @@ def _wire_update(monkeypatch, container):
     # "running"), so only the accessor needs replacing.
     monkeypatch.setattr(core_update.core_docker, "get_frappe_container", lambda name: container)
     monkeypatch.setattr(core_update.cache, "recache_project", lambda *a, **k: True)
+    _wire_stopped_bench(monkeypatch)
 
 
 def test_update_frappe_runs_bench_update_reset(monkeypatch):
