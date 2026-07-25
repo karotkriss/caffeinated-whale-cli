@@ -60,6 +60,19 @@ def _run_tests(**kwargs):
     return axi_mod.axi_run_tests("proj", **params)
 
 
+def _set_lock_probe_exit(monkeypatch, container, exit_code):
+    original_exec_run = container.exec_run
+
+    def exec_run(cmd, *args, **kwargs):
+        cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
+        if cmd_str.startswith("flock "):
+            container.calls.append(cmd_str)
+            return exit_code, b"probe output"
+        return original_exec_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(container, "exec_run", exec_run)
+
+
 # --------------------------------------------------------------------- axi migrate
 
 
@@ -130,12 +143,14 @@ def test_a_failure_carries_a_help_line_and_a_success_does_not(container, capsys)
     assert "cwcli axi logs proj" in capsys.readouterr().out
 
 
-def test_a_held_migrate_lock_is_refused_before_maintenance_and_names_unlock(container, capsys):
+def test_a_held_migrate_lock_is_refused_before_maintenance_and_names_unlock(
+    monkeypatch, container, capsys
+):
     """The task this verb was fixed for: a stranded migrate lock used to surface as
     a generic `ok: false` no different from any other failure. It must now name
     itself and the exact remedy in the document, and must NOT also carry the
     generic "read the logs" hint - a preflight refusal ran no command to read."""
-    container.fail_on = ["flock -n"]
+    _set_lock_probe_exit(monkeypatch, container, 200)
 
     with pytest.raises(typer.Exit) as exc:
         _migrate()
@@ -146,6 +161,24 @@ def test_a_held_migrate_lock_is_refused_before_maintenance_and_names_unlock(cont
     assert "lock_check" in out
     assert f"cwcli unlock proj --site {SITE}" in out
     assert "help:" not in out
+    assert not [c for c in container.calls if c.endswith("migrate")]
+    assert not [c for c in container.calls if "maintenance" in c]
+
+
+def test_a_failed_migrate_lock_probe_surfaces_as_a_typed_error(
+    monkeypatch, container, capsys
+):
+    _set_lock_probe_exit(monkeypatch, container, 126)
+
+    with pytest.raises(typer.Exit) as exc:
+        _migrate()
+
+    assert exc.value.exit_code == 1
+    out = capsys.readouterr().out
+    assert "Could not determine whether migrate lock" in out
+    assert "flock exited 126" in out
+    assert "Check that flock is installed" in out
+    assert "ok: false" not in out
     assert not [c for c in container.calls if c.endswith("migrate")]
     assert not [c for c in container.calls if "maintenance" in c]
 

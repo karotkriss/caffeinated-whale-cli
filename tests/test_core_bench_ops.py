@@ -46,6 +46,19 @@ def _actions(report):
     return [r.action for r in report.results]
 
 
+def _set_lock_probe_exit(monkeypatch, container, exit_code):
+    original_exec_run = container.exec_run
+
+    def exec_run(cmd, *args, **kwargs):
+        cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
+        if cmd_str.startswith("flock "):
+            container.calls.append(cmd_str)
+            return exit_code, b"probe output"
+        return original_exec_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(container, "exec_run", exec_run)
+
+
 # ------------------------------------------------------------------ exactly one site
 
 
@@ -171,7 +184,9 @@ def test_there_is_no_skip_maintenance_escape_hatch(container):
 # ------------------------------------------------------------------ the stranded-lock gate
 
 
-def test_a_held_migrate_lock_refuses_the_migrate_entirely_and_names_unlock(container):
+def test_a_held_migrate_lock_refuses_the_migrate_entirely_and_names_unlock(
+    monkeypatch, container
+):
     """The gate this task exists for: a genuinely-held migrate lock is refused
     BEFORE maintenance mode is even touched, and the refusal names the exact
     remedy rather than surfacing a generic failure later.
@@ -180,7 +195,7 @@ def test_a_held_migrate_lock_refuses_the_migrate_entirely_and_names_unlock(conta
     -n` probes the SAME kernel primitive frappe's own `filelock()` acquires, so
     this can never be a false positive on a harmless leftover file.
     """
-    container.fail_on = ["flock -n"]
+    _set_lock_probe_exit(monkeypatch, container, 200)
 
     result = bench_ops.migrate_site("proj", site=SITE)
 
@@ -194,6 +209,19 @@ def test_a_held_migrate_lock_refuses_the_migrate_entirely_and_names_unlock(conta
     assert "locks/bench_migrate.lock" in message
 
 
+def test_a_failed_migrate_lock_probe_raises_a_typed_precondition(monkeypatch, container):
+    _set_lock_probe_exit(monkeypatch, container, 127)
+
+    with pytest.raises(CwcliError) as exc:
+        bench_ops.migrate_site("proj", site=SITE)
+
+    assert exc.value.kind is ErrorKind.PRECONDITION
+    assert exc.value.code == "migrate.lock_probe_failed"
+    assert "flock exited 127" in exc.value.message
+    assert not [c for c in container.calls if c.endswith("migrate")]
+    assert not [c for c in container.calls if "maintenance" in c]
+
+
 def test_a_lock_file_with_no_live_holder_never_blocks_a_migrate(container):
     """The false-positive guard, proven on a real bench: an empty leftover
     `bench_migrate.lock` that nothing holds is harmless, and `bench migrate`
@@ -203,7 +231,9 @@ def test_a_lock_file_with_no_live_holder_never_blocks_a_migrate(container):
 
     assert result.data.ok is True
     probes = [c for c in container.calls if c.startswith("flock -n")]
-    assert len(probes) == 1
+    assert probes == [
+        f"flock -n -E 200 {BENCH}/sites/{SITE}/locks/bench_migrate.lock -c true"
+    ]
 
 
 def test_a_bench_never_migrated_has_no_locks_dir_and_skips_the_probe(container):
@@ -217,11 +247,13 @@ def test_a_bench_never_migrated_has_no_locks_dir_and_skips_the_probe(container):
     assert not [c for c in container.calls if c.startswith("flock")]
 
 
-def test_the_bench_op_command_naming_the_bench_selector_is_carried_in_the_hint(container):
+def test_the_bench_op_command_naming_the_bench_selector_is_carried_in_the_hint(
+    monkeypatch, container
+):
     """When the caller passed an explicit --bench selector, the unlock hint must
     carry the SAME selector - unlock has to resolve to the identical bench, not
     whichever one a bare re-run would default to."""
-    container.fail_on = ["flock -n"]
+    _set_lock_probe_exit(monkeypatch, container, 200)
 
     result = bench_ops.migrate_site("proj", site=SITE, bench="0")
 
