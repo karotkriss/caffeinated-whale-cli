@@ -199,6 +199,9 @@ def _help_examples(command: click.Command, ctx: click.Context) -> list[str]:
             f"{base} {_option_placeholder(by_flag['--set'], ctx)}",
             f"{base} {_option_placeholder(by_flag['--clear'], ctx)}",
         ]
+    if command.name == "init":
+        prefix = 'CWCLI_ADMIN_PASSWORD="<password>"'
+        return [f"{prefix} {base}", f"{prefix} {base} --no-start"]
     examples = [base]
     optional = next(
         (option for option in options if option.name != "help" and not _param_required(option)),

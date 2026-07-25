@@ -84,9 +84,13 @@ def test_all_axi_help_is_toon_on_runtime_only_binary():
                 assert argument.help in result.stdout
         if isinstance(command, click.Group):
             assert "commands[" in result.stdout
+            assert "{name,description}" in result.stdout
             ctx = click.Context(command)
             for name in command.list_commands(ctx):
                 assert name in result.stdout
+                child = command.get_command(ctx, name)
+                assert child is not None
+                assert child.get_short_help_str() in result.stdout
         for option in (
             param
             for param in command.get_params(click.Context(command))
@@ -99,10 +103,18 @@ def test_all_axi_help_is_toon_on_runtime_only_binary():
         assert "\x1b[" not in result.stdout
         assert result.stderr == ""
         assert all(line and line == line.rstrip() for line in result.stdout.splitlines())
+        examples = next(line for line in result.stdout.splitlines() if line.startswith("examples["))
+        assert ": " in examples
 
     assert () in visited
     assert ("scale",) in visited
     assert ("apps", "install") in visited
+
+    init = harness.run_cwcli("axi", "init", "--help")
+    init_examples = next(
+        line for line in init.stdout.splitlines() if line.startswith("examples[")
+    )
+    assert init_examples.count('CWCLI_ADMIN_PASSWORD=\\"<password>\\"') == 2
 
     human = harness.run_cwcli("scale", "--help")
     assert human.returncode == 0, human.stdout + human.stderr
