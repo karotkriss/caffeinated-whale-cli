@@ -70,9 +70,9 @@ END {
   canon_line = 0
   for (i = 1; i <= n; i++) {
     line = lines[i]
-    trimmed = line
-    sub(/[ \t\r]+$/, "", trimmed)
-    if (trimmed == "<!-- flagship -->") {
+    canonical = line
+    sub(/\r$/, "", canonical)
+    if (canonical == "<!-- flagship -->") {
       canon_count++
       canon_line = i
       continue
@@ -110,6 +110,10 @@ END {
   }
   if (!next_exists || next_blank) {
     print "error: the <!-- flagship --> marker on line " canon_line " is detached from any entry - it must sit directly above the entry'"'"'s first line with no blank line between them" > "/dev/stderr"
+    exit 1
+  }
+  if (lines[canon_line + 1] !~ /^\*\*[^*].*\*\*[ \t\r]*$/) {
+    print "error: the <!-- flagship --> marker on line " canon_line " must sit directly above an entry that begins with a bold benefit sentence" > "/dev/stderr"
     exit 1
   }
 

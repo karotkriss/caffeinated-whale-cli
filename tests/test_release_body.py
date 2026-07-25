@@ -266,6 +266,20 @@ A.
         assert result.returncode != 0
         assert "malformed flagship marker" in result.stderr
 
+    @pytest.mark.parametrize("trailing_whitespace", [" ", "\t"])
+    def test_a_marker_with_trailing_whitespace_is_rejected(
+        self, rendered, trailing_whitespace
+    ):
+        notes = f"""### What's Changed
+
+<!-- flagship -->{trailing_whitespace}
+**First.**
+A.
+"""
+        result = rendered("1.1.0", notes=notes)
+        assert result.returncode != 0
+        assert "malformed flagship marker" in result.stderr
+
     def test_a_marker_detached_by_a_blank_line_is_rejected(self, rendered):
         notes = """### What's Changed
 
@@ -277,6 +291,17 @@ A.
         result = rendered("1.1.0", notes=notes)
         assert result.returncode != 0
         assert "is detached from any entry" in result.stderr
+
+    def test_a_marker_above_ordinary_prose_is_rejected(self, rendered):
+        notes = """### What's Changed
+
+<!-- flagship -->
+This is not a bold benefit sentence.
+Context.
+"""
+        result = rendered("1.1.0", notes=notes)
+        assert result.returncode != 0
+        assert "begins with a bold benefit sentence" in result.stderr
 
     def test_a_marker_glued_mid_entry_is_rejected(self, rendered):
         """The marker must start its own paragraph, not interrupt one."""
@@ -321,6 +346,13 @@ Why it matters.
         assert install.index("uv tool install") < install.index("pip install")
         assert f"https://github.com/{REPO}/blob/v2.0.0/CHANGELOG.md" in body
         assert body.rstrip().endswith(f"https://github.com/{REPO}/compare/v1.1.0...v2.0.0")
+
+    def test_the_checked_in_major_release_note_remains_publishable(self, rendered):
+        notes = (NOTES_DIR / "v2.0.0.md").read_text()
+        result = rendered("2.0.0", notes=notes)
+        assert result.returncode == 0
+        assert "<!-- flagship -->" not in result.stdout
+        assert result.stdout.startswith("### What's New\n\n**Your multi-bench instances")
 
 
 class TestTheWorkflowUsesTheGenerator:
