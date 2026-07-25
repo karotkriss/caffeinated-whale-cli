@@ -419,7 +419,9 @@ class _Handler(BaseHTTPRequestHandler):
                 # ONLY: nothing here starts a stopped instance (core.scale refuses
                 # one with NOT_RUNNING before consent is even considered).
                 consent = payload.get("consent") is True
-                scale_result = core_scale.scale(project, consent=consent)
+                scale_result = core_scale.scale(
+                    project, to=_optional_to(payload.get("to")), consent=consent
+                )
                 if scale_result.status is not Status.NEEDS_CHOICE:
                     self._refresh_lifecycle(project, scale_result.warnings)
                 return _result_response(action, project, scale_result)
@@ -719,6 +721,24 @@ def _required_str(payload: dict, key: str) -> str:
             f"Console action requires a non-empty '{key}' string.",
         )
     return value.strip()
+
+
+def _optional_to(value) -> int | None:
+    """Scale's optional bench-count floor: a JSON integer or absent, nothing else.
+
+    ``bool`` is excluded explicitly because it is an ``int`` subclass and a JSON
+    ``true`` must not read as "cover 1 bench". Range validation stays in
+    ``core.scale`` (the single owner of that rule).
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise CwcliError(
+            ErrorKind.USAGE,
+            "action.to_invalid",
+            "Console action 'to' must be an integer when present.",
+        )
+    return int(value)
 
 
 def _optional_str(value) -> str | None:

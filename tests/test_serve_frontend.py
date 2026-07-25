@@ -853,7 +853,9 @@ class TestTierAActions:
             )
 
         monkeypatch.setattr(serve_cmd.core_label, "set_label", _set_label)
-        monkeypatch.setattr(daemon.fleet, "probe", lambda project: called.update({"probe": project}))
+        monkeypatch.setattr(
+            daemon.fleet, "probe", lambda project: called.update({"probe": project})
+        )
 
         status, body = _post(
             daemon.base + "/api/action",
@@ -952,7 +954,7 @@ class TestTierAActions:
         assert body["error"]["kind"] == "needs_choice"
         assert body["error"]["code"] == "confirm_scale"
         assert "RESTARTS" in body["error"]["message"]
-        assert called == {"project": "p", "consent": False}
+        assert called == {"project": "p", "to": None, "consent": False}
 
     def test_scale_consent_must_be_the_json_boolean_true(self, daemon, monkeypatch):
         """Consent is strictly `true`; a truthy string does not count, and the
@@ -980,7 +982,38 @@ class TestTierAActions:
                 {"action": "scale_instance", "project": "p", "consent": 1},
             )
 
-        assert calls == [{"consent": False}, {"consent": False}]
+        assert calls == [{"to": None, "consent": False}, {"to": None, "consent": False}]
+
+    def test_scale_forwards_a_valid_to_and_refuses_a_non_integer_one(self, daemon, monkeypatch):
+        calls = []
+
+        def _scale(project, **kwargs):
+            calls.append(kwargs)
+            return Result(
+                status=Status.NEEDS_CHOICE,
+                choice=Choice(kind="confirm_scale", param="consent", prompt="Continue?"),
+            )
+
+        monkeypatch.setattr(serve_cmd.core_scale, "scale", _scale)
+
+        with pytest.raises(urllib.error.HTTPError):
+            _post(
+                daemon.base + "/api/action",
+                {"action": "scale_instance", "project": "p", "to": 8},
+            )
+        assert calls == [{"to": 8, "consent": False}]
+
+        # JSON true is an int subclass in Python and must not read as "1 bench";
+        # a string is not a count either. Both are refused before dispatch.
+        for bad in (True, "8"):
+            with pytest.raises(urllib.error.HTTPError) as e:
+                _post(
+                    daemon.base + "/api/action",
+                    {"action": "scale_instance", "project": "p", "to": bad},
+                )
+            assert e.value.code == 400
+            assert json.loads(e.value.read())["error"]["code"] == "action.to_invalid"
+        assert len(calls) == 1
 
     def test_checkout_app_never_forwards_reset_or_auto_start(self, daemon, monkeypatch):
         """Tier A ships checkout's no-reset form ONLY: a request smuggling
@@ -1094,7 +1127,9 @@ class TestTierAActions:
     def test_refresh_status_rebootstraps_and_reprobes(self, daemon, monkeypatch):
         called = []
         monkeypatch.setattr(daemon.fleet, "bootstrap", lambda: called.append("bootstrap"))
-        monkeypatch.setattr(daemon.fleet, "probe", lambda project: called.append(f"probe:{project}"))
+        monkeypatch.setattr(
+            daemon.fleet, "probe", lambda project: called.append(f"probe:{project}")
+        )
 
         status, body = _post(
             daemon.base + "/api/action", {"action": "refresh_status", "project": "p"}
@@ -1318,8 +1353,8 @@ class TestTierAConsoleUi:
         assert 'error.code === "confirm_scale"' in page
         assert "openScaleConfirm(inst.project, error.message" in page
         assert "confirm.disabled = input.value !== project;" in page
-        assert 'runAction("scale_instance", {consent: true})' in page
-        assert 'runAction("scale_instance", {consent: false})' in page
+        assert "Object.assign({consent: true}" in page
+        assert "Object.assign({consent: false}" in page
 
     def test_the_checkout_form_sends_only_app_and_ref(self, page):
         assert 'runAction("checkout_app", {app, ref})' in page
@@ -1340,7 +1375,9 @@ class TestTierAConsoleUi:
     def test_the_fleet_search_lives_outside_the_rerendered_rail(self, page):
         # The rail body re-renders on every delta; an input inside it would
         # lose its text and focus mid-typing. The search panel is static.
-        rail_body_render = page.split('el("rail-body").innerHTML')[1].split("restoreControlFocus")[0]
+        rail_body_render = page.split('el("rail-body").innerHTML')[1].split("restoreControlFocus")[
+            0
+        ]
         assert "where-input" not in rail_body_render
         assert '<form id="where-form"' in page
         assert 'id="where-input"' in page

@@ -321,3 +321,93 @@ class TestLazyTier:
         with pytest.raises(urllib.error.HTTPError) as e:
             _get(daemon.base + "/api/instance/cwe2e-no-such-project/detail")
         assert e.value.code == 404
+
+
+class TestTierAActions:
+    """The Tier A rail expansion against the real instance: each verb round-trips
+    through the daemon into real core against a real container, the scale confirm
+    provably arrives FROM core (before any mutation), and every test leaves the
+    shared instance exactly as it found it."""
+
+    def _prime(self, daemon) -> None:
+        # The detail endpoint runs core.inspect(refresh="auto"), so serving it once
+        # populates the cache the bench-scoped verbs resolve against.
+        body = _get(daemon.base + f"/api/instance/{daemon.project}/detail")
+        assert body["benches"], "the cache must know the bench before bench-scoped verbs"
+
+    def test_set_label_round_trips_and_is_cleared(self, daemon):
+        self._prime(daemon)
+        try:
+            body = _post(
+                daemon.base + "/api/action",
+                {"action": "set_label", "project": daemon.project, "label": "tiera"},
+            )
+            assert body["ok"] is True
+            assert body["outcome"]["label"] == "tiera"
+
+            detail = _get(daemon.base + f"/api/instance/{daemon.project}/detail")
+            assert detail["benches"][0]["label"] == "tiera"
+        finally:
+            # Shared-group convention: remove the label again (DB and marker).
+            result = harness.run_cwcli("axi", "label", daemon.project, "--clear")
+            assert result.returncode == 0, result.stderr
+
+    def test_unlock_resolves_the_site_in_core_and_touches_the_real_container(self, daemon):
+        # Removing a locks folder is self-restoring state: absent is the clean state.
+        body = _post(
+            daemon.base + "/api/action",
+            {"action": "unlock_site", "project": daemon.project, "site": harness.DEFAULT_SITE},
+        )
+
+        assert body["ok"] is True
+        assert body["outcome"]["site"] == harness.DEFAULT_SITE
+        assert body["outcome"]["locks_path"].endswith(f"{harness.DEFAULT_SITE}/locks")
+
+    def test_the_scale_confirm_arrives_from_core_not_the_page(self, daemon):
+        import urllib.error
+
+        self._prime(daemon)
+        # to=8 makes expansion genuinely needed (init publishes 6 ports), and core
+        # answers NEEDS_CHOICE/confirm_scale BEFORE any mutation - so this is a
+        # read, safe on the shared instance, and the 409 payload is core's own
+        # warning text, not anything the page could have invented.
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _post(
+                daemon.base + "/api/action",
+                {"action": "scale_instance", "project": daemon.project, "to": 8},
+            )
+
+        assert e.value.code == 409
+        body = json.loads(e.value.read())
+        assert body["error"]["kind"] == "needs_choice"
+        assert body["error"]["code"] == "confirm_scale"
+        assert "RESTARTS" in body["error"]["message"]
+
+        # The covering case is a consent-free idempotent no-op that changes nothing.
+        noop = _post(
+            daemon.base + "/api/action",
+            {"action": "scale_instance", "project": daemon.project},
+        )
+        assert noop["ok"] is True
+        assert noop["outcome"]["expanded"] is False
+
+    def test_the_logs_read_serves_real_supervisor_logs(self, daemon):
+        body = _get(daemon.base + f"/api/instance/{daemon.project}/logs?lines=20")
+
+        assert body["ok"] is True
+        read = body["outcome"]
+        assert read["not_cwcli_supervised"] is False
+        processes = {group["process"] for group in read["logs"]}
+        assert "web" in processes
+        web = next(g for g in read["logs"] if g["process"] == "web")
+        assert web["lines"], "a served bench's web log must not be empty"
+
+    def test_where_reports_the_real_instance_as_present_and_verified(self, daemon):
+        self._prime(daemon)
+        body = _get(daemon.base + "/api/where?q=frappe")
+
+        assert body["ok"] is True
+        assert body["verified"] is True, "with Docker reachable the sweep must verify"
+        ours = [m for m in body["matches"] if m["project"] == daemon.project]
+        assert ours, "the real instance's frappe app must match"
+        assert all(m["project_state"] == "present" for m in ours)
