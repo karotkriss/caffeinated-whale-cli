@@ -334,6 +334,13 @@ Both originals are now one-line delegations - do NOT re-inline either. Two copie
 NO `--skip-maintenance` (captain ruling M1): `apps update`'s exists for long multi-site runs an operator opted into; a flag that removes the gate has no named beneficiary and its existence invites its use.
 It is a PLAIN function, not a generator, precisely for that `finally` - here `core.update`'s abandoned-generator hazard is REAL, not merely shape-consistency, because the cost is a site left down.
 
+**A held migrate lock is a preflight refusal, never an inferred file-state failure.**
+`migrate_site` probes `sites/<site>/locks/bench_migrate.lock` before enabling maintenance mode by attempting the same non-blocking `flock` that Frappe's `filelock()` uses.
+Only the dedicated lock-conflict exit code means held; an absent locks directory or an unheld leftover file allows migration, while any other probe failure raises `PRECONDITION` because the state is unknown.
+The refusal reports `lock_check`, names the exact lock path, and gives `cwcli unlock <project> --site <site> [--bench <selector>]` as the remedy.
+The AXI renderer must not add its generic `cwcli axi logs` hint for this preflight result because `bench migrate` never ran.
+Regression coverage lives in `tests/test_core_bench_ops.py` and `tests/test_axi_bench_ops.py`.
+
 **`run_tests` takes `site` and `app` as REQUIRED parameters** (captain ruling S1), pinned at the CORE so no frontend can default them.
 A deliberate divergence from the `--site`-defaults convention `backup`/`unlock`/`migrate` follow, and the reason generalizes: for those three cwcli can state exactly what the operation does to the site; run-tests executes the repository's OWN code against a live site, so the honest description is *arbitrary Python from the repo under test*. **When the effect is unbounded, defaulting the target is the wrong default.**
 

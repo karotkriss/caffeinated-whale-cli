@@ -11,7 +11,7 @@ They print, prompt and exit nothing: a stopped container or an ambiguous
 multi-bench project comes back as ``NEEDS_CHOICE``, hard failures raise
 :class:`~.errors.CwcliError`.
 
-Three things here are deliberate and load-bearing:
+Four things here are deliberate and load-bearing:
 
 - **A migrate resolves EXACTLY ONE site and never fans out.** This is the whole
   point of the module. ``apps update`` migrates every site it discovers to have
@@ -33,6 +33,9 @@ Three things here are deliberate and load-bearing:
   that is exactly the cleanup ``core.update`` proved does not run when an
   abandoned generator lands in a reference cycle. Here the hazard is real, not
   merely shape-consistency: an abandoned generator would leave a site DOWN.
+- **A held migrate lock is diagnosed before maintenance mode.** The probe uses
+  the same non-blocking ``flock`` primitive as frappe's ``filelock()``; mere file
+  presence never refuses a migrate.
 
 ``set_maintenance`` lives here, and ``core.update`` imports it. It was private to
 ``core/update.py`` until this module became its second caller; it was PROMOTED
@@ -50,6 +53,8 @@ from . import resolvers
 from .envelope import Message, Result, Status
 from .errors import CwcliError, ErrorKind
 from .exec_stream import ExecChunk, exec_stream
+
+_MIGRATE_LOCK_CONFLICT_EXIT_CODE = 200
 
 # ------------------------------------------------------------------------------ DTOs
 
@@ -165,6 +170,52 @@ def _run_step(container, cmd: str, bench_path: str, *, action: str, emit: OnEven
     return exit_code
 
 
+def _migrate_lock_held(container, bench_path: str, site: str) -> bool:
+    """True when frappe's OWN migrate lock is genuinely held by a live process.
+
+    ``bench migrate`` wraps its whole run in ``frappe.utils.synchronization.
+    filelock("bench_migrate", timeout=1)``, an ``fcntl``-based advisory lock on
+    ``{bench_path}/sites/{site}/locks/bench_migrate.lock``.
+
+    This probes with ``flock -n -E 200`` - the SAME kernel primitive frappe's own
+    ``filelock()`` acquires - rather than checking whether the lock FILE exists.
+    Exit 200 alone means the identical lock is held. Exit 0 means it is free,
+    including when an unheld lock file remains. Any other exit is an unreadable
+    lock state and raises ``CwcliError(PRECONDITION)``.
+    """
+    locks_dir = f"{bench_path}/sites/{site}/locks"
+    exit_code, _ = container.exec_run(["test", "-d", locks_dir])
+    if exit_code != 0:
+        return False  # never migrated yet: nothing to hold a lock
+
+    lock_file = f"{locks_dir}/bench_migrate.lock"
+    exit_code, _ = container.exec_run(
+        [
+            "flock",
+            "-n",
+            "-E",
+            str(_MIGRATE_LOCK_CONFLICT_EXIT_CODE),
+            lock_file,
+            "-c",
+            "true",
+        ]
+    )
+    if exit_code == 0:
+        return False
+    if exit_code == _MIGRATE_LOCK_CONFLICT_EXIT_CODE:
+        return True
+    raise CwcliError(
+        ErrorKind.PRECONDITION,
+        "migrate.lock_probe_failed",
+        (
+            f"Could not determine whether migrate lock "
+            f"'sites/{site}/locks/bench_migrate.lock' is held "
+            f"(flock exited {exit_code})."
+        ),
+        hint="Check that flock is installed and the lock path is accessible, then retry.",
+    )
+
+
 def _resolve_site(
     container,
     project_name: str,
@@ -216,6 +267,10 @@ def migrate_site(
     The maintenance-mode gate is not optional: a site that cannot be put into
     maintenance is NOT migrated, and a site that cannot be taken back out is
     reported via ``maintenance_left_on`` and fails the operation.
+
+    A THIRD gate runs first, before maintenance mode is touched: a site whose
+    migrate lock is genuinely held (:func:`_migrate_lock_held`) is refused,
+    naming ``cwcli unlock`` as the remedy.
     """
     emit: OnEvent = on_event or _noop
 
@@ -230,6 +285,31 @@ def migrate_site(
 
     results: list[BenchOpResult] = []
     maintenance_left_on = False
+
+    if _migrate_lock_held(container, path, target):
+        # Name the exact cause and remedy before maintenance mode is touched.
+        bench_flag = f" --bench {bench}" if bench else ""
+        message = (
+            f"Site '{target}' already has an active migrate lock "
+            f"(sites/{target}/locks/bench_migrate.lock); the migrate was NOT run. "
+            "This is expected if another migration is genuinely in progress right "
+            "now - wait for it to finish. If nothing is actually running, the lock "
+            "is stranded from an earlier interrupted migration; clear it with: "
+            f"cwcli unlock {project_name} --site {target}{bench_flag}"
+        )
+        emit(BenchOpStepEnd(action="lock_check", ok=False))
+        results.append(BenchOpResult(action="lock_check", ok=False, message=message))
+        return Result(
+            status=Status.WARNING,
+            data=BenchOpReport(
+                project=project_name,
+                bench_path=path,
+                site=target,
+                results=results,
+                ok=False,
+            ),
+            warnings=warnings,
+        )
 
     if not set_maintenance(container, path, target, enable=True):
         # The gate. No migrate is issued at all - this is a REFUSAL, not a failure
