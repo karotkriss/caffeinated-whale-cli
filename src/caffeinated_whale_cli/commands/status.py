@@ -31,6 +31,7 @@ import typer
 from rich.live import Live
 from rich.table import Table
 
+from ..core import resolvers
 from ..core import status as core_status
 from ..core.envelope import Result
 from ..core.errors import CwcliError
@@ -181,6 +182,13 @@ def _bench_heading(bench: BenchStatus) -> str:
     name = f"bench {index}  {bench.bench_path}"
     if bench.label:
         name = f"{name} ('{bench.label}')"
+    if bench.bench_present == resolvers.BENCH_ABSENT:
+        # Said before the health, because the health is about a directory that is
+        # not there: "online" on a deleted bench reads as "here, just not up".
+        return (
+            f"{name}: [bold red]GONE[/bold red] (directory no longer exists; "
+            f"reported from cache - run `cwcli inspect --update`)"
+        )
     if bench.not_cwcli_supervised:
         # Running under honcho / bench start: "supervisor down" would be a lie.
         supervisor = "not under cwcli supervision"

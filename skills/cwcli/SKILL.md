@@ -69,7 +69,7 @@ Exit codes: **0** success (a completed operation, including one with warnings, a
   restart        Restart ONE supervised process; emit the outcome as TOON (never prompts, no --watch).
   scale          Widen the instance's published port range; emit the new port map as TOON.
   inspect        Inspect a project's benches, sites, and apps; emit the report as TOON.
-  benches        List a project's benches with their indices and labels; emit them as TOON.
+  benches        List a project's benches with their indices, labels, and existence state; TOON.
   label          Set or clear a bench's durable user label; emit the outcome as TOON.
   migrate        Run 'bench migrate' against ONE site under maintenance mode; emit the report as TOON.
   run-tests      Run 'bench run-tests' for ONE app against ONE named site; emit the report as TOON.

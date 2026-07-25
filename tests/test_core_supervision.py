@@ -92,7 +92,14 @@ class FakeContainer:
         ctl_status=None,
         configs=None,
         markers=None,
+        absent_paths=(),
+        presence_probe_fails=False,
     ):
+        # The shared bench-existence probe (`resolvers.present_bench_paths`):
+        # every path asked about exists unless named in ``absent_paths``, and
+        # ``presence_probe_fails`` drives the honest "could not ask" branch.
+        self.absent_paths = set(absent_paths)
+        self.presence_probe_fails = presence_probe_fails
         # ``marker`` is the single-bench answer for every bench; ``markers`` is the
         # per-bench mapping a multi-bench test needs. Two parameters rather than one
         # overloaded value, because the marker IS a dict, so a dict cannot signal
@@ -189,6 +196,11 @@ class FakeContainer:
             return self._exec_bash(cmd[2], detach)
         if head == "sh":
             script = cmd[2]
+            if 'for p in "$@"' in script:
+                if self.presence_probe_fails:
+                    return (1, b"")
+                paths = [p for p in cmd[4:] if p not in self.absent_paths]
+                return (0, "\n".join(paths).encode())
             if "readlink" in script:
                 lines = "".join(f"{pid}\t{cwd}\n" for pid, cwd in self.cwds.items())
                 return (0, lines.encode())

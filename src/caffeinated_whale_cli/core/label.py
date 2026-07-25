@@ -6,6 +6,11 @@ a missing bench selector as a legitimate read request, and a read request is not
 ``NEEDS_CHOICE`` - that envelope status is for decisions the core cannot make from
 its params, and "list the benches" is one the caller already made.
 
+:func:`list_benches` no longer serves the cache unqualified: every row carries a
+``present``/``absent``/``unverified`` state, cross-checked in one exec against the
+live container. See :func:`resolvers.present_bench_paths` for the rule and why it
+lives at the layer rather than here.
+
 Setting and clearing are likewise separate rather than one ``label=None``-means-clear
 function. That sentinel is the shape ``_stop_project``'s ``None`` return was
 retired from; ``db_utils.set_bench_label`` keeps the ``None``-clears convention at
@@ -52,11 +57,18 @@ class BenchInfo:
     ``index`` is the bench's durable numeric identity and is what ``--bench``
     accepts. Discovery order may change when another path is added, but this value
     remains attached to the same path. A user label remains the readable handle.
+
+    ``state`` says whether this row is still true: ``present`` | ``absent`` |
+    ``unverified`` (:mod:`core.resolvers`' shared vocabulary). Every other field
+    here is remembered, not observed - this one says whether to trust them, and it
+    is on the ROW rather than only in a warning so an agent parsing the TOON table
+    can act on it without parsing prose.
     """
 
     index: int
     path: str
     label: str | None
+    state: str = resolvers.BENCH_UNVERIFIED
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -66,6 +78,8 @@ class BenchList:
 
     project: str
     benches: list[BenchInfo]
+    #: True only when the live existence check actually ran and answered.
+    verified: bool = False
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -123,22 +137,72 @@ def _require_benches(project_name: str) -> list[dict]:
     return benches
 
 
-def list_benches(project_name: str) -> Result[BenchList]:
-    """The project's benches with their indices and labels. Touches no container."""
+def list_benches(project_name: str, *, verify: bool = True) -> Result[BenchList]:
+    """The project's benches with their indices, labels, and existence state.
+
+    The rows come from the cache; ``verify`` (default on) cross-checks each path
+    against the live container in ONE exec, so a bench whose directory is gone is
+    reported ``absent`` instead of vouched for. It used to touch no container at
+    all, which is exactly how it kept confidently reporting a removed bench across
+    repeated probes while the host and the container both agreed it was gone - the
+    third read surface caught doing that, and the reason the rule now lives at the
+    layer (see :func:`resolvers.present_bench_paths`).
+
+    Verification is best-effort by design, because this verb must keep answering
+    when there is nothing to ask: it is what tells a caller which ``--bench`` to
+    pass to ``cwcli start``, on a project that is by definition stopped. A stopped
+    project, a missing container, or an unreachable daemon leaves every row
+    ``unverified`` with a warning saying so - never ``present``, and never an
+    error. ``verify=False`` is the explicit opt-out for a caller that has already
+    established liveness; it reports ``unverified`` rather than buying speed by
+    pretending.
+
+    Nothing is pruned here: an ``absent`` row is reported with the remedy named.
+    """
     benches = _require_benches(project_name)
-    return Result(
-        status=Status.OK,
-        data=BenchList(
-            project=project_name,
-            benches=[
-                BenchInfo(
-                    index=b.get("index", position),
-                    path=b["path"],
-                    label=b.get("label"),
+    paths = [b["path"] for b in benches]
+
+    present = _present_paths(project_name, paths) if verify else None
+    rows = [
+        BenchInfo(
+            index=b.get("index", position),
+            path=b["path"],
+            label=b.get("label"),
+            state=(
+                resolvers.BENCH_UNVERIFIED
+                if present is None
+                else (resolvers.BENCH_PRESENT if b["path"] in present else resolvers.BENCH_ABSENT)
+            ),
+        )
+        for position, b in enumerate(benches)
+    ]
+
+    warnings: list[Message] = []
+    if present is None:
+        if verify:
+            warnings.append(
+                Message(
+                    "benches.unverified",
+                    "Could not reach the project's container, so these paths were not "
+                    "checked; they are cached and a bench may no longer exist.",
                 )
-                for position, b in enumerate(benches)
-            ],
-        ),
+            )
+    else:
+        stale = [row.path for row in rows if row.state == resolvers.BENCH_ABSENT]
+        if stale:
+            warnings.append(
+                Message(
+                    "benches.stale",
+                    f"{len(stale)} cached bench(es) no longer exist: {', '.join(stale)}. "
+                    f"Run 'cwcli inspect {project_name} --update' to refresh the cache.",
+                    detail={"benches": stale},
+                )
+            )
+
+    return Result(
+        status=Status.WARNING if warnings else Status.OK,
+        data=BenchList(project=project_name, benches=rows, verified=present is not None),
+        warnings=warnings,
     )
 
 
@@ -181,22 +245,37 @@ def _running_container(project_name: str):
     return frappe_container
 
 
+def _container_or_none(project_name: str):
+    """The running frappe container, or None for the states a cached read degrades on.
+
+    "Degrades on" is one set - a stopped project, a gone container, an unreachable
+    daemon - shared by :func:`container_available`, :func:`set_labels`' cache-only
+    fallback, and :func:`list_benches`' verification. Anything else propagates.
+    """
+    try:
+        return _running_container(project_name)
+    except CwcliError as exc:
+        if exc.kind in (ErrorKind.NOT_RUNNING, ErrorKind.NOT_FOUND, ErrorKind.DOCKER):
+            return None
+        raise
+
+
+def _present_paths(project_name: str, paths: list[str]) -> set[str] | None:
+    """The subset of ``paths`` that still exist, or None if it could not be asked."""
+    container = _container_or_none(project_name)
+    if container is None:
+        return None
+    return resolvers.present_bench_paths(container, paths)
+
+
 def container_available(project_name: str) -> bool:
     """Whether the project's frappe container is resolvable and running.
 
     A serializable pre-check ``inspect -i`` calls BEFORE prompting, so it can warn
     the user up front that labels will be cache-only - rather than only finding
     out from :func:`set_labels`'s own degrade after the whole prompt loop has run.
-    Returns False for exactly the errors :func:`set_labels` degrades on (a stopped
-    project, a gone container, or an unreachable daemon); anything else propagates.
     """
-    try:
-        _running_container(project_name)
-    except CwcliError as exc:
-        if exc.kind in (ErrorKind.NOT_RUNNING, ErrorKind.NOT_FOUND, ErrorKind.DOCKER):
-            return False
-        raise
-    return True
+    return _container_or_none(project_name) is not None
 
 
 def _label_of(benches: list[dict], bench_path: str) -> str | None:
@@ -296,13 +375,9 @@ def set_labels(project_name: str, assignments: list[tuple[str, str]]) -> Result[
     # A running, reachable container lets us write markers; any container
     # unavailability (stopped, gone, or the daemon unreachable) degrades to
     # cache-only rather than refusing (the interactive-inspect affordance).
-    frappe_container = None
     warnings: list[Message] = []
-    try:
-        frappe_container = _running_container(project_name)
-    except CwcliError as exc:
-        if exc.kind not in (ErrorKind.NOT_RUNNING, ErrorKind.NOT_FOUND, ErrorKind.DOCKER):
-            raise
+    frappe_container = _container_or_none(project_name)
+    if frappe_container is None:
         warnings.append(
             Message(
                 code="label.marker_skipped",

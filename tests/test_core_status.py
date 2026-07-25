@@ -568,6 +568,76 @@ class TestTheProbeNamesTheSite:
         assert _bench(report).web_http_code is None
 
 
+class TestBenchPresence:
+    """``bench_present`` - whether the bench this row is ABOUT still exists.
+
+    The bench list comes from the cache, which outlives the benches it describes.
+    No amount of live health probing settles this: a deleted bench has no marker
+    and no supervisord, which is EXACTLY what a bench that was never started looks
+    like, so a removed bench reported ``online`` - "here, just not up".
+
+    Positive first, deliberately: a check that answered "gone" about everything
+    would pass the removed-bench assertion and be worthless.
+    """
+
+    def test_a_live_bench_is_reported_present(self, wire):
+        wire(FakeContainer(marker=_MARKER, web_code="200"), benches=[{"path": BENCH}])
+        report = core_status.status("proj").data
+
+        assert _bench(report).bench_present == "present"
+        # Untouched: presence is reported ALONGSIDE health, never folded into it.
+        assert _bench(report).overall == "running"
+        assert report.overall == "running"
+
+    def test_a_removed_bench_is_absent_not_a_never_started_one(self, wire):
+        # b0 is gone from disk; b1 is a genuinely healthy bench. Before this token
+        # both rows were `overall`-only and b0 read as `online`.
+        c = FakeContainer(
+            ps=_PS_ONLY_B1,
+            cwds={200: _B1},
+            markers={_B1: _MARKER},
+            web_code={8001: "200"},
+            configs=_TWO_BENCH_CONFIGS,
+            absent_paths={_B0},
+        )
+        wire(c, benches=_TWO_BENCHES)
+        result = core_status.status("proj")
+        report = result.data
+
+        by_path = _by_path(report)
+        assert by_path[_B1].bench_present == "present"
+        assert by_path[_B0].bench_present == "absent"
+        # Still reported, never pruned - and the remedy is named.
+        assert len(report.benches) == 2
+        stale = next(w for w in result.warnings if w.code == "status.stale_benches")
+        assert _B0 in stale.text and "inspect" in stale.text
+        assert stale.detail == {"benches": [_B0]}
+        # `overall` keeps its four tokens; the live half of the answer is unchanged.
+        assert by_path[_B1].overall == "running"
+
+    def test_an_unaskable_probe_is_unverified_never_all_absent(self, wire):
+        # Fail-honest in BOTH directions: a probe that could not run must not read
+        # as "every bench is gone", which is the same wrong answer, just louder.
+        wire(
+            FakeContainer(marker=_MARKER, web_code="200", presence_probe_fails=True),
+            benches=[{"path": BENCH}],
+        )
+        result = core_status.status("proj")
+
+        assert _bench(result.data).bench_present == "unverified"
+        assert [w.code for w in result.warnings] == []
+
+    def test_the_fused_tier_answers_it_too(self, wire):
+        # `cwcli serve`'s FAST tier trades round trips, never honesty.
+        wire(
+            FakeContainer(marker=_MARKER, web_code="200", absent_paths={BENCH}),
+            benches=[{"path": BENCH}],
+        )
+        report = core_status.status("proj", fused=True).data
+
+        assert _bench(report).bench_present == "absent"
+
+
 class TestFusedFastPath:
     """``fused=True`` - the exec-budget option ``cwcli serve``'s FAST tier polls on.
 

@@ -75,6 +75,15 @@ to run ``cwcli start``, and ``overall`` reflects the real process state
 (``None``) - correct, since supervisord is not what manages these. The fallback
 is a pure READ: it never launches supervisord (migrating is ``cwcli start``'s job).
 
+**Each reported bench's path is cross-checked against the container.** The bench
+list is read from the cache, which outlives the benches it describes, and no
+amount of live health probing can tell a DELETED bench from one that was never
+started - both have no marker and no supervisord, so a removed bench reported
+``online``. ``resolvers.present_bench_paths`` answers it in ONE exec for the whole
+list, so the cost is flat in bench count and adds exactly one round trip per
+report, on the fused tier too; the answer lands on each row as ``bench_present``
+(``present``/``absent``/``unverified``) rather than folding into ``overall``.
+
 A real-but-stopped project (containers exist but frappe is not running) is
 ``offline`` with an EMPTY ``benches`` list and is RETURNED (never raised),
 preserving today's "offline, exit 0" contract. A truly-nonexistent project (no
@@ -128,12 +137,23 @@ class BenchStatus:
     ``resolvers.resolve_representative_site``), and reporting which one is what keeps
     that a disclosed pick rather than a silent claim about the bench as a whole. None
     means no site could be resolved and the probe named none.
+
+    ``bench_present`` says whether the bench directory this row is ABOUT still
+    exists: ``present`` | ``absent`` | ``unverified``. ``overall`` cannot answer
+    that and must not be asked to - a deleted bench has no marker and no
+    supervisord, which is indistinguishable from a bench that simply was never
+    started, so it reported ``online`` and read as "here, just not up". The
+    remembered path was the unverified claim, not the health; the token sits next
+    to the health rather than folding into it, which is why ``overall`` keeps its
+    four tokens and gains no fifth.
     """
 
     index: int | None
     bench_path: str
     label: str | None
     overall: str
+    #: ``present`` | ``absent`` | ``unverified`` - see the class docstring.
+    bench_present: str = resolvers.BENCH_UNVERIFIED
     supervisor_up: bool
     web_port: int | None
     web_port_verified: bool
@@ -273,6 +293,12 @@ def status(
         frappe_container, [path for _, path, _ in targets], fill_defaults=False
     )
 
+    # Does each of those remembered paths still exist? ONE exec for the whole list,
+    # so the cost is flat in bench count on every tier including the fused one. It
+    # answers the question no amount of live health probing can: a deleted bench and
+    # a never-started bench look identical to the marker and to supervisord.
+    present = resolvers.present_bench_paths(frappe_container, [path for _, path, _ in targets])
+
     benches: list[BenchStatus] = []
     for index, path, label in targets:
         ports = assigned.get(path)
@@ -287,15 +313,29 @@ def status(
             )
         read = _bench_status_fused if fused else _bench_status
         benches.append(
-            read(
-                frappe_container,
-                index=index,
-                bench_path=path,
-                label=label,
-                web_port=web_port,
-                web_site=resolvers.resolve_representative_site(project_name, path),
-                probe_web=probe_web,
-                warnings=warnings,
+            replace(
+                read(
+                    frappe_container,
+                    index=index,
+                    bench_path=path,
+                    label=label,
+                    web_port=web_port,
+                    web_site=resolvers.resolve_representative_site(project_name, path),
+                    probe_web=probe_web,
+                    warnings=warnings,
+                ),
+                bench_present=_present_state(present, path),
+            )
+        )
+
+    stale = [b.bench_path for b in benches if b.bench_present == resolvers.BENCH_ABSENT]
+    if stale:
+        warnings.append(
+            Message(
+                "status.stale_benches",
+                f"{len(stale)} bench(es) reported here no longer exist: {', '.join(stale)}. "
+                f"Run 'cwcli inspect {project_name} --update' to refresh the cache.",
+                detail={"benches": stale},
             )
         )
 
@@ -311,18 +351,28 @@ def status(
     )
 
 
+def _present_state(present: set[str] | None, bench_path: str) -> str:
+    """One path's existence token. ``None`` (unaskable) is never a confirmation."""
+    if present is None:
+        return resolvers.BENCH_UNVERIFIED
+    return resolvers.BENCH_PRESENT if bench_path in present else resolvers.BENCH_ABSENT
+
+
 def _targets(
     project_name: str, bench: str | None, bench_path: str | None
 ) -> tuple[list[tuple[int | None, str, str | None]], list[Message]]:
     """The ``(index, bench_path, label)`` benches to report, plus resolver warnings.
 
     A selector narrows to one entry; without one, every cached bench is reported in
-    durable identity order, while each tuple carries its durable numeric
-    identity. That list is REMEMBERED, not verified, and
-    deliberately carries no ``where``-style verification token: each bench's health
-    is read LIVE, so a stale path self-corrects into a visible no-processes bench
-    rather than a confident wrong answer (the repo's settled read-surface audit -
-    remembered ADDRESSING validated on use, not consumed as correctness evidence).
+    durable identity order, while each tuple carries its durable numeric identity.
+
+    That list is REMEMBERED, so the caller cross-checks it (see ``status``'s
+    ``present_bench_paths`` call and ``BenchStatus.bench_present``). This used to
+    carry no verification token on the reasoning that each bench's health is read
+    LIVE, so a stale path would self-correct into a visible no-processes bench.
+    It does not: a deleted bench has no marker and no supervisord, which is
+    exactly what a bench that was never started looks like, so it reported
+    ``online`` - "here, just not up" - about a directory that was gone.
 
     ``resolve_bench``'s errors and warnings are unchanged; only the multi-bench
     ``NEEDS_CHOICE`` is now impossible, because the bare form is answered instead of
