@@ -109,17 +109,16 @@ class FakeFrappeContainer:
         return code, out.encode() if isinstance(out, str) else out
 
 
-@pytest.fixture()
-def wired(monkeypatch):
-    """Patch the apps module's collaborators; return a small control object."""
+def _wire_stopped_bench(monkeypatch):
+    """No manager runs for this bench, so no post-mutation resync happens.
 
-    state = types.SimpleNamespace(
-        recache_calls=[], bench="/workspace/frappe-bench", sites=["a.localhost", "b.localhost"]
-    )
-
-    monkeypatch.setattr(apps_mod, "ensure_containers_running", lambda *a, **k: True)
-    monkeypatch.setattr(apps_mod, "resolve_bench_path", lambda *a, **k: state.bench)
-    monkeypatch.setattr(core_apps.bench_sites, "list_sites", lambda *a, **k: list(state.sites))
+    The default for every fake here: `core.supervision.resync_after_code_change`
+    reads process state with ``required=True`` and RAISES on an unreadable read
+    (fail-honest), so a fake that answers no ``ps`` would fail every mutating verb
+    rather than exercise it. Patching the two discovery entry points on the shared
+    ``supervision`` module covers ``core.apps`` and ``core.update`` at once - they
+    import the same module object.
+    """
     monkeypatch.setattr(
         core_apps.supervision,
         "discover_stack",
@@ -132,6 +131,20 @@ def wired(monkeypatch):
         "discover_unsupervised_stack",
         lambda *a, **k: core_apps.supervision.UnsupervisedStack(manager_up=False, processes=[]),
     )
+
+
+@pytest.fixture()
+def wired(monkeypatch):
+    """Patch the apps module's collaborators; return a small control object."""
+
+    state = types.SimpleNamespace(
+        recache_calls=[], bench="/workspace/frappe-bench", sites=["a.localhost", "b.localhost"]
+    )
+
+    monkeypatch.setattr(apps_mod, "ensure_containers_running", lambda *a, **k: True)
+    monkeypatch.setattr(apps_mod, "resolve_bench_path", lambda *a, **k: state.bench)
+    monkeypatch.setattr(core_apps.bench_sites, "list_sites", lambda *a, **k: list(state.sites))
+    _wire_stopped_bench(monkeypatch)
 
     def fake_recache(project_name, verbose=False):
         state.recache_calls.append(project_name)
@@ -645,6 +658,7 @@ def _wire_update(monkeypatch, container):
     # "running"), so only the accessor needs replacing.
     monkeypatch.setattr(core_update.core_docker, "get_frappe_container", lambda name: container)
     monkeypatch.setattr(core_update.cache, "recache_project", lambda *a, **k: True)
+    _wire_stopped_bench(monkeypatch)
 
 
 def test_update_frappe_runs_bench_update_reset(monkeypatch):

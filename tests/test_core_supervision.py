@@ -905,3 +905,299 @@ class TestFusedProbe:
             supervision.fused_probe(c, BENCH, web_port=8000, web_site="x.localhost")
         assert (c.ps, c.ctl, c.web_code) == before
         assert len(c.calls) == 20
+
+
+# ------------------------------------------------- resync_after_code_change (THE step)
+
+
+class TestCodeBearingPrograms:
+    """Which Procfile programs hold the bench's Python, and which deliberately do not."""
+
+    def test_web_scheduler_and_every_worker_spelling_are_code_bearing(self):
+        assert supervision.code_bearing_programs(
+            ["web", "schedule", "worker", "worker_short", "worker_long", "worker_default"]
+        ) == ["web", "schedule", "worker", "worker_short", "worker_long", "worker_default"]
+
+    def test_node_and_redis_programs_are_left_alone(self):
+        """They import no Frappe app, and restarting redis would drop the cache and queue."""
+        assert (
+            supervision.code_bearing_programs(
+                ["socketio", "watch", "redis_cache", "redis_queue", "redis"]
+            )
+            == []
+        )
+
+    def test_procfile_order_is_preserved(self):
+        assert supervision.code_bearing_programs(
+            ["web", "socketio", "watch", "schedule", "worker_default"]
+        ) == ["web", "schedule", "worker_default"]
+
+
+class _ResyncFake:
+    """A container whose only job is to be handed to a fully-monkeypatched resync."""
+
+    def exec_run(self, *_a, **_k):
+        return 0, b""
+
+
+def _wire_resync(
+    monkeypatch,
+    *,
+    states=None,
+    supervised=True,
+    manager_up=False,
+    restart_code=0,
+    ports=(8000, 9000),
+    pending=(),
+):
+    restarted: list[str] = []
+    monkeypatch.setattr(
+        supervision,
+        "discover_stack",
+        lambda *a, **k: supervision.StackSnapshot(
+            supervisor_up=supervised, supervisor_pid=100 if supervised else None, processes=[]
+        ),
+    )
+    monkeypatch.setattr(
+        supervision,
+        "discover_unsupervised_stack",
+        lambda *a, **k: supervision.UnsupervisedStack(manager_up=manager_up, processes=[]),
+    )
+    monkeypatch.setattr(
+        supervision,
+        "supervisorctl_states",
+        lambda *a, **k: (
+            states
+            if states is not None
+            else {
+                "web": ("RUNNING", 1),
+                "schedule": ("RUNNING", 2),
+                "worker_default": ("RUNNING", 3),
+            }
+        ),
+    )
+
+    def restart(_c, _p, program):
+        restarted.append(program)
+        return restart_code, f"{program}: ERROR (no such process)" if restart_code else ""
+
+    monkeypatch.setattr(supervision, "restart_program", restart)
+    monkeypatch.setattr(
+        supervision.resolvers,
+        "resolve_assigned_ports",
+        lambda *a, **k: {BENCH: ports} if ports else {},
+    )
+    monkeypatch.setattr(
+        supervision,
+        "_wait_for_serving_sites",
+        lambda *a, **k: (
+            list(pending),
+            {s: ("500" if s in pending else "200") for s in k["sites"]},
+        ),
+    )
+    return restarted
+
+
+class TestResyncAfterCodeChange:
+    """THE shared step every app-code-changing verb routes through.
+
+    It lives here rather than in ``core.apps`` because ``core.update`` needs the
+    same step, and four verbs each growing their own restart is exactly the drift
+    the install/uninstall fix already avoided between two.
+    """
+
+    def test_it_cycles_every_code_bearing_program_and_proves_the_sites_serve(self, monkeypatch):
+        restarted = _wire_resync(monkeypatch)
+
+        outcome = supervision.resync_after_code_change(_ResyncFake(), BENCH, sites=["a.localhost"])
+
+        assert restarted == ["web", "schedule", "worker_default"]
+        assert outcome.ok is True
+        assert outcome.attempted is True
+        assert outcome.restarted == ["web", "schedule", "worker_default"]
+
+    def test_no_affected_site_means_nothing_is_serving_the_change(self, monkeypatch):
+        restarted = _wire_resync(monkeypatch)
+
+        outcome = supervision.resync_after_code_change(_ResyncFake(), BENCH, sites=[])
+
+        assert restarted == []
+        assert outcome.attempted is False
+        assert outcome.ok is True
+
+    def test_a_site_that_never_answers_200_is_not_a_success(self, monkeypatch):
+        """Restarting is not proof: "supervisord says RUNNING" is a bound-port claim."""
+        _wire_resync(monkeypatch, pending=["a.localhost"])
+
+        outcome = supervision.resync_after_code_change(_ResyncFake(), BENCH, sites=["a.localhost"])
+
+        assert outcome.ok is False
+        assert outcome.unserved_sites == ["a.localhost"]
+        assert "HTTP 200" in outcome.error
+        assert "a.localhost=500" in outcome.error
+
+    def test_the_error_is_one_line_because_axi_renders_it_through_toon_kv(self, monkeypatch):
+        _wire_resync(monkeypatch, pending=["a.localhost"])
+
+        outcome = supervision.resync_after_code_change(_ResyncFake(), BENCH, sites=["a.localhost"])
+
+        assert "\n" not in outcome.error
+
+    def test_a_bench_with_a_stopped_web_is_not_started(self, monkeypatch):
+        restarted = _wire_resync(
+            monkeypatch, states={"web": ("STOPPED", None), "worker_default": ("RUNNING", 3)}
+        )
+
+        outcome = supervision.resync_after_code_change(_ResyncFake(), BENCH, sites=["a.localhost"])
+
+        assert restarted == []
+        assert outcome.attempted is False
+
+    def test_a_bench_with_no_manager_at_all_is_left_alone(self, monkeypatch):
+        restarted = _wire_resync(monkeypatch, supervised=False, manager_up=False)
+
+        outcome = supervision.resync_after_code_change(_ResyncFake(), BENCH, sites=["a.localhost"])
+
+        assert restarted == []
+        assert outcome.attempted is False
+        assert outcome.ok is True
+
+    def test_a_manager_cwcli_does_not_own_is_probed_but_never_restarted(self, monkeypatch):
+        restarted = _wire_resync(monkeypatch, supervised=False, manager_up=True)
+
+        outcome = supervision.resync_after_code_change(_ResyncFake(), BENCH, sites=["a.localhost"])
+
+        assert restarted == []
+        assert outcome.attempted is True
+        assert outcome.restarted == []
+        assert outcome.ok is True
+
+    def test_an_unhealthy_unowned_manager_gets_a_manual_restart_remedy(self, monkeypatch):
+        _wire_resync(monkeypatch, supervised=False, manager_up=True, pending=["a.localhost"])
+
+        outcome = supervision.resync_after_code_change(_ResyncFake(), BENCH, sites=["a.localhost"])
+
+        assert "Restart the bench manually" in outcome.error
+
+    def test_it_never_raises_because_the_code_change_already_landed(self, monkeypatch):
+        """A raise would erase the record of a mutation that genuinely happened, and
+        an automation caller that retried would then run it twice."""
+        _wire_resync(monkeypatch)
+        monkeypatch.setattr(
+            supervision,
+            "supervisorctl_states",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("docker went away")),
+        )
+
+        outcome = supervision.resync_after_code_change(_ResyncFake(), BENCH, sites=["a.localhost"])
+
+        assert outcome.ok is False
+        assert "docker went away" in outcome.error
+
+    def test_an_unreadable_process_state_fails_honest_rather_than_assuming_idle(self, monkeypatch):
+        _wire_resync(monkeypatch)
+
+        def boom(*_a, **_k):
+            raise CwcliError(
+                ErrorKind.PRECONDITION,
+                "supervisor.process_state_unknown",
+                "Could not verify the supervisord process state.",
+            )
+
+        monkeypatch.setattr(supervision, "discover_stack", boom)
+
+        outcome = supervision.resync_after_code_change(_ResyncFake(), BENCH, sites=["a.localhost"])
+
+        assert outcome.ok is False
+        assert "Could not verify the supervisord process state." in outcome.error
+
+    def test_the_process_read_is_required_so_an_unreadable_ps_cannot_read_as_idle(self):
+        """``required=True`` is what turns "I could not tell" into a reported failure.
+
+        Without it ``_ps_rows`` returns an empty list, ``supervisor_up`` is False, the
+        unsupervised fallback is also empty, and the step reports a clean no-op on
+        exactly the bench that needed the restart.
+        """
+        source = inspect.getsource(supervision.resync_after_code_change)
+        assert source.count("required=True") == 2
+
+    def test_a_failed_restart_stops_before_claiming_the_bench_serves(self, monkeypatch):
+        _wire_resync(monkeypatch, restart_code=1)
+
+        outcome = supervision.resync_after_code_change(_ResyncFake(), BENCH, sites=["a.localhost"])
+
+        assert outcome.ok is False
+        assert "restarting the bench process 'web' failed" in outcome.error
+
+    def test_a_restart_with_no_recorded_exit_code_is_not_a_failure(self, monkeypatch):
+        """``None`` is "docker recorded no code"; the site probe is the real gate."""
+        restarted = _wire_resync(monkeypatch, restart_code=None)
+
+        outcome = supervision.resync_after_code_change(_ResyncFake(), BENCH, sites=["a.localhost"])
+
+        assert restarted == ["web", "schedule", "worker_default"]
+        assert outcome.ok is True
+
+    def test_an_unreadable_port_is_reported_never_guessed(self, monkeypatch):
+        _wire_resync(monkeypatch, ports=None)
+
+        outcome = supervision.resync_after_code_change(_ResyncFake(), BENCH, sites=["a.localhost"])
+
+        assert outcome.ok is False
+        assert "assigned port could not be read" in outcome.error
+
+    def test_each_restart_is_announced_as_it_happens(self, monkeypatch):
+        _wire_resync(monkeypatch)
+        announced: list[str] = []
+
+        supervision.resync_after_code_change(
+            _ResyncFake(), BENCH, sites=["a.localhost"], on_restart=announced.append
+        )
+
+        assert announced == ["web", "schedule", "worker_default"]
+
+    def test_duplicate_sites_are_probed_once(self, monkeypatch):
+        _wire_resync(monkeypatch)
+        probed = []
+        monkeypatch.setattr(
+            supervision,
+            "_wait_for_serving_sites",
+            lambda *a, **k: probed.append(k["sites"]) or ([], {}),
+        )
+
+        supervision.resync_after_code_change(
+            _ResyncFake(), BENCH, sites=["a.localhost", "a.localhost", "b.localhost"]
+        )
+
+        assert probed == [["a.localhost", "b.localhost"]]
+
+
+class TestSiteVerificationBudget:
+    def test_each_probe_gets_only_the_remaining_time_budget(self, monkeypatch):
+        """A server that accepts the connection and never answers cannot outlive the
+        deadline: without a per-probe cap the bounded loop would hang forever."""
+        now = [0.0]
+        probe_budgets = []
+
+        monkeypatch.setattr(supervision.time, "monotonic", lambda: now[0])
+        monkeypatch.setattr(
+            supervision.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds)
+        )
+
+        def unresponsive(*_args, **kwargs):
+            probe_budgets.append(kwargs["max_time"])
+            now[0] += kwargs["max_time"]
+            return None
+
+        monkeypatch.setattr(supervision, "web_http_code", unresponsive)
+
+        pending, codes = supervision._wait_for_serving_sites(
+            _ResyncFake(),
+            port=8000,
+            sites=["a.localhost", "b.localhost", "c.localhost"],
+            timeout=5.0,
+        )
+
+        assert probe_budgets == [5.0]
+        assert pending == ["a.localhost", "b.localhost", "c.localhost"]
+        assert codes == {"a.localhost": None, "b.localhost": None, "c.localhost": None}

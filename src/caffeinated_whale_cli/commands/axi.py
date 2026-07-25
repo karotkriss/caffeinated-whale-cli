@@ -1372,8 +1372,19 @@ def _checkout_narrate(event) -> None:
 
     Everything here goes to stderr, including git's stdout, so the one-TOON-
     document contract on stdout holds.
+
+    It narrates ``AppsAnnounce`` too, which is why ``install`` shares it rather
+    than keeping its own copy: the post-mutation resynchronisation announces each
+    program as it is cycled, and it is the one step here that can sit silent for
+    up to a minute waiting on the site probe. Checkout used to emit no announces
+    at all; it does now, and dropping them would leave an agent watching nothing.
     """
-    if isinstance(event, core_apps.AppsCommand):
+    if isinstance(event, core_apps.AppsAnnounce):
+        # `.rstrip()`: the resync names a program and no site, and the fetch names
+        # an app and no site, so the line would otherwise carry a trailing space.
+        target = " ".join(p for p in (event.app, event.site) if p)
+        print(f"[{event.phase}] {target}".rstrip(), file=sys.stderr, flush=True)
+    elif isinstance(event, core_apps.AppsCommand):
         print(f"$ {event.command}", file=sys.stderr, flush=True)
     elif isinstance(event, core_apps.AppsOutput):
         print(event.text, end="", file=sys.stderr, flush=True)
@@ -1493,23 +1504,6 @@ def axi_apps_checkout(
 # ------------------------------------------------------------------ apps install
 
 
-def _install_narrate(event) -> None:
-    """The fetch/install steps, to STDERR.
-
-    Same reasoning as :func:`_checkout_narrate` (bench's own bytes are the only
-    place a failure's reason exists - neither step is a supervised process, so
-    neither logs anywhere ``cwcli logs`` can serve), plus the phase announcements,
-    which install emits and checkout does not.
-    """
-    if isinstance(event, core_apps.AppsAnnounce):
-        # `.rstrip()`: the post-mutation web restart names no app and no site (it is
-        # about the bench), so its line would otherwise carry a trailing space.
-        target = " ".join(p for p in (event.app, event.site) if p)
-        print(f"[{event.phase}] {target}".rstrip(), file=sys.stderr, flush=True)
-    else:
-        _checkout_narrate(event)
-
-
 @apps_app.command("install")
 def axi_apps_install(
     project: str = typer.Argument(..., help="The Docker Compose project name."),
@@ -1583,7 +1577,7 @@ def axi_apps_install(
             branch=branch,
             auto_start=False,
             require_absent=True,
-            on_event=_install_narrate,
+            on_event=_checkout_narrate,
         )
     except CwcliError as error:
         emit_axi_error(error)
