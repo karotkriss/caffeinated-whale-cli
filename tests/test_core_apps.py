@@ -109,9 +109,7 @@ def container(monkeypatch):
     monkeypatch.setattr(
         core_apps.supervision,
         "discover_unsupervised_stack",
-        lambda *a, **k: core_apps.supervision.UnsupervisedStack(
-            manager_up=False, processes=[]
-        ),
+        lambda *a, **k: core_apps.supervision.UnsupervisedStack(manager_up=False, processes=[]),
     )
     return c
 
@@ -454,18 +452,14 @@ def test_a_stopped_supervised_web_process_is_not_started_by_an_install(monkeypat
     assert result.data.ok is True
 
 
-def test_an_unsupervised_running_bench_is_verified_without_being_restarted(
-    monkeypatch, container
-):
+def test_an_unsupervised_running_bench_is_verified_without_being_restarted(monkeypatch, container):
     _cache(monkeypatch, [{"path": BENCH}])
     monkeypatch.setattr(
         core_apps.supervision,
         "discover_unsupervised_stack",
         lambda *a, **k: core_apps.supervision.UnsupervisedStack(
             manager_up=True,
-            processes=[
-                core_apps.supervision.ProcessHealth(label="web", up=True, pid=101)
-            ],
+            processes=[core_apps.supervision.ProcessHealth(label="web", up=True, pid=101)],
         ),
     )
     monkeypatch.setattr(
@@ -494,18 +488,14 @@ def test_an_unsupervised_running_bench_is_verified_without_being_restarted(
     assert result.data.ok is True
 
 
-def test_an_unhealthy_unsupervised_bench_fails_with_a_manual_restart_remedy(
-    monkeypatch, container
-):
+def test_an_unhealthy_unsupervised_bench_fails_with_a_manual_restart_remedy(monkeypatch, container):
     _cache(monkeypatch, [{"path": BENCH}])
     monkeypatch.setattr(
         core_apps.supervision,
         "discover_unsupervised_stack",
         lambda *a, **k: core_apps.supervision.UnsupervisedStack(
             manager_up=True,
-            processes=[
-                core_apps.supervision.ProcessHealth(label="web", up=True, pid=101)
-            ],
+            processes=[core_apps.supervision.ProcessHealth(label="web", up=True, pid=101)],
         ),
     )
     monkeypatch.setattr(
