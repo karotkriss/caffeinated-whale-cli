@@ -60,7 +60,7 @@ The final renderer recognizes command, argument, and option metadata through Cli
 | Help path | Before bytes | After bytes | Saved | Reduction |
 | --- | ---: | ---: | ---: | ---: |
 | `cwcli axi --help` | 5,153 | 1,565 | 3,588 | 69.6% |
-| `cwcli axi scale --help` | 2,577 | 1,167 | 1,410 | 54.7% |
+| `cwcli axi scale --help` | 2,577 | 1,188 | 1,389 | 53.9% |
 | `cwcli axi apps --help` | 2,012 | 532 | 1,480 | 73.6% |
 | `cwcli axi apps install --help` | 6,153 | 3,780 | 2,373 | 38.6% |
 
@@ -108,12 +108,12 @@ The installed representative leaf output began:
 usage: "cwcli axi scale <project> [flags]"
 description: "Widen the instance's published port range; emit the new port map as TOON."
 arguments[1]{name,value,required,description}:
-  project,str,true,"The Docker Compose project name."
+  project,text,true,"The Docker Compose project name."
 flags[3]{name,value,required,default,description}:
-  "--to",int,false,null,"Ensure at least this many benches are host-reachable (publish at least this many ports). Omit to auto-fit every bench."
+  "--to",integer,false,null,"Ensure at least this many benches are host-reachable (publish at least this many ports). Omit to auto-fit every bench."
   "--yes/-y",boolean,false,false,"Consent to the whole-instance restart that expanding the port range causes."
   "--help",boolean,false,null,"Show this message and exit."
-examples[2]: cwcli axi scale <project>,cwcli axi scale <project> --to <int>
+examples[2]: cwcli axi scale <project> --yes,cwcli axi scale <project> --to <integer> --yes
 ```
 
 The installed `init` examples both supply the non-interactive administrator password input that the command requires:
