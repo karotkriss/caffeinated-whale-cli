@@ -19,6 +19,10 @@ init (fixture) -> apps list -> inspect -> backup -> rm (fixture teardown). Any
 undeclared runtime dependency surfaces here as a ``ModuleNotFoundError`` on a
 real command, which no other gate would catch.
 
+The same installed binary also serves the recursive ``cwcli axi ... --help``
+proof in this file. That test walks the source registry, invokes every matching
+installed help path, and keeps the human Rich surface in the same artifact check.
+
 Marked ``e2e_pkg`` (not ``e2e``) so it is OFF the per-version ``-m e2e`` matrix -
 running it there would just double that leg's dominant init cost for no added
 signal, since the matrix already uses the dev binary. Run locally with
@@ -31,11 +35,82 @@ from __future__ import annotations
 import json
 import shlex
 
+import click
 import pytest
+from typer.main import get_command
 
 from . import harness
 
 pytestmark = pytest.mark.e2e_pkg
+
+
+def _installed_axi_help_paths():
+    """Enumerate the source registry that the runtime-only wheel must expose."""
+    from caffeinated_whale_cli.main import app
+
+    root = get_command(app)
+    axi = root.commands["axi"]
+
+    def walk(command, path):
+        yield path, command
+        if isinstance(command, click.Group):
+            ctx = click.Context(command)
+            for name in command.list_commands(ctx):
+                child = command.get_command(ctx, name)
+                assert child is not None
+                yield from walk(child, [*path, name])
+
+    yield from walk(axi, [])
+
+
+def test_all_axi_help_is_toon_on_runtime_only_binary():
+    """Every installed agent help path is complete TOON while human help stays Rich."""
+    visited: list[tuple[str, ...]] = []
+    for path, command in _installed_axi_help_paths():
+        visited.append(tuple(path))
+        result = harness.run_cwcli("axi", *path, "--help")
+
+        # Prove useful content before checking the absence of decoration.
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert result.stdout.startswith('usage: "cwcli axi')
+        assert "description:" in result.stdout
+        assert "flags[" in result.stdout
+        assert "examples[" in result.stdout
+        arguments = [param for param in command.params if isinstance(param, click.Argument)]
+        if arguments:
+            assert "arguments[" in result.stdout
+            for argument in arguments:
+                assert argument.name in result.stdout
+                assert argument.help in result.stdout
+        if isinstance(command, click.Group):
+            assert "commands[" in result.stdout
+            ctx = click.Context(command)
+            for name in command.list_commands(ctx):
+                assert name in result.stdout
+        for option in (
+            param
+            for param in command.get_params(click.Context(command))
+            if isinstance(param, click.Option) and not param.hidden
+        ):
+            assert option.opts[0] in result.stdout
+            assert option.help in result.stdout
+
+        assert not any("\u2500" <= char <= "\u257f" for char in result.stdout)
+        assert "\x1b[" not in result.stdout
+        assert result.stderr == ""
+        assert all(line and line == line.rstrip() for line in result.stdout.splitlines())
+
+    assert () in visited
+    assert ("scale",) in visited
+    assert ("apps", "install") in visited
+
+    human = harness.run_cwcli("scale", "--help")
+    assert human.returncode == 0, human.stdout + human.stderr
+    assert "Usage:" in human.stdout
+    assert "Arguments" in human.stdout
+    assert "--to" in human.stdout
+    assert any("\u2500" <= char <= "\u257f" for char in human.stdout)
+    assert not human.stdout.startswith("usage:")
 
 
 def test_full_lifecycle_on_runtime_only_binary(running_instance, tmp_path):
