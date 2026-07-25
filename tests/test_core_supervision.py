@@ -622,6 +622,12 @@ class TestWebProbe:
     def test_web_none_when_curl_fails(self):
         assert supervision.web_http_code(FakeContainer(web_ok=False), port=8000) is None
 
+    def test_web_probe_uses_the_callers_time_budget(self):
+        c = FakeContainer(web_code="200")
+        supervision.web_http_code(c, port=8000, max_time=2.5)
+        curl = next(cmd for cmd in c.calls if isinstance(cmd, list) and cmd[0] == "curl")
+        assert curl[curl.index("--max-time") + 1] == "2.5"
+
     def test_serving_true_for_any_http_code(self):
         # A bound port serving ANY code (even 404/5xx) is up (status's definition).
         assert supervision.web_is_serving(FakeContainer(web_code="404"), port=8000) is True

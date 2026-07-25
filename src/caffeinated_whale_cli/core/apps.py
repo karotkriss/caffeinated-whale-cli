@@ -292,14 +292,22 @@ def _wait_for_sites_after_restart(
     deadline = time.monotonic() + timeout
     while pending:
         for site in list(pending):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return sorted(pending), codes
             codes[site] = supervision.web_http_code(
-                frappe_container, port=port, site=site, path="/api/method/ping"
+                frappe_container,
+                port=port,
+                site=site,
+                path="/api/method/ping",
+                max_time=min(10.0, remaining),
             )
             if codes[site] == "200":
                 pending.remove(site)
-        if not pending or time.monotonic() >= deadline:
+        remaining = deadline - time.monotonic()
+        if not pending or remaining <= 0:
             break
-        time.sleep(interval)
+        time.sleep(min(interval, remaining))
     return sorted(pending), codes
 
 
