@@ -1676,10 +1676,8 @@ def axi_migrate(
       the verb, because that site is DOWN and the agent must know. There is NO
       --skip-maintenance: a flag that removes the gate has no named beneficiary.
     - A site whose migrate lock is genuinely held is REFUSED before maintenance mode
-      is even touched, naming `cwcli unlock` as the remedy. Two migrations racing
-      for one site is a tolerated, reproducible failure; a STRANDED lock silently
-      making every later solo attempt fail the exact same opaque way - reading as a
-      broken site rather than leftover residue - is not, and this is the fix.
+      is touched, naming `cwcli unlock` as the remedy. An unheld leftover lock file
+      does not block migration.
     - NO --yes and no auto-start (an agent starting containers a user deliberately
       stopped): a stopped project is a usage error naming `cwcli start`.
 
@@ -1704,12 +1702,9 @@ def axi_migrate(
     emit_result(report, warnings=result.warnings)
     if not report.ok:
         # Contextual disclosure (AXI section 9) on failure only: a successful migrate
-        # fully answers the query, and a help line there would be noise. Only when
-        # `bench migrate` itself actually RAN and failed does "read the failure"
-        # mean anything - a preflight refusal (the maintenance gate, the stranded-
-        # lock gate) never ran a command, and its own `results[].message` already
-        # names the cause and the remedy; a generic "read the logs" line there would
-        # contradict the specific one right above it.
+        # fully answers the query, and a help line there would be noise. A preflight
+        # refusal already names its cause and remedy, so logs only help when
+        # `bench migrate` itself ran and failed.
         migrate_ran_and_failed = any(r.action == "migrate" and not r.ok for r in report.results)
         if migrate_ran_and_failed:
             typer.echo(toon.kv("help", f"read the failure with 'cwcli axi logs {project}'"))
