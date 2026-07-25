@@ -1414,9 +1414,12 @@ dialog input {
     const read = entry.data || {};
     const warn = (entry.warnings || [])
       .map(w => `<div class="notice">${esc(w.text || w.code || "")}</div>`).join("");
+    // bench's own tools colorize freely; in a <pre> those ANSI codes would
+    // render as literal escape garbage, so they are stripped, not interpreted.
+    const stripAnsi = line => String(line).replace(/\u001b\[[0-9;]*[A-Za-z]/g, "");
     const blocks = (read.logs || []).map(group => `<div class="section">
       <h3>PROCESS ${esc(group.process)} <span class="log-file">${esc(group.file)}</span></h3>
-      <pre class="log-lines">${esc((group.lines || []).join("\n"))}</pre>
+      <pre class="log-lines">${esc((group.lines || []).map(stripAnsi).join("\n"))}</pre>
     </div>`).join("");
     el("detail").innerHTML = toolbar(`fetched ${entry.at} · last ${read.lines_requested || "?"} lines per process`)
       + `<div class="summary-grid">
