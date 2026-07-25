@@ -1522,7 +1522,7 @@ dialog input {
           // because consent was not given, and its own words describe the blast
           // radius. The page never invents this warning; it only relays it and
           // requires the typed project name before retrying with consent.
-          openScaleConfirm(inst.project, error.message || "Scaling needs confirmation.");
+          openScaleConfirm(inst.project, error.message || "Scaling needs confirmation.", payload.to);
           return;
         }
         const choice = body.choice && body.choice.options ? " Options: " + body.choice.options.map(o => o.label || o.value).join(", ") : "";
@@ -1579,14 +1579,28 @@ dialog input {
     </div>`;
   }
 
-  function openScaleConfirm(project, message) {
+  function openScaleModal(inst) {
+    openModal(`<h3 id="modal-title">Scale published ports</h3>
+      <p class="modal-help">Widens ${esc(inst.project)}'s published port range so every bench is host-reachable. When the range already covers every bench this is a no-op; when it must expand, cwcli itself asks for confirmation first.</p>
+      <label>Cover at least this many benches (blank = just cover what exists)
+        <input name="to" type="number" min="1" step="1" autocomplete="off">
+      </label>
+      ${modalButtons("Check and scale")}`, values => {
+      const to = parseInt(values.to, 10);
+      runAction("scale_instance", Object.assign({consent: false}, to > 0 ? {to} : {}));
+    });
+  }
+
+  function openScaleConfirm(project, message, to) {
     openModal(`<h3 id="modal-title">Scale published ports</h3>
       <p class="modal-warning">${esc(message)}</p>
       <label>Type the project name <span class="code">${esc(project)}</span> to confirm
         <input name="confirm" autocomplete="off" required>
       </label>
       ${modalButtons("Scale - restarts benches", true)}`, values => {
-      if (values.confirm === project) runAction("scale_instance", {consent: true});
+      if (values.confirm === project) {
+        runAction("scale_instance", Object.assign({consent: true}, to > 0 ? {to} : {}));
+      }
     });
     const input = modal.querySelector('input[name="confirm"]');
     const confirm = modal.querySelector(".modal-confirm");
@@ -1767,7 +1781,7 @@ dialog input {
       // Ask WITHOUT consent first: when expansion is needed, core answers
       // NEEDS_CHOICE/confirm_scale and its message drives the typed-name
       // confirm; a covering no-op never asks. Consent means consent only.
-      return runAction("scale_instance", {consent: false});
+      return openScaleModal(inst);
     }
     runAction(action);
   });
