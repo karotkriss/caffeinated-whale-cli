@@ -111,9 +111,7 @@ def test_all_axi_help_is_toon_on_runtime_only_binary():
     assert ("apps", "install") in visited
 
     init = harness.run_cwcli("axi", "init", "--help")
-    init_examples = next(
-        line for line in init.stdout.splitlines() if line.startswith("examples[")
-    )
+    init_examples = next(line for line in init.stdout.splitlines() if line.startswith("examples["))
     assert init_examples.count('CWCLI_ADMIN_PASSWORD=\\"<password>\\"') == 2
 
     human = harness.run_cwcli("scale", "--help")

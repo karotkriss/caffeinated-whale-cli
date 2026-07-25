@@ -661,9 +661,7 @@ class TestAxiHelpIsToon:
                 line for line in result.stdout.splitlines() if line.startswith("examples[")
             )
             assert ": " in examples_line, path
-            assert not any(
-                line.startswith("  cwcli ") for line in result.stdout.splitlines()
-            ), path
+            assert not any(line.startswith("  cwcli ") for line in result.stdout.splitlines()), path
             assert not any("\u2500" <= char <= "\u257f" for char in result.stdout), path
             assert "\x1b[" not in result.stdout, path
             assert result.stderr == "", path
