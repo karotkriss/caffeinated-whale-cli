@@ -384,6 +384,33 @@ class TestLabelCommand:
             _run_label(monkeypatch, container, bench_selector="99", new_label="x")
         assert exc.value.exit_code == 1
 
+    @pytest.mark.parametrize(
+        ("container", "marker"),
+        [
+            (MarkerFakeContainer(present_paths={BENCH_A}), "GONE"),
+            pytest.param(
+                MarkerFakeContainer(),
+                "not verified",
+                id="stopped-container",
+            ),
+        ],
+    )
+    def test_unknown_selector_available_benches_preserve_state(
+        self, temp_db, monkeypatch, capsys, container, marker
+    ):
+        _seed_two_benches()
+        if marker == "not verified":
+            container.status = "exited"
+
+        with pytest.raises(typer.Exit) as exc:
+            _run_label(monkeypatch, container, bench_selector="99", new_label="x")
+
+        assert exc.value.exit_code == 1
+        err = capsys.readouterr().err
+        assert "Available benches" in err
+        assert BENCH_B in err
+        assert marker in err
+
     def test_unknown_selector_without_new_label_reports_unknown_selector(
         self, temp_db, monkeypatch, capsys
     ):

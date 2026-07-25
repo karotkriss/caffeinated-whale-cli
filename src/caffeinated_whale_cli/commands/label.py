@@ -16,7 +16,6 @@ from ..core import label as core_label
 from ..core import resolvers
 from ..core.envelope import Status
 from ..core.errors import CwcliError
-from ..utils import bench_labels
 from ..utils.completion_utils import complete_project_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import handle_docker_errors
@@ -32,16 +31,20 @@ def _state_part(state: str) -> str:
     return ""
 
 
+def _bench_line(bench) -> str:
+    label_part = (
+        f" [magenta]'{bench.label}'[/magenta]" if bench.label else " [dim](no label)[/dim]"
+    )
+    return (
+        f"  [cyan]\\[{bench.index}][/cyan]{label_part}  {bench.path}"
+        f"{_state_part(bench.state)}"
+    )
+
+
 def _print_bench_list(project_name: str, benches: list) -> None:
     console.print(f"Benches in project [bold cyan]{project_name}[/bold cyan]:")
     for bench in benches:
-        label_part = (
-            f" [magenta]'{bench.label}'[/magenta]" if bench.label else " [dim](no label)[/dim]"
-        )
-        console.print(
-            f"  [cyan]\\[{bench.index}][/cyan]{label_part}  {bench.path}"
-            f"{_state_part(bench.state)}"
-        )
+        console.print(_bench_line(bench))
 
 
 def _handle_label_error(e: CwcliError, project_name: str) -> NoReturn:
@@ -66,11 +69,8 @@ def _handle_label_error(e: CwcliError, project_name: str) -> NoReturn:
             raise typer.Exit(code=1) from None
         assert listing.data is not None
         stderr_console.print("Available benches (address by index or label):")
-        stderr_console.print(
-            bench_labels.format_bench_list(
-                [{"path": b.path, "label": b.label} for b in listing.data.benches]
-            )
-        )
+        for bench in listing.data.benches:
+            stderr_console.print(_bench_line(bench))
 
     raise typer.Exit(code=1)
 
