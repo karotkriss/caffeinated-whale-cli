@@ -2,6 +2,10 @@
 
 Date: 2026-07-25
 
+This is historical evidence for the initial TOON renderer revision.
+It intentionally preserves that revision's measurements and output capture rather than serving as current command reference.
+The [README agent-surface section](../../README.md#for-agents-the-cwcli-axi-surface) owns the current user-facing contract, and the live `cwcli axi ... --help` output owns generated command details.
+
 ## Scope
 
 This run reproduced and fixed decorated Rich help on the agent-facing surface.

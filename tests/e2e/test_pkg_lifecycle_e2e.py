@@ -39,6 +39,8 @@ import click
 import pytest
 from typer.main import get_command
 
+from caffeinated_whale_cli.commands import axi as axi_mod
+
 from . import harness
 
 pytestmark = pytest.mark.e2e_pkg
@@ -80,7 +82,8 @@ def test_all_axi_help_is_toon_on_runtime_only_binary():
         if arguments:
             assert "arguments[" in result.stdout
             for argument in arguments:
-                assert argument.name in result.stdout
+                display_name = getattr(argument, "metavar", None) or argument.name
+                assert display_name in result.stdout
                 assert argument.help in result.stdout
         if isinstance(command, click.Group):
             assert "commands[" in result.stdout
@@ -90,7 +93,8 @@ def test_all_axi_help_is_toon_on_runtime_only_binary():
                 assert name in result.stdout
                 child = command.get_command(ctx, name)
                 assert child is not None
-                assert child.get_short_help_str() in result.stdout
+                expected = axi_mod._strip_prose_markup(child.get_short_help_str(limit=100))
+                assert expected in result.stdout
         for option in (
             param
             for param in command.get_params(click.Context(command))
