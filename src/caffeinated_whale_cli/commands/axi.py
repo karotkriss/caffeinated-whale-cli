@@ -1687,6 +1687,9 @@ def axi_migrate(
       and a site left in maintenance is reported as `maintenance_left_on` and fails
       the verb, because that site is DOWN and the agent must know. There is NO
       --skip-maintenance: a flag that removes the gate has no named beneficiary.
+    - A site whose migrate lock is genuinely held is REFUSED before maintenance mode
+      is touched, naming `cwcli unlock` as the remedy. An unheld leftover lock file
+      does not block migration.
     - NO --yes and no auto-start (an agent starting containers a user deliberately
       stopped): a stopped project is a usage error naming `cwcli start`.
 
@@ -1711,8 +1714,12 @@ def axi_migrate(
     emit_result(report, warnings=result.warnings)
     if not report.ok:
         # Contextual disclosure (AXI section 9) on failure only: a successful migrate
-        # fully answers the query, and a help line there would be noise.
-        typer.echo(toon.kv("help", f"read the failure with 'cwcli axi logs {project}'"))
+        # fully answers the query, and a help line there would be noise. A preflight
+        # refusal already names its cause and remedy, so logs only help when
+        # `bench migrate` itself ran and failed.
+        migrate_ran_and_failed = any(r.action == "migrate" and not r.ok for r in report.results)
+        if migrate_ran_and_failed:
+            typer.echo(toon.kv("help", f"read the failure with 'cwcli axi logs {project}'"))
     # The exit code reads report.ok, NOT result.status: a failed step is a
     # WARNING-shaped envelope, and WARNING maps to exit 0 everywhere else.
     raise typer.Exit(0 if report.ok else 1)
