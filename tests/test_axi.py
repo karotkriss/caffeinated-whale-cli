@@ -501,6 +501,20 @@ class TestToonEncoder:
         out = toon.block("help", ["do x", "do y"])
         assert out == "help[2]:\n  do x\n  do y"
 
+    def test_help_can_force_quote_structural_strings(self):
+        """Help metadata can be strict TOON without changing ordinary data output."""
+        assert (
+            toon.kv("usage", "cwcli axi [command] [flags]", force_quote=True)
+            == 'usage: "cwcli axi [command] [flags]"'
+        )
+        out = toon.table(
+            "flags",
+            [{"name": "--help", "description": "Show help."}],
+            ["name", "description"],
+            force_quote_fields={"name", "description"},
+        )
+        assert out.splitlines()[1] == '  "--help","Show help."'
+
     def test_self_check_runs(self):
         """The toon module's internal self-check passes."""
         toon._self_check()  # asserts internally; must not raise
@@ -572,6 +586,141 @@ class TestAxiParseErrorsAreToon:
         out = capsys.readouterr().out
         assert out.startswith("error:")
         assert "\x1b[" not in out  # no ANSI escapes
+
+
+# ------------------------------------------------------------------------- TOON help
+
+
+def _axi_help_commands():
+    """Walk the real mounted ``cwcli axi`` tree, including every nested group."""
+    from typer.main import get_command
+
+    from caffeinated_whale_cli.main import app as root_app
+
+    root = get_command(root_app)
+    axi = root.commands["axi"]
+
+    def walk(command, path):
+        yield path, command
+        if isinstance(command, click.Group):
+            ctx = click.Context(command)
+            for name in command.list_commands(ctx):
+                child = command.get_command(ctx, name)
+                assert child is not None
+                yield from walk(child, [*path, name])
+
+    yield from walk(axi, ["axi"])
+
+
+class TestAxiHelpIsToon:
+    """Every help path is a complete TOON reference, including future commands."""
+
+    def test_every_registered_help_path_is_complete_toon(self):
+        """Walk the registry so a new command cannot silently regain Rich help."""
+        from caffeinated_whale_cli.main import app as root_app
+
+        visited: list[tuple[str, ...]] = []
+        for path, command in _axi_help_commands():
+            visited.append(tuple(path))
+            result = runner.invoke(root_app, [*path, "--help"], color=True)
+
+            # Positive proof comes first. Empty or content-stripped output must
+            # fail before any decoration check could pass vacuously.
+            assert result.exit_code == 0, (path, result.stdout, result.stderr)
+            assert result.stdout.startswith("usage:"), path
+            assert all(part in result.stdout.splitlines()[0] for part in path), path
+            assert "description:" in result.stdout, path
+            assert "flags[" in result.stdout, path
+            assert "examples[" in result.stdout, path
+
+            visible_params = [param for param in command.params if not param.hidden]
+            arguments = [param for param in visible_params if isinstance(param, click.Argument)]
+            options = [param for param in visible_params if isinstance(param, click.Option)]
+            if arguments:
+                assert "arguments[" in result.stdout, path
+                for argument in arguments:
+                    assert argument.name in result.stdout, (path, argument.name)
+                    assert str(argument.required).lower() in result.stdout, path
+                    assert argument.help in result.stdout, (path, argument.help)
+            if isinstance(command, click.Group):
+                assert "commands[" in result.stdout, path
+                assert "{name,description}" in result.stdout, path
+                ctx = click.Context(command)
+                for name in command.list_commands(ctx):
+                    assert name in result.stdout, (path, name)
+                    child = command.get_command(ctx, name)
+                    assert child is not None
+                    assert child.get_short_help_str() in result.stdout, (path, name)
+            for option in options:
+                assert option.opts[0] in result.stdout, (path, option.opts[0])
+                assert str(option.required).lower() in result.stdout, path
+                assert option.help in result.stdout, (path, option.help)
+
+            # Negative proof follows the content assertions.
+            examples_line = next(
+                line for line in result.stdout.splitlines() if line.startswith("examples[")
+            )
+            assert ": " in examples_line, path
+            assert not any(line.startswith("  cwcli ") for line in result.stdout.splitlines()), path
+            assert not any("\u2500" <= char <= "\u257f" for char in result.stdout), path
+            assert "\x1b[" not in result.stdout, path
+            assert result.stderr == "", path
+            for line in result.stdout.splitlines():
+                assert line, f"blank alignment line in {' '.join(path)}"
+                assert line == line.rstrip(), f"trailing alignment space in {line!r}"
+                leading = len(line) - len(line.lstrip(" "))
+                assert leading in (0, 2), f"non-TOON indentation in {line!r}"
+                assert "  " not in line[leading:], f"column padding in {line!r}"
+
+        assert ("axi",) in visited
+        assert ("axi", "scale") in visited
+        assert ("axi", "apps", "install") in visited
+
+    def test_constraint_aware_examples_are_valid_operations(self):
+        """Examples include the runtime-required mode that parser metadata cannot express."""
+        from caffeinated_whale_cli.main import app as root_app
+
+        label = runner.invoke(root_app, ["axi", "label", "--help"])
+        label_examples = next(
+            line for line in label.stdout.splitlines() if line.startswith("examples[")
+        )
+        assert "--set <text>" in label_examples
+        assert "--clear" in label_examples
+        assert "label <project>," not in label_examples
+
+        init = runner.invoke(root_app, ["axi", "init", "--help"])
+        init_examples = next(
+            line for line in init.stdout.splitlines() if line.startswith("examples[")
+        )
+        assert init_examples.count('CWCLI_ADMIN_PASSWORD=\\"<password>\\"') == 2
+        assert "--no-start" in init_examples
+
+    def test_explicit_argument_metavars_are_preserved(self):
+        """Usage and examples retain a command's explicit public argument shape."""
+        from caffeinated_whale_cli.main import app as root_app
+
+        for command in ("checkout", "install"):
+            result = runner.invoke(root_app, ["axi", "apps", command, "--help"])
+            usage = result.stdout.splitlines()[0]
+            examples = next(
+                line for line in result.stdout.splitlines() if line.startswith("examples[")
+            )
+            assert "<APP>" in usage
+            assert "<APP>" in examples
+            assert "<app-name>" not in usage
+            assert "<app-name>" not in examples
+
+    def test_human_help_keeps_rich_rendering(self):
+        """The sibling human surface remains the existing decorated help."""
+        from caffeinated_whale_cli.main import app as root_app
+
+        result = runner.invoke(root_app, ["scale", "--help"], color=True)
+        assert result.exit_code == 0
+        assert "Usage:" in result.stdout
+        assert "Arguments" in result.stdout
+        assert "--to" in click.unstyle(result.stdout)
+        assert any("\u2500" <= char <= "\u257f" for char in result.stdout)
+        assert not result.stdout.startswith("usage:")
 
 
 class TestNoAxiRunVerb:

@@ -18,7 +18,7 @@ from pathlib import Path
 _SPECIAL = set(",:\"'\n\r")
 
 
-def _scalar(value) -> str:
+def _scalar(value, *, force_quote: bool = False) -> str:
     """Render a single scalar as a TOON token (quoting only when needed)."""
     if value is None:
         return "null"
@@ -31,7 +31,7 @@ def _scalar(value) -> str:
     if isinstance(value, Path):
         return _scalar(str(value))
     text = str(value)
-    if _needs_quote(text):
+    if force_quote or _needs_quote(text):
         escaped = text.replace("\\", "\\\\").replace('"', '\\"')
         return f'"{escaped}"'
     return text
@@ -56,17 +56,24 @@ def _needs_quote(text: str) -> bool:
         return False
 
 
-def kv(key: str, value) -> str:
+def kv(key: str, value, *, force_quote: bool = False) -> str:
     """A single ``key: value`` line."""
-    return f"{key}: {_scalar(value)}"
+    return f"{key}: {_scalar(value, force_quote=force_quote)}"
 
 
-def table(name: str, rows: list[dict], fields: list[str]) -> str:
+def table(
+    name: str,
+    rows: list[dict],
+    fields: list[str],
+    *,
+    force_quote_fields: set[str] | None = None,
+) -> str:
     """A tabular ``name[N]{fields}:`` block; each row lists ``fields`` in order."""
     header = f"{name}[{len(rows)}]{{{','.join(fields)}}}:"
     lines = [header]
+    quoted = force_quote_fields or set()
     for row in rows:
-        lines.append("  " + ",".join(_scalar(row.get(f)) for f in fields))
+        lines.append("  " + ",".join(_scalar(row.get(f), force_quote=f in quoted) for f in fields))
     return "\n".join(lines)
 
 
