@@ -58,8 +58,8 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from ..utils import cache, db_utils
-from . import bench_ops, credbridge, resolvers
+from ..utils import bench_sites, cache, db_utils
+from . import bench_ops, credbridge, resolvers, supervision
 from . import docker as core_docker
 from .envelope import Message, Result, Status
 from .errors import CwcliError, ErrorKind
@@ -101,6 +101,12 @@ class UpdateReport:
     failed_cache_clears: list[str]
     failed_website_cache_clears: list[str]
     failed_maintenance_disable: list[str]  # STUCK: the site is DOWN, needs manual action
+    # The post-update resynchronisation (core.supervision.resync_after_code_change):
+    # `git pull` moved the code under processes that were already running, so they
+    # are cycled and the migrated sites must genuinely serve afterwards.
+    restarted_processes: list[str]  # the bench programs actually cycled
+    unserved_sites: list[str]  # migrated sites that did NOT come back with HTTP 200
+    resync_error: str | None  # the resync could not be completed or proved at all
     aborted: bool  # the fan-out stopped early (Ctrl-C / an unexpected error)
     ok: bool  # pre-computed aggregate; the frontends' exit code reads THIS
 
@@ -344,6 +350,7 @@ def _build_report(
     failed_cache_clears: list[str],
     failed_website_cache_clears: list[str],
     failed_maintenance_disable: list[str],
+    resync: supervision.ResyncOutcome | None = None,
     aborted: bool,
 ) -> UpdateReport:
     """Assemble the report and pre-compute ``ok``.
@@ -351,7 +358,14 @@ def _build_report(
     ``ok`` is pre-computed here rather than re-derived per frontend, matching the
     ``"ok"`` key `apps`'s other subcommands already emit. An UNKNOWN outcome makes
     ``ok`` false: an unknowable exit code is not a success.
+
+    A failed resynchronisation counts against ``ok`` for the reason the whole change
+    exists: an update whose migrated site no longer answers is not a success, and it
+    is the one failure mode the user cannot see from the per-phase lists.
     """
+    resync = resync or supervision.ResyncOutcome(
+        attempted=False, restarted=[], unserved_sites=[], error=None
+    )
     ok = not (
         aborted
         or failed_apps
@@ -364,6 +378,7 @@ def _build_report(
         or failed_cache_clears
         or failed_website_cache_clears
         or failed_maintenance_disable
+        or not resync.ok
     )
     return UpdateReport(
         project=project_name,
@@ -382,6 +397,9 @@ def _build_report(
         failed_cache_clears=list(failed_cache_clears),
         failed_website_cache_clears=list(failed_website_cache_clears),
         failed_maintenance_disable=list(failed_maintenance_disable),
+        restarted_processes=list(resync.restarted),
+        unserved_sites=list(resync.unserved_sites),
+        resync_error=resync.error,
         aborted=aborted,
         ok=ok,
     )
@@ -461,6 +479,33 @@ def _frappe_reset(
     if not no_recache:
         _recache(project_name, warnings, emit)
 
+    # Same resync every other code-changing path takes. This one resets and pulls
+    # EVERY app in the bench, so its affected set is every site on it - and bench's
+    # own `bench restart` at the tail of `bench update` targets a
+    # supervisor/systemd setup cwcli's per-bench supervisord is not, so nothing has
+    # cycled these processes. Only on the success path: a reset that failed may have
+    # left the tree anywhere, and a bounded site wait is not what that run needs.
+    resync: supervision.ResyncOutcome | None = None
+    if code == 0:
+        resync = supervision.resync_after_code_change(
+            frappe_container,
+            bench_path,
+            sites=bench_sites.list_sites(frappe_container, bench_path) or [],
+            on_restart=lambda program: emit(UpdateStepStart(phase="resync", item=program)),
+        )
+        if resync.error:
+            warnings.append(
+                Message("resync.failed", f"The frappe update completed, but {resync.error}")
+            )
+        if resync.attempted:
+            emit(
+                UpdateStepEnd(
+                    phase="resync",
+                    status="ok" if resync.ok else "failed",
+                    message=resync.error,
+                )
+            )
+
     report = _build_report(
         project_name=project_name,
         bench_path=bench_path,
@@ -478,6 +523,7 @@ def _frappe_reset(
         failed_cache_clears=[],
         failed_website_cache_clears=[],
         failed_maintenance_disable=[],
+        resync=resync,
         aborted=False,
     )
     return Result(status=Status.OK if report.ok else Status.WARNING, data=report, warnings=warnings)
@@ -623,6 +669,7 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
     failed_maintenance_enable: list[str] = []  # never in maintenance, so not migrated
     maintenance_sites: set[str] = set()  # sites we actually turned maintenance ON for
     sites_to_migrate: list[str] = []  # the fan-out set; empty until we get that far
+    resync: supervision.ResyncOutcome | None = None
     aborted = False
 
     try:
@@ -849,6 +896,36 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
                     )
                 )
 
+        # THE RESYNC, and its position is the whole subtlety. `git pull` moved the
+        # code under processes that were already running, so they hold the pre-pull
+        # interpreter exactly as an install does. It has to come AFTER the
+        # maintenance-disable above, because a site in maintenance mode answers 503
+        # and the proof this step exists to give could never be obtained.
+        #
+        # Skipped on an abort: the maintenance-disable is the only cleanup a Ctrl-C
+        # owes, and adding a restart plus a bounded site wait to that path would make
+        # an interrupt take another minute to return. `aborted` already tells the
+        # caller the run is half-applied, which covers "the processes may be stale".
+        if not aborted and sites_to_migrate:
+            resync = supervision.resync_after_code_change(
+                frappe_container,
+                bench_path,
+                sites=sites_to_migrate,
+                on_restart=lambda program: emit(UpdateStepStart(phase="resync", item=program)),
+            )
+            if resync.error:
+                warnings.append(
+                    Message("resync.failed", f"The update completed, but {resync.error}")
+                )
+            if resync.attempted:
+                emit(
+                    UpdateStepEnd(
+                        phase="resync",
+                        status="ok" if resync.ok else "failed",
+                        message=resync.error,
+                    )
+                )
+
         # An abort is only worth reporting once there was a fan-out to abandon:
         # raising earlier (a --site typo, a failed pull) leaves nothing half-done, so
         # the raise's own error stands alone rather than being dressed up as an
@@ -870,6 +947,7 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
             failed_cache_clears=failed_cache_clears,
             failed_website_cache_clears=failed_website_cache_clears,
             failed_maintenance_disable=failed_maintenance_disable,
+            resync=resync,
             aborted=aborted and bool(sites_to_migrate),
         )
         if aborted:

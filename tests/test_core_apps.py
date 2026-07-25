@@ -254,7 +254,15 @@ def test_install_shell_interpolations_are_shlex_quoted(monkeypatch, container):
     assert "'x; whoami'" in fetch
 
 
-def _wire_running_web(monkeypatch, *, restart_code=0, web_state="RUNNING"):
+def _wire_running_bench(monkeypatch, *, restart_code=0, web_state="RUNNING", programs=None):
+    """A live cwcli supervisord whose programs are all serving; restarts recorded.
+
+    Patches the SHARED step's collaborators on ``core.supervision`` rather than
+    anything private to ``core.apps``: the restart-and-verify logic lives there now,
+    so a test that reached into ``core.apps`` for it would pin a seam that no longer
+    decides anything.
+    """
+    programs = programs or ["web", "socketio", "watch", "schedule", "worker_default"]
     restarted: list[str] = []
     monkeypatch.setattr(
         core_apps.supervision,
@@ -266,108 +274,119 @@ def _wire_running_web(monkeypatch, *, restart_code=0, web_state="RUNNING"):
     monkeypatch.setattr(
         core_apps.supervision,
         "supervisorctl_states",
-        lambda *a, **k: {"web": (web_state, 101)},
+        lambda *a, **k: {
+            program: (web_state if program == "web" else "RUNNING", 101 + i)
+            for i, program in enumerate(programs)
+        },
     )
 
     def restart(_container, _path, program):
         restarted.append(program)
-        return restart_code, "web: stopped\nweb: started"
+        return restart_code, f"{program}: stopped\n{program}: started"
 
     monkeypatch.setattr(core_apps.supervision, "restart_program", restart)
     monkeypatch.setattr(
-        core_apps.resolvers,
+        core_apps.supervision.resolvers,
         "resolve_assigned_ports",
         lambda *a, **k: {BENCH: (8000, 9000)},
     )
     monkeypatch.setattr(
-        core_apps,
-        "_wait_for_sites_after_restart",
+        core_apps.supervision,
+        "_wait_for_serving_sites",
         lambda *a, **k: ([], {site: "200" for site in k["sites"]}),
     )
     return restarted
 
 
-def test_site_verification_passes_each_probe_only_its_remaining_time_budget(monkeypatch):
-    now = [0.0]
-    probe_budgets = []
-
-    monkeypatch.setattr(core_apps.time, "monotonic", lambda: now[0])
+def _unserved(monkeypatch, sites, code="500"):
     monkeypatch.setattr(
-        core_apps.time,
-        "sleep",
-        lambda seconds: now.__setitem__(0, now[0] + seconds),
+        core_apps.supervision,
+        "_wait_for_serving_sites",
+        lambda *a, **k: (list(sites), dict.fromkeys(sites, code)),
     )
-
-    def unresponsive_probe(*_args, **kwargs):
-        probe_budgets.append(kwargs["max_time"])
-        now[0] += kwargs["max_time"]
-        return None
-
-    monkeypatch.setattr(core_apps.supervision, "web_http_code", unresponsive_probe)
-
-    pending, codes = core_apps._wait_for_sites_after_restart(
-        object(),
-        port=8000,
-        sites=["a.localhost", "b.localhost", "c.localhost"],
-        timeout=5.0,
-    )
-
-    assert probe_budgets == [5.0]
-    assert pending == ["a.localhost", "b.localhost", "c.localhost"]
-    assert codes == {
-        "a.localhost": None,
-        "b.localhost": None,
-        "c.localhost": None,
-    }
 
 
 @pytest.mark.parametrize("web_state", ["RUNNING", "STARTING"])
-def test_install_restarts_a_running_web_process_and_reports_the_verified_step(
+def test_install_resynchronises_a_running_bench_and_reports_the_verified_step(
     monkeypatch, container, web_state
 ):
     _cache(monkeypatch, [{"path": BENCH}])
-    restarted = _wire_running_web(monkeypatch, web_state=web_state)
+    restarted = _wire_running_bench(monkeypatch, web_state=web_state)
 
     result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
 
-    assert restarted == ["web"]
-    assert [(r.action, r.ok) for r in result.data.results][-1] == ("restart-web", True)
+    assert restarted == ["web", "schedule", "worker_default"]
+    row = [(r.action, r.ok) for r in result.data.results][-1]
+    assert row == ("restart-processes", True)
     assert result.data.ok is True
 
 
-def test_install_does_not_claim_success_when_the_restarted_web_cannot_serve(monkeypatch, container):
+def test_the_scheduler_and_workers_are_cycled_too_not_only_web(monkeypatch, container):
+    """The residual the first fix left: a worker keeps the pre-mutation interpreter.
+
+    Cycling only ``web`` fixes the page a human loads and leaves every background
+    job running code that no longer matches the disk - after an install it cannot
+    import the new app, after an uninstall it writes to tables that are gone. The
+    node (``socketio``, ``watch``) and redis programs import no Frappe app, so they
+    are deliberately NOT cycled: restarting redis would drop the cache and the job
+    queue for nothing.
+    """
     _cache(monkeypatch, [{"path": BENCH}])
-    _wire_running_web(monkeypatch)
-    monkeypatch.setattr(
-        core_apps,
-        "_wait_for_sites_after_restart",
-        lambda *a, **k: (["a.localhost"], {"a.localhost": "500"}),
+    restarted = _wire_running_bench(
+        monkeypatch,
+        programs=[
+            "web",
+            "socketio",
+            "watch",
+            "schedule",
+            "worker_short",
+            "worker_long",
+            "worker_default",
+            "redis_cache",
+        ],
     )
+
+    core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
+
+    assert restarted == ["web", "schedule", "worker_short", "worker_long", "worker_default"]
+    assert "socketio" not in restarted
+    assert "watch" not in restarted
+    assert "redis_cache" not in restarted
+
+
+def test_install_does_not_claim_success_when_the_restarted_bench_cannot_serve(
+    monkeypatch, container
+):
+    _cache(monkeypatch, [{"path": BENCH}])
+    _wire_running_bench(monkeypatch)
+    _unserved(monkeypatch, ["a.localhost"])
 
     result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
 
     assert result.status is Status.WARNING
     assert result.data.ok is False
-    assert [(r.action, r.ok) for r in result.data.results][-1] == ("restart-web", False)
+    assert [(r.action, r.ok) for r in result.data.results][-1] == ("restart-processes", False)
     assert any("HTTP 200" in warning.text for warning in result.warnings)
 
 
-def test_the_restart_is_announced_and_not_only_reported_afterwards(monkeypatch, container):
-    """The disturbance is disclosed AS IT HAPPENS, not just in the result rows.
+def test_each_restart_is_announced_and_not_only_reported_afterwards(monkeypatch, container):
+    """The disturbance is disclosed AS IT HAPPENS, and names the process.
 
     This defect exists because a bench was mutated underneath a running process
     silently. A fix that restarts silently and mentions it only in the trailing
     table repeats the habit on a command that can sit in the site-probe wait for
-    up to a minute.
+    up to a minute - and a worker restart can interrupt a job in flight, which the
+    caller has a right to see named as it happens.
     """
     _cache(monkeypatch, [{"path": BENCH}])
-    _wire_running_web(monkeypatch)
+    _wire_running_bench(monkeypatch)
     events = []
 
     core_apps.install_apps("proj", ["payments"], sites=["a.localhost"], on_event=events.append)
 
-    announced = [e.phase for e in events if isinstance(e, core_apps.AppsAnnounce)]
-    assert "restart-web" in announced
+    announced = [(e.phase, e.app) for e in events if isinstance(e, core_apps.AppsAnnounce)]
+    assert ("restart-processes", "web") in announced
+    assert ("restart-processes", "worker_default") in announced
 
 
 def test_a_restart_reporting_no_exit_code_is_not_treated_as_a_failure(monkeypatch, container):
@@ -378,11 +397,11 @@ def test_a_restart_reporting_no_exit_code_is_not_treated_as_a_failure(monkeypatc
     worked, and would skip the site probe that is the real gate.
     """
     _cache(monkeypatch, [{"path": BENCH}])
-    _wire_running_web(monkeypatch, restart_code=None)
+    _wire_running_bench(monkeypatch, restart_code=None)
 
     result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
 
-    assert [(r.action, r.ok) for r in result.data.results][-1] == ("restart-web", True)
+    assert [(r.action, r.ok) for r in result.data.results][-1] == ("restart-processes", True)
     assert result.data.ok is True
 
 
@@ -408,7 +427,7 @@ def test_an_unreadable_process_state_fails_closed_rather_than_assuming_nothing_r
     result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
 
     assert result.data.ok is False
-    assert [(r.action, r.ok) for r in result.data.results][-1] == ("restart-web", False)
+    assert [(r.action, r.ok) for r in result.data.results][-1] == ("restart-processes", False)
     # The install itself still reports as landed: it did, and a caller that retried
     # it because the restart check failed would install over a live site.
     assert ("install-app", True) in [(r.action, r.ok) for r in result.data.results]
@@ -430,17 +449,17 @@ def test_a_stopped_bench_is_not_started_by_an_install(monkeypatch, container):
     result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
 
     assert started == []
-    assert "restart-web" not in [r.action for r in result.data.results]
+    assert "restart-processes" not in [r.action for r in result.data.results]
     assert result.data.ok is True
 
 
 def test_a_stopped_supervised_web_process_is_not_started_by_an_install(monkeypatch, container):
     _cache(monkeypatch, [{"path": BENCH}])
-    restarted = _wire_running_web(monkeypatch, web_state="STOPPED")
+    restarted = _wire_running_bench(monkeypatch, web_state="STOPPED")
     probed = []
     monkeypatch.setattr(
-        core_apps,
-        "_wait_for_sites_after_restart",
+        core_apps.supervision,
+        "_wait_for_serving_sites",
         lambda *a, **k: probed.append(k["sites"]) or ([], {}),
     )
 
@@ -448,8 +467,27 @@ def test_a_stopped_supervised_web_process_is_not_started_by_an_install(monkeypat
 
     assert restarted == []
     assert probed == []
-    assert "restart-web" not in [r.action for r in result.data.results]
+    assert "restart-processes" not in [r.action for r in result.data.results]
     assert result.data.ok is True
+
+
+def test_a_stopped_worker_is_not_started_by_an_install(monkeypatch, container):
+    """Only programs already serving are cycled: a deliberately-stopped worker stays down."""
+    _cache(monkeypatch, [{"path": BENCH}])
+    restarted = _wire_running_bench(monkeypatch, programs=["web", "schedule", "worker_default"])
+    monkeypatch.setattr(
+        core_apps.supervision,
+        "supervisorctl_states",
+        lambda *a, **k: {
+            "web": ("RUNNING", 101),
+            "schedule": ("RUNNING", 102),
+            "worker_default": ("FATAL", None),
+        },
+    )
+
+    core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
+
+    assert restarted == ["web", "schedule"]
 
 
 def test_an_unsupervised_running_bench_is_verified_without_being_restarted(monkeypatch, container):
@@ -463,14 +501,14 @@ def test_an_unsupervised_running_bench_is_verified_without_being_restarted(monke
         ),
     )
     monkeypatch.setattr(
-        core_apps.resolvers,
+        core_apps.supervision.resolvers,
         "resolve_assigned_ports",
         lambda *a, **k: {BENCH: (8000, 9000)},
     )
     probed = []
     monkeypatch.setattr(
-        core_apps,
-        "_wait_for_sites_after_restart",
+        core_apps.supervision,
+        "_wait_for_serving_sites",
         lambda *a, **k: probed.append(k["sites"]) or ([], {"a.localhost": "200"}),
     )
     restarted = []
@@ -484,7 +522,7 @@ def test_an_unsupervised_running_bench_is_verified_without_being_restarted(monke
 
     assert restarted == []
     assert probed == [["a.localhost"]]
-    assert "restart-web" not in [r.action for r in result.data.results]
+    assert "restart-processes" not in [r.action for r in result.data.results]
     assert result.data.ok is True
 
 
@@ -499,20 +537,16 @@ def test_an_unhealthy_unsupervised_bench_fails_with_a_manual_restart_remedy(monk
         ),
     )
     monkeypatch.setattr(
-        core_apps.resolvers,
+        core_apps.supervision.resolvers,
         "resolve_assigned_ports",
         lambda *a, **k: {BENCH: (8000, 9000)},
     )
-    monkeypatch.setattr(
-        core_apps,
-        "_wait_for_sites_after_restart",
-        lambda *a, **k: (["a.localhost"], {"a.localhost": "500"}),
-    )
+    _unserved(monkeypatch, ["a.localhost"])
 
     result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
 
     assert result.data.ok is False
-    assert [(r.action, r.ok) for r in result.data.results][-1] == ("restart-web", False)
+    assert [(r.action, r.ok) for r in result.data.results][-1] == ("restart-processes", False)
     assert any("Restart the bench manually" in warning.text for warning in result.warnings)
 
 
@@ -521,30 +555,39 @@ def test_an_unhealthy_unsupervised_bench_fails_with_a_manual_restart_remedy(monk
     [
         "supervisorctl_states",
         "restart_program",
-        "resolve_assigned_ports",
-        "_wait_for_sites_after_restart",
+        "_wait_for_serving_sites",
     ],
 )
 def test_post_mutation_failures_are_reported_without_erasing_the_landed_change(
     monkeypatch, container, stage
 ):
     _cache(monkeypatch, [{"path": BENCH}])
-    _wire_running_web(monkeypatch)
+    _wire_running_bench(monkeypatch)
 
     def boom(*_a, **_k):
         raise RuntimeError(f"{stage} failed")
 
-    owner = core_apps.resolvers if stage == "resolve_assigned_ports" else core_apps
-    if stage in {"supervisorctl_states", "restart_program"}:
-        owner = core_apps.supervision
-    monkeypatch.setattr(owner, stage, boom)
+    monkeypatch.setattr(core_apps.supervision, stage, boom)
 
     result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
 
     assert ("install-app", True) in [(r.action, r.ok) for r in result.data.results]
-    assert [(r.action, r.ok) for r in result.data.results][-1] == ("restart-web", False)
+    assert [(r.action, r.ok) for r in result.data.results][-1] == ("restart-processes", False)
     assert result.data.ok is False
     assert any(f"{stage} failed" in warning.text for warning in result.warnings)
+
+
+def test_an_unreadable_port_is_reported_rather_than_guessed(monkeypatch, container):
+    _cache(monkeypatch, [{"path": BENCH}])
+    _wire_running_bench(monkeypatch)
+    monkeypatch.setattr(
+        core_apps.supervision.resolvers, "resolve_assigned_ports", lambda *a, **k: {}
+    )
+
+    result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
+
+    assert result.data.ok is False
+    assert any("assigned port could not be read" in w.text for w in result.warnings)
 
 
 # ------------------------------------------------------------------- uninstall_apps
@@ -571,16 +614,16 @@ def test_uninstall_with_consent_fans_out(monkeypatch, container):
     assert any("uninstall-app payments --yes" in c for c in container.calls)
 
 
-def test_uninstall_restarts_a_running_web_process_and_reports_the_verified_step(
+def test_uninstall_resynchronises_a_running_bench_and_reports_the_verified_step(
     monkeypatch, container
 ):
     _cache(monkeypatch, [{"path": BENCH}])
-    restarted = _wire_running_web(monkeypatch)
+    restarted = _wire_running_bench(monkeypatch)
 
     result = core_apps.uninstall_apps("proj", ["payments"], sites=["a.localhost"], consent=True)
 
-    assert restarted == ["web"]
-    assert [(r.action, r.ok) for r in result.data.results][-1] == ("restart-web", True)
+    assert restarted == ["web", "schedule", "worker_default"]
+    assert [(r.action, r.ok) for r in result.data.results][-1] == ("restart-processes", True)
     assert result.data.ok is True
 
 
@@ -686,6 +729,93 @@ def test_checkout_fetches_then_checks_out_the_ref_in_the_app_dir(monkeypatch, co
     assert "git checkout -B feature/x FETCH_HEAD" in container.calls
     # No reset step without --reset.
     assert not any("reset --hard" in c for c in container.calls)
+
+
+def test_checkout_resynchronises_the_sites_that_have_the_app_installed(monkeypatch, container):
+    """The residual that kept ``checkout`` out of the first fix, closed.
+
+    "checkout has no target site" was true of its ARGUMENTS and false of its
+    effect: the sites it changes are the ones with the app installed, which is the
+    inverse of a question this module already answers per site. Without this the
+    bench happily keeps serving the branch the developer just moved off - the
+    quietest form of the defect, because nothing errors at all.
+    """
+    container.installed = {"a.localhost": ["frappe 15.0.0 version-15", "payments 1.0.0 main"]}
+    _cache(monkeypatch, [{"path": BENCH}])
+    _bridge_spy(monkeypatch)
+    restarted = _wire_running_bench(monkeypatch)
+
+    result = core_apps.checkout_app("proj", "payments", "feature/x")
+
+    assert restarted == ["web", "schedule", "worker_default"]
+    assert [(r.action, r.ok) for r in result.data.results][-1] == ("restart-processes", True)
+    assert result.data.ok is True
+
+
+def test_checkout_does_not_claim_success_when_the_bench_cannot_serve_the_new_ref(
+    monkeypatch, container
+):
+    container.installed = {"a.localhost": ["payments 1.0.0 main"]}
+    _cache(monkeypatch, [{"path": BENCH}])
+    _bridge_spy(monkeypatch)
+    _wire_running_bench(monkeypatch)
+    _unserved(monkeypatch, ["a.localhost"])
+
+    result = core_apps.checkout_app("proj", "payments", "feature/x")
+
+    assert result.data.ok is False
+    assert [(r.action, r.ok) for r in result.data.results][-1] == ("restart-processes", False)
+    assert ("checkout", True) in [(r.action, r.ok) for r in result.data.results]
+
+
+def test_checkout_skips_a_site_that_does_not_have_the_app(monkeypatch, container):
+    """A site without the app cannot be affected by its checkout, so it is not probed."""
+    monkeypatch.setattr(
+        core_apps.bench_sites, "list_sites", lambda *a, **k: ["a.localhost", "b.localhost"]
+    )
+    container.installed = {
+        "a.localhost": ["payments 1.0.0 main"],
+        "b.localhost": ["frappe 15.0.0 version-15"],
+    }
+    _cache(monkeypatch, [{"path": BENCH}])
+    _bridge_spy(monkeypatch)
+    _wire_running_bench(monkeypatch)
+    probed = []
+    monkeypatch.setattr(
+        core_apps.supervision,
+        "_wait_for_serving_sites",
+        lambda *a, **k: probed.append(k["sites"]) or ([], {}),
+    )
+
+    core_apps.checkout_app("proj", "payments", "feature/x")
+
+    assert probed == [["a.localhost"]]
+
+
+def test_checkout_reports_a_site_whose_installed_apps_it_could_not_read(monkeypatch, container):
+    """Unreadable is REPORTED, never silently folded into "not affected"."""
+    container.fail_on = ["list-apps"]
+    _cache(monkeypatch, [{"path": BENCH}])
+    _bridge_spy(monkeypatch)
+    _wire_running_bench(monkeypatch)
+
+    result = core_apps.checkout_app("proj", "payments", "feature/x")
+
+    assert any(w.code == "app.site_scope_unknown" for w in result.warnings)
+
+
+def test_a_checkout_that_never_moved_the_tree_resynchronises_nothing(monkeypatch, container):
+    """A failed ``git fetch`` writes only into ``.git``: no process is serving it."""
+    container.fail_on = ["git fetch"]
+    container.installed = {"a.localhost": ["payments 1.0.0 main"]}
+    _cache(monkeypatch, [{"path": BENCH}])
+    _bridge_spy(monkeypatch)
+    restarted = _wire_running_bench(monkeypatch)
+
+    result = core_apps.checkout_app("proj", "payments", "feature/x")
+
+    assert restarted == []
+    assert "restart-processes" not in [r.action for r in result.data.results]
 
 
 def test_checkout_falls_back_to_origin_when_no_upstream(monkeypatch, container):

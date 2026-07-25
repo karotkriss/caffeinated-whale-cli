@@ -89,7 +89,7 @@ def test_axi_apps_install_permitted_then_refused_on_rerun(running_instance):
 
         # The state genuinely changed, and the necessary disturbance was reported.
         assert _APP in _installed_apps(inst)
-        assert "restart-web" in result.stdout
+        assert "restart-processes" in result.stdout
 
         # Re-running the EXACT same command is refused, before anything is fetched.
         rerun = harness.run_cwcli(
@@ -117,7 +117,7 @@ def test_axi_apps_install_permitted_then_refused_on_rerun(running_instance):
         # Positive proof before the negative state assertion: the post-uninstall
         # web process serves the site, then the removed app is confirmed absent.
         assert _site_ping_code(inst) == "200"
-        assert "restart-web" in uninstall.stdout + uninstall.stderr
+        assert "restart-processes" in uninstall.stdout + uninstall.stderr
         assert _APP not in _installed_apps(inst)
         restored = True
     finally:

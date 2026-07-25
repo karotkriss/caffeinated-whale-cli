@@ -1,6 +1,6 @@
 # Historical E2E: `cwcli axi apps install`
 
-This records the original v15 install validation before the verified `restart-web` step was added.
+This records the original v15 install validation before the verified post-mutation resynchronise step (`restart-processes`) was added.
 For the current serving guarantee, see the `apps` contract in the README and `tests/e2e/test_axi_apps_install_e2e.py`.
 
 Real-instance validation of the agent-surface install verb, run against a throwaway

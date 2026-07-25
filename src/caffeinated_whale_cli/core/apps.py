@@ -35,7 +35,6 @@ Three things here are deliberate and load-bearing:
 from __future__ import annotations
 
 import shlex
-import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
@@ -74,7 +73,7 @@ class AppResult:
 
     app: str
     site: str | None  # None for the bench-wide get-app step
-    action: str  # "get-app" | "install-app" | "uninstall-app" | "restart-web"
+    action: str  # "get-app" | "install-app" | "uninstall-app" | "restart-processes" | a git step
     ok: bool
 
 
@@ -102,7 +101,7 @@ class AppsAnnounce:
     internal ``apps/`` reads are echoed but never narrated.
     """
 
-    phase: str  # "get-app" | "install-app" | "uninstall-app" | "restart-web"
+    phase: str  # "get-app" | "install-app" | "uninstall-app" | "restart-processes"
     app: str | None = None
     site: str | None = None
 
@@ -270,48 +269,7 @@ def _target_sites(frappe_container, bench_path: str, sites: list[str] | None) ->
     return sorted(found) if found else []
 
 
-def _wait_for_sites_after_restart(
-    frappe_container,
-    *,
-    port: int,
-    sites: list[str],
-    timeout: float = 60.0,
-    interval: float = 1.0,
-) -> tuple[list[str], dict[str, str | None]]:
-    """Poll until every mutated site answers Frappe's ping with HTTP 200.
-
-    ``/api/method/ping`` is the target rather than ``/`` because its 200 is
-    unambiguous: it is a whitelisted guest endpoint, so a healthy site cannot
-    answer it with a redirect the way a website route can, and reaching it at all
-    means Frappe booted that site's installed-app set. Bounded, because the
-    mutation has already landed and a wait that never ends is worse than an
-    honest "it did not come back".
-    """
-    pending = set(sites)
-    codes: dict[str, str | None] = {site: None for site in sites}
-    deadline = time.monotonic() + timeout
-    while pending:
-        for site in list(pending):
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return sorted(pending), codes
-            codes[site] = supervision.web_http_code(
-                frappe_container,
-                port=port,
-                site=site,
-                path="/api/method/ping",
-                max_time=min(10.0, remaining),
-            )
-            if codes[site] == "200":
-                pending.remove(site)
-        remaining = deadline - time.monotonic()
-        if not pending or remaining <= 0:
-            break
-        time.sleep(min(interval, remaining))
-    return sorted(pending), codes
-
-
-def _restart_web_after_mutation(
+def _resync_after_mutation(
     frappe_container,
     bench_path: str,
     sites: list[str],
@@ -320,112 +278,82 @@ def _restart_web_after_mutation(
     *,
     emit: OnEvent,
 ) -> None:
-    """Restart a running bench's web program and prove every mutated site serves.
+    """Resynchronise the running bench to the code this verb just changed on disk.
 
     The defect this closes: ``bench install-app`` changes what is on disk, but the
-    web process was started BEFORE it and keeps serving the interpreter it booted
-    with, so requests can 500 on a module the process cannot import while the
-    command reports plain success. Uninstall is the same fault mirrored - the old
-    process keeps serving an app whose files and tables are gone. So the restart is
-    ONE shared post-mutation step for both verbs, not two.
+    bench's processes were started BEFORE it and keep serving the interpreter they
+    booted with, so requests can 500 on a module the process cannot import while the
+    command reports plain success. Uninstall is the same fault mirrored (the old
+    process serves an app whose files and tables are gone) and ``checkout`` is the
+    quietest version of all: nothing 500s, the bench simply keeps running the branch
+    the developer just moved off. So this is ONE shared step for all three verbs,
+    reached through :func:`core.supervision.resync_after_code_change`, which
+    ``core.update`` calls too.
 
-    It is not enough to restart and say so: this whole defect is a command
-    vouching for a state it never checked, and "supervisord reports the program
-    RUNNING" is another bound-port-shaped claim. Every site the fan-out actually
-    changed must answer a site-routed request before ``ok`` may stay true.
+    All this adds is the report shape: which sites this verb changed goes in, and a
+    ``restart-processes`` row plus a warning comes out. Every rule about what may be
+    restarted and what counts as proof lives in the shared step, so ``apps`` cannot
+    drift from ``update``.
 
-    Three properties, each guarding something specific:
-
-    - **A stopped bench stays stopped.** The bench is only restarted when a
-      ``required`` process read POSITIVELY establishes a live supervisord; an
-      unreadable read is a reported failure, never "assume nothing is running"
-      (``core.where``'s fail-honest rule). Starting a bench the user deliberately
-      stopped is its own defect, and an install must not smuggle one in.
-    - **Nothing here raises.** A mutation has already landed by this point, so
-      failures append to the typed report instead. A raise would erase the record
-      of a change that genuinely happened, and an automation caller that retried
-      the install or uninstall would then run it a second time.
-    - **The restart is DISCLOSED**, as its own announced step and its own result
-      row, on the human, ``--json`` and ``axi`` surfaces alike. Replacing a silent
-      breakage with a silent restart would fix the outcome and keep the habit.
+    The restart is DISCLOSED, as its own announced step and its own result row, on
+    the human, ``--json`` and ``axi`` surfaces alike. Replacing a silent breakage
+    with a silent restart would fix the outcome and keep the habit.
     """
-
-    def failed(text: str) -> None:
-        results.append(AppResult(app="web", site=None, action="restart-web", ok=False))
-        warnings.append(Message("app.web_restart_failed", text))
-
-    unique_sites = list(dict.fromkeys(sites))
-    if not unique_sites:
-        return
-
-    try:
-        snapshot = supervision.discover_stack(frappe_container, bench_path, required=True)
-        supervised = snapshot.supervisor_up
-        if supervised:
-            states = supervision.supervisorctl_states(frappe_container, bench_path)
-            program = supervision.program_for_label(list(states), "web")
-            if program is None:
-                failed(
-                    "App mutation completed, but the running bench has no supervised web "
-                    "process that cwcli can restart."
-                )
-                return
-            if states[program][0] not in {"RUNNING", "STARTING"}:
-                return
-
-            emit(AppsAnnounce(phase="restart-web"))
-            restart_code, restart_output = supervision.restart_program(
-                frappe_container, bench_path, program
-            )
-            if restart_code not in (0, None):
-                detail = restart_output.strip()
-                suffix = f" ({detail})" if detail else ""
-                failed(
-                    "App mutation completed, but restarting the bench web process "
-                    f"failed{suffix}."
-                )
-                return
-        else:
-            fallback = supervision.discover_unsupervised_stack(
-                frappe_container, bench_path, required=True
-            )
-            if not fallback.manager_up:
-                return
-
-        ports = resolvers.resolve_assigned_ports(
-            frappe_container, [bench_path], fill_defaults=False
-        ).get(bench_path)
-        if ports is None:
-            failed(
-                "App mutation completed, but the bench's assigned port could not be read, "
-                "so cwcli could not confirm the mutated site serves."
-            )
-            return
-
-        pending, codes = _wait_for_sites_after_restart(
-            frappe_container, port=ports[0], sites=unique_sites
+    outcome = supervision.resync_after_code_change(
+        frappe_container,
+        bench_path,
+        sites=sites,
+        on_restart=lambda program: emit(AppsAnnounce(phase="restart-processes", app=program)),
+    )
+    if outcome.error:
+        results.append(AppResult(app="bench", site=None, action="restart-processes", ok=False))
+        warnings.append(
+            Message("app.resync_failed", f"App mutation completed, but {outcome.error}")
         )
-        if pending:
-            observed = ", ".join(f"{site}={codes[site] or 'unreachable'}" for site in pending)
-            remedy = (
-                " Restart the bench manually, then verify the sites again."
-                if not supervised
-                else ""
+    elif outcome.restarted:
+        # No row for a bench cwcli did not restart (an unsupervised manager is only
+        # probed): the row reports a disturbance, and there was none.
+        results.append(
+            AppResult(
+                app=" ".join(outcome.restarted),
+                site=None,
+                action="restart-processes",
+                ok=True,
             )
-            failed(
-                "These mutated sites did not answer Frappe's ping with HTTP 200: "
-                f"{observed}.{remedy}"
-            )
-            return
-
-        if supervised:
-            results.append(AppResult(app="web", site=None, action="restart-web", ok=True))
-    except Exception as error:  # noqa: BLE001
-        detail = error.message if isinstance(error, CwcliError) else str(error)
-        failed(
-            "App mutation completed, but cwcli could not complete the web restart and "
-            f"verification: {detail or type(error).__name__}"
         )
+
+
+def _sites_with_app_installed(
+    frappe_container, bench_path: str, app: str, warnings: list[Message]
+) -> list[str]:
+    """The bench's sites that have ``app`` installed - ``checkout``'s affected set.
+
+    ``checkout`` names no site, which is exactly why it was left out of the first
+    fix; but the sites its change reaches are not unknowable, they are simply the
+    inverse question ``_installed_apps`` already answers per site. Built from THIS
+    module's own primitive rather than by widening ``core.update._sites_with_app``,
+    which reads a different data shape and drops an unreadable site deliberately
+    because it feeds a filter.
+
+    An unreadable site is REPORTED and left out, never silently treated as
+    unaffected: saying "cwcli did not check this one" is honest, where verifying it
+    anyway would fail a checkout over a sibling site that was already broken.
+    """
+    found: list[str] = []
+    for site in _target_sites(frappe_container, bench_path, None):
+        _command, ok, installed = _installed_apps(frappe_container, bench_path, site)
+        if not ok:
+            warnings.append(
+                Message(
+                    "app.site_scope_unknown",
+                    f"Could not read the installed apps for site '{site}', so it was not "
+                    f"checked after the checkout of '{app}'.",
+                )
+            )
+            continue
+        if app in installed:
+            found.append(site)
+    return found
 
 
 def derive_app_name(target: str) -> str:
@@ -655,7 +583,7 @@ def install_apps(
     changed_sites = [
         r.site for r in results if r.action == "install-app" and r.ok and r.site is not None
     ]
-    _restart_web_after_mutation(frappe_container, path, changed_sites, results, warnings, emit=emit)
+    _resync_after_mutation(frappe_container, path, changed_sites, results, warnings, emit=emit)
 
     any_fail = any(not r.ok for r in results)
     return Result(
@@ -791,6 +719,14 @@ def checkout_app(
     :class:`AppResult` per git step - so the CLI renderer and exit-code logic are
     shared. It stops at the first failed step (a failed fetch makes the checkout
     meaningless).
+
+    A successful checkout ends in the SAME :func:`_resync_after_mutation` step
+    ``install`` and ``uninstall`` use: swapping the code under a running bench and
+    leaving it serving the old branch is this verb's own version of that defect, and
+    the quietest one - nothing errors, the developer simply tests the ref they moved
+    off. The sites to prove are the ones with this app installed
+    (:func:`_sites_with_app_installed`), which is why "checkout names no site" was
+    never a reason it could not be verified.
     """
     emit: OnEvent = on_event or _noop
 
@@ -830,6 +766,19 @@ def checkout_app(
             results.append(AppResult(app=app, site=None, action=action, ok=code == 0))
             if code != 0:
                 break
+
+    # Gated on the CHECKOUT step, not on the whole run: `git fetch` writes only into
+    # `.git`, so a run that stopped there changed no code any process could be
+    # serving, while a failed `--reset` AFTER a good checkout did move the tree.
+    if any(r.action == "checkout" and r.ok for r in results):
+        _resync_after_mutation(
+            frappe_container,
+            path,
+            _sites_with_app_installed(frappe_container, path, app, warnings),
+            results,
+            warnings,
+            emit=emit,
+        )
 
     any_fail = any(not r.ok for r in results)
     return Result(
@@ -913,7 +862,7 @@ def uninstall_apps(
     changed_sites = [
         r.site for r in results if r.action == "uninstall-app" and r.ok and r.site is not None
     ]
-    _restart_web_after_mutation(frappe_container, path, changed_sites, results, warnings, emit=emit)
+    _resync_after_mutation(frappe_container, path, changed_sites, results, warnings, emit=emit)
 
     any_fail = any(not r.ok for r in results)
     return Result(
