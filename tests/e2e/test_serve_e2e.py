@@ -411,3 +411,97 @@ class TestTierAActions:
         ours = [m for m in body["matches"] if m["project"] == daemon.project]
         assert ours, "the real instance's frappe app must match"
         assert all(m["project_state"] == "present" for m in ours)
+
+    def test_refresh_and_checkout_round_trip_without_leaving_git_state(self, daemon):
+        import shlex
+        import urllib.error
+
+        self._prime(daemon)
+        app_dir = f"{harness.DEFAULT_BENCH_PATH}/apps/frappe"
+        code, branch = harness.exec_in_frappe(
+            daemon.project, f"git -C {shlex.quote(app_dir)} branch --show-current"
+        )
+        assert code == 0, branch
+        branch = branch.strip()
+        assert branch
+        code, original_head = harness.exec_in_frappe(
+            daemon.project, f"git -C {shlex.quote(app_dir)} rev-parse HEAD"
+        )
+        assert code == 0, original_head
+        original_head = original_head.strip()
+        code, status = harness.exec_in_frappe(
+            daemon.project, f"git -C {shlex.quote(app_dir)} status --porcelain"
+        )
+        assert code == 0, status
+        assert not status.strip(), "the shared checkout must start clean"
+
+        try:
+            refreshed = _post(
+                daemon.base + "/api/action",
+                {"action": "refresh_status", "project": daemon.project},
+            )
+            assert refreshed["ok"] is True
+            assert refreshed["outcome"]["project"] == daemon.project
+            assert refreshed["outcome"]["container_running"] is True
+
+            checked_out = _post(
+                daemon.base + "/api/action",
+                {
+                    "action": "checkout_app",
+                    "project": daemon.project,
+                    "app": "frappe",
+                    "ref": branch,
+                },
+            )
+            assert checked_out["ok"] is True
+            assert [row["action"] for row in checked_out["outcome"]["results"]] == [
+                "fetch",
+                "checkout",
+            ]
+
+            marker = "cwe2e-serve-dirty-tree"
+            tracked = f"{app_dir}/README.md"
+            code, output = harness.exec_in_frappe(
+                daemon.project, f"printf '\\n{marker}\\n' >> {shlex.quote(tracked)}"
+            )
+            assert code == 0, output
+            with pytest.raises(urllib.error.HTTPError) as exc:
+                _post(
+                    daemon.base + "/api/action",
+                    {
+                        "action": "checkout_app",
+                        "project": daemon.project,
+                        "app": "frappe",
+                        "ref": branch,
+                    },
+                )
+            assert exc.value.code == 409
+            refusal = json.loads(exc.value.read())
+            assert refusal["error"]["code"] == "app.dirty_tree"
+            assert "README.md" in refusal["error"]["message"]
+            code, output = harness.exec_in_frappe(
+                daemon.project, f"grep -F {shlex.quote(marker)} {shlex.quote(tracked)}"
+            )
+            assert code == 0, output
+        finally:
+            restore = (
+                f"git -C {shlex.quote(app_dir)} checkout {shlex.quote(branch)}"
+                f" && git -C {shlex.quote(app_dir)} reset --hard {shlex.quote(original_head)}"
+            )
+            code, output = harness.exec_in_frappe(daemon.project, restore)
+            assert code == 0, output
+            code, restored_branch = harness.exec_in_frappe(
+                daemon.project, f"git -C {shlex.quote(app_dir)} branch --show-current"
+            )
+            assert code == 0, restored_branch
+            assert restored_branch.strip() == branch
+            code, restored_head = harness.exec_in_frappe(
+                daemon.project, f"git -C {shlex.quote(app_dir)} rev-parse HEAD"
+            )
+            assert code == 0, restored_head
+            assert restored_head.strip() == original_head
+            code, restored_status = harness.exec_in_frappe(
+                daemon.project, f"git -C {shlex.quote(app_dir)} status --porcelain"
+            )
+            assert code == 0, restored_status
+            assert not restored_status.strip()

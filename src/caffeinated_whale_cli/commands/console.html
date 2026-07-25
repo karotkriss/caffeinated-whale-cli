@@ -1493,8 +1493,8 @@ dialog input {
 
   const benchScopedActions = ["start_instance", "restart_instance", "restart_process", "set_label", "unlock_site", "checkout_app"];
 
-  async function runAction(action, extra) {
-    const inst = selectedInstance();
+  async function runAction(action, extra, targetProject) {
+    const inst = targetProject ? model.get(targetProject) || null : selectedInstance();
     if (!inst || pendingAction) return;
     const bench = selectedBench();
     const process = selectedProcess();
@@ -1525,7 +1525,7 @@ dialog input {
           // because consent was not given, and its own words describe the blast
           // radius. The page never invents this warning; it only relays it and
           // requires the typed project name before retrying with consent.
-          openScaleConfirm(inst.project, error.message || "Scaling needs confirmation.", payload.to);
+          openScaleConfirm(payload.project, error.message || "Scaling needs confirmation.", payload.to);
           return;
         }
         const choice = body.choice && body.choice.options ? " Options: " + body.choice.options.map(o => o.label || o.value).join(", ") : "";
@@ -1611,7 +1611,11 @@ dialog input {
       </label>
       ${modalButtons("Scale - restarts benches", true)}`, values => {
       if (values.confirm === project) {
-        runAction("scale_instance", Object.assign({consent: true}, to > 0 ? {to} : {}));
+        runAction(
+          "scale_instance",
+          Object.assign({consent: true}, to > 0 ? {to} : {}),
+          project
+        );
       }
     });
     const input = modal.querySelector('input[name="confirm"]');
