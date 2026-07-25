@@ -644,15 +644,26 @@ class TestAxiHelpIsToon:
                     assert argument.help in result.stdout, (path, argument.help)
             if isinstance(command, click.Group):
                 assert "commands[" in result.stdout, path
+                assert "{name,description}" in result.stdout, path
                 ctx = click.Context(command)
                 for name in command.list_commands(ctx):
                     assert name in result.stdout, (path, name)
+                    child = command.get_command(ctx, name)
+                    assert child is not None
+                    assert child.get_short_help_str() in result.stdout, (path, name)
             for option in options:
                 assert option.opts[0] in result.stdout, (path, option.opts[0])
                 assert str(option.required).lower() in result.stdout, path
                 assert option.help in result.stdout, (path, option.help)
 
             # Negative proof follows the content assertions.
+            examples_line = next(
+                line for line in result.stdout.splitlines() if line.startswith("examples[")
+            )
+            assert ": " in examples_line, path
+            assert not any(
+                line.startswith("  cwcli ") for line in result.stdout.splitlines()
+            ), path
             assert not any("\u2500" <= char <= "\u257f" for char in result.stdout), path
             assert "\x1b[" not in result.stdout, path
             assert result.stderr == "", path
@@ -666,6 +677,33 @@ class TestAxiHelpIsToon:
         assert ("axi",) in visited
         assert ("axi", "scale") in visited
         assert ("axi", "apps", "install") in visited
+
+    def test_constraint_aware_examples_are_valid_operations(self):
+        """Examples include the runtime-required mode that parser metadata cannot express."""
+        from caffeinated_whale_cli.main import app as root_app
+
+        result = runner.invoke(root_app, ["axi", "label", "--help"])
+        examples = next(
+            line for line in result.stdout.splitlines() if line.startswith("examples[")
+        )
+        assert "--set <text>" in examples
+        assert "--clear" in examples
+        assert "label <project>," not in examples
+
+    def test_explicit_argument_metavars_are_preserved(self):
+        """Usage and examples retain a command's explicit public argument shape."""
+        from caffeinated_whale_cli.main import app as root_app
+
+        for command in ("checkout", "install"):
+            result = runner.invoke(root_app, ["axi", "apps", command, "--help"])
+            usage = result.stdout.splitlines()[0]
+            examples = next(
+                line for line in result.stdout.splitlines() if line.startswith("examples[")
+            )
+            assert "<APP>" in usage
+            assert "<APP>" in examples
+            assert "<app-name>" not in usage
+            assert "<app-name>" not in examples
 
     def test_human_help_keeps_rich_rendering(self):
         """The sibling human surface remains the existing decorated help."""
