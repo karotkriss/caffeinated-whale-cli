@@ -428,6 +428,7 @@ class _Handler(BaseHTTPRequestHandler):
             if action == "checkout_app":
                 app = _required_str(payload, "app")
                 ref = _required_str(payload, "ref")
+                core_apps.validate_checkout_app_name(app)
                 return self._checkout_app(project, bench, app, ref)
 
             assert process is not None
