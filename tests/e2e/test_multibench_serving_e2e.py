@@ -54,7 +54,9 @@ v16_only = pytest.mark.skipif(
 
 FIRST_BENCH_PATH = harness.DEFAULT_BENCH_PATH
 FIRST_SITE = harness.DEFAULT_SITE
-SECOND_BENCH_NAME = f"{harness.DEFAULT_BENCH_NAME}-2"
+# Deliberately sorts before the original bench. This is the live ordering that
+# used to renumber the original from 0 to 1 as soon as the add completed.
+SECOND_BENCH_NAME = "aaa-bench"
 SECOND_BENCH_PATH = f"/workspace/{SECOND_BENCH_NAME}"
 SECOND_SITE = "second.localhost"
 
@@ -158,10 +160,9 @@ def _axi_status_blocks(project: str, *args: str) -> tuple[str, dict[str, dict[st
 def _bench_indices(project: str) -> dict[str, int]:
     """Each bench path's ``--bench`` index, read from the discovery verb itself.
 
-    Indices are positions in stable sorted-by-path order, so they are derivable -
-    but deriving them here rather than hardcoding them means the tests below name
-    the bench they mean even if the ordering rule ever changes, and the fixture
-    asserts the mapping it got.
+    Indices are durable path identities. Reading them here rather than hardcoding
+    them means the tests below name the bench they mean, including when display
+    order differs from identity assignment order.
     """
     res = harness.run_cwcli("axi", "benches", project)
     assert res.returncode == 0, res.stdout + res.stderr
@@ -186,6 +187,7 @@ def _bench_indices(project: str) -> dict[str, int]:
 class TwoBenches:
     name: str
     port: int
+    first_index_before_add: int
     first_index: int
     second_index: int
     first_port: int
@@ -233,6 +235,12 @@ def two_benches(port_allocator):
         assert first.returncode == 0, first.stdout + first.stderr
         harness.wait_for_site_ready(name, FIRST_SITE, bench=FIRST_BENCH_PATH)
 
+        initial_inspect = harness.run_cwcli("inspect", name, "--update")
+        assert initial_inspect.returncode == 0, initial_inspect.stdout + initial_inspect.stderr
+        initial_indices = _bench_indices(name)
+        assert set(initial_indices) == {FIRST_BENCH_PATH}, initial_indices
+        first_index_before_add = initial_indices[FIRST_BENCH_PATH]
+
         # The SECOND real bench, added to the running instance. Re-running init
         # against a live project is the supported way to add a bench (its own
         # ports are skipped by the port check), and it provisions and starts the
@@ -260,6 +268,7 @@ def two_benches(port_allocator):
         inst = TwoBenches(
             name=name,
             port=port,
+            first_index_before_add=first_index_before_add,
             first_index=indices[FIRST_BENCH_PATH],
             second_index=indices[SECOND_BENCH_PATH],
             first_port=_assigned_web_port(name, FIRST_BENCH_PATH),
@@ -279,7 +288,26 @@ def two_benches(port_allocator):
 
 
 # --------------------------------------------------------------------------- #
-# 0. the fixture itself: two benches, genuinely serving, on different ports
+# 0. bench identity survives an earlier-sorting add
+# --------------------------------------------------------------------------- #
+@v16_only
+def test_prior_bench_identity_still_resolves_after_an_earlier_add(two_benches):
+    inst = two_benches
+    assert SECOND_BENCH_PATH < FIRST_BENCH_PATH
+
+    # Positive first: the identity captured before the add still resolves to the
+    # original bench through the real agent command and its live status probe.
+    out, blocks = _axi_status_blocks(inst.name, "--bench", str(inst.first_index_before_add))
+    assert FIRST_BENCH_PATH in blocks, out
+    assert blocks[FIRST_BENCH_PATH]["bench_path"] == FIRST_BENCH_PATH, out
+    assert inst.first_index == inst.first_index_before_add
+
+    # The earlier bench exists, but the prior identity did not silently retarget it.
+    assert SECOND_BENCH_PATH not in blocks, out
+
+
+# --------------------------------------------------------------------------- #
+# 1. the fixture itself: two benches, genuinely serving, on different ports
 # --------------------------------------------------------------------------- #
 @v16_only
 def test_both_benches_genuinely_serve_on_their_own_ports(two_benches):

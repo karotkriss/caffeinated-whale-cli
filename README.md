@@ -920,7 +920,8 @@ cwcli inspect frappe-one --interactive
 
 ### `label` - Manage Bench Labels
 
-Assigns, clears, or lists per-bench user labels for a project. A user label is a durable, human-friendly handle for a bench in a [multi-bench](#working-with-multiple-benches) project (numeric indices are positional and can shift), and is the value you pass to `--bench` on the bench-operating commands.
+Assigns, clears, or lists per-bench user labels for a project.
+A user label is a durable, human-friendly alternative to the bench's stable numeric identity, and is the value you pass to `--bench` on the bench-operating commands.
 
 ```bash
 cwcli label [OPTIONS] PROJECT_NAME [SELECTOR] [NEW_LABEL]
@@ -2030,8 +2031,10 @@ A single cwcli project (one Docker Compose instance) can hold more than one benc
 
 **How benches are addressed:**
 
-- **Numeric index** - Every bench discovered by `cwcli inspect` gets an index (`0`, `1`, `2`, ...) from a stable, sorted-by-path order. `cwcli inspect` shows it next to each bench (for example `Bench [1] at /workspace/frappe-bench-2`). An index is positional, so it can shift when a bench is added or removed.
-- **User label** - A durable, human-friendly handle you assign with the [`label`](#label---manage-bench-labels) command or `cwcli inspect -i`. Because it does not move when benches are renumbered, a label is the reliable way to target a bench in scripts. Labels may not be purely numeric (that would collide with an index) and must be unique within a project.
+- **Numeric index** - Every bench discovered by `cwcli inspect` gets a durable per-project number. `cwcli inspect` shows it next to each bench (for example `Bench [1] at /workspace/frappe-bench-2`). The number stays attached to that bench path when another bench is added or removed, so a stored or scripted `--bench 1` never quietly starts addressing a different bench.
+  Removed numbers are not reused, so the available indices may be sparse, such as `0`, `2`, and `3`.
+  Benches are listed in that numeric order, so a newly added bench appears at the end of the list even when its path sorts earlier.
+- **User label** - A durable, human-friendly handle you assign with the [`label`](#label---manage-bench-labels) command or `cwcli inspect -i`. Labels may not be purely numeric (that would collide with an index) and must be unique within a project.
 
 **The `--bench` selector:**
 
