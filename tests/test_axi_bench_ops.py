@@ -165,9 +165,7 @@ def test_a_held_migrate_lock_is_refused_before_maintenance_and_names_unlock(
     assert not [c for c in container.calls if "maintenance" in c]
 
 
-def test_a_failed_migrate_lock_probe_surfaces_as_a_typed_error(
-    monkeypatch, container, capsys
-):
+def test_a_failed_migrate_lock_probe_surfaces_as_a_typed_error(monkeypatch, container, capsys):
     _set_lock_probe_exit(monkeypatch, container, 126)
 
     with pytest.raises(typer.Exit) as exc:

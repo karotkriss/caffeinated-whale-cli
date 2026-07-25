@@ -184,9 +184,7 @@ def test_there_is_no_skip_maintenance_escape_hatch(container):
 # ------------------------------------------------------------------ the stranded-lock gate
 
 
-def test_a_held_migrate_lock_refuses_the_migrate_entirely_and_names_unlock(
-    monkeypatch, container
-):
+def test_a_held_migrate_lock_refuses_the_migrate_entirely_and_names_unlock(monkeypatch, container):
     """The gate this task exists for: a genuinely-held migrate lock is refused
     BEFORE maintenance mode is even touched, and the refusal names the exact
     remedy rather than surfacing a generic failure later.
@@ -231,9 +229,7 @@ def test_a_lock_file_with_no_live_holder_never_blocks_a_migrate(container):
 
     assert result.data.ok is True
     probes = [c for c in container.calls if c.startswith("flock -n")]
-    assert probes == [
-        f"flock -n -E 200 {BENCH}/sites/{SITE}/locks/bench_migrate.lock -c true"
-    ]
+    assert probes == [f"flock -n -E 200 {BENCH}/sites/{SITE}/locks/bench_migrate.lock -c true"]
 
 
 def test_a_bench_never_migrated_has_no_locks_dir_and_skips_the_probe(container):
