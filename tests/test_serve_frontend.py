@@ -1381,7 +1381,7 @@ class TestTierAConsoleUi:
         assert "Object.assign({consent: false}" in page
         assert "async function runAction(action, extra, targetProject)" in page
         assert "targetProject ? model.get(targetProject)" in page
-        consent_retry = page.split('Object.assign({consent: true}', 1)[1].split(");", 1)[0]
+        consent_retry = page.split("Object.assign({consent: true}", 1)[1].split(");", 1)[0]
         assert "project" in consent_retry
 
     def test_the_checkout_form_sends_only_app_and_ref(self, page):

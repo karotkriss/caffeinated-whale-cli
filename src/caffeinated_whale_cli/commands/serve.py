@@ -48,8 +48,9 @@ later delta or keepalive discovers the closed response stream. See
 and a Windows browser cannot reach a WSL-only ``127.0.0.1`` listener. Every
 endpoint names local projects, ports and sites, and the action endpoint can drive
 non-destructive lifecycle operations, so ``--host 127.0.0.1`` is there for anyone
-on an untrusted network. CORS remains open only for the read endpoints;
-cross-origin browser actions are refused, but this is not client authentication.
+on an untrusted network. CORS remains open for snapshot, event and detail reads only;
+cross-origin browser actions and the sensitive logs/where reads are refused,
+but this is not client authentication.
 """
 
 from __future__ import annotations
