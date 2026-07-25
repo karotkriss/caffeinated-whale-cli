@@ -283,6 +283,34 @@ A real shipped bug, not a migration: Typer/click reject an unknown flag, a missi
 
 Regression coverage: `tests/test_axi.py::TestAxiParseErrorsAreToon` (unknown flag, missing argument, missing required option, the `cwcli axi` mounted path, the human-CLI-untouched path, ANSI-free emitter output) and the updated `TestAxiBackup` `confirm_start` assertions (statement not question, remedy still present).
 
+## `--help` renders as TOON on the complete axi tree (2026-07-25)
+
+The agent surface documented structured TOON output but inherited Typer's Rich help renderer.
+The installed `cwcli axi --help` was 5,153 bytes, and 48 of its 53 lines carried box-drawing characters.
+Every agent pays that cost while doing the exact discovery the AXI standard asks it to do.
+
+- **`AxiTyper` makes the rule structural for future commands.**
+  It defaults every registered leaf to `AxiToonCommand`, while `AxiToonGroup` owns group help.
+  Both classes route `format_help` through `_render_help_as_toon`.
+  The human root still uses `ToonGroup`, which intercepts parse errors but deliberately does not override help rendering, so `cwcli ... --help` stays Rich.
+- **Help comes from Click's real command metadata, never a second registry.**
+  Usage, child names, arguments, option spellings, value shapes, required state, defaults, descriptions, and examples are derived from the command and its parameters.
+  The first command-help paragraph is `description`, remaining paragraphs are counted `notes`, so removing Rich does not delete safety or behavior detail.
+  Groups list command names without repeating every description, matching the `tasks-axi` reference and keeping discovery compact.
+- **Do not replace the protocol checks with `isinstance(..., click.Option)` or `click.Group`.**
+  The development lock uses Typer 0.16 with ordinary Click 8.2 classes, while a clean runtime-only `uv tool install .` resolved Typer 0.27, whose generated commands use vendored `typer._click` classes.
+  A first implementation passed every development test but rendered an empty installed reference because the external Click type checks matched nothing.
+  `_is_group`, `_is_argument`, and `_is_option` deliberately use the stable command protocol and `param_type_name`, which work across both dependency shapes.
+- **Forced quoting is opt-in at the existing TOON boundary.**
+  `toon.kv(force_quote=True)` and `toon.table(force_quote_fields=...)` make help's usage strings and `--flag` cells strict TOON without changing any existing non-help document.
+  Do not widen the default quoting behavior as part of help work because non-help TOON output is a separately pinned contract.
+- **The regression walks the registry recursively.**
+  `tests/test_axi.py::TestAxiHelpIsToon` invokes the mounted help for the group, every leaf, the nested `apps` group, and all of its leaves.
+  It proves usage, commands, arguments, flags, and examples before rejecting box drawing, ANSI, blank alignment lines, trailing spaces, and column padding.
+  `tests/e2e/test_pkg_lifecycle_e2e.py::test_all_axi_help_is_toon_on_runtime_only_binary` repeats the complete walk against the runtime-only installed binary and proves a human leaf remains Rich.
+
+Worked installed-artifact measurements and the byte-identical human proof live in `docs/e2e/axi-help-toon.md`.
+
 ## The two execution verbs: `axi migrate` + `axi run-tests` (`add-axi-bench-exec-verbs`, 2026-07-20)
 
 `bench migrate` and `bench run-tests` are the two commands every Frappe proof runs, and neither had ANY callable form: migrate lived only inside `core.update`'s pull-and-fan-out and `restore_apply`, run-tests existed nowhere, so every agent execution step dropped to raw `cwcli run`.

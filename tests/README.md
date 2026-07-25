@@ -400,6 +400,10 @@ The proof and measurements live in [`docs/e2e/multibench-serving-status.md`](../
 4p. **Host-uid alignment for the workspace bind mount** (`core/docker.py`) - covered by `test_core_docker.py` (the no-op paths for matching ids and platforms without `os.getuid`, the uid+gid remap with/without the home chown, and failed remaps or unreadable ids degrading to warnings rather than raises).
 The `id -u`/`id -g frappe` probe fake plumbing in `test_core_init.py`/`test_core_supervision.py` keeps the align step a no-op in those existing suites.
 The host-uid alignment note in the `cwcli-lifecycle` skill's `init.md` reference owns the behavior and rationale.
+4q. **TOON help across the complete `cwcli axi` tree** (`commands/axi.py`) - `TestAxiHelpIsToon` recursively walks the mounted Click registry, proves usage, commands, arguments, flags, required state, defaults, and examples, then rejects Rich box drawing, ANSI, blank alignment lines, trailing spaces, and column padding.
+The same test proves a representative human leaf remains Rich.
+`test_all_axi_help_is_toon_on_runtime_only_binary` repeats the complete 28-path walk against the `uv tool install .` binary in the `e2e_pkg` job, which also covers Typer 0.27's vendored Click parameter classes.
+The measured before and after artifact evidence is `docs/e2e/axi-help-toon.md`.
 
 ### Partial
 5. **Port conflict detection** (`commands/start.py`) - `test_yes_flag` covers the non-interactive/`--yes` contract; the interactive port-conflict confirmation prompt is driven end to end in `tests/e2e/test_start_status_e2e.py`, and the remaining port-scanning helpers still have no dedicated unit suite (~57%).

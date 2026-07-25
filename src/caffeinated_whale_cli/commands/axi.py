@@ -24,9 +24,11 @@ stderr; stdout carries only TOON.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any, cast
 
 import click
 import typer
@@ -82,6 +84,217 @@ def _param_metavar(param, ctx) -> str:
         return str(param.make_metavar())
     except Exception:  # pragma: no cover - defensive
         return str(param.name).upper()
+
+
+def _is_group(command) -> bool:
+    """Recognize groups across Click and Typer's newer vendored Click."""
+    return callable(getattr(command, "list_commands", None))
+
+
+def _is_argument(param) -> bool:
+    return getattr(param, "param_type_name", None) == "argument"
+
+
+def _is_option(param) -> bool:
+    return getattr(param, "param_type_name", None) == "option"
+
+
+def _help_paragraphs(text: str | None) -> list[str]:
+    """Collapse Click help prose into TOON-safe, unpadded paragraph values."""
+    if not text:
+        return []
+    return [
+        " ".join(paragraph.split())
+        for paragraph in re.split(r"\n\s*\n", text.strip())
+        if paragraph.strip()
+    ]
+
+
+def _param_required(param: Any) -> bool:
+    """Return Click's requirement plus the few runtime-enforced REQUIRED flags."""
+    help_text = getattr(param, "help", "") or ""
+    return bool(param.required or "REQUIRED" in help_text)
+
+
+def _value_shape(param: Any, ctx: click.Context) -> str:
+    """Describe the value shape without Rich's angle-bracket decoration."""
+    if _is_option(param) and param.is_flag:
+        return "boolean"
+    type_name = getattr(param.type, "name", None)
+    shape = str(type_name or _param_metavar(param, ctx)).strip().lower().replace("_", "-")
+    if param.nargs == -1 or (_is_option(param) and param.multiple):
+        shape = shape.removesuffix("...") + "..."
+    return shape
+
+
+def _option_name(option: Any) -> str:
+    return "/".join([*option.opts, *option.secondary_opts])
+
+
+def _option_default(option: Any, ctx: click.Context):
+    """Expose meaningful defaults without evaluating dynamic callbacks."""
+    if option.name == "help" or option.show_default is False:
+        return None
+    default = option.get_default(ctx, call=False)
+    if callable(default):
+        return "dynamic"
+    if isinstance(default, tuple):
+        return list(default)
+    return default
+
+
+def _argument_placeholder(argument: Any) -> str:
+    explicit = getattr(argument, "metavar", None)
+    name = str(explicit) if explicit else (argument.name or "arg").replace("_", "-")
+    suffix = "..." if argument.nargs == -1 else ""
+    value = f"<{name}>{suffix}"
+    return value if argument.required else f"[{value}]"
+
+
+def _option_placeholder(option: Any, ctx: click.Context) -> str:
+    value = str(option.opts[0])
+    if not option.is_flag:
+        value += f" <{_value_shape(option, ctx).removesuffix('...')}>"
+        if option.multiple:
+            value += "..."
+    return value
+
+
+def _help_usage(command: click.Command, ctx: click.Context) -> str:
+    parts = [ctx.command_path]
+    if _is_group(command):
+        parts.extend(["[command]", "[args]", "[flags]"])
+    else:
+        arguments = [cast(Any, param) for param in command.params if _is_argument(param)]
+        options = [cast(Any, param) for param in command.params if _is_option(param)]
+        parts.extend(_argument_placeholder(argument) for argument in arguments)
+        parts.extend(
+            _option_placeholder(option, ctx)
+            for option in options
+            if option.name != "help" and _param_required(option)
+        )
+        if any(option.name == "help" or not _param_required(option) for option in options):
+            parts.append("[flags]")
+    return " ".join(parts)
+
+
+def _help_examples(command: click.Command, ctx: click.Context) -> list[str]:
+    """Generate concise examples from the same parameters used by the parser."""
+    if _is_group(command):
+        return [ctx.command_path, f"{ctx.command_path} <command> --help"]
+
+    arguments = [cast(Any, param) for param in command.params if _is_argument(param)]
+    options = [cast(Any, param) for param in command.params if _is_option(param)]
+    base_parts = [ctx.command_path]
+    base_parts.extend(_argument_placeholder(argument) for argument in arguments)
+    base_parts.extend(
+        _option_placeholder(option, ctx)
+        for option in options
+        if option.name != "help" and _param_required(option)
+    )
+    base = " ".join(base_parts)
+    if command.name == "label":
+        by_flag = {flag: option for option in options for flag in option.opts}
+        return [
+            f"{base} {_option_placeholder(by_flag['--set'], ctx)}",
+            f"{base} {_option_placeholder(by_flag['--clear'], ctx)}",
+        ]
+    if command.name == "init":
+        prefix = 'CWCLI_ADMIN_PASSWORD="<password>"'
+        return [f"{prefix} {base}", f"{prefix} {base} --no-start"]
+    examples = [base]
+    optional = next(
+        (option for option in options if option.name != "help" and not _param_required(option)),
+        None,
+    )
+    examples.append(
+        f"{base} {_option_placeholder(optional, ctx)}"
+        if optional is not None
+        else f"{ctx.command_path} --help"
+    )
+    return examples
+
+
+def _render_help_as_toon(command: click.Command, ctx: click.Context) -> str:
+    """Render one command's complete reference as compact TOON."""
+    lines = [toon.kv("usage", _help_usage(command, ctx), force_quote=True)]
+
+    paragraphs = _help_paragraphs(command.help)
+    description = paragraphs[0] if paragraphs else ""
+    lines.append(toon.kv("description", description, force_quote=True))
+
+    if _is_group(command):
+        names = cast(Any, command).list_commands(ctx)
+        rows = []
+        for name in names:
+            child = cast(Any, command).get_command(ctx, name)
+            description = child.get_short_help_str() if child is not None else ""
+            rows.append({"name": name, "description": " ".join(description.split())})
+        lines.append(
+            toon.table(
+                "commands",
+                rows,
+                ["name", "description"],
+                force_quote_fields={"description"},
+            )
+        )
+
+    arguments = [cast(Any, param) for param in command.params if _is_argument(param)]
+    if arguments:
+        lines.append(
+            toon.table(
+                "arguments",
+                [
+                    {
+                        "name": argument.name,
+                        "value": _value_shape(argument, ctx),
+                        "required": _param_required(argument),
+                        "description": " ".join((getattr(argument, "help", "") or "").split()),
+                    }
+                    for argument in arguments
+                ],
+                ["name", "value", "required", "description"],
+                force_quote_fields={"description"},
+            )
+        )
+
+    options = [
+        cast(Any, param)
+        for param in command.get_params(ctx)
+        if _is_option(param) and not getattr(param, "hidden", False)
+    ]
+    lines.append(
+        toon.table(
+            "flags",
+            [
+                {
+                    "name": _option_name(option),
+                    "value": _value_shape(option, ctx),
+                    "required": _param_required(option),
+                    "default": _option_default(option, ctx),
+                    "description": " ".join((option.help or "").split()),
+                }
+                for option in options
+            ],
+            ["name", "value", "required", "default", "description"],
+            force_quote_fields={"name", "description"},
+        )
+    )
+
+    lines.append(toon.encode({"examples": _help_examples(command, ctx)}))
+
+    notes = [*paragraphs[1:], *_help_paragraphs(command.epilog)]
+    if notes:
+        lines.append(
+            toon.table(
+                "notes",
+                [{"text": note} for note in notes],
+                ["text"],
+                force_quote_fields={"text"},
+            )
+        )
+
+    return "\n".join(lines)
 
 
 def _usage_help_lines(error: click.UsageError) -> list[str]:
@@ -176,12 +389,35 @@ class ToonGroup(_typer_core.TyperGroup):
         sys.exit(rv if isinstance(rv, int) else 0)
 
 
+class AxiToonCommand(_typer_core.TyperCommand):
+    """A leaf command whose ``--help`` is the same TOON as the axi data surface."""
+
+    def format_help(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        formatter.write(_render_help_as_toon(self, ctx))
+
+
 class AxiToonGroup(ToonGroup):
-    """Marker subclass tagging the axi app's group, so a parse failure anywhere in
-    its subtree is detected as axi-surface regardless of mount depth."""
+    """An axi group marker that also replaces Rich help with TOON."""
+
+    def format_help(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        formatter.write(_render_help_as_toon(self, ctx))
 
 
-app = typer.Typer(
+class AxiTyper(typer.Typer):
+    """Typer registry whose current and future leaf commands inherit TOON help."""
+
+    def __init__(self, *args, **kwargs):
+        if kwargs.get("cls") is None:
+            kwargs["cls"] = AxiToonGroup
+        super().__init__(*args, **kwargs)
+
+    def command(self, *args, **kwargs):
+        if kwargs.get("cls") is None:
+            kwargs["cls"] = AxiToonCommand
+        return super().command(*args, **kwargs)
+
+
+app = AxiTyper(
     cls=AxiToonGroup,
     help="Agent-facing surface: structured TOON output on stdout, no interactive prompts.",
 )
@@ -984,7 +1220,7 @@ def axi_label(
 
 # --------------------------------------------------------------------------- apps list
 
-apps_app = typer.Typer(help="Manage Frappe apps: structured, non-interactive.")
+apps_app = AxiTyper(help="Manage Frappe apps: structured, non-interactive.")
 app.add_typer(apps_app, name="apps")
 
 
