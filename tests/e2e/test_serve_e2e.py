@@ -26,11 +26,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import subprocess
 import threading
 import time
 import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -321,3 +323,202 @@ class TestLazyTier:
         with pytest.raises(urllib.error.HTTPError) as e:
             _get(daemon.base + "/api/instance/cwe2e-no-such-project/detail")
         assert e.value.code == 404
+
+
+class TestTierAActions:
+    """The Tier A rail expansion against the real instance: each verb round-trips
+    through the daemon into real core against a real container, the scale confirm
+    provably arrives FROM core (before any mutation), and every test leaves the
+    shared instance exactly as it found it."""
+
+    def _prime(self, daemon) -> None:
+        # The detail endpoint runs core.inspect(refresh="auto"), so serving it once
+        # populates the cache the bench-scoped verbs resolve against.
+        body = _get(daemon.base + f"/api/instance/{daemon.project}/detail")
+        assert body["benches"], "the cache must know the bench before bench-scoped verbs"
+
+    def test_set_label_round_trips_and_is_cleared(self, daemon):
+        self._prime(daemon)
+        try:
+            body = _post(
+                daemon.base + "/api/action",
+                {"action": "set_label", "project": daemon.project, "label": "tiera"},
+            )
+            assert body["ok"] is True
+            assert body["outcome"]["label"] == "tiera"
+
+            detail = _get(daemon.base + f"/api/instance/{daemon.project}/detail")
+            assert detail["benches"][0]["label"] == "tiera"
+        finally:
+            # Shared-group convention: remove the label again (DB and marker).
+            result = harness.run_cwcli("axi", "label", daemon.project, "--clear")
+            assert result.returncode == 0, result.stderr
+
+    def test_unlock_resolves_the_site_in_core_and_touches_the_real_container(self, daemon):
+        # Removing a locks folder is self-restoring state: absent is the clean state.
+        body = _post(
+            daemon.base + "/api/action",
+            {"action": "unlock_site", "project": daemon.project, "site": harness.DEFAULT_SITE},
+        )
+
+        assert body["ok"] is True
+        assert body["outcome"]["site"] == harness.DEFAULT_SITE
+        assert body["outcome"]["locks_path"].endswith(f"{harness.DEFAULT_SITE}/locks")
+
+    def test_the_scale_confirm_arrives_from_core_not_the_page(self, daemon):
+        import urllib.error
+
+        self._prime(daemon)
+        # Another shared-instance E2E may already have widened the init default of
+        # six ports. Request one beyond the live compose range so expansion is
+        # genuinely needed regardless of collection order. Core answers
+        # NEEDS_CHOICE/confirm_scale before any mutation, so this remains a read.
+        compose_path = (
+            Path(os.environ["CWCLI_HOME"])
+            / "projects"
+            / daemon.project
+            / "conf"
+            / "docker-compose.yml"
+        )
+        compose_text = compose_path.read_text()
+        web_range = re.search(r"\d+-\d+:8000-(\d+)", compose_text)
+        assert web_range is not None, compose_text
+        requested_count = int(web_range.group(1)) - 8000 + 2
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _post(
+                daemon.base + "/api/action",
+                {
+                    "action": "scale_instance",
+                    "project": daemon.project,
+                    "to": requested_count,
+                },
+            )
+
+        assert e.value.code == 409
+        body = json.loads(e.value.read())
+        assert body["error"]["kind"] == "needs_choice"
+        assert body["error"]["code"] == "confirm_scale"
+        assert "RESTARTS" in body["error"]["message"]
+
+        # The covering case is a consent-free idempotent no-op that changes nothing.
+        noop = _post(
+            daemon.base + "/api/action",
+            {"action": "scale_instance", "project": daemon.project},
+        )
+        assert noop["ok"] is True
+        assert noop["outcome"]["expanded"] is False
+
+    def test_the_logs_read_serves_real_supervisor_logs(self, daemon):
+        body = _get(daemon.base + f"/api/instance/{daemon.project}/logs?lines=20")
+
+        assert body["ok"] is True
+        read = body["outcome"]
+        assert read["not_cwcli_supervised"] is False
+        processes = {group["process"] for group in read["logs"]}
+        assert "web" in processes
+        web = next(g for g in read["logs"] if g["process"] == "web")
+        assert web["lines"], "a served bench's web log must not be empty"
+
+    def test_where_reports_the_real_instance_as_present_and_verified(self, daemon):
+        self._prime(daemon)
+        body = _get(daemon.base + "/api/where?q=frappe")
+
+        assert body["ok"] is True
+        assert body["verified"] is True, "with Docker reachable the sweep must verify"
+        ours = [m for m in body["matches"] if m["project"] == daemon.project]
+        assert ours, "the real instance's frappe app must match"
+        assert all(m["project_state"] == "present" for m in ours)
+
+    def test_refresh_and_checkout_round_trip_without_leaving_git_state(self, daemon):
+        import shlex
+        import urllib.error
+
+        self._prime(daemon)
+        app_dir = f"{harness.DEFAULT_BENCH_PATH}/apps/frappe"
+        code, branch = harness.exec_in_frappe(
+            daemon.project, f"git -C {shlex.quote(app_dir)} branch --show-current"
+        )
+        assert code == 0, branch
+        branch = branch.strip()
+        assert branch
+        code, original_head = harness.exec_in_frappe(
+            daemon.project, f"git -C {shlex.quote(app_dir)} rev-parse HEAD"
+        )
+        assert code == 0, original_head
+        original_head = original_head.strip()
+        code, status = harness.exec_in_frappe(
+            daemon.project, f"git -C {shlex.quote(app_dir)} status --porcelain"
+        )
+        assert code == 0, status
+        assert not status.strip(), "the shared checkout must start clean"
+
+        try:
+            refreshed = _post(
+                daemon.base + "/api/action",
+                {"action": "refresh_status", "project": daemon.project},
+            )
+            assert refreshed["ok"] is True
+            assert refreshed["outcome"]["project"] == daemon.project
+            assert refreshed["outcome"]["container_running"] is True
+
+            checked_out = _post(
+                daemon.base + "/api/action",
+                {
+                    "action": "checkout_app",
+                    "project": daemon.project,
+                    "app": "frappe",
+                    "ref": branch,
+                },
+            )
+            assert checked_out["ok"] is True
+            assert [row["action"] for row in checked_out["outcome"]["results"]] == [
+                "fetch",
+                "checkout",
+            ]
+
+            marker = "cwe2e-serve-dirty-tree"
+            tracked = f"{app_dir}/README.md"
+            code, output = harness.exec_in_frappe(
+                daemon.project, f"printf '\\n{marker}\\n' >> {shlex.quote(tracked)}"
+            )
+            assert code == 0, output
+            with pytest.raises(urllib.error.HTTPError) as exc:
+                _post(
+                    daemon.base + "/api/action",
+                    {
+                        "action": "checkout_app",
+                        "project": daemon.project,
+                        "app": "frappe",
+                        "ref": branch,
+                    },
+                )
+            assert exc.value.code == 409
+            refusal = json.loads(exc.value.read())
+            assert refusal["error"]["code"] == "app.dirty_tree"
+            assert "README.md" in refusal["error"]["message"]
+            code, output = harness.exec_in_frappe(
+                daemon.project, f"grep -F {shlex.quote(marker)} {shlex.quote(tracked)}"
+            )
+            assert code == 0, output
+        finally:
+            restore = (
+                f"git -C {shlex.quote(app_dir)} checkout {shlex.quote(branch)}"
+                f" && git -C {shlex.quote(app_dir)} reset --hard {shlex.quote(original_head)}"
+            )
+            code, output = harness.exec_in_frappe(daemon.project, restore)
+            assert code == 0, output
+            code, restored_branch = harness.exec_in_frappe(
+                daemon.project, f"git -C {shlex.quote(app_dir)} branch --show-current"
+            )
+            assert code == 0, restored_branch
+            assert restored_branch.strip() == branch
+            code, restored_head = harness.exec_in_frappe(
+                daemon.project, f"git -C {shlex.quote(app_dir)} rev-parse HEAD"
+            )
+            assert code == 0, restored_head
+            assert restored_head.strip() == original_head
+            code, restored_status = harness.exec_in_frappe(
+                daemon.project, f"git -C {shlex.quote(app_dir)} status --porcelain"
+            )
+            assert code == 0, restored_status
+            assert not restored_status.strip()

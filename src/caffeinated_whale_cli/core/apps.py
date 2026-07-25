@@ -37,6 +37,7 @@ from __future__ import annotations
 import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 
 from ..utils import bench_sites
 from . import credbridge, resolvers
@@ -136,6 +137,21 @@ class AppsStepEnd:
 AppsEvent = AppsAnnounce | AppsCommand | AppsOutput | AppsStepEnd
 
 OnEvent = Callable[[AppsEvent], None]
+
+
+def validate_checkout_app_name(app: str) -> None:
+    if (
+        not app
+        or not app.strip()
+        or app in {".", ".."}
+        or PurePosixPath(app).name != app
+        or "\0" in app
+    ):
+        raise CwcliError(
+            ErrorKind.USAGE,
+            "app.invalid_component",
+            f"Invalid app name '{app}'. It must be one plain directory name.",
+        )
 
 
 def _noop(_event: AppsEvent) -> None:
@@ -612,6 +628,7 @@ def checkout_app(
     """
     emit: OnEvent = on_event or _noop
 
+    validate_checkout_app_name(app)
     resolved = _resolve(project_name, bench, bench_path, auto_start=auto_start)
     if isinstance(resolved, Result):
         return resolved
