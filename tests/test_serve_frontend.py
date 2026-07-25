@@ -1058,6 +1058,29 @@ class TestTierAActions:
         assert "reset" not in called
         assert "auto_start" not in called
 
+    def test_checkout_app_rejects_path_traversal_before_dispatch(self, daemon, monkeypatch):
+        dispatched = []
+        monkeypatch.setattr(
+            serve_cmd.core_apps,
+            "checkout_app",
+            lambda *args, **kwargs: dispatched.append((args, kwargs)),
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(
+                daemon.base + "/api/action",
+                {
+                    "action": "checkout_app",
+                    "project": "p",
+                    "app": "../other",
+                    "ref": "main",
+                },
+            )
+
+        assert exc.value.code == 400
+        assert json.loads(exc.value.read())["error"]["code"] == "app.invalid_component"
+        assert dispatched == []
+
     def test_a_failed_checkout_reports_failure_with_gits_own_words(self, daemon, monkeypatch):
         """ok reads report.ok, not the envelope status (the exit-code precedent
         in HTTP clothes), and the failure message carries a bounded tail of
