@@ -682,13 +682,20 @@ class TestAxiHelpIsToon:
         """Examples include the runtime-required mode that parser metadata cannot express."""
         from caffeinated_whale_cli.main import app as root_app
 
-        result = runner.invoke(root_app, ["axi", "label", "--help"])
-        examples = next(
-            line for line in result.stdout.splitlines() if line.startswith("examples[")
+        label = runner.invoke(root_app, ["axi", "label", "--help"])
+        label_examples = next(
+            line for line in label.stdout.splitlines() if line.startswith("examples[")
         )
-        assert "--set <text>" in examples
-        assert "--clear" in examples
-        assert "label <project>," not in examples
+        assert "--set <text>" in label_examples
+        assert "--clear" in label_examples
+        assert "label <project>," not in label_examples
+
+        init = runner.invoke(root_app, ["axi", "init", "--help"])
+        init_examples = next(
+            line for line in init.stdout.splitlines() if line.startswith("examples[")
+        )
+        assert init_examples.count('CWCLI_ADMIN_PASSWORD=\\"<password>\\"') == 2
+        assert "--no-start" in init_examples
 
     def test_explicit_argument_metavars_are_preserved(self):
         """Usage and examples retain a command's explicit public argument shape."""

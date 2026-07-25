@@ -59,25 +59,47 @@ The final renderer recognizes command, argument, and option metadata through Cli
 
 | Help path | Before bytes | After bytes | Saved | Reduction |
 | --- | ---: | ---: | ---: | ---: |
-| `cwcli axi --help` | 5,153 | 470 | 4,683 | 90.9% |
-| `cwcli axi scale --help` | 2,577 | 1,171 | 1,406 | 54.6% |
-| `cwcli axi apps --help` | 2,012 | 330 | 1,682 | 83.6% |
-| `cwcli axi apps install --help` | 6,153 | 3,799 | 2,354 | 38.3% |
+| `cwcli axi --help` | 5,153 | 1,565 | 3,588 | 69.6% |
+| `cwcli axi scale --help` | 2,577 | 1,167 | 1,410 | 54.7% |
+| `cwcli axi apps --help` | 2,012 | 532 | 1,480 | 73.6% |
+| `cwcli axi apps install --help` | 6,153 | 3,780 | 2,373 | 38.6% |
 
 The longer nested leaf still carries all seven safety and behavior notes from its command documentation.
 Its reduction comes from removing Rich framing, wrapping, and alignment rather than deleting those details.
+The group measurements include each child command's short description, and the examples use TOON's inline primitive-array form.
 
 The installed group output became:
 
 ```toon
 usage: "cwcli axi [command] [args] [flags]"
 description: "Agent-facing surface: structured TOON output on stdout, no interactive prompts."
-commands[23]: ls,where,backup,unlock,stop,start,status,logs,restart,scale,inspect,benches,label,migrate,run-tests,build,config,init,rm,rm-site,self-update,setup,apps
+commands[23]{name,description}:
+  ls,"List all Frappe/ERPNext instances; emit..."
+  where,"Search cached instances for apps/sites..."
+  backup,"Back up a site's database (and optionally..."
+  unlock,"Remove a site's locks folder; emit the..."
+  stop,"Stop a project's containers, or one..."
+  start,"Start a project's containers + bench; emit..."
+  status,"Report every bench's per-process health;..."
+  logs,"Read a bounded tail of a bench's..."
+  restart,"Restart ONE supervised process; emit the..."
+  scale,"Widen the instance's published port range;..."
+  inspect,"Inspect a project's benches, sites, and..."
+  benches,"List a project's benches with their..."
+  label,"Set or clear a bench's durable user label;..."
+  migrate,"Run 'bench migrate' against ONE site under..."
+  run-tests,"Run 'bench run-tests' for ONE app against..."
+  build,"Run 'bench build' to compile the bench's..."
+  config,"Report the effective cwcli configuration;..."
+  init,"Provision a new instance, bench, and site;..."
+  rm,"Permanently remove an instance; emit the..."
+  rm-site,"Permanently drop ONE site; emit the..."
+  self-update,"Report whether a newer cwcli is available;..."
+  setup,"Install the SessionStart hook into every..."
+  apps,"Manage Frappe apps: structured,..."
 flags[1]{name,value,required,default,description}:
   "--help",boolean,false,null,"Show this message and exit."
-examples[2]:
-  cwcli axi
-  cwcli axi <command> --help
+examples[2]: cwcli axi,cwcli axi <command> --help
 ```
 
 The installed representative leaf output began:
@@ -91,9 +113,13 @@ flags[3]{name,value,required,default,description}:
   "--to",int,false,null,"Ensure at least this many benches are host-reachable (publish at least this many ports). Omit to auto-fit every bench."
   "--yes/-y",boolean,false,false,"Consent to the whole-instance restart that expanding the port range causes."
   "--help",boolean,false,null,"Show this message and exit."
-examples[2]:
-  cwcli axi scale <project>
-  cwcli axi scale <project> --to <int>
+examples[2]: cwcli axi scale <project>,cwcli axi scale <project> --to <int>
+```
+
+The installed `init` examples both supply the non-interactive administrator password input that the command requires:
+
+```toon
+examples[2]: "CWCLI_ADMIN_PASSWORD=\"<password>\" cwcli axi init <project>","CWCLI_ADMIN_PASSWORD=\"<password>\" cwcli axi init <project> --no-start"
 ```
 
 ## Positive checks before negative checks
@@ -104,10 +130,10 @@ Each installed help path first had to prove all of the following:
 - A real usage line containing the mounted `cwcli axi` path.
 - A description.
 - A counted flags table with value shapes, required state, defaults, and descriptions.
-- A counted examples block.
+- A counted inline examples array.
 - Every real argument name and description for leaf commands.
 - Every real option spelling and description.
-- Every real child command name for groups.
+- Every real child command name and short description for groups.
 
 Only after those checks passed did the proof reject box-drawing characters, ANSI escape sequences, blank alignment lines, trailing spaces, non-TOON indentation, and repeated spaces used as column padding.
 All 28 installed paths passed.
