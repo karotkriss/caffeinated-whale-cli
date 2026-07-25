@@ -202,6 +202,18 @@ def _help_examples(command: click.Command, ctx: click.Context) -> list[str]:
     if command.name == "init":
         prefix = 'CWCLI_ADMIN_PASSWORD="<password>"'
         return [f"{prefix} {base}", f"{prefix} {base} --no-start"]
+    if command.name == "scale":
+        # `--yes` is enforced at RUNTIME only when expansion is actually needed
+        # (core/scale.py's `confirm_scale`), so it cannot carry the literal
+        # REQUIRED token in its help text without lying about the idempotent
+        # no-op case, which genuinely needs no consent - unlike `label`/`init`
+        # above, `_param_required` never puts it in `base`. Both examples show
+        # it anyway because both demonstrate the operation `scale` exists to
+        # perform (actually widening the range), which always needs consent.
+        by_flag = {flag: option for option in options for flag in option.opts}
+        yes = _option_placeholder(by_flag["--yes"], ctx)
+        to = _option_placeholder(by_flag["--to"], ctx)
+        return [f"{base} {yes}", f"{base} {to} {yes}"]
     examples = [base]
     optional = next(
         (option for option in options if option.name != "help" and not _param_required(option)),
