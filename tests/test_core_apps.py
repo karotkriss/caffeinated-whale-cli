@@ -393,9 +393,7 @@ def test_checkout_a_dir_that_is_not_a_git_checkout_raises(monkeypatch, container
 
 
 @pytest.mark.parametrize("app", ["../other", "nested/app", ".", "..", " ", "bad\0name"])
-def test_checkout_rejects_non_child_app_names_before_container_access(
-    monkeypatch, container, app
-):
+def test_checkout_rejects_non_child_app_names_before_container_access(monkeypatch, container, app):
     _cache(monkeypatch, [{"path": BENCH}])
     _bridge_spy(monkeypatch)
 
@@ -537,9 +535,7 @@ def test_checkout_quotes_a_hostile_ref(monkeypatch, container):
     assert "git fetch upstream -- 'x; rm -rf /'" in container.calls
 
 
-def test_checkout_guards_a_dash_prefixed_ref_from_being_parsed_as_an_option(
-    monkeypatch, container
-):
+def test_checkout_guards_a_dash_prefixed_ref_from_being_parsed_as_an_option(monkeypatch, container):
     """A `--upload-pack=...`-style ref must not be parsed as a fetch option."""
     _cache(monkeypatch, [{"path": BENCH}])
     _bridge_spy(monkeypatch)
