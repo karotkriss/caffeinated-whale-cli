@@ -144,7 +144,8 @@ def _option_default(option: Any, ctx: click.Context):
 
 
 def _argument_placeholder(argument: Any) -> str:
-    name = (argument.name or "arg").replace("_", "-")
+    explicit = getattr(argument, "metavar", None)
+    name = str(explicit) if explicit else (argument.name or "arg").replace("_", "-")
     suffix = "..." if argument.nargs == -1 else ""
     value = f"<{name}>{suffix}"
     return value if argument.required else f"[{value}]"
@@ -192,6 +193,12 @@ def _help_examples(command: click.Command, ctx: click.Context) -> list[str]:
         if option.name != "help" and _param_required(option)
     )
     base = " ".join(base_parts)
+    if command.name == "label":
+        by_flag = {flag: option for option in options for flag in option.opts}
+        return [
+            f"{base} {_option_placeholder(by_flag['--set'], ctx)}",
+            f"{base} {_option_placeholder(by_flag['--clear'], ctx)}",
+        ]
     examples = [base]
     optional = next(
         (option for option in options if option.name != "help" and not _param_required(option)),
@@ -215,7 +222,19 @@ def _render_help_as_toon(command: click.Command, ctx: click.Context) -> str:
 
     if _is_group(command):
         names = cast(Any, command).list_commands(ctx)
-        lines.append(toon.encode({"commands": names}))
+        rows = []
+        for name in names:
+            child = cast(Any, command).get_command(ctx, name)
+            description = child.get_short_help_str() if child is not None else ""
+            rows.append({"name": name, "description": " ".join(description.split())})
+        lines.append(
+            toon.table(
+                "commands",
+                rows,
+                ["name", "description"],
+                force_quote_fields={"description"},
+            )
+        )
 
     arguments = [cast(Any, param) for param in command.params if _is_argument(param)]
     if arguments:
@@ -259,7 +278,7 @@ def _render_help_as_toon(command: click.Command, ctx: click.Context) -> str:
         )
     )
 
-    lines.append(toon.block("examples", _help_examples(command, ctx)))
+    lines.append(toon.encode({"examples": _help_examples(command, ctx)}))
 
     notes = [*paragraphs[1:], *_help_paragraphs(command.epilog)]
     if notes:
