@@ -8,10 +8,10 @@ Listing SHALL be a distinct function rather than a mode of the mutation function
 Setting and clearing SHALL be distinct functions rather than one function whose `label=None` means clear, so the core does not expose the `None` sentinel that `db_utils.set_bench_label` uses at the storage layer.
 `core.label` SHALL NOT print, prompt, or call `typer.Exit`.
 
-#### Scenario: Listing benches needs no container
+#### Scenario: Listing benches reports cached existence honestly
 
 - **WHEN** `core.list_benches` runs against a project with cached benches
-- **THEN** it returns `Result(OK, BenchList)` with one `BenchInfo(index, path, label)` per bench in stable sorted order, touching no container and printing nothing
+- **THEN** it returns one stable `BenchInfo` row per cached bench, with `state` set to `present`, `absent`, or `unverified`, and prints nothing
 
 #### Scenario: A project with no cached benches is a typed error naming the remedy
 
@@ -108,7 +108,7 @@ The command's arguments, flags, messages, and exit codes SHALL be preserved.
 #### Scenario: List mode is preserved
 
 - **WHEN** `cwcli label <project>` runs with no bench selector
-- **THEN** it prints the bench list exactly as before, touching no container
+- **THEN** it prints the bench list with each cached row's existence state, without starting a container
 
 #### Scenario: The available-benches list on an unknown selector is preserved
 
