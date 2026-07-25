@@ -127,6 +127,13 @@ def wired(monkeypatch):
             supervisor_up=False, supervisor_pid=None, processes=[]
         ),
     )
+    monkeypatch.setattr(
+        core_apps.supervision,
+        "discover_unsupervised_stack",
+        lambda *a, **k: core_apps.supervision.UnsupervisedStack(
+            manager_up=False, processes=[]
+        ),
+    )
 
     def fake_recache(project_name, verbose=False):
         state.recache_calls.append(project_name)
