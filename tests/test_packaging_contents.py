@@ -103,9 +103,7 @@ class TestTheWheelShipsThePackage:
             root = name.split("/", 1)[0]
             package_file = name.startswith(f"{DIST_NAME}/")
             metadata_file = (
-                root.startswith(f"{DIST_NAME}-")
-                and root.endswith(".dist-info")
-                and "/" in name
+                root.startswith(f"{DIST_NAME}-") and root.endswith(".dist-info") and "/" in name
             )
             if not package_file and not metadata_file:
                 unexpected.append(name)
