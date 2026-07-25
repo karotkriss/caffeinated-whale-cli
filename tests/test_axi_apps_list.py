@@ -46,6 +46,13 @@ def container(monkeypatch):
             supervisor_up=False, supervisor_pid=None, processes=[]
         ),
     )
+    monkeypatch.setattr(
+        core_apps.supervision,
+        "discover_unsupervised_stack",
+        lambda *a, **k: core_apps.supervision.UnsupervisedStack(
+            manager_up=False, processes=[]
+        ),
+    )
     return c
 
 
