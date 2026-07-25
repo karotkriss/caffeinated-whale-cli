@@ -106,6 +106,13 @@ def container(monkeypatch):
             supervisor_up=False, supervisor_pid=None, processes=[]
         ),
     )
+    monkeypatch.setattr(
+        core_apps.supervision,
+        "discover_unsupervised_stack",
+        lambda *a, **k: core_apps.supervision.UnsupervisedStack(
+            manager_up=False, processes=[]
+        ),
+    )
     return c
 
 
@@ -249,7 +256,7 @@ def test_install_shell_interpolations_are_shlex_quoted(monkeypatch, container):
     assert "'x; whoami'" in fetch
 
 
-def _wire_running_web(monkeypatch, *, restart_code=0):
+def _wire_running_web(monkeypatch, *, restart_code=0, web_state="RUNNING"):
     restarted: list[str] = []
     monkeypatch.setattr(
         core_apps.supervision,
@@ -259,7 +266,9 @@ def _wire_running_web(monkeypatch, *, restart_code=0):
         ),
     )
     monkeypatch.setattr(
-        core_apps.supervision, "supervisorctl_states", lambda *a, **k: {"web": ("RUNNING", 101)}
+        core_apps.supervision,
+        "supervisorctl_states",
+        lambda *a, **k: {"web": (web_state, 101)},
     )
 
     def restart(_container, _path, program):
@@ -280,11 +289,12 @@ def _wire_running_web(monkeypatch, *, restart_code=0):
     return restarted
 
 
+@pytest.mark.parametrize("web_state", ["RUNNING", "STARTING"])
 def test_install_restarts_a_running_web_process_and_reports_the_verified_step(
-    monkeypatch, container
+    monkeypatch, container, web_state
 ):
     _cache(monkeypatch, [{"path": BENCH}])
-    restarted = _wire_running_web(monkeypatch)
+    restarted = _wire_running_web(monkeypatch, web_state=web_state)
 
     result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
 
@@ -390,6 +400,127 @@ def test_a_stopped_bench_is_not_started_by_an_install(monkeypatch, container):
     assert started == []
     assert "restart-web" not in [r.action for r in result.data.results]
     assert result.data.ok is True
+
+
+def test_a_stopped_supervised_web_process_is_not_started_by_an_install(monkeypatch, container):
+    _cache(monkeypatch, [{"path": BENCH}])
+    restarted = _wire_running_web(monkeypatch, web_state="STOPPED")
+    probed = []
+    monkeypatch.setattr(
+        core_apps,
+        "_wait_for_sites_after_restart",
+        lambda *a, **k: probed.append(k["sites"]) or ([], {}),
+    )
+
+    result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
+
+    assert restarted == []
+    assert probed == []
+    assert "restart-web" not in [r.action for r in result.data.results]
+    assert result.data.ok is True
+
+
+def test_an_unsupervised_running_bench_is_verified_without_being_restarted(
+    monkeypatch, container
+):
+    _cache(monkeypatch, [{"path": BENCH}])
+    monkeypatch.setattr(
+        core_apps.supervision,
+        "discover_unsupervised_stack",
+        lambda *a, **k: core_apps.supervision.UnsupervisedStack(
+            manager_up=True,
+            processes=[
+                core_apps.supervision.ProcessHealth(label="web", up=True, pid=101)
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        core_apps.resolvers,
+        "resolve_assigned_ports",
+        lambda *a, **k: {BENCH: (8000, 9000)},
+    )
+    probed = []
+    monkeypatch.setattr(
+        core_apps,
+        "_wait_for_sites_after_restart",
+        lambda *a, **k: probed.append(k["sites"]) or ([], {"a.localhost": "200"}),
+    )
+    restarted = []
+    monkeypatch.setattr(
+        core_apps.supervision,
+        "restart_program",
+        lambda *a, **k: restarted.append(a) or (0, ""),
+    )
+
+    result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
+
+    assert restarted == []
+    assert probed == [["a.localhost"]]
+    assert "restart-web" not in [r.action for r in result.data.results]
+    assert result.data.ok is True
+
+
+def test_an_unhealthy_unsupervised_bench_fails_with_a_manual_restart_remedy(
+    monkeypatch, container
+):
+    _cache(monkeypatch, [{"path": BENCH}])
+    monkeypatch.setattr(
+        core_apps.supervision,
+        "discover_unsupervised_stack",
+        lambda *a, **k: core_apps.supervision.UnsupervisedStack(
+            manager_up=True,
+            processes=[
+                core_apps.supervision.ProcessHealth(label="web", up=True, pid=101)
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        core_apps.resolvers,
+        "resolve_assigned_ports",
+        lambda *a, **k: {BENCH: (8000, 9000)},
+    )
+    monkeypatch.setattr(
+        core_apps,
+        "_wait_for_sites_after_restart",
+        lambda *a, **k: (["a.localhost"], {"a.localhost": "500"}),
+    )
+
+    result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
+
+    assert result.data.ok is False
+    assert [(r.action, r.ok) for r in result.data.results][-1] == ("restart-web", False)
+    assert any("Restart the bench manually" in warning.text for warning in result.warnings)
+
+
+@pytest.mark.parametrize(
+    "stage",
+    [
+        "supervisorctl_states",
+        "restart_program",
+        "resolve_assigned_ports",
+        "_wait_for_sites_after_restart",
+    ],
+)
+def test_post_mutation_failures_are_reported_without_erasing_the_landed_change(
+    monkeypatch, container, stage
+):
+    _cache(monkeypatch, [{"path": BENCH}])
+    _wire_running_web(monkeypatch)
+
+    def boom(*_a, **_k):
+        raise RuntimeError(f"{stage} failed")
+
+    owner = core_apps.resolvers if stage == "resolve_assigned_ports" else core_apps
+    if stage in {"supervisorctl_states", "restart_program"}:
+        owner = core_apps.supervision
+    monkeypatch.setattr(owner, stage, boom)
+
+    result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
+
+    assert ("install-app", True) in [(r.action, r.ok) for r in result.data.results]
+    assert [(r.action, r.ok) for r in result.data.results][-1] == ("restart-web", False)
+    assert result.data.ok is False
+    assert any(f"{stage} failed" in warning.text for warning in result.warnings)
 
 
 # ------------------------------------------------------------------- uninstall_apps

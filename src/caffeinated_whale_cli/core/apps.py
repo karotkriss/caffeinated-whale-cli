@@ -352,64 +352,72 @@ def _restart_web_after_mutation(
 
     try:
         snapshot = supervision.discover_stack(frappe_container, bench_path, required=True)
-    except CwcliError as error:
-        failed(
-            "App mutation completed, but cwcli could not verify whether the bench web "
-            f"process needed restarting: {error.message}"
+        supervised = snapshot.supervisor_up
+        if supervised:
+            states = supervision.supervisorctl_states(frappe_container, bench_path)
+            program = supervision.program_for_label(list(states), "web")
+            if program is None:
+                failed(
+                    "App mutation completed, but the running bench has no supervised web "
+                    "process that cwcli can restart."
+                )
+                return
+            if states[program][0] not in {"RUNNING", "STARTING"}:
+                return
+
+            emit(AppsAnnounce(phase="restart-web"))
+            restart_code, restart_output = supervision.restart_program(
+                frappe_container, bench_path, program
+            )
+            if restart_code not in (0, None):
+                detail = restart_output.strip()
+                suffix = f" ({detail})" if detail else ""
+                failed(
+                    "App mutation completed, but restarting the bench web process "
+                    f"failed{suffix}."
+                )
+                return
+        else:
+            fallback = supervision.discover_unsupervised_stack(
+                frappe_container, bench_path, required=True
+            )
+            if not fallback.manager_up:
+                return
+
+        ports = resolvers.resolve_assigned_ports(
+            frappe_container, [bench_path], fill_defaults=False
+        ).get(bench_path)
+        if ports is None:
+            failed(
+                "App mutation completed, but the bench's assigned port could not be read, "
+                "so cwcli could not confirm the mutated site serves."
+            )
+            return
+
+        pending, codes = _wait_for_sites_after_restart(
+            frappe_container, port=ports[0], sites=unique_sites
         )
-        return
-    if not snapshot.supervisor_up:
-        return
+        if pending:
+            observed = ", ".join(f"{site}={codes[site] or 'unreachable'}" for site in pending)
+            remedy = (
+                " Restart the bench manually, then verify the sites again."
+                if not supervised
+                else ""
+            )
+            failed(
+                "These mutated sites did not answer Frappe's ping with HTTP 200: "
+                f"{observed}.{remedy}"
+            )
+            return
 
-    emit(AppsAnnounce(phase="restart-web"))
-
-    states = supervision.supervisorctl_states(frappe_container, bench_path)
-    program = supervision.program_for_label(list(states), "web")
-    if program is None:
+        if supervised:
+            results.append(AppResult(app="web", site=None, action="restart-web", ok=True))
+    except Exception as error:  # noqa: BLE001
+        detail = error.message if isinstance(error, CwcliError) else str(error)
         failed(
-            "App mutation completed, but the running bench has no supervised web process "
-            "that cwcli can restart."
+            "App mutation completed, but cwcli could not complete the web restart and "
+            f"verification: {detail or type(error).__name__}"
         )
-        return
-
-    restart_code, restart_output = supervision.restart_program(
-        frappe_container, bench_path, program
-    )
-    # `not in (0, None)`, the convention every other container read here uses: an
-    # exec that reports no code at all is not evidence of failure, and treating it
-    # as one would fail an install whose restart in fact worked. The site probe
-    # below is the real gate either way.
-    if restart_code not in (0, None):
-        detail = restart_output.strip()
-        suffix = f" ({detail})" if detail else ""
-        failed(f"App mutation completed, but restarting the bench web process failed{suffix}.")
-        return
-
-    # fill_defaults=False: this port becomes a PROBE TARGET, and on any bench past
-    # the first a guessed 8000 measures a SIBLING bench's web server - which would
-    # let this verification pass on a bench it never tested.
-    ports = resolvers.resolve_assigned_ports(
-        frappe_container, [bench_path], fill_defaults=False
-    ).get(bench_path)
-    if ports is None:
-        failed(
-            "The bench web process restarted, but its assigned port could not be read, "
-            "so cwcli could not confirm the mutated site serves."
-        )
-        return
-
-    pending, codes = _wait_for_sites_after_restart(
-        frappe_container, port=ports[0], sites=unique_sites
-    )
-    if pending:
-        observed = ", ".join(f"{site}={codes[site] or 'unreachable'}" for site in pending)
-        failed(
-            "The bench web process restarted, but these mutated sites did not answer "
-            f"Frappe's ping with HTTP 200: {observed}."
-        )
-        return
-
-    results.append(AppResult(app="web", site=None, action="restart-web", ok=True))
 
 
 def derive_app_name(target: str) -> str:

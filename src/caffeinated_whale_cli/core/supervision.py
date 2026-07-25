@@ -660,7 +660,9 @@ def _manager_pids_for_bench(container, rows: list[_PsRow], bench_path: str) -> l
     return [r.pid for r in candidates if _same_path(cwds.get(r.pid), bench_path)]
 
 
-def discover_unsupervised_stack(container, bench_path: str) -> UnsupervisedStack:
+def discover_unsupervised_stack(
+    container, bench_path: str, *, required: bool = False
+) -> UnsupervisedStack:
     """Discover a bench's stack when it runs under honcho / ``bench start``, not cwcli.
 
     The fallback used by ``status`` when :func:`discover_stack` finds no cwcli
@@ -670,7 +672,7 @@ def discover_unsupervised_stack(container, bench_path: str) -> UnsupervisedStack
     supervisord ``state`` in this mode, so ``state`` stays ``None``. Returns
     ``manager_up=False`` (no processes) when no such manager is running for the bench.
     """
-    rows = _ps_rows(container)
+    rows = _ps_rows(container, required=required)
     mgr_pids = _manager_pids_for_bench(container, rows, bench_path)
     if not mgr_pids:
         return UnsupervisedStack(manager_up=False, processes=[])
