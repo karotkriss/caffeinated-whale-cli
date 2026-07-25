@@ -119,4 +119,18 @@ containers and supervisor did come up, because the web genuinely isn't serving y
 The success block resolves the site's host URL from that assigned container port and Docker's live published binding, so a custom `--port` and every later bench advertise the address that is actually reachable from the host.
 If either half cannot be read, it omits the address rather than guessing.
 `--no-start` skips the call entirely (for automation/CI that wants a created-but-idle bench); it is orthogonal to `--auto-start`/container startup, which stage 1 always performs regardless of this flag.
+
+### `init_instance` skips `compose pull`/`up -d` against an already-running instance (`fm/cwcli-bench-add-silently-stops-benches`)
+
+`init_instance` used to run `docker compose pull` then `docker compose up -d` unconditionally on EVERY `cwcli init` call, including one that only adds a bench to an already-running instance (`cwcli init existing --bench second ...`).
+`pull` re-fetches every image, including the downloaded devcontainer compose's UNPINNED `redis:alpine` tag and MariaDB's own tag (only the frappe image is pinned to a resolved semver by `init_instance` itself); without `--no-deps`/`--force-recreate`, `up -d` silently RECREATES any container whose freshly-pulled image no longer matches what is running.
+For the frappe service that kills supervisord and every bench's process tree running under it, with nothing in the report to say so - a bench add is the ordinary, supported way to grow a multi-bench instance, and running concurrent tasks against ONE instance (each owning a bench) is the captain-directed norm, so this landed on the everyday path.
+The trigger needs real upstream image drift between the instance's creation and the later `cwcli init` call (not reproducible on demand in a hermetic test), but the underlying operation - unconditionally re-pulling and `up -d`-ing an already-running instance's containers just to add a bench - was never necessary: bench provisioning happens entirely over `docker exec` in stage 2.
+`core.init._running_compose_services` (distinct from the older, coarser `_project_containers_running` the port check uses) now gates these commands.
+When this project's own frappe container and all three dependency services are confirmed running, `init_instance` skips pull and up entirely and emits an `instance.already_running` notice.
+The human renderer shows that notice in verbose mode instead of silently dropping it.
+When frappe is running but MariaDB or either Redis service is stopped, init still skips the image pull and starts only the missing siblings with `docker compose up -d --no-deps <services>`.
+This recovers the dependency without allowing Compose to touch or recreate frappe.
+A stopped frappe beside a running MariaDB or Redis still gets the normal pull and whole-stack up path.
+Regression coverage: `tests/test_core_init.py::TestInitInstance` pins the healthy skip, partial-stack recovery, and stopped-frappe paths; `tests/test_init_characterization.py::TestAlreadyRunningNotice` pins the human verbose notice; `tests/e2e/test_init_bench_add_preserves_running_e2e.py` proves on real Docker that a bench add leaves the frappe container's id and `StartedAt` byte-identical and the first bench still answering, with no manual restart in between.
 Regression coverage: `tests/test_init_characterization.py::TestAutoStartServices` (the human CLI: exact `bench_path` passthrough, the running/not-running/`--no-start` completion messages, the failure-degrades-to-warning-not-exit case) and `tests/test_axi_init.py::TestAutoStartServices` (axi parity: exit 0 on a start failure, the stderr warning, `--no-start`).

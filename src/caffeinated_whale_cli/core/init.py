@@ -9,8 +9,7 @@ decision lives - the existing-bench question needs a running container (stage
 1's own product) and fires on the COMMON interactive path (the devcontainer
 image ships ``/workspace/frappe-bench``) - so resolving that ``NEEDS_CHOICE``
 re-invokes ONLY stage 2, whose pre-decision work is a container resolve plus
-two subsecond probes, instead of re-running host setup, a Docker Hub query,
-``compose pull``, and ``compose up`` on every default interactive init.
+two subsecond probes, instead of re-running host setup and instance readiness.
 Neither prior two-call motivation applies (no generator laziness, nothing
 destructive to preview); this does NOT reopen plan/apply.
 
@@ -19,12 +18,9 @@ Both are plain functions with the optional typed-event ``on_event`` callback
 maintenance-mode/GC reasons. Progress rides the event family below; the
 terminal value is the returned envelope.
 
-There is deliberately NO ``axi init`` verb in this batch: whether an agent may
-create instances (gigabytes of images, host state, a required secret on the
-agent's argv, a 10-20 minute single-document wait) is a product decision the
-captain owns on its own evidence, DEFERRED as its own follow-up decision
-(design Decision 9) - not a structural refusal. The two-call shape here makes
-the verb thin whenever it is decided; a test pins the registry absence.
+``cwcli axi init`` is a thin non-interactive frontend over the same two core
+functions. It maps unresolved choices to typed errors and keeps the terminal
+result as one TOON document.
 
 Secrets (design Decision 3): ``bench new-site``'s two passwords ride the exec
 ``environment=`` and are referenced in the command string ONLY as unexpanded
@@ -474,6 +470,22 @@ def _project_containers_running(project_name: str) -> bool:
     return any(c.status == "running" for c in containers)
 
 
+_EXPECTED_COMPOSE_SERVICES = frozenset({"frappe", "mariadb", "redis-cache", "redis-queue"})
+
+
+def _running_compose_services(project_name: str) -> set[str]:
+    """Return this project's running compose service names."""
+    containers = core_docker.get_project_containers(project_name)
+    if not containers:
+        return set()
+    return {
+        service
+        for c in containers
+        if c.status == "running"
+        and (service := c.labels.get("com.docker.compose.service")) is not None
+    }
+
+
 def init_instance(
     project_name: str,
     *,
@@ -487,8 +499,10 @@ def init_instance(
 
     Project dir + compose download (skipped when the file is already present),
     port/image customization (Docker Hub fails open to the pinned fallback),
-    ``compose pull`` + ``up -d`` via captured subprocess, then the bounded
-    silent readiness poll. On poll timeout: ``confirm_start`` choice when
+    ``compose pull`` + ``up -d`` via captured subprocess. When this project's
+    own frappe container is already running, image pulls are skipped and only
+    missing sibling services are started with ``--no-deps``. Then the bounded
+    silent readiness poll runs. On poll timeout: ``confirm_start`` choice when
     ``auto_start=False``; typed ``NOT_RUNNING`` when ``auto_start=True`` (the
     structural cap - the caller claimed the start was handled and the
     containers are still down; no core function performs a container start).
@@ -606,14 +620,58 @@ def init_instance(
 
     compose_base = ["docker", "compose", "-p", project_name, "-f", "docker-compose.yml"]
 
-    emit(InitStepStart(phase="pull", message="Pulling Docker images"))
-    pull_cmd = compose_base + ["pull"]
-    if not stream_output:
-        pull_cmd.append("--quiet")
-    _run_host_command(pull_cmd, cwd=str(conf_dir), phase="pull", emit=emit)
+    # Pull and whole-stack up are skipped when this project's OWN frappe container is already
+    # running - the same self-conflict carve-out as the port check above,
+    # applied to a higher-stakes pair of commands. Re-running init to add a
+    # bench or a site to a live instance never needs to refetch or recreate
+    # anything: bench provisioning happens over `docker exec` in stage 2. But
+    # `pull` unconditionally re-fetches every image, including the compose
+    # template's unpinned `redis:alpine` tag and `mariadb`'s own tag - if
+    # upstream has pushed a newer image under that tag since this instance was
+    # created, `up -d` (with no `--no-deps`/`--force-recreate` guard) silently
+    # RECREATES that container to match, and for the frappe service that kills
+    # every already-serving bench's supervisord with nothing in the report to
+    # say so. Skipping pull+up here makes adding a bench to a running instance
+    # structurally unable to disturb it, rather than merely unlikely to.
+    running_services = _running_compose_services(project_name)
+    if "frappe" in running_services:
+        missing_services = sorted(_EXPECTED_COMPOSE_SERVICES - running_services)
+        detail = (
+            f" Starting missing services without touching frappe: {', '.join(missing_services)}."
+            if missing_services
+            else ""
+        )
+        emit(
+            InitNotice(
+                code="instance.already_running",
+                text=(
+                    f"Instance '{project_name}' is already running; skipping image pull "
+                    f"and preserving its frappe container.{detail}"
+                ),
+            )
+        )
+        if missing_services:
+            emit(
+                InitStepStart(
+                    phase="up",
+                    message=f"Starting missing Docker Compose services: {', '.join(missing_services)}",
+                )
+            )
+            _run_host_command(
+                compose_base + ["up", "-d", "--no-deps", *missing_services],
+                cwd=str(conf_dir),
+                phase="up",
+                emit=emit,
+            )
+    else:
+        emit(InitStepStart(phase="pull", message="Pulling Docker images"))
+        pull_cmd = compose_base + ["pull"]
+        if not stream_output:
+            pull_cmd.append("--quiet")
+        _run_host_command(pull_cmd, cwd=str(conf_dir), phase="pull", emit=emit)
 
-    emit(InitStepStart(phase="up", message="Starting Docker Compose containers"))
-    _run_host_command(compose_base + ["up", "-d"], cwd=str(conf_dir), phase="up", emit=emit)
+        emit(InitStepStart(phase="up", message="Starting Docker Compose containers"))
+        _run_host_command(compose_base + ["up", "-d"], cwd=str(conf_dir), phase="up", emit=emit)
 
     emit(InitStepStart(phase="wait_ready", message="Waiting for containers to be ready"))
     if not _wait_for_running(project_name):
