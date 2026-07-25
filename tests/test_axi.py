@@ -639,7 +639,11 @@ class TestAxiHelpIsToon:
             if arguments:
                 assert "arguments[" in result.stdout, path
                 for argument in arguments:
-                    assert argument.name in result.stdout, (path, argument.name)
+                    # D3: the table names an argument by its explicit metavar
+                    # when one is declared (e.g. `APP` for `app_name`), matching
+                    # the usage line and examples rather than the raw param name.
+                    display_name = getattr(argument, "metavar", None) or argument.name
+                    assert display_name in result.stdout, (path, display_name)
                     assert str(argument.required).lower() in result.stdout, path
                     assert argument.help in result.stdout, (path, argument.help)
             if isinstance(command, click.Group):
@@ -650,7 +654,11 @@ class TestAxiHelpIsToon:
                     assert name in result.stdout, (path, name)
                     child = command.get_command(ctx, name)
                     assert child is not None
-                    assert child.get_short_help_str() in result.stdout, (path, name)
+                    # D2: rendered with limit=100 (Click's default 45 truncated
+                    # every description, several mid-clause). D6: leaked RST/
+                    # markdown markup is stripped from the row too.
+                    expected = axi_mod._strip_prose_markup(child.get_short_help_str(limit=100))
+                    assert expected in result.stdout, (path, name)
             for option in options:
                 assert option.opts[0] in result.stdout, (path, option.opts[0])
                 assert str(option.required).lower() in result.stdout, path
@@ -748,6 +756,137 @@ class TestAxiHelpIsToon:
             assert "<APP>" in examples
             assert "<app-name>" not in usage
             assert "<app-name>" not in examples
+
+    def test_arguments_table_uses_the_declared_metavar(self):
+        """Regression pin for D3: the arguments table used to print the raw
+        param name (`app_name`) while the usage line and examples used the
+        declared metavar (`APP`) - one document carrying two names for one
+        parameter. The table must use the same resolution `_argument_placeholder`
+        does, so all three surfaces agree."""
+        from caffeinated_whale_cli.main import app as root_app
+
+        for command in ("checkout", "install"):
+            result = runner.invoke(root_app, ["axi", "apps", command, "--help"])
+            arguments_block = next(
+                line for line in result.stdout.splitlines() if line.startswith("arguments[")
+            )
+            row_start = result.stdout.index(arguments_block) + len(arguments_block)
+            rows_text = result.stdout[row_start:]
+            assert "\n  APP," in rows_text
+            assert "app_name" not in rows_text
+
+    def test_group_listing_descriptions_are_not_truncated(self):
+        """Regression pin for D2: Click's default `limit=45` cut every one of the
+        27 command descriptions in the two group listings, several mid-clause,
+        dropping load-bearing words like READ-ONLY and ONE named site. Passing
+        `limit=100` must eliminate every truncation-with-ellipsis, and the two
+        READ-ONLY markers (lost to Click's separate stop-at-first-sentence
+        behavior, not the limit itself) must survive too."""
+        from caffeinated_whale_cli.main import app as root_app
+
+        for path in (["axi"], ["axi", "apps"]):
+            result = runner.invoke(root_app, [*path, "--help"])
+            rows = []
+            in_commands = False
+            for line in result.stdout.splitlines():
+                if line.startswith("commands["):
+                    in_commands = True
+                    continue
+                if in_commands:
+                    if not line.startswith("  "):
+                        break
+                    rows.append(line)
+            assert rows, path
+            for row in rows:
+                assert not row.rstrip('"').endswith("..."), row
+
+        root = runner.invoke(root_app, ["axi", "--help"])
+        assert 'config,"Report the effective cwcli configuration' in root.stdout
+        assert (
+            "READ-ONLY"
+            in [line for line in root.stdout.splitlines() if line.strip().startswith("config,")][0]
+        )
+        assert (
+            "READ-ONLY"
+            in [
+                line for line in root.stdout.splitlines() if line.strip().startswith("self-update,")
+            ][0]
+        )
+        assert (
+            "ONE named site"
+            in [line for line in root.stdout.splitlines() if line.strip().startswith("run-tests,")][
+                0
+            ]
+        )
+
+    def test_help_only_second_example_is_dropped(self):
+        """Regression pin for D4: a command whose only optional flag is --help
+        used to emit `cwcli axi X --help` as a filler second example, which
+        teaches an agent nothing it does not already know. Such a command must
+        emit exactly one example instead."""
+        from caffeinated_whale_cli.main import app as root_app
+
+        for command in ("ls", "config", "setup"):
+            result = runner.invoke(root_app, ["axi", command, "--help"])
+            examples_line = next(
+                line for line in result.stdout.splitlines() if line.startswith("examples[")
+            )
+            assert examples_line.startswith("examples[1]:"), examples_line
+            assert "--help" not in examples_line
+
+    def test_rm_second_example_shows_the_non_destructive_flag(self):
+        """Regression pin for D5: rm's second example used to spell out
+        `--volumes`, the MORE destructive half of `--volumes/--no-volumes`
+        (`--volumes` is already the default). The flag worth showing on the
+        repo's most destructive verb is the one that preserves data."""
+        from caffeinated_whale_cli.main import app as root_app
+
+        result = runner.invoke(root_app, ["axi", "rm", "--help"])
+        examples_line = next(
+            line for line in result.stdout.splitlines() if line.startswith("examples[")
+        )
+        assert "--no-volumes" in examples_line
+        assert "--yes --volumes" not in examples_line
+
+    def test_notes_have_no_leaked_markdown_markup(self):
+        """Regression pin for D6: raw markdown ``` `code` ``` and `**bold**`
+        markers used to leak into notes/description text verbatim, since Rich
+        stripped them but the TOON renderer read `command.help` directly."""
+        for path, command in _axi_help_commands():
+            for paragraph in axi_mod._help_paragraphs(command.help):
+                assert "`" not in paragraph, (path, paragraph)
+                assert "**" not in paragraph, (path, paragraph)
+
+    def test_bullet_lists_stay_separate_note_rows(self):
+        """Regression pin for D7: a `- ` bullet list used to collapse into one
+        run-on paragraph because `_help_paragraphs` joined every line in a block
+        with spaces; each item must survive as its own entry, as Rich rendered
+        them as separate bullets. Also pins the false-positive guard: a plain
+        prose paragraph that merely word-wraps onto a line starting with "- "
+        (migrate's BLAST RADIUS paragraph) must NOT be split."""
+        from caffeinated_whale_cli.main import app as root_app
+
+        migrate = runner.invoke(root_app, ["axi", "migrate", "--help"])
+        notes = [
+            line.strip()
+            for line in migrate.stdout.splitlines()
+            if line.strip().startswith('"') and "guard against a named threat" not in line
+        ]
+        # Four distinct safety-posture bullets, each its own note row.
+        assert any(note.startswith('"EXACTLY ONE site') for note in notes)
+        assert any(note.startswith('"Maintenance mode is enabled') for note in notes)
+        assert any(note.startswith('"A site whose migrate lock') for note in notes)
+        assert any(note.startswith('"NO --yes and no auto-start') for note in notes)
+        # No row runs all four bullets together.
+        assert not any(
+            "EXACTLY ONE site" in note and "Maintenance mode is enabled" in note for note in notes
+        )
+        # The wrapped BLAST RADIUS prose (ends a sentence with "no rollback" then
+        # wraps onto "- a patch...") stays one paragraph, not a bullet split.
+        assert any(
+            "no rollback - a patch that fails partway" in note
+            for note in migrate.stdout.split("\n")
+        )
 
     def test_human_help_keeps_rich_rendering(self):
         """The sibling human surface remains the existing decorated help."""
