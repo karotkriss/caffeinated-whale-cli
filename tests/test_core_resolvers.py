@@ -363,3 +363,68 @@ class TestResolveRepresentativeSite:
 
         monkeypatch.setattr(resolvers.db_utils, "get_all_site_configs", boom)
         assert resolvers.resolve_representative_site("proj", "/w/b0") is None
+
+
+# ------------------------------------------------------------- present_bench_paths
+
+
+class _ProbeContainer:
+    """A container that answers the one-exec bench-existence probe.
+
+    It runs the REAL script through a tiny shell interpretation so the argv
+    contract (paths as positionals, never interpolated into the script) is what is
+    actually exercised.
+    """
+
+    def __init__(self, present=(), exit_code=0, raises=None):
+        self.present = set(present)
+        self.exit_code = exit_code
+        self.raises = raises
+        self.calls: list = []
+
+    def exec_run(self, cmd):
+        self.calls.append(cmd)
+        if self.raises is not None:
+            raise self.raises
+        assert cmd[:2] == ["sh", "-c"], "the probe must be argv-form, not a shell string"
+        assert cmd[3] == "sh", "paths must ride as $@ positionals after the $0 placeholder"
+        paths = cmd[4:]
+        body = "\n".join(p for p in paths if p in self.present)
+        return (self.exit_code, body.encode())
+
+
+class TestPresentBenchPaths:
+    """The shared cached-bench verification. Fail-honest in BOTH directions."""
+
+    def test_it_reports_which_paths_still_exist(self):
+        c = _ProbeContainer(present={"/w/b0"})
+        assert resolvers.present_bench_paths(c, ["/w/b0", "/w/b1"]) == {"/w/b0"}
+
+    def test_one_exec_regardless_of_bench_count(self):
+        # The property that makes verifying affordable on every read: flat in bench
+        # count, so a six-bench instance costs the same round trip as a one-bench one.
+        c = _ProbeContainer(present={"/w/b0", "/w/b1", "/w/b2"})
+        resolvers.present_bench_paths(c, ["/w/b0", "/w/b1", "/w/b2"])
+        assert len(c.calls) == 1
+
+    def test_a_path_is_never_interpolated_into_the_script(self):
+        # A cached path is data, not code. The assertions in _ProbeContainer.exec_run
+        # pin the argv shape; this drives a hostile value through it.
+        hostile = '/w/b0"; rm -rf /; echo "'
+        c = _ProbeContainer(present={hostile})
+        assert resolvers.present_bench_paths(c, [hostile]) == {hostile}
+        assert c.calls[0][4] == hostile
+
+    def test_a_failed_exec_is_none_not_an_empty_set(self):
+        # An empty set would render as "every cached bench is gone" - the same wrong
+        # answer as the staleness this exists to remove, just louder.
+        assert resolvers.present_bench_paths(_ProbeContainer(exit_code=1), ["/w/b0"]) is None
+
+    def test_a_transport_failure_is_none(self):
+        c = _ProbeContainer(raises=APIError("container is gone"))
+        assert resolvers.present_bench_paths(c, ["/w/b0"]) is None
+
+    def test_nothing_to_check_needs_no_exec(self):
+        c = _ProbeContainer()
+        assert resolvers.present_bench_paths(c, []) == set()
+        assert c.calls == []

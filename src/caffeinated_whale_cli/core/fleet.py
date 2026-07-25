@@ -137,6 +137,7 @@ def health_key(state: InstanceState) -> tuple:
                 b.web_site,
                 b.web_http_code,
                 b.not_cwcli_supervised,
+                b.bench_present,
                 tuple((p.label, p.up, p.pid, p.state) for p in b.processes),
             )
             for b in state.benches

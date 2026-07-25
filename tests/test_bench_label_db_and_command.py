@@ -86,7 +86,7 @@ class TestLabelDB:
             "proj",
             [{"path": BENCH_A, "sites": [], "available_apps": []}],
         )
-        before = core_label.list_benches("proj")
+        before = core_label.list_benches("proj", verify=False)
         assert before.data is not None
         prior_index = before.data.benches[0].index
 
@@ -107,7 +107,7 @@ class TestLabelDB:
         assert resolved.data == BENCH_A
 
         # The earlier path is really there, but it owns a different identity.
-        after = core_label.list_benches("proj")
+        after = core_label.list_benches("proj", verify=False)
         assert after.data is not None
         assert {b.path for b in after.data.benches} == {BENCH_A, BENCH_EARLIER}
         earlier = next(b for b in after.data.benches if b.path == BENCH_EARLIER)
@@ -142,13 +142,13 @@ class TestLabelDB:
         assert served["bench_instances"][1]["path"] == BENCH_EARLIER
         assert [b["index"] for b in served["bench_instances"]] == [0, 1]
 
-        listed = core_label.list_benches("proj").data
+        listed = core_label.list_benches("proj", verify=False).data
         assert listed is not None
         assert [b.path for b in listed.benches] == [BENCH_A, BENCH_EARLIER]
 
     def test_removed_identity_is_never_reused_for_another_path(self, temp_db):
         _seed_two_benches()
-        original = core_label.list_benches("proj").data
+        original = core_label.list_benches("proj", verify=False).data
         assert original is not None
         removed_index = next(b.index for b in original.benches if b.path == BENCH_B)
 
@@ -160,7 +160,7 @@ class TestLabelDB:
             ],
         )
 
-        current = core_label.list_benches("proj").data
+        current = core_label.list_benches("proj", verify=False).data
         assert current is not None
         earlier = next(b for b in current.benches if b.path == BENCH_EARLIER)
         assert earlier.index != removed_index
@@ -174,7 +174,7 @@ class TestLabelDB:
             "proj",
             [{"path": BENCH_A, "sites": [], "available_apps": []}],
         )
-        prior = core_label.list_benches("proj").data
+        prior = core_label.list_benches("proj", verify=False).data
         assert prior is not None
         prior_index = prior.benches[0].index
 
@@ -246,18 +246,12 @@ def _run_label(monkeypatch, container, **kwargs):
 
 
 class TestLabelCommand:
-    def test_list_mode_no_container_needed(self, temp_db, monkeypatch, capsys):
-        _seed_two_benches(labels=(None, "staging"))
-
-        # get_frappe_container should NOT be called in list mode; make it explode.
-        def _boom(name):
-            raise AssertionError("list mode must not touch the container")
-
+    def _list_mode(self, monkeypatch, container):
         monkeypatch.setattr(docker_utils.shutil, "which", lambda _n: "/usr/bin/docker")
         monkeypatch.setattr(
             docker_utils.docker, "from_env", lambda: type("C", (), {"ping": lambda s: True})()
         )
-        monkeypatch.setattr(core_docker, "get_frappe_container", _boom)
+        monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
         label_mod.label(
             project_name="proj",
             bench_selector=None,
@@ -265,8 +259,40 @@ class TestLabelCommand:
             clear=False,
             verbose=False,
         )
+
+    def test_list_mode_reports_live_benches(self, temp_db, monkeypatch, capsys):
+        # This REVERSES the old "list mode must not touch the container" assertion.
+        # Touching no container is precisely what let this listing keep vouching
+        # for a bench whose directory had been removed; the cheap probe is the fix,
+        # and the positive case comes first - a live bench is still listed, in full,
+        # and carries no scary marker.
+        _seed_two_benches(labels=(None, "staging"))
+        self._list_mode(monkeypatch, MarkerFakeContainer())
+
         out = capsys.readouterr().out
         assert "[0]" in out and "[1]" in out and "staging" in out
+        assert "GONE" not in out
+
+    def test_list_mode_marks_a_removed_bench_gone(self, temp_db, monkeypatch, capsys):
+        _seed_two_benches(labels=(None, "staging"))
+        self._list_mode(monkeypatch, MarkerFakeContainer(present_paths={BENCH_A}))
+
+        out = capsys.readouterr().out
+        # Still listed (never silently pruned), but no longer vouched for.
+        assert BENCH_B in out
+        assert "GONE" in out
+
+    def test_list_mode_still_answers_with_no_container_to_ask(self, temp_db, monkeypatch, capsys):
+        # The verb that tells you which --bench to pass to `cwcli start` must keep
+        # working on a stopped project; it just cannot claim `present`.
+        _seed_two_benches(labels=(None, "staging"))
+        stopped = MarkerFakeContainer()
+        stopped.status = "exited"
+        self._list_mode(monkeypatch, stopped)
+
+        out = capsys.readouterr().out
+        assert "[0]" in out and "[1]" in out and "staging" in out
+        assert "not verified" in out
 
     def test_set_label_writes_db_and_marker(self, temp_db, monkeypatch):
         _seed_two_benches()
@@ -357,6 +383,33 @@ class TestLabelCommand:
         with pytest.raises(typer.Exit) as exc:
             _run_label(monkeypatch, container, bench_selector="99", new_label="x")
         assert exc.value.exit_code == 1
+
+    @pytest.mark.parametrize(
+        ("container", "marker"),
+        [
+            (MarkerFakeContainer(present_paths={BENCH_A}), "GONE"),
+            pytest.param(
+                MarkerFakeContainer(),
+                "not verified",
+                id="stopped-container",
+            ),
+        ],
+    )
+    def test_unknown_selector_available_benches_preserve_state(
+        self, temp_db, monkeypatch, capsys, container, marker
+    ):
+        _seed_two_benches()
+        if marker == "not verified":
+            container.status = "exited"
+
+        with pytest.raises(typer.Exit) as exc:
+            _run_label(monkeypatch, container, bench_selector="99", new_label="x")
+
+        assert exc.value.exit_code == 1
+        err = capsys.readouterr().err
+        assert "Available benches" in err
+        assert BENCH_B in err
+        assert marker in err
 
     def test_unknown_selector_without_new_label_reports_unknown_selector(
         self, temp_db, monkeypatch, capsys

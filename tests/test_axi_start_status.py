@@ -50,6 +50,7 @@ def _bench_status(
     path="/w/b0",
     web_port=8000,
     not_cwcli_supervised=False,
+    bench_present="present",
 ):
     return BenchStatus(
         index=index,
@@ -63,6 +64,7 @@ def _bench_status(
         web_http_code="200" if overall == "running" else None,
         processes=processes if processes is not None else [],
         not_cwcli_supervised=not_cwcli_supervised,
+        bench_present=bench_present,
     )
 
 
@@ -332,3 +334,39 @@ class TestAxiStatus:
         result = runner.invoke(axi_mod.app, ["status", "proj"])
         assert result.exit_code == 1
         assert "error: Could not connect to Docker daemon." in result.stdout
+
+
+class TestAxiStatusReportsBenchExistence:
+    """``bench_present`` on the agent surface.
+
+    A deleted bench and a never-started bench are indistinguishable to the marker
+    and to supervisord, so ``overall: online`` used to be the only thing an agent
+    saw about a directory that no longer existed. Positive first: a live bench is
+    still reported, and reported ``present``.
+    """
+
+    def test_a_live_bench_is_present_in_the_toon(self, monkeypatch):
+        monkeypatch.setattr(
+            axi_mod.core_status,
+            "status",
+            lambda *a, **k: Result(status=Status.OK, data=_status_report(overall="running")),
+        )
+        result = runner.invoke(axi_mod.app, ["status", "proj"])
+
+        assert result.exit_code == 0
+        assert "bench_present: present" in result.stdout
+
+    def test_a_removed_bench_says_so_next_to_its_health(self, monkeypatch):
+        report = _status_report(
+            overall="online",
+            benches=[_bench_status(overall="online", bench_present="absent")],
+        )
+        monkeypatch.setattr(
+            axi_mod.core_status, "status", lambda *a, **k: Result(status=Status.OK, data=report)
+        )
+        result = runner.invoke(axi_mod.app, ["status", "proj"])
+
+        assert "bench_present: absent" in result.stdout
+        # The health half is unchanged and still there - the token qualifies the
+        # row, it does not replace it or add a fifth `overall` token.
+        assert "overall: online" in result.stdout

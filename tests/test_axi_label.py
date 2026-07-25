@@ -22,13 +22,14 @@ BENCH_A = "/workspace/frappe-bench"
 BENCH_B = "/workspace/frappe-bench-2"
 
 
-def _bench_list():
+def _bench_list(states=("present", "present"), verified=True):
     return BenchList(
         project="proj",
         benches=[
-            BenchInfo(index=0, path=BENCH_A, label=None),
-            BenchInfo(index=1, path=BENCH_B, label="staging"),
+            BenchInfo(index=0, path=BENCH_A, label=None, state=states[0]),
+            BenchInfo(index=1, path=BENCH_B, label="staging", state=states[1]),
         ],
+        verified=verified,
     )
 
 
@@ -62,7 +63,7 @@ class TestAxiBenches:
         monkeypatch.setattr(
             axi_mod.core_label,
             "list_benches",
-            lambda p: Result(status=Status.OK, data=_bench_list()),
+            lambda p, *, verify=True: Result(status=Status.OK, data=_bench_list()),
         )
         result = runner.invoke(axi_mod.app, ["benches", "proj"])
 
@@ -73,8 +74,46 @@ class TestAxiBenches:
         assert "staging" in result.stdout
         assert BENCH_A in result.stdout
 
+    def test_every_row_carries_its_own_state_token(self, monkeypatch):
+        # The token has to be ON THE ROW, not only in a warning: an agent parsing
+        # the TOON table must be able to act on "this bench is gone" without
+        # parsing prose (the `core.where` per-match rule).
+        monkeypatch.setattr(
+            axi_mod.core_label,
+            "list_benches",
+            lambda p, *, verify=True: Result(
+                status=Status.OK, data=_bench_list(states=("present", "absent"))
+            ),
+        )
+        result = runner.invoke(axi_mod.app, ["benches", "proj"])
+
+        assert result.exit_code == 0
+        assert "verified: true" in result.stdout
+        rows = [line for line in result.stdout.splitlines() if BENCH_A in line or BENCH_B in line]
+        assert any("present" in r for r in rows)
+        assert any("absent" in r for r in rows)
+
+    def test_no_verify_is_forwarded_to_the_core(self, monkeypatch):
+        seen = {}
+
+        def _list(p, *, verify=True):
+            seen["verify"] = verify
+            return Result(
+                status=Status.OK,
+                data=_bench_list(states=("unverified", "unverified"), verified=False),
+            )
+
+        monkeypatch.setattr(axi_mod.core_label, "list_benches", _list)
+        result = runner.invoke(axi_mod.app, ["benches", "proj", "--no-verify"])
+
+        assert result.exit_code == 0
+        assert seen["verify"] is False
+        # Opting out reports `unverified`; it never upgrades a row to `present`.
+        assert "verified: false" in result.stdout
+        assert "present" not in result.stdout
+
     def test_uninspected_project_is_a_structured_error_naming_inspect(self, monkeypatch):
-        def _raise(p):
+        def _raise(p, *, verify=True):
             raise CwcliError(
                 ErrorKind.NOT_FOUND,
                 "benches.none_cached",

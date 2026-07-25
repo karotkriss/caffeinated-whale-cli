@@ -1138,8 +1138,11 @@ def axi_inspect(
 @app.command("benches")
 def axi_benches(
     project: str = typer.Argument(..., help="The Docker Compose project name."),
+    no_verify: bool = typer.Option(
+        False, "--no-verify", help="Skip the live check that each cached bench still exists."
+    ),
 ) -> None:
-    """List a project's benches with their indices and labels; emit them as TOON.
+    """List a project's benches with their indices, labels, and existence state; TOON.
 
     The discovery verb behind every other verb's ``--bench``: when a bench-scoped
     verb reports "multiple benches; pass --bench <index|label>", this is what
@@ -1147,14 +1150,21 @@ def axi_benches(
     data, and ``axi where`` only yields a bench path from a search you must already
     know an app or site name to run.
 
-    Read-only; touches no container. A project that has never been inspected is a
-    structured error naming ``cwcli axi inspect``, NOT an empty list: "not
-    inspected yet" and "has zero benches" are different facts, and only one has a
-    remedy - and since this batch the remedy is agent-native, not the human
-    command.
+    Read-only, and it does touch the container: each row's ``state`` is
+    ``present``/``absent``/``unverified``, cross-checked in one exec, because
+    serving the cache unqualified is how this verb kept reporting a bench whose
+    directory had been removed. A stopped project cannot be asked, so every row
+    comes back ``unverified`` with a warning - never ``present``, and never an
+    error, since answering ``--bench`` for ``cwcli start`` is the job. ``--no-verify``
+    is the bare cache read and reports ``unverified`` accordingly.
+
+    A project that has never been inspected is a structured error naming
+    ``cwcli axi inspect``, NOT an empty list: "not inspected yet" and "has zero
+    benches" are different facts, and only one has a remedy - and since this batch
+    the remedy is agent-native, not the human command.
     """
     try:
-        result = core_label.list_benches(project)
+        result = core_label.list_benches(project, verify=not no_verify)
     except CwcliError as error:
         if error.code == "benches.none_cached":
             # The core's hint names the human `cwcli inspect`; on the agent
