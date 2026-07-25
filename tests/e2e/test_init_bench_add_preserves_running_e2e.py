@@ -10,9 +10,11 @@ own tag; without ``--no-deps``/``--force-recreate``, ``up -d`` silently
 RECREATES any container whose freshly-pulled image no longer matches what is
 running - for the frappe service that kills every already-serving bench's
 supervisord, with nothing in the report to say so. The fix (``core/init.py``,
-``_frappe_container_running``) skips both commands entirely once this
-project's own frappe container is confirmed running, mirroring the existing
-self-conflict carve-out the port check already applies in the same function.
+``_running_compose_services``) always skips the image pull once this project's
+own frappe container is confirmed running. When every expected dependency is
+also running, it skips ``up`` entirely. When MariaDB or either Redis service is
+stopped, it starts only the missing siblings with ``up -d --no-deps`` so
+Compose cannot touch or recreate frappe.
 
 This is the container/process-level proof the fix requires: real Docker, no
 mocks. It cannot force the ORIGINAL trigger (a genuine upstream image update
@@ -20,9 +22,9 @@ between two ``pull`` calls, which no hermetic test controls), so it instead
 pins the property the fix makes UNCONDITIONALLY true - the frappe container's
 identity and process the bench depends on are untouched by a bench-add,
 regardless of what a `pull` would have fetched. Any regression that
-reintroduces an unconditional pull/up on this path breaks it the same way the
-original defect would have: a changed container id, a changed start time, or a
-bench that stops answering.
+reintroduces a pull or includes frappe in an ``up`` target on this path breaks
+it the same way the original defect would have: a changed container id, a
+changed start time, or a bench that stops answering.
 
 Builds its own two-bench instance (the second bench cannot be un-added), so it
 is ``standalone``, matching ``test_multibench_serving_e2e.py``'s ``two_benches``
