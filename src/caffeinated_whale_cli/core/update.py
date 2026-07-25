@@ -513,9 +513,7 @@ def _frappe_reset(
                     frappe_container,
                     bench_path,
                     sites=bench_site_names,
-                    on_restart=lambda program: emit(
-                        UpdateStepStart(phase="resync", item=program)
-                    ),
+                    on_restart=lambda program: emit(UpdateStepStart(phase="resync", item=program)),
                 )
         if resync.error:
             warnings.append(
