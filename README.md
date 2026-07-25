@@ -1732,10 +1732,18 @@ pane, and a persistent right action rail.
 It is an ordinary **foreground** command: you start it when you want the
 live view and stop it with Ctrl-C. There is no background service, no auto-start
 and no boot unit.
-The Console action rail is deliberately narrow: it can start, stop, or restart
-one instance, and restart one supervised process.
-It cannot delete, restore, migrate, back up, unlock, build, set labels, or drop
-sites.
+The Console action rail holds the safe, synchronous verbs, grouped by level:
+start, stop, or restart one instance, refresh its health, and scale its
+published port range (behind a typed-name confirm that cwcli itself demands);
+set a bench label or check out an app ref (never with `--reset`); unlock a
+site; restart one supervised process.
+The page also serves a live per-process logs tab and a fleet-wide cache search
+whose rows carry the same verified/remembered honesty tokens as `cwcli where`.
+It cannot delete, restore, migrate, back up, install, uninstall, or drop
+sites: the long-running verbs wait on a job backend that does not exist yet,
+and the destructive ones remain per-verb decisions - none of them has a button.
+Nothing on the page can start a stopped instance as a side effect of another
+action: consent to one thing never means consent to a start.
 
 **Usage:**
 
@@ -1757,7 +1765,9 @@ cwcli serve [--port 8765] [--host 0.0.0.0] [--interval 2.5]
 | `GET /api/snapshot` | The whole fleet model as JSON (in-memory; no Docker call) |
 | `GET /api/events` | SSE: one `snapshot` event, then `delta` events tagged `tier: instant` or `tier: fast` |
 | `GET /api/instance/<project>/detail` | A cache-backed `inspect` read for one instance, preserving `served_from` and `installed_apps_verified` |
-| `POST /api/action` | Console actions: `start_instance`, `stop_instance`, `restart_instance`, `restart_process`; cross-origin browser requests are refused |
+| `GET /api/instance/<project>/logs` | A bounded tail of the bench's per-process logs (`lines`, `bench`, `process` query params); same-origin only |
+| `GET /api/where?q=<term>` | The `where` cache search, `verified` and per-row `project_state` intact; same-origin only |
+| `POST /api/action` | Console actions: `start_instance`, `stop_instance`, `restart_instance`, `restart_process`, `refresh_status`, `set_label`, `unlock_site`, `scale_instance`, `checkout_app`; cross-origin browser requests are refused |
 
 Add `?focus=<project>` to `/api/events` to say which instance the browser
 currently has open. That is what turns the web HTTP health check on for that
@@ -1784,9 +1794,17 @@ A container starting is reported as the container being up, never as the bench
 being healthy - those are seconds apart, and the health tier is what fills the
 gap in.
 
-The mutating action endpoint refuses cross-origin browser requests.
-The read endpoints keep open CORS for external inspection tools, but browsers
-must load the bundled Console page from this daemon to drive lifecycle actions.
+The mutating action endpoint refuses cross-origin browser requests, and so do
+the `/logs` and `/api/where` reads, whose payloads are more sensitive than
+fleet health.
+The other read endpoints keep open CORS for external inspection tools, but
+browsers must load the bundled Console page from this daemon to drive
+lifecycle actions.
+When an action needs a decision cwcli itself would ask about - scaling, which
+restarts every serving bench - the daemon answers `409 needs_choice` carrying
+the core's own warning, and the page renders it as a typed-name confirm.
+The confirm cannot be skipped from the page because the gate lives in cwcli,
+not in the browser.
 This browser boundary is not authentication: any direct client that can reach
 the daemon can submit an action, so bind to `127.0.0.1` on an untrusted network.
 
