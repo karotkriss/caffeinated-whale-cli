@@ -289,6 +289,40 @@ def _wire_running_web(monkeypatch, *, restart_code=0, web_state="RUNNING"):
     return restarted
 
 
+def test_site_verification_passes_each_probe_only_its_remaining_time_budget(monkeypatch):
+    now = [0.0]
+    probe_budgets = []
+
+    monkeypatch.setattr(core_apps.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(
+        core_apps.time,
+        "sleep",
+        lambda seconds: now.__setitem__(0, now[0] + seconds),
+    )
+
+    def unresponsive_probe(*_args, **kwargs):
+        probe_budgets.append(kwargs["max_time"])
+        now[0] += kwargs["max_time"]
+        return None
+
+    monkeypatch.setattr(core_apps.supervision, "web_http_code", unresponsive_probe)
+
+    pending, codes = core_apps._wait_for_sites_after_restart(
+        object(),
+        port=8000,
+        sites=["a.localhost", "b.localhost", "c.localhost"],
+        timeout=5.0,
+    )
+
+    assert probe_budgets == [5.0]
+    assert pending == ["a.localhost", "b.localhost", "c.localhost"]
+    assert codes == {
+        "a.localhost": None,
+        "b.localhost": None,
+        "c.localhost": None,
+    }
+
+
 @pytest.mark.parametrize("web_state", ["RUNNING", "STARTING"])
 def test_install_restarts_a_running_web_process_and_reports_the_verified_step(
     monkeypatch, container, web_state

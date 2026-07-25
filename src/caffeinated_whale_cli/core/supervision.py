@@ -825,7 +825,14 @@ def write_marker(container, bench_path: str) -> str:
 # -------------------------------------------------------------------------- launch
 
 
-def web_http_code(container, *, port: int, site: str | None = None, path: str = "") -> str | None:
+def web_http_code(
+    container,
+    *,
+    port: int,
+    site: str | None = None,
+    path: str = "",
+    max_time: float = 10.0,
+) -> str | None:
     """The web server's HTTP code on ``port``, or None if unreachable.
 
     ``port`` is keyword-only with NO DEFAULT, deliberately. One instance holds many
@@ -852,12 +859,23 @@ def web_http_code(container, *, port: int, site: str | None = None, path: str = 
     site's app set (a bound port alone is not: the stale-code regression this
     serves answered 500 from a perfectly bound port).
 
+    ``max_time`` lets a bounded caller pass its remaining time budget to curl.
+
     ``--max-time`` is not decoration: every caller polls this in a bounded loop,
     and a server that accepts the connection but never answers would otherwise
     hang that loop forever, past its own timeout.
     """
     url = f"http://localhost:{port}{path}"
-    cmd = ["curl", "-s", "--max-time", "10", "-o", "/dev/null", "-w", "%{http_code}"]
+    cmd = [
+        "curl",
+        "-s",
+        "--max-time",
+        str(max_time),
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{http_code}",
+    ]
     if site:
         cmd += ["-H", f"Host: {site}"]
     exit_code, output = container.exec_run([*cmd, url])
