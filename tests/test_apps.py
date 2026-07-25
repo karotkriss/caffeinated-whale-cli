@@ -120,6 +120,18 @@ def wired(monkeypatch):
     monkeypatch.setattr(apps_mod, "ensure_containers_running", lambda *a, **k: True)
     monkeypatch.setattr(apps_mod, "resolve_bench_path", lambda *a, **k: state.bench)
     monkeypatch.setattr(core_apps.bench_sites, "list_sites", lambda *a, **k: list(state.sites))
+    monkeypatch.setattr(
+        core_apps.supervision,
+        "discover_stack",
+        lambda *a, **k: core_apps.supervision.StackSnapshot(
+            supervisor_up=False, supervisor_pid=None, processes=[]
+        ),
+    )
+    monkeypatch.setattr(
+        core_apps.supervision,
+        "discover_unsupervised_stack",
+        lambda *a, **k: core_apps.supervision.UnsupervisedStack(manager_up=False, processes=[]),
+    )
 
     def fake_recache(project_name, verbose=False):
         state.recache_calls.append(project_name)
@@ -1238,9 +1250,7 @@ def _boom_frappe_container():
 
 def test_capture_path_reports_cwclierror_cleanly(wired, monkeypatch, capsys):
     """The drain-and-join path (list's per-site read) surfaces a lost stream."""
-    monkeypatch.setattr(
-        core_docker, "get_frappe_container", lambda name: _boom_frappe_container()
-    )
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: _boom_frappe_container())
 
     with pytest.raises(typer.Exit) as exc:
         apps_mod.list_apps(
@@ -1262,9 +1272,7 @@ def test_capture_path_reports_cwclierror_cleanly(wired, monkeypatch, capsys):
 
 def test_stream_path_reports_cwclierror_cleanly(wired, monkeypatch, capsys):
     """The render-each-event path (install's fan-out) surfaces a lost stream."""
-    monkeypatch.setattr(
-        core_docker, "get_frappe_container", lambda name: _boom_frappe_container()
-    )
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: _boom_frappe_container())
 
     with pytest.raises(typer.Exit) as exc:
         apps_mod.install_apps(
