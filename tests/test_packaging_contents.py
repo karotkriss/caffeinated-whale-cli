@@ -12,11 +12,17 @@ test or fixture directory is out by construction. This file is the gate that
 keeps it that way, and it runs in the fast `unit` tier so the existing `Pytest`
 check blocks a regression with no extra CI workflow step.
 
+The artifact checks are allow-lists too. A deny-list here would repeat the same
+mistake one level up: a newly added source package such as `src/qa/` could enter
+the wheel through setuptools auto-discovery without matching a known
+scaffolding name, then remain invisible to the wheel-to-sdist comparison because
+that comparison considers only `caffeinated_whale_cli/`.
+
 ORDER MATTERS HERE. The negative check - "no test file is present" - passes
 trivially for a package that ships nothing, and an allow-list's own failure mode
-is exactly that: dropping a file the package needs. So every test below asserts
-the POSITIVE first (the artifacts carry the whole package, and the sdist carries
-everything the wheel does) before asserting the negative.
+is exactly that: dropping a file the package needs. Each artifact therefore has
+one test that asserts the POSITIVE first (the artifact carries the whole package,
+and the sdist carries everything the wheel does) before asserting the negative.
 """
 
 from __future__ import annotations
@@ -31,31 +37,6 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DIST_NAME = "caffeinated_whale_cli"
-
-# Path components that mean "this is test or development scaffolding, not
-# something a user installing the tool needs". Matched against every path
-# component, so a future `tests/`, `e2e/fixtures/` or `src/tests/` is caught
-# wherever it is added.
-SCAFFOLDING_DIRS = {
-    ".claude",
-    ".github",
-    "docs",
-    "e2e",
-    "fixtures",
-    "openspec",
-    "scripts",
-    "skills",
-    "test",
-    "testing",
-    "tests",
-}
-SCAFFOLDING_FILES = {
-    "AGENTS.md",
-    "CLAUDE.md",
-    "CONTRIBUTING.md",
-    ".no-mistakes.yaml",
-    "uv.lock",
-}
 
 
 def _build(tmp_path: Path, kind: str) -> Path:
@@ -106,24 +87,9 @@ def wheel_names(tmp_path_factory) -> list[str]:
         return sorted(n for n in zf.namelist() if not n.endswith("/"))
 
 
-def _scaffolding_in(names: list[str]) -> list[str]:
-    hits = []
-    for name in names:
-        parts = Path(name).parts
-        if SCAFFOLDING_DIRS.intersection(parts):
-            hits.append(name)
-        elif parts[-1] in SCAFFOLDING_FILES:
-            hits.append(name)
-        elif parts[-1].startswith("test_") and parts[-1].endswith(".py"):
-            hits.append(name)
-        elif parts[-1] == "conftest.py":
-            hits.append(name)
-    return hits
-
-
 class TestTheWheelShipsThePackage:
-    def test_the_wheel_carries_the_package_and_its_data(self, wheel_names):
-        """POSITIVE FIRST: the wheel is genuinely the tool, not an empty box."""
+    def test_the_wheel_contains_only_the_package_and_metadata(self, wheel_names):
+        """Assert the useful contents before enforcing the artifact allow-list."""
         modules = [n for n in wheel_names if n.startswith(f"{DIST_NAME}/")]
         assert len(modules) > 50, f"wheel looks empty: {modules}"
         assert f"{DIST_NAME}/main.py" in modules
@@ -132,26 +98,36 @@ class TestTheWheelShipsThePackage:
         # without it installs cleanly and then fails at runtime.
         assert f"{DIST_NAME}/commands/console.html" in modules
 
-    def test_the_wheel_ships_no_tests_or_scaffolding(self, wheel_names):
-        assert _scaffolding_in(wheel_names) == []
+        unexpected = []
+        for name in wheel_names:
+            root = name.split("/", 1)[0]
+            package_file = name.startswith(f"{DIST_NAME}/")
+            metadata_file = (
+                root.startswith(f"{DIST_NAME}-")
+                and root.endswith(".dist-info")
+                and "/" in name
+            )
+            if not package_file and not metadata_file:
+                unexpected.append(name)
+        assert unexpected == [], f"wheel contains paths outside its allow-list: {unexpected}"
 
 
 class TestTheSdistShipsWhatABuildNeeds:
-    def test_the_sdist_carries_the_build_inputs(self, sdist_names):
-        """POSITIVE FIRST: an sdist a consumer cannot build from is worthless."""
-        for required in ("pyproject.toml", "README.md", "LICENSE", "PKG-INFO"):
-            assert required in sdist_names, f"sdist is missing {required}"
-
-    def test_the_sdist_carries_every_file_the_wheel_does(self, sdist_names, wheel_names):
-        """The allow-list's own failure mode, guarded.
+    def test_the_sdist_contains_only_build_inputs_package_and_metadata(
+        self, sdist_names, wheel_names
+    ):
+        """Assert complete build contents before enforcing the artifact allow-list.
 
         `MANIFEST.in` denies everything and then re-includes by extension, so a
         new package-data type added to `[tool.setuptools.package-data]` but not
-        to `MANIFEST.in` would be in the wheel and absent from the sdist - and
-        the wheel built from that sdist during a release would silently lack it.
+        to `MANIFEST.in` would be in the wheel and absent from the sdist. The
+        wheel built from that sdist during a release would silently lack it.
         The wheel here is built from the SOURCE TREE, so this comparison is a
         real check rather than a tautology.
         """
+        for required in ("pyproject.toml", "README.md", "LICENSE", "PKG-INFO"):
+            assert required in sdist_names, f"sdist is missing {required}"
+
         in_wheel = {n[len(DIST_NAME) + 1 :] for n in wheel_names if n.startswith(f"{DIST_NAME}/")}
         in_sdist = {
             n[len(f"src/{DIST_NAME}/") :] for n in sdist_names if n.startswith(f"src/{DIST_NAME}/")
@@ -162,6 +138,12 @@ class TestTheSdistShipsWhatABuildNeeds:
             "pattern to MANIFEST.in: " + str(sorted(in_wheel - in_sdist))
         )
 
-    def test_the_sdist_ships_no_tests_or_scaffolding(self, sdist_names):
-        """The 1.1.0 regression itself. 102 test files used to land here."""
-        assert _scaffolding_in(sdist_names) == []
+        permitted_files = {"pyproject.toml", "README.md", "LICENSE", "PKG-INFO", "setup.cfg"}
+        unexpected = [
+            name
+            for name in sdist_names
+            if name not in permitted_files
+            and not name.startswith(f"src/{DIST_NAME}/")
+            and not name.startswith(f"src/{DIST_NAME}.egg-info/")
+        ]
+        assert unexpected == [], f"sdist contains paths outside its allow-list: {unexpected}"
