@@ -130,6 +130,26 @@ def test_a_failure_carries_a_help_line_and_a_success_does_not(container, capsys)
     assert "cwcli axi logs proj" in capsys.readouterr().out
 
 
+def test_a_held_migrate_lock_is_refused_before_maintenance_and_names_unlock(container, capsys):
+    """The task this verb was fixed for: a stranded migrate lock used to surface as
+    a generic `ok: false` no different from any other failure. It must now name
+    itself and the exact remedy in the document, and must NOT also carry the
+    generic "read the logs" hint - a preflight refusal ran no command to read."""
+    container.fail_on = ["flock -n"]
+
+    with pytest.raises(typer.Exit) as exc:
+        _migrate()
+
+    assert exc.value.exit_code == 1
+    out = capsys.readouterr().out
+    assert "ok: false" in out
+    assert "lock_check" in out
+    assert f"cwcli unlock proj --site {SITE}" in out
+    assert "help:" not in out
+    assert not [c for c in container.calls if c.endswith("migrate")]
+    assert not [c for c in container.calls if "maintenance" in c]
+
+
 def test_there_is_no_skip_maintenance_flag_on_the_verb(container):
     """Captain ruling M1, pinned at the frontend as well as the core."""
     import inspect

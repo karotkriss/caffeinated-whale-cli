@@ -55,7 +55,9 @@ def test_a_migrate_runs_against_exactly_one_site_and_reports_it(container):
     assert result.status is Status.OK
     assert result.data.ok is True
     assert result.data.site == SITE
-    migrates = [c for c in container.calls if "migrate" in c]
+    # endswith, not `in`: a lock-check call also names the lock file
+    # `bench_migrate.lock`, and a substring match would catch it too.
+    migrates = [c for c in container.calls if c.endswith("migrate")]
     assert migrates == [f"bench --site {SITE} migrate"]
 
 
@@ -164,6 +166,66 @@ def test_there_is_no_skip_maintenance_escape_hatch(container):
     and its existence would invite its use."""
     with pytest.raises(TypeError):
         bench_ops.migrate_site("proj", site=SITE, skip_maintenance=True)
+
+
+# ------------------------------------------------------------------ the stranded-lock gate
+
+
+def test_a_held_migrate_lock_refuses_the_migrate_entirely_and_names_unlock(container):
+    """The gate this task exists for: a genuinely-held migrate lock is refused
+    BEFORE maintenance mode is even touched, and the refusal names the exact
+    remedy rather than surfacing a generic failure later.
+
+    Verified against a real bench (see `_migrate_lock_held`'s docstring): `flock
+    -n` probes the SAME kernel primitive frappe's own `filelock()` acquires, so
+    this can never be a false positive on a harmless leftover file.
+    """
+    container.fail_on = ["flock -n"]
+
+    result = bench_ops.migrate_site("proj", site=SITE)
+
+    assert result.data.ok is False
+    assert result.status is Status.WARNING
+    assert not [c for c in container.calls if c.endswith("migrate")]
+    assert not [c for c in container.calls if "maintenance" in c]
+    assert _actions(result.data) == ["lock_check"]
+    message = result.data.results[0].message
+    assert f"cwcli unlock proj --site {SITE}" in message
+    assert "locks/bench_migrate.lock" in message
+
+
+def test_a_lock_file_with_no_live_holder_never_blocks_a_migrate(container):
+    """The false-positive guard, proven on a real bench: an empty leftover
+    `bench_migrate.lock` that nothing holds is harmless, and `bench migrate`
+    succeeds straight through it. Gating on file presence would refuse a
+    perfectly runnable migrate; gating on `flock -n` does not."""
+    result = bench_ops.migrate_site("proj", site=SITE)
+
+    assert result.data.ok is True
+    probes = [c for c in container.calls if c.startswith("flock -n")]
+    assert len(probes) == 1
+
+
+def test_a_bench_never_migrated_has_no_locks_dir_and_skips_the_probe(container):
+    """A fresh bench has no locks directory at all - nothing to probe, and the
+    probe command (which would otherwise try to create the lock file) never runs."""
+    container.fail_on = ["/locks"]  # simulate `test -d .../locks` failing (absent)
+
+    result = bench_ops.migrate_site("proj", site=SITE)
+
+    assert result.data.ok is True
+    assert not [c for c in container.calls if c.startswith("flock")]
+
+
+def test_the_bench_op_command_naming_the_bench_selector_is_carried_in_the_hint(container):
+    """When the caller passed an explicit --bench selector, the unlock hint must
+    carry the SAME selector - unlock has to resolve to the identical bench, not
+    whichever one a bare re-run would default to."""
+    container.fail_on = ["flock -n"]
+
+    result = bench_ops.migrate_site("proj", site=SITE, bench="0")
+
+    assert "--bench 0" in result.data.results[0].message
 
 
 # ------------------------------------------------------------------------- run-tests
