@@ -10,6 +10,8 @@ site fails closed, and omitting `--site` is a usage error.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from . import harness
@@ -27,6 +29,22 @@ def _installed_apps(inst) -> list[str]:
     return [line.split()[0] for line in out.strip().splitlines() if line.strip()]
 
 
+def _site_ping_code(inst) -> str:
+    """The HTTP result a real site-routed request gets from this bench's web process."""
+    code, config = harness.exec_in_frappe(
+        inst.name, f"cat {inst.bench}/sites/common_site_config.json"
+    )
+    assert code == 0, config
+    port = int(json.loads(config)["webserver_port"])
+    code, out = harness.exec_in_frappe(
+        inst.name,
+        f'curl -sS --max-time 10 -o /dev/null -w "%{{http_code}}" '
+        f'-H "Host: {inst.site}" http://localhost:{port}/api/method/ping',
+    )
+    assert code == 0, out
+    return out.strip().splitlines()[-1]
+
+
 def test_axi_apps_install_permitted_then_refused_on_rerun(running_instance):
     """The full arc against a real bench: fetch+install lands, state genuinely
     changes, and the exact same command re-run is refused before any fetch.
@@ -39,7 +57,9 @@ def test_axi_apps_install_permitted_then_refused_on_rerun(running_instance):
     """
     inst = running_instance
     assert _APP not in _installed_apps(inst), "fixture already has payments installed"
+    assert _site_ping_code(inst) == "200", "the running fixture must serve before the mutation"
 
+    restored = False
     try:
         result = harness.run_cwcli(
             "axi",
@@ -62,8 +82,14 @@ def test_axi_apps_install_permitted_then_refused_on_rerun(running_instance):
         # bench's own output narrates to stderr, stdout stays one document.
         assert "get-app" in result.stderr
 
-        # The state genuinely changed.
+        # Positive proof first: the already-running web process must genuinely serve
+        # a site-routed request after loading the newly installed app. Checking only
+        # list-apps is the exact false green this regression closes.
+        assert _site_ping_code(inst) == "200"
+
+        # The state genuinely changed, and the necessary disturbance was reported.
         assert _APP in _installed_apps(inst)
+        assert "restart-web" in result.stdout
 
         # Re-running the EXACT same command is refused, before anything is fetched.
         rerun = harness.run_cwcli(
@@ -82,16 +108,26 @@ def test_axi_apps_install_permitted_then_refused_on_rerun(running_instance):
         assert "already installed" in rerun.stdout
         assert "apps checkout" in rerun.stdout
         assert "apps update" in rerun.stdout
-    finally:
-        # Best-effort, and deliberately unasserted here: raising inside `finally`
-        # would replace whatever the body failed on, hiding the real error.
-        harness.run_cwcli("apps", "uninstall", inst.name, _APP, "--site", inst.site, "--yes")
 
-    # Reached only when the body passed, so this cannot mask a failure above: the
-    # restore has to have genuinely taken, or the next test inherits the app.
-    assert _APP not in _installed_apps(
-        inst
-    ), f"{_APP} must be uninstalled again so the shared site is left as it was found"
+        uninstall = harness.run_cwcli(
+            "apps", "uninstall", inst.name, _APP, "--site", inst.site, "--yes"
+        )
+        assert uninstall.returncode == 0, uninstall.stdout + uninstall.stderr
+
+        # Positive proof before the negative state assertion: the post-uninstall
+        # web process serves the site, then the removed app is confirmed absent.
+        assert _site_ping_code(inst) == "200"
+        assert "restart-web" in uninstall.stdout + uninstall.stderr
+        assert _APP not in _installed_apps(inst)
+        restored = True
+    finally:
+        if not restored:
+            # Best-effort cleanup that never masks the real assertion failure.
+            if _APP in _installed_apps(inst):
+                harness.run_cwcli(
+                    "apps", "uninstall", inst.name, _APP, "--site", inst.site, "--yes"
+                )
+            harness.run_cwcli("axi", "restart", inst.name, "--process", "web")
 
 
 def test_axi_apps_install_refuses_the_git_url_spelling_of_an_installed_app(running_instance):

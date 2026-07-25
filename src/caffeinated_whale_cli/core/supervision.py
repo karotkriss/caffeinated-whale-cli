@@ -401,7 +401,7 @@ def _queue_from_args(args: str) -> str | None:
     return None
 
 
-def discover_stack(container, bench_path: str) -> StackSnapshot:
+def discover_stack(container, bench_path: str, *, required: bool = False) -> StackSnapshot:
     """Discover the supervisord stack for ``bench_path`` from one ``ps`` (keyed to the bench).
 
     Returns ``supervisor_up`` (a supervisord for this bench is live), its pid, and
@@ -410,7 +410,7 @@ def discover_stack(container, bench_path: str) -> StackSnapshot:
     supervisord STATE (RUNNING/BACKOFF/FATAL) is read separately via
     :func:`supervisorctl_states`; discovery here is the cheap ``ps`` liveness read.
     """
-    rows = _ps_rows(container)
+    rows = _ps_rows(container, required=required)
     sup_pids = _supervisord_pids_for_bench(container, rows, bench_path)
     if not sup_pids:
         return StackSnapshot(supervisor_up=False, supervisor_pid=None, processes=[])
@@ -823,7 +823,7 @@ def write_marker(container, bench_path: str) -> str:
 # -------------------------------------------------------------------------- launch
 
 
-def web_http_code(container, *, port: int, site: str | None = None) -> str | None:
+def web_http_code(container, *, port: int, site: str | None = None, path: str = "") -> str | None:
     """The web server's HTTP code on ``port``, or None if unreachable.
 
     ``port`` is keyword-only with NO DEFAULT, deliberately. One instance holds many
@@ -844,9 +844,18 @@ def web_http_code(container, *, port: int, site: str | None = None) -> str | Non
     ``degraded`` too. With the site named, the probe is the request a real user
     makes and a healthy bench reads 200. Omitted (or unresolvable) keeps the old
     host-less request rather than guessing a site.
+
+    ``path`` requests something more specific than ``/``. ``core.apps`` asks for
+    ``/api/method/ping``, whose 200 is a positive statement that Frappe booted the
+    site's app set (a bound port alone is not: the stale-code regression this
+    serves answered 500 from a perfectly bound port).
+
+    ``--max-time`` is not decoration: every caller polls this in a bounded loop,
+    and a server that accepts the connection but never answers would otherwise
+    hang that loop forever, past its own timeout.
     """
-    url = f"http://localhost:{port}"
-    cmd = ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}"]
+    url = f"http://localhost:{port}{path}"
+    cmd = ["curl", "-s", "--max-time", "10", "-o", "/dev/null", "-w", "%{http_code}"]
     if site:
         cmd += ["-H", f"Host: {site}"]
     exit_code, output = container.exec_run([*cmd, url])

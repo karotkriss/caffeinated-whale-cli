@@ -99,6 +99,13 @@ def container(monkeypatch):
     c = FakeContainer(installed={"a.localhost": ["frappe 15.0.0 version-15"]})
     monkeypatch.setattr(core_docker, "get_frappe_container", lambda _p: c)
     monkeypatch.setattr(core_apps.bench_sites, "list_sites", lambda *a, **k: ["a.localhost"])
+    monkeypatch.setattr(
+        core_apps.supervision,
+        "discover_stack",
+        lambda *a, **k: core_apps.supervision.StackSnapshot(
+            supervisor_up=False, supervisor_pid=None, processes=[]
+        ),
+    )
     return c
 
 
@@ -242,6 +249,149 @@ def test_install_shell_interpolations_are_shlex_quoted(monkeypatch, container):
     assert "'x; whoami'" in fetch
 
 
+def _wire_running_web(monkeypatch, *, restart_code=0):
+    restarted: list[str] = []
+    monkeypatch.setattr(
+        core_apps.supervision,
+        "discover_stack",
+        lambda *a, **k: core_apps.supervision.StackSnapshot(
+            supervisor_up=True, supervisor_pid=100, processes=[]
+        ),
+    )
+    monkeypatch.setattr(
+        core_apps.supervision, "supervisorctl_states", lambda *a, **k: {"web": ("RUNNING", 101)}
+    )
+
+    def restart(_container, _path, program):
+        restarted.append(program)
+        return restart_code, "web: stopped\nweb: started"
+
+    monkeypatch.setattr(core_apps.supervision, "restart_program", restart)
+    monkeypatch.setattr(
+        core_apps.resolvers,
+        "resolve_assigned_ports",
+        lambda *a, **k: {BENCH: (8000, 9000)},
+    )
+    monkeypatch.setattr(
+        core_apps,
+        "_wait_for_sites_after_restart",
+        lambda *a, **k: ([], {site: "200" for site in k["sites"]}),
+    )
+    return restarted
+
+
+def test_install_restarts_a_running_web_process_and_reports_the_verified_step(
+    monkeypatch, container
+):
+    _cache(monkeypatch, [{"path": BENCH}])
+    restarted = _wire_running_web(monkeypatch)
+
+    result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
+
+    assert restarted == ["web"]
+    assert [(r.action, r.ok) for r in result.data.results][-1] == ("restart-web", True)
+    assert result.data.ok is True
+
+
+def test_install_does_not_claim_success_when_the_restarted_web_cannot_serve(monkeypatch, container):
+    _cache(monkeypatch, [{"path": BENCH}])
+    _wire_running_web(monkeypatch)
+    monkeypatch.setattr(
+        core_apps,
+        "_wait_for_sites_after_restart",
+        lambda *a, **k: (["a.localhost"], {"a.localhost": "500"}),
+    )
+
+    result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
+
+    assert result.status is Status.WARNING
+    assert result.data.ok is False
+    assert [(r.action, r.ok) for r in result.data.results][-1] == ("restart-web", False)
+    assert any("HTTP 200" in warning.text for warning in result.warnings)
+
+
+def test_the_restart_is_announced_and_not_only_reported_afterwards(monkeypatch, container):
+    """The disturbance is disclosed AS IT HAPPENS, not just in the result rows.
+
+    This defect exists because a bench was mutated underneath a running process
+    silently. A fix that restarts silently and mentions it only in the trailing
+    table repeats the habit on a command that can sit in the site-probe wait for
+    up to a minute.
+    """
+    _cache(monkeypatch, [{"path": BENCH}])
+    _wire_running_web(monkeypatch)
+    events = []
+
+    core_apps.install_apps("proj", ["payments"], sites=["a.localhost"], on_event=events.append)
+
+    announced = [e.phase for e in events if isinstance(e, core_apps.AppsAnnounce)]
+    assert "restart-web" in announced
+
+
+def test_a_restart_reporting_no_exit_code_is_not_treated_as_a_failure(monkeypatch, container):
+    """``None`` is "docker recorded no code", which is not evidence of failure.
+
+    Every other container read in this module reads ``not in (0, None)``. Treating
+    a bare ``None`` as a failed restart would fail an install whose restart in fact
+    worked, and would skip the site probe that is the real gate.
+    """
+    _cache(monkeypatch, [{"path": BENCH}])
+    _wire_running_web(monkeypatch, restart_code=None)
+
+    result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
+
+    assert [(r.action, r.ok) for r in result.data.results][-1] == ("restart-web", True)
+    assert result.data.ok is True
+
+
+def test_an_unreadable_process_state_fails_closed_rather_than_assuming_nothing_runs(
+    monkeypatch, container
+):
+    """Fail-honest (``core.where``'s rule): "I could not tell" is never "nothing is running".
+
+    Degrading here would silently skip the restart on exactly the bench that needed
+    it and hand back the plain success this whole change exists to stop.
+    """
+    _cache(monkeypatch, [{"path": BENCH}])
+
+    def boom(*_a, **_k):
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "supervisor.process_state_unknown",
+            "Could not verify the supervisord process state.",
+        )
+
+    monkeypatch.setattr(core_apps.supervision, "discover_stack", boom)
+
+    result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
+
+    assert result.data.ok is False
+    assert [(r.action, r.ok) for r in result.data.results][-1] == ("restart-web", False)
+    # The install itself still reports as landed: it did, and a caller that retried
+    # it because the restart check failed would install over a live site.
+    assert ("install-app", True) in [(r.action, r.ok) for r in result.data.results]
+
+
+def test_a_stopped_bench_is_not_started_by_an_install(monkeypatch, container):
+    """A bench nobody started stays stopped, with no restart row to explain.
+
+    ``container`` wires ``discover_stack`` to report no supervisord, so this is the
+    ordinary "installed into a bench that is not serving" case: there is no running
+    process serving stale code, so there is nothing to cycle.
+    """
+    _cache(monkeypatch, [{"path": BENCH}])
+    started = []
+    monkeypatch.setattr(
+        core_apps.supervision, "restart_program", lambda *a, **k: started.append(a) or (0, "")
+    )
+
+    result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
+
+    assert started == []
+    assert "restart-web" not in [r.action for r in result.data.results]
+    assert result.data.ok is True
+
+
 # ------------------------------------------------------------------- uninstall_apps
 
 
@@ -264,6 +414,19 @@ def test_uninstall_with_consent_fans_out(monkeypatch, container):
 
     assert result.data.ok is True
     assert any("uninstall-app payments --yes" in c for c in container.calls)
+
+
+def test_uninstall_restarts_a_running_web_process_and_reports_the_verified_step(
+    monkeypatch, container
+):
+    _cache(monkeypatch, [{"path": BENCH}])
+    restarted = _wire_running_web(monkeypatch)
+
+    result = core_apps.uninstall_apps("proj", ["payments"], sites=["a.localhost"], consent=True)
+
+    assert restarted == ["web"]
+    assert [(r.action, r.ok) for r in result.data.results][-1] == ("restart-web", True)
+    assert result.data.ok is True
 
 
 def test_uninstall_with_no_sites_is_a_clean_noop_before_the_gate(monkeypatch, container):

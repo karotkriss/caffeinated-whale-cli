@@ -120,6 +120,13 @@ def wired(monkeypatch):
     monkeypatch.setattr(apps_mod, "ensure_containers_running", lambda *a, **k: True)
     monkeypatch.setattr(apps_mod, "resolve_bench_path", lambda *a, **k: state.bench)
     monkeypatch.setattr(core_apps.bench_sites, "list_sites", lambda *a, **k: list(state.sites))
+    monkeypatch.setattr(
+        core_apps.supervision,
+        "discover_stack",
+        lambda *a, **k: core_apps.supervision.StackSnapshot(
+            supervisor_up=False, supervisor_pid=None, processes=[]
+        ),
+    )
 
     def fake_recache(project_name, verbose=False):
         state.recache_calls.append(project_name)
