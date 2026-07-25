@@ -28,7 +28,7 @@ from caffeinated_whale_cli.core.update import (
     UpdateStepStart,
 )
 
-from .test_apps import FakeFrappeContainer
+from .test_apps import FakeFrappeContainer, _wire_stopped_bench
 
 BENCH = "/workspace/frappe-bench"
 
@@ -42,6 +42,7 @@ def wired(monkeypatch):
     monkeypatch.setattr(core_update.cache, "recache_project", lambda *a, **k: True)
     monkeypatch.setattr(core_update.time, "sleep", lambda *a, **k: None)
     monkeypatch.setattr(core_update, "_sites_with_app", lambda *a, **k: ["a.localhost"])
+    _wire_stopped_bench(monkeypatch)
     return container
 
 
@@ -85,8 +86,10 @@ class TestEnvelope:
         # dataclasses.asdict recurses; anything holding a live object would surface
         # here, and this DTO has to survive TOON/JSON serialization.
         flat = dataclasses.asdict(report)
+        # `None` is in the set because `resync_error` is genuinely optional and
+        # serializes fine; the property under test is "no live object", not "no None".
         assert all(
-            isinstance(v, (str, bool, list)) for v in flat.values()
+            isinstance(v, (str, bool, list, type(None))) for v in flat.values()
         ), f"non-builtin in report: {flat}"
 
     def test_no_apps_is_a_usage_error(self, wired):
@@ -426,6 +429,32 @@ class TestFrappeFork:
         assert report.failed_apps == ["frappe"]
         assert report.frappe_reset is True
         assert report.ok is False
+
+    def test_an_unreadable_site_set_fails_the_successful_reset(self, monkeypatch, wired):
+        monkeypatch.setattr(core_update.bench_sites, "list_sites", lambda *a, **k: None)
+
+        result = _update(apps=["frappe"])
+
+        assert result.data.failed_apps == []
+        assert result.data.resync_error is not None
+        assert result.data.ok is False
+        assert any(w.code == "resync.failed" for w in result.warnings)
+
+    def test_site_enumeration_exception_fails_the_successful_reset(self, monkeypatch, wired):
+        monkeypatch.setattr(
+            core_update.bench_sites,
+            "list_sites",
+            lambda *a, **k: (_ for _ in ()).throw(
+                CwcliError(ErrorKind.DOCKER, "sites.unreadable", "the site list was lost")
+            ),
+        )
+
+        result = _update(apps=["frappe"])
+
+        assert result.data.failed_apps == []
+        assert result.data.resync_error is not None
+        assert result.data.ok is False
+        assert any(w.code == "resync.failed" for w in result.warnings)
 
     def test_the_reset_recaches_before_checking_the_exit_code(self, monkeypatch, wired):
         # Preserved deliberately, not "fixed" in a migration: a partially-applied

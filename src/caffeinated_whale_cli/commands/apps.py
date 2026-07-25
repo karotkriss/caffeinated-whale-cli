@@ -56,14 +56,15 @@ _ANNOUNCE = {
     "uninstall-app": lambda app_name, site: (
         f"[bold cyan]Uninstalling[/bold cyan] {app_name} from [magenta]{site}[/magenta]..."
     ),
-    # The app set changed underneath a process that is already serving, so it has to
-    # be cycled before the site can load the app. Announced rather than done quietly:
-    # this defect exists because something happened silently, and the fix must not
-    # repeat the habit - the caller sees the disturbance as it happens, not only as a
-    # result row afterwards.
-    "restart-web": lambda app_name, site: (
-        "[bold cyan]Restarting[/bold cyan] the bench web process so the site serves the "
-        "change..."
+    # App code changed underneath processes that are already running, so each one
+    # holding that code has to be cycled before it serves the change. Announced
+    # per program rather than done quietly: this defect exists because something
+    # happened silently, and the fix must not repeat the habit - the caller sees
+    # each disturbance as it happens, not only as a result row afterwards. A worker
+    # restart can interrupt a job in flight, which is precisely why it is named.
+    "restart-processes": lambda app_name, site: (
+        f"[bold cyan]Restarting[/bold cyan] the bench '{app_name}' process so it runs the "
+        "changed code..."
     ),
 }
 
