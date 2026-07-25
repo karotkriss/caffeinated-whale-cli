@@ -235,7 +235,14 @@ class TestResolveFrappeRef:
 
 
 def instance_setup(
-    monkeypatch, tmp_path, *, seed_compose=True, container=None, hub_tags=None, running=False
+    monkeypatch,
+    tmp_path,
+    *,
+    seed_compose=True,
+    container=None,
+    hub_tags=None,
+    running=False,
+    project_containers=None,
 ):
     """Wire stage 1's host seams; returns the recorded host calls and paths."""
     host_calls: list[dict] = []
@@ -267,7 +274,9 @@ def instance_setup(
     monkeypatch.setattr(urllib.request, "urlretrieve", lambda url, dest: downloads.append(url))
     monkeypatch.setattr(config_utils, "PROJECTS_DIR", tmp_path)
     own = container or FakeContainer()
-    use_container(monkeypatch, own, project_containers=[own] if running else [])
+    if project_containers is None:
+        project_containers = [own] if running else []
+    use_container(monkeypatch, own, project_containers=project_containers)
 
     conf_dir = tmp_path / PROJECT / "conf"
     compose_path = conf_dir / "docker-compose.yml"
@@ -408,13 +417,46 @@ class TestInitInstance:
         structurally unable to trigger that recreate at all.
         """
         events: list = []
-        s = instance_setup(monkeypatch, tmp_path, running=True)
+        services = [
+            SimpleNamespace(status="running", labels={"com.docker.compose.service": service})
+            for service in core_init._EXPECTED_COMPOSE_SERVICES
+        ]
+        s = instance_setup(monkeypatch, tmp_path, project_containers=services)
         result = core_init.init_instance(PROJECT, port=18000, on_event=events.append)
 
         assert result.status is Status.OK
         assert s.host_calls == []
         notices = [e for e in events if isinstance(e, core_init.InitNotice)]
         assert any(n.code == "instance.already_running" for n in notices)
+
+    def test_missing_siblings_start_without_pulling_or_touching_frappe(
+        self, monkeypatch, tmp_path, patched
+    ):
+        containers = [
+            SimpleNamespace(status="running", labels={"com.docker.compose.service": "frappe"}),
+            SimpleNamespace(status="running", labels={"com.docker.compose.service": "redis-cache"}),
+            SimpleNamespace(status="running", labels={"com.docker.compose.service": "redis-queue"}),
+            SimpleNamespace(status="exited", labels={"com.docker.compose.service": "mariadb"}),
+        ]
+        s = instance_setup(monkeypatch, tmp_path, project_containers=containers)
+
+        result = core_init.init_instance(PROJECT, port=18000)
+
+        assert result.status is Status.OK
+        assert [call["cmd"] for call in s.host_calls] == [
+            [
+                "docker",
+                "compose",
+                "-p",
+                PROJECT,
+                "-f",
+                "docker-compose.yml",
+                "up",
+                "-d",
+                "--no-deps",
+                "mariadb",
+            ]
+        ]
 
     def test_pull_and_up_still_run_when_a_sibling_container_is_up_but_frappe_is_not(
         self, monkeypatch, tmp_path, patched

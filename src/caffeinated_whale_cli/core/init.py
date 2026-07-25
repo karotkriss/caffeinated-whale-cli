@@ -474,22 +474,20 @@ def _project_containers_running(project_name: str) -> bool:
     return any(c.status == "running" for c in containers)
 
 
-def _frappe_container_running(project_name: str) -> bool:
-    """True when THIS project's own frappe service container is already running.
+_EXPECTED_COMPOSE_SERVICES = frozenset({"frappe", "mariadb", "redis-cache", "redis-queue"})
 
-    Distinct from :func:`_project_containers_running` (any container of the
-    project): this gates skipping ``compose pull`` + ``up -d`` entirely (see
-    ``init_instance``), so it checks the ONE service those commands exist to
-    bring up rather than any sibling (mariadb/redis) that happens to be up
-    while frappe itself is down.
-    """
+
+def _running_compose_services(project_name: str) -> set[str]:
+    """Return this project's running compose service names."""
     containers = core_docker.get_project_containers(project_name)
     if not containers:
-        return False
-    return any(
-        c.labels.get("com.docker.compose.service") == "frappe" and c.status == "running"
+        return set()
+    return {
+        service
         for c in containers
-    )
+        if c.status == "running"
+        and (service := c.labels.get("com.docker.compose.service")) is not None
+    }
 
 
 def init_instance(
@@ -505,10 +503,10 @@ def init_instance(
 
     Project dir + compose download (skipped when the file is already present),
     port/image customization (Docker Hub fails open to the pinned fallback),
-    ``compose pull`` + ``up -d`` via captured subprocess (skipped entirely when
-    this project's own frappe container is already running - see the
-    ``_frappe_container_running`` guard below), then the bounded silent
-    readiness poll. On poll timeout: ``confirm_start`` choice when
+    ``compose pull`` + ``up -d`` via captured subprocess. When this project's
+    own frappe container is already running, image pulls are skipped and only
+    missing sibling services are started with ``--no-deps``. Then the bounded
+    silent readiness poll runs. On poll timeout: ``confirm_start`` choice when
     ``auto_start=False``; typed ``NOT_RUNNING`` when ``auto_start=True`` (the
     structural cap - the caller claimed the start was handled and the
     containers are still down; no core function performs a container start).
@@ -626,7 +624,7 @@ def init_instance(
 
     compose_base = ["docker", "compose", "-p", project_name, "-f", "docker-compose.yml"]
 
-    # Skipped entirely when this project's OWN frappe container is already
+    # Pull and whole-stack up are skipped when this project's OWN frappe container is already
     # running - the same self-conflict carve-out as the port check above,
     # applied to a higher-stakes pair of commands. Re-running init to add a
     # bench or a site to a live instance never needs to refetch or recreate
@@ -639,16 +637,36 @@ def init_instance(
     # every already-serving bench's supervisord with nothing in the report to
     # say so. Skipping pull+up here makes adding a bench to a running instance
     # structurally unable to disturb it, rather than merely unlikely to.
-    if _frappe_container_running(project_name):
+    running_services = _running_compose_services(project_name)
+    if "frappe" in running_services:
+        missing_services = sorted(_EXPECTED_COMPOSE_SERVICES - running_services)
+        detail = (
+            f" Starting missing services without touching frappe: {', '.join(missing_services)}."
+            if missing_services
+            else ""
+        )
         emit(
             InitNotice(
                 code="instance.already_running",
                 text=(
                     f"Instance '{project_name}' is already running; skipping image pull "
-                    "and container refresh."
+                    f"and preserving its frappe container.{detail}"
                 ),
             )
         )
+        if missing_services:
+            emit(
+                InitStepStart(
+                    phase="up",
+                    message=f"Starting missing Docker Compose services: {', '.join(missing_services)}",
+                )
+            )
+            _run_host_command(
+                compose_base + ["up", "-d", "--no-deps", *missing_services],
+                cwd=str(conf_dir),
+                phase="up",
+                emit=emit,
+            )
     else:
         emit(InitStepStart(phase="pull", message="Pulling Docker images"))
         pull_cmd = compose_base + ["pull"]
