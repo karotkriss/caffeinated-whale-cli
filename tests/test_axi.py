@@ -718,7 +718,7 @@ class TestAxiHelpIsToon:
         assert result.exit_code == 0
         assert "Usage:" in result.stdout
         assert "Arguments" in result.stdout
-        assert "--to" in result.stdout
+        assert "--to" in click.unstyle(result.stdout)
         assert any("\u2500" <= char <= "\u257f" for char in result.stdout)
         assert not result.stdout.startswith("usage:")
 
