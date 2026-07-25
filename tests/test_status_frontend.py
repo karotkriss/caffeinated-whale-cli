@@ -28,6 +28,7 @@ def _bench(
     web_port=8000,
     web_port_verified=True,
     web_site="site.localhost",
+    bench_present="present",
 ):
     return BenchStatus(
         index=index,
@@ -41,6 +42,7 @@ def _bench(
         web_http_code="200" if overall == "running" and web_port_verified else None,
         processes=processes if processes is not None else [],
         not_cwcli_supervised=not_cwcli_supervised,
+        bench_present=bench_present,
     )
 
 
@@ -199,3 +201,34 @@ def test_an_unknown_port_says_so_rather_than_implying_8000(monkeypatch, capsys):
     captured = _run(monkeypatch, capsys, report)
     assert "port unknown" in captured.err
     assert "8000" not in captured.err
+
+
+def test_a_live_bench_heading_carries_no_gone_marker(monkeypatch, capsys):
+    # Positive first: the normal case stays quiet. Only a row that cannot be
+    # trusted earns ink.
+    captured = _run(monkeypatch, capsys, _report("running"))
+    assert "GONE" not in captured.err
+    assert "not verified" not in captured.err
+    assert "running" in captured.err
+
+
+def test_an_unverified_bench_heading_labels_cache_without_hiding_health(monkeypatch, capsys):
+    report = _report("online", benches=[_bench("online", bench_present="unverified")])
+    captured = _run(monkeypatch, capsys, report)
+
+    assert "not verified" in captured.err
+    assert "online" in captured.err
+    assert "supervisor down" in captured.err
+    assert captured.out.strip() == "online"
+
+
+def test_a_removed_bench_heading_says_gone_before_its_health(monkeypatch, capsys):
+    # `online` on a deleted bench reads as "here, just not up" - the exact wrong
+    # conclusion, said confidently.
+    report = _report("online", benches=[_bench("online", bench_present="absent")])
+    captured = _run(monkeypatch, capsys, report)
+
+    assert "GONE" in captured.err
+    assert "inspect" in captured.err
+    # stdout stays exactly one token, as ever.
+    assert captured.out.strip() == "online"

@@ -102,19 +102,15 @@ It is more uniform for a consumer iterating `benches`, and it is arguably knowab
 Rejected on the smaller-diff rule: `overall: offline` plus `container_running: false` is a complete answer to "how is this instance", and manufacturing per-bench rows nothing was probed for adds a claim-shaped structure backed by no observation.
 `inspect` is the verb for "what benches does this instance have"; `status` is the verb for "is it healthy".
 
-## Decision 6: Bench enumeration comes from the cache, and that needs no new honesty token
+## Decision 6: Bench enumeration comes from the cache
 
 The bare form enumerates `resolvers.cached_benches(project_name)` - the same list `--bench <index>` indexes into, so an index means the same thing in both forms and both agree with `cwcli axi benches`.
 
 That list is remembered, not verified: a bench created since the last `cwcli inspect` is absent from it.
 
-**This does not get a `where`-style verification token**, and the reasoning is the repo's own settled read-surface audit (`CLAUDE.md`, the `inspect` entry):
-
-> `benches` serves remembered addressing (paths/labels) but those are validated on USE by the next live op rather than consumed as correctness evidence - the lower-severity, self-correcting case left deliberately untokened.
-
-That applies here exactly.
-Each enumerated bench's **health is read live** (`ps`, `supervisorctl`, the probe), so a stale path self-corrects into a visible no-processes bench rather than a confident wrong answer.
-A missing bench is a real gap, but it is the *same* gap `--bench` already has, and it is `cwcli inspect`'s job to close it.
+The original design left that remembered existence unqualified.
+That decision was superseded by the shared contract in `core/resolvers.py:present_bench_paths`; current user-facing behavior is documented in README.md under `cwcli axi status` and `cwcli axi benches`.
+Each enumerated bench's health is still read live, while `BenchStatus.bench_present` separately reports whether its cached directory is `present`, `absent`, or `unverified`.
 
 Today's no-cached-benches behavior is preserved unchanged: one synthetic entry at `resolvers.DEFAULT_BENCH_PATH` with the existing `bench.default_used` warning.
 A never-inspected project keeps working; no new refusal is introduced.

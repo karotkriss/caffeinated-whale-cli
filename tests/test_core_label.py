@@ -61,11 +61,7 @@ def _wire(monkeypatch, container):
 class TestListBenches:
     def test_lists_indices_labels_and_paths(self, temp_db, monkeypatch):
         _seed(_two_benches(labels=(None, "staging")))
-
-        def _boom(name):
-            raise AssertionError("list_benches must not touch the container")
-
-        monkeypatch.setattr(core_docker, "get_frappe_container", _boom)
+        _wire(monkeypatch, MarkerFakeContainer())
 
         result = core_label.list_benches("proj")
         assert result.status is Status.OK
@@ -82,6 +78,100 @@ class TestListBenches:
             core_label.list_benches("never-inspected")
         assert exc.value.kind is ErrorKind.NOT_FOUND
         assert "inspect" in (exc.value.hint or "")
+
+
+class TestListBenchesReportsWhatStillExists:
+    """The cache outlives the benches it describes, so a listing must say which
+    rows are still true.
+
+    The order of these tests is the point, and it is the order the proof has to be
+    read in: FIRST that a live bench is still reported, and reported ``present`` -
+    a verification that answers "gone" about everything would satisfy a
+    removed-bench assertion perfectly while being useless. Only then that a removed
+    bench stops being vouched for. A cache that is correct OR labelled, never a
+    cache turned into nothing.
+    """
+
+    def test_a_live_bench_is_reported_and_marked_present(self, temp_db, monkeypatch):
+        _seed(_two_benches(labels=(None, "staging")))
+        _wire(monkeypatch, MarkerFakeContainer())
+
+        result = core_label.list_benches("proj")
+
+        assert result.status is Status.OK
+        assert result.data is not None
+        assert result.data.verified is True
+        assert [(b.path, b.state) for b in result.data.benches] == [
+            (BENCH_A, "present"),
+            (BENCH_B, "present"),
+        ]
+        # Nothing was weakened: the addressing this verb exists to serve is intact.
+        assert [(b.index, b.label) for b in result.data.benches] == [(0, None), (1, "staging")]
+        assert result.warnings == []
+
+    def test_a_removed_bench_is_reported_absent_not_present(self, temp_db, monkeypatch):
+        _seed(_two_benches(labels=(None, "staging")))
+        # BENCH_B's directory is gone; BENCH_A is still there.
+        _wire(monkeypatch, MarkerFakeContainer(present_paths={BENCH_A}))
+
+        result = core_label.list_benches("proj")
+
+        assert result.data is not None
+        states = {b.path: b.state for b in result.data.benches}
+        assert states[BENCH_A] == "present"
+        assert states[BENCH_B] == "absent"
+        # The row is still SERVED - a read verb must not silently prune cached
+        # state; refreshing it is `cwcli inspect`'s job.
+        assert len(result.data.benches) == 2
+        assert result.status is Status.WARNING
+        assert [w.code for w in result.warnings] == ["benches.stale"]
+        assert BENCH_B in result.warnings[0].text
+        assert result.warnings[0].detail == {"benches": [BENCH_B]}
+
+    def test_an_unaskable_check_is_unverified_never_present(self, temp_db, monkeypatch):
+        # A stopped project is the ordinary case here: `benches` is what answers
+        # `--bench` for `cwcli start`, so it must keep working with nothing to ask.
+        _seed(_two_benches())
+        stopped = MarkerFakeContainer()
+        stopped.status = "exited"
+        _wire(monkeypatch, stopped)
+
+        result = core_label.list_benches("proj")
+
+        assert result.data is not None
+        assert result.data.verified is False
+        assert {b.state for b in result.data.benches} == {"unverified"}
+        assert [w.code for w in result.warnings] == ["benches.unverified"]
+
+    def test_a_failed_probe_is_unverified_never_all_absent(self, temp_db, monkeypatch):
+        # Fail-HONEST, never fail-open in EITHER direction: a probe that could not
+        # run must not read as "every cached bench is gone", which is the same
+        # wrong answer as the staleness this fixes, just louder.
+        _seed(_two_benches())
+        _wire(monkeypatch, MarkerFakeContainer(present_probe_fails=True))
+
+        result = core_label.list_benches("proj")
+
+        assert result.data is not None
+        assert result.data.verified is False
+        assert {b.state for b in result.data.benches} == {"unverified"}
+
+    def test_verify_false_opts_out_and_says_so(self, temp_db, monkeypatch):
+        _seed(_two_benches())
+
+        def _boom(name):
+            raise AssertionError("verify=False must not touch the container")
+
+        monkeypatch.setattr(core_docker, "get_frappe_container", _boom)
+
+        result = core_label.list_benches("proj", verify=False)
+
+        assert result.data is not None
+        assert result.data.verified is False
+        assert {b.state for b in result.data.benches} == {"unverified"}
+        # Opting out buys speed, not a claim: no warning is raised (the caller
+        # asked), but no row is upgraded to `present` either.
+        assert result.warnings == []
 
 
 class TestSetLabel:

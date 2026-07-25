@@ -164,7 +164,7 @@ class TestAxiInspect:
 
 class TestAxiBenchesHintRePoint:
     def test_not_inspected_hint_names_the_axi_verb_not_the_human_command(self, monkeypatch):
-        def raise_none_cached(project):
+        def raise_none_cached(project, *, verify=True):
             raise CwcliError(
                 ErrorKind.NOT_FOUND,
                 "benches.none_cached",
