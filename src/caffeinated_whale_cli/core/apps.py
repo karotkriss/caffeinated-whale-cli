@@ -349,7 +349,18 @@ def _sites_with_app_installed(
     unaffected: saying "cwcli did not check this one" is honest, where verifying it
     anyway would fail a checkout over a sibling site that was already broken.
     """
-    sites = bench_sites.list_sites(frappe_container, bench_path)
+    try:
+        sites = bench_sites.list_sites(frappe_container, bench_path)
+    except Exception as error:  # noqa: BLE001
+        detail = error.message if isinstance(error, CwcliError) else str(error)
+        warnings.append(
+            Message(
+                "app.site_scope_unknown",
+                f"Could not list the bench sites, so cwcli could not identify which sites "
+                f"to check after the checkout of '{app}' ({detail or type(error).__name__}).",
+            )
+        )
+        return None
     if sites is None:
         warnings.append(
             Message(

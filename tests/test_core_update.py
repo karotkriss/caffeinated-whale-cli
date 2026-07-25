@@ -440,6 +440,24 @@ class TestFrappeFork:
         assert result.data.ok is False
         assert any(w.code == "resync.failed" for w in result.warnings)
 
+    def test_site_enumeration_exception_fails_the_successful_reset(
+        self, monkeypatch, wired
+    ):
+        monkeypatch.setattr(
+            core_update.bench_sites,
+            "list_sites",
+            lambda *a, **k: (_ for _ in ()).throw(
+                CwcliError(ErrorKind.DOCKER, "sites.unreadable", "the site list was lost")
+            ),
+        )
+
+        result = _update(apps=["frappe"])
+
+        assert result.data.failed_apps == []
+        assert result.data.resync_error is not None
+        assert result.data.ok is False
+        assert any(w.code == "resync.failed" for w in result.warnings)
+
     def test_the_reset_recaches_before_checking_the_exit_code(self, monkeypatch, wired):
         # Preserved deliberately, not "fixed" in a migration: a partially-applied
         # reset genuinely changes the cache, so a FAILED reset still warrants a
