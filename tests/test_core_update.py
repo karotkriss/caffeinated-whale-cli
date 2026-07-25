@@ -440,9 +440,7 @@ class TestFrappeFork:
         assert result.data.ok is False
         assert any(w.code == "resync.failed" for w in result.warnings)
 
-    def test_site_enumeration_exception_fails_the_successful_reset(
-        self, monkeypatch, wired
-    ):
+    def test_site_enumeration_exception_fails_the_successful_reset(self, monkeypatch, wired):
         monkeypatch.setattr(
             core_update.bench_sites,
             "list_sites",

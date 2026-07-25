@@ -311,9 +311,7 @@ def _resync_after_mutation(
             frappe_container,
             bench_path,
             sites=sites,
-            on_restart=lambda program: emit(
-                AppsAnnounce(phase="restart-processes", app=program)
-            ),
+            on_restart=lambda program: emit(AppsAnnounce(phase="restart-processes", app=program)),
         )
     if outcome.error:
         results.append(AppResult(app="bench", site=None, action="restart-processes", ok=False))
@@ -374,9 +372,7 @@ def _sites_with_app_installed(
     found: list[str] = []
     for site in sorted(sites):
         try:
-            _command, ok, installed = _installed_apps(
-                frappe_container, bench_path, site
-            )
+            _command, ok, installed = _installed_apps(frappe_container, bench_path, site)
         except Exception as error:  # noqa: BLE001
             ok = False
             installed = []
@@ -762,10 +758,11 @@ def checkout_app(
     shared. It stops at the first failed step (a failed fetch makes the checkout
     meaningless).
 
-    A successful checkout ends in the SAME :func:`_resync_after_mutation` step
-    ``install`` and ``uninstall`` use: swapping the code under a running bench and
-    leaving it serving the old branch is this verb's own version of that defect, and
-    the quietest one - nothing errors, the developer simply tests the ref they moved
+    Once the checkout step succeeds, this runs the SAME
+    :func:`_resync_after_mutation` step ``install`` and ``uninstall`` use, even if a
+    later ``reset`` step fails. Swapping the code under a running bench and leaving
+    it serving the old branch is this verb's own version of that defect, and the
+    quietest one - nothing errors, the developer simply tests the ref they moved
     off. The sites to prove are the ones with this app installed
     (:func:`_sites_with_app_installed`), which is why "checkout names no site" was
     never a reason it could not be verified.
