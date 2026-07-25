@@ -23,10 +23,12 @@ _APP = "payments"
 
 def _installed_apps(inst) -> list[str]:
     code, out = harness.exec_in_frappe(
-        inst.name, f"cd {inst.bench} && bench --site {inst.site} list-apps"
+        inst.name,
+        f"cd {inst.bench} && bench --site {inst.site} "
+        "execute frappe.get_installed_apps",
     )
     assert code == 0, out
-    return [line.split()[0] for line in out.strip().splitlines() if line.strip()]
+    return json.loads(out.strip().splitlines()[-1])
 
 
 def _site_ping_code(inst) -> str:
@@ -84,7 +86,7 @@ def test_axi_apps_install_permitted_then_refused_on_rerun(running_instance):
 
         # Positive proof first: the already-running web process must genuinely serve
         # a site-routed request after loading the newly installed app. Checking only
-        # list-apps is the exact false green this regression closes.
+        # The authoritative site state is the exact false green this regression closes.
         assert _site_ping_code(inst) == "200"
 
         # The state genuinely changed, and the necessary disturbance was reported.
