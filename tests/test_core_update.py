@@ -430,6 +430,16 @@ class TestFrappeFork:
         assert report.frappe_reset is True
         assert report.ok is False
 
+    def test_an_unreadable_site_set_fails_the_successful_reset(self, monkeypatch, wired):
+        monkeypatch.setattr(core_update.bench_sites, "list_sites", lambda *a, **k: None)
+
+        result = _update(apps=["frappe"])
+
+        assert result.data.failed_apps == []
+        assert result.data.resync_error is not None
+        assert result.data.ok is False
+        assert any(w.code == "resync.failed" for w in result.warnings)
+
     def test_the_reset_recaches_before_checking_the_exit_code(self, monkeypatch, wired):
         # Preserved deliberately, not "fixed" in a migration: a partially-applied
         # reset genuinely changes the cache, so a FAILED reset still warrants a

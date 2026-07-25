@@ -272,7 +272,7 @@ def _target_sites(frappe_container, bench_path: str, sites: list[str] | None) ->
 def _resync_after_mutation(
     frappe_container,
     bench_path: str,
-    sites: list[str],
+    sites: list[str] | None,
     results: list[AppResult],
     warnings: list[Message],
     *,
@@ -299,12 +299,22 @@ def _resync_after_mutation(
     the human, ``--json`` and ``axi`` surfaces alike. Replacing a silent breakage
     with a silent restart would fix the outcome and keep the habit.
     """
-    outcome = supervision.resync_after_code_change(
-        frappe_container,
-        bench_path,
-        sites=sites,
-        on_restart=lambda program: emit(AppsAnnounce(phase="restart-processes", app=program)),
-    )
+    if sites is None:
+        outcome = supervision.ResyncOutcome(
+            attempted=False,
+            restarted=[],
+            unserved_sites=[],
+            error="cwcli could not identify the sites affected by the code change.",
+        )
+    else:
+        outcome = supervision.resync_after_code_change(
+            frappe_container,
+            bench_path,
+            sites=sites,
+            on_restart=lambda program: emit(
+                AppsAnnounce(phase="restart-processes", app=program)
+            ),
+        )
     if outcome.error:
         results.append(AppResult(app="bench", site=None, action="restart-processes", ok=False))
         warnings.append(
@@ -325,7 +335,7 @@ def _resync_after_mutation(
 
 def _sites_with_app_installed(
     frappe_container, bench_path: str, app: str, warnings: list[Message]
-) -> list[str]:
+) -> list[str] | None:
     """The bench's sites that have ``app`` installed - ``checkout``'s affected set.
 
     ``checkout`` names no site, which is exactly why it was left out of the first
@@ -339,15 +349,36 @@ def _sites_with_app_installed(
     unaffected: saying "cwcli did not check this one" is honest, where verifying it
     anyway would fail a checkout over a sibling site that was already broken.
     """
+    sites = bench_sites.list_sites(frappe_container, bench_path)
+    if sites is None:
+        warnings.append(
+            Message(
+                "app.site_scope_unknown",
+                f"Could not list the bench sites, so cwcli could not identify which sites "
+                f"to check after the checkout of '{app}'.",
+            )
+        )
+        return None
+
     found: list[str] = []
-    for site in _target_sites(frappe_container, bench_path, None):
-        _command, ok, installed = _installed_apps(frappe_container, bench_path, site)
+    for site in sorted(sites):
+        try:
+            _command, ok, installed = _installed_apps(
+                frappe_container, bench_path, site
+            )
+        except Exception as error:  # noqa: BLE001
+            ok = False
+            installed = []
+            detail = error.message if isinstance(error, CwcliError) else str(error)
+        else:
+            detail = ""
         if not ok:
+            suffix = f" ({detail})" if detail else ""
             warnings.append(
                 Message(
                     "app.site_scope_unknown",
                     f"Could not read the installed apps for site '{site}', so it was not "
-                    f"checked after the checkout of '{app}'.",
+                    f"checked after the checkout of '{app}'{suffix}.",
                 )
             )
             continue
