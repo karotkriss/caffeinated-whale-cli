@@ -1560,12 +1560,21 @@ dialog input {
   }
 
   el("modal-form").addEventListener("submit", event => {
-    const cancelled = event.submitter && event.submitter.value === "cancel";
     const submit = modalSubmit;
     modalSubmit = null;
-    if (cancelled || !submit) return;
+    if (!submit) return;
     const values = Object.fromEntries(new FormData(el("modal-form")).entries());
     submit(values);
+  });
+
+  // Cancel is type=button, NOT a submit control: with method="dialog" the form's
+  // FIRST submit button is the implicit-submission target, so a submit-type
+  // Cancel would make Enter in any field cancel the dialog.
+  modal.addEventListener("click", event => {
+    if (event.target.closest(".modal-cancel")) {
+      modalSubmit = null;
+      modal.close();
+    }
   });
 
   modal.addEventListener("close", () => {
@@ -1574,7 +1583,7 @@ dialog input {
 
   function modalButtons(confirmLabel, disabled) {
     return `<div class="modal-buttons">
-      <button value="cancel" formnovalidate>Cancel</button>
+      <button type="button" class="modal-cancel">Cancel</button>
       <button value="confirm" class="modal-confirm"${disabled ? " disabled" : ""}>${esc(confirmLabel)}</button>
     </div>`;
   }
