@@ -132,6 +132,7 @@ def run_init(
     host_fail_stage=None,
     host_fail_output=b"",
     compose_content=COMPOSE_TEMPLATE,
+    project_containers=None,
     **overrides,
 ):
     """Drive the real ``init`` body through migration-surviving seams only.
@@ -169,6 +170,11 @@ def run_init(
         downloads.append(url)
 
     monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(
+        core_docker,
+        "get_project_containers",
+        lambda name: list(project_containers or []),
+    )
     monkeypatch.setattr(config_utils, "PROJECTS_DIR", tmp_path)
     monkeypatch.setattr(config_utils, "get_show_tips", lambda: False)
     monkeypatch.setattr(config_utils, "add_custom_path", fake_add_custom_path)
@@ -401,6 +407,26 @@ class TestComposeFailureOutput:
         assert exc.value.exit_code == 1
         err = capsys.readouterr().err
         assert err.count(fail_text) == 1
+
+
+class TestAlreadyRunningNotice:
+    def test_verbose_output_reports_that_frappe_is_preserved(self, monkeypatch, tmp_path, capsys):
+        services = [
+            SimpleNamespace(status="running", labels={"com.docker.compose.service": service})
+            for service in ("frappe", "mariadb", "redis-cache", "redis-queue")
+        ]
+
+        result = run_init(
+            monkeypatch,
+            tmp_path,
+            verbose=True,
+            project_containers=services,
+        )
+
+        assert result.host_calls == []
+        err = " ".join(capsys.readouterr().err.split())
+        assert "Instance 'proj' is already running" in err
+        assert "skipping image pull and preserving its frappe container" in err
 
 
 class TestRefusals:
