@@ -22,13 +22,26 @@ from ..utils.console import console, stderr_console
 from ..utils.docker_utils import handle_docker_errors
 
 
+def _state_part(state: str) -> str:
+    """The per-row existence marker. ``present`` is unmarked - the normal case is
+    the quiet one, and only a row that cannot be trusted earns ink."""
+    if state == resolvers.BENCH_ABSENT:
+        return "  [bold red](GONE - directory no longer exists)[/bold red]"
+    if state == resolvers.BENCH_UNVERIFIED:
+        return "  [yellow](cached, not verified)[/yellow]"
+    return ""
+
+
 def _print_bench_list(project_name: str, benches: list) -> None:
     console.print(f"Benches in project [bold cyan]{project_name}[/bold cyan]:")
     for bench in benches:
         label_part = (
             f" [magenta]'{bench.label}'[/magenta]" if bench.label else " [dim](no label)[/dim]"
         )
-        console.print(f"  [cyan]\\[{bench.index}][/cyan]{label_part}  {bench.path}")
+        console.print(
+            f"  [cyan]\\[{bench.index}][/cyan]{label_part}  {bench.path}"
+            f"{_state_part(bench.state)}"
+        )
 
 
 def _handle_label_error(e: CwcliError, project_name: str) -> NoReturn:
@@ -102,10 +115,15 @@ def label(
             _handle_label_error(e, project_name)
         assert listing.data is not None
         _print_bench_list(project_name, listing.data.benches)
+        for warning in listing.warnings:
+            stderr_console.print(f"[yellow]{warning.text}[/yellow]")
         return
 
     try:
-        core_label.list_benches(project_name)
+        # verify=False: this call is a "has this project been inspected" gate, not a
+        # report, and the row it resolves is about to be used against the live
+        # container anyway - which is where a stale path fails honestly.
+        core_label.list_benches(project_name, verify=False)
         resolvers.resolve_bench(project_name, bench_selector, None)
     except CwcliError as e:
         _handle_label_error(e, project_name)

@@ -43,9 +43,86 @@ def cached_benches(project_name: str) -> list[dict]:
     Lives here rather than in ``commands/`` because BOTH layers need it and the
     core cannot import the frontend: it was previously a private helper in
     ``commands/utils.py`` that the core had to re-implement inline.
+
+    This is the RAW read: every row is remembered, none is observed. A read that
+    VOUCHES for those rows pairs it with :func:`present_bench_paths` - see that
+    function's docstring for the rule and where its boundary sits.
     """
     cached_data = db_utils.get_cached_project_data(project_name)
     return (cached_data or {}).get("bench_instances") or []
+
+
+# ----------------------------------------------------- cached-bench verification
+#
+# The cache OUTLIVES the benches it describes, and a removed bench directory is
+# invisible to it: nothing prunes the row, so a read served straight from
+# `cached_benches` keeps vouching for a bench that is gone, indefinitely and
+# identically to a live one. That was caught three times on three different read
+# surfaces before it was settled here, at the layer, rather than a fourth time on
+# a fourth verb.
+#
+# THE RULE, stated once: a cached read that VOUCHES for a bench's existence
+# verifies it when reality is reachable, and says plainly that it could not when
+# reality is not. Never silently either way. The token vocabulary is
+# `core.where`'s, deliberately reused rather than re-invented - three states, not
+# two, so an unanswerable check can never read as a confirmation.
+#
+# THE BOUNDARY: this applies to a read that PRESENTS bench rows as an answer
+# (`core.label.list_benches`, `core.status`). It deliberately does NOT apply to
+# the resolve paths (`resolve_bench`, and its callers in `logs`/`open`/`apps`/
+# `bench_ops`), which hand the path straight to a live container op that fails
+# honestly within the same command - remembered ADDRESSING validated on use, not
+# consumed as evidence. Adding a probe there would buy nothing and cost an exec
+# on every bench verb.
+#
+# Verification NEVER mutates: an absent row is REPORTED, not pruned. Refreshing
+# the cache is `cwcli inspect`'s job, and a read command that silently deleted
+# cached state would be the same defect pointing the other way (the `core.where`
+# rule, same reason).
+
+#: ``state`` tokens for a cached bench row. ``unverified`` means the check could
+#: not run and is deliberately distinct from ``present``.
+BENCH_PRESENT = "present"
+BENCH_ABSENT = "absent"
+BENCH_UNVERIFIED = "unverified"
+
+# The same three tests `core.inspect._is_bench_directory` applies, run over every
+# candidate path in ONE exec instead of one exec per bench - so the cost of
+# verifying is flat in bench count, the property that made `core.where`'s
+# per-invocation Docker listing affordable. `if/then/fi` rather than `&& echo`
+# keeps the loop's exit status 0, so a non-zero code means the exec ITSELF failed
+# and is never confused with "nothing matched".
+_PRESENT_BENCHES_SCRIPT = (
+    'for p in "$@"; do '
+    'if [ -d "$p/sites" ] && [ -d "$p/apps" ] && [ -f "$p/sites/common_site_config.json" ]; '
+    'then echo "$p"; fi; '
+    "done"
+)
+
+
+def present_bench_paths(container, bench_paths: list[str]) -> set[str] | None:
+    """Which of ``bench_paths`` still exist as benches inside ``container``.
+
+    Returns ``None`` when the question could not be asked at all (the exec failed,
+    the container went away, the daemon is unreachable). Fail-HONEST, never
+    fail-open: it must never degrade to an empty set, which the caller would render
+    as "every cached bench is gone" - the same wrong answer as the staleness this
+    exists to remove, just louder.
+
+    Paths ride as argv positionals (``sh -c <script> sh <path>...``), so a cached
+    path is never interpolated into the script text no matter what it contains.
+    """
+    if not bench_paths:
+        return set()
+    try:
+        exit_code, output = container.exec_run(
+            ["sh", "-c", _PRESENT_BENCHES_SCRIPT, "sh", *bench_paths]
+        )
+    except Exception:  # noqa: BLE001 - any transport failure is "could not ask"
+        return None
+    if exit_code != 0:
+        return None
+    return {line for line in _decode(output).split("\n") if line}
 
 
 def resolve_container_state(

@@ -93,7 +93,7 @@ See [../docs/testing/README.md](../docs/testing/README.md) for the per-area brea
 `test_status_unsupervised_e2e.py`, `test_logs_orphan_tail_e2e.py`,
 `test_unlock_e2e.py`, `test_label_e2e.py`, `test_axi_rm_e2e.py`,
 `test_rm_site_e2e.py`, `test_multibench_correctness_e2e.py`,
-`test_harness_safety.py`); run `ls tests/e2e/`
+`test_stale_bench_cache_e2e.py`, `test_harness_safety.py`); run `ls tests/e2e/`
 for the current list. They are not part of the count above since they need a
 Docker daemon and are excluded from a bare `pytest`. `test_axi_rm_e2e.py` is the
 permanent net for `cwcli axi rm` (`add-axi-rm-verb`): its own dedicated instance
