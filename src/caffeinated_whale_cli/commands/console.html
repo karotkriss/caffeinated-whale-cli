@@ -80,7 +80,10 @@ button { color: inherit; }
   grid-area: rail;
   border-width: 0 0 0 1px;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  /* head / scrolling action groups / the static fleet-search panel. The search
+     panel is OUTSIDE #rail-body because the rail re-renders on every delta and
+     an input inside it would lose its text and focus mid-typing. */
+  grid-template-rows: auto minmax(0, 1fr) auto;
 }
 .brand, .rail-head {
   padding: 18px 18px 14px;
@@ -472,6 +475,182 @@ td.code, .code {
   border-color: rgba(255, 143, 120, 0.45);
   background: rgba(255, 143, 120, 0.08);
 }
+.where-panel {
+  min-width: 0;
+  border-top: 1px solid var(--line-soft);
+  padding: 14px 16px;
+  display: grid;
+  gap: 8px;
+}
+.where-panel h3 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.where-form {
+  display: flex;
+  gap: 6px;
+}
+.where-form input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 9px;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+.where-form input::placeholder { color: var(--quiet); }
+.where-form button, .log-toolbar button {
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-2);
+  color: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.where-form button:hover, .log-toolbar button:hover {
+  border-color: rgba(246, 192, 95, 0.65);
+  background: #282821;
+}
+.where-form input:focus-visible, .where-form button:focus-visible,
+.log-toolbar button:focus-visible, dialog input:focus-visible,
+.modal-buttons button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.where-results {
+  max-height: 180px;
+  overflow: auto;
+  display: grid;
+  gap: 6px;
+  align-content: start;
+}
+.where-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  align-items: center;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  padding: 7px 9px;
+  background: var(--panel);
+}
+.where-row .where-name { overflow-wrap: anywhere; }
+.where-row .where-meta {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.log-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+pre.log-lines {
+  margin: 0;
+  padding: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  overflow: auto;
+  max-height: 320px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.log-file {
+  color: var(--quiet);
+  font-size: 11px;
+  font-weight: 400;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+dialog {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 20px;
+  width: min(440px, calc(100vw - 40px));
+  box-shadow: var(--shadow);
+}
+dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+dialog h3 {
+  margin: 0 0 10px;
+  font-size: 16px;
+  letter-spacing: 0;
+}
+.modal-warning {
+  margin: 0;
+  padding: 10px;
+  color: var(--amber);
+  background: var(--amber-bg);
+  border: 1px solid rgba(240, 182, 109, 0.4);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+.modal-help {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+dialog label {
+  display: block;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+dialog input {
+  display: block;
+  width: 100%;
+  margin-top: 5px;
+  padding: 8px 10px;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+.modal-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+.modal-buttons button {
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-2);
+  color: inherit;
+  cursor: pointer;
+}
+.modal-buttons button:hover:not(:disabled) {
+  border-color: rgba(246, 192, 95, 0.65);
+  background: #282821;
+}
+.modal-confirm {
+  color: var(--focus);
+  background: rgba(246, 192, 95, 0.12);
+  border-color: rgba(246, 192, 95, 0.5);
+  font-weight: 650;
+}
+.modal-confirm:disabled {
+  color: var(--quiet);
+  background: #171714;
+  border-color: var(--line);
+  cursor: not-allowed;
+}
 .sr-only {
   position: absolute;
   width: 1px;
@@ -558,19 +737,31 @@ td.code, .code {
   <aside class="rail" aria-label="Actions">
     <div class="rail-head"><h2>Actions</h2></div>
     <div id="rail-body" class="rail-body"></div>
+    <div class="where-panel">
+      <h3 id="where-title">Fleet search</h3>
+      <form id="where-form" class="where-form" aria-labelledby="where-title">
+        <input id="where-input" name="q" placeholder="app or site name" autocomplete="off" aria-label="Search cached apps and sites">
+        <button type="submit">Search</button>
+      </form>
+      <div id="where-results" class="where-results"><div class="muted">Search the cache for apps and sites</div></div>
+    </div>
     <div id="action-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
     <div id="conn-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
   </aside>
 </div>
+<dialog id="modal" aria-labelledby="modal-title">
+  <form id="modal-form" method="dialog"><div id="modal-content"></div></form>
+</dialog>
 <script>
 (() => {
   "use strict";
 
   const model = new Map();
   const detailCache = new Map();
+  const logsCache = new Map();
   const expanded = new Set();
   const eventRows = [];
-  const tabs = ["processes", "sites", "apps"];
+  const tabs = ["processes", "sites", "apps", "logs"];
   const initialFocus = new URLSearchParams(location.search).get("focus");
   let selected = initialFocus ? {type: "instance", project: initialFocus} : {type: "empty"};
   let activeTab = "processes";
@@ -601,6 +792,7 @@ td.code, .code {
     }
     if (node.dataset.tab !== undefined) return `tab:${node.dataset.tab}`;
     if (node.dataset.action !== undefined) return `action:${node.dataset.action}`;
+    if (node.dataset.logsRefresh !== undefined) return "logs-refresh";
     return null;
   }
 
@@ -980,7 +1172,10 @@ td.code, .code {
   function renderTabs() {
     const focusKey = controlFocusKey(document.activeElement);
     el("tabs").innerHTML = tabs.map(tab => {
-      const label = tab === "sites" ? "Sites <small>cached</small>" : tab === "apps" ? "Apps <small>cached</small>" : "Processes";
+      const label = tab === "sites" ? "Sites <small>cached</small>"
+        : tab === "apps" ? "Apps <small>cached</small>"
+        : tab === "logs" ? "Logs <small>live</small>"
+        : "Processes";
       const selectedTab = activeTab === tab;
       return `<button id="tab-${tab}" class="tab ${selectedTab ? "active" : ""}" role="tab" data-tab="${tab}" aria-selected="${selectedTab ? "true" : "false"}" aria-controls="detail" tabindex="${selectedTab ? "0" : "-1"}">${label}</button>`;
     }).join("");
@@ -993,6 +1188,8 @@ td.code, .code {
       renderSites();
     } else if (activeTab === "apps") {
       renderApps();
+    } else if (activeTab === "logs") {
+      renderLogs();
     } else {
       renderProcesses();
     }
@@ -1092,6 +1289,7 @@ td.code, .code {
       const sites = bench.sites || [];
       return `<div class="inventory-block">
         <div class="inventory-title"><span>${esc(bench.label || bench.path)}</span><span class="pill neutral">cached</span></div>
+        <div class="tree-meta">${esc(benchDetailMeta(bench))}</div>
         ${sites.length ? `<div class="table-wrap"><table><thead><tr><th>Site</th><th>Default</th><th>Config</th><th>Apps</th></tr></thead><tbody>
           ${sites.map(site => `<tr>
             <td class="code">${esc(site.name)}</td>
@@ -1120,20 +1318,116 @@ td.code, .code {
       const installedRows = sites.flatMap(site => (site.installed_apps || []).map(app => ({site, app})));
       return `<div class="inventory-block">
         <div class="inventory-title"><span>${esc(bench.label || bench.path)}</span><span class="pill neutral">cached</span></div>
+        <div class="tree-meta">${esc(benchDetailMeta(bench))}</div>
         <div class="section"><h3>Available apps</h3><div class="chips">${available.length ? available.map(app => `<span class="chip">${esc(app)}</span>`).join("") : unknown("could not find out")}</div></div>
         <div class="section"><h3>Installed apps</h3>
-          ${installedRows.length ? `<div class="table-wrap"><table><thead><tr><th>Site</th><th>App</th><th>Verification</th></tr></thead><tbody>
-            ${installedRows.map(row => `<tr>
-              <td class="code">${esc(row.site.name)}</td>
-              <td class="code">${esc(row.app)}</td>
-              <td>${row.site.installed_apps_verified ? "verified" : unknown("remembered - could not verify")}</td>
-            </tr>`).join("")}
+          ${installedRows.length ? `<div class="table-wrap"><table><thead><tr><th>Site</th><th>App</th><th>Version</th><th>Branch</th><th>Verification</th></tr></thead><tbody>
+            ${installedRows.map(row => {
+              const app = appParts(row.app);
+              return `<tr>
+                <td class="code">${esc(row.site.name)}</td>
+                <td class="code">${esc(app.name)}</td>
+                <td class="code">${app.version ? esc(app.version) : `<span class="muted">not recorded</span>`}</td>
+                <td class="code">${app.branch ? esc(app.branch) : `<span class="muted">not recorded</span>`}</td>
+                <td>${row.site.installed_apps_verified ? "verified" : unknown("remembered - could not verify")}</td>
+              </tr>`;
+            }).join("")}
           </tbody></table></div>` : `<div class="empty">No installed apps in cached inspect result</div>`}
         </div>
       </div>`;
     }).join("");
     el("detail").innerHTML = `<div class="summary-grid">${metric("Inspect freshness", detail.served_from || "unknown")}${metric("Project", detail.project)}${metric("Benches", benches.length)}${metric("Apps", countApps(benches))}</div>
       <div class="site-apps">${blocks || `<div class="empty">No cached app detail</div>`}</div>`;
+  }
+
+  function benchDetailMeta(bench) {
+    const where = `path ${bench.path || "unknown"}`;
+    const def = bench.default_site ? `default site ${bench.default_site}` : "no default site recorded";
+    return `${where} · ${def}`;
+  }
+
+  function appParts(entry) {
+    // Each cached installed-app entry is "name version branch" from bench
+    // list-apps; older cache rows may carry the name alone. Absent parts render
+    // as "not recorded" - never invented.
+    const parts = String(entry || "").trim().split(/\s+/);
+    return {name: parts[0] || "", version: parts[1] || "", branch: parts.slice(2).join(" ")};
+  }
+
+  function logsKey() {
+    return `${selected.project}|${selected.benchKey || ""}`;
+  }
+
+  async function fetchLogs() {
+    if (!selected.project) return;
+    const key = logsKey();
+    const previous = logsCache.get(key);
+    if (previous && previous.state === "loading") return;
+    logsCache.set(key, {state: "loading"});
+    if (activeTab === "logs") renderDetail();
+    const params = new URLSearchParams({lines: "200"});
+    const selector = benchSelector(selectedBench());
+    if (selector) params.set("bench", selector);
+    const project = selected.project;
+    try {
+      const response = await fetch(`/api/instance/${encodeURIComponent(project)}/logs?${params}`);
+      const body = await response.json();
+      if (!response.ok || !body.ok) {
+        const error = body.error || {};
+        const benches = body.choice && body.choice.options
+          ? " Benches: " + body.choice.options.map(o => o.label || o.value).join(", ")
+          : "";
+        throw new Error((error.message || "could not find out") + benches);
+      }
+      logsCache.set(key, {
+        state: "ready",
+        data: body.outcome,
+        warnings: body.warnings || [],
+        at: new Date().toLocaleTimeString()
+      });
+    } catch (error) {
+      logsCache.set(key, {state: "error", message: error.message || "could not find out"});
+    }
+    if (activeTab === "logs" && logsKey() === key) renderDetail();
+  }
+
+  function renderLogs() {
+    const focusKey = controlFocusKey(document.activeElement);
+    if (!selected.project) {
+      el("detail").innerHTML = `<div class="empty">No instance selected</div>`;
+      return;
+    }
+    const entry = logsCache.get(logsKey());
+    const toolbar = when => `<div class="log-toolbar">
+      <span class="muted">${esc(when)}</span>
+      <button data-logs-refresh>Refresh</button>
+    </div>`;
+    if (!entry || entry.state === "loading") {
+      el("detail").innerHTML = `<div class="empty">Loading logs</div>`;
+      return;
+    }
+    if (entry.state === "error") {
+      el("detail").innerHTML = toolbar("logs read failed") + `<div class="empty">${esc(entry.message || "could not find out")}</div>`;
+      restoreControlFocus(el("detail"), focusKey);
+      return;
+    }
+    const read = entry.data || {};
+    const warn = (entry.warnings || [])
+      .map(w => `<div class="notice">${esc(w.text || w.code || "")}</div>`).join("");
+    const blocks = (read.logs || []).map(group => `<div class="section">
+      <h3>PROCESS ${esc(group.process)} <span class="log-file">${esc(group.file)}</span></h3>
+      <pre class="log-lines">${esc((group.lines || []).join("\n"))}</pre>
+    </div>`).join("");
+    el("detail").innerHTML = toolbar(`fetched ${entry.at} · last ${read.lines_requested || "?"} lines per process`)
+      + `<div class="summary-grid">
+        ${metric("Bench", read.bench_path)}
+        ${metric("Container", read.container_name)}
+        ${metric("Processes", (read.logs || []).length)}
+        ${metric("Supervision", read.not_cwcli_supervised ? "raw bench logs - not cwcli supervised" : "cwcli supervisord")}
+      </div>`
+      + warn
+      + (blocks || `<div class="empty">No logs written yet</div>`);
+    restoreControlFocus(el("detail"), focusKey);
   }
 
   function countApps(benches) {
@@ -1166,6 +1460,17 @@ td.code, .code {
         ${actionButton("start_instance", "Start instance", "starts bench", busy)}
         ${actionButton("stop_instance", "Stop instance", "stops containers", busy)}
         ${actionButton("restart_instance", "Restart instance", "stop then start", busy)}
+        ${actionButton("refresh_status", "Refresh status", "re-probe health", busy)}
+        ${actionButton("scale_instance", "Scale ports…", "asks to confirm", busy)}
+      </div>
+      <div class="action-group">
+        <h3>Bench</h3>
+        ${actionButton("set_label", "Set label…", "durable handle", busy)}
+        ${actionButton("checkout_app", "Check out app ref…", "fetch + checkout", busy)}
+      </div>
+      <div class="action-group">
+        <h3>Site</h3>
+        ${actionButton("unlock_site", "Unlock site…", "removes locks", busy)}
       </div>
       <div class="action-group">
         <h3>Process</h3>
@@ -1183,14 +1488,16 @@ td.code, .code {
     </button>`;
   }
 
-  async function runAction(action) {
+  const benchScopedActions = ["start_instance", "restart_instance", "restart_process", "set_label", "unlock_site", "checkout_app"];
+
+  async function runAction(action, extra) {
     const inst = selectedInstance();
     if (!inst || pendingAction) return;
     const bench = selectedBench();
     const process = selectedProcess();
-    const payload = {action, project: inst.project};
+    const payload = Object.assign({action, project: inst.project}, extra || {});
     const selector = benchSelector(bench);
-    if (selector && (action === "start_instance" || action === "restart_instance" || action === "restart_process")) {
+    if (selector && benchScopedActions.includes(action)) {
       payload.bench = selector;
     }
     if (action === "restart_process") {
@@ -1210,11 +1517,25 @@ td.code, .code {
       const body = await response.json();
       if (!response.ok || !body.ok) {
         const error = body.error || {};
+        if (response.status === 409 && error.kind === "needs_choice" && error.code === "confirm_scale") {
+          // The confirm arrives FROM CORE: core.scale returned NEEDS_CHOICE
+          // because consent was not given, and its own words describe the blast
+          // radius. The page never invents this warning; it only relays it and
+          // requires the typed project name before retrying with consent.
+          openScaleConfirm(inst.project, error.message || "Scaling needs confirmation.");
+          return;
+        }
         const choice = body.choice && body.choice.options ? " Options: " + body.choice.options.map(o => o.label || o.value).join(", ") : "";
         throw new Error((error.message || "action failed") + choice);
       }
       lastAction = {ok: true, text: `${action.replaceAll("_", " ")} accepted for ${inst.project}`};
       addEvent("fast", `ACTION ${action.replaceAll("_", " ")} ${inst.project}`);
+      if (action === "set_label" || action === "checkout_app") {
+        // The bench label / app registry just changed; the cached detail no
+        // longer describes it.
+        detailCache.delete(inst.project);
+        ensureDetail(inst.project);
+      }
     } catch (error) {
       lastAction = {ok: false, text: error.message || "action failed"};
       addEvent("error", `ACTION ${action} failed`);
@@ -1223,6 +1544,157 @@ td.code, .code {
       renderRail();
       el("action-status").textContent = lastAction ? lastAction.text : "";
     }
+  }
+
+  // ------------------------------------------------------------------ modals
+
+  const modal = el("modal");
+  let modalSubmit = null;
+
+  function openModal(html, onSubmit) {
+    el("modal-content").innerHTML = html;
+    modalSubmit = onSubmit;
+    modal.showModal();
+    const first = modal.querySelector("input");
+    if (first) first.focus();
+  }
+
+  el("modal-form").addEventListener("submit", event => {
+    const cancelled = event.submitter && event.submitter.value === "cancel";
+    const submit = modalSubmit;
+    modalSubmit = null;
+    if (cancelled || !submit) return;
+    const values = Object.fromEntries(new FormData(el("modal-form")).entries());
+    submit(values);
+  });
+
+  modal.addEventListener("close", () => {
+    modalSubmit = null;
+  });
+
+  function modalButtons(confirmLabel, disabled) {
+    return `<div class="modal-buttons">
+      <button value="cancel" formnovalidate>Cancel</button>
+      <button value="confirm" class="modal-confirm"${disabled ? " disabled" : ""}>${esc(confirmLabel)}</button>
+    </div>`;
+  }
+
+  function openScaleConfirm(project, message) {
+    openModal(`<h3 id="modal-title">Scale published ports</h3>
+      <p class="modal-warning">${esc(message)}</p>
+      <label>Type the project name <span class="code">${esc(project)}</span> to confirm
+        <input name="confirm" autocomplete="off" required>
+      </label>
+      ${modalButtons("Scale - restarts benches", true)}`, values => {
+      if (values.confirm === project) runAction("scale_instance", {consent: true});
+    });
+    const input = modal.querySelector('input[name="confirm"]');
+    const confirm = modal.querySelector(".modal-confirm");
+    input.addEventListener("input", () => {
+      confirm.disabled = input.value !== project;
+    });
+  }
+
+  function openLabelModal(inst, bench) {
+    const target = bench ? (bench.label || bench.bench_path) : "the selected bench";
+    openModal(`<h3 id="modal-title">Set bench label</h3>
+      <p class="modal-help">A durable handle for ${esc(target)} on ${esc(inst.project)}, usable anywhere a bench selector is.</p>
+      <label>Label
+        <input name="label" autocomplete="off" required>
+      </label>
+      ${modalButtons("Set label")}`, values => {
+      const label = (values.label || "").trim();
+      if (label) runAction("set_label", {label});
+    });
+  }
+
+  function openCheckoutModal(inst) {
+    const detail = currentDetail();
+    const apps = new Set();
+    if (detail && detail.state === "ready") {
+      (detail.data.benches || []).forEach(bench => (bench.available_apps || []).forEach(app => apps.add(app)));
+    }
+    const options = [...apps].sort().map(app => `<option value="${esc(app)}"></option>`).join("");
+    openModal(`<h3 id="modal-title">Check out an app ref</h3>
+      <p class="modal-help">Fetches and checks out a branch, tag, or commit into an app already in the bench on ${esc(inst.project)}. A dirty working tree is refused - commit or stash in-instance work first (the CLI's --reset is the way through, on purpose not offered here).</p>
+      <label>App
+        <input name="app" autocomplete="off" required list="modal-apps">
+      </label>
+      <datalist id="modal-apps">${options}</datalist>
+      <label>Ref (branch, tag, or commit)
+        <input name="ref" autocomplete="off" required>
+      </label>
+      ${modalButtons("Check out")}`, values => {
+      const app = (values.app || "").trim();
+      const ref = (values.ref || "").trim();
+      if (app && ref) runAction("checkout_app", {app, ref});
+    });
+  }
+
+  function openUnlockModal(inst) {
+    const detail = currentDetail();
+    const sites = new Set();
+    if (detail && detail.state === "ready") {
+      (detail.data.benches || []).forEach(bench => (bench.sites || []).forEach(site => sites.add(site.name)));
+    }
+    const options = [...sites].sort().map(site => `<option value="${esc(site)}"></option>`).join("");
+    openModal(`<h3 id="modal-title">Unlock a site</h3>
+      <p class="modal-help">Removes the site's locks folder on ${esc(inst.project)}; it regenerates on the next lock. Leave the site blank to use the bench's default site.</p>
+      <label>Site (blank = default site)
+        <input name="site" autocomplete="off" list="modal-sites">
+      </label>
+      <datalist id="modal-sites">${options}</datalist>
+      ${modalButtons("Unlock")}`, values => {
+      const site = (values.site || "").trim();
+      runAction("unlock_site", site ? {site} : {});
+    });
+  }
+
+  // -------------------------------------------------------------- fleet search
+
+  async function runWhere(term) {
+    const results = el("where-results");
+    results.innerHTML = `<div class="muted">searching the cache…</div>`;
+    try {
+      const response = await fetch(`/api/where?q=${encodeURIComponent(term)}`);
+      const body = await response.json();
+      if (!response.ok || !body.ok) {
+        throw new Error((body.error && body.error.message) || "could not find out");
+      }
+      renderWhere(term, body);
+    } catch (error) {
+      results.innerHTML = `<div class="notice error">${esc(error.message || "could not find out")}</div>`;
+      el("action-status").textContent = "Fleet search failed.";
+    }
+  }
+
+  function renderWhere(term, body) {
+    const rows = body.matches || [];
+    // The daemon-unreachable case must not read as "everything is gone": the
+    // core reports it as verified=false + per-row "unverified", and both are
+    // shown as exactly that.
+    const head = body.verified ? "" : `<div class="notice">Docker was not reachable - matches are remembered, not verified.</div>`;
+    el("action-status").textContent = `${rows.length} match${rows.length === 1 ? "" : "es"} for ${term}`;
+    if (!rows.length) {
+      el("where-results").innerHTML = head + `<div class="muted">No cached matches for "${esc(term)}"</div>`;
+      return;
+    }
+    el("where-results").innerHTML = head + rows.map(match => {
+      const state = match.project_state === "present"
+        ? `<span class="pill up">present</span>`
+        : match.project_state === "absent"
+          ? `<span class="pill down">instance gone</span>`
+          : `<span class="pill unknown">could not verify</span>`;
+      const name = match.type === "app"
+        ? [match.name, match.version, match.branch].filter(Boolean).join(" ")
+        : match.name;
+      const meta = [match.type, match.project, match.site, match.type === "app" ? (match.installed ? "installed" : "available only") : null]
+        .filter(Boolean).join(" · ");
+      return `<div class="where-row">
+        <span class="code where-name">${esc(name)}</span>${state}
+        <span class="where-meta">${esc(meta)}</span>
+      </div>`;
+    }).join("");
   }
 
   el("tree").addEventListener("click", event => {
@@ -1252,7 +1724,12 @@ td.code, .code {
 
   function activateTab(tab, focus) {
     activeTab = tab;
-    if (selected.project) ensureDetail(selected.project);
+    if (selected.project) {
+      // Logs are live, so every activation re-reads them; the other tabs serve
+      // the cached inspect detail.
+      if (tab === "logs") fetchLogs();
+      else ensureDetail(selected.project);
+    }
     render();
     if (focus) restoreControlFocus(el("tabs"), `tab:${tab}`);
   }
@@ -1280,7 +1757,29 @@ td.code, .code {
   el("rail-body").addEventListener("click", event => {
     const button = event.target.closest("[data-action]");
     if (!button || button.getAttribute("aria-disabled") === "true") return;
-    runAction(button.dataset.action);
+    const action = button.dataset.action;
+    const inst = selectedInstance();
+    if (!inst || pendingAction) return;
+    if (action === "set_label") return openLabelModal(inst, selectedBench());
+    if (action === "checkout_app") return openCheckoutModal(inst);
+    if (action === "unlock_site") return openUnlockModal(inst);
+    if (action === "scale_instance") {
+      // Ask WITHOUT consent first: when expansion is needed, core answers
+      // NEEDS_CHOICE/confirm_scale and its message drives the typed-name
+      // confirm; a covering no-op never asks. Consent means consent only.
+      return runAction("scale_instance", {consent: false});
+    }
+    runAction(action);
+  });
+
+  el("detail").addEventListener("click", event => {
+    if (event.target.closest("[data-logs-refresh]")) fetchLogs();
+  });
+
+  el("where-form").addEventListener("submit", event => {
+    event.preventDefault();
+    const term = el("where-input").value.trim();
+    if (term) runWhere(term);
   });
 
   // First paint before any server data: honest empty states in every pane
