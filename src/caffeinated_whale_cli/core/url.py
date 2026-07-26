@@ -135,8 +135,8 @@ def probe_url(
                 "url.unresolved",
                 f"Container port {assigned[0]} for bench {resolved_bench_path} has no "
                 "live host binding. If the bench is outside the instance's published "
-                f"range, run 'cwcli scale {project_name}'; otherwise repair the Docker "
-                "port binding, then retry.",
+                f"range, run 'cwcli axi scale {project_name}'; otherwise repair the "
+                "Docker port binding, then retry.",
             )
         )
     else:

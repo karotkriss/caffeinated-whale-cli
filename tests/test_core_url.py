@@ -188,7 +188,7 @@ class TestUnreadableRoutingData:
         assert result.data.url is None
         assert result.data.reachable is False
         assert "has no live host binding" in result.warnings[-1].text
-        assert "cwcli scale proj" in result.warnings[-1].text
+        assert "run 'cwcli axi scale proj'" in result.warnings[-1].text
 
 
 class TestExplicitMultiBenchSelection:

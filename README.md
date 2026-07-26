@@ -2263,7 +2263,7 @@ This verb reuses those existing primitives rather than adding a second URL resol
 `cwcli axi status` also performs a fresh one-shot probe; only the human `cwcli status --watch` path suppresses HTTP probing.
 Like every other bench-scoped verb, a stopped project is a usage error naming `cwcli start` (exit 2, no `--yes`) and an ambiguous multi-bench project with no `--bench` is a usage error naming it.
 `--site` sends that site as the `Host` header (Frappe routes by `Host`); omitted, it falls back to the bench's own representative site (its default, else its only/first cached site), reported so the observation stays attributable, and a bench with no site at all is probed host-less rather than guessing one.
-An unreadable port config is `url: null` / `reachable: false` with a warning that names the live config file to repair; a missing live host binding names `cwcli scale` when the bench lies beyond the published range.
+An unreadable port config is `url: null` / `reachable: false` with a warning that names the live config file to repair; a missing live host binding names `cwcli axi scale` when the bench lies beyond the published range.
 Neither case guesses `:8000`.
 `http_code` is whatever code curl saw, verbatim: a 404 or 500 still counts as `reachable: true`, exactly as `cwcli axi status` already treats "any code is serving".
 There is no human `cwcli url` yet; use `cwcli open`'s banner or `cwcli status` for the equivalent human-facing information.
