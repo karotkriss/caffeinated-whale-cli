@@ -25,6 +25,8 @@ Endpoints:
 * ``GET /api/where?q=<term>``          - ``core.where`` cache search, its
   per-row ``project_state`` verified/remembered token passed through unchanged
   (same-origin only, like ``/logs``)
+* ``POST /api/session``                - exchange the bearer token for the
+  browser session cookie (only meaningful when authentication is on)
 * ``POST /api/action``                 - the Console rail's synchronous safe
   set (the captain's Tier A ruling, 2026-07-24): start/stop/restart one
   instance, restart one supervised process, refresh one instance's health,
@@ -44,23 +46,67 @@ connection itself carries the answer, so closing the tab retracts focus when a
 later delta or keepalive discovers the closed response stream. See
 ``core.fleet.Fleet.set_focus``.
 
-**Binding.** The default is ``0.0.0.0`` because the primary environment is WSL
-and a Windows browser cannot reach a WSL-only ``127.0.0.1`` listener. Every
-endpoint names local projects, ports and sites, and the action endpoint can drive
-non-destructive lifecycle operations, so ``--host 127.0.0.1`` is there for anyone
-on an untrusted network. CORS remains open for snapshot, event and detail reads only;
-cross-origin browser actions and the sensitive logs/where reads are refused,
-but this is not client authentication.
+**Binding.** The default is ``127.0.0.1``. Every endpoint names local projects,
+ports and sites, and the action endpoint drives lifecycle operations, so the
+listener is this machine's by default and reaching it from elsewhere is a
+deliberate act.
+
+A Windows browser CAN reach a WSL-only ``127.0.0.1`` listener: WSL's default NAT
+mode forwards ``localhost`` into the distro, which Microsoft documents
+(https://learn.microsoft.com/en-us/windows/wsl/networking) and which this repo
+measured on its own primary machine (``docs/e2e/serve-daemon.md`` section 1,
+whose table records ``127.0.0.1`` as reachable from Windows). The reason
+``0.0.0.0`` remains available is the narrower one that table also records: the
+WSL-IP route survives ``localhostForwarding`` being turned off, and it is what a
+genuinely remote browser needs.
+
+**Authentication.** Set ``CWCLI_SERVE_TOKEN`` to require ``Authorization: Bearer
+<token>`` on every non-``OPTIONS`` ``/api/*`` request. The token is read from
+the ENVIRONMENT only and never from a flag, so it stays out of ``ps`` output
+(the ``core/init.py`` secret-transport rule). Comparison is
+``hmac.compare_digest``. ``GET /`` stays open because it is the static page with
+no fleet data in it, and a browser that could not load it could never
+authenticate. ``OPTIONS`` is the browser-preflight exception: it returns no
+fleet data, dispatches no action, and an action preflight grants no cross-origin
+access.
+
+**A non-loopback bind REFUSES TO START without a token.** An explicit
+``--host 0.0.0.0`` used to be silently unauthenticated: the same-origin guard
+below returns True when a request carries neither ``Origin`` nor
+``Sec-Fetch-Site``, which is exactly what a non-browser client sends, so any host
+on the LAN could stop or restart an instance with one ``curl``. That guard is a
+CSRF guard and is correct as one; it was never authentication, and it is kept
+here as defense in depth rather than relied on.
+
+Browsers authenticate once via ``POST /api/session``, which exchanges the bearer
+token for a ``HttpOnly``/``SameSite=Strict`` session cookie. That exists because
+``EventSource`` cannot send request headers, so a header-only scheme would leave
+the SSE stream unauthenticatable from a page. The cookie carries one random
+daemon-wide session id, never the token itself. It is replayable if captured
+until that daemon restarts. ``HttpOnly`` and ``SameSite`` constrain browser
+behavior; they do not encrypt plain HTTP. A non-loopback listener belongs only
+on a trusted network.
+
+CORS remains open for unauthenticated snapshot, event and detail reads only.
+When authentication is on, non-browser clients can send the bearer token
+directly, while browsers use the same-origin Console page and its session
+cookie. Cross-origin browser actions and the sensitive logs/where reads are
+always refused.
 """
 
 from __future__ import annotations
 
+import hmac
+import ipaddress
 import json
+import os
 import platform
 import queue
+import secrets
 import socket
 import threading
 from dataclasses import asdict, dataclass, is_dataclass
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from urllib.parse import parse_qs, unquote, urlparse
@@ -86,9 +132,11 @@ from ..utils.console import console, stderr_console
 from . import start as start_cmd
 
 DEFAULT_PORT = 8765
-DEFAULT_HOST = "0.0.0.0"  # noqa: S104 - see the module docstring's "Binding" note
+DEFAULT_HOST = "127.0.0.1"
 DEFAULT_INTERVAL = 2.5
 KEEPALIVE_S = 15.0
+TOKEN_ENV = "CWCLI_SERVE_TOKEN"
+SESSION_COOKIE = "cwcli_serve_session"
 
 # Map the core's closed error kinds onto equivalent HTTP statuses.
 _HTTP_FOR_KIND = {
@@ -104,6 +152,36 @@ _ACTION_LOCK_STRIPES = 64
 CONSOLE_PAGE = (
     files("caffeinated_whale_cli.commands").joinpath("console.html").read_text(encoding="utf-8")
 )
+
+
+def auth_token() -> str | None:
+    """The configured bearer token, or None when authentication is off.
+
+    Read from the ENVIRONMENT only. There is deliberately no ``--token`` flag:
+    an argv secret is readable by every other process on the machine, which is
+    the same rule ``core/init.py`` follows for the admin and db-root passwords.
+    """
+    return (os.environ.get(TOKEN_ENV) or "").strip() or None
+
+
+def is_loopback(host: str) -> bool:
+    """True only when this bind address is provably this machine's loopback.
+
+    Fails CLOSED. An empty host binds every interface, and a name that is not an
+    IP literal could resolve anywhere, so both answer False: "this bind needs a
+    token" is the safe answer to a question that cannot be settled here.
+    """
+    if not host:
+        return False
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
+def _secret_matches(presented: str, expected: str) -> bool:
+    """Timing-safe secret comparison, over bytes so a non-ASCII token cannot raise."""
+    return hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8"))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -184,6 +262,8 @@ class _Handler(BaseHTTPRequestHandler):
     fleet: core_fleet.Fleet
     hub: _Hub
     action_locks: tuple[threading.Lock, ...]
+    token: str | None
+    session_id: str
 
     def log_message(self, fmt, *args):  # noqa: A003 - stdlib hook name
         """Silence per-request logging; a dashboard polls, and the noise buries the banner."""
@@ -215,6 +295,80 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    # ------------------------------------------------------------------- auth
+
+    def _authenticated(self) -> bool:
+        """Whether this request carries the configured credential.
+
+        Two accepted forms, one secret. ``Authorization: Bearer`` is what a
+        programmatic client (curl, the future Tauri shell) sends. The session
+        cookie is what a BROWSER falls back to, and it exists for one concrete
+        reason: ``EventSource`` cannot set request headers, so a header-only
+        scheme would leave ``/api/events`` unreachable from the Console page.
+        """
+        expected = self.token
+        if expected is None:
+            return True
+        scheme, _, presented = (self.headers.get("Authorization") or "").partition(" ")
+        if scheme.lower() == "bearer" and _secret_matches(presented.strip(), expected):
+            return True
+        return _secret_matches(self._session_cookie(), self.session_id)
+
+    def _session_cookie(self) -> str:
+        raw = self.headers.get("Cookie")
+        if not raw:
+            return ""
+        try:
+            return SimpleCookie(raw)[SESSION_COOKIE].value
+        except (CookieError, KeyError):
+            return ""
+
+    def _refuse_unauthenticated(self) -> bool:
+        """Send the 401 and return True when the request lacks the credential.
+
+        The response names the environment variable and NEVER the value, nor
+        what was presented: an error that echoes a credential puts it into the
+        browser console, the terminal and any bug report copied out of them.
+        """
+        if self._authenticated():
+            return False
+        body = json.dumps(
+            {
+                "ok": False,
+                "error": {
+                    "kind": ErrorKind.PRECONDITION.value,
+                    "code": "auth.required",
+                    "message": "This cwcli serve daemon requires an access token.",
+                    "hint": f"Send 'Authorization: Bearer <token>' matching {TOKEN_ENV}.",
+                },
+            }
+        ).encode()
+        self.send_response(401)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("WWW-Authenticate", 'Bearer realm="cwcli serve"')
+        self.end_headers()
+        self.wfile.write(body)
+        return True
+
+    def _open_session(self) -> None:
+        """Hand an authenticated caller the browser session cookie.
+
+        Reached only after ``_refuse_unauthenticated``, so the bearer token has
+        already been verified. The cookie carries a per-launch random id rather
+        than the token. It remains a bearer credential that can be replayed if
+        captured until the daemon restarts. ``HttpOnly`` keeps page scripts from
+        reading it back and ``SameSite=Strict`` keeps a cross-site request from
+        carrying it.
+        """
+        self.send_response(204)
+        self.send_header(
+            "Set-Cookie",
+            f"{SESSION_COOKIE}={self.session_id}; Path=/; HttpOnly; SameSite=Strict",
+        )
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_OPTIONS(self):  # noqa: N802 - stdlib hook name
         if urlparse(self.path).path == "/api/action":
             self.send_response(204)
@@ -231,8 +385,14 @@ class _Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         if path == "/":
+            # The page itself is static and holds no fleet data, and gating it
+            # would leave an authenticated browser with no way to reach the
+            # prompt it needs in order to authenticate.
             self._send_html(CONSOLE_PAGE)
-        elif path == "/api/snapshot":
+            return
+        if self._refuse_unauthenticated():
+            return
+        if path == "/api/snapshot":
             self._send_json({"instances": self.fleet.snapshot()}, cors=True)
         elif path == "/api/events":
             focus = (parse_qs(parsed.query).get("focus") or [None])[0]
@@ -250,10 +410,24 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802 - stdlib hook name
         parsed = urlparse(self.path)
-        if parsed.path != "/api/action":
+        if parsed.path not in {"/api/action", "/api/session"}:
             self._send_json({"ok": False, "error": {"message": "not found"}}, status=404)
+            self.close_connection = True
             return
-        if self._refuse_cross_origin():
+        # Drain the body BEFORE any guard. This is HTTP/1.1 with keep-alive, so a
+        # guard that answers 401/403/415 without consuming the request body leaves
+        # those bytes in the socket, and the NEXT request on that connection is
+        # parsed starting mid-body - which the browser sees as a bogus 501.
+        try:
+            raw = self._read_request_body()
+        except CwcliError as e:
+            self.close_connection = True
+            self._send_core_error(e)
+            return
+        if self._refuse_unauthenticated() or self._refuse_cross_origin():
+            return
+        if parsed.path == "/api/session":
+            self._open_session()
             return
         if not self._action_json_content_type():
             self._send_json(
@@ -269,7 +443,7 @@ class _Handler(BaseHTTPRequestHandler):
             )
             return
         try:
-            payload = self._read_action_body()
+            payload = _parse_action_body(raw)
             status, body = self._dispatch_action(payload)
         except CwcliError as e:
             self._send_core_error(e)
@@ -329,7 +503,8 @@ class _Handler(BaseHTTPRequestHandler):
         media_type = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
         return media_type == "application/json"
 
-    def _read_action_body(self) -> dict:
+    def _read_request_body(self) -> bytes:
+        """Consume the whole request body, bounded. See ``do_POST`` for why always."""
         raw_length = self.headers.get("Content-Length") or "0"
         try:
             length = int(raw_length)
@@ -351,22 +526,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "request.too_large",
                 "Action request body is too large.",
             )
-        raw = self.rfile.read(length) if length else b"{}"
-        try:
-            body = json.loads(raw.decode("utf-8") or "{}")
-        except (UnicodeDecodeError, json.JSONDecodeError) as e:
-            raise CwcliError(
-                ErrorKind.USAGE,
-                "request.json_invalid",
-                "Action request body must be JSON.",
-            ) from e
-        if not isinstance(body, dict):
-            raise CwcliError(
-                ErrorKind.USAGE,
-                "request.json_object_required",
-                "Action request body must be a JSON object.",
-            )
-        return body
+        return self.rfile.read(length) if length else b"{}"
 
     def _dispatch_action(self, payload: dict) -> tuple[int, dict]:
         action = _required_str(payload, "action")
@@ -714,6 +874,24 @@ class _Handler(BaseHTTPRequestHandler):
             self.hub.unsubscribe(client_id)
 
 
+def _parse_action_body(raw: bytes) -> dict:
+    try:
+        body = json.loads(raw.decode("utf-8") or "{}")
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise CwcliError(
+            ErrorKind.USAGE,
+            "request.json_invalid",
+            "Action request body must be JSON.",
+        ) from e
+    if not isinstance(body, dict):
+        raise CwcliError(
+            ErrorKind.USAGE,
+            "request.json_object_required",
+            "Action request body must be a JSON object.",
+        )
+    return body
+
+
 def _required_str(payload: dict, key: str) -> str:
     value = payload.get(key)
     if not isinstance(value, str) or not value.strip():
@@ -834,8 +1012,18 @@ def _check_start_port_conflicts(project: str) -> None:
     )
 
 
-def make_server(host: str, port: int, fleet: core_fleet.Fleet, hub: _Hub) -> ThreadingHTTPServer:
-    """Bind the HTTP server, handing the handler class its fleet and hub."""
+def make_server(
+    host: str,
+    port: int,
+    fleet: core_fleet.Fleet,
+    hub: _Hub,
+    token: str | None = None,
+) -> ThreadingHTTPServer:
+    """Bind the HTTP server, handing the handler class its fleet, hub and token.
+
+    ``token=None`` means authentication is off, which is the shipped loopback
+    default. The browser session id is fresh per launch and never persisted.
+    """
     handler = type(
         "Handler",
         (_Handler,),
@@ -843,6 +1031,8 @@ def make_server(host: str, port: int, fleet: core_fleet.Fleet, hub: _Hub) -> Thr
             "fleet": fleet,
             "hub": hub,
             "action_locks": tuple(threading.Lock() for _ in range(_ACTION_LOCK_STRIPES)),
+            "token": token,
+            "session_id": secrets.token_urlsafe(32),
         },
     )
     httpd = ThreadingHTTPServer((host, port), handler)
@@ -879,8 +1069,9 @@ def serve(
     host: str = typer.Option(
         DEFAULT_HOST,
         "--host",
-        help="Address to bind. The 0.0.0.0 default is what lets a browser outside "
-        "WSL reach the daemon; use 127.0.0.1 to keep it to this machine.",
+        help="Address to bind. Defaults to loopback, which a Windows browser still "
+        f"reaches under WSL. Any value other than a loopback IP literal requires "
+        f"${TOKEN_ENV}.",
     ),
     interval: float = typer.Option(
         DEFAULT_INTERVAL,
@@ -891,6 +1082,20 @@ def serve(
     """Serve the live fleet model over HTTP + SSE (foreground; Ctrl-C to stop)."""
     if interval <= 0:
         stderr_console.print("[red]--interval must be greater than 0.[/red]")
+        raise typer.Exit(code=2)
+
+    # Refuse BEFORE anything binds or probes. A reachable-from-the-network
+    # daemon whose only guard is a CSRF check is drivable by any host that can
+    # route to it, so an unauthenticated remote bind is not offered at all.
+    token = auth_token()
+    if token is None and not is_loopback(host):
+        stderr_console.print(
+            f"[red]Refusing to bind {host} without authentication.[/red]\n"
+            f"  That address is reachable from other machines, and the Console's "
+            f"same-origin guard is a CSRF guard, not authentication.\n"
+            f"  Set {TOKEN_ENV} to a secret of your choosing, or bind "
+            f"{DEFAULT_HOST} (which a Windows browser still reaches under WSL)."
+        )
         raise typer.Exit(code=2)
 
     # The two reference each other (the fleet publishes through the hub; the hub
@@ -927,7 +1132,7 @@ def serve(
         t.start()
 
     try:
-        httpd = make_server(host, port, fleet, hub)
+        httpd = make_server(host, port, fleet, hub, token)
     except OSError as e:
         stderr_console.print(f"[red]Could not bind {host}:{port}: {e}[/red]")
         stop.set()
@@ -935,12 +1140,18 @@ def serve(
 
     console.print(f"[bold]cwcli serve[/bold] on [cyan]http://{host}:{port}[/cyan]")
     console.print(f"  instances: {len(fleet.snapshot())}   probe interval: {interval}s")
-    if host == "0.0.0.0":  # noqa: S104
+    # The token itself is NEVER printed - only that one is in force.
+    console.print(
+        f"  auth: [green]required[/green] (${TOKEN_ENV})"
+        if token
+        else "  auth: none (loopback only)"
+    )
+    if not is_loopback(host):
         addr = _outbound_address()
         if addr:
             console.print(f"  reachable at [cyan]http://{addr}:{port}[/cyan]")
-        if "microsoft" in platform.uname().release.lower():
-            console.print(f"  from Windows: [cyan]http://localhost:{port}[/cyan] (WSL forwarding)")
+    if "microsoft" in platform.uname().release.lower():
+        console.print(f"  from Windows: [cyan]http://localhost:{port}[/cyan] (WSL forwarding)")
     console.print("  Ctrl-C to stop")
 
     try:
