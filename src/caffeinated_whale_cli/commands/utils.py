@@ -381,6 +381,70 @@ def _inline_value(token: str, values: Mapping[str, str]) -> tuple[str, str] | No
     return None
 
 
+def _parse_short_cluster(
+    token: str, flags: Mapping[str, tuple[str, bool]], values: Mapping[str, str]
+) -> tuple[list[tuple[str, bool]], tuple[str, str] | None, bool] | None:
+    """Resolve an attached or clustered short-option token: ``-pweb``, ``-vy``, ``-vpweb``.
+
+    Returns the ``(destination, value)`` pairs the cluster sets, followed by the
+    value-taking option it ends on as ``(option, attached_value)`` - an EMPTY
+    attached value meaning the value is the next token - and whether the cluster
+    requests eager help. Click's own grammar, reproduced: a value-taking short
+    swallows the rest of the token as its value and stops the cluster, so
+    ``-pv web`` is ``--process v`` with ``web`` still a project name.
+
+    Returns ``None`` for anything that is not a short cluster THIS command fully
+    defines - a long option, a bare ``-``, ``--``, or any cluster holding a
+    character the command does not know.
+
+    That last part is ALL-OR-NOTHING on purpose, and it is the whole safety
+    property: a cluster is applied only when EVERY character in it resolves, so
+    a typo, a truncation, or a flag borrowed from a sibling subcommand can never
+    synthesise the ``-y`` consent it happens to contain. ``cwcli rm proj -yq``
+    must not become ``cwcli rm proj -y``. Returning ``None`` rather than raising
+    keeps the decision POSITIONAL, like the rest of this splitter: in option
+    position the caller refuses it, in value position it is simply the value, so
+    a bench label such as ``-staging`` still resolves. The eager-help exception
+    is a malformed cluster that reaches ``-h`` before an unknown short, such as
+    ``-vhq``: it is refused in either position so the unknown short cannot be
+    hidden by help or preserved as a value.
+    """
+    if len(token) < 2 or not token.startswith("-") or token[1] == "-":
+        return None
+    recovered: list[tuple[str, bool]] = []
+    eager_help = False
+    for index, char in enumerate(token[1:], start=1):
+        option = f"-{char}"
+        if option in _HELP_OPTIONS:
+            eager_help = True
+        elif option in flags:
+            recovered.append(flags[option])
+        elif option in values:
+            return recovered, (option, token[index + 1 :]), eager_help
+        else:
+            return None
+    return recovered, None, eager_help
+
+
+def _has_help_before_unknown_short(
+    token: str, flags: Mapping[str, tuple[str, bool]], values: Mapping[str, str]
+) -> bool:
+    if len(token) < 2 or not token.startswith("-") or token[1] == "-":
+        return False
+    saw_help = False
+    for char in token[1:]:
+        option = f"-{char}"
+        if option in _HELP_OPTIONS:
+            saw_help = True
+        elif option in flags:
+            continue
+        elif option in values:
+            return False
+        else:
+            return saw_help
+    return False
+
+
 def _is_recognised_option(
     token: str, flags: Mapping[str, tuple[str, bool]], values: Mapping[str, str]
 ) -> bool:
@@ -390,6 +454,7 @@ def _is_recognised_option(
         or token in flags
         or token in values
         or _inline_value(token, values) is not None
+        or _parse_short_cluster(token, flags, values) is not None
     )
 
 
@@ -397,6 +462,32 @@ def _show_command_help() -> NoReturn:
     context = click.get_current_context()
     click.echo(context.get_help())
     raise typer.Exit()
+
+
+def _value_from_next_token(
+    items: Sequence[str],
+    index: int,
+    option: str,
+    flags: Mapping[str, tuple[str, bool]],
+    values: Mapping[str, str],
+) -> str:
+    """The value a value-taking option takes from the token after it.
+
+    Shared by the standalone (``-p web``) and clustered (``-vp web``) forms so the
+    two cannot drift on what counts as a missing value.
+    """
+    following = items[index + 1] if index + 1 < len(items) else None
+    if following in _HELP_OPTIONS:
+        _show_command_help()
+    if following is not None:
+        cluster = _parse_short_cluster(following, flags, values)
+        if cluster is not None and cluster[2]:
+            _show_command_help()
+        if _has_help_before_unknown_short(following, flags, values):
+            _usage_error(f"No such option: {following}")
+    if following is None or _is_recognised_option(following, flags, values):
+        _usage_error(f"Option '{option}' requires a value.")
+    return following
 
 
 def _usage_error(message: str, hint: str | None = None) -> NoReturn:
@@ -433,6 +524,11 @@ def split_trailing_options(
     distinction is POSITIONAL - the token after a value-taking option is that
     option's value unless it is an option this command defines - which is why the
     unrecognised-option check below can only ever see a token in option position.
+
+    Attached and clustered short options (``-pweb``, ``-vy``, ``-vpweb``) are
+    resolved by :func:`_parse_short_cluster`, which reproduces Click's grammar and
+    refuses a cluster WHOLE when any character in it is unknown - see that
+    function for why the all-or-nothing rule is load-bearing here.
     """
     names: list[str] = []
     recovered_flags: dict[str, bool] = {}
@@ -447,18 +543,33 @@ def split_trailing_options(
             destination, value = flags[token]
             recovered_flags[destination] = value
         elif token in values:
-            following = items[i + 1] if i + 1 < len(items) else None
-            if following in _HELP_OPTIONS:
-                _show_command_help()
-            if following is None or _is_recognised_option(following, flags, values):
-                _usage_error(f"Option '{token}' requires a value.")
-            recovered_values[values[token]] = following
+            recovered_values[values[token]] = _value_from_next_token(items, i, token, flags, values)
             i += 1
         elif (inline := _inline_value(token, values)) is not None:
             option, inline_value = inline
             if not inline_value:
                 _usage_error(f"Option '{option}' requires a value.")
             recovered_values[values[option]] = inline_value
+        elif (cluster := _parse_short_cluster(token, flags, values)) is not None:
+            cluster_flags, value_option, eager_help = cluster
+            recovered_value: tuple[str, str] | None = None
+            if value_option is not None:
+                option, attached = value_option
+                if attached:
+                    recovered_value = values[option], attached
+                else:
+                    recovered_value = (
+                        values[option],
+                        _value_from_next_token(items, i, option, flags, values),
+                    )
+                    i += 1
+            if eager_help:
+                _show_command_help()
+            for destination, flag_value in cluster_flags:
+                recovered_flags[destination] = flag_value
+            if recovered_value is not None:
+                destination, option_value = recovered_value
+                recovered_values[destination] = option_value
         elif len(token) > 1 and token.startswith("-"):
             _usage_error(
                 f"No such option: {token}",
