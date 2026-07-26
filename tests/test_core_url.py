@@ -170,6 +170,8 @@ class TestUnreadableRoutingData:
         assert result.data.http_code is None
         assert result.data.reachable is False
         assert any(w.code == "url.unresolved" for w in result.warnings)
+        assert "common_site_config.json" in result.warnings[-1].text
+        assert "numeric webserver_port and socketio_port" in result.warnings[-1].text
         # Never probed - there is no port to have probed.
         assert not any(isinstance(cmd, list) and cmd[0] == "curl" for cmd in c.calls)
 
@@ -185,6 +187,8 @@ class TestUnreadableRoutingData:
 
         assert result.data.url is None
         assert result.data.reachable is False
+        assert "has no live host binding" in result.warnings[-1].text
+        assert "cwcli scale proj" in result.warnings[-1].text
 
 
 class TestExplicitMultiBenchSelection:

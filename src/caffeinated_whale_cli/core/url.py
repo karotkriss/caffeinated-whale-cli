@@ -21,10 +21,9 @@ call, never re-implement):
   port ``resolve_host_web_url`` just resolved, with the site named as the ``Host``
   header (Frappe is multi-tenant and routes by ``Host``; a host-less request is
   correctly answered 404 by a healthy bench). It is called directly here, never
-  through ``core.status``, so the read is fresh on every invocation regardless of
-  whether some OTHER caller is mid-``--watch`` (``probe_web=False``) or on the
-  ``fused=True`` tier - this module's own call is neither of those, so it is
-  unaffected by and does not affect either.
+  through ``core.status``, so the read is fresh on every invocation. ``cwcli axi
+  status`` also performs a fresh one-shot probe; only the human ``cwcli status
+  --watch`` path suppresses its repeated probes with ``probe_web=False``.
 
 An unresolvable port (unreadable/unparseable ``common_site_config.json``, or a
 container port with no published host binding) is reported as ``url: null`` /
@@ -120,12 +119,24 @@ def probe_url(
         if assigned is not None
         else None
     )
-    if url is None or assigned is None:
+    if assigned is None:
         warnings.append(
             Message(
                 "url.unresolved",
-                f"Could not resolve the host URL for bench {resolved_bench_path}. Run "
-                f"'cwcli inspect {project_name}' to refresh its port config.",
+                f"Could not read assigned ports from "
+                f"{resolved_bench_path}/sites/common_site_config.json. Check that the "
+                "file is readable JSON containing numeric webserver_port and "
+                "socketio_port values, then retry.",
+            )
+        )
+    elif url is None:
+        warnings.append(
+            Message(
+                "url.unresolved",
+                f"Container port {assigned[0]} for bench {resolved_bench_path} has no "
+                "live host binding. If the bench is outside the instance's published "
+                f"range, run 'cwcli scale {project_name}'; otherwise repair the Docker "
+                "port binding, then retry.",
             )
         )
     else:
