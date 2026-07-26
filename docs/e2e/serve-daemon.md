@@ -21,8 +21,10 @@ The boundary was measured before anything was built on top of it, with a throwaw
 | `127.0.0.1` | reachable | not applicable |
 | `0.0.0.0` | reachable | reachable |
 
-Both routes work on this build, so `0.0.0.0` is the default: it is the only bind that serves BOTH, and the WSL-IP route keeps working if `localhostForwarding` is ever turned off.
-`--host 127.0.0.1` remains available for an untrusted network.
+Both routes work on this build.
+The top-left cell is the load-bearing one and it is easy to misread: **a Windows browser DOES reach a WSL-only `127.0.0.1` listener**, because WSL's default NAT mode forwards `localhost` into the distro ([Microsoft's own networking documentation](https://learn.microsoft.com/en-us/windows/wsl/networking) says so, and the row above measures it).
+`cwcli serve` was originally shipped with a `0.0.0.0` default on the reasoning that it is the only bind serving both routes; that default was later found to leave the action endpoint drivable, without credentials, from any host on the network, and the default is now `127.0.0.1`.
+What this table actually justifies is the narrower claim: the WSL-IP route is what survives `localhostForwarding` being turned off, and it is what a browser on another machine needs, so `--host 0.0.0.0` remains available - now gated behind `CWCLI_SERVE_TOKEN`, which a non-loopback bind refuses to start without.
 The startup banner prints the address it is reachable at, resolved by a UDP `connect` to TEST-NET-1 (which sends nothing and only makes the kernel pick a source interface).
 Resolving the hostname - the obvious alternative - is wrong here: on this distro it answers `127.0.1.1` and nothing else.
 

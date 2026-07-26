@@ -9,7 +9,8 @@ The test used the editable worktree build through `uv run cwcli`, a worktree-loc
 - `CWCLI_HOME=.tmp/cwcli-console-p3/home`, so the captain's real cwcli home was not read or written.
 - Throwaway instance: `cwe2e-console-p3`.
 - Frappe: default version 16 via `cwcli init cwe2e-console-p3 --version 16 --port 28000 --site console.localhost`.
-- Console daemon: `cwcli serve --host 0.0.0.0 --port 8777 --interval 1`.
+- Console daemon: `cwcli serve --host 0.0.0.0 --port 8777 --interval 1`, which was the shipped default at the time.
+  That invocation now requires `CWCLI_SERVE_TOKEN` and the default bind is `127.0.0.1`; nothing else in this record changes, because the two reachability proofs immediately below both went through `localhost`, which loopback serves.
 - Windows reachability: Windows PowerShell reached `http://localhost:8777/api/snapshot` with HTTP 200.
 - Browser proof: Windows Edge opened `http://localhost:8777/?focus=cwe2e-console-p3`.
 
