@@ -960,9 +960,12 @@ dialog input {
       // without this the page would say "reconnecting" forever while nothing
       // retried. Reconnecting from scratch re-bootstraps (the first frame of
       // every connection is a full snapshot), never a replay.
+      // Reconnect through the auth gate, not straight into a new stream: a
+      // daemon that restarted has a new session id, so this tab's cookie is
+      // now stale and retrying the stream alone would spin forever.
       if (es.readyState === EventSource.CLOSED) {
         setTimeout(() => {
-          if (source === es && es.readyState === EventSource.CLOSED) connectEvents();
+          if (source === es && es.readyState === EventSource.CLOSED) startSession();
         }, 3000);
       }
     };
@@ -1812,11 +1815,61 @@ dialog input {
     if (term) runWhere(term);
   });
 
+  // --------------------------------------------------------------- auth gate
+
+  // Authentication is OFF on the ordinary loopback run, so this probe answers
+  // 200 and the page connects with nothing shown. It only asks when the daemon
+  // was started with CWCLI_SERVE_TOKEN, which is the deliberate remote-bind
+  // case. One POST exchanges the token for the daemon's HttpOnly session
+  // cookie; after that every fetch AND the EventSource carry it automatically,
+  // which is why EventSource - which cannot send an Authorization header -
+  // needs no special handling here.
+  async function startSession() {
+    let probe;
+    try {
+      probe = await fetch("/api/snapshot");
+    } catch (error) {
+      connectEvents();  // daemon unreachable: let the stream's own retry loop say so
+      return;
+    }
+    if (probe.status !== 401) {
+      connectEvents();
+      return;
+    }
+    askForToken("This cwcli serve daemon requires its access token.");
+  }
+
+  function askForToken(message) {
+    setConnection("locked");
+    openModal(`<h3 id="modal-title">Access token required</h3>
+      <p class="modal-help">${esc(message)} It is the value of <code>CWCLI_SERVE_TOKEN</code> in the shell that started <code>cwcli serve</code>. The token is sent once, in exchange for a session cookie for this tab.</p>
+      <label>Access token
+        <input name="token" type="password" autocomplete="off" required>
+      </label>
+      <div class="modal-buttons"><button value="confirm" class="modal-confirm">Unlock</button></div>`,
+    async values => {
+      const token = (values.token || "").trim();
+      if (!token) return askForToken("An access token is required.");
+      let response;
+      try {
+        response = await fetch("/api/session", {
+          method: "POST",
+          headers: {"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+          body: "{}"
+        });
+      } catch (error) {
+        return askForToken("Could not reach the daemon. Try again.");
+      }
+      if (!response.ok) return askForToken("That token was not accepted.");
+      connectEvents();
+    });
+  }
+
   // First paint before any server data: honest empty states in every pane
   // rather than a blank shell while the first snapshot (or a dead daemon's
   // retry loop) is pending.
   render();
-  connectEvents();
+  startSession();
 })();
 </script>
 </body>
