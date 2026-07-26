@@ -81,8 +81,12 @@ A parent item below is checked only when every clause it once bundled has real E
   - [x] 4.8b The scoped agent verb refuses an already-installed app by plain name and git URL, fails closed on an unreadable site, and requires `--site`.
   - [ ] 4.8c The human `cwcli apps install` every-site fan-out is not E2E-proven.
   - [ ] 4.8d The human install verb's interactive and non-interactive confirmation paths are not E2E-proven.
-  - [ ] 4.8e Real `apps list` and `apps uninstall`, multi-site fan-out with honest aggregated exit codes, `--json` purity, and post-mutation cache refresh in `where` and `inspect` are not E2E-proven in both modes.
-  - [ ] 4.8f The remaining `tests/test_apps.py` container-mock tests have not been retired.
+  - [x] 4.8e The human `cwcli apps list --json` non-interactive path returns parseable, non-empty JSON from a real instance.
+  - [x] 4.8f The human `cwcli apps uninstall --site <site> --yes` non-interactive path removes a genuinely installed app, after which the app is absent and the site continues serving.
+  - [ ] 4.8g The interactive human uninstall confirmation path is not E2E-proven.
+  - [ ] 4.8h Multi-site fan-out and honest aggregated exit codes across list, install, and uninstall are not E2E-proven.
+  - [ ] 4.8i Broader `--json` purity and post-mutation cache refresh in `where` and `inspect` are not E2E-proven.
+  - [ ] 4.8j The remaining `tests/test_apps.py` container-mock tests have not been retired.
 - [ ] 4.9 **yes-flag / auto-start contract**
   - [x] 4.9a `apps update` refuses non-interactively on a stopped instance without `--yes`.
   - [ ] 4.9b `init` non-TTY refusal without its required `--admin-password` is not E2E-proven.
