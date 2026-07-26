@@ -1,6 +1,7 @@
 This is a multi-PR rebuild.
-A `[x]` marks a checklist item ONLY when every clause it states is independently backed by real E2E evidence.
-A historical requirement that bundled several clauses, where some are proven and some are not, is split into a parent line plus per-clause sub-items, so an unproven clause is never presented as complete by riding a checked parent.
+For behavioral E2E coverage claims, a `[x]` marks a checklist item only when every clause it states is independently backed by real E2E evidence.
+For source, harness, CI, unit-test, documentation, and historical-validation items, a `[x]` means the clause has its appropriate direct implementation or validation evidence.
+A historical behavioral requirement that bundled several clauses, where some are proven and some are not, is split into a parent line plus per-clause sub-items, so an unproven clause is never presented as complete by riding a checked parent.
 
 The per-command items in §4 track E2E coverage, not mock-suite retirement.
 The retirement contract and its sequencing are owned by the [E2E test-suite specification](specs/e2e-test-suite/spec.md#requirement-parallel-run-transition-off-the-mock-suite); this checklist reconciliation does not retire any mock suite.
@@ -43,15 +44,24 @@ For the current, authoritative per-file test coverage, read [`tests/README.md`](
 A parent item below is checked only when every clause it once bundled has real E2E proof; where a clause is unproven or deliberately deferred to the unit tier, it is broken out as its own sub-item so the parent cannot read as fully done.
 
 - [ ] 4.1 **init**
-  - [x] 4.1a A real bench and site are created through both interactive and non-interactive paths.
+  - [x] 4.1a The non-interactive path creates a real bench and site.
   - [x] 4.1b The non-interactive fixture exercises `--auto-start` and `--admin-password`.
-  - [x] 4.1c Omitting `--admin-password` interactively generates and prints the administrator password exactly once.
-  - [ ] 4.1d An explicit `--db-root-password` value is not E2E-proven.
+  - [x] 4.1c The interactive PTY path reaches the success output, and omitting `--admin-password` generates and prints the administrator password exactly once.
+  - [ ] 4.1d Interactive bench and site creation are not independently read back from the real instance.
+  - [ ] 4.1e An explicit `--db-root-password` value is not E2E-proven.
   - `init` has no pure mock-behavior suite to retire beyond resolver logic, which stays in unit.
 - [ ] 4.2 **backup**
   - [x] 4.2a A real, non-empty DB dump lands on the host, in both interactive and non-interactive modes.
   - [ ] 4.2b Multi-bench `--bench` backup against a real instance - NOT E2E; only unit-tier (mocked container) coverage exists. `backup` has no dedicated mock suite to retire (net-new coverage).
-- [ ] 4.3 **rm** - named volumes + `~/.cwcli/projects/<name>` removal, and the verified non-empty DB dump that must exist first (the C1 gate), are now E2E-proven for the `cwcli axi rm --yes` path (`tests/e2e/test_axi_rm_e2e.py`, added after this checklist was first written). Still not E2E: the human `cwcli rm` verb's own interactive and non-interactive-without-`--yes` paths, and the early-abort-before-container-removal case on a failed backup. THEN retire the container-mock behavior tests in `tests/test_rm_safety.py` / `tests/bench_fakes_mb.py` (keep `test_rm_truth.py`'s pure-logic name/path validators in unit).
+- [ ] 4.3 **rm**
+  - [x] 4.3a `cwcli axi rm --yes` produces a verified, non-empty database archive that genuinely restores into a fresh instance.
+  - [x] 4.3b `cwcli axi rm --yes` removes the named volumes and isolated `$CWCLI_HOME/projects/<name>`, along with the containers and project network.
+  - [ ] 4.3c Removal of the default `~/.cwcli/projects/<name>` path is not directly E2E-proven because the isolation rails require `CWCLI_HOME`.
+  - [ ] 4.3d The human `cwcli rm` interactive path is not E2E-proven.
+  - [ ] 4.3e The human `cwcli rm` non-interactive refusal without `--yes` is not E2E-proven.
+  - [ ] 4.3f Early abort before container removal when backup fails is not E2E-proven.
+  - [ ] 4.3g The container-mock behavior tests in `tests/test_rm_safety.py` and `tests/bench_fakes_mb.py` have not been retired.
+  - Keep `test_rm_truth.py`'s pure-logic name and path validators in unit.
 - [ ] 4.4 **restore**
   - [x] 4.4a Genuine data replacement through `--latest`, and through the interactive backup-selection menu, each followed by a site that becomes ready.
   - [ ] 4.4b Explicit `--backup-file <name>` selection (as opposed to `--latest` or the interactive menu) - NOT E2E; unit-tier only.
@@ -66,7 +76,13 @@ A parent item below is checked only when every clause it once bundled has real E
   - [x] 4.6a Real site locks are created and their removal is proven through the non-interactive, interactive, auto-start, and `axi` paths.
   - [ ] 4.6b Multi-bench `--bench` resolution against a real instance - NOT E2E; unit-tier only.
 - [ ] 4.7 **inspect** - E2E: assert the 3-tier freshness behavior against a real bench (T1 serve, T2 read-only drift detect, T3 re-cache on real drift); a freshly installed app becomes visible without `--update`. THEN retire the tier-assertion mock tests in `tests/test_inspect_partial_refresh.py` (keep any pure-logic in unit).
-- [ ] 4.8 **apps (list/install/uninstall)** - `cwcli axi apps install`'s own scoped verb (a fresh install, not a reinstall) is now E2E-proven end to end (`tests/e2e/test_axi_apps_install_e2e.py`, added after this checklist was first written: the permitted install, the already-installed refusal on both a plain name and a git-URL spelling, a fail-closed unreadable site, and a missing-`--site` usage error). Still not E2E: the human `cwcli apps install`'s every-site fan-out and interactive/non-interactive confirm paths, and `cwcli apps list`/`uninstall` entirely - real `bench get-app`/`install-app`/`uninstall-app`, multi-site fan-out with honest aggregated exit codes, `--json` purity, post-mutation cache refresh reflected in `where`/`inspect`; both modes. Retire the remaining `tests/test_apps.py` container-mock tests once green.
+- [ ] 4.8 **apps (list/install/uninstall)**
+  - [x] 4.8a The scoped `cwcli axi apps install` verb genuinely fetches and installs an absent app onto the named real site.
+  - [x] 4.8b The scoped agent verb refuses an already-installed app by plain name and git URL, fails closed on an unreadable site, and requires `--site`.
+  - [ ] 4.8c The human `cwcli apps install` every-site fan-out is not E2E-proven.
+  - [ ] 4.8d The human install verb's interactive and non-interactive confirmation paths are not E2E-proven.
+  - [ ] 4.8e Real `apps list` and `apps uninstall`, multi-site fan-out with honest aggregated exit codes, `--json` purity, and post-mutation cache refresh in `where` and `inspect` are not E2E-proven in both modes.
+  - [ ] 4.8f The remaining `tests/test_apps.py` container-mock tests have not been retired.
 - [ ] 4.9 **yes-flag / auto-start contract**
   - [x] 4.9a `apps update` refuses non-interactively on a stopped instance without `--yes`.
   - [ ] 4.9b `init` non-TTY refusal without its required `--admin-password` is not E2E-proven.
@@ -82,12 +98,15 @@ A parent item below is checked only when every clause it once bundled has real E
 - [x] 5.1 MariaDB flag: assert `new-site` uses `--no-mariadb-socket` on v14 and `--mariadb-user-host-login-scope=%` on v15/v16, and that the site is actually created (the flag divergence is real - the 15+ flag breaks bench 14).
 - [x] 5.2 pyenv/nvm branches: assert v14 provisions python3.10 + node16 + yarn, v15 provisions python3.12, v16 uses image defaults (no pyenv/nvm step).
 - [x] 5.3 `--receive` bare-filename: assert the v14 leg reproduces-then-passes the full-container-path fix (v15/v16 mask it via alternative-directory fallback).
-- [ ] 5.4 apps behaviors on each version leg (per §4.8), plus the v16-first-ever real E2E coverage. `axi apps install`'s narrow slice (§4.8) runs on whichever leg `CWE2E_FRAPPE_MAJOR` selects in CI, but the full per-leg apps matrix this item describes is not built.
+- [ ] 5.4 Apps behaviors on each version leg
+  - [x] 5.4a The scoped `axi apps install` slice in §4.8 runs on the v14, v15, and v16 matrix legs.
+  - [ ] 5.4b The full `apps list`/`install`/`uninstall` behaviors in §4.8 are not E2E-proven on every version leg.
 
 ## 6. P2P (gated, single loopback)
 
-- [x] 6.1 Ensure `sendme` is installed on the P2P leg (or gate the test off cleanly when absent).
-- [x] 6.2 Single `e2e_p2p` loopback: `restore --send` produces a ticket, `restore --receive` consumes it on the same runner, and the receive path's real side effect (data replaced + migrate + restart) is asserted. NOT on the per-version matrix legs.
+- [x] 6.1 Ensure `sendme` is installed for the P2P tests, or fail clearly when installation fails.
+- [x] 6.2 Single-runner `e2e_p2p` loopback: `restore --send` produces a ticket, `restore --receive` consumes it, the transferred data replaces the live data, and the site subsequently becomes ready.
+  The generic transport proof runs on the v16 matrix leg, while the separate bare-filename regression in §5.3 runs on the v14 matrix leg.
 
 ## 7. Docs
 
