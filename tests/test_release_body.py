@@ -26,10 +26,15 @@ REPO = "karotkriss/caffeinated-whale-cli"
 
 def _notes_for(version: str) -> str:
     _, minor, patch = (int(part) for part in version.split("."))
-    heading = "### What's New" if minor == patch == 0 else "### What's Changed"
+    is_major = minor == patch == 0
+    heading = "### What's New" if is_major else "### What's Changed"
+    # A major release requires an explicit flagship marker (see
+    # TestTheFlagshipMarker below); a smaller release does not, so the marker
+    # is added here only when it would otherwise be required.
+    marker = "<!-- flagship -->\n" if is_major else ""
     return f"""{heading}
 
-**One benefit, stated for the reader.**
+{marker}**One benefit, stated for the reader.**
 One short sentence of context.
 """
 
@@ -155,6 +160,197 @@ class TestTheCardCannotBePublishedWithoutItsCopy:
         result = rendered("3.0.0", notes=notes)
         assert result.returncode != 0
         assert '"### What\'s New"' in result.stderr
+
+
+class TestTheFlagshipMarker:
+    """The `<!-- flagship -->` marker (see .github/release-notes/README.md).
+
+    It exists because the card's authoring rule ("lead with the benefit") had
+    no enforcement: a hand-written note could bury the actual headline under
+    lesser entries and still publish cleanly. The marker names which entry is
+    the headline; this script is the one place that guarantees it leads,
+    refusing to publish rather than silently reordering hand-written prose.
+    """
+
+    def test_a_leading_flagship_entry_publishes_with_the_marker_stripped(self, rendered):
+        notes = """### What's Changed
+
+<!-- flagship -->
+**The flagship benefit, stated for the reader.**
+Why it matters.
+
+**A smaller change.**
+Context.
+"""
+        result = rendered("1.1.0", notes=notes)
+        assert result.returncode == 0
+        body = result.stdout
+        assert "<!-- flagship -->" not in body
+        assert body.index("The flagship benefit") < body.index("A smaller change")
+
+    def test_a_buried_flagship_entry_stops_the_release(self, rendered):
+        notes = """### What's Changed
+
+**A smaller change.**
+Context.
+
+<!-- flagship -->
+**The flagship benefit, stated for the reader.**
+Why it matters.
+"""
+        result = rendered("1.1.0", notes=notes)
+        assert result.returncode != 0
+        assert "does not lead the change list" in result.stderr
+
+    def test_a_major_release_without_a_flagship_marker_stops_the_release(self, rendered):
+        notes = """### What's New
+
+**Just an entry, no marker.**
+Context.
+"""
+        result = rendered("3.0.0", notes=notes)
+        assert result.returncode != 0
+        assert "requires an explicit <!-- flagship --> marker" in result.stderr
+
+    def test_a_minor_release_with_no_flagship_at_all_publishes_unchanged(self, rendered):
+        """Preserves the ordinary case: most minor/patch releases have no headline."""
+        notes = """### What's Changed
+
+**An ordinary change.**
+Nothing special.
+"""
+        result = rendered("1.1.0", notes=notes)
+        assert result.returncode == 0
+        assert result.stdout.startswith(notes)
+
+    def test_duplicate_markers_are_rejected(self, rendered):
+        notes = """### What's Changed
+
+<!-- flagship -->
+**First.**
+A.
+
+<!-- flagship -->
+**Second.**
+B.
+"""
+        result = rendered("1.1.0", notes=notes)
+        assert result.returncode != 0
+        assert "multiple <!-- flagship --> markers" in result.stderr
+
+    @pytest.mark.parametrize(
+        "notes",
+        [
+            pytest.param(
+                """### What's Changed
+
+<!--flagship-->
+**First.**
+A.
+""",
+                id="no-spaces",
+            ),
+            pytest.param(
+                """### What's Changed
+
+<!-- Flagship -->
+**First.**
+A.
+""",
+                id="wrong-case",
+            ),
+        ],
+    )
+    def test_a_malformed_marker_is_rejected(self, rendered, notes):
+        result = rendered("1.1.0", notes=notes)
+        assert result.returncode != 0
+        assert "malformed flagship marker" in result.stderr
+
+    @pytest.mark.parametrize("trailing_whitespace", [" ", "\t"])
+    def test_a_marker_with_trailing_whitespace_is_rejected(self, rendered, trailing_whitespace):
+        notes = f"""### What's Changed
+
+<!-- flagship -->{trailing_whitespace}
+**First.**
+A.
+"""
+        result = rendered("1.1.0", notes=notes)
+        assert result.returncode != 0
+        assert "malformed flagship marker" in result.stderr
+
+    def test_a_marker_detached_by_a_blank_line_is_rejected(self, rendered):
+        notes = """### What's Changed
+
+<!-- flagship -->
+
+**First.**
+A.
+"""
+        result = rendered("1.1.0", notes=notes)
+        assert result.returncode != 0
+        assert "is detached from any entry" in result.stderr
+
+    def test_a_marker_above_ordinary_prose_is_rejected(self, rendered):
+        notes = """### What's Changed
+
+<!-- flagship -->
+This is not a bold benefit sentence.
+Context.
+"""
+        result = rendered("1.1.0", notes=notes)
+        assert result.returncode != 0
+        assert "begins with a bold benefit sentence" in result.stderr
+
+    def test_a_marker_glued_mid_entry_is_rejected(self, rendered):
+        """The marker must start its own paragraph, not interrupt one."""
+        notes = """### What's Changed
+
+**First.**
+<!-- flagship -->
+A.
+"""
+        result = rendered("1.1.0", notes=notes)
+        assert result.returncode != 0
+        assert "must start its own paragraph" in result.stderr
+
+    def test_the_marker_never_reaches_the_published_body_even_with_the_footer(self, rendered):
+        """The marker is authoring metadata, not reader-facing copy - it must
+        not survive into the published card even though the whole footer
+        (Installation, CHANGELOG link) is appended after it."""
+        notes = """### What's Changed
+
+<!-- flagship -->
+**One benefit, stated for the reader.**
+Why it matters.
+"""
+        result = rendered("1.1.0", notes=notes)
+        assert result.returncode == 0
+        assert "<!--" not in result.stdout
+        assert "-->" not in result.stdout
+
+    def test_footer_and_version_heading_behavior_is_unchanged_by_a_flagship_entry(self, rendered):
+        """A flagship entry changes ordering only; the footer/version rules from
+        TestTheCardSatisfiesTheStandingRules still hold."""
+        notes = """### What's New
+
+<!-- flagship -->
+**The flagship benefit.**
+Why it matters.
+"""
+        body = rendered("2.0.0", notes=notes).stdout
+        assert body.startswith("### What's New")
+        assert body.index("### What's New") < body.index("### Installation")
+        install = body.split("### Installation", 1)[1]
+        assert install.index("uv tool install") < install.index("pip install")
+        assert f"https://github.com/{REPO}/blob/v2.0.0/CHANGELOG.md" in body
+        assert body.rstrip().endswith(f"https://github.com/{REPO}/compare/v1.1.0...v2.0.0")
+
+    def test_the_checked_in_major_release_note_remains_publishable(self, rendered):
+        notes = (NOTES_DIR / "v2.0.0.md").read_text()
+        result = rendered("2.0.0", notes=notes)
+        assert result.returncode == 0
+        assert "<!-- flagship -->" not in result.stdout
+        assert result.stdout.startswith("### What's New\n\n**Your multi-bench instances")
 
 
 class TestTheWorkflowUsesTheGenerator:
