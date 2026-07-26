@@ -85,8 +85,7 @@ the SSE stream unauthenticatable from a page. The cookie carries one random
 daemon-wide session id, never the token itself. It is replayable if captured
 until that daemon restarts. ``HttpOnly`` and ``SameSite`` constrain browser
 behavior; they do not encrypt plain HTTP. A non-loopback listener belongs only
-on a trusted network or behind a same-origin TLS-terminating proxy that keeps
-the direct listener private.
+on a trusted network.
 
 CORS remains open for snapshot, event and detail reads only; cross-origin
 browser actions and the sensitive logs/where reads are refused.

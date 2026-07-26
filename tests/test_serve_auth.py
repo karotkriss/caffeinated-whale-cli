@@ -339,6 +339,19 @@ class TestBrowserSession:
         assert "event.preventDefault()" in cancel_handler
         assert "{dismissible: false}" in page.split("function askForToken", 1)[1]
 
+    def test_a_whitespace_token_keeps_the_authentication_dialog_open(self):
+        page = serve_cmd.CONSOLE_PAGE
+        submit_handler = page.split(
+            'el("modal-form").addEventListener("submit"', 1
+        )[1].split("});", 1)[0]
+        auth_handler = page.split("function askForToken", 1)[1].split(
+            "function openTokenSession", 1
+        )[0]
+        assert "submit(values) === false" in submit_handler
+        assert "event.preventDefault()" in submit_handler
+        assert "input.setCustomValidity" in auth_handler
+        assert "return false" in auth_handler
+
     def test_the_session_cookie_authenticates_subsequent_requests(self, guarded, stopped):
         status, _, headers = _request(
             guarded + "/api/session",
