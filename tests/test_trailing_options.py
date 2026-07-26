@@ -618,7 +618,6 @@ class TestShortOptionClusters:
         assert exc.value.exit_code == 2
 
     def test_help_still_wins_inside_a_cluster(self, monkeypatch):
-        # -h is eager standalone, so it stays eager clustered, as it is in Click.
         shown: list[bool] = []
 
         def _fake_help():
@@ -632,6 +631,25 @@ class TestShortOptionClusters:
 
         assert shown == [True]
         assert exc.value.exit_code in (0, None)
+
+    @pytest.mark.parametrize("token", ["-vhq", "-hq"])
+    def test_help_waits_until_the_complete_cluster_is_valid(self, monkeypatch, token):
+        shown: list[bool] = []
+        monkeypatch.setattr(utils_mod, "_show_command_help", lambda: shown.append(True))
+
+        with pytest.raises(typer.Exit) as exc:
+            self._split(["proj", token])
+
+        assert shown == []
+        assert exc.value.exit_code == 2
+        assert utils_mod._parse_short_cluster(token, self.FLAGS, self.VALUES) is None
+
+    @pytest.mark.parametrize("token", ["-vhq", "-hq"])
+    def test_invalid_help_clusters_are_not_preserved_as_option_values(self, token):
+        with pytest.raises(typer.Exit) as exc:
+            self._split(["proj", "--bench", token])
+
+        assert exc.value.exit_code == 2
 
 
 class TestEveryCommandInBothModes:
@@ -753,7 +771,7 @@ class TestGrammarMatchesClick:
         """Click's own answer, in split_trailing_options' return shape."""
         captured: dict = {}
 
-        @click.command()
+        @click.command(context_settings={"help_option_names": ["-h", "--help"]})
         @click.option("-v", "--verbose", is_flag=True)
         @click.option("-y", "--yes", is_flag=True)
         @click.option("-p", "--process", default=None)
@@ -798,3 +816,27 @@ class TestGrammarMatchesClick:
             split_trailing_options(argv, command="stop", flags=self.FLAGS, values=self.VALUES)
 
         assert exc.value.exit_code == 2
+
+    @pytest.mark.parametrize("argv", [["-vh"], ["-hv"], ["-vhq"], ["-hq"]])
+    def test_help_clusters_exit_the_same_way_click_would(self, monkeypatch, argv):
+        @click.command(context_settings={"help_option_names": ["-h", "--help"]})
+        @click.option("-v", "--verbose", is_flag=True)
+        def cmd(verbose):
+            pass
+
+        expected = ClickRunner().invoke(cmd, argv).exit_code
+        monkeypatch.setattr(
+            utils_mod,
+            "_show_command_help",
+            lambda: (_ for _ in ()).throw(typer.Exit()),
+        )
+
+        with pytest.raises(typer.Exit) as exc:
+            split_trailing_options(
+                argv, command="stop", flags=self.FLAGS, values=self.VALUES
+            )
+
+        if expected == 0:
+            assert exc.value.exit_code in (0, None)
+        else:
+            assert exc.value.exit_code == expected

@@ -383,13 +383,13 @@ def _inline_value(token: str, values: Mapping[str, str]) -> tuple[str, str] | No
 
 def _parse_short_cluster(
     token: str, flags: Mapping[str, tuple[str, bool]], values: Mapping[str, str]
-) -> tuple[list[tuple[str, bool]], tuple[str, str] | None] | None:
+) -> tuple[list[tuple[str, bool]], tuple[str, str] | None, bool] | None:
     """Resolve an attached or clustered short-option token: ``-pweb``, ``-vy``, ``-vpweb``.
 
     Returns the ``(destination, value)`` pairs the cluster sets, followed by the
     value-taking option it ends on as ``(option, attached_value)`` - an EMPTY
-    attached value meaning the value is the next token - or ``None`` when the
-    cluster is all flags. Click's own grammar, reproduced: a value-taking short
+    attached value meaning the value is the next token - and whether the cluster
+    requests eager help. Click's own grammar, reproduced: a value-taking short
     swallows the rest of the token as its value and stops the cluster, so
     ``-pv web`` is ``--process v`` with ``web`` still a project name.
 
@@ -409,17 +409,37 @@ def _parse_short_cluster(
     if len(token) < 2 or not token.startswith("-") or token[1] == "-":
         return None
     recovered: list[tuple[str, bool]] = []
+    eager_help = False
     for index, char in enumerate(token[1:], start=1):
         option = f"-{char}"
         if option in _HELP_OPTIONS:
-            _show_command_help()
-        if option in flags:
+            eager_help = True
+        elif option in flags:
             recovered.append(flags[option])
         elif option in values:
-            return recovered, (option, token[index + 1 :])
+            return recovered, (option, token[index + 1 :]), eager_help
         else:
             return None
-    return recovered, None
+    return recovered, None, eager_help
+
+
+def _has_help_before_unknown_short(
+    token: str, flags: Mapping[str, tuple[str, bool]], values: Mapping[str, str]
+) -> bool:
+    if len(token) < 2 or not token.startswith("-") or token[1] == "-":
+        return False
+    saw_help = False
+    for char in token[1:]:
+        option = f"-{char}"
+        if option in _HELP_OPTIONS:
+            saw_help = True
+        elif option in flags:
+            continue
+        elif option in values:
+            return False
+        else:
+            return saw_help
+    return False
 
 
 def _is_recognised_option(
@@ -456,6 +476,12 @@ def _value_from_next_token(
     following = items[index + 1] if index + 1 < len(items) else None
     if following in _HELP_OPTIONS:
         _show_command_help()
+    if following is not None:
+        cluster = _parse_short_cluster(following, flags, values)
+        if cluster is not None and cluster[2]:
+            _show_command_help()
+        if _has_help_before_unknown_short(following, flags, values):
+            _usage_error(f"No such option: {following}")
     if following is None or _is_recognised_option(following, flags, values):
         _usage_error(f"Option '{option}' requires a value.")
     return following
@@ -522,7 +548,9 @@ def split_trailing_options(
                 _usage_error(f"Option '{option}' requires a value.")
             recovered_values[values[option]] = inline_value
         elif (cluster := _parse_short_cluster(token, flags, values)) is not None:
-            cluster_flags, value_option = cluster
+            cluster_flags, value_option, eager_help = cluster
+            if eager_help:
+                _show_command_help()
             for destination, value in cluster_flags:
                 recovered_flags[destination] = value
             if value_option is not None:
