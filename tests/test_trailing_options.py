@@ -632,6 +632,17 @@ class TestShortOptionClusters:
         assert shown == [True]
         assert exc.value.exit_code in (0, None)
 
+    @pytest.mark.parametrize("token", ["-hp", "-vhp"])
+    def test_help_cannot_mask_a_cluster_missing_its_value(self, monkeypatch, token):
+        shown: list[bool] = []
+        monkeypatch.setattr(utils_mod, "_show_command_help", lambda: shown.append(True))
+
+        with pytest.raises(typer.Exit) as exc:
+            self._split(["proj", token])
+
+        assert shown == []
+        assert exc.value.exit_code == 2
+
     @pytest.mark.parametrize("token", ["-vhq", "-hq"])
     def test_help_waits_until_the_complete_cluster_is_valid(self, monkeypatch, token):
         shown: list[bool] = []
@@ -808,7 +819,9 @@ class TestGrammarMatchesClick:
 
         assert (names, flags, values) == expected
 
-    @pytest.mark.parametrize("argv", [["-yq"], ["-y-"], ["-q"], ["-p"], ["-vp"]])
+    @pytest.mark.parametrize(
+        "argv", [["-yq"], ["-y-"], ["-q"], ["-p"], ["-vp"], ["-hp"], ["-vhp"]]
+    )
     def test_forms_click_rejects_are_rejected_here_too(self, argv):
         assert self._click_reference(argv) is None
 

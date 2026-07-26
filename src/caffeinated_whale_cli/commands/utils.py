@@ -552,19 +552,24 @@ def split_trailing_options(
             recovered_values[values[option]] = inline_value
         elif (cluster := _parse_short_cluster(token, flags, values)) is not None:
             cluster_flags, value_option, eager_help = cluster
+            recovered_value: tuple[str, str] | None = None
+            if value_option is not None:
+                option, attached = value_option
+                if attached:
+                    recovered_value = values[option], attached
+                else:
+                    recovered_value = (
+                        values[option],
+                        _value_from_next_token(items, i, option, flags, values),
+                    )
+                    i += 1
             if eager_help:
                 _show_command_help()
             for destination, value in cluster_flags:
                 recovered_flags[destination] = value
-            if value_option is not None:
-                option, attached = value_option
-                if attached:
-                    recovered_values[values[option]] = attached
-                else:
-                    recovered_values[values[option]] = _value_from_next_token(
-                        items, i, option, flags, values
-                    )
-                    i += 1
+            if recovered_value is not None:
+                destination, value = recovered_value
+                recovered_values[destination] = value
         elif len(token) > 1 and token.startswith("-"):
             _usage_error(
                 f"No such option: {token}",
