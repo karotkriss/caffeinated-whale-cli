@@ -1768,12 +1768,12 @@ cwcli serve [--port 8765] [--host 127.0.0.1] [--interval 2.5]
 | Option | Description |
 | --- | --- |
 | `--port`, `-p` | Port to listen on. Default `8765`. |
-| `--host` | Address to bind. Default `127.0.0.1`, this machine only. Any other address is reachable from the network and **requires** `CWCLI_SERVE_TOKEN`. |
+| `--host` | Address to bind. Default `127.0.0.1`, this machine only. Any value other than a loopback IP literal **requires** `CWCLI_SERVE_TOKEN`. Hostnames such as `localhost` fail closed because cwcli does not resolve them to decide the authentication boundary. |
 | `--interval` | Seconds between health probes of each running instance. Default `2.5`. |
 
 | Environment variable | Description |
 | --- | --- |
-| `CWCLI_SERVE_TOKEN` | When set, every non-`OPTIONS` `/api/*` request must carry `Authorization: Bearer <token>`. Read from the environment only, with deliberately no flag, so the secret never enters argv or `ps` output. |
+| `CWCLI_SERVE_TOKEN` | When set, every non-`OPTIONS` `/api/*` request must authenticate with `Authorization: Bearer <token>` or the browser session cookie. Read from the environment only, with deliberately no flag, so the secret never enters argv or `ps` output. |
 
 **Endpoints:**
 
@@ -1816,9 +1816,11 @@ gap in.
 The mutating action endpoint refuses cross-origin browser requests, and so do
 the `/logs` and `/api/where` reads, whose payloads are more sensitive than
 fleet health; that refusal stands even for a request carrying a valid token.
-The other read endpoints keep open CORS for external inspection tools, but
-browsers must load the bundled Console page from this daemon to drive
-lifecycle actions.
+The other read endpoints keep open CORS while authentication is off.
+When authentication is on, non-browser inspection tools can send the bearer
+token directly, but a browser must load the bundled Console page from this
+daemon to establish its session.
+Lifecycle actions always require that same-origin page.
 When an action needs a decision cwcli itself would ask about - scaling, which
 restarts every serving bench - the daemon answers `409 needs_choice` carrying
 the core's own warning, and the page renders it as a typed-name confirm.
@@ -1848,8 +1850,9 @@ cwcli serve --host 0.0.0.0
 
 Paste a randomly generated token at the silent prompt.
 This keeps the token itself out of shell history.
-Binding any address other than loopback **refuses to start** without that
-variable set, rather than serving an unauthenticated listener to the network.
+Binding any value other than a loopback IP literal **refuses to start** without
+that variable set, rather than serving an unauthenticated listener to the
+network.
 The token is read from the environment only, so it never appears in `ps`
 output; cwcli never prints it, and the startup banner reports only whether
 authentication is in force.
