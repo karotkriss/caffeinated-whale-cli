@@ -53,6 +53,7 @@ from ..core import status as core_status
 from ..core import stop as core_stop
 from ..core import unlock as core_unlock
 from ..core import update as core_update
+from ..core import url as core_url
 from ..core import version as core_version
 from ..core import where as core_where
 from ..core.envelope import Choice, Message
@@ -1053,6 +1054,50 @@ def _emit_logs_read(read, *, warnings=None) -> None:
     if warnings:
         head.append(toon.block("warnings", [w.text for w in warnings]))
     typer.echo("\n".join(head))
+
+
+# ---------------------------------------------------------------------------------- url
+
+
+@app.command("url")
+def axi_url(
+    project: str = typer.Argument(..., help="The Docker Compose project name."),
+    bench: str = typer.Option(None, "--bench", help="Which bench: numeric index or label."),
+    site: str = typer.Option(
+        None,
+        "--site",
+        help="Send this Host header. Omit to use the bench's representative site.",
+    ),
+) -> None:
+    """Resolve a bench's host URL and probe it fresh; emit both as TOON.
+
+    Answers what no other ``axi`` verb does: the HOST address a browser reaches this
+    bench at (``cwcli axi status``'s ``web_http_code`` is measured against the
+    container-internal port and never states it), and whether that address answers
+    HTTP right now. This verb and ``cwcli axi status`` both perform a fresh one-shot
+    probe. Only the human ``cwcli status --watch`` path suppresses HTTP probing.
+
+    A stopped project is a usage error naming ``cwcli start`` (exit 2, no ``--yes``
+    on this verb); a multi-bench project with no ``--bench`` is a usage error naming
+    it. An unreadable port config is reported as ``url: null`` / ``reachable: false``
+    with a warning rather than guessed - never falls back to ``:8000``. ``http_code``
+    is whatever code curl saw, verbatim (a 404/500 counts as reachable, exactly as
+    ``cwcli axi status`` already treats "any code is serving").
+    """
+    try:
+        result = core_url.probe_url(project, bench=bench, site=site)
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    if result.status is CoreStatus.NEEDS_CHOICE:
+        assert result.choice is not None
+        emit_axi_choice_as_usage_error(result.choice)
+        raise typer.Exit(2)
+
+    assert result.data is not None  # OK always carries a UrlProbe
+    emit_result(result.data, warnings=result.warnings)
+    raise typer.Exit(0)
 
 
 # --------------------------------------------------------------------------- restart
