@@ -20,14 +20,17 @@ destructive call) so "nothing was acted on" cannot pass vacuously.
 
 from __future__ import annotations
 
+import click
 import pytest
 import typer
+from click.testing import CliRunner as ClickRunner
 from typer.testing import CliRunner
 
 from caffeinated_whale_cli.commands import restart as restart_mod
 from caffeinated_whale_cli.commands import rm as rm_mod
 from caffeinated_whale_cli.commands import start as start_mod
 from caffeinated_whale_cli.commands import stop as stop_mod
+from caffeinated_whale_cli.commands import utils as utils_mod
 from caffeinated_whale_cli.commands.utils import split_trailing_options
 from caffeinated_whale_cli.core import rm as core_rm
 from caffeinated_whale_cli.core import stop as core_stop
@@ -91,9 +94,7 @@ class TestStop:
         assert stopped == []
 
     @pytest.mark.parametrize("help_option", ["-h", "--help"])
-    def test_trailing_help_shows_stop_help_and_stops_nothing(
-        self, monkeypatch, help_option
-    ):
+    def test_trailing_help_shows_stop_help_and_stops_nothing(self, monkeypatch, help_option):
         stopped = self._wire(monkeypatch)
 
         result = CliRunner().invoke(stop_mod.app, ["proj", help_option])
@@ -188,9 +189,7 @@ class TestRestart:
         assert restarted == []
 
     @pytest.mark.parametrize("help_option", ["-h", "--help"])
-    def test_trailing_help_shows_restart_help_and_restarts_nothing(
-        self, monkeypatch, help_option
-    ):
+    def test_trailing_help_shows_restart_help_and_restarts_nothing(self, monkeypatch, help_option):
         restarted = self._wire(monkeypatch)
 
         result = CliRunner().invoke(restart_mod.app, ["proj", help_option])
@@ -261,9 +260,7 @@ class TestStart:
         assert started == []
 
     @pytest.mark.parametrize("help_option", ["-h", "--help"])
-    def test_trailing_help_shows_start_help_and_starts_nothing(
-        self, monkeypatch, help_option
-    ):
+    def test_trailing_help_shows_start_help_and_starts_nothing(self, monkeypatch, help_option):
         started = self._wire(monkeypatch)
 
         result = CliRunner().invoke(start_mod.app, ["proj", help_option])
@@ -351,9 +348,7 @@ class TestRm:
         assert removed == []
 
     @pytest.mark.parametrize("help_option", ["-h", "--help"])
-    def test_trailing_help_shows_rm_help_and_removes_nothing(
-        self, monkeypatch, help_option
-    ):
+    def test_trailing_help_shows_rm_help_and_removes_nothing(self, monkeypatch, help_option):
         removed = self._wire(monkeypatch)
 
         result = CliRunner().invoke(rm_mod.app, ["proj", help_option])
@@ -470,3 +465,379 @@ class TestSplitTrailingOptions:
         names, _flags, _values = self._split(["-"])
 
         assert names == ["-"]
+
+
+# --------------------------------------------- attached / clustered shorts
+
+
+class TestShortOptionClusters:
+    """``-pweb`` and ``-vy`` must work, and ``-yq`` must never become ``-y``.
+
+    The splitter used to compare whole tokens against the option table, so every
+    attached (``-pweb``) or clustered (``-vy``) short was refused as "No such
+    option" - forms Click itself accepts, and forms these four commands are the
+    only ones in cwcli that have to parse for themselves (they are Typer
+    sub-apps, hence Click Groups, whose ``allow_interspersed_args=False`` dumps
+    every token after the first project name into the variadic argument).
+
+    The grammar has to know which shorts consume a value, and it has to refuse a
+    cluster WHOLE. Resolving a cluster character by character and keeping what
+    matched would let ``cwcli rm proj -yq`` - a typo, or ``-q`` borrowed from a
+    sibling verb - synthesise the ``-y`` that skips rm's destructive
+    confirmation. Refusal must land before a project is selected, so nothing is
+    started, stopped, prompted for, backed up or deleted.
+    """
+
+    FLAGS = {
+        "-v": ("verbose", True),
+        "--verbose": ("verbose", True),
+        "-y": ("yes", True),
+        "--yes": ("yes", True),
+    }
+    VALUES = {"-p": "process", "--process": "process", "--bench": "bench"}
+
+    def _split(self, tokens):
+        return split_trailing_options(tokens, command="stop", flags=self.FLAGS, values=self.VALUES)
+
+    # -- the positive half: the forms that must now work -------------------
+
+    def test_an_attached_value_is_the_rest_of_the_token(self):
+        _names, _flags, values = self._split(["proj", "-pweb"])
+
+        assert values == {"process": "web"}
+
+    def test_a_cluster_of_flags_sets_every_one_of_them(self):
+        _names, flags, _values = self._split(["proj", "-vy"])
+
+        assert flags == {"verbose": True, "yes": True}
+
+    def test_a_cluster_may_end_in_a_value_option_carrying_its_value(self):
+        names, flags, values = self._split(["proj", "-vpweb"])
+
+        assert (names, flags, values) == (["proj"], {"verbose": True}, {"process": "web"})
+
+    def test_a_cluster_ending_in_a_bare_value_option_takes_the_next_token(self):
+        names, flags, values = self._split(["proj", "-vp", "web"])
+
+        assert (names, flags, values) == (["proj"], {"verbose": True}, {"process": "web"})
+
+    def test_a_value_option_stops_the_cluster_so_the_rest_is_its_value(self):
+        # Click's rule: -pv is --process v, and "web" stays a project name. The
+        # grammar must know -p consumes a value, not just that -v is a flag.
+        names, _flags, values = self._split(["-pv", "web"])
+
+        assert (names, values) == (["web"], {"process": "v"})
+
+    def test_cluster_order_does_not_matter(self):
+        assert self._split(["-vy"])[1] == self._split(["-yv"])[1]
+
+    # -- the safety half: no -y may be synthesised -------------------------
+
+    @pytest.mark.parametrize(
+        "token",
+        [
+            "-yq",  # a typo after the consent flag
+            "-qy",  # a typo before it
+            "-y-",  # a malformed dash inside the cluster
+            "-yy!",  # a stray character
+            "-vyq",  # a longer cluster with one unknown
+            "-yb",  # -b is a sibling verb's short, not defined here
+            "-y1",  # a digit that is not an option
+        ],
+    )
+    def test_a_cluster_holding_an_unknown_character_is_refused_whole(self, token):
+        with pytest.raises(typer.Exit) as exc:
+            self._split(["proj", token])
+
+        assert exc.value.exit_code == 2
+
+    def test_the_refused_cluster_yields_no_flags_at_all(self):
+        # The load-bearing assertion: not merely "it exited 2", but that no
+        # value ever comes back for a caller to apply. split_trailing_options
+        # raises instead of returning, so there is no partial result carrying
+        # the -y that the refused token happened to contain.
+        recorded: list = []
+
+        with pytest.raises(typer.Exit):
+            recorded.append(self._split(["proj", "-yq"]))
+
+        assert recorded == []
+
+    def test_an_incomplete_cluster_missing_its_value_is_a_usage_error(self):
+        with pytest.raises(typer.Exit) as exc:
+            self._split(["proj", "-vp"])
+
+        assert exc.value.exit_code == 2
+
+    def test_a_cluster_may_not_borrow_the_next_option_as_its_value(self):
+        with pytest.raises(typer.Exit) as exc:
+            self._split(["proj", "-vp", "-y"])
+
+        assert exc.value.exit_code == 2
+
+    # -- what must NOT change ---------------------------------------------
+
+    @pytest.mark.parametrize("value", ["-1", "-staging", "--weird-label"])
+    def test_a_dash_leading_label_is_still_a_value_not_a_cluster(self, value):
+        # None of these resolve as clusters, so the positional rule still wins
+        # and the label survives. This is why an unknown cluster RETURNS rather
+        # than raising: raising here would break every dash-leading bench label.
+        _names, _flags, values = self._split(["proj", "--bench", value])
+
+        assert values == {"bench": value}
+
+    def test_a_valid_cluster_in_value_position_is_still_a_missing_value(self):
+        # -vy became parseable, so it must now also be refused as a --bench value.
+        with pytest.raises(typer.Exit) as exc:
+            self._split(["proj", "--bench", "-vy"])
+
+        assert exc.value.exit_code == 2
+
+    def test_long_options_are_untouched_by_the_short_grammar(self):
+        names, flags, values = self._split(["proj", "--verbose", "--bench=1", "--process", "web"])
+
+        assert (names, flags, values) == (
+            ["proj"],
+            {"verbose": True},
+            {"bench": "1", "process": "web"},
+        )
+
+    @pytest.mark.parametrize("token", ["--benhc", "--force", "-q", "--"])
+    def test_unknown_options_are_still_refused(self, token):
+        with pytest.raises(typer.Exit) as exc:
+            self._split(["proj", token])
+
+        assert exc.value.exit_code == 2
+
+    def test_help_still_wins_inside_a_cluster(self, monkeypatch):
+        shown: list[bool] = []
+
+        def _fake_help():
+            shown.append(True)
+            raise typer.Exit()
+
+        monkeypatch.setattr(utils_mod, "_show_command_help", _fake_help)
+
+        with pytest.raises(typer.Exit) as exc:
+            self._split(["proj", "-vh"])
+
+        assert shown == [True]
+        assert exc.value.exit_code in (0, None)
+
+    @pytest.mark.parametrize("token", ["-hp", "-vhp"])
+    def test_help_cannot_mask_a_cluster_missing_its_value(self, monkeypatch, token):
+        shown: list[bool] = []
+        monkeypatch.setattr(utils_mod, "_show_command_help", lambda: shown.append(True))
+
+        with pytest.raises(typer.Exit) as exc:
+            self._split(["proj", token])
+
+        assert shown == []
+        assert exc.value.exit_code == 2
+
+    @pytest.mark.parametrize("token", ["-vhq", "-hq"])
+    def test_help_waits_until_the_complete_cluster_is_valid(self, monkeypatch, token):
+        shown: list[bool] = []
+        monkeypatch.setattr(utils_mod, "_show_command_help", lambda: shown.append(True))
+
+        with pytest.raises(typer.Exit) as exc:
+            self._split(["proj", token])
+
+        assert shown == []
+        assert exc.value.exit_code == 2
+        assert utils_mod._parse_short_cluster(token, self.FLAGS, self.VALUES) is None
+
+    @pytest.mark.parametrize("token", ["-vhq", "-hq"])
+    def test_invalid_help_clusters_are_not_preserved_as_option_values(self, token):
+        with pytest.raises(typer.Exit) as exc:
+            self._split(["proj", "--bench", token])
+
+        assert exc.value.exit_code == 2
+
+
+class TestEveryCommandInBothModes:
+    """One grammar, four commands, TTY and non-TTY alike.
+
+    Each command owns its own flag/value table, so the accept-and-refuse pair is
+    asserted per command rather than once on the splitter: a table that forgets a
+    short would accept the cluster nowhere, and a command wired to a stale copy
+    of the splitter would accept it everywhere. Both modes, because the refusal
+    is what an agent driving cwcli non-interactively hits.
+    """
+
+    @pytest.mark.parametrize("tty", [True, False])
+    def test_stop_takes_a_cluster_and_refuses_a_malformed_one(self, monkeypatch, tty):
+        stopped = TestStop()._wire(monkeypatch, tty=tty)
+        seen: list[tuple] = []
+        monkeypatch.setattr(
+            stop_mod, "_stop_benches", lambda names, bench, verbose: seen.append((names, bench))
+        )
+
+        stop_mod.stop(ctx=None, verbose=False, bench=None, project_name=["proj", "-v"])
+        assert stopped == ["proj"]
+
+        with pytest.raises(typer.Exit) as exc:
+            stop_mod.stop(ctx=None, verbose=False, bench=None, project_name=["proj", "-vq"])
+
+        assert exc.value.exit_code == 2
+        assert stopped == ["proj"] and seen == []
+
+    @pytest.mark.parametrize("tty", [True, False])
+    def test_restart_takes_an_attached_process_and_refuses_a_malformed_cluster(
+        self, monkeypatch, tty
+    ):
+        TestRestart()._wire(monkeypatch, tty=tty)
+        seen: list[tuple] = []
+        monkeypatch.setattr(
+            restart_mod,
+            "_restart_processes",
+            lambda names, process, bench, verbose: seen.append((names, process)),
+        )
+
+        restart_mod.restart(
+            ctx=None, verbose=False, process=None, bench=None, project_name=["proj", "-pweb"]
+        )
+        assert seen == [(["proj"], "web")]
+
+        with pytest.raises(typer.Exit) as exc:
+            restart_mod.restart(
+                ctx=None, verbose=False, process=None, bench=None, project_name=["proj", "-vq"]
+            )
+
+        assert exc.value.exit_code == 2
+        assert seen == [(["proj"], "web")]
+
+    @pytest.mark.parametrize("tty", [True, False])
+    def test_start_takes_a_cluster_and_refuses_a_malformed_one(self, monkeypatch, tty):
+        started = TestStart()._wire(monkeypatch, tty=tty)
+
+        start_mod.start(
+            verbose=False, bench=None, yes=False, autorestart=True, project_name=["proj", "-vy"]
+        )
+        assert started == [("proj", None, True)]
+
+        with pytest.raises(typer.Exit) as exc:
+            start_mod.start(
+                verbose=False,
+                bench=None,
+                yes=False,
+                autorestart=True,
+                project_name=["proj", "-vyq"],
+            )
+
+        assert exc.value.exit_code == 2
+        assert started == [("proj", None, True)]
+
+    @pytest.mark.parametrize("tty", [True, False])
+    def test_rm_takes_a_cluster_and_refuses_a_malformed_one(self, monkeypatch, tty):
+        removed = TestRm()._wire(monkeypatch, tty=tty)
+
+        # -vy is a valid cluster, so it really does carry rm's consent through.
+        rm_mod.rm(
+            ctx=None,
+            verbose=False,
+            volumes=True,
+            no_backup=True,
+            yes=False,
+            project_name=["proj", "-vy"],
+        )
+        assert [r["name"] for r in removed] == ["proj"]
+
+        with pytest.raises(typer.Exit) as exc:
+            rm_mod.rm(
+                ctx=None,
+                verbose=False,
+                volumes=True,
+                no_backup=True,
+                yes=False,
+                project_name=["proj", "-vyq"],
+            )
+
+        assert exc.value.exit_code == 2
+        assert [r["name"] for r in removed] == ["proj"]
+
+
+class TestGrammarMatchesClick:
+    """The grammar is Click's, not an approximation of it.
+
+    These four commands parse their own trailing options only because a Click
+    Group stops parsing at the first positional. What they accept there should
+    be what Click would have accepted had it kept going, so this compares the
+    splitter against a real Click command carrying the same option set.
+    """
+
+    FLAGS = {"-v": ("verbose", True), "-y": ("yes", True)}
+    VALUES = {"-p": "process"}
+
+    @staticmethod
+    def _click_reference(argv):
+        """Click's own answer, in split_trailing_options' return shape."""
+        captured: dict = {}
+
+        @click.command(context_settings={"help_option_names": ["-h", "--help"]})
+        @click.option("-v", "--verbose", is_flag=True)
+        @click.option("-y", "--yes", is_flag=True)
+        @click.option("-p", "--process", default=None)
+        @click.argument("names", nargs=-1)
+        def cmd(verbose, yes, process, names):
+            captured["names"] = list(names)
+            captured["flags"] = {
+                key: True for key, on in (("verbose", verbose), ("yes", yes)) if on
+            }
+            captured["values"] = {} if process is None else {"process": process}
+
+        if ClickRunner().invoke(cmd, argv).exit_code != 0:
+            return None
+        return captured["names"], captured["flags"], captured["values"]
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["-pweb"],
+            ["-p=web"],
+            ["-vy"],
+            ["-yv"],
+            ["-vp", "web"],
+            ["-pv", "web"],
+            ["-vpweb"],
+            ["proj", "-pweb"],
+        ],
+    )
+    def test_accepted_forms_parse_the_same_way_click_would(self, argv):
+        names, flags, values = split_trailing_options(
+            argv, command="stop", flags=self.FLAGS, values=self.VALUES
+        )
+        expected = self._click_reference(argv)
+
+        assert (names, flags, values) == expected
+
+    @pytest.mark.parametrize("argv", [["-yq"], ["-y-"], ["-q"], ["-p"], ["-vp"], ["-hp"], ["-vhp"]])
+    def test_forms_click_rejects_are_rejected_here_too(self, argv):
+        assert self._click_reference(argv) is None
+
+        with pytest.raises(typer.Exit) as exc:
+            split_trailing_options(argv, command="stop", flags=self.FLAGS, values=self.VALUES)
+
+        assert exc.value.exit_code == 2
+
+    @pytest.mark.parametrize("argv", [["-vh"], ["-hv"], ["-vhq"], ["-hq"]])
+    def test_help_clusters_exit_the_same_way_click_would(self, monkeypatch, argv):
+        @click.command(context_settings={"help_option_names": ["-h", "--help"]})
+        @click.option("-v", "--verbose", is_flag=True)
+        def cmd(verbose):
+            pass
+
+        expected = ClickRunner().invoke(cmd, argv).exit_code
+        monkeypatch.setattr(
+            utils_mod,
+            "_show_command_help",
+            lambda: (_ for _ in ()).throw(typer.Exit()),
+        )
+
+        with pytest.raises(typer.Exit) as exc:
+            split_trailing_options(argv, command="stop", flags=self.FLAGS, values=self.VALUES)
+
+        if expected == 0:
+            assert exc.value.exit_code in (0, None)
+        else:
+            assert exc.value.exit_code == expected

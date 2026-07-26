@@ -126,6 +126,10 @@ cwcli apps update my-project erpnext
 
 ## Command Reference
 
+For the variadic `start`, `stop`, `restart`, and `rm` commands, options may appear after project names.
+Short flags can be clustered (`-vy` means `-v -y`), and a short option's value can be attached (`-pweb` means `--process web`).
+A cluster containing an unknown short option is rejected as a whole.
+
 ### `init` - Initialize New Project
 
 Creates a complete Frappe development environment in a single step. Downloads compose files, starts containers, initializes bench, creates a site, and starts the bench's dev services.
