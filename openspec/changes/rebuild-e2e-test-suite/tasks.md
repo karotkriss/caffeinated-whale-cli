@@ -34,20 +34,26 @@ For the current, authoritative per-file test coverage, read [`tests/README.md`](
 - [x] 3.2 New `.github/workflows/e2e.yml`: `strategy.matrix.frappe: [14, 15, 16]` of `ubuntu-latest` jobs with NO `container:`; install uv via `astral-sh/setup-uv`.
 - [x] 3.3 Authenticated Docker Hub login step (dodge anonymous pull rate limits); a distinct "upstream pull/compose fetch failed" annotation separable from an assertion failure.
 - [x] 3.4 Per-job `timeout-minutes` (start ~45, provisional); the `cwe2e-` teardown backstop in an `always()` step.
-- [x] 3.5 Run version-agnostic E2E only on the v16 leg; version-sensitive E2E on all three legs.
+- [x] 3.5 Run the E2E suite on all three version legs.
+  Version-agnostic command tests run on all three unless an individual test explicitly narrows itself, while version-sensitive tests run on every applicable leg.
 - [x] 3.6 Gating triggers: required on PRs into protected branches, plus on-demand via a PR label. Note in the workflow/PR that branch protection must be enabled on `develop`/`master` for "required" to bite.
 
 ## 4. Per-command E2E + mock retirement (parallel-run cadence)
 
 A parent item below is checked only when every clause it once bundled has real E2E proof; where a clause is unproven or deliberately deferred to the unit tier, it is broken out as its own sub-item so the parent cannot read as fully done.
 
-- [x] 4.1 **init** - both interactive and non-interactive (`--yes`, `--admin-password`, `--mariadb-root-password`) paths are E2E-proven, including the generated-admin-password print-once behavior. (init has no pure "mock behavior" suite to retire beyond resolver logic, which stays in unit.)
+- [ ] 4.1 **init**
+  - [x] 4.1a A real bench and site are created through both interactive and non-interactive paths.
+  - [x] 4.1b The non-interactive fixture exercises `--auto-start` and `--admin-password`.
+  - [x] 4.1c Omitting `--admin-password` interactively generates and prints the administrator password exactly once.
+  - [ ] 4.1d An explicit `--db-root-password` value is not E2E-proven.
+  - `init` has no pure mock-behavior suite to retire beyond resolver logic, which stays in unit.
 - [ ] 4.2 **backup**
   - [x] 4.2a A real, non-empty DB dump lands on the host, in both interactive and non-interactive modes.
   - [ ] 4.2b Multi-bench `--bench` backup against a real instance - NOT E2E; only unit-tier (mocked container) coverage exists. `backup` has no dedicated mock suite to retire (net-new coverage).
 - [ ] 4.3 **rm** - named volumes + `~/.cwcli/projects/<name>` removal, and the verified non-empty DB dump that must exist first (the C1 gate), are now E2E-proven for the `cwcli axi rm --yes` path (`tests/e2e/test_axi_rm_e2e.py`, added after this checklist was first written). Still not E2E: the human `cwcli rm` verb's own interactive and non-interactive-without-`--yes` paths, and the early-abort-before-container-removal case on a failed backup. THEN retire the container-mock behavior tests in `tests/test_rm_safety.py` / `tests/bench_fakes_mb.py` (keep `test_rm_truth.py`'s pure-logic name/path validators in unit).
 - [ ] 4.4 **restore**
-  - [x] 4.4a Genuine data replacement through `--latest`, and through the interactive backup-selection menu, each followed by a site that boots (`bench migrate` + restart ran).
+  - [x] 4.4a Genuine data replacement through `--latest`, and through the interactive backup-selection menu, each followed by a site that becomes ready.
   - [ ] 4.4b Explicit `--backup-file <name>` selection (as opposed to `--latest` or the interactive menu) - NOT E2E; unit-tier only.
   - [ ] 4.4c Origin-mismatch handling - NOT E2E; unit-tier only.
   - The v14-only `--receive` bare-filename path is covered separately by §5.3.
@@ -61,7 +67,15 @@ A parent item below is checked only when every clause it once bundled has real E
   - [ ] 4.6b Multi-bench `--bench` resolution against a real instance - NOT E2E; unit-tier only.
 - [ ] 4.7 **inspect** - E2E: assert the 3-tier freshness behavior against a real bench (T1 serve, T2 read-only drift detect, T3 re-cache on real drift); a freshly installed app becomes visible without `--update`. THEN retire the tier-assertion mock tests in `tests/test_inspect_partial_refresh.py` (keep any pure-logic in unit).
 - [ ] 4.8 **apps (list/install/uninstall)** - `cwcli axi apps install`'s own scoped verb (a fresh install, not a reinstall) is now E2E-proven end to end (`tests/e2e/test_axi_apps_install_e2e.py`, added after this checklist was first written: the permitted install, the already-installed refusal on both a plain name and a git-URL spelling, a fail-closed unreadable site, and a missing-`--site` usage error). Still not E2E: the human `cwcli apps install`'s every-site fan-out and interactive/non-interactive confirm paths, and `cwcli apps list`/`uninstall` entirely - real `bench get-app`/`install-app`/`uninstall-app`, multi-site fan-out with honest aggregated exit codes, `--json` purity, post-mutation cache refresh reflected in `where`/`inspect`; both modes. Retire the remaining `tests/test_apps.py` container-mock tests once green.
-- [ ] 4.9 **yes-flag / auto-start contract** - each landed per-command E2E file above already asserts its own non-TTY-without-flag refusal (e.g. `test_restore_e2e.py::test_non_tty_without_selector_refuses`), but the cross-cutting fold-in this item describes - retiring `tests/test_yes_flag.py`'s container-mock parts once every command's own E2E covers the same ground - has not happened. Keep any pure-logic in `tests/test_yes_flag.py` in unit.
+- [ ] 4.9 **yes-flag / auto-start contract**
+  - [x] 4.9a `apps update` refuses non-interactively on a stopped instance without `--yes`.
+  - [ ] 4.9b `init` non-TTY refusal without its required `--admin-password` is not E2E-proven.
+  - [ ] 4.9c `backup` non-TTY refusal on a stopped instance without `--yes` is not E2E-proven.
+  - [ ] 4.9d `restore` non-TTY refusal at the destructive confirmation without `--yes` is not E2E-proven.
+  - [ ] 4.9e `unlock` non-TTY refusal on a stopped instance without `--yes` is not E2E-proven.
+  - [ ] 4.9f `axi rm` refusal without its required `--yes` is not E2E-proven.
+  - The cross-cutting retirement of `tests/test_yes_flag.py` has not happened.
+  - Keep any pure logic in `tests/test_yes_flag.py` in unit.
 
 ## 5. Version-sensitive matrix coverage (runs on all three legs)
 
@@ -88,7 +102,7 @@ A parent item below is checked only when every clause it once bundled has real E
 - [x] 8.3 Deliberately leak a container mid-test and confirm the `cwe2e-` backstop sweeps it; deliberately point `HOME` at the real home and confirm the rail refuses.
 - [ ] 8.4 Confirm each destructive command's E2E asserts the REAL side effect (not a string match) and that both modes are exercised.
   - [x] 8.4a `backup` - real dump on the host, both modes.
-  - [x] 8.4b `restore` - genuine data replacement + migrate + restart, both modes.
+  - [x] 8.4b `restore` - genuine data replacement followed by site readiness, both modes.
   - [x] 8.4c `unlock` - real lock removal, both modes.
   - [ ] 8.4d `update` - both modes are exercised, but the real side effect (pull/migrate/maintenance toggle) is not E2E-asserted; see 4.5b/4.5c.
   - [ ] 8.4e `rm` - the real side effect is E2E-proven, but only one mode (`cwcli axi rm --yes`) is exercised; see 4.3.
