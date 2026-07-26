@@ -3,7 +3,7 @@
 Real-instance validation for the fix that teaches the four variadic-project commands (`start`, `stop`, `restart`, `rm`) a proper short-option grammar, so `-pweb` means `-p web` and `-vy` means `-v -y`, while a cluster holding an unknown character is refused whole.
 
 > **Status: the permanent proof is CI, not this run.**
-> Real-instance validation for this fix belongs to [`tests/e2e/test_trailing_clustered_shorts_e2e.py`](../../tests/e2e/test_trailing_clustered_shorts_e2e.py), executed by the v14/v15/v16 matrix in `.github/workflows/e2e.yml` on an ephemeral runner, against the final pushed code, re-run on every fix commit, blocking the merge.
+> Real-instance validation for this fix belongs to [`tests/e2e/test_trailing_clustered_shorts_e2e.py`](../../tests/e2e/test_trailing_clustered_shorts_e2e.py), executed by the v16 standalone leg of `.github/workflows/e2e.yml` on an ephemeral runner, against the final pushed code, re-run on every fix commit, blocking the merge.
 > That is strictly better than a local re-run: it validates the code that actually ships rather than the code the author happened to have checked out.
 > **Do not copy the local procedure below as a recipe.** `docs/e2e/` is where canonical patterns get read from, and running a destructive lifecycle by hand on a shared box is no longer one of them - the committed test is.
 > What follows is retained as the honest record of the run that first established this behaviour, and as the readable narrative of what the CI test asserts.
