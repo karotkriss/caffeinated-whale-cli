@@ -484,7 +484,13 @@ def resolve_assigned_ports(
     return assigned
 
 
-def resolve_host_web_url(container, bench_path: str, *, site: str | None = None) -> str | None:
+def resolve_host_web_url(
+    container,
+    bench_path: str,
+    *,
+    site: str | None = None,
+    assigned_ports: tuple[int, int] | None = None,
+) -> str | None:
     """The URL a browser ON THE HOST reaches this bench at, or None if unresolvable.
 
     Two hops, neither of them guessed:
@@ -508,8 +514,10 @@ def resolve_host_web_url(container, bench_path: str, *, site: str | None = None)
     the site to reach it. With no site the URL falls back to ``localhost``, which is
     still the right port - and still answers, with Frappe's own site-not-found page.
     """
-    ports = resolve_assigned_ports(container, [bench_path], fill_defaults=False)
-    assigned = ports.get(bench_path)
+    assigned = assigned_ports
+    if assigned is None:
+        ports = resolve_assigned_ports(container, [bench_path], fill_defaults=False)
+        assigned = ports.get(bench_path)
     if assigned is None:
         return None
     host_port = _published_host_port(container, assigned[0])
