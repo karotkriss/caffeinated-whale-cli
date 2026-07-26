@@ -2168,14 +2168,13 @@ cwcli axi status frappe-one --bench 1
 cwcli axi logs frappe-one
 cwcli axi logs frappe-one --process web --lines 50
 
-# Resolve a bench's host URL and probe it fresh, right now; prints as TOON. The
-# only place `--bench 1`'s real address is computed (bench 1 of a --port 21000
-# instance is :21001, not :8000) plus whether it answers HTTP THIS INVOCATION -
+# Resolve a bench's host URL and probe it fresh, right now; prints as TOON. This
+# is the agent verb that reports `--bench 1`'s real address (bench 1 of a
+# --port 21000 instance is :21001, not :8000) plus whether it answers HTTP now.
 # `cwcli axi status` also probes fresh once; only human `cwcli status --watch`
-# suppresses HTTP probing. An
-# unreadable port config is `url: null` / `reachable: false`, never a guessed
-# :8000; --site sends that Host header (Frappe routes by Host) instead of the
-# bench's own default site.
+# suppresses HTTP probing. An unreadable port config is `url: null` /
+# `reachable: false`, never a guessed :8000; --site sends that Host header
+# (Frappe routes by Host) instead of the bench's representative site.
 cwcli axi url frappe-one
 cwcli axi url frappe-one --bench 1 --site erp.localhost
 
@@ -2261,12 +2260,13 @@ cwcli axi config
 `cwcli axi status`'s `web_http_code` is measured against the bench's CONTAINER-internal port and never states the host address; the host URL is computed only by `cwcli open`'s success banner and the human `cwcli init` banner, neither reachable from `cwcli axi`, so getting either answer meant dropping to a raw `docker inspect`/`curl` against the container.
 This verb reuses those existing primitives rather than adding a second URL resolver or probe mechanism: the URL comes from the same two-hop resolution `cwcli open` already uses (the bench's own assigned container port, mapped through the container's live published port bindings), and the probe is a fresh `curl` run **every invocation**.
 `cwcli axi status` also performs a fresh one-shot probe; only the human `cwcli status --watch` path suppresses HTTP probing.
-Like every other bench-scoped verb, a stopped project is a usage error naming `cwcli start` (exit 2, no `--yes`) and an ambiguous multi-bench project with no `--bench` is a usage error naming it.
+Like other single-bench verbs such as `cwcli axi logs`, a stopped project is a usage error naming `cwcli start` (exit 2, no `--yes`) and an ambiguous multi-bench project with no `--bench` is a usage error naming it.
 `--site` sends that site as the `Host` header (Frappe routes by `Host`); omitted, it falls back to the bench's own representative site (its default, else its only/first cached site), reported so the observation stays attributable, and a bench with no site at all is probed host-less rather than guessing one.
 An unreadable port config is `url: null` / `reachable: false` with a warning that names the live config file to repair; a missing live host binding names `cwcli axi scale` when the bench lies beyond the published range.
 Neither case guesses `:8000`.
 `http_code` is whatever code curl saw, verbatim: a 404 or 500 still counts as `reachable: true`, exactly as `cwcli axi status` already treats "any code is serving".
-There is no human `cwcli url` yet; use `cwcli open`'s banner or `cwcli status` for the equivalent human-facing information.
+There is no human `cwcli url` yet.
+Use `cwcli open`'s banner for the host address and `cwcli status` for the HTTP observation.
 
 `cwcli axi apps update` blocks until the update finishes and emits ONE terminal document, exactly as `cwcli axi backup` does for a minutes-long `bench backup`: progress is deliberately not streamed, because N documents on stdout would break the one-TOON-document contract and an agent needs a verdict it can branch on rather than a progress bar (use `cwcli logs`/`cwcli status --watch` if you want live progress). Its exit code is `0` only when the report's `ok` is true; any failed phase, any stuck site, or any unknown outcome exits `1`, and an ambiguous multi-bench project is a `--bench` usage error (exit 2). A stopped project is likewise a usage error pointing at `cwcli start` (exit 2) - there is deliberately no `--yes` on this verb, because starting a container is UI-coupled and the core stays UI-pure about it, so an agent composes `cwcli axi start` then this verb, exactly as `cwcli axi unlock`/`cwcli axi backup` already document. **`failed_*` and `unknown_*` are not the same thing and must not be collapsed:** a `failed_*` item ran and failed, so retrying it is safe, while an `unknown_*` item's output stream was lost - its exit code is unknowable and **it may still be running**, so retrying it (a migration above all) can do real harm. Check before retrying. There is deliberately no `cwcli axi update`: the deprecated `cwcli update` spelling does not get an agent-facing verb. JSON output stays on the human commands (`cwcli ls --json`, `cwcli where --json`, `cwcli apps update --json`).
 

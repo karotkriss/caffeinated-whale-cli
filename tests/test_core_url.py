@@ -1,7 +1,7 @@
 """``core.url`` - the host URL a bench serves on, plus a fresh HTTP observation.
 
-Covers what ``cwcli axi status``/``cwcli axi logs`` already establish the pattern
-for (the shared ``resolve_container_and_bench`` prologue: a stopped project is
+Covers the pattern single-bench verbs such as ``cwcli axi logs`` already establish
+(the shared ``resolve_container_and_bench`` prologue: a stopped project is
 ``confirm_start``, an ambiguous multi-bench project is ``select_bench``) plus what
 is unique to this verb: the URL is unresolvable without failing the call, the probe
 is read fresh every time (never through ``core.status``'s cached/``--watch`` tiers),
@@ -89,8 +89,7 @@ class TestSuccess:
         config_reads = [
             cmd
             for cmd in c.calls
-            if isinstance(cmd, list)
-            and cmd == ["cat", f"{BENCH_0}/sites/common_site_config.json"]
+            if isinstance(cmd, list) and cmd == ["cat", f"{BENCH_0}/sites/common_site_config.json"]
         ]
         assert len(config_reads) == 1
         # The probe used the resolved site as the Host header, hitting the
