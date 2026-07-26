@@ -21,6 +21,12 @@ So this module builds a real second bench: its own ``bench init`` virtualenv, it
 own site, its own Procfile, its own supervisord, and the port bench's own
 ``make_ports`` assigned it.
 
+The same fixture also backs the ``cwcli axi url`` discriminator tests near the
+bottom of this file: that verb's whole reason to exist is the SAME class of bug
+(a probe that reads one bench's port while reporting on another), so its E2E
+proof reuses this module's already-built two-genuinely-serving-benches instance
+rather than paying for a second one.
+
 **Every test asserts the positive before the negative.** Before asserting that a
 bench is not misreported it proves that bench is genuinely serving, because a
 "no wrong answer" check passes just as happily against a bench that is not there.
@@ -37,6 +43,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import time
 from dataclasses import dataclass
 
@@ -553,3 +560,115 @@ def test_instance_wide_status_latency_on_two_serving_benches(two_benches, capsys
         )
 
     assert two < 30, f"instance-wide status on 2 benches took {two:.1f}s"
+
+
+# --------------------------------------------------------------------------- #
+# `cwcli axi url`: the same bench-blind-probe defect class, on its own verb
+# --------------------------------------------------------------------------- #
+def _real_host_port(project: str, container_port: int) -> int:
+    """The ACTUAL Docker-published host port, read via the CLI - independent of
+    ``resolve_host_web_url``'s own docker-py read, so a passing test is not just
+    comparing cwcli's answer to itself."""
+    cid = harness.frappe_container_id(project)
+    r = subprocess.run(
+        ["docker", "port", cid, f"{container_port}/tcp"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    return int(r.stdout.strip().splitlines()[0].rsplit(":", 1)[1])
+
+
+def _axi_url_fields(project: str, *args: str) -> tuple[dict[str, str], str]:
+    res = harness.run_cwcli("axi", "url", project, *args)
+    assert res.returncode == 0, res.stdout + res.stderr
+    out = harness.strip_ansi(res.stdout)
+    fields: dict[str, str] = {}
+    for line in out.splitlines():
+        if not line or line.startswith(" "):
+            continue
+        if line.endswith(":"):
+            break  # a block header ("warnings[N]:") - the flat fields precede it
+        if ": " not in line:
+            continue
+        key, _, value = line.partition(": ")
+        fields[key.strip()] = value.strip().strip('"')
+    return fields, out
+
+
+@v16_only
+def test_axi_url_targets_each_benchs_own_port_never_a_neighbours(two_benches):
+    """``cwcli axi url``'s whole reason to exist, proven the same way F3/F4 are:
+    each bench's reported URL is that bench's OWN Docker-published port, and its
+    probe answers for that bench's OWN site - never bench 0's when asked about
+    bench 1, or vice versa. This is the exact defect class ``report-status-per-
+    bench`` fixed for ``status``, reused here rather than re-derived."""
+    inst = two_benches
+    _serve_both(inst)
+
+    first_host_port = _real_host_port(inst.name, inst.first_port)
+    second_host_port = _real_host_port(inst.name, inst.second_port)
+    # The fixture precondition this test leans on: two DIFFERENT container ports,
+    # so two different host ports too (a shared port would make this vacuous).
+    assert first_host_port != second_host_port
+
+    first, first_out = _axi_url_fields(inst.name, "--bench", str(inst.first_index))
+    assert first["bench_path"] == FIRST_BENCH_PATH, first_out
+    assert first["site"] == FIRST_SITE, first_out
+    assert first["url"] == f"http://{FIRST_SITE}:{first_host_port}", first_out
+    assert first["reachable"] == "true", first_out
+    assert first["http_code"] == "200", first_out
+
+    second, second_out = _axi_url_fields(inst.name, "--bench", str(inst.second_index))
+    assert second["bench_path"] == SECOND_BENCH_PATH, second_out
+    assert second["site"] == SECOND_SITE, second_out
+    assert second["url"] == f"http://{SECOND_SITE}:{second_host_port}", second_out
+    assert second["reachable"] == "true", second_out
+    assert second["http_code"] == "200", second_out
+
+    # THE DISCRIMINATOR: neither bench's reported URL/port is the other's. A
+    # bench-blind implementation (the removed ``status`` defect, reincarnated
+    # here) would report the SAME port for both.
+    assert first["url"] != second["url"], (first_out, second_out)
+
+
+@v16_only
+def test_axi_url_reports_a_stopped_benchs_own_url_as_unreachable(two_benches):
+    """A bench whose dev processes are stopped still resolves ITS OWN url (the
+    container and port config are untouched), but the fresh probe reports it
+    honestly unreachable - and the sibling bench, still serving, is unaffected."""
+    inst = two_benches
+    _serve_both(inst)
+    try:
+        stop = harness.run_cwcli("stop", inst.name, "--bench", str(inst.second_index))
+        assert stop.returncode == 0, stop.stdout + stop.stderr
+        _wait_code(inst.name, inst.second_port, "000")
+
+        second, second_out = _axi_url_fields(inst.name, "--bench", str(inst.second_index))
+        assert second["bench_path"] == SECOND_BENCH_PATH, second_out
+        assert second["reachable"] == "false", second_out
+        assert second["http_code"] == "null", second_out
+        # The URL itself is still resolved (the port config never went away) -
+        # only the freshly-observed reachability changed.
+        assert second["url"].endswith(f":{_real_host_port(inst.name, inst.second_port)}")
+
+        # The sibling bench is a separate observation, unaffected by its neighbour.
+        first, first_out = _axi_url_fields(inst.name, "--bench", str(inst.first_index))
+        assert first["reachable"] == "true", first_out
+        assert first["http_code"] == "200", first_out
+    finally:
+        _serve_both(inst)
+
+
+@v16_only
+def test_axi_url_with_no_bench_on_a_multibench_project_is_a_usage_error(two_benches):
+    """No ``--bench`` on a genuinely multi-bench project is ambiguous - a usage
+    error naming the flag, never a guess at which bench's URL was meant."""
+    inst = two_benches
+    _serve_both(inst)
+
+    res = harness.run_cwcli("axi", "url", inst.name)
+    assert res.returncode == 2, res.stdout + res.stderr
+    out = harness.strip_ansi(res.stdout)
+    assert "--bench" in out, out
