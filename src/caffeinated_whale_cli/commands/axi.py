@@ -1072,8 +1072,8 @@ def axi_url(
     Answers what no other ``axi`` verb does: the HOST address a browser reaches this
     bench at (``cwcli axi status``'s ``web_http_code`` is measured against the
     container-internal port and never states it), and whether that address answers
-    HTTP right now - a fresh probe on every call, never the cached/``--watch``-tier
-    reading ``cwcli axi status`` may be showing.
+    HTTP right now. This verb and ``cwcli axi status`` both perform a fresh one-shot
+    probe. Only the human ``cwcli status --watch`` path suppresses HTTP probing.
 
     A stopped project is a usage error naming ``cwcli start`` (exit 2, no ``--yes``
     on this verb); a multi-bench project with no ``--bench`` is a usage error naming

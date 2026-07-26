@@ -32,6 +32,14 @@ def _probe(**overrides):
 
 
 class TestAxiUrl:
+    def test_help_distinguishes_axi_status_from_human_watch(self):
+        result = runner.invoke(axi_mod.app, ["url", "--help"])
+
+        assert result.exit_code == 0
+        assert "cwcli axi status both perform a fresh one-shot probe" in result.stdout
+        assert "Only the human cwcli status --watch path suppresses HTTP probing" in result.stdout
+        assert "cached" not in result.stdout
+
     def test_success_emits_toon_exit_0(self, monkeypatch):
         monkeypatch.setattr(
             axi_mod.core_url,
