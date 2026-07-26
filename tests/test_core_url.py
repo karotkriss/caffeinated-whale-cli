@@ -86,6 +86,13 @@ class TestSuccess:
         assert result.data.site == "one.localhost"
         assert result.data.http_code == "200"
         assert result.data.reachable is True
+        config_reads = [
+            cmd
+            for cmd in c.calls
+            if isinstance(cmd, list)
+            and cmd == ["cat", f"{BENCH_0}/sites/common_site_config.json"]
+        ]
+        assert len(config_reads) == 1
         # The probe used the resolved site as the Host header, hitting the
         # CONTAINER port (curl runs inside the container) - not a guessed 8000.
         curl_calls = [cmd for cmd in c.calls if isinstance(cmd, list) and cmd[0] == "curl"]
