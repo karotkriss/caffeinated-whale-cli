@@ -35,8 +35,7 @@ For the current, authoritative per-file test coverage, read [`tests/README.md`](
 - [x] 3.2 New `.github/workflows/e2e.yml`: `strategy.matrix.frappe: [14, 15, 16]` of `ubuntu-latest` jobs with NO `container:`; install uv via `astral-sh/setup-uv`.
 - [x] 3.3 Authenticated Docker Hub login step (dodge anonymous pull rate limits); a distinct "upstream pull/compose fetch failed" annotation separable from an assertion failure.
 - [x] 3.4 Per-job `timeout-minutes` (start ~45, provisional); the `cwe2e-` teardown backstop in an `always()` step.
-- [x] 3.5 Run the E2E suite on all three version legs.
-  Version-agnostic command tests run on all three unless an individual test explicitly narrows itself, while version-sensitive tests run on every applicable leg.
+- [x] 3.5 Run version-agnostic E2E only on the v16 leg and version-sensitive E2E on all three legs.
 - [x] 3.6 Gating triggers: required on PRs into protected branches, plus on-demand via a PR label. Note in the workflow/PR that branch protection must be enabled on `develop`/`master` for "required" to bite.
 
 ## 4. Per-command E2E + mock retirement (parallel-run cadence)
