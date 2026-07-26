@@ -67,7 +67,8 @@ Notes for anyone changing this:
 ## E2E harness (real Docker)
 
 The E2E harness ([`tests/e2e/harness.py`](e2e/harness.py) + [`tests/e2e/conftest.py`](e2e/conftest.py)) automates the manual `docs/e2e/` recipe so the destructive-path guarantees are enforced by machine.
-It drives the real `cwcli` binary (subprocess for non-interactive, `pexpect` for interactive - awaiting the prompt_toolkit `ESC[?2004h` raw-mode marker before each keystroke), waits on real readiness (never fixed sleeps), and asserts real side effects (e.g. a non-empty DB dump copied out to the host), in both modes.
+It drives the real `cwcli` binary (subprocess for non-interactive, `pexpect` for interactive - awaiting the prompt_toolkit `ESC[?2004h` raw-mode marker before each keystroke), waits on real readiness (never fixed sleeps), and reads real side effects back from the throwaway instance.
+The per-command coverage ledger below and the tests themselves identify which modes each command currently proves.
 
 Isolation and safety are non-negotiable and layered:
 
@@ -413,7 +414,17 @@ The measured before and after artifact evidence is `docs/e2e/axi-help-toon.md`.
 7. **Port utilities** (`utils/port_utils.py`) - cross-platform process detection (~9%).
 8. **VS Code integration** (`utils/vscode_utils.py`) - container attachment fallback (~15%).
 9. **Configuration management** (`utils/config_utils.py`) - distinct from `db_utils`'s config validation (~37%).
-10. **Real-Docker E2E for the remaining commands** (`rm`, `apps list`/`install`/`uninstall`, `open`, `config`, `inspect`) - tracked in `openspec/changes/rebuild-e2e-test-suite`. The P2P (`sendme`) loopback is no longer in this list: `tests/e2e/test_restore_p2p_e2e.py` fills the `e2e_p2p` marker with a real send->receive transfer (see item 4c's sibling above), and `test_sendme_utils.py` lifts `utils/sendme_utils.py` off its 9% floor. `unlock` is no longer in this list: `tests/e2e/test_unlock_e2e.py` covers it (see item 4c). `update`/`apps update` is no longer in this list either: `tests/e2e/test_apps_update_e2e.py` covers it (see item 4f). `restore` is no longer in this list: `tests/e2e/test_restore_e2e.py` drives both modes with a cache-free DB marker proving the destructive restore (see item 4m). `apps`'s other three subcommands moving onto the core (item 4g) did not close this gap - it is unit-tier only, by design (see `migrate-apps-core/tasks.md`). `install`'s fetch/install execution is now PARTLY closed: `tests/e2e/test_axi_apps_install_e2e.py` drives the scoped `cwcli axi apps install` verb through a real bench end to end (the permitted install, the same-command refusal, the git-URL refusal, and a fail-closed unreadable site), but the human `cwcli apps install`'s own every-site fan-out and interactive/non-interactive confirm paths stay unit-tier only, so `install` remains in this list.
+10. **Remaining Real-Docker E2E gaps** (`apps list`/`install`/`uninstall`, `open`, `config`, `inspect`) are tracked in `openspec/changes/rebuild-e2e-test-suite`.
+    The P2P (`sendme`) loopback is no longer in this list: `tests/e2e/test_restore_p2p_e2e.py` fills the `e2e_p2p` marker with a real send-to-receive transfer (see item 4c's sibling above), and `test_sendme_utils.py` lifts `utils/sendme_utils.py` off its 9% floor.
+    `unlock` is no longer in this list: `tests/e2e/test_unlock_e2e.py` covers it (see item 4c).
+    `update`/`apps update` is no longer in this list either: `tests/e2e/test_apps_update_e2e.py` covers it (see item 4f).
+    `restore` is no longer in this list: `tests/e2e/test_restore_e2e.py` drives both modes with a cache-free DB marker proving the destructive restore (see item 4m).
+    `rm` is no longer in this list either: `tests/e2e/test_axi_rm_e2e.py` proves the `cwcli axi rm --yes` arc end to end (the C1 verified-backup gate, honest deletion, and the archived backup genuinely restoring into a fresh instance).
+    The human `cwcli rm` verb's own interactive and non-interactive refusal paths, and the abort-on-failed-backup case, are not yet covered, so plain `rm` stays tracked in the OpenSpec change.
+    `apps list` now has a narrow real non-interactive proof: `tests/e2e/test_pkg_lifecycle_e2e.py` runs the human `apps list --json` path and parses a non-empty result.
+    `apps uninstall` also has a narrow real non-interactive proof: `tests/e2e/test_axi_apps_install_e2e.py` and `tests/e2e/test_apps_resync_e2e.py` run the human `apps uninstall --site ... --yes` path, verify the app is absent, and verify the site continues serving.
+    `apps install` is partly closed too: `tests/e2e/test_axi_apps_install_e2e.py` drives the scoped `cwcli axi apps install` verb through a real bench end to end (the permitted install, the same-command refusal, the git-URL refusal, and a fail-closed unreadable site).
+    Interactive human install and uninstall confirmation paths, multi-site fan-out, aggregated exit codes, broader JSON-purity coverage, and post-mutation cache refresh remain unproven, so the apps commands stay in this gap list.
 11. Other command modules at or near 0% dedicated unit coverage: `backup.py` (its logic moved to `core/backup.py`, which is covered). `status.py` and `unlock.py` are no longer in this bucket: `test_status_frontend`/`test_status_watch` dedicated-test `status.py` (~95%, on top of `tests/e2e/test_start_status_e2e.py`, see item 3a), and `unlock.py`'s logic moved to `core/unlock.py` (covered, see item 4c) with `commands/unlock.py` itself now at ~50% via `test_unlock_command_cli`. `run.py` is also no longer in this bucket: its logic moved to `core/run.py` + `core/exec_stream.py` (see item 4e), and `test_core_run.py` dedicated-tests the reseated CLI frontend itself.
 
 ## Resources
