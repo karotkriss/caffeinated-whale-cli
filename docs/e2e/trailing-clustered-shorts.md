@@ -149,8 +149,10 @@ PASS  project dir gone
 ## 5. What did not change
 
 - Unknown trailing **long** options are refused exactly as before (`--yes-please` above, and the `--benhc` case in [variadic-unknown-flag.md](variadic-unknown-flag.md)).
-- A dash-leading value is still a value, not a cluster: an unknown short cluster is **returned as unresolved rather than raised**, so the positional rule still wins and `--bench -staging` / `--bench=-staging` keep resolving that label. Widening the grammar to reject on the leading dash would have broken every dash-leading bench label.
-- Long-option behaviour, `--option=value` inline values, and `-h`/`--help` in trailing position are untouched.
+- A dash-leading value is still a value, not a cluster: an unknown short cluster is **returned as unresolved rather than raised**, so the positional rule still wins and `--bench -staging` / `--bench=-staging` keep resolving that label.
+  The eager-help exception is a malformed cluster that reaches `-h` before an unknown short, such as `-vhq`; it is refused in either position after the complete token is validated.
+  Widening the grammar to reject every leading dash would have broken every dash-leading bench label.
+- Long-option behaviour, `--option=value` inline values, and valid `-h`/`--help` forms in trailing position are untouched.
 
 ## Note on the grammar's source of truth
 

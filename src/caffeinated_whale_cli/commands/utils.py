@@ -404,7 +404,10 @@ def _parse_short_cluster(
     must not become ``cwcli rm proj -y``. Returning ``None`` rather than raising
     keeps the decision POSITIONAL, like the rest of this splitter: in option
     position the caller refuses it, in value position it is simply the value, so
-    a bench label such as ``-staging`` still resolves.
+    a bench label such as ``-staging`` still resolves. The eager-help exception
+    is a malformed cluster that reaches ``-h`` before an unknown short, such as
+    ``-vhq``: it is refused in either position so the unknown short cannot be
+    hidden by help or preserved as a value.
     """
     if len(token) < 2 or not token.startswith("-") or token[1] == "-":
         return None
