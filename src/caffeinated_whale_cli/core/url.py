@@ -72,10 +72,10 @@ def probe_url(
 ) -> Result[UrlProbe]:
     """Resolve a bench's host URL and probe it fresh, once, right now.
 
-    Shares the container+bench prologue every bench-scoped verb uses
-    (:func:`resolvers.resolve_container_and_bench`): a stopped container is a
+    Shares the container+bench prologue used by single-bench verbs such as
+    ``axi logs`` (:func:`resolvers.resolve_container_and_bench`): a stopped container is a
     ``confirm_start`` ``NEEDS_CHOICE`` (never auto-started here - no ``--yes`` on
-    this verb, matching ``axi logs``/``axi status``), and an ambiguous multi-bench
+    this verb, matching ``axi logs``), and an ambiguous multi-bench
     project with no ``--bench`` is a ``select_bench`` ``NEEDS_CHOICE``. Either way
     the frontend renders it as a usage error naming the flag to pass.
     """
@@ -105,9 +105,7 @@ def probe_url(
             )
 
     http_code: str | None = None
-    ports = resolvers.resolve_assigned_ports(
-        container, [resolved_bench_path], fill_defaults=False
-    )
+    ports = resolvers.resolve_assigned_ports(container, [resolved_bench_path], fill_defaults=False)
     assigned = ports.get(resolved_bench_path)
     url = (
         resolvers.resolve_host_web_url(

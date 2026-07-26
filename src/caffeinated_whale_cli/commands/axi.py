@@ -1064,7 +1064,9 @@ def axi_url(
     project: str = typer.Argument(..., help="The Docker Compose project name."),
     bench: str = typer.Option(None, "--bench", help="Which bench: numeric index or label."),
     site: str = typer.Option(
-        None, "--site", help="Send this Host header. Omit to use the bench's own default site."
+        None,
+        "--site",
+        help="Send this Host header. Omit to use the bench's representative site.",
     ),
 ) -> None:
     """Resolve a bench's host URL and probe it fresh; emit both as TOON.
