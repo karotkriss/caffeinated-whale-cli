@@ -94,9 +94,7 @@ class TestStop:
         assert stopped == []
 
     @pytest.mark.parametrize("help_option", ["-h", "--help"])
-    def test_trailing_help_shows_stop_help_and_stops_nothing(
-        self, monkeypatch, help_option
-    ):
+    def test_trailing_help_shows_stop_help_and_stops_nothing(self, monkeypatch, help_option):
         stopped = self._wire(monkeypatch)
 
         result = CliRunner().invoke(stop_mod.app, ["proj", help_option])
@@ -191,9 +189,7 @@ class TestRestart:
         assert restarted == []
 
     @pytest.mark.parametrize("help_option", ["-h", "--help"])
-    def test_trailing_help_shows_restart_help_and_restarts_nothing(
-        self, monkeypatch, help_option
-    ):
+    def test_trailing_help_shows_restart_help_and_restarts_nothing(self, monkeypatch, help_option):
         restarted = self._wire(monkeypatch)
 
         result = CliRunner().invoke(restart_mod.app, ["proj", help_option])
@@ -264,9 +260,7 @@ class TestStart:
         assert started == []
 
     @pytest.mark.parametrize("help_option", ["-h", "--help"])
-    def test_trailing_help_shows_start_help_and_starts_nothing(
-        self, monkeypatch, help_option
-    ):
+    def test_trailing_help_shows_start_help_and_starts_nothing(self, monkeypatch, help_option):
         started = self._wire(monkeypatch)
 
         result = CliRunner().invoke(start_mod.app, ["proj", help_option])
@@ -354,9 +348,7 @@ class TestRm:
         assert removed == []
 
     @pytest.mark.parametrize("help_option", ["-h", "--help"])
-    def test_trailing_help_shows_rm_help_and_removes_nothing(
-        self, monkeypatch, help_option
-    ):
+    def test_trailing_help_shows_rm_help_and_removes_nothing(self, monkeypatch, help_option):
         removed = self._wire(monkeypatch)
 
         result = CliRunner().invoke(rm_mod.app, ["proj", help_option])
@@ -819,9 +811,7 @@ class TestGrammarMatchesClick:
 
         assert (names, flags, values) == expected
 
-    @pytest.mark.parametrize(
-        "argv", [["-yq"], ["-y-"], ["-q"], ["-p"], ["-vp"], ["-hp"], ["-vhp"]]
-    )
+    @pytest.mark.parametrize("argv", [["-yq"], ["-y-"], ["-q"], ["-p"], ["-vp"], ["-hp"], ["-vhp"]])
     def test_forms_click_rejects_are_rejected_here_too(self, argv):
         assert self._click_reference(argv) is None
 
@@ -845,9 +835,7 @@ class TestGrammarMatchesClick:
         )
 
         with pytest.raises(typer.Exit) as exc:
-            split_trailing_options(
-                argv, command="stop", flags=self.FLAGS, values=self.VALUES
-            )
+            split_trailing_options(argv, command="stop", flags=self.FLAGS, values=self.VALUES)
 
         if expected == 0:
             assert exc.value.exit_code in (0, None)

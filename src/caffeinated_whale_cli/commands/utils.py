@@ -565,11 +565,11 @@ def split_trailing_options(
                     i += 1
             if eager_help:
                 _show_command_help()
-            for destination, value in cluster_flags:
-                recovered_flags[destination] = value
+            for destination, flag_value in cluster_flags:
+                recovered_flags[destination] = flag_value
             if recovered_value is not None:
-                destination, value = recovered_value
-                recovered_values[destination] = value
+                destination, option_value = recovered_value
+                recovered_values[destination] = option_value
         elif len(token) > 1 and token.startswith("-"):
             _usage_error(
                 f"No such option: {token}",
