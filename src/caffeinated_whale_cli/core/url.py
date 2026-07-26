@@ -105,9 +105,22 @@ def probe_url(
                 )
             )
 
-    url = resolvers.resolve_host_web_url(container, resolved_bench_path, site=resolved_site)
     http_code: str | None = None
-    if url is None:
+    ports = resolvers.resolve_assigned_ports(
+        container, [resolved_bench_path], fill_defaults=False
+    )
+    assigned = ports.get(resolved_bench_path)
+    url = (
+        resolvers.resolve_host_web_url(
+            container,
+            resolved_bench_path,
+            site=resolved_site,
+            assigned_ports=assigned,
+        )
+        if assigned is not None
+        else None
+    )
+    if url is None or assigned is None:
         warnings.append(
             Message(
                 "url.unresolved",
@@ -116,11 +129,6 @@ def probe_url(
             )
         )
     else:
-        ports = resolvers.resolve_assigned_ports(
-            container, [resolved_bench_path], fill_defaults=False
-        )
-        assigned = ports.get(resolved_bench_path)
-        assert assigned is not None  # url is only non-None when the port resolved
         http_code = supervision.web_http_code(container, port=assigned[0], site=resolved_site)
 
     return Result(
