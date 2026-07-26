@@ -87,8 +87,11 @@ until that daemon restarts. ``HttpOnly`` and ``SameSite`` constrain browser
 behavior; they do not encrypt plain HTTP. A non-loopback listener belongs only
 on a trusted network.
 
-CORS remains open for snapshot, event and detail reads only; cross-origin
-browser actions and the sensitive logs/where reads are refused.
+CORS remains open for unauthenticated snapshot, event and detail reads only.
+When authentication is on, non-browser clients can send the bearer token
+directly, while browsers use the same-origin Console page and its session
+cookie. Cross-origin browser actions and the sensitive logs/where reads are
+always refused.
 """
 
 from __future__ import annotations
@@ -1067,7 +1070,8 @@ def serve(
         DEFAULT_HOST,
         "--host",
         help="Address to bind. Defaults to loopback, which a Windows browser still "
-        f"reaches under WSL. Any other address requires ${TOKEN_ENV}.",
+        f"reaches under WSL. Any value other than a loopback IP literal requires "
+        f"${TOKEN_ENV}.",
     ),
     interval: float = typer.Option(
         DEFAULT_INTERVAL,
