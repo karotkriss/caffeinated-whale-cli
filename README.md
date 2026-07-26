@@ -10,7 +10,7 @@ A command-line interface (CLI) for managing Frappe/ERPNext Docker instances duri
 - **Cross-Project Search** - Find apps and sites across all instances with `cwcli where`
 - **Container Lifecycle** - Start, stop, and restart projects with ease
 - **Scale Beyond Six Benches** - Widen an instance's published port range on demand with `cwcli scale` so more than six benches are reachable from the host - database-safe (only the frappe service is recreated)
-- **Live Fleet Stream** - `cwcli serve` streams every instance's health to a browser over plain HTTP + SSE, pushing only genuine changes (reachable from a Windows browser when running under WSL)
+- **Live Fleet Stream** - `cwcli serve` streams every instance's health to a browser over plain HTTP + SSE, pushing only genuine changes (loopback by default, and still reachable from a Windows browser when running under WSL)
 - **Development Tools** - VS Code integration, log viewing, and command execution
 - **Cache System** - Fast project inspection with SQLite-based caching and configuration storage
 - **Multi-Bench Support** - Address individual benches in a multi-bench instance by numeric index or a durable label with `--bench`
@@ -1762,14 +1762,18 @@ action: consent to one thing never means consent to a start.
 **Usage:**
 
 ```bash
-cwcli serve [--port 8765] [--host 0.0.0.0] [--interval 2.5]
+cwcli serve [--port 8765] [--host 127.0.0.1] [--interval 2.5]
 ```
 
 | Option | Description |
 | --- | --- |
 | `--port`, `-p` | Port to listen on. Default `8765`. |
-| `--host` | Address to bind. Default `0.0.0.0`, which is what lets a browser outside WSL reach the daemon; use `127.0.0.1` to keep it to this machine. |
+| `--host` | Address to bind. Default `127.0.0.1`, this machine only. Any value other than a loopback IP literal **requires** `CWCLI_SERVE_TOKEN`. Hostnames such as `localhost` fail closed because cwcli does not resolve them to decide the authentication boundary. |
 | `--interval` | Seconds between health probes of each running instance. Default `2.5`. |
+
+| Environment variable | Description |
+| --- | --- |
+| `CWCLI_SERVE_TOKEN` | When set, every non-`OPTIONS` `/api/*` request must authenticate with `Authorization: Bearer <token>` or the browser session cookie. Read from the environment only, with deliberately no flag, so the secret never enters argv or `ps` output. |
 
 **Endpoints:**
 
@@ -1781,6 +1785,7 @@ cwcli serve [--port 8765] [--host 0.0.0.0] [--interval 2.5]
 | `GET /api/instance/<project>/detail` | A cache-backed `inspect` read for one instance, preserving `served_from` and `installed_apps_verified` |
 | `GET /api/instance/<project>/logs` | A bounded tail of the bench's per-process logs (`lines`, `bench`, `process` query params); same-origin only |
 | `GET /api/where?q=<term>` | The `where` cache search, `verified` and per-row `project_state` intact; same-origin only |
+| `POST /api/session` | Exchanges a bearer token for a browser session cookie; only meaningful when `CWCLI_SERVE_TOKEN` is set |
 | `POST /api/action` | Console actions: `start_instance`, `stop_instance`, `restart_instance`, `restart_process`, `refresh_status`, `set_label`, `unlock_site`, `scale_instance`, `checkout_app`; cross-origin browser requests are refused |
 
 Add `?focus=<project>` to `/api/events` to say which instance the browser
@@ -1810,37 +1815,100 @@ gap in.
 
 The mutating action endpoint refuses cross-origin browser requests, and so do
 the `/logs` and `/api/where` reads, whose payloads are more sensitive than
-fleet health.
-The other read endpoints keep open CORS for external inspection tools, but
-browsers must load the bundled Console page from this daemon to drive
-lifecycle actions.
+fleet health; that refusal stands even for a request carrying a valid token.
+The other read endpoints keep open CORS while authentication is off.
+When authentication is on, non-browser inspection tools can send the bearer
+token directly, but a browser must load the bundled Console page from this
+daemon to establish its session.
+Lifecycle actions always require that same-origin page.
 When an action needs a decision cwcli itself would ask about - scaling, which
 restarts every serving bench - the daemon answers `409 needs_choice` carrying
 the core's own warning, and the page renders it as a typed-name confirm.
 The confirm cannot be skipped from the page because the gate lives in cwcli,
 not in the browser.
-This browser boundary is not authentication: any direct client that can reach
-the daemon can submit an action, so bind to `127.0.0.1` on an untrusted network.
+
+**Binding and authentication:**
+
+The same-origin boundary above is a **CSRF** guard, not authentication.
+It is correct as one and it stays, but it defends browsers, and it deliberately
+admits a request that carries neither `Origin` nor `Sec-Fetch-Site` - which is
+exactly what a non-browser client such as `curl` sends.
+So it is `--host` and `CWCLI_SERVE_TOKEN`, not that guard, that decide who can
+reach the daemon at all.
+
+`cwcli serve` binds `127.0.0.1` by default, so out of the box the Console is
+reachable only from this machine.
+Set `CWCLI_SERVE_TOKEN` to require a bearer token on every non-`OPTIONS`
+`/api/*` request:
+
+```bash
+read -rsp "CWCLI serve token: " CWCLI_SERVE_TOKEN
+printf "\n"
+export CWCLI_SERVE_TOKEN
+cwcli serve --host 0.0.0.0
+```
+
+Paste a randomly generated token at the silent prompt.
+This keeps the token itself out of shell history.
+Binding any value other than a loopback IP literal **refuses to start** without
+that variable set, rather than serving an unauthenticated listener to the
+network.
+The token is read from the environment only, so it never appears in `ps`
+output; cwcli never prints it, and the startup banner reports only whether
+authentication is in force.
+`GET /` stays open because it is the static page with no fleet data in it - a
+gated page would leave a browser with no way to reach the prompt it needs.
+`OPTIONS` is the only unauthenticated `/api/*` exception.
+It returns no fleet data, dispatches no action, and the `/api/action` preflight
+does not grant cross-origin access.
+
+Programmatic clients send the token directly:
+
+```bash
+curl -H "Authorization: Bearer $CWCLI_SERVE_TOKEN" http://127.0.0.1:8765/api/snapshot
+```
+
+A browser is asked for the token once, in a dialog, and trades it for a
+`HttpOnly`, `SameSite=Strict` session cookie via `POST /api/session`.
+That step exists because `EventSource` cannot send request headers, so a
+header-only scheme would leave the live event stream unreachable from the page.
+The cookie carries a random per-launch session id, never the token itself, so
+restarting the daemon invalidates every open tab and the page asks again.
+That cookie is one daemon-wide bearer credential and can be replayed if captured
+until the daemon restarts.
+`HttpOnly` prevents page scripts from reading it, and `SameSite=Strict` limits
+cross-site browser requests, but neither encrypts plain HTTP.
+Non-loopback serving is plain HTTP and is limited to trusted networks.
 
 **Reaching it from Windows (WSL):**
 
-With the default `--host 0.0.0.0`, both routes work:
+A Windows browser reaches the default loopback listener directly:
 
 ```
-http://localhost:8765            # via WSL's localhost forwarding
+http://localhost:8765            # WSL forwards localhost into the distro
+```
+
+This is [documented by Microsoft](https://learn.microsoft.com/en-us/windows/wsl/networking)
+for the default NAT mode and measured in `docs/e2e/serve-daemon.md` section 1.
+`--host 0.0.0.0` is for the two cases loopback does not cover - a browser on
+another machine, or a WSL configuration with `localhostForwarding` turned off -
+and it needs `CWCLI_SERVE_TOKEN`:
+
+```
 http://172.24.87.141:8765        # the WSL IP, printed in the startup banner
 ```
 
-The banner prints the address the daemon is reachable at when it binds all
-interfaces, so you can copy it straight into a browser on the host.
+The banner prints that address whenever the daemon binds a non-loopback
+interface, so you can copy it straight into a browser on the host.
 
 **Example:**
 
 ```bash
-cwcli serve                        # listens on all interfaces, probes every 2.5s
+cwcli serve                        # this machine only, probes every 2.5s
 cwcli serve --port 9000            # a different port
-cwcli serve --host 127.0.0.1       # this machine only
 cwcli serve --interval 5           # a quieter probe cadence
+
+cwcli serve --host 0.0.0.0         # reachable, with an exported token
 
 curl -s http://127.0.0.1:8765/api/snapshot | jq '.instances[].overall'
 curl -N http://127.0.0.1:8765/api/events    # watch the live delta stream
