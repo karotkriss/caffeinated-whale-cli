@@ -1773,7 +1773,7 @@ cwcli serve [--port 8765] [--host 127.0.0.1] [--interval 2.5]
 
 | Environment variable | Description |
 | --- | --- |
-| `CWCLI_SERVE_TOKEN` | When set, every `/api/*` request must carry `Authorization: Bearer <token>`. Read from the environment only, with deliberately no flag, so the secret never enters argv or `ps` output. |
+| `CWCLI_SERVE_TOKEN` | When set, every non-`OPTIONS` `/api/*` request must carry `Authorization: Bearer <token>`. Read from the environment only, with deliberately no flag, so the secret never enters argv or `ps` output. |
 
 **Endpoints:**
 
@@ -1836,7 +1836,8 @@ reach the daemon at all.
 
 `cwcli serve` binds `127.0.0.1` by default, so out of the box the Console is
 reachable only from this machine.
-Set `CWCLI_SERVE_TOKEN` to require a bearer token on every `/api/*` request:
+Set `CWCLI_SERVE_TOKEN` to require a bearer token on every non-`OPTIONS`
+`/api/*` request:
 
 ```bash
 read -rsp "CWCLI serve token: " CWCLI_SERVE_TOKEN
@@ -1854,6 +1855,9 @@ output; cwcli never prints it, and the startup banner reports only whether
 authentication is in force.
 `GET /` stays open because it is the static page with no fleet data in it - a
 gated page would leave a browser with no way to reach the prompt it needs.
+`OPTIONS` is the only unauthenticated `/api/*` exception.
+It returns no fleet data, dispatches no action, and the `/api/action` preflight
+does not grant cross-origin access.
 
 Programmatic clients send the token directly:
 
@@ -1867,6 +1871,13 @@ That step exists because `EventSource` cannot send request headers, so a
 header-only scheme would leave the live event stream unreachable from the page.
 The cookie carries a random per-launch session id, never the token itself, so
 restarting the daemon invalidates every open tab and the page asks again.
+That cookie is one daemon-wide bearer credential and can be replayed if captured
+until the daemon restarts.
+`HttpOnly` prevents page scripts from reading it, and `SameSite=Strict` limits
+cross-site browser requests, but neither encrypts plain HTTP.
+Use a non-loopback listener only on a trusted network.
+For an untrusted network, put it behind a same-origin TLS-terminating proxy and
+keep the direct cwcli listener private.
 
 **Reaching it from Windows (WSL):**
 
