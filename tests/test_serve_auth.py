@@ -201,18 +201,30 @@ class TestDefaultBind:
     def test_the_default_host_is_loopback(self):
         assert serve_cmd.is_loopback(serve_cmd.DEFAULT_HOST)
 
-    @pytest.mark.parametrize("host", ["127.0.0.1", "127.0.0.53", "::1", "localhost"])
+    @pytest.mark.parametrize("host", ["127.0.0.1", "127.0.0.53", "::1", "[::1]"])
     def test_loopback_addresses_are_recognised(self, host):
         assert serve_cmd.is_loopback(host)
 
-    @pytest.mark.parametrize("host", ["0.0.0.0", "", "::", "192.168.1.10", "example.internal"])
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "0.0.0.0",
+            "",
+            "::",
+            "192.168.1.10",
+            "example.internal",
+            "localhost",
+            "localhost.",
+        ],
+    )
     def test_everything_else_fails_closed(self, host):
         """A name that is not an IP literal could resolve anywhere, so it needs a token."""
         assert not serve_cmd.is_loopback(host)
 
 
 class TestRemoteBindRefusesWithoutAuth:
-    def test_it_refuses_before_anything_is_served(self, monkeypatch):
+    @pytest.mark.parametrize("host", ["0.0.0.0", "localhost", "localhost."])
+    def test_it_refuses_before_anything_is_served(self, monkeypatch, host):
         """The refusal must beat the bind, not tear one down afterwards."""
         monkeypatch.delenv(serve_cmd.TOKEN_ENV, raising=False)
         monkeypatch.setattr(
@@ -226,7 +238,7 @@ class TestRemoteBindRefusesWithoutAuth:
             lambda: pytest.fail("probed Docker before refusing the bind"),
         )
         with pytest.raises(typer.Exit) as excinfo:
-            serve_cmd.serve(port=0, host="0.0.0.0", interval=2.5)
+            serve_cmd.serve(port=0, host=host, interval=2.5)
         assert excinfo.value.exit_code == 2
 
     def test_a_configured_token_lets_the_remote_bind_through(self, monkeypatch, stopped):
@@ -291,6 +303,20 @@ class TestAuthEnabled:
         assert b"<html" in body.lower()
         assert _TOKEN.encode() not in body
 
+    def test_options_is_the_no_data_no_action_auth_exception(self, guarded, stopped):
+        status, body, headers = _request(
+            guarded + "/api/action",
+            headers={
+                "Origin": "https://example.invalid",
+                "Access-Control-Request-Method": "POST",
+            },
+            method="OPTIONS",
+        )
+        assert status == 204
+        assert body == b""
+        assert headers.get("Access-Control-Allow-Origin") is None
+        assert stopped == []
+
     def test_the_bearer_comparison_is_timing_safe(self):
         """Pinned at the comparison itself: ``==`` here leaks the token bytewise."""
         import inspect
@@ -304,6 +330,14 @@ class TestAuthEnabled:
 
 class TestBrowserSession:
     """``EventSource`` cannot send headers, so a browser trades the token for a cookie."""
+
+    def test_the_authentication_dialog_cannot_be_dismissed_with_escape(self):
+        page = serve_cmd.CONSOLE_PAGE
+        cancel_handler = page.split('modal.addEventListener("cancel"', 1)[1].split(
+            "});", 1
+        )[0]
+        assert "event.preventDefault()" in cancel_handler
+        assert "{dismissible: false}" in page.split("function askForToken", 1)[1]
 
     def test_the_session_cookie_authenticates_subsequent_requests(self, guarded, stopped):
         status, _, headers = _request(

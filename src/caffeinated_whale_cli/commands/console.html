@@ -1556,10 +1556,12 @@ dialog input {
 
   const modal = el("modal");
   let modalSubmit = null;
+  let modalDismissible = true;
 
-  function openModal(html, onSubmit) {
+  function openModal(html, onSubmit, {dismissible = true} = {}) {
     el("modal-content").innerHTML = html;
     modalSubmit = onSubmit;
+    modalDismissible = dismissible;
     modal.showModal();
     const first = modal.querySelector("input");
     if (first) first.focus();
@@ -1583,8 +1585,13 @@ dialog input {
     }
   });
 
+  modal.addEventListener("cancel", event => {
+    if (!modalDismissible) event.preventDefault();
+  });
+
   modal.addEventListener("close", () => {
     modalSubmit = null;
+    modalDismissible = true;
   });
 
   function modalButtons(confirmLabel, disabled) {
@@ -1842,7 +1849,7 @@ dialog input {
   function askForToken(message) {
     setConnection("locked");
     openModal(`<h3 id="modal-title">Access token required</h3>
-      <p class="modal-help">${esc(message)} It is the value of <code>CWCLI_SERVE_TOKEN</code> in the shell that started <code>cwcli serve</code>. The token is sent once, in exchange for a session cookie for this tab.</p>
+      <p class="modal-help">${esc(message)} It is the value of <code>CWCLI_SERVE_TOKEN</code> in the shell that started <code>cwcli serve</code>. The token is sent once, in exchange for a session cookie for this daemon launch.</p>
       <label>Access token
         <input name="token" type="password" autocomplete="off" required>
       </label>
@@ -1862,7 +1869,7 @@ dialog input {
       }
       if (!response.ok) return askForToken("That token was not accepted.");
       connectEvents();
-    });
+    }, {dismissible: false});
   }
 
   // First paint before any server data: honest empty states in every pane

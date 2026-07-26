@@ -61,12 +61,14 @@ WSL-IP route survives ``localhostForwarding`` being turned off, and it is what a
 genuinely remote browser needs.
 
 **Authentication.** Set ``CWCLI_SERVE_TOKEN`` to require ``Authorization: Bearer
-<token>`` on every ``/api/*`` request. The token is read from the ENVIRONMENT
-only and never from a flag, so it stays out of ``ps`` output and shell history
+<token>`` on every non-``OPTIONS`` ``/api/*`` request. The token is read from
+the ENVIRONMENT only and never from a flag, so it stays out of ``ps`` output
 (the ``core/init.py`` secret-transport rule). Comparison is
 ``hmac.compare_digest``. ``GET /`` stays open because it is the static page with
 no fleet data in it, and a browser that could not load it could never
-authenticate.
+authenticate. ``OPTIONS`` is the browser-preflight exception: it returns no
+fleet data, dispatches no action, and an action preflight grants no cross-origin
+access.
 
 **A non-loopback bind REFUSES TO START without a token.** An explicit
 ``--host 0.0.0.0`` used to be silently unauthenticated: the same-origin guard
@@ -79,8 +81,12 @@ here as defense in depth rather than relied on.
 Browsers authenticate once via ``POST /api/session``, which exchanges the bearer
 token for a ``HttpOnly``/``SameSite=Strict`` session cookie. That exists because
 ``EventSource`` cannot send request headers, so a header-only scheme would leave
-the SSE stream unauthenticatable from a page. The cookie carries a per-launch
-random id, never the token itself.
+the SSE stream unauthenticatable from a page. The cookie carries one random
+daemon-wide session id, never the token itself. It is replayable if captured
+until that daemon restarts. ``HttpOnly`` and ``SameSite`` constrain browser
+behavior; they do not encrypt plain HTTP. A non-loopback listener belongs only
+on a trusted network or behind a same-origin TLS-terminating proxy that keeps
+the direct listener private.
 
 CORS remains open for snapshot, event and detail reads only; cross-origin
 browser actions and the sensitive logs/where reads are refused.
@@ -165,8 +171,6 @@ def is_loopback(host: str) -> bool:
     """
     if not host:
         return False
-    if host.lower() in {"localhost", "localhost."}:
-        return True
     try:
         return ipaddress.ip_address(host.strip("[]")).is_loopback
     except ValueError:
@@ -350,9 +354,10 @@ class _Handler(BaseHTTPRequestHandler):
 
         Reached only after ``_refuse_unauthenticated``, so the bearer token has
         already been verified. The cookie carries a per-launch random id rather
-        than the token, so a cookie that leaks is not a reusable credential and
-        dies with the daemon; ``HttpOnly`` keeps page scripts from reading it
-        back and ``SameSite=Strict`` keeps a cross-site request from carrying it.
+        than the token. It remains a bearer credential that can be replayed if
+        captured until the daemon restarts. ``HttpOnly`` keeps page scripts from
+        reading it back and ``SameSite=Strict`` keeps a cross-site request from
+        carrying it.
         """
         self.send_response(204)
         self.send_header(
