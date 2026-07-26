@@ -1773,7 +1773,7 @@ cwcli serve [--port 8765] [--host 127.0.0.1] [--interval 2.5]
 
 | Environment variable | Description |
 | --- | --- |
-| `CWCLI_SERVE_TOKEN` | When set, every `/api/*` request must carry `Authorization: Bearer <token>`. Read from the environment only - there is deliberately no flag, so the secret never enters argv, `ps` output or shell history. |
+| `CWCLI_SERVE_TOKEN` | When set, every `/api/*` request must carry `Authorization: Bearer <token>`. Read from the environment only, with deliberately no flag, so the secret never enters argv or `ps` output. |
 
 **Endpoints:**
 
@@ -1839,9 +1839,14 @@ reachable only from this machine.
 Set `CWCLI_SERVE_TOKEN` to require a bearer token on every `/api/*` request:
 
 ```bash
-CWCLI_SERVE_TOKEN="$(openssl rand -base64 24)" cwcli serve --host 0.0.0.0
+read -rsp "CWCLI serve token: " CWCLI_SERVE_TOKEN
+printf "\n"
+export CWCLI_SERVE_TOKEN
+cwcli serve --host 0.0.0.0
 ```
 
+Paste a randomly generated token at the silent prompt.
+This keeps the token itself out of shell history.
 Binding any address other than loopback **refuses to start** without that
 variable set, rather than serving an unauthenticated listener to the network.
 The token is read from the environment only, so it never appears in `ps`
@@ -1891,7 +1896,7 @@ cwcli serve                        # this machine only, probes every 2.5s
 cwcli serve --port 9000            # a different port
 cwcli serve --interval 5           # a quieter probe cadence
 
-CWCLI_SERVE_TOKEN=secret cwcli serve --host 0.0.0.0    # reachable, authenticated
+cwcli serve --host 0.0.0.0         # reachable, with an exported token
 
 curl -s http://127.0.0.1:8765/api/snapshot | jq '.instances[].overall'
 curl -N http://127.0.0.1:8765/api/events    # watch the live delta stream
