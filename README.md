@@ -1875,9 +1875,7 @@ That cookie is one daemon-wide bearer credential and can be replayed if captured
 until the daemon restarts.
 `HttpOnly` prevents page scripts from reading it, and `SameSite=Strict` limits
 cross-site browser requests, but neither encrypts plain HTTP.
-Use a non-loopback listener only on a trusted network.
-For an untrusted network, put it behind a same-origin TLS-terminating proxy and
-keep the direct cwcli listener private.
+Non-loopback serving is plain HTTP and is limited to trusted networks.
 
 **Reaching it from Windows (WSL):**
 

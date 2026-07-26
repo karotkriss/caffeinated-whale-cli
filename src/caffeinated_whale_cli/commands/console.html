@@ -1569,10 +1569,13 @@ dialog input {
 
   el("modal-form").addEventListener("submit", event => {
     const submit = modalSubmit;
-    modalSubmit = null;
     if (!submit) return;
     const values = Object.fromEntries(new FormData(el("modal-form")).entries());
-    submit(values);
+    if (submit(values) === false) {
+      event.preventDefault();
+      return;
+    }
+    modalSubmit = null;
   });
 
   // Cancel is type=button, NOT a submit control: with method="dialog" the form's
@@ -1854,9 +1857,20 @@ dialog input {
         <input name="token" type="password" autocomplete="off" required>
       </label>
       <div class="modal-buttons"><button value="confirm" class="modal-confirm">Unlock</button></div>`,
-    async values => {
+    values => {
       const token = (values.token || "").trim();
-      if (!token) return askForToken("An access token is required.");
+      if (!token) {
+        const input = modal.querySelector('input[name="token"]');
+        input.setCustomValidity("Enter an access token containing a non-whitespace character.");
+        input.reportValidity();
+        input.addEventListener("input", () => input.setCustomValidity(""), {once: true});
+        return false;
+      }
+      openTokenSession(token);
+    }, {dismissible: false});
+  }
+
+  async function openTokenSession(token) {
       let response;
       try {
         response = await fetch("/api/session", {
@@ -1869,7 +1883,6 @@ dialog input {
       }
       if (!response.ok) return askForToken("That token was not accepted.");
       connectEvents();
-    }, {dismissible: false});
   }
 
   // First paint before any server data: honest empty states in every pane
