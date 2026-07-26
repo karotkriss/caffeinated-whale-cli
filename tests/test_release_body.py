@@ -267,9 +267,7 @@ A.
         assert "malformed flagship marker" in result.stderr
 
     @pytest.mark.parametrize("trailing_whitespace", [" ", "\t"])
-    def test_a_marker_with_trailing_whitespace_is_rejected(
-        self, rendered, trailing_whitespace
-    ):
+    def test_a_marker_with_trailing_whitespace_is_rejected(self, rendered, trailing_whitespace):
         notes = f"""### What's Changed
 
 <!-- flagship -->{trailing_whitespace}

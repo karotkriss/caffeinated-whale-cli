@@ -13,12 +13,13 @@
 #     CHANGELOG link is pinned to this release's tag, never a branch, and the
 #     comparison runs from the previous version tag to this one.
 #
-# The change-list entries can name a flagship entry with a `<!-- flagship -->`
-# marker directly above it (see .github/release-notes/README.md). This script
-# is the one place that guarantees the marked entry leads: it refuses to
-# publish (rather than rewrite hand-written Markdown) when the marker is
-# buried, duplicated, or detached from an entry, and it strips the marker
-# itself so it never reaches the published card.
+# A major release must name its flagship entry with a `<!-- flagship -->`
+# marker directly above it; smaller releases may do so (see
+# .github/release-notes/README.md). This script is the one place that
+# guarantees the marked entry leads: it refuses to publish (rather than
+# rewrite hand-written Markdown) when the marker is buried, duplicated, or
+# detached from an entry, and it strips the marker itself so it never reaches
+# the published card.
 set -euo pipefail
 
 VERSION="${1:?usage: release-body.sh <version> <owner/repo>}"
@@ -53,8 +54,9 @@ if [ "$RELEASE_SIZE" = "major" ]; then
   IS_MAJOR="true"
 fi
 
-# Validate and strip the optional `<!-- flagship -->` marker (see the header
-# comment above and .github/release-notes/README.md for the authoring rule).
+# Validate and strip the `<!-- flagship -->` marker, optional only for smaller
+# releases (see the header comment above and .github/release-notes/README.md
+# for the authoring rule).
 # A malformed/duplicated/detached marker, or one that does not lead the change
 # list, stops the release rather than silently reordering hand-written prose;
 # a major release with no marker at all also stops, since guessing a headline

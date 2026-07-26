@@ -17,6 +17,7 @@ The file opens with the heading required by its version and lists one entry per 
 ```markdown
 ### What's New
 
+<!-- flagship -->
 **One bold sentence naming the benefit to the reader.**
 At most one or two short sentences of context.
 
@@ -25,6 +26,7 @@ Same again.
 ```
 
 The example is for a major release.
+Its first entry carries the required flagship marker described below.
 Use `### What's Changed` in the same position for a minor or patch release.
 
 Rules the card must satisfy:
