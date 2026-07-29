@@ -32,7 +32,7 @@ DB_FILENAME = "20251109_225726-development_localhost-database.sql.gz"
 
 
 class TestDownloadRoot:
-    """Fix #1: the download root is disk-backed, under ``cwcli_home()``, never
+    """Fix #1: the download root is managed under ``cwcli_home()``, never
     the system temp dir."""
 
     def test_download_root_is_under_cwcli_home(self, tmp_path, monkeypatch):
@@ -184,16 +184,19 @@ class TestPreflightFreeSpace:
         container = FakeReceiveContainer()
 
         if failure_point == "mkdir":
+
             def fail_mkdir(self, **kwargs):
                 raise OSError("read-only filesystem")
 
             monkeypatch.setattr(Path, "mkdir", fail_mkdir)
         elif failure_point == "disk_usage":
+
             def fail_disk_usage(path):
                 raise OSError("filesystem unavailable")
 
             monkeypatch.setattr(shutil, "disk_usage", fail_disk_usage)
         else:
+
             def fail_temp_dir(**kwargs):
                 raise OSError("no space left")
 

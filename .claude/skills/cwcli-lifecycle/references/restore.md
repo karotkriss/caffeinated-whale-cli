@@ -29,7 +29,7 @@ Two supporting fixes travel with it, and BOTH the receive path and the normal re
 Regression coverage is in `tests/test_restore_safety.py`: it drives `restore_receive_mode` with a `FakeReceiveContainer` that records every `exec_run` (command, workdir, environment) and asserts a declined/non-TTY confirm does NOT run `bench restore --force` and exits non-zero, `--yes` proceeds, an origin mismatch is surfaced, and the DB password rides in `environment=` (never in the recorded argv).
 Testing note: `restore_receive_mode` is a plain function (not the Typer command), so tests call it directly with all args explicit; stub `TipSpinner` to a no-op (it starts a Rich spinner even with `enabled=False`) and fake `subprocess.run` to write the "downloaded" backup into its `cwd`.
 
-**`_run_receive`/`_run_send` run `sendme` from a disk-backed dir under `cwcli_home()`, never the system temp dir.**
+**`_run_receive`/`_run_send` run `sendme` from a managed directory under `cwcli_home()`, never the system temp dir.**
 sendme creates its on-disk blob store in whatever directory it is invoked from (`.sendme-recv-<hash>/` in the CWD; verified against sendme 0.36.0's own source and README).
 `_run_receive` previously used `subprocess.run(..., cwd=temp_dir)`, with `temp_dir` created by a bare `tempfile.TemporaryDirectory()` in the system temp dir.
 `_run_send` also staged files in a bare `TemporaryDirectory()`, but its `subprocess.Popen(...)` had no `cwd`, so sendme inherited the caller's working directory instead.
