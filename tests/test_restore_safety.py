@@ -52,6 +52,9 @@ class FakeReceiveContainer:
         self.put_archive_paths: list[str] = []
         self.put_archive_streamed: bool | None = None
         self.printed: list[str] = []
+        # The ``cwd`` the fake ``sendme receive`` subprocess was run with, so
+        # tests can assert the download landed under the expected root.
+        self.sendme_cwd: str | None = None
 
     def exec_run(self, cmd, workdir=None, environment=None):
         self.exec_calls.append({"cmd": cmd, "workdir": workdir, "environment": environment})
@@ -113,6 +116,8 @@ def _run_receive(
     admin_password=None,
     missing_apps=None,
     ticket="ticket-abc",
+    sendme_returncode=0,
+    sendme_stderr="",
 ):
     """Drive ``restore_receive_mode`` end-to-end against ``container``.
 
@@ -122,6 +127,11 @@ def _run_receive(
     ``missing_apps`` (none by default), and the TTY / confirmation answers are
     controlled by ``isatty`` / ``confirm_answer``. Credentials are supplied
     directly so no interactive credential prompt fires.
+
+    ``sendme_returncode``/``sendme_stderr`` let a caller simulate a failed
+    ``sendme receive`` (e.g. the out-of-space ``Receiver closed`` signature);
+    when non-zero, no db file is written (the download failed before landing
+    anything usable).
     """
 
     # Re-pointed BY DESIGN: receive_mode became the frontend _run_receive over
@@ -132,6 +142,9 @@ def _run_receive(
     from caffeinated_whale_cli.core.envelope import Result, Status
 
     def fake_sendme_run(cmd, cwd=None, capture_output=True, text=True):
+        container.sendme_cwd = cwd
+        if sendme_returncode != 0:
+            return SimpleNamespace(returncode=sendme_returncode, stdout="", stderr=sendme_stderr)
         Path(cwd).joinpath(db_filename).write_text("SQL DUMP DATA")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
