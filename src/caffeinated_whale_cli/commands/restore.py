@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn
 
@@ -69,7 +70,18 @@ _MIN_RECEIVE_FREE_BYTES = 2 * 1024**3  # 2 GiB floor; sendme only reveals a
 # collection's real size after connecting to the sender, so a fixed floor is
 # the best pre-transfer guard cwcli can offer.
 _SENDME_SPACE_ERROR_SIGNATURES = ("receiver closed", "no space left")
+_SENDME_SPACE_ERROR_BYTES = tuple(
+    signature.encode() for signature in _SENDME_SPACE_ERROR_SIGNATURES
+)
+_SENDME_SIGNATURE_OVERLAP_BYTES = max(map(len, _SENDME_SPACE_ERROR_BYTES)) - 1
 _VERBOSE_STDERR_CAPTURE_BYTES = 64 * 1024
+
+
+@dataclass(frozen=True)
+class _SendmeReceiveResult:
+    returncode: int
+    stderr: str
+    space_error_detected: bool
 
 
 def _format_bytes(n: int) -> str:
@@ -118,7 +130,9 @@ def _render_sendme_filesystem_error(path: Path, action: str, error: OSError) -> 
     raise typer.Exit(code=1) from error
 
 
-def _explain_sendme_failure(stderr_text: str, download_dir: Path) -> str | None:
+def _explain_sendme_failure(
+    stderr_text: str, download_dir: Path, *, space_error_detected: bool = False
+) -> str | None:
     """Return an actionable out-of-space explanation for a known sendme
     failure signature, or ``None`` when it doesn't match (caller falls back to
     the generic message + raw stderr passthrough).
@@ -127,7 +141,9 @@ def _explain_sendme_failure(stderr_text: str, download_dir: Path) -> str | None:
     sending over irpc: Receiver closed`` rather than the underlying I/O error.
     """
     lowered = stderr_text.lower()
-    if not any(signature in lowered for signature in _SENDME_SPACE_ERROR_SIGNATURES):
+    if not space_error_detected and not any(
+        signature in lowered for signature in _SENDME_SPACE_ERROR_SIGNATURES
+    ):
         return None
     try:
         free_space = f"{_format_bytes(shutil.disk_usage(download_dir).free)} free"
@@ -143,13 +159,22 @@ def _explain_sendme_failure(stderr_text: str, download_dir: Path) -> str | None:
 
 def _run_sendme_receive(
     command: list[str], download_dir: str, *, verbose: bool
-) -> subprocess.CompletedProcess[str]:
+) -> _SendmeReceiveResult:
     if not verbose:
-        return subprocess.run(command, cwd=download_dir, capture_output=True, text=True)
+        completed = subprocess.run(command, cwd=download_dir, capture_output=True, text=True)
+        stderr_text = completed.stderr or ""
+        return _SendmeReceiveResult(
+            returncode=completed.returncode,
+            stderr=stderr_text,
+            space_error_detected=any(
+                signature in stderr_text.lower()
+                for signature in _SENDME_SPACE_ERROR_SIGNATURES
+            ),
+        )
 
     master_fd: int | None = None
     slave_fd: int | None = None
-    if sys.stderr.isatty():
+    if os.name != "nt" and hasattr(os, "openpty") and sys.stderr.isatty():
         master_fd, slave_fd = os.openpty()
         stderr_target = slave_fd
     else:
@@ -167,6 +192,8 @@ def _run_sendme_receive(
             os.close(slave_fd)
 
     captured = bytearray()
+    signature_overlap = b""
+    space_error_detected = False
     try:
         if master_fd is not None:
             while True:
@@ -178,18 +205,25 @@ def _run_sendme_receive(
                     raise
                 if not chunk:
                     break
+                detected, signature_overlap = _scan_sendme_space_error(
+                    signature_overlap, chunk
+                )
+                space_error_detected = space_error_detected or detected
                 _append_bounded(captured, chunk)
                 _write_live_stderr(chunk)
         elif process.stderr:
             read = getattr(process.stderr, "read1", process.stderr.read)
             while chunk := read(8192):
+                detected, signature_overlap = _scan_sendme_space_error(
+                    signature_overlap, chunk
+                )
+                space_error_detected = space_error_detected or detected
                 _append_bounded(captured, chunk)
                 _write_live_stderr(chunk)
-        return subprocess.CompletedProcess(
-            command,
-            process.wait(),
-            stdout="",
+        return _SendmeReceiveResult(
+            returncode=process.wait(),
             stderr=captured.decode(errors="replace"),
+            space_error_detected=space_error_detected,
         )
     except BaseException:
         process.kill()
@@ -198,6 +232,12 @@ def _run_sendme_receive(
     finally:
         if master_fd is not None:
             os.close(master_fd)
+
+
+def _scan_sendme_space_error(overlap: bytes, chunk: bytes) -> tuple[bool, bytes]:
+    window = (overlap + chunk).lower()
+    detected = any(signature in window for signature in _SENDME_SPACE_ERROR_BYTES)
+    return detected, window[-_SENDME_SIGNATURE_OVERLAP_BYTES:]
 
 
 def _append_bounded(captured: bytearray, chunk: bytes) -> None:
@@ -811,7 +851,11 @@ def _run_receive(
             proc = _run_sendme_receive(receive_cmd, str(temp_path), verbose=verbose)
             if proc.returncode != 0:
                 stderr_text = proc.stderr or ""
-                explanation = _explain_sendme_failure(stderr_text, temp_path)
+                explanation = _explain_sendme_failure(
+                    stderr_text,
+                    temp_path,
+                    space_error_detected=proc.space_error_detected,
+                )
                 if explanation:
                     stderr_console.print(f"[bold red]Error:[/bold red] {explanation}")
                 else:
