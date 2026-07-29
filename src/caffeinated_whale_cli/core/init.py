@@ -849,10 +849,23 @@ def init_bench(
     # files it creates are owned by the host user and `cwcli rm` can remove them on
     # any host uid (a CI runner is 1001; a dev box is often 1000). `chown_home` is
     # paid here, once, so this first provision's pyenv/nvm/pip installs can write
-    # the (now host-owned) home. A no-op when the ids already match.
+    # the (now host-owned) home. A no-op when the ids already match - but the
+    # caller can't know that in advance, and when it is NOT a no-op the recursive
+    # `chown -R` over /home/frappe is a single blocking exec with no progress
+    # output of its own, minutes long on a slow disk. Announcing the phase BEFORE
+    # running it (not just reporting on completion) is what keeps this window
+    # from reading as a hang: the reported defect was this exact step reporting
+    # only its own completion, with nothing printed while it ran.
+    emit(
+        InitStepStart(
+            phase="align_uid",
+            message="Aligning container user to host uid/gid (first run can take several minutes)",
+        )
+    )
     remapped, remap_err = core_docker.align_container_user_to_host(
         frappe_container, chown_home=True
     )
+    emit(InitStepEnd(phase="align_uid"))
     if remap_err:
         emit(InitNotice(code="init.uid_align_failed", text=remap_err))
         warnings.append(Message("init.uid_align_failed", remap_err))
@@ -919,7 +932,20 @@ def init_bench(
                         text=f"Python {python_prefix} not found, installing via pyenv...",
                     )
                 )
+                # Compiling CPython from source is minutes long with no output of
+                # its own; announce the phase before running it, same reasoning
+                # as the uid-alignment step above.
+                emit(
+                    InitStepStart(
+                        phase="python_install",
+                        message=(
+                            f"Installing Python {python_prefix} via pyenv "
+                            "(can take several minutes)"
+                        ),
+                    )
+                )
                 py_version = _install_pyenv_python(frappe_container, python_prefix, emit, warnings)
+                emit(InitStepEnd(phase="python_install"))
             if py_version:
                 env_prefix = f"PYENV_VERSION={py_version} "
                 emit(InitTrace(text=f"Using PYENV_VERSION={py_version} for {frappe_ref}"))
@@ -934,7 +960,14 @@ def init_bench(
                         text=f"Node.js {node_major} not found, installing via nvm...",
                     )
                 )
+                emit(
+                    InitStepStart(
+                        phase="node_install",
+                        message=f"Installing Node.js {node_major} via nvm (can take a few minutes)",
+                    )
+                )
                 node_version = _install_nvm_node(frappe_container, node_major, emit, warnings)
+                emit(InitStepEnd(phase="node_install"))
             if node_version:
                 nvm_prefix = f"source ~/.nvm/nvm.sh && nvm use {node_version} && "
                 emit(InitTrace(text=f"Using Node.js {node_version} for {frappe_ref}"))

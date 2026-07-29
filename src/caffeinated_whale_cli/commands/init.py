@@ -51,6 +51,13 @@ _SPINNER_GROUP = {
     "pull": "stage1",
     "up": "stage1",
     "wait_ready": "stage1",
+    # A stage-2 group of its own: it runs right after stage 1's spinner closes
+    # and before bench_init's, so without a group here it is the exact silent
+    # gap the align_uid step used to leave (a chown that can run minutes with
+    # no spinner alive to show it).
+    "align_uid": "align_uid",
+    "python_install": "python_install",
+    "node_install": "node_install",
     "bench_init": "bench_init",
     "configure_bench": "configure_bench",
     "new_site": "new_site",
@@ -85,6 +92,9 @@ class _InitRenderer:
     def _group_label(self, group: str) -> str:
         return {
             "stage1": f"Setting up project '{self.project}'",
+            "align_uid": f"Preparing bench workspace for '{self.project}'",
+            "python_install": f"Installing Python for bench '{self.bench_name}'",
+            "node_install": f"Installing Node.js for bench '{self.bench_name}'",
             "bench_init": f"Initializing bench '{self.bench_name}'",
             "configure_bench": f"Configuring bench '{self.bench_name}'",
             "new_site": f"Creating site '{self.site_name}'",
@@ -123,6 +133,13 @@ class _InitRenderer:
                 stderr_console.print(f"[dim]{event.message}...[/dim]")
             elif event.phase in _LONG_PHASES:
                 console.print()
+            elif event.message:
+                # Every other announced phase (align_uid, up, wait_ready, the
+                # python/node installs, ...) gets the same dim line so verbose
+                # mode never goes silent for a phase that can legitimately run
+                # long - a phase that only reports on completion is what
+                # produced the reported silent, hang-looking window.
+                stderr_console.print(f"[dim]{event.message}[/dim]")
             return
 
         group = _SPINNER_GROUP[event.phase]
