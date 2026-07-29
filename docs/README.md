@@ -190,19 +190,7 @@ uv run pytest --cov
 
 ### For Maintainers
 
-**Preparing release:**
-```bash
-# Update version (pyproject.toml, __init__.py, uv.lock via `uv lock`), CHANGELOG, README
-git commit -m "chore: release v0.9.2
-
-- Bump version to 0.9.2
-- Update CHANGELOG
-- Update README"
-
-# Tag and push
-git tag v0.9.2
-git push origin develop --tags
-```
+See the [CI/CD guide](./contributing/ci-cd.md#release-githubworkflowsreleaseyml) for the authoritative release procedure.
 
 ## Decision Trees
 

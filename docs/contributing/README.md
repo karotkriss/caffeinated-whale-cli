@@ -151,23 +151,7 @@ Checklist:
 
 ## Release Process
 
-See [Chores Guide](./chores.md) for details on release workflow.
-
-**Quick summary:**
-```bash
-# 1. Update version (pyproject.toml, __init__.py, uv.lock via `uv lock`), CHANGELOG, README
-git commit -m "chore: release v0.9.2
-
-- Bump version to 0.9.2
-- Update CHANGELOG with new features
-- Update README"
-
-# 2. Tag release
-git tag v0.9.2
-
-# 3. Push
-git push origin develop --tags
-```
+See the [CI/CD guide](./ci-cd.md#release-githubworkflowsreleaseyml) for the authoritative release procedure.
 
 ## Common Tasks
 
