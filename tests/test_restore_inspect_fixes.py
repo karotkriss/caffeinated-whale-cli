@@ -31,6 +31,8 @@ from caffeinated_whale_cli.utils import bench_sites, db_utils
 
 BENCH_PATH = "/workspace/frappe-bench"
 SITE = "development.localhost"
+# Matches _TICKET_PATTERN's shape ("blob" prefix + a long base32-ish tail).
+VALID_TICKET = "blob" + "abcdefgh234567abcdefgh234567abcdefgh"
 
 
 # --------------------------------------------------------------------------- db
@@ -115,7 +117,11 @@ class RecordingContainer:
         return (0, b"")
 
     def put_archive(self, path, data):
-        # The receive flow streams each downloaded backup file into the container.
+        # The receive flow streams each downloaded backup file into the container;
+        # drain it as real docker-py does, or a pipe-fed producer broken-pipes.
+        if hasattr(data, "read"):
+            while data.read(65536):
+                pass
         return True
 
     def restore_calls(self):
@@ -159,7 +165,7 @@ class TestReceiveUsesFullDbPath:
         monkeypatch.setattr(
             restore_mod.questionary,
             "text",
-            lambda *a, **k: SimpleNamespace(ask=lambda: "ticket-abc"),
+            lambda *a, **k: SimpleNamespace(ask=lambda: VALID_TICKET),
         )
         monkeypatch.setattr(restore_mod.console, "print", lambda *a, **k: None)
         monkeypatch.setattr(restore_mod.stderr_console, "print", lambda *a, **k: None)
@@ -183,7 +189,7 @@ class TestReceiveUsesFullDbPath:
             "proj",
             site=SITE,
             bench_path=BENCH_PATH,
-            ticket="ticket-abc",
+            ticket=VALID_TICKET,
             mariadb_root_username="root",
             mariadb_root_password="pw",
             admin_password=None,
