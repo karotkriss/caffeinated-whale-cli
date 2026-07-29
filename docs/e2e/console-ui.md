@@ -1,6 +1,8 @@
-# E2E evidence: Console UI served by `cwcli serve`
+# Historical E2E evidence: Console UI
 
 Real-instance validation for Console phase 3.
+This is historical evidence for the retained implementation; the Console entry in `AGENTS.md` owns its current surface-availability contract.
+The retained implementation is covered directly by unit tests.
 The test used the editable worktree build through `uv run cwcli`, a worktree-local `CWCLI_HOME`, one throwaway instance, and a Windows Edge browser reaching the daemon through WSL localhost forwarding.
 
 ## Environment
@@ -9,7 +11,7 @@ The test used the editable worktree build through `uv run cwcli`, a worktree-loc
 - `CWCLI_HOME=.tmp/cwcli-console-p3/home`, so the captain's real cwcli home was not read or written.
 - Throwaway instance: `cwe2e-console-p3`.
 - Frappe: default version 16 via `cwcli init cwe2e-console-p3 --version 16 --port 28000 --site console.localhost`.
-- Console daemon: `cwcli serve --host 0.0.0.0 --port 8777 --interval 1`, which was the shipped default at the time.
+- Console daemon: `cwcli serve --host 0.0.0.0 --port 8777 --interval 1`, which was the implementation default at the time.
   That invocation now requires `CWCLI_SERVE_TOKEN` and the default bind is `127.0.0.1`; nothing else in this record changes, because the two reachability proofs immediately below both went through `localhost`, which loopback serves.
 - Windows reachability: Windows PowerShell reached `http://localhost:8777/api/snapshot` with HTTP 200.
 - Browser proof: Windows Edge opened `http://localhost:8777/?focus=cwe2e-console-p3`.
