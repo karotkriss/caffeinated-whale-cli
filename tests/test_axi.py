@@ -1022,6 +1022,44 @@ class TestNoAxiRunVerb:
             assert "exec" not in sub
 
 
+class TestServeUnreachable:
+    """``cwcli serve`` (the Console GUI) is UNRELEASED and deliberately not exposed
+    in a released build (captain ruling 2026-07-29): it must be unreachable from
+    both the human CLI and the ``axi`` surface - not registered, not invocable, not
+    listed in help - while the module itself (``commands/serve.py``, ``core/fleet.py``)
+    stays in the tree, since this withholds an unready feature rather than deleting
+    the work. ``tests/test_serve_frontend.py`` and ``tests/test_serve_auth.py``
+    continue to exercise it directly by importing the module, bypassing the CLI
+    registry entirely, so they are unaffected by this de-registration."""
+
+    def test_serve_not_registered_on_the_human_cli(self):
+        from caffeinated_whale_cli.main import app as root_app
+
+        registered = {c.name for c in root_app.registered_commands}
+        assert "serve" not in registered
+
+    def test_serve_not_invocable_on_the_human_cli(self):
+        from caffeinated_whale_cli.main import app as root_app
+
+        result = runner.invoke(root_app, ["serve", "--help"])
+        assert result.exit_code != 0
+        assert "No such command" in result.output
+
+    def test_serve_absent_from_root_help_listing(self):
+        from caffeinated_whale_cli.main import app as root_app
+
+        result = runner.invoke(root_app, ["--help"])
+        assert result.exit_code == 0
+        assert not re.search(r"\bserve\b", result.output, re.IGNORECASE)
+
+    def test_serve_not_registered_under_axi(self):
+        registered = {c.name for c in axi_mod.app.registered_commands}
+        assert "serve" not in registered
+        for group in axi_mod.app.registered_groups:
+            sub = {c.name for c in group.typer_instance.registered_commands}
+            assert "serve" not in sub
+
+
 class TestNoMutatingAxiSelfUpdate:
     """The mutating ``cwcli axi self-update`` is deliberately deferred; only the
     READ-ONLY ``--check`` form ships. ``--check`` is a REQUIRED option, so the verb

@@ -38,7 +38,17 @@ import pytest
 
 from . import harness
 
-pytestmark = pytest.mark.e2e
+pytestmark = [
+    pytest.mark.e2e,
+    pytest.mark.skip(
+        reason="cwcli serve is deliberately unreachable in a released build "
+        "(captain ruling 2026-07-29: the Console GUI is unreleased and not ready "
+        "to ship). This suite drives the shipped binary's `serve` subcommand "
+        "directly, so it cannot exercise anything until the command is exposed "
+        "again; the module itself is untouched and stays covered directly by "
+        "tests/test_serve_frontend.py and tests/test_serve_auth.py."
+    ),
+]
 
 _HTTP_TIMEOUT = 10
 

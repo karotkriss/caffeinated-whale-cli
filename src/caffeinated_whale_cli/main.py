@@ -21,7 +21,6 @@ from .commands.rm_site import rm_site as _rm_site_cmd
 from .commands.run import run as _run_cmd
 from .commands.scale import scale as _scale_cmd
 from .commands.self_update import self_update as _self_update_cmd
-from .commands.serve import serve as _serve_cmd
 from .commands.status import status as _status_cmd
 from .commands.unlock import unlock as _unlock_cmd
 from .commands.update import update as _update_cmd
@@ -121,7 +120,6 @@ app.command("run", context_settings={"ignore_unknown_options": True})(_run_cmd)
 app.command("update")(_update_cmd)
 app.command("self-update")(_self_update_cmd)
 app.command("status")(_status_cmd)
-app.command("serve")(_serve_cmd)
 app.command("open")(_open_cmd)
 app.command("logs")(_logs_cmd)
 app.command("unlock")(_unlock_cmd)
