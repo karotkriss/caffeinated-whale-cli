@@ -22,6 +22,7 @@ assert which command ran and how the secret was passed.
 
 import subprocess
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -150,12 +151,15 @@ def _run_receive(
     class FakeSendmeProcess:
         def __init__(self, cmd, cwd=None, **kwargs):
             container.sendme_cwd = cwd
-            self.stderr = iter(sendme_stderr.splitlines(keepends=True))
+            self.stderr = BytesIO(sendme_stderr.encode())
 
         def wait(self):
             if sendme_returncode == 0:
                 Path(container.sendme_cwd).joinpath(db_filename).write_text("SQL DUMP DATA")
             return sendme_returncode
+
+        def kill(self):
+            pass
 
     monkeypatch.setattr(subprocess, "run", fake_sendme_run)
     monkeypatch.setattr(subprocess, "Popen", FakeSendmeProcess)
