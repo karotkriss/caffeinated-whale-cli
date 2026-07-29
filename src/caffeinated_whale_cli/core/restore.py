@@ -25,9 +25,9 @@ Two decisions the frontend keeps: the interactive backup menu and the two
 confirms are UI (the core surfaces ``select_backup`` and ``confirm_restore`` as
 typed choices), and the sendme send/receive subprocess plus the ticket prompt
 stay in ``commands/restore.py`` (interactive host I/O the core does not consume,
-the ``commands/logs.py`` ``-it`` precedent). What crosses to the core from the
-sendme flows is only the CONTAINER I/O: the streamed ``put_archive`` copy-in and
-``get_archive`` copy-out (M4), and the plan/apply itself.
+the ``commands/logs.py`` ``-it`` precedent). The core owns the receive-mode site
+preflight, the streamed ``put_archive`` copy-in and ``get_archive`` copy-out
+(M4), and the plan/apply itself.
 
 There is deliberately NO ``axi restore`` verb (see the no-verb assertion in the
 tests): a ``bench restore --force`` that destroys a user's site data is a product
@@ -951,13 +951,12 @@ def _put_archive_streamed(frappe_container, backup_dir: str, local_file: Path) -
     """Stream a single host file INTO the container's backup dir (M4).
 
     The tar is built directly onto an OS pipe rather than a temp file, so a
-    multi-GiB backup is never doubled on disk (the class of bug PR #177 fixed
-    for the sendme download itself but missed here): a writer thread feeds the
-    tar into the pipe while ``put_archive`` reads from the other end and
-    streams it to the daemon, bounded by the pipe's kernel buffer rather than a
-    second full copy. ``requests`` measures a pipe's length via ``os.fstat``,
-    which reports 0 for a FIFO, and falls back to chunked transfer encoding for
-    a falsy length - exactly what makes an unsized streaming body work here.
+    multi-GiB backup is never doubled on disk. A writer thread feeds the tar
+    into the pipe while ``put_archive`` reads from the other end and streams it
+    to the daemon, bounded by the pipe's kernel buffer rather than a second full
+    copy. ``requests`` measures a pipe's length via ``os.fstat``, which reports
+    0 for a FIFO, and falls back to chunked transfer encoding for a falsy
+    length. This is what makes an unsized streaming body work here.
     """
     read_fd, write_fd = os.pipe()
     build_error: list[BaseException] = []
