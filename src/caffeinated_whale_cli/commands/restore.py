@@ -59,10 +59,10 @@ DEFAULT_BENCH_PATH = "/workspace/frappe-bench"
 _REMOTE_SENTINEL = "__restore_from_remote__"
 
 # sendme creates its on-disk download store in whatever directory it is run
-# from (see the ``sendme-receiver-closed`` incident report), so ``--receive``/
-# ``--send`` must run it from a disk-backed directory under cwcli's own home
-# rather than the system temp dir, which is tmpfs (RAM-backed) or otherwise
-# small on some hosts and can fail a multi-GiB transfer mid-download.
+# from, so ``--receive``/``--send`` must run it from a disk-backed directory
+# under cwcli's own home rather than the system temp dir, which is tmpfs
+# (RAM-backed) or otherwise small on some hosts and can fail a multi-GiB
+# transfer mid-download.
 _MIN_RECEIVE_FREE_BYTES = 2 * 1024**3  # 2 GiB floor; sendme only reveals a
 # collection's real size after connecting to the sender, so a fixed floor is
 # the best pre-transfer guard cwcli can offer.
@@ -77,14 +77,20 @@ def _sendme_download_root() -> Path:
     """Disk-backed download root for ``restore --receive``/``--send``, under
     ``cwcli_home()`` rather than the system temp dir."""
     root = config_utils.cwcli_home() / "tmp"
-    root.mkdir(parents=True, exist_ok=True)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        _render_sendme_filesystem_error(root, "create the transfer directory", e)
     return root
 
 
 def _check_receive_free_space(download_root: Path) -> None:
     """Refuse early when ``download_root`` has too little free space to
     plausibly hold a backup, naming the location and the shortfall."""
-    free = shutil.disk_usage(download_root).free
+    try:
+        free = shutil.disk_usage(download_root).free
+    except OSError as e:
+        _render_sendme_filesystem_error(download_root, "check available disk space", e)
     if free < _MIN_RECEIVE_FREE_BYTES:
         stderr_console.print(
             "[bold red]Error:[/bold red] Not enough free space to receive a backup.\n"
@@ -96,25 +102,65 @@ def _check_receive_free_space(download_root: Path) -> None:
         raise typer.Exit(code=1)
 
 
+def _new_sendme_temp_dir(download_root: Path) -> tempfile.TemporaryDirectory[str]:
+    try:
+        return tempfile.TemporaryDirectory(dir=str(download_root))
+    except OSError as e:
+        _render_sendme_filesystem_error(download_root, "create a temporary transfer directory", e)
+
+
+def _render_sendme_filesystem_error(path: Path, action: str, error: OSError) -> NoReturn:
+    stderr_console.print(f"[bold red]Error:[/bold red] Could not {action} at {path}: {error}")
+    raise typer.Exit(code=1) from error
+
+
 def _explain_sendme_failure(stderr_text: str, download_dir: Path) -> str | None:
     """Return an actionable out-of-space explanation for a known sendme
     failure signature, or ``None`` when it doesn't match (caller falls back to
     the generic message + raw stderr passthrough).
 
-    sendme surfaces a failed on-disk store write (e.g. the store running out
-    of space) as the internal ``error sending over irpc: Receiver closed``
-    rather than the underlying I/O error - see the ``sendme-receiver-closed``
-    incident report for the verified causal chain.
+    sendme can surface a failed on-disk store write as the internal ``error
+    sending over irpc: Receiver closed`` rather than the underlying I/O error.
     """
     lowered = stderr_text.lower()
     if not any(signature in lowered for signature in _SENDME_SPACE_ERROR_SIGNATURES):
         return None
-    free = shutil.disk_usage(download_dir).free
+    try:
+        free_space = f"{_format_bytes(shutil.disk_usage(download_dir).free)} free"
+    except OSError as e:
+        free_space = f"available space could not be checked: {e}"
     return (
         f"Download failed - {download_dir} may be out of space "
-        f"({_format_bytes(free)} free; the backup can be several GiB). "
+        f"({free_space}; the backup can be several GiB). "
         "Free up space, or set CWCLI_HOME to a location on a disk with more "
         "room, and retry."
+    )
+
+
+def _run_sendme_receive(
+    command: list[str], download_dir: str, *, verbose: bool
+) -> subprocess.CompletedProcess[str]:
+    if not verbose:
+        return subprocess.run(command, cwd=download_dir, capture_output=True, text=True)
+
+    process = subprocess.Popen(
+        command,
+        cwd=download_dir,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    stderr_lines: list[str] = []
+    if process.stderr:
+        for line in process.stderr:
+            stderr_lines.append(line)
+            sys.stderr.write(line)
+            sys.stderr.flush()
+    return subprocess.CompletedProcess(
+        command,
+        process.wait(),
+        stdout="",
+        stderr="".join(stderr_lines),
     )
 
 
@@ -697,7 +743,7 @@ def _run_receive(
     receive_root = _sendme_download_root()
     _check_receive_free_space(receive_root)
 
-    with tempfile.TemporaryDirectory(dir=str(receive_root)) as temp_dir:
+    with _new_sendme_temp_dir(receive_root) as temp_dir:
         temp_path = Path(temp_dir)
         console.print()
         console.print("[bold cyan]Downloading backup files...[/bold cyan]")
@@ -706,10 +752,10 @@ def _run_receive(
             receive_cmd = [sendme_cmd, "receive", ticket]
             if verbose:
                 stderr_console.print(f"[dim]$ {' '.join(receive_cmd)}[/dim]")
-            proc = subprocess.run(receive_cmd, cwd=temp_dir, capture_output=not verbose, text=True)
+            proc = _run_sendme_receive(receive_cmd, temp_dir, verbose=verbose)
             if proc.returncode != 0:
                 stderr_text = proc.stderr or ""
-                explanation = None if verbose else _explain_sendme_failure(stderr_text, temp_path)
+                explanation = _explain_sendme_failure(stderr_text, temp_path)
                 if explanation:
                     stderr_console.print(f"[bold red]Error:[/bold red] {explanation}")
                 else:
@@ -808,7 +854,7 @@ def _run_send(project_name: str, *, site: str | None, bench_path: str, verbose: 
         stderr_console.print("[bold red]Error:[/bold red] No files to send.")
         raise typer.Exit(code=1)
 
-    with tempfile.TemporaryDirectory(dir=str(_sendme_download_root())) as temp_dir:
+    with _new_sendme_temp_dir(_sendme_download_root()) as temp_dir:
         temp_path = Path(temp_dir)
         console.print()
         console.print(
@@ -830,7 +876,12 @@ def _run_send(project_name: str, *, site: str | None, bench_path: str, verbose: 
             if verbose:
                 stderr_console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
             process = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1
+                cmd,
+                cwd=temp_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
             )
             ticket = None
             ticket_line_pattern = re.compile(r"sendme receive (\S+)")

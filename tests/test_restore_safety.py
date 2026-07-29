@@ -52,8 +52,6 @@ class FakeReceiveContainer:
         self.put_archive_paths: list[str] = []
         self.put_archive_streamed: bool | None = None
         self.printed: list[str] = []
-        # The ``cwd`` the fake ``sendme receive`` subprocess was run with, so
-        # tests can assert the download landed under the expected root.
         self.sendme_cwd: str | None = None
 
     def exec_run(self, cmd, workdir=None, environment=None):
@@ -118,6 +116,7 @@ def _run_receive(
     ticket="ticket-abc",
     sendme_returncode=0,
     sendme_stderr="",
+    verbose=False,
 ):
     """Drive ``restore_receive_mode`` end-to-end against ``container``.
 
@@ -148,7 +147,18 @@ def _run_receive(
         Path(cwd).joinpath(db_filename).write_text("SQL DUMP DATA")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
+    class FakeSendmeProcess:
+        def __init__(self, cmd, cwd=None, **kwargs):
+            container.sendme_cwd = cwd
+            self.stderr = iter(sendme_stderr.splitlines(keepends=True))
+
+        def wait(self):
+            if sendme_returncode == 0:
+                Path(container.sendme_cwd).joinpath(db_filename).write_text("SQL DUMP DATA")
+            return sendme_returncode
+
     monkeypatch.setattr(subprocess, "run", fake_sendme_run)
+    monkeypatch.setattr(subprocess, "Popen", FakeSendmeProcess)
     monkeypatch.setattr(restore_mod, "get_sendme_command", lambda: "sendme")
     monkeypatch.setattr(restore_mod, "TipSpinner", _NullSpinner)
     monkeypatch.setattr(restore_mod.config_utils, "get_show_tips", lambda: False)
@@ -189,7 +199,7 @@ def _run_receive(
         # These tests pin the restore command/confirm behavior only; skip the
         # post-restore migrate + instance restart (covered by its own tests).
         no_migrate=True,
-        verbose=False,
+        verbose=verbose,
     )
 
 

@@ -1,7 +1,6 @@
 """Regression tests for the ``restore --receive`` "Receiver closed" fix.
 
-Root cause (see the ``sendme-receiver-closed`` incident report): ``sendme
-receive`` writes its on-disk store into whatever directory it is run from.
+``sendme receive`` writes its on-disk store into its working directory.
 ``restore --receive`` used to run it from the system temp dir
 (``tempfile.TemporaryDirectory()`` with no ``dir=``), which is tmpfs
 (RAM-backed) or otherwise small on some hosts; a multi-GiB transfer then hit
@@ -15,6 +14,8 @@ and a failed download leaves no partial store behind.
 """
 
 import shutil
+import subprocess
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -59,6 +60,59 @@ class TestDownloadRoot:
         assert container.sendme_cwd is not None
         # Never the system temp dir - always under the cwcli-home root.
         assert str((home / "tmp").resolve()) in str(container.sendme_cwd)
+
+    def test_send_runs_sendme_under_the_cwcli_home_root(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        monkeypatch.setenv("CWCLI_HOME", str(home))
+        popen_call = {}
+
+        class FakeProcess:
+            stdout = StringIO("sendme receive ticket-abc\n")
+            stderr = StringIO()
+
+            def poll(self):
+                return None
+
+            def wait(self):
+                return 0
+
+        def fake_popen(cmd, **kwargs):
+            popen_call.update(cmd=cmd, **kwargs)
+            return FakeProcess()
+
+        monkeypatch.setattr(restore_mod, "_get_frappe_container", lambda project: object())
+        monkeypatch.setattr(
+            restore_mod.core_restore,
+            "scan_backups_for_all_sites",
+            lambda container, bench_path: [object()],
+        )
+        monkeypatch.setattr(
+            restore_mod.core_restore,
+            "group_and_sort_backups",
+            lambda backups, site: ([], []),
+        )
+        monkeypatch.setattr(restore_mod.core_restore, "_menu_options", lambda *args: ["backup"])
+        monkeypatch.setattr(
+            restore_mod, "_render_backup_menu", lambda options, site, offer_remote: "backup"
+        )
+        monkeypatch.setattr(
+            restore_mod.core_restore,
+            "_match_selected",
+            lambda *args: {"database": {"full_path": "/backups/database.sql.gz"}},
+        )
+        monkeypatch.setattr(
+            restore_mod.core_restore,
+            "copy_backup_files_out",
+            lambda container, files, destination: None,
+        )
+        monkeypatch.setattr(restore_mod, "get_sendme_command", lambda: "sendme")
+        monkeypatch.setattr(restore_mod, "copy_to_clipboard", lambda ticket: True)
+        monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+        restore_mod._run_send("project", site=SITE, bench_path="/bench", verbose=False)
+
+        assert popen_call["cwd"].startswith(str(home / "tmp"))
+        assert popen_call["cwd"] == popen_call["cmd"][-1]
 
 
 class TestPreflightFreeSpace:
@@ -110,6 +164,52 @@ class TestPreflightFreeSpace:
         )
 
         assert len(container.restore_calls()) == 1
+
+    @pytest.mark.parametrize(
+        ("failure_point", "expected_action"),
+        [
+            ("mkdir", "create the transfer directory"),
+            ("disk_usage", "check available disk space"),
+            ("temporary_directory", "create a temporary transfer directory"),
+        ],
+    )
+    def test_filesystem_failures_exit_cleanly(
+        self, tmp_path, monkeypatch, failure_point, expected_action
+    ):
+        home = tmp_path / "home"
+        monkeypatch.setenv("CWCLI_HOME", str(home))
+        container = FakeReceiveContainer()
+
+        if failure_point == "mkdir":
+            def fail_mkdir(self, **kwargs):
+                raise OSError("read-only filesystem")
+
+            monkeypatch.setattr(Path, "mkdir", fail_mkdir)
+        elif failure_point == "disk_usage":
+            def fail_disk_usage(path):
+                raise OSError("filesystem unavailable")
+
+            monkeypatch.setattr(shutil, "disk_usage", fail_disk_usage)
+        else:
+            def fail_temp_dir(**kwargs):
+                raise OSError("no space left")
+
+            monkeypatch.setattr(restore_mod.tempfile, "TemporaryDirectory", fail_temp_dir)
+
+        with pytest.raises(typer.Exit) as excinfo:
+            _run_receive(
+                monkeypatch,
+                container,
+                site=SITE,
+                db_filename=DB_FILENAME,
+                yes=True,
+                isatty=False,
+            )
+
+        assert excinfo.value.exit_code == 1
+        assert container.restore_calls() == []
+        assert any(expected_action in line for line in container.printed)
+        assert any(str(home / "tmp") in line for line in container.printed)
 
 
 class TestErrorTranslation:
@@ -168,6 +268,43 @@ class TestErrorTranslation:
         assert any("Failed to download files via sendme" in line for line in container.printed)
         assert any("Hit the end of buffer" in line for line in container.printed)
         assert not any("may be out of space" in line for line in container.printed)
+
+    def test_verbose_receiver_closed_is_still_classified(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        monkeypatch.setenv("CWCLI_HOME", str(home))
+        container = FakeReceiveContainer()
+
+        with pytest.raises(typer.Exit) as excinfo:
+            _run_receive(
+                monkeypatch,
+                container,
+                site=SITE,
+                db_filename=DB_FILENAME,
+                yes=True,
+                isatty=False,
+                verbose=True,
+                sendme_returncode=1,
+                sendme_stderr="error sending over irpc: Receiver closed\n",
+            )
+
+        assert excinfo.value.exit_code == 1
+        assert any("may be out of space" in line for line in container.printed)
+
+    def test_error_translation_survives_disk_usage_failure(self, tmp_path, monkeypatch):
+        download_dir = tmp_path / "download"
+
+        def fail_disk_usage(path):
+            raise OSError("filesystem unavailable")
+
+        monkeypatch.setattr(shutil, "disk_usage", fail_disk_usage)
+
+        explanation = restore_mod._explain_sendme_failure(
+            "error sending over irpc: Receiver closed", download_dir
+        )
+
+        assert explanation is not None
+        assert str(download_dir) in explanation
+        assert "available space could not be checked" in explanation
 
 
 class TestPartialDownloadCleanup:
