@@ -84,8 +84,8 @@ console.html present: True
 test files: 0
 ```
 
-`commands/console.html` is served by `cwcli serve`, so a wheel missing it would install
-cleanly and then fail at runtime. It is checked positively for that reason.
+`commands/console.html` belongs to the retained, unregistered Console frontend.
+It remains package data so the withheld implementation stays package-complete without exposing its command.
 
 ### 4. The tool genuinely installs and runs FROM THE SDIST
 

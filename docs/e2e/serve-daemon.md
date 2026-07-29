@@ -1,7 +1,8 @@
-# E2E: `cwcli serve` - the three tiers, the quiet in between, and the WSL/Windows boundary
+# Historical E2E: Console tiers, quiet periods, and the WSL/Windows boundary
 
 Real-instance validation of the streaming Console daemon (`core/fleet.py`, `commands/serve.py`).
-The committed suite is `tests/e2e/test_serve_e2e.py`, which CI runs on the v14/v15/v16 matrix.
+This is historical evidence for the retained implementation; the Console entry in `AGENTS.md` owns its current surface-availability contract.
+The committed `tests/e2e/test_serve_e2e.py` suite is therefore skipped until the command is approved for release; direct unit coverage of the retained modules remains active.
 This document records the hand-driven run that produced the measurements, because two of the properties below cannot be observed from CI at all: the Windows-browser boundary needs a Windows host, and the reconnect re-bootstrap needs the event stream to be dropped on purpose.
 
 Everything here ran against ONE throwaway Frappe v16 instance (`cwp2serve`, ports 24000/25000, site `p2.localhost`) built and destroyed inside this task, under an isolated `CWCLI_HOME=/tmp/cwp2/home`.
@@ -23,7 +24,7 @@ The boundary was measured before anything was built on top of it, with a throwaw
 
 Both routes work on this build.
 The top-left cell is the load-bearing one and it is easy to misread: **a Windows browser DOES reach a WSL-only `127.0.0.1` listener**, because WSL's default NAT mode forwards `localhost` into the distro ([Microsoft's own networking documentation](https://learn.microsoft.com/en-us/windows/wsl/networking) says so, and the row above measures it).
-`cwcli serve` was originally shipped with a `0.0.0.0` default on the reasoning that it is the only bind serving both routes; that default was later found to leave the action endpoint drivable, without credentials, from any host on the network, and the default is now `127.0.0.1`.
+The Console was originally implemented with a `0.0.0.0` default on the reasoning that it is the only bind serving both routes; that default was later found to leave the action endpoint drivable, without credentials, from any host on the network, and the retained implementation now defaults to `127.0.0.1`.
 What this table actually justifies is the narrower claim: the WSL-IP route is what survives `localhostForwarding` being turned off, and it is what a browser on another machine needs, so `--host 0.0.0.0` remains available - now gated behind `CWCLI_SERVE_TOKEN`, which a non-loopback bind refuses to start without.
 The startup banner prints the address it is reachable at, resolved by a UDP `connect` to TEST-NET-1 (which sends nothing and only makes the kernel pick a source interface).
 Resolving the hostname - the obvious alternative - is wrong here: on this distro it answers `127.0.1.1` and nothing else.
@@ -177,7 +178,7 @@ Stopped instances carry `probe_ms: null`. They were never probed, and the model 
 ## 5. Reconnect re-bootstrap, against real Docker
 
 The rule under test is that a lost event stream RE-BOOTSTRAPS and never replays with `since=`.
-Driving it needs the stream dropped on purpose, so this ran the shipped `core.fleet.event_loop` against the real Docker daemon with the reconnect held shut by a gate, and asserted inside the wrapper that no `since=`/`until=` is ever passed.
+Driving it needs the stream dropped on purpose, so this ran the retained `core.fleet.event_loop` against the real Docker daemon with the reconnect held shut by a gate, and asserted inside the wrapper that no `since=`/`until=` is ever passed.
 
 ```
   0.020s  connect #1 filters=['start','stop','die','kill','restart','destroy']
@@ -228,7 +229,7 @@ Two things stay here rather than in CI:
 
 ## Phase 4 tightening audit (2026-07-24)
 
-An audit-then-fix pass over the shipped Console, driven hand-on against ONE throwaway Frappe v16 instance (`cwp4con`, ports 14000/15000, isolated `CWCLI_HOME`) built and destroyed inside the task.
+An audit-then-fix pass over the unreleased Console, driven hand-on against ONE throwaway Frappe v16 instance (`cwp4con`, ports 14000/15000, isolated `CWCLI_HOME`) built and destroyed inside the task.
 Browser evidence is Linux Chrome via chrome-devtools-axi; Windows interop was unavailable on the box during this pass, so no Windows-browser claims are made here (section 2 above remains the Windows evidence).
 One difference from the phase-2 run: the captain's `gcaa` instance was already running throughout, so the daemon passively health-probed it exactly as `cwcli serve` probes any running instance; no action, focus, or detail read ever targeted it.
 
