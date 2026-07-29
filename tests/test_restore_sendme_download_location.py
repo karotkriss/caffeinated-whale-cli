@@ -328,6 +328,44 @@ class TestErrorTranslation:
         assert "Receiver closed" in result.stderr
         assert b"\rprogress" in stderr.buffer.getvalue()
 
+    def test_verbose_receive_retains_only_a_bounded_stderr_tail(self, tmp_path, monkeypatch):
+        payload = (
+            b"x" * (restore_mod._VERBOSE_STDERR_CAPTURE_BYTES * 2)
+            + b"\nReceiver closed\n"
+        )
+
+        class Sink:
+            def write(self, chunk):
+                return len(chunk)
+
+            def flush(self):
+                pass
+
+        class NonTtyStderr:
+            buffer = Sink()
+
+            def isatty(self):
+                return False
+
+        class FakeProcess:
+            stderr = BytesIO(payload)
+
+            def wait(self):
+                return 1
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(restore_mod.sys, "stderr", NonTtyStderr())
+        monkeypatch.setattr(restore_mod.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+
+        result = restore_mod._run_sendme_receive(["sendme"], str(tmp_path), verbose=True)
+
+        assert result.returncode == 1
+        assert len(result.stderr.encode()) <= restore_mod._VERBOSE_STDERR_CAPTURE_BYTES
+        assert "Receiver closed" in result.stderr
+        assert restore_mod._explain_sendme_failure(result.stderr, tmp_path) is not None
+
     def test_error_translation_survives_disk_usage_failure(self, tmp_path, monkeypatch):
         download_dir = tmp_path / "download"
 
