@@ -69,6 +69,7 @@ _MIN_RECEIVE_FREE_BYTES = 2 * 1024**3  # 2 GiB floor; sendme only reveals a
 # collection's real size after connecting to the sender, so a fixed floor is
 # the best pre-transfer guard cwcli can offer.
 _SENDME_SPACE_ERROR_SIGNATURES = ("receiver closed", "no space left")
+_VERBOSE_STDERR_CAPTURE_BYTES = 64 * 1024
 
 
 def _format_bytes(n: int) -> str:
@@ -177,12 +178,12 @@ def _run_sendme_receive(
                     raise
                 if not chunk:
                     break
-                captured.extend(chunk)
+                _append_bounded(captured, chunk)
                 _write_live_stderr(chunk)
         elif process.stderr:
             read = getattr(process.stderr, "read1", process.stderr.read)
             while chunk := read(8192):
-                captured.extend(chunk)
+                _append_bounded(captured, chunk)
                 _write_live_stderr(chunk)
         return subprocess.CompletedProcess(
             command,
@@ -197,6 +198,16 @@ def _run_sendme_receive(
     finally:
         if master_fd is not None:
             os.close(master_fd)
+
+
+def _append_bounded(captured: bytearray, chunk: bytes) -> None:
+    if len(chunk) >= _VERBOSE_STDERR_CAPTURE_BYTES:
+        captured[:] = chunk[-_VERBOSE_STDERR_CAPTURE_BYTES :]
+        return
+    overflow = len(captured) + len(chunk) - _VERBOSE_STDERR_CAPTURE_BYTES
+    if overflow > 0:
+        del captured[:overflow]
+    captured.extend(chunk)
 
 
 def _write_live_stderr(chunk: bytes) -> None:
