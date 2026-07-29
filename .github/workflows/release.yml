@@ -32,6 +32,18 @@ jobs:
         with:
           fetch-depth: 0  # Fetch all history for proper versioning
 
+      - name: Configure git safe directory
+        # actions/checkout only registers the workspace as a safe directory
+        # around its OWN git calls (and again in its post-job cleanup); it
+        # does not persist that config for later `run:` steps. This job runs
+        # in a container, where the checked-out files are owned by a
+        # different UID than the one later `run:` steps execute as, so any
+        # step that invokes git directly (here, release-body.sh's `git tag`/
+        # `git rev-parse` calls) hits git's "detected dubious ownership"
+        # refusal. Registering it globally, once, before any such step is
+        # what git's own error message recommends.
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Extract version information
         id: version
         run: |
