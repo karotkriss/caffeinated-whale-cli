@@ -77,7 +77,7 @@ The token lives on each row so TOON consumers do not need to infer state from wa
 
 This rule applies to `core.label.list_benches` (`BenchInfo.state`, `BenchList.verified`) and `core.status` (`BenchStatus.bench_present`).
 Status reports existence separately from health because a deleted bench and a never-started bench both lack a supervisor marker and supervisord state; the existing four-token `overall` aggregate therefore cannot answer existence.
-The fused `cwcli serve` health key includes `bench_present`, so an existence change republishes the report.
+The retained Console frontend's fused health key includes `bench_present`, so an existence change republishes the report when that module is driven directly.
 `cwcli axi benches --no-verify` is the explicit bare-cache path and reports every row as `unverified`.
 
 The rule deliberately excludes `resolve_bench` and its callers in logs, open, apps, and bench operations.

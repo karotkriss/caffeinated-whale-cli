@@ -237,8 +237,9 @@ def status(
     ``fused=True`` reads each SUPERVISED bench through
     :func:`supervision.fused_probe` - ONE ``docker exec`` instead of the default
     path's five - for a repeating caller that cannot afford the round trips
-    (``cwcli serve``'s FAST tier polls every RUNNING instance every few seconds;
-    measured 758ms -> 252ms per instance). It is an exec-budget choice ONLY: the
+    (the retained Console frontend's FAST tier polls every RUNNING instance every
+    few seconds when driven directly; measured 758ms -> 252ms per instance). It is
+    an exec-budget choice ONLY: the
     returned :class:`StatusReport` is the same shape with the same tokens, and an
     UNSUPERVISED bench falls back to the full read per bench, so the never-started
     vs supervisor-died distinction and the honcho fallback are never traded away.
