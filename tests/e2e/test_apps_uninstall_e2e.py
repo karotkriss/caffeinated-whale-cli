@@ -33,6 +33,7 @@ shared-instance convention.
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
@@ -65,6 +66,24 @@ def _apps_list_site(inst) -> list[str]:
     assert result.returncode == 0, result.stdout + result.stderr
     doc = json.loads(result.stdout)
     return doc["installed"][inst.site]
+
+
+def _axi_apps_list_site(inst) -> list[str]:
+    """What `cwcli axi apps list --site --installed` reports for the site."""
+    result = harness.run_cwcli(
+        "axi", "apps", "list", inst.name, "--site", inst.site, "--installed"
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not result.stdout.lstrip().startswith("{"), "must be TOON, never JSON"
+    match = re.search(
+        rf"^  {re.escape(inst.site)}\[(\d+)\]:(?: (.*))?$",
+        result.stdout,
+        re.MULTILINE,
+    )
+    assert match is not None, f"missing installed entry for {inst.site}: {result.stdout}"
+    apps = match.group(2).split(",") if match.group(2) else []
+    assert len(apps) == int(match.group(1)), result.stdout
+    return apps
 
 
 def _site_ping_code(inst) -> str:
@@ -120,12 +139,7 @@ def test_apps_uninstall_destroys_the_sites_app_state(running_instance):
         assert _APP in _apps_list_site(inst), "install is not visible in `apps list --site`"
 
         # The agent read verb reflects the same installed state (previously E2E-uncovered).
-        axi_list = harness.run_cwcli(
-            "axi", "apps", "list", inst.name, "--site", inst.site, "--installed"
-        )
-        assert axi_list.returncode == 0, axi_list.stdout + axi_list.stderr
-        assert not axi_list.stdout.lstrip().startswith("{"), "must be TOON, never JSON"
-        assert _APP in axi_list.stdout
+        assert _APP in _axi_apps_list_site(inst)
 
         # --- Destroy it.
         uninstall = harness.run_cwcli(
@@ -145,11 +159,25 @@ def test_apps_uninstall_destroys_the_sites_app_state(running_instance):
         _remove_app_source(inst)
         restored = True
     finally:
-        if not restored:
-            # Best-effort cleanup that never masks the real assertion failure.
-            if _APP in _installed_on_site(inst):
-                harness.run_cwcli(
-                    "apps", "uninstall", inst.name, _APP, "--site", inst.site, "--yes"
-                )
-            _remove_app_source(inst, required=False)
-        _ensure_serving(inst.name)
+        try:
+            if not restored:
+                # Best-effort cleanup that never masks the real assertion failure.
+                try:
+                    installed = _APP in _installed_on_site(inst)
+                except (AssertionError, IndexError, json.JSONDecodeError):
+                    installed = True
+                try:
+                    if installed:
+                        harness.run_cwcli(
+                            "apps",
+                            "uninstall",
+                            inst.name,
+                            _APP,
+                            "--site",
+                            inst.site,
+                            "--yes",
+                        )
+                finally:
+                    _remove_app_source(inst, required=False)
+        finally:
+            _ensure_serving(inst.name)
