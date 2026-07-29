@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-07-29
+
+Sendme transfers and restores no longer exhaust a small temp partition, long-running `init` phases stay visibly alive instead of looking hung, and a bare `cwcli` now prints help instead of a traceback. The published package itself is also clean for the first time under the new packaging allow-list: no test files ship in the artifact.
+
+### Added
+- **`cwcli axi url <project>`** - Reports the host address a bench actually answers on and probes it fresh with a real HTTP request, naming the site it asked for. Nothing else on the `axi` surface states the host-reachable address; `axi status`'s health probe is measured against the container-internal port and never surfaces the address a browser would use
+
+### Changed
+- **`cwcli restore --receive` validates before downloading** - The site and, in receive mode, the sendme ticket are now checked before a multi-gigabyte transfer starts, rather than failing after the download completes. Restore also no longer keeps a duplicate copy of the backup archive on disk during the process
+- **Sendme transfers and restore no longer fight a small `/tmp`** - Transfers now stream through cwcli's own home directory instead of the system temp partition, check free space up front, and stream rather than double-copying, so a large restore no longer exhausts a small temp partition. When disk space is genuinely the problem, cwcli now says so plainly instead of failing with an opaque I/O error
+- **Long `cwcli init` phases stay visibly alive** - A bench build or dependency install can run for minutes with no output, which used to look identical to a hang. Long phases now announce themselves and keep progress visible for their duration
+
+### Fixed
+- **A bare `cwcli` prints help instead of crashing** - A runtime-only install can end up on Typer's vendored Click, whose error classes are not the ones cwcli's error handling caught by name, so a bare invocation raised an unhandled exception instead of showing the usage text every other zero-argument CLI shows
+- **The published package no longer ships the test suite** - The published 1.1.0 sdist carried 102 test files, including a fixture with a private hostname, because the project had no packaging allow-list and setuptools' default swept `tests/` in. Packaging is now a deny-all allow-list: only the package itself and the required build inputs are included, so a newly added test or fixture directory is excluded by construction rather than by someone remembering to exclude it
+- **`cwcli restart`, `cwcli stop`, and `cwcli start` accept clustered and attached short options** - Forms Click accepts everywhere else, such as `-pweb` for `--process web` or `-vy` for `-v -y`, were refused as "No such option" on these four commands because they parse their own trailing arguments. A cluster that does not fully resolve is refused outright rather than partially applied, so a typo can never be silently read as consent to a destructive action
+- **`cwcli axi` help output is concise TOON across every command** - Group listings, argument metavars, and command notes were truncated or leaked raw markdown in places; help across the whole `axi` tree is now rendered consistently
+- **App changes fully resynchronise a running bench** - Installing, uninstalling, updating, or checking out an app used to restart only the web process, so the scheduler and background workers kept running the old code after a mutation landed. Every code-bearing process is now cycled, and the affected sites must answer a live ping before the change reports success
+- **Bench listings stop vouching for a bench that no longer exists** - A removed bench directory kept reporting as present across repeated reads. Bench presence is now verified against the container and the host filesystem where that is possible, and honestly reported as unverified rather than guessed when it is not
+- **A stranded migrate lock is now diagnosed instead of failing opaquely** - A migrate that loses a lock race can leave a genuinely held lock file behind; every later migrate against that site now fails with a clear pointer to `cwcli unlock` instead of the same unexplained error
+- **Adding a bench to a running instance no longer risks restarting every other bench on it** - `cwcli init` against an already-running instance used to re-pull and potentially recreate the frappe container unconditionally, which could silently kill every other bench's supervisor. Adding a bench now never refetches or recreates anything
+- **Bench numbers stay stable across additions** - A new bench sorting earlier by path used to renumber an existing bench's index the moment it was added, so a stored or scripted `--bench 0` could silently start addressing a different bench. Bench numbers are now durable identities assigned on first discovery and never reassigned
+- **`cwcli init` no longer crashes on Windows during user-ID alignment** - The Linux/macOS-only ownership alignment step now no-ops cleanly on platforms without POSIX UID/GID support instead of raising
+
 ## [2.0.0] - 2026-07-23
 
 Multi-bench instances are the theme. `cwcli status` now reports every bench on an instance and measures each one on its own port and its own site, instead of modelling a single bench and asking `localhost:8000` about all of them. `cwcli scale` lifts the six-bench ceiling that silently made a seventh bench unreachable from the host. `cwcli rm-site` drops one site without touching the instance around it, and agents gain the removal, install, and asset-build verbs they previously had to reach around cwcli to run. `cwcli run -i` finally carries bench commands that ask questions. **This is a major release because `cwcli axi status`'s document shape changed:** its per-bench fields moved inside `benches[i]`, including on single-bench instances. `apps checkout` also now genuinely refuses to run over uncommitted work, which the documentation always claimed it did.
