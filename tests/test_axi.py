@@ -6,10 +6,13 @@ typed-error rendering + exit codes, needs-choice -> flag-naming usage error exit
 2, and the ls-DTO home populated + empty. Plus the shared TOON encoder's shape.
 """
 
+import importlib
 import re
+import sys
 
 import click
 import pytest
+from typer import core as _typer_core
 from typer.testing import CliRunner
 
 from caffeinated_whale_cli.commands import axi as axi_mod
@@ -586,6 +589,96 @@ class TestAxiParseErrorsAreToon:
         out = capsys.readouterr().out
         assert out.startswith("error:")
         assert "\x1b[" not in out  # no ANSI escapes
+
+    def test_bare_cwcli_is_usage_error_not_traceback(self):
+        """A bare `cwcli` (no subcommand) must print a usage error and exit 2, never
+        escape to the top-level rich traceback. See TestVendoredClickIsCaught for the
+        root cause (ToonGroup.main missing the click flavor a vendoring Typer raises)."""
+        from caffeinated_whale_cli.main import app as root_app
+
+        result = runner.invoke(root_app, [])
+        assert result.exit_code == 2
+        assert "Missing command" in result.output
+        assert "Traceback" not in result.output
+
+
+class TestVendoredClickIsCaught:
+    """Root cause of the captain's bare-`cwcli` traceback: Typer >= ~0.17 VENDORS
+    Click as `typer._click`, so a TyperGroup raises that vendored
+    ClickException/UsageError/Abort - a DIFFERENT class hierarchy from the `click`
+    package `commands/axi.py` imports. The hardcoded `except click.ClickException`
+    then missed them and the error escaped to the top-level rich traceback. The fix
+    resolves the caught-sets from whichever Click flavor Typer actually uses.
+
+    These pin the fix independently of the installed Typer version (the repo locks
+    an older, standalone-Click Typer where the bug does not reproduce end to end).
+    """
+
+    def test_caught_sets_track_the_click_flavor_typer_raises(self):
+        """The classes ToonGroup.main catches must be the ones Typer's OWN base group
+        raises - resolved live from the base class's module, so this holds on both a
+        standalone-Click and a Click-vendoring Typer."""
+        base_module = sys.modules[_typer_core.TyperGroup.__mro__[1].__module__]
+        click_pkg = base_module.__name__.rsplit(".", 1)[0]  # 'click' or 'typer._click'
+        exc = importlib.import_module(click_pkg + ".exceptions")
+
+        assert exc.ClickException in axi_mod._CLICK_EXCEPTIONS
+        assert exc.UsageError in axi_mod._USAGE_ERRORS
+        assert exc.Abort in axi_mod._ABORTS
+
+    def test_toongroup_renders_a_foreign_hierarchy_usage_error(self, monkeypatch, capsys):
+        """Portable reproduction: a UsageError from a foreign hierarchy (as a
+        vendoring Typer raises) must be caught and rendered as TOON on the axi
+        surface, exit 2 - not escape. Before the fix, `except click.ClickException`
+        could not match it, so `group.main` raised instead of exiting."""
+
+        class ForeignClickError(Exception):
+            exit_code = 1
+
+            def show(self, file=None):  # pragma: no cover - unused on the TOON path
+                pass
+
+        class ForeignUsageError(ForeignClickError):
+            exit_code = 2
+
+            def __init__(self, message, ctx=None):
+                super().__init__(message)
+                self._message = message
+                self.ctx = ctx
+
+            def format_message(self):
+                return self._message
+
+        # The fix's resolution picks these up under a vendoring Typer; simulate that.
+        # raising=False so that BEFORE the fix (no such attributes, and the hardcoded
+        # `except click.ClickException` ignores them) the foreign error genuinely
+        # escapes `group.main` and this test fails on the real bug, not on setup.
+        monkeypatch.setattr(
+            axi_mod,
+            "_CLICK_EXCEPTIONS",
+            (click.ClickException, ForeignClickError),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            axi_mod, "_USAGE_ERRORS", (click.UsageError, ForeignUsageError), raising=False
+        )
+
+        group = axi_mod.AxiToonGroup(name="axi")
+        ctx = click.Context(group, info_name="cwcli axi")
+        error = ForeignUsageError("Missing command.", ctx=ctx)
+
+        def raise_foreign(self, *args, **kwargs):
+            raise error
+
+        monkeypatch.setattr(_typer_core.TyperGroup, "main", raise_foreign)
+
+        with pytest.raises(SystemExit) as exit_info:
+            group.main(args=[], prog_name="cwcli axi", standalone_mode=True)
+
+        assert exit_info.value.code == 2
+        out = capsys.readouterr().out
+        assert out.startswith("error:")
+        assert "Missing command." in out
 
 
 # ------------------------------------------------------------------------- TOON help
