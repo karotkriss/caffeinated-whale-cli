@@ -1,33 +1,10 @@
-"""`cwcli apps uninstall` E2E - real Docker, real bench, real site data destroyed.
+"""Prove `cwcli apps uninstall` against a real bench and site.
 
-`apps uninstall` runs `bench uninstall-app`, which DROPS the app's tables from the
-site's database - the one apps-group path that destroys user data. It shipped on
-unit proof; the maintainer standard requires a data-destroying command proven on a
-real instance, and proven the honest way: the app must be genuinely present first,
-or asserting its absence afterwards passes vacuously against a no-op that removed
-nothing.
-
-This is the dedicated destructive proof. The install E2E exercises uninstall inside
-its own happy path, but that proof is coupled to install succeeding and never checks
-the command's OWN read surface (`apps list`). This test stands alone and asserts the
-presence-then-absence arc on that surface:
-
-1. POSITIVE first - the app is genuinely installed, visible in `apps list --site`,
-   and present in the authoritative `frappe.get_installed_apps`. Fails here if the
-   install did not land, so the later absence check can never pass vacuously.
-2. The destructive `cwcli apps uninstall`.
-3. NEGATIVE - gone from `apps list --site` and from the site - plus the side effect
-   the command promises: the long-lived processes are resynchronised (the site still
-   serves 200 and the uninstall reports `restart-processes`).
-
-The setup install runs through the human `cwcli apps install`, giving that verb real
-E2E exercise too, and a read through `cwcli axi apps list` covers the agent read verb
-(previously unit-only). `axi apps uninstall` deliberately does not exist, so there is
-no agent destructive surface to prove.
-
-Mutates the shared session instance (installs then uninstalls an app, cycles its
-stack), so it removes the app source and restores serving in a `finally`, per the
-shared-instance convention.
+The test establishes the app's presence through both the command's per-site read
+surface and Frappe before uninstalling it, so the absence checks cannot pass
+vacuously.
+It then proves absence through both surfaces, checks the process resynchronisation,
+and restores the shared session instance in a `finally`.
 """
 
 from __future__ import annotations
@@ -70,9 +47,7 @@ def _apps_list_site(inst) -> list[str]:
 
 def _axi_apps_list_site(inst) -> list[str]:
     """What `cwcli axi apps list --site --installed` reports for the site."""
-    result = harness.run_cwcli(
-        "axi", "apps", "list", inst.name, "--site", inst.site, "--installed"
-    )
+    result = harness.run_cwcli("axi", "apps", "list", inst.name, "--site", inst.site, "--installed")
     assert result.returncode == 0, result.stdout + result.stderr
     assert not result.stdout.lstrip().startswith("{"), "must be TOON, never JSON"
     match = re.search(
