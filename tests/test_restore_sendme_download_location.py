@@ -15,7 +15,8 @@ and a failed download leaves no partial store behind.
 
 import shutil
 import subprocess
-from io import StringIO
+import sys
+from io import BytesIO, StringIO
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -61,9 +62,10 @@ class TestDownloadRoot:
         # Never the system temp dir - always under the cwcli-home root.
         assert str((home / "tmp").resolve()) in str(container.sendme_cwd)
 
-    def test_send_runs_sendme_under_the_cwcli_home_root(self, tmp_path, monkeypatch):
+    def test_send_resolves_a_relative_cwcli_home(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("CWCLI_HOME", "home")
         home = tmp_path / "home"
-        monkeypatch.setenv("CWCLI_HOME", str(home))
         popen_call = {}
 
         class FakeProcess:
@@ -112,6 +114,7 @@ class TestDownloadRoot:
         restore_mod._run_send("project", site=SITE, bench_path="/bench", verbose=False)
 
         assert popen_call["cwd"].startswith(str(home / "tmp"))
+        assert Path(popen_call["cwd"]).is_absolute()
         assert popen_call["cwd"] == popen_call["cmd"][-1]
 
 
@@ -289,6 +292,41 @@ class TestErrorTranslation:
 
         assert excinfo.value.exit_code == 1
         assert any("may be out of space" in line for line in container.printed)
+
+    def test_verbose_receive_preserves_tty_progress_and_captures_stderr(
+        self, tmp_path, monkeypatch
+    ):
+        class TtyStderr:
+            def __init__(self):
+                self.buffer = BytesIO()
+
+            def isatty(self):
+                return True
+
+            def write(self, text):
+                return self.buffer.write(text.encode())
+
+            def flush(self):
+                pass
+
+        stderr = TtyStderr()
+        monkeypatch.setattr(restore_mod.sys, "stderr", stderr)
+        command = [
+            sys.executable,
+            "-c",
+            "import os, sys; "
+            "sys.stderr.write(f'tty={os.isatty(2)}\\rprogress\\nReceiver closed\\n'); "
+            "sys.stderr.flush(); "
+            "raise SystemExit(3)",
+        ]
+
+        result = restore_mod._run_sendme_receive(command, str(tmp_path), verbose=True)
+
+        assert result.returncode == 3
+        assert "tty=True" in result.stderr
+        assert "\rprogress" in result.stderr
+        assert "Receiver closed" in result.stderr
+        assert b"\rprogress" in stderr.buffer.getvalue()
 
     def test_error_translation_survives_disk_usage_failure(self, tmp_path, monkeypatch):
         download_dir = tmp_path / "download"

@@ -15,6 +15,8 @@ bench + site BEFORE the scan/download - the shared ``_resolve_bench_prologue``
 collapses the three old per-mode copies of the no-cache inspect fallback.
 """
 
+import errno
+import os
 import re
 import shutil
 import subprocess
@@ -78,6 +80,7 @@ def _sendme_download_root() -> Path:
     ``cwcli_home()`` rather than the system temp dir."""
     root = config_utils.cwcli_home() / "tmp"
     try:
+        root = root.resolve()
         root.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         _render_sendme_filesystem_error(root, "create the transfer directory", e)
@@ -143,25 +146,67 @@ def _run_sendme_receive(
     if not verbose:
         return subprocess.run(command, cwd=download_dir, capture_output=True, text=True)
 
-    process = subprocess.Popen(
-        command,
-        cwd=download_dir,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-    )
-    stderr_lines: list[str] = []
-    if process.stderr:
-        for line in process.stderr:
-            stderr_lines.append(line)
-            sys.stderr.write(line)
-            sys.stderr.flush()
-    return subprocess.CompletedProcess(
-        command,
-        process.wait(),
-        stdout="",
-        stderr="".join(stderr_lines),
-    )
+    master_fd: int | None = None
+    slave_fd: int | None = None
+    if sys.stderr.isatty():
+        master_fd, slave_fd = os.openpty()
+        stderr_target = slave_fd
+    else:
+        stderr_target = subprocess.PIPE
+
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=download_dir,
+            stderr=stderr_target,
+            bufsize=0,
+        )
+    finally:
+        if slave_fd is not None:
+            os.close(slave_fd)
+
+    captured = bytearray()
+    try:
+        if master_fd is not None:
+            while True:
+                try:
+                    chunk = os.read(master_fd, 8192)
+                except OSError as e:
+                    if e.errno == errno.EIO:
+                        break
+                    raise
+                if not chunk:
+                    break
+                captured.extend(chunk)
+                _write_live_stderr(chunk)
+        elif process.stderr:
+            read = getattr(process.stderr, "read1", process.stderr.read)
+            while chunk := read(8192):
+                captured.extend(chunk)
+                _write_live_stderr(chunk)
+        return subprocess.CompletedProcess(
+            command,
+            process.wait(),
+            stdout="",
+            stderr=captured.decode(errors="replace"),
+        )
+    except BaseException:
+        process.kill()
+        process.wait()
+        raise
+    finally:
+        if master_fd is not None:
+            os.close(master_fd)
+
+
+def _write_live_stderr(chunk: bytes) -> None:
+    buffer = getattr(sys.stderr, "buffer", None)
+    if buffer is not None:
+        buffer.write(chunk)
+        buffer.flush()
+        return
+    sys.stderr.write(chunk.decode(errors="replace"))
+    sys.stderr.flush()
 
 
 # --------------------------------------------------------------------------- #
@@ -744,7 +789,7 @@ def _run_receive(
     _check_receive_free_space(receive_root)
 
     with _new_sendme_temp_dir(receive_root) as temp_dir:
-        temp_path = Path(temp_dir)
+        temp_path = Path(temp_dir).resolve()
         console.print()
         console.print("[bold cyan]Downloading backup files...[/bold cyan]")
         sendme_cmd = get_sendme_command()
@@ -752,7 +797,7 @@ def _run_receive(
             receive_cmd = [sendme_cmd, "receive", ticket]
             if verbose:
                 stderr_console.print(f"[dim]$ {' '.join(receive_cmd)}[/dim]")
-            proc = _run_sendme_receive(receive_cmd, temp_dir, verbose=verbose)
+            proc = _run_sendme_receive(receive_cmd, str(temp_path), verbose=verbose)
             if proc.returncode != 0:
                 stderr_text = proc.stderr or ""
                 explanation = _explain_sendme_failure(stderr_text, temp_path)
@@ -855,7 +900,7 @@ def _run_send(project_name: str, *, site: str | None, bench_path: str, verbose: 
         raise typer.Exit(code=1)
 
     with _new_sendme_temp_dir(_sendme_download_root()) as temp_dir:
-        temp_path = Path(temp_dir)
+        temp_path = Path(temp_dir).resolve()
         console.print()
         console.print(
             f"[bold cyan]Preparing {len(files_to_send)} file(s) for transfer...[/bold cyan]"
@@ -877,7 +922,7 @@ def _run_send(project_name: str, *, site: str | None, bench_path: str, verbose: 
                 stderr_console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
             process = subprocess.Popen(
                 cmd,
-                cwd=temp_dir,
+                cwd=str(temp_path),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
