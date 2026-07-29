@@ -415,7 +415,7 @@ class TestErrorTranslation:
             raise AssertionError("openpty must not be called on Windows")
 
         monkeypatch.setattr(restore_mod.os, "name", "nt")
-        monkeypatch.setattr(restore_mod.os, "openpty", fail_openpty)
+        monkeypatch.setattr(restore_mod.os, "openpty", fail_openpty, raising=False)
         monkeypatch.setattr(restore_mod.sys, "stderr", TtyStderr())
         monkeypatch.setattr(restore_mod.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
 
