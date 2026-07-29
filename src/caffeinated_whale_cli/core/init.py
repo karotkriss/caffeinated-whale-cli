@@ -849,13 +849,8 @@ def init_bench(
     # files it creates are owned by the host user and `cwcli rm` can remove them on
     # any host uid (a CI runner is 1001; a dev box is often 1000). `chown_home` is
     # paid here, once, so this first provision's pyenv/nvm/pip installs can write
-    # the (now host-owned) home. A no-op when the ids already match - but the
-    # caller can't know that in advance, and when it is NOT a no-op the recursive
-    # `chown -R` over /home/frappe is a single blocking exec with no progress
-    # output of its own, minutes long on a slow disk. Announcing the phase BEFORE
-    # running it (not just reporting on completion) is what keeps this window
-    # from reading as a hang: the reported defect was this exact step reporting
-    # only its own completion, with nothing printed while it ran.
+    # the (now host-owned) home. A no-op when the ids already match. The caller
+    # cannot know that in advance, so announce before the potentially slow chown.
     emit(
         InitStepStart(
             phase="align_uid",
@@ -932,9 +927,7 @@ def init_bench(
                         text=f"Python {python_prefix} not found, installing via pyenv...",
                     )
                 )
-                # Compiling CPython from source is minutes long with no output of
-                # its own; announce the phase before running it, same reasoning
-                # as the uid-alignment step above.
+                # Compiling CPython can take minutes, so announce before it blocks.
                 emit(
                     InitStepStart(
                         phase="python_install",

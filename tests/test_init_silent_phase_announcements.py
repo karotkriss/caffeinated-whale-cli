@@ -1,27 +1,9 @@
-"""Regression coverage for fm/cwcli-init-silent-longphase.
+"""Pin init's announce-before-run progress contract.
 
-``cwcli init`` went silent for 5-10 minutes right after the compose containers
-reported "Started": the host-uid alignment step (``core.docker.
-align_container_user_to_host``, a recursive ``chown -R`` over ``/home/frappe``
-on first provision) reported ONLY on completion, via a trace line emitted
-after the call returned. In non-verbose mode the ``TipSpinner`` had already
-been closed at the end of stage 1 (``init_instance``) and nothing re-opened it
-until ``bench_init``'s ``InitStepStart`` fired, potentially minutes later - so
-the spinner visibly died. In verbose mode there was no line at all until the
-call returned. Both read as a hang.
-
-Two things are pinned here:
-
-- ``core.init``: the ``align_uid``/``python_install``/``node_install`` phases
-  each emit ``InitStepStart`` BEFORE the potentially-long call runs, not just
-  a trace after it - proven by observing the announcement land before the
-  (faked) blocking call completes, the same ordering property a real
-  minutes-long ``chown`` or ``pyenv install`` would exhibit.
-- ``commands.init._InitRenderer``: the spinner started for ``align_uid`` in
-  non-verbose mode is the SAME spinner instance stage 1 was using up to
-  ``close()`` never running between the two - i.e. once stage 2's first event
-  lands, a spinner is live with no gap, and verbose mode prints the phase's
-  announcement line before its completion trace.
+The authoritative rationale lives in
+``.claude/skills/cwcli-lifecycle/references/init.md``. These tests cover event
+ordering for ``align_uid`` and ``python_install``, spinner continuity at the
+stage boundary, the separate Python install spinner, and verbose ordering.
 """
 
 from caffeinated_whale_cli.commands import init as init_mod
