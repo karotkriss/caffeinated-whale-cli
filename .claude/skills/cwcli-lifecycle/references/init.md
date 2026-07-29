@@ -41,17 +41,33 @@ Regression coverage: `tests/test_core_docker.py` (the no-op paths for matching i
 
 ### `init` phases must announce themselves BEFORE they run, not just on completion (`fm/cwcli-init-silent-longphase`)
 
-Observed live 2026-07-29: after the compose containers reported Started, `cwcli init -v` went completely silent for 5-10 minutes on a slow-disk host, then resumed with "Aligned the container 'frappe' user to the host uid/gid." and continued normally. In non-verbose mode the `TipSpinner` visibly died at the same point; in verbose mode there was zero output. A reasonable user reads either as a hang and Ctrl-Cs a healthy init.
+Observed live 2026-07-29: after the compose containers reported Started, `cwcli init -v` went completely silent for 5-10 minutes on a slow-disk host, then resumed with "Aligned the container 'frappe' user to the host uid/gid." and continued normally.
+In non-verbose mode the `TipSpinner` visibly died at the same point; in verbose mode there was zero output.
+A reasonable user reads either as a hang and Ctrl-Cs a healthy init.
 
-Root cause, confirmed with a timestamped repro (a fake `align_container_user_to_host` that sleeps, driven through the real `_InitRenderer`): the `chown -R {uid}:{gid} /home/frappe` step (see the host-uid-alignment note above) reported ONLY on completion - `InitTrace("Aligned the container 'frappe' user...")` fires AFTER `align_container_user_to_host` returns, with no event at all marking that it started. Compounding it, `commands/init.py`'s renderer closes its `TipSpinner` at the end of stage 1 (`init_instance`) and does not re-open one until the next `InitStepStart` fires - which, before this fix, was `bench_init`'s, potentially minutes later. So the non-verbose spinner had a real dead window, and verbose mode had a real empty one, both bounded only by however long the recursive chown actually took.
+Root cause, confirmed with a timestamped repro (a fake `align_container_user_to_host` that sleeps, driven through the real `_InitRenderer`): the `chown -R {uid}:{gid} /home/frappe` step (see the host-uid-alignment note above) reported only on completion.
+`InitTrace("Aligned the container 'frappe' user...")` fires after `align_container_user_to_host` returns, with no event marking that it started.
+Compounding it, `commands/init.py`'s renderer closes its `TipSpinner` at the end of stage 1 (`init_instance`) and does not reopen one until the next `InitStepStart` fires.
+Before this fix, that was `bench_init`'s event, potentially minutes later.
+The non-verbose spinner therefore had a real dead window, while verbose mode had an empty one, both bounded only by however long the recursive chown took.
 
-The fix is `InitStepStart`/`InitStepEnd` bracketing the call (`core/init.py:init_bench`), using the SAME event family every other phase already uses - no new primitive: `emit(InitStepStart(phase="align_uid", message="Aligning container user to host uid/gid (first run can take several minutes)"))` before the call, `emit(InitStepEnd(phase="align_uid"))` after. `commands/init.py` registers `"align_uid"` in `_SPINNER_GROUP` (its own group, between stage 1's and `bench_init`'s) and its own `_group_label`, so the non-verbose spinner opens with the correct label at the instant the phase starts rather than inheriting a stale one. Verbose mode's `_on_start` also gained a generic `elif event.message: stderr_console.print(...)` fallback - every phase that carries a message and isn't one of the specially-formatted ones (`customize_ports`, `resolve_bench_tag`/`pull`, the streamed `_LONG_PHASES`) now prints it, so a FUTURE phase that only sets `message` is announced for free instead of silently landing in the old no-op default.
+The fix brackets the call in `core/init.py:init_bench` with the existing `InitStepStart` and `InitStepEnd` event family.
+The start event uses phase `"align_uid"` and carries the user-facing progress message.
+`commands/init.py` registers `"align_uid"` in `_SPINNER_GROUP` as its own group between stage 1 and `bench_init`, with its own `_group_label`, so the non-verbose spinner opens with the correct label as soon as the phase starts.
+Verbose mode's `_on_start` also has a generic `elif event.message: stderr_console.print(...)` fallback.
+Every phase that carries a message and is not specially formatted (`customize_ports`, `resolve_bench_tag`/`pull`, or the streamed `_LONG_PHASES`) is therefore announced without another phase-specific renderer branch.
 
-The same "reports on completion, not on start" shape existed in two sibling phases and was swept in the same change rather than leaving them for the next incident: `_install_pyenv_python` (compiling CPython from source inside the container - genuinely minutes) and `_install_nvm_node`, both in `core/init.py`. Each already had an `InitNotice(code="python.installing"/"node.installing")` printed once at the start (so non-verbose was never TOTALLY silent there), but nothing kept a spinner alive or updated during the install itself; both now get the same `InitStepStart`/`InitStepEnd` bracket, phases `"python_install"`/`"node_install"`, registered in `_SPINNER_GROUP` alongside `align_uid`.
+The same completion-only shape existed in `_install_pyenv_python` (which can spend minutes compiling CPython from source) and `_install_nvm_node`.
+Each already had an `InitNotice(code="python.installing"/"node.installing")` at the start, but nothing kept a spinner alive or updated during the install itself.
+Both now use the same `InitStepStart`/`InitStepEnd` bracket, with phases `"python_install"` and `"node_install"`, and each has its own spinner group.
 
-**The durable rule for any future long-running phase in `core/init.py`:** emit `InitStepStart(phase=..., message=...)` immediately BEFORE the blocking call, not an `InitTrace`/`InitNotice` only after it returns, and register the phase in `commands/init.py:_SPINNER_GROUP` (plus a `_group_label` entry if it deserves its own group rather than inheriting the current one). A phase that only reports success after the fact is the exact defect this note exists to prevent from recurring - the completion line is fine to KEEP (it's what shows phase duration in logs), it just cannot be the ONLY line.
+**The durable rule for any future long-running phase in `core/init.py`:** emit `InitStepStart(phase=..., message=...)` immediately before the blocking call, and register the phase in `commands/init.py:_SPINNER_GROUP`.
+Add a `_group_label` entry when the phase deserves its own group instead of inheriting the current one.
+An `InitTrace` or `InitNotice` emitted only after success is insufficient.
+Keep completion output when it is useful for showing phase duration, but never make it the only progress signal.
 
-Regression coverage: `tests/test_init_silent_phase_announcements.py` - a core-level test proving each new `InitStepStart` is observed before its underlying (faked) blocking call runs, and a renderer-level test proving the non-verbose spinner is alive with the correct label in the SAME call that follows `stage 1`'s `close()` (i.e. no event-free gap at the stage boundary), plus a verbose-mode test that the start line prints before the completion trace.
+Regression coverage: `tests/test_init_silent_phase_announcements.py` proves that the `align_uid` and `python_install` start events precede their faked blocking calls.
+It also proves that non-verbose rendering opens the `align_uid` spinner on stage 2's first event, that `python_install` gets its own live spinner, and that verbose rendering prints the `align_uid` start message before its completion trace.
 
 ### `init` command: Frappe/bench version gating
 

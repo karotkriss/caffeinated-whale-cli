@@ -51,10 +51,8 @@ _SPINNER_GROUP = {
     "pull": "stage1",
     "up": "stage1",
     "wait_ready": "stage1",
-    # A stage-2 group of its own: it runs right after stage 1's spinner closes
-    # and before bench_init's, so without a group here it is the exact silent
-    # gap the align_uid step used to leave (a chown that can run minutes with
-    # no spinner alive to show it).
+    # align_uid starts stage 2 after stage 1 closes its spinner, so it needs
+    # a group of its own to keep progress visible during the blocking chown.
     "align_uid": "align_uid",
     "python_install": "python_install",
     "node_install": "node_install",
@@ -134,11 +132,8 @@ class _InitRenderer:
             elif event.phase in _LONG_PHASES:
                 console.print()
             elif event.message:
-                # Every other announced phase (align_uid, up, wait_ready, the
-                # python/node installs, ...) gets the same dim line so verbose
-                # mode never goes silent for a phase that can legitimately run
-                # long - a phase that only reports on completion is what
-                # produced the reported silent, hang-looking window.
+                # A message-bearing phase must remain visible even when it has
+                # no specialized verbose renderer.
                 stderr_console.print(f"[dim]{event.message}[/dim]")
             return
 
