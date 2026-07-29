@@ -62,8 +62,8 @@ DEFAULT_BENCH_PATH = "/workspace/frappe-bench"
 _REMOTE_SENTINEL = "__restore_from_remote__"
 
 # sendme creates its on-disk download store in whatever directory it is run
-# from, so ``--receive``/``--send`` must run it from a disk-backed directory
-# under cwcli's own home rather than the system temp dir, which is tmpfs
+# from, so ``--receive``/``--send`` must run it from a directory under cwcli's
+# own home rather than the system temp dir, which is tmpfs
 # (RAM-backed) or otherwise small on some hosts and can fail a multi-GiB
 # transfer mid-download.
 _MIN_RECEIVE_FREE_BYTES = 2 * 1024**3  # 2 GiB floor; sendme only reveals a
@@ -89,7 +89,7 @@ def _format_bytes(n: int) -> str:
 
 
 def _sendme_download_root() -> Path:
-    """Disk-backed download root for ``restore --receive``/``--send``, under
+    """Managed download root for ``restore --receive``/``--send``, under
     ``cwcli_home()`` rather than the system temp dir."""
     root = config_utils.cwcli_home() / "tmp"
     try:
@@ -167,8 +167,7 @@ def _run_sendme_receive(
             returncode=completed.returncode,
             stderr=stderr_text,
             space_error_detected=any(
-                signature in stderr_text.lower()
-                for signature in _SENDME_SPACE_ERROR_SIGNATURES
+                signature in stderr_text.lower() for signature in _SENDME_SPACE_ERROR_SIGNATURES
             ),
         )
 
@@ -205,18 +204,14 @@ def _run_sendme_receive(
                     raise
                 if not chunk:
                     break
-                detected, signature_overlap = _scan_sendme_space_error(
-                    signature_overlap, chunk
-                )
+                detected, signature_overlap = _scan_sendme_space_error(signature_overlap, chunk)
                 space_error_detected = space_error_detected or detected
                 _append_bounded(captured, chunk)
                 _write_live_stderr(chunk)
         elif process.stderr:
             read = getattr(process.stderr, "read1", process.stderr.read)
             while chunk := read(8192):
-                detected, signature_overlap = _scan_sendme_space_error(
-                    signature_overlap, chunk
-                )
+                detected, signature_overlap = _scan_sendme_space_error(signature_overlap, chunk)
                 space_error_detected = space_error_detected or detected
                 _append_bounded(captured, chunk)
                 _write_live_stderr(chunk)
@@ -242,7 +237,7 @@ def _scan_sendme_space_error(overlap: bytes, chunk: bytes) -> tuple[bool, bytes]
 
 def _append_bounded(captured: bytearray, chunk: bytes) -> None:
     if len(chunk) >= _VERBOSE_STDERR_CAPTURE_BYTES:
-        captured[:] = chunk[-_VERBOSE_STDERR_CAPTURE_BYTES :]
+        captured[:] = chunk[-_VERBOSE_STDERR_CAPTURE_BYTES:]
         return
     overflow = len(captured) + len(chunk) - _VERBOSE_STDERR_CAPTURE_BYTES
     if overflow > 0:
