@@ -329,11 +329,6 @@ class TestErrorTranslation:
         assert b"\rprogress" in stderr.buffer.getvalue()
 
     def test_verbose_receive_retains_only_a_bounded_stderr_tail(self, tmp_path, monkeypatch):
-        payload = (
-            b"x" * (restore_mod._VERBOSE_STDERR_CAPTURE_BYTES * 2)
-            + b"\nReceiver closed\n"
-        )
-
         class Sink:
             def write(self, chunk):
                 return len(chunk)
@@ -347,8 +342,23 @@ class TestErrorTranslation:
             def isatty(self):
                 return False
 
+        class ChunkStream:
+            def __init__(self):
+                self.chunks = iter(
+                    [
+                        b"Receiver clo",
+                        b"sed\n" + b"x" * restore_mod._VERBOSE_STDERR_CAPTURE_BYTES,
+                        b"x" * restore_mod._VERBOSE_STDERR_CAPTURE_BYTES,
+                    ]
+                )
+
+            def read1(self, size):
+                return next(self.chunks, b"")
+
+            read = read1
+
         class FakeProcess:
-            stderr = BytesIO(payload)
+            stderr = ChunkStream()
 
             def wait(self):
                 return 1
@@ -363,8 +373,57 @@ class TestErrorTranslation:
 
         assert result.returncode == 1
         assert len(result.stderr.encode()) <= restore_mod._VERBOSE_STDERR_CAPTURE_BYTES
-        assert "Receiver closed" in result.stderr
-        assert restore_mod._explain_sendme_failure(result.stderr, tmp_path) is not None
+        assert "Receiver closed" not in result.stderr
+        assert result.space_error_detected is True
+        assert (
+            restore_mod._explain_sendme_failure(
+                result.stderr,
+                tmp_path,
+                space_error_detected=result.space_error_detected,
+            )
+            is not None
+        )
+
+    def test_windows_tty_falls_back_without_openpty(self, tmp_path, monkeypatch):
+        class Sink:
+            def write(self, chunk):
+                return len(chunk)
+
+            def flush(self):
+                pass
+
+        class TtyStderr:
+            buffer = Sink()
+
+            def isatty(self):
+                return True
+
+        class FakeProcess:
+            stderr = BytesIO(b"Receiver closed\n")
+
+            def wait(self):
+                return 1
+
+            def kill(self):
+                pass
+
+        openpty_called = False
+
+        def fail_openpty():
+            nonlocal openpty_called
+            openpty_called = True
+            raise AssertionError("openpty must not be called on Windows")
+
+        monkeypatch.setattr(restore_mod.os, "name", "nt")
+        monkeypatch.setattr(restore_mod.os, "openpty", fail_openpty)
+        monkeypatch.setattr(restore_mod.sys, "stderr", TtyStderr())
+        monkeypatch.setattr(restore_mod.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+
+        result = restore_mod._run_sendme_receive(["sendme"], str(tmp_path), verbose=True)
+
+        assert openpty_called is False
+        assert result.returncode == 1
+        assert result.space_error_detected is True
 
     def test_error_translation_survives_disk_usage_failure(self, tmp_path, monkeypatch):
         download_dir = tmp_path / "download"
