@@ -29,6 +29,17 @@ Two supporting fixes travel with it, and BOTH the receive path and the normal re
 Regression coverage is in `tests/test_restore_safety.py`: it drives `restore_receive_mode` with a `FakeReceiveContainer` that records every `exec_run` (command, workdir, environment) and asserts a declined/non-TTY confirm does NOT run `bench restore --force` and exits non-zero, `--yes` proceeds, an origin mismatch is surfaced, and the DB password rides in `environment=` (never in the recorded argv).
 Testing note: `restore_receive_mode` is a plain function (not the Typer command), so tests call it directly with all args explicit; stub `TipSpinner` to a no-op (it starts a Rich spinner even with `enabled=False`) and fake `subprocess.run` to write the "downloaded" backup into its `cwd`.
 
+**`_run_receive`/`_run_send` run `sendme` from a managed directory under `cwcli_home()`, never the system temp dir.**
+sendme creates its on-disk blob store in whatever directory it is invoked from (`.sendme-recv-<hash>/` in the CWD; verified against sendme 0.36.0's own source and README).
+`_run_receive` previously used `subprocess.run(..., cwd=temp_dir)`, with `temp_dir` created by a bare `tempfile.TemporaryDirectory()` in the system temp dir.
+`_run_send` also staged files in a bare `TemporaryDirectory()`, but its `subprocess.Popen(...)` had no `cwd`, so sendme inherited the caller's working directory instead.
+On a host where either filesystem is tmpfs (RAM-backed) or otherwise small, a multi-GiB backup can fill it mid-transfer; sendme's store write then fails (ENOSPC-class), which iroh-blobs surfaces not as the real I/O error but as the cryptic `error sending over irpc: Receiver closed`.
+This failure was reproduced byte-identically by capping the writable file size during a real receive.
+`commands/restore.py:_sendme_download_root()` now anchors the store at `cwcli_home() / "tmp"` (honors `CWCLI_HOME`, same disk as the rest of cwcli's footprint and follows the `rm` archive-dir precedent), and `_check_receive_free_space` refuses BEFORE starting any download when that location has under a fixed 2 GiB floor free (sendme reveals a collection's real size only after connecting to the sender, so a floor is the best pre-transfer guard available).
+On a sendme failure, `_explain_sendme_failure` matches the `Receiver closed`/`No space left` signature and swaps the generic `Failed to download files via sendme` headline for one naming the download directory and current free space, while still surfacing sendme's raw stderr underneath (unrelated failures, e.g. a malformed ticket, keep the old generic message unchanged).
+Partial-download cleanup needs no new code: the per-attempt `tempfile.TemporaryDirectory(dir=...)` already removes its tree on any exit path (including a raised `typer.Exit`), so a failed receive leaves nothing behind under the new root.
+Coverage: `tests/test_restore_sendme_download_location.py` (download-root location, preflight refusal/pass, error-signature translation vs. the generic-message fallback, and post-failure cleanup).
+
 ### `restore` command (normal path): non-interactive selectors + honest exit codes (issue #40)
 
 The normal (non `--send`/`--receive`) `cwcli restore` path is fully drivable by an agent or script. Every prompt has a flag, and a non-TTY without the needed flag refuses with a NON-ZERO exit instead of silently exiting 0 (the prior "exit-0-on-cancel" finding is closed).
