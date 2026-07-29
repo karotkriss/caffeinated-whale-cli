@@ -22,6 +22,7 @@ assert which command ran and how the secret was passed.
 
 import subprocess
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -52,6 +53,7 @@ class FakeReceiveContainer:
         self.put_archive_paths: list[str] = []
         self.put_archive_streamed: bool | None = None
         self.printed: list[str] = []
+        self.sendme_cwd: str | None = None
 
     def exec_run(self, cmd, workdir=None, environment=None):
         self.exec_calls.append({"cmd": cmd, "workdir": workdir, "environment": environment})
@@ -113,6 +115,9 @@ def _run_receive(
     admin_password=None,
     missing_apps=None,
     ticket="ticket-abc",
+    sendme_returncode=0,
+    sendme_stderr="",
+    verbose=False,
 ):
     """Drive ``restore_receive_mode`` end-to-end against ``container``.
 
@@ -122,6 +127,11 @@ def _run_receive(
     ``missing_apps`` (none by default), and the TTY / confirmation answers are
     controlled by ``isatty`` / ``confirm_answer``. Credentials are supplied
     directly so no interactive credential prompt fires.
+
+    ``sendme_returncode``/``sendme_stderr`` let a caller simulate a failed
+    ``sendme receive`` (e.g. the out-of-space ``Receiver closed`` signature);
+    when non-zero, no db file is written (the download failed before landing
+    anything usable).
     """
 
     # Re-pointed BY DESIGN: receive_mode became the frontend _run_receive over
@@ -132,10 +142,27 @@ def _run_receive(
     from caffeinated_whale_cli.core.envelope import Result, Status
 
     def fake_sendme_run(cmd, cwd=None, capture_output=True, text=True):
+        container.sendme_cwd = cwd
+        if sendme_returncode != 0:
+            return SimpleNamespace(returncode=sendme_returncode, stdout="", stderr=sendme_stderr)
         Path(cwd).joinpath(db_filename).write_text("SQL DUMP DATA")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
+    class FakeSendmeProcess:
+        def __init__(self, cmd, cwd=None, **kwargs):
+            container.sendme_cwd = cwd
+            self.stderr = BytesIO(sendme_stderr.encode())
+
+        def wait(self):
+            if sendme_returncode == 0:
+                Path(container.sendme_cwd).joinpath(db_filename).write_text("SQL DUMP DATA")
+            return sendme_returncode
+
+        def kill(self):
+            pass
+
     monkeypatch.setattr(subprocess, "run", fake_sendme_run)
+    monkeypatch.setattr(subprocess, "Popen", FakeSendmeProcess)
     monkeypatch.setattr(restore_mod, "get_sendme_command", lambda: "sendme")
     monkeypatch.setattr(restore_mod, "TipSpinner", _NullSpinner)
     monkeypatch.setattr(restore_mod.config_utils, "get_show_tips", lambda: False)
@@ -176,7 +203,7 @@ def _run_receive(
         # These tests pin the restore command/confirm behavior only; skip the
         # post-restore migrate + instance restart (covered by its own tests).
         no_migrate=True,
-        verbose=False,
+        verbose=verbose,
     )
 
 

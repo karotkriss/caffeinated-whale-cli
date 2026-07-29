@@ -1502,10 +1502,11 @@ Backup: 20251112_105638-development_localhost-database.sql.gz
 ```
 
 For scripted (non-interactive) receives, pass `-y`/`--yes` to skip the confirmation and the missing-apps prompt. Without a TTY and without `--yes`, cwcli refuses and exits non-zero rather than silently overwriting the site's data.
+Before downloading, cwcli requires at least 2 GiB free in its temporary [transfer directory](#architecture).
+The backup may require more space, so choose a `CWCLI_HOME` filesystem large enough for the complete transfer.
 
 **P2P Transfer Features:**
 - **Hash-verified transfers** - BLAKE3 cryptographic verification ensures data integrity
-- **Resumable downloads** - Interrupted transfers can resume from where they stopped
 - **NAT traversal** - Works behind firewalls and corporate networks
 - **No cloud intermediary** - Direct peer-to-peer connections
 - **Cross-platform** - Works on macOS, Linux, and Windows
@@ -2510,11 +2511,12 @@ The CLI uses:
 - **Cache**: `~/.cwcli/cache/cwc-cache.db` - Project inspection cache
 - **Runtime**: `~/.cwcli/run/` - PID and log files for background services
 - **Archive**: `~/.cwcli/archive/` - Pre-deletion backups and config snapshots from `cwcli rm`, plus dropped-site archives from `cwcli rm-site`
+- **Transfers**: `~/.cwcli/tmp/` - Temporary files used by `restore --send` and `restore --receive`; each attempt is removed when it finishes or fails
 
 **Relocating cwcli's data (`CWCLI_HOME`):**
 
-Set the `CWCLI_HOME` environment variable to move cwcli's entire on-disk footprint - projects, config, cache, runtime, and archive files - out of `~/.cwcli` and into a directory of your choice.
-When it is set, cwcli uses `$CWCLI_HOME/projects`, `$CWCLI_HOME/config`, `$CWCLI_HOME/cache`, `$CWCLI_HOME/run`, and `$CWCLI_HOME/archive` in place of the `~/.cwcli/*` locations above.
+Set the `CWCLI_HOME` environment variable to move cwcli's entire on-disk footprint - projects, config, cache, runtime, archive, and temporary transfer files - out of `~/.cwcli` and into a directory of your choice.
+When it is set, cwcli uses the corresponding directories under `$CWCLI_HOME` in place of the `~/.cwcli/*` locations above.
 When it is unset (or empty), cwcli uses the default `~/.cwcli` locations, so existing installs are unaffected.
 
 Unlike repointing `HOME`, `CWCLI_HOME` redirects only cwcli's own state - it does not change your process `HOME`, so `git`, `ssh`, and other tools that read `HOME` are untouched.
