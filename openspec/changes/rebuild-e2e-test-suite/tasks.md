@@ -79,9 +79,9 @@ A parent item below is checked only when every clause it once bundled has real E
   - [x] 4.8a The scoped `cwcli axi apps install` verb genuinely fetches and installs an absent app onto the named real site.
   - [x] 4.8b The scoped agent verb refuses an already-installed app by plain name and git URL, fails closed on an unreadable site, and requires `--site`.
   - [ ] 4.8c The human `cwcli apps install` every-site fan-out is not E2E-proven.
-  - [ ] 4.8d The human install verb's interactive and non-interactive confirmation paths are not E2E-proven.
-  - [x] 4.8e The human `cwcli apps list --json` non-interactive path returns parseable, non-empty JSON from a real instance.
-  - [x] 4.8f The human `cwcli apps uninstall --site <site> --yes` non-interactive path removes a genuinely installed app, after which the app is absent and the site continues serving.
+  - [ ] 4.8d The human install verb's non-interactive `--yes` path is E2E-proven while establishing the uninstall fixture; its interactive confirmation path is not.
+  - [x] 4.8e The human `cwcli apps list --site <site> --json` and agent `cwcli axi apps list --site <site> --installed` paths both report a genuinely installed app from a real instance.
+  - [x] 4.8f The dedicated human `cwcli apps uninstall --site <site> --yes` E2E establishes the app through both `apps list --site` and `frappe.get_installed_apps`, removes it, proves absence through both reads, confirms the site still serves HTTP 200, and observes the `restart-processes` report.
   - [ ] 4.8g The interactive human uninstall confirmation path is not E2E-proven.
   - [ ] 4.8h Multi-site fan-out and honest aggregated exit codes across list, install, and uninstall are not E2E-proven.
   - [ ] 4.8i Broader `--json` purity and post-mutation cache refresh in `where` and `inspect` are not E2E-proven.
