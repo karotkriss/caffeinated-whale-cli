@@ -62,15 +62,23 @@ class TestDownloadRoot:
         # Never the system temp dir - always under the cwcli-home root.
         assert str((home / "tmp").resolve()) in str(container.sendme_cwd)
 
-    def test_send_resolves_a_relative_cwcli_home(self, tmp_path, monkeypatch):
+    def test_send_uses_a_payload_below_its_managed_working_directory(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("CWCLI_HOME", "home")
         home = tmp_path / "home"
         popen_call = {}
 
         class FakeProcess:
-            stdout = StringIO("sendme receive ticket-abc\n")
             stderr = StringIO()
+
+            def __init__(self, *, can_share):
+                # Real sendme 0.36.0 refuses when its source is also its cwd:
+                # "can not share from the current directory".
+                self.stdout = StringIO(
+                    "sendme receive ticket-abc\n"
+                    if can_share
+                    else "can not share from the current directory\n"
+                )
 
             def poll(self):
                 return None
@@ -80,7 +88,7 @@ class TestDownloadRoot:
 
         def fake_popen(cmd, **kwargs):
             popen_call.update(cmd=cmd, **kwargs)
-            return FakeProcess()
+            return FakeProcess(can_share=Path(kwargs["cwd"]) != Path(cmd[-1]))
 
         monkeypatch.setattr(restore_mod, "_get_frappe_container", lambda project: object())
         monkeypatch.setattr(
@@ -115,7 +123,7 @@ class TestDownloadRoot:
 
         assert popen_call["cwd"].startswith(str(home / "tmp"))
         assert Path(popen_call["cwd"]).is_absolute()
-        assert popen_call["cwd"] == popen_call["cmd"][-1]
+        assert Path(popen_call["cmd"][-1]).parent == Path(popen_call["cwd"])
 
 
 class TestPreflightFreeSpace:

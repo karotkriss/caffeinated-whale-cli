@@ -85,7 +85,7 @@ class _SendmeReceiveResult:
 
 
 def _format_bytes(n: int) -> str:
-    return f"{n / (1024 ** 3):.2f} GiB"
+    return f"{n / (1024**3):.2f} GiB"
 
 
 def _sendme_download_root() -> Path:
@@ -951,12 +951,14 @@ def _run_send(project_name: str, *, site: str | None, bench_path: str, verbose: 
 
     with _new_sendme_temp_dir(_sendme_download_root()) as temp_dir:
         temp_path = Path(temp_dir).resolve()
+        payload_path = temp_path / "payload"
+        payload_path.mkdir()
         console.print()
         console.print(
             f"[bold cyan]Preparing {len(files_to_send)} file(s) for transfer...[/bold cyan]"
         )
         try:
-            core_restore.copy_backup_files_out(frappe_container, files_to_send, temp_path)
+            core_restore.copy_backup_files_out(frappe_container, files_to_send, payload_path)
         except CwcliError as e:
             stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
             raise typer.Exit(code=1) from e
@@ -967,7 +969,7 @@ def _run_send(project_name: str, *, site: str | None, bench_path: str, verbose: 
         console.print("[bold cyan]Creating sendme ticket...[/bold cyan]")
         console.print()
         try:
-            cmd = [sendme_cmd, "send", str(temp_path)]
+            cmd = [sendme_cmd, "send", str(payload_path)]
             if verbose:
                 stderr_console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
             process = subprocess.Popen(
