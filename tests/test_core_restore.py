@@ -72,6 +72,13 @@ class FakeContainer:
     def put_archive(self, path, data):
         self.put_archive_streamed = hasattr(data, "read")
         self.put_archive_paths.append(path)
+        # Real docker-py reads the stream to completion while forwarding it to
+        # the daemon; a fake that doesn't drain it deadlocks/broken-pipes a
+        # producer thread feeding a pipe (the streamed tar-build in
+        # core.restore._put_archive_streamed).
+        if hasattr(data, "read"):
+            while data.read(65536):
+                pass
         return True
 
     def restore_calls(self):
@@ -352,6 +359,120 @@ class TestReceivePlan:
         with pytest.raises(CwcliError) as e:
             core_restore.receive_plan("proj", site=SITE, bench_path=BENCH_PATH, downloaded_files=[junk])
         assert e.value.kind is ErrorKind.PRECONDITION
+
+
+# --------------------------------------------------------------------------- #
+# receive_preflight - defect 1: a missing/ambiguous site must fail BEFORE the
+# download, not be discovered only when receive_plan runs post-download.
+# --------------------------------------------------------------------------- #
+class TestReceivePreflight:
+    def test_raises_site_no_default_without_touching_downloaded_files(self, monkeypatch):
+        """No ``downloaded_files`` argument exists at all - proving this call is
+        usable BEFORE anything has been downloaded, not merely before the
+        copy-in step of an already-downloaded set."""
+        c = FakeContainer()
+        _patch_common(monkeypatch, c)
+        monkeypatch.setattr(core_restore.db_utils, "get_default_site", lambda *a, **k: None)
+        monkeypatch.setattr(core_restore.bench_sites, "read_current_site", lambda *a, **k: None)
+
+        with pytest.raises(CwcliError) as e:
+            core_restore.receive_preflight("proj", site=None, bench_path=BENCH_PATH)
+        assert e.value.code == "site.no_default"
+
+    def test_resolves_an_explicit_site_without_a_default_lookup(self, monkeypatch):
+        c = FakeContainer()
+        _patch_common(monkeypatch, c)
+
+        def _boom(*a, **k):
+            raise AssertionError("an explicit --site must skip default-site resolution")
+
+        monkeypatch.setattr(core_restore.db_utils, "get_default_site", _boom)
+
+        result = core_restore.receive_preflight("proj", site=SITE, bench_path=BENCH_PATH)
+        assert result.status is Status.OK
+        assert result.data == SITE
+
+    def test_resolves_the_cached_default_site(self, monkeypatch):
+        c = FakeContainer()
+        _patch_common(monkeypatch, c)
+        monkeypatch.setattr(core_restore.db_utils, "get_default_site", lambda *a, **k: SITE)
+
+        result = core_restore.receive_preflight("proj", site=None, bench_path=BENCH_PATH)
+        assert result.status is Status.OK
+        assert result.data == SITE
+        assert any(w.code == "default_site.resolved" for w in result.warnings)
+
+
+# --------------------------------------------------------------------------- #
+# _put_archive_streamed - defect 2: no second full copy of the backup on disk.
+# --------------------------------------------------------------------------- #
+class TestPutArchiveStreamed:
+    def test_never_touches_tempfile_for_the_container_copy(self, monkeypatch, tmp_path):
+        """Pins the fix at its root cause: the container-copy step must not
+        call ANY tempfile.* API (a temp file/dir is exactly the second full
+        copy that exhausted the maintainer's small system-temp filesystem)."""
+        import tempfile
+
+        def _must_not_be_called(*a, **k):
+            raise AssertionError("must not create a temp file/dir for the container copy")
+
+        monkeypatch.setattr(tempfile, "TemporaryDirectory", _must_not_be_called)
+        monkeypatch.setattr(tempfile, "mkdtemp", _must_not_be_called)
+        monkeypatch.setattr(tempfile, "NamedTemporaryFile", _must_not_be_called)
+
+        local_file = tmp_path / DB_FILENAME
+        local_file.write_text("SQL DUMP")
+
+        class RecordingContainer:
+            def put_archive(self, path, data):
+                while data.read(65536):
+                    pass
+                return True
+
+        core_restore._put_archive_streamed(RecordingContainer(), BACKUP_DIR, local_file)
+
+    def test_streams_a_payload_larger_than_the_pipe_buffer(self, tmp_path):
+        """A payload bigger than the OS pipe's kernel buffer (~64KB) must still
+        arrive byte-for-byte - proof this is genuine streaming, not merely
+        avoiding a temp file while secretly buffering in RAM."""
+        import io
+        import os
+        import tarfile
+
+        payload = os.urandom(200_000)
+        local_file = tmp_path / "big-database.sql.gz"
+        local_file.write_bytes(payload)
+
+        received = io.BytesIO()
+
+        class RecordingContainer:
+            def put_archive(self, path, data):
+                while chunk := data.read(65536):
+                    received.write(chunk)
+                return True
+
+        core_restore._put_archive_streamed(RecordingContainer(), BACKUP_DIR, local_file)
+
+        received.seek(0)
+        with tarfile.open(fileobj=received, mode="r") as tar:
+            member = tar.getmembers()[0]
+            assert member.name == local_file.name
+            extracted = tar.extractfile(member)
+            assert extracted is not None
+            assert extracted.read() == payload
+
+    def test_a_failed_copy_raises_precondition(self, tmp_path):
+        missing_file = tmp_path / "vanished-database.sql.gz"  # never written
+
+        class RecordingContainer:
+            def put_archive(self, path, data):
+                data.read()  # drain whatever the writer manages before it errors
+                return True
+
+        with pytest.raises(CwcliError) as e:
+            core_restore._put_archive_streamed(RecordingContainer(), BACKUP_DIR, missing_file)
+        assert e.value.kind is ErrorKind.PRECONDITION
+        assert e.value.code == "copy.failed"
 
 
 # --------------------------------------------------------------------------- #
