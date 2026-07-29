@@ -39,6 +39,36 @@ On a capable host, an unreadable uid/gid or a failed remap exec is a soft warnin
 
 Regression coverage: `tests/test_core_docker.py` (the no-op paths for matching ids and a platform without `os.getuid`, the uid+gid remap with/without the home chown, the root-user exec, and a failed remap or unreadable ids degrading to a soft warning rather than a raise); the `id -u`/`id -g frappe` probe fake plumbing added to `tests/test_core_init.py`/`tests/test_core_supervision.py`'s `FakeContainer` reports the host's own ids so the align step stays a clean no-op in those existing suites.
 
+### `init` phases must announce themselves BEFORE they run, not just on completion (`fm/cwcli-init-silent-longphase`)
+
+Observed live 2026-07-29: after the compose containers reported Started, `cwcli init -v` went completely silent for 5-10 minutes on a slow-disk host, then resumed with "Aligned the container 'frappe' user to the host uid/gid." and continued normally.
+In non-verbose mode the `TipSpinner` visibly died at the same point; in verbose mode there was zero output.
+A reasonable user reads either as a hang and Ctrl-Cs a healthy init.
+
+Root cause, confirmed with a timestamped repro (a fake `align_container_user_to_host` that sleeps, driven through the real `_InitRenderer`): the `chown -R {uid}:{gid} /home/frappe` step (see the host-uid-alignment note above) reported only on completion.
+`InitTrace("Aligned the container 'frappe' user...")` fires after `align_container_user_to_host` returns, with no event marking that it started.
+Compounding it, `commands/init.py`'s renderer closes its `TipSpinner` at the end of stage 1 (`init_instance`) and does not reopen one until the next `InitStepStart` fires.
+Before this fix, that was `bench_init`'s event, potentially minutes later.
+The non-verbose spinner therefore had a real dead window, while verbose mode had an empty one, both bounded only by however long the recursive chown took.
+
+The fix brackets the call in `core/init.py:init_bench` with the existing `InitStepStart` and `InitStepEnd` event family.
+The start event uses phase `"align_uid"` and carries the user-facing progress message.
+`commands/init.py` registers `"align_uid"` in `_SPINNER_GROUP` as its own group between stage 1 and `bench_init`, with its own `_group_label`, so the non-verbose spinner opens with the correct label as soon as the phase starts.
+Verbose mode's `_on_start` also has a generic `elif event.message: stderr_console.print(...)` fallback.
+Every phase that carries a message and is not specially formatted (`customize_ports`, `resolve_bench_tag`/`pull`, or the streamed `_LONG_PHASES`) is therefore announced without another phase-specific renderer branch.
+
+The same completion-only shape existed in `_install_pyenv_python` (which can spend minutes compiling CPython from source) and `_install_nvm_node`.
+Each already had an `InitNotice(code="python.installing"/"node.installing")` at the start, but nothing kept a spinner alive or updated during the install itself.
+Both now use the same `InitStepStart`/`InitStepEnd` bracket, with phases `"python_install"` and `"node_install"`, and each has its own spinner group.
+
+**The durable rule for any future long-running phase in `core/init.py`:** emit `InitStepStart(phase=..., message=...)` immediately before the blocking call, and register the phase in `commands/init.py:_SPINNER_GROUP`.
+Add a `_group_label` entry when the phase deserves its own group instead of inheriting the current one.
+An `InitTrace` or `InitNotice` emitted only after success is insufficient.
+Keep completion output when it is useful for showing phase duration, but never make it the only progress signal.
+
+Regression coverage: `tests/test_init_silent_phase_announcements.py` proves that the `align_uid` and `python_install` start events precede their faked blocking calls.
+It also proves that non-verbose rendering opens the `align_uid` spinner on stage 2's first event, that `python_install` gets its own live spinner, and that verbose rendering prints the `align_uid` start message before its completion trace.
+
 ### `init` command: Frappe/bench version gating
 
 The default Frappe branch is `version-16` (`DEFAULT_FRAPPE_BRANCH` in `core/init.py`; `--erpnext-branch` defaults to `version-16` to match). Two mutually-exclusive flags pick the ref, resolved BEFORE any port/Docker work so a bad value fails fast:
