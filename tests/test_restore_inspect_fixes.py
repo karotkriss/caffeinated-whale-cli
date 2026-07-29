@@ -536,7 +536,9 @@ class TestPostRestoreMigrateAndRestart:
 
     def _patch(self, monkeypatch, container):
         calls = {"start": [], "start_kwargs": []}
-        monkeypatch.setattr(core_restore.core_docker, "get_frappe_container", lambda name: container)
+        monkeypatch.setattr(
+            core_restore.core_docker, "get_frappe_container", lambda name: container
+        )
         import caffeinated_whale_cli.core.start as core_start
 
         def fake_start(project_name, *, bench_path=None, restart=False, **k):

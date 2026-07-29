@@ -52,7 +52,12 @@ class FakeContainer:
             return (self.restore_exit, b"Restore output")
         if "migrate" in s:
             return (self.migrate_exit, b"migrate output")
-        if "find" in s and f"{BENCH_PATH}/sites" in s and "-maxdepth 1" in s and "private/backups" not in s:
+        if (
+            "find" in s
+            and f"{BENCH_PATH}/sites" in s
+            and "-maxdepth 1" in s
+            and "private/backups" not in s
+        ):
             return (0, f"{BENCH_PATH}/sites/{SITE}\n".encode())
         if "find" in s and "private/backups" in s:
             lines = [f"{BACKUP_DIR}/{DB_FILENAME}"]
@@ -82,7 +87,11 @@ class FakeContainer:
         return True
 
     def restore_calls(self):
-        return [c for c in self.exec_calls if "restore" in self._s(c["cmd"]) and "--force" in self._s(c["cmd"])]
+        return [
+            c
+            for c in self.exec_calls
+            if "restore" in self._s(c["cmd"]) and "--force" in self._s(c["cmd"])
+        ]
 
 
 def _patch_common(monkeypatch, container, *, run_state=Status.OK, bench=BENCH_PATH):
@@ -90,7 +99,9 @@ def _patch_common(monkeypatch, container, *, run_state=Status.OK, bench=BENCH_PA
     monkeypatch.setattr(
         core_restore.resolvers,
         "resolve_container_state",
-        lambda *a, **k: SimpleNamespace(status=run_state, choice=SimpleNamespace(kind="confirm_start")),
+        lambda *a, **k: SimpleNamespace(
+            status=run_state, choice=SimpleNamespace(kind="confirm_start")
+        ),
     )
     monkeypatch.setattr(
         core_restore.resolvers,
@@ -146,7 +157,9 @@ class TestRestorePlan:
         c = FakeContainer()
         _patch_common(monkeypatch, c)
         # Restore the same dump into a DIFFERENT site name.
-        result = core_restore.restore_plan("proj", site="other.localhost", selected_backup=DB_FULL_PATH)
+        result = core_restore.restore_plan(
+            "proj", site="other.localhost", selected_backup=DB_FULL_PATH
+        )
         assert result.status is Status.OK
         assert result.data.origin_mismatch == "development_localhost"
 
@@ -204,7 +217,10 @@ class TestRestoreApply:
         c = FakeContainer()
         _patch_apply(monkeypatch, c)
         result = core_restore.restore_apply(
-            _plan(files_path=f"{BACKUP_DIR}/f-files.tar", private_files_path=f"{BACKUP_DIR}/f-private-files.tar"),
+            _plan(
+                files_path=f"{BACKUP_DIR}/f-files.tar",
+                private_files_path=f"{BACKUP_DIR}/f-private-files.tar",
+            ),
             mariadb_root_username="root",
             mariadb_root_password=SECRET_PW,
             consent=True,
@@ -224,8 +240,11 @@ class TestRestoreApply:
         c = FakeContainer()
         _patch_apply(monkeypatch, c)
         core_restore.restore_apply(
-            _plan(), mariadb_root_username="root", mariadb_root_password=SECRET_PW,
-            admin_password="adm1n", consent=True,
+            _plan(),
+            mariadb_root_username="root",
+            mariadb_root_password=SECRET_PW,
+            admin_password="adm1n",
+            consent=True,
         )
         call = c.restore_calls()[0]
         assert "adm1n" not in FakeContainer._s(call["cmd"])
@@ -288,8 +307,11 @@ class TestRestoreApply:
         c = FakeContainer()
         _patch_apply(monkeypatch, c)
         result = core_restore.restore_apply(
-            _plan(), mariadb_root_username="root", mariadb_root_password=SECRET_PW,
-            consent=True, no_migrate=True,
+            _plan(),
+            mariadb_root_username="root",
+            mariadb_root_password=SECRET_PW,
+            consent=True,
+            no_migrate=True,
         )
         assert result.status is Status.OK
         assert result.data.migrate_ran is False
@@ -300,12 +322,16 @@ class TestRestoreApply:
         _patch_apply(monkeypatch, c)
         result = core_restore.restore_apply(
             _plan(site_config_backup_path=f"{BACKUP_DIR}/{CONFIG_FILENAME}"),
-            mariadb_root_username="root", mariadb_root_password=SECRET_PW, consent=True,
+            mariadb_root_username="root",
+            mariadb_root_password=SECRET_PW,
+            consent=True,
         )
         assert result.data.encryption_key_updated is True
         writes = [
-            x for x in c.exec_calls
-            if "site_config.json" in FakeContainer._s(x["cmd"]) and "EOF" in FakeContainer._s(x["cmd"])
+            x
+            for x in c.exec_calls
+            if "site_config.json" in FakeContainer._s(x["cmd"])
+            and "EOF" in FakeContainer._s(x["cmd"])
         ]
         assert writes and "KEY-FROM-BACKUP" in FakeContainer._s(writes[0]["cmd"])
 
@@ -314,7 +340,10 @@ class TestRestoreApply:
         _patch_apply(monkeypatch, c)
         with pytest.raises(CwcliError) as e:
             core_restore.restore_apply(
-                _plan(), mariadb_root_username="root;rm -rf", mariadb_root_password=SECRET_PW, consent=True
+                _plan(),
+                mariadb_root_username="root;rm -rf",
+                mariadb_root_password=SECRET_PW,
+                consent=True,
             )
         assert e.value.kind is ErrorKind.USAGE
         assert c.restore_calls() == []
@@ -345,7 +374,9 @@ class TestReceivePlan:
         _patch_common(monkeypatch, c)
         f = tmp_path / DB_FILENAME
         f.write_text("SQL")
-        result = core_restore.receive_plan("proj", site=SITE, bench_path=BENCH_PATH, downloaded_files=[f])
+        result = core_restore.receive_plan(
+            "proj", site=SITE, bench_path=BENCH_PATH, downloaded_files=[f]
+        )
         assert result.status is Status.OK
         assert result.data.is_receive is True
         assert result.data.database_path == f"{BACKUP_DIR}/{DB_FILENAME}"
@@ -357,7 +388,9 @@ class TestReceivePlan:
         junk = tmp_path / "notabackup.txt"
         junk.write_text("x")
         with pytest.raises(CwcliError) as e:
-            core_restore.receive_plan("proj", site=SITE, bench_path=BENCH_PATH, downloaded_files=[junk])
+            core_restore.receive_plan(
+                "proj", site=SITE, bench_path=BENCH_PATH, downloaded_files=[junk]
+            )
         assert e.value.kind is ErrorKind.PRECONDITION
 
 
@@ -519,8 +552,11 @@ class TestContracts:
 
         _patch_apply(monkeypatch, c)
         report = core_restore.restore_apply(
-            _plan(), mariadb_root_username="root", mariadb_root_password=SECRET_PW,
-            consent=True, no_migrate=True,
+            _plan(),
+            mariadb_root_username="root",
+            mariadb_root_password=SECRET_PW,
+            consent=True,
+            no_migrate=True,
         ).data
         rd = dataclasses.asdict(report)
         assert "password" not in repr(rd).lower()
@@ -531,8 +567,11 @@ class TestContracts:
         _patch_apply(monkeypatch, c)
         plan = core_restore.restore_plan("proj", site=SITE, latest=True).data
         core_restore.restore_apply(
-            plan, mariadb_root_username="root", mariadb_root_password=SECRET_PW,
-            consent=True, no_migrate=True,
+            plan,
+            mariadb_root_username="root",
+            mariadb_root_password=SECRET_PW,
+            consent=True,
+            no_migrate=True,
         )
         out, err = capsys.readouterr()
         assert out == "" and err == ""
@@ -547,7 +586,10 @@ def _bset(site_dir=SITE, filename=DB_FILENAME):
         "timestamp_str": "20251109_225726",
         "site_name": "development_localhost",
         "site_dir": site_dir,
-        "database": {"filename": filename, "full_path": f"{BENCH_PATH}/sites/{site_dir}/private/backups/{filename}"},
+        "database": {
+            "filename": filename,
+            "full_path": f"{BENCH_PATH}/sites/{site_dir}/private/backups/{filename}",
+        },
         "files": None,
         "private_files": None,
         "site_config_backup": None,
@@ -578,7 +620,10 @@ class TestSelectBackupSet:
     def test_latest_picks_newest_target(self):
         newest = _bset(filename="20251110_000000-development_localhost-database.sql.gz")
         older = _bset(filename="20251109_000000-development_localhost-database.sql.gz")
-        assert core_restore.select_backup_set([newest, older], [], latest=True, backup_file=None) is newest
+        assert (
+            core_restore.select_backup_set([newest, older], [], latest=True, backup_file=None)
+            is newest
+        )
 
     def test_latest_empty_target_returns_none(self):
         other = _bset(site_dir="other", filename="20251109_225726-other-database.sql.gz")
@@ -586,7 +631,12 @@ class TestSelectBackupSet:
 
     def test_backup_file_matches_across_both_lists(self):
         other = _bset(site_dir="other", filename="20251109_225726-other-database.sql.gz")
-        assert core_restore.select_backup_set([], [other], latest=False, backup_file="20251109_225726-other-database.sql.gz") is other
+        assert (
+            core_restore.select_backup_set(
+                [], [other], latest=False, backup_file="20251109_225726-other-database.sql.gz"
+            )
+            is other
+        )
 
     def test_multi_match_records_a_warning(self):
         from caffeinated_whale_cli.core.envelope import Message
@@ -594,5 +644,7 @@ class TestSelectBackupSet:
         a = _bset()
         b = _bset()
         warnings: list[Message] = []
-        core_restore.select_backup_set([a, b], [], latest=False, backup_file=DB_FILENAME, warnings=warnings)
+        core_restore.select_backup_set(
+            [a, b], [], latest=False, backup_file=DB_FILENAME, warnings=warnings
+        )
         assert any(w.code == "backup.multi_match" for w in warnings)
