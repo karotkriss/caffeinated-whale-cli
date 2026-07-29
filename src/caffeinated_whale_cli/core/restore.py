@@ -25,9 +25,9 @@ Two decisions the frontend keeps: the interactive backup menu and the two
 confirms are UI (the core surfaces ``select_backup`` and ``confirm_restore`` as
 typed choices), and the sendme send/receive subprocess plus the ticket prompt
 stay in ``commands/restore.py`` (interactive host I/O the core does not consume,
-the ``commands/logs.py`` ``-it`` precedent). What crosses to the core from the
-sendme flows is only the CONTAINER I/O: the streamed ``put_archive`` copy-in and
-``get_archive`` copy-out (M4), and the plan/apply itself.
+the ``commands/logs.py`` ``-it`` precedent). The core owns the receive-mode site
+preflight, the streamed ``put_archive`` copy-in and ``get_archive`` copy-out
+(M4), and the plan/apply itself.
 
 There is deliberately NO ``axi restore`` verb (see the no-verb assertion in the
 tests): a ``bench restore --force`` that destroys a user's site data is a product
@@ -41,10 +41,11 @@ whenever it is decided.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import tarfile
-import tempfile
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -408,6 +409,45 @@ def _resolve_default_site(
     return site
 
 
+def _resolve_site(
+    project_name: str, frappe_container, bench_path: str, site: str | None
+) -> tuple[str, list[Message]]:
+    """The default-site resolution + format validation shared by every restore
+    entry point - including the ``--receive`` preflight below, which calls this
+    BEFORE the download so a missing/ambiguous site fails in milliseconds
+    rather than after a multi-GiB transfer. Raises ``CwcliError('site.no_default')``
+    exactly as before; hoisting the call earlier must not fork the rule it hoists.
+    """
+    warnings: list[Message] = []
+    if not site:
+        site = _resolve_default_site(project_name, bench_path, frappe_container)
+        if not site:
+            raise CwcliError(
+                ErrorKind.NOT_FOUND,
+                "site.no_default",
+                "No site specified and no default site found in config.",
+            )
+        warnings.append(Message("default_site.resolved", f"Using default site: {site}"))
+    resolvers.validate_site_name(site)
+    return site, warnings
+
+
+def receive_preflight(project_name: str, *, site: str | None, bench_path: str) -> Result[str]:
+    """Resolve/validate the ``--receive`` target site before spending the download.
+
+    Requires the container already running and ``bench_path`` already resolved -
+    the frontend's no-spinner prologue (``ensure_containers_running`` +
+    ``_resolve_bench_prologue``) guarantees both before any receive-mode call, so
+    the only thing left to check here is the site. Returns the resolved site name
+    on success; raises ``CwcliError('site.no_default')`` on a missing default,
+    the SAME error :func:`receive_plan` would eventually raise post-download.
+    """
+    frappe_container = core_docker.get_frappe_container(project_name)
+    resolved_site, warnings = _resolve_site(project_name, frappe_container, bench_path, site)
+    resolvers.validate_bench_path(bench_path)
+    return Result(status=Status.OK, data=resolved_site, warnings=warnings)
+
+
 def _resolve_bench(
     project_name: str, bench: str | None, bench_path: str | None, warnings: list[Message]
 ) -> Result[str] | None:
@@ -556,17 +596,9 @@ def restore_plan(
         bench_path = bench_result.data
     assert bench_path is not None
 
-    if not site:
-        site = _resolve_default_site(project_name, bench_path, frappe_container)
-        if not site:
-            raise CwcliError(
-                ErrorKind.NOT_FOUND,
-                "site.no_default",
-                "No site specified and no default site found in config.",
-            )
-        warnings.append(Message("default_site.resolved", f"Using default site: {site}"))
+    site, site_warnings = _resolve_site(project_name, frappe_container, bench_path, site)
+    warnings.extend(site_warnings)
 
-    resolvers.validate_site_name(site)
     resolvers.validate_bench_path(bench_path)
     resolvers.require_bench_dir(frappe_container, bench_path)
     resolvers.require_site_dir(frappe_container, bench_path, site)
@@ -645,17 +677,8 @@ def receive_plan(
         bench_path = bench_result.data
     assert bench_path is not None
 
-    if not site:
-        site = _resolve_default_site(project_name, bench_path, frappe_container)
-        if not site:
-            raise CwcliError(
-                ErrorKind.NOT_FOUND,
-                "site.no_default",
-                "No site specified and no default site found in config.",
-            )
-        warnings.append(Message("default_site.resolved", f"Using default site: {site}"))
-
-    resolvers.validate_site_name(site)
+    site, site_warnings = _resolve_site(project_name, frappe_container, bench_path, site)
+    warnings.extend(site_warnings)
     resolvers.validate_bench_path(bench_path)
 
     # Identify the downloaded components.
@@ -927,16 +950,39 @@ def _ensure_backup_dir(frappe_container, backup_dir: str, *, on_event: OnEvent =
 def _put_archive_streamed(frappe_container, backup_dir: str, local_file: Path) -> None:
     """Stream a single host file INTO the container's backup dir (M4).
 
-    The tar is written to a temp file and the OPEN HANDLE is passed to
-    ``put_archive`` (docker-py streams it) rather than read whole into RAM; an
-    unsuccessful copy fails closed.
+    The tar is built directly onto an OS pipe rather than a temp file, so a
+    multi-GiB backup is never doubled on disk. A writer thread feeds the tar
+    into the pipe while ``put_archive`` reads from the other end and streams it
+    to the daemon, bounded by the pipe's kernel buffer rather than a second full
+    copy. ``requests`` measures a pipe's length via ``os.fstat``, which reports
+    0 for a FIFO, and falls back to chunked transfer encoding for a falsy
+    length. This is what makes an unsized streaming body work here.
     """
-    with tempfile.TemporaryDirectory() as tmp:
-        tar_path = Path(tmp) / f"{local_file.name}.tar"
-        with tarfile.open(tar_path, "w") as tar:
-            tar.add(local_file, arcname=local_file.name)
-        with open(tar_path, "rb") as tar_file:
-            copied = frappe_container.put_archive(backup_dir, tar_file)
+    read_fd, write_fd = os.pipe()
+    build_error: list[BaseException] = []
+
+    def _build_tar() -> None:
+        try:
+            with os.fdopen(write_fd, "wb") as write_file:
+                with tarfile.open(fileobj=write_file, mode="w|") as tar:
+                    tar.add(local_file, arcname=local_file.name)
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread
+            build_error.append(exc)
+
+    writer = threading.Thread(target=_build_tar, daemon=True)
+    writer.start()
+    try:
+        with os.fdopen(read_fd, "rb") as read_file:
+            copied = frappe_container.put_archive(backup_dir, read_file)
+    finally:
+        writer.join()
+
+    if build_error:
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "copy.failed",
+            f"Failed to copy '{local_file.name}' into the container: {build_error[0]}",
+        ) from build_error[0]
     if not copied:
         raise CwcliError(
             ErrorKind.PRECONDITION,

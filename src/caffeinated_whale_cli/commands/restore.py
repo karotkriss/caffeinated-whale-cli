@@ -65,7 +65,13 @@ _REMOTE_SENTINEL = "__restore_from_remote__"
 # from, so ``--receive``/``--send`` must run it from a directory under cwcli's
 # own home rather than the system temp dir, which is tmpfs
 # (RAM-backed) or otherwise small on some hosts and can fail a multi-GiB
-# transfer mid-download.
+# transfer mid-download. An explicit TMPDIR/TEMP/TMP is the one legitimate
+# override (checked in that order, the same order the stdlib tempfile module
+# searches): the user has deliberately pointed temp storage somewhere with
+# room, so cwcli honors it - but the DEFAULT, when none is set, must never
+# silently fall back to a small system temp dir the way the old container-copy
+# step did (see ``core.restore._put_archive_streamed``'s docstring).
+_TMPDIR_ENV_VARS = ("TMPDIR", "TEMP", "TMP")
 _MIN_RECEIVE_FREE_BYTES = 2 * 1024**3  # 2 GiB floor; sendme only reveals a
 # collection's real size after connecting to the sender, so a fixed floor is
 # the best pre-transfer guard cwcli can offer.
@@ -75,6 +81,30 @@ _SENDME_SPACE_ERROR_BYTES = tuple(
 )
 _SENDME_SIGNATURE_OVERLAP_BYTES = max(map(len, _SENDME_SPACE_ERROR_BYTES)) - 1
 _VERBOSE_STDERR_CAPTURE_BYTES = 64 * 1024
+
+# A sendme ticket is the literal prefix "blob" followed by RFC4648 base32 (no
+# padding) of a postcard-encoded NodeAddr + hash - always well over 100
+# characters for a real ticket. A drastically-truncated copy/paste is caught
+# here instead of surfacing as sendme's own "Hit the end of buffer, expected
+# more data" only after the subprocess has already launched. The length floor
+# is deliberately far below a real ticket's, so this only rejects the
+# obviously malformed shape rather than attempting to fully validate
+# decodability (this is not a base32/postcard decoder); the charset check
+# accepts either case in case a clipboard/terminal recases the paste.
+_TICKET_PATTERN = re.compile(r"^blob[A-Za-z2-7]{20,}$")
+
+
+def _validate_ticket_shape(ticket: str) -> None:
+    """Refuse an obviously malformed/truncated ticket before spawning sendme."""
+    if not _TICKET_PATTERN.fullmatch(ticket):
+        stderr_console.print(
+            "[bold red]Error:[/bold red] That doesn't look like a valid sendme ticket."
+        )
+        stderr_console.print(
+            "[dim]A sendme ticket starts with 'blob' followed by a long string of "
+            "letters and digits; check for a truncated copy/paste and try again.[/dim]"
+        )
+        raise typer.Exit(code=1)
 
 
 @dataclass(frozen=True)
@@ -89,9 +119,16 @@ def _format_bytes(n: int) -> str:
 
 
 def _sendme_download_root() -> Path:
-    """Managed download root for ``restore --receive``/``--send``, under
-    ``cwcli_home()`` rather than the system temp dir."""
-    root = config_utils.cwcli_home() / "tmp"
+    """Managed download root for ``restore --receive``/``--send``.
+
+    Defaults under ``cwcli_home()`` rather than the system temp dir. An
+    explicit TMPDIR/TEMP/TMP is honored as the user's own escape hatch to a
+    disk with more room (this is the ONLY host-disk write path the receive
+    flow uses - the container-copy step streams via a pipe rather than a
+    second temp file - so checking free space here covers the whole flow).
+    """
+    override = next((os.environ[name] for name in _TMPDIR_ENV_VARS if os.environ.get(name)), None)
+    root = Path(override) / "cwcli" if override else config_utils.cwcli_home() / "tmp"
     try:
         root = root.resolve()
         root.mkdir(parents=True, exist_ok=True)
@@ -112,8 +149,8 @@ def _check_receive_free_space(download_root: Path) -> None:
             "[bold red]Error:[/bold red] Not enough free space to receive a backup.\n"
             f"[dim]{download_root} has {_format_bytes(free)} free; "
             f"cwcli requires at least {_format_bytes(_MIN_RECEIVE_FREE_BYTES)}. "
-            "Free up space, or set CWCLI_HOME to a location on a disk with more "
-            "room, and retry.[/dim]"
+            "Free up space, or set CWCLI_HOME (or TMPDIR) to a location on a disk "
+            "with more room, and retry.[/dim]"
         )
         raise typer.Exit(code=1)
 
@@ -152,8 +189,8 @@ def _explain_sendme_failure(
     return (
         f"Download failed - {download_dir} may be out of space "
         f"({free_space}; the backup can be several GiB). "
-        "Free up space, or set CWCLI_HOME to a location on a disk with more "
-        "room, and retry."
+        "Free up space, or set CWCLI_HOME (or TMPDIR) to a location on a disk "
+        "with more room, and retry."
     )
 
 
@@ -830,6 +867,18 @@ def _run_receive(
     if not ticket:
         stderr_console.print("[bold red]Error:[/bold red] Ticket cannot be empty after cleanup")
         raise typer.Exit(code=1)
+    _validate_ticket_shape(ticket)
+
+    # Resolve/validate the target site BEFORE the download: a missing/ambiguous
+    # site used to only surface once ``receive_plan`` ran post-download (after a
+    # multi-GiB transfer), via the exact same 'site.no_default' error this
+    # renders today.
+    try:
+        preflight = core_restore.receive_preflight(project_name, site=site, bench_path=bench_path)
+    except CwcliError as e:
+        _handle_plan_error(project_name, e)
+    _render_warnings(preflight.warnings)
+    site = preflight.data
 
     receive_root = _sendme_download_root()
     _check_receive_free_space(receive_root)

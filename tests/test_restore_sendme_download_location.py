@@ -31,6 +31,15 @@ SITE = "development.localhost"
 DB_FILENAME = "20251109_225726-development_localhost-database.sql.gz"
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_tmp_override(monkeypatch):
+    """Neutralize any TMPDIR/TEMP/TMP the host happens to have set (macOS always
+    sets TMPDIR) so these tests deterministically exercise the cwcli_home()
+    default unless a test opts into the override explicitly."""
+    for name in restore_mod._TMPDIR_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+
 class TestDownloadRoot:
     """Fix #1: the download root is managed under ``cwcli_home()``, never
     the system temp dir."""
@@ -124,6 +133,43 @@ class TestDownloadRoot:
         assert popen_call["cwd"].startswith(str(home / "tmp"))
         assert Path(popen_call["cwd"]).is_absolute()
         assert Path(popen_call["cmd"][-1]).parent == Path(popen_call["cwd"])
+
+
+class TestTmpdirOverride:
+    """An explicit TMPDIR/TEMP/TMP is the one legitimate override: a user who
+    has already pointed their own temp storage at a disk with more room gets
+    to keep using it, but the DEFAULT (nothing set) must never fall back to
+    the system temp dir - that silent fallback is exactly what let a small,
+    separate filesystem from cwcli_home() go unchecked (field evidence: Docker
+    root and cwcli home had plenty of free space; only the system temp dir,
+    on its own small volume, was the write path that actually ran out)."""
+
+    def test_default_never_falls_back_to_the_system_temp_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "home"))
+
+        root = restore_mod._sendme_download_root()
+
+        assert root == (tmp_path / "home" / "tmp").resolve()
+
+    def test_tmpdir_override_wins_over_cwcli_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "home"))
+        override = tmp_path / "big-disk"
+        monkeypatch.setenv("TMPDIR", str(override))
+
+        root = restore_mod._sendme_download_root()
+
+        assert root == (override / "cwcli").resolve()
+        assert root.is_dir()
+
+    def test_temp_and_tmp_are_honored_in_priority_order(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("TMP", str(tmp_path / "tmp-var"))
+        monkeypatch.setenv("TEMP", str(tmp_path / "temp-var"))
+        # TMPDIR unset: TEMP wins over TMP, the same search order as tempfile.
+
+        root = restore_mod._sendme_download_root()
+
+        assert root == (tmp_path / "temp-var" / "cwcli").resolve()
 
 
 class TestPreflightFreeSpace:

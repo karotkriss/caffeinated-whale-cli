@@ -35,6 +35,10 @@ from caffeinated_whale_cli.utils import docker_utils as docker_utils_mod
 
 BENCH_PATH = "/workspace/frappe-bench"
 SECRET_PW = "sup3r-s3cr3t-pw"
+# A fake ticket that matches _TICKET_PATTERN's shape (the "blob" prefix + a
+# long base32-ish tail); the ticket-shape preflight would otherwise reject the
+# short placeholder tickets these tests used before that check existed.
+VALID_TICKET = "blob" + "abcdefgh234567abcdefgh234567abcdefgh"
 
 
 class FakeReceiveContainer:
@@ -64,6 +68,12 @@ class FakeReceiveContainer:
         # M4: the tar must be streamed (a file handle), not slurped into a bytes blob.
         self.put_archive_streamed = hasattr(data, "read")
         self.put_archive_paths.append(path)
+        # Real docker-py drains the stream while forwarding it to the daemon;
+        # the pipe-fed tar-build (core.restore._put_archive_streamed) needs a
+        # genuine reader on the other end or the writer thread broken-pipes.
+        if hasattr(data, "read"):
+            while data.read(65536):
+                pass
         return True
 
     @staticmethod
@@ -114,7 +124,7 @@ def _run_receive(
     confirm_answer=True,
     admin_password=None,
     missing_apps=None,
-    ticket="ticket-abc",
+    ticket=VALID_TICKET,
     sendme_returncode=0,
     sendme_stderr="",
     verbose=False,
@@ -418,7 +428,7 @@ class TestReceiveTicket:
             db_filename="20251109_225726-development_localhost-database.sql.gz",
             yes=True,
             isatty=False,
-            ticket="blob-supplied-ticket",
+            ticket=VALID_TICKET,
         )
 
         assert len(container.restore_calls()) == 1
@@ -439,6 +449,110 @@ class TestReceiveTicket:
 
         assert excinfo.value.exit_code != 0
         assert container.restore_calls() == []
+
+
+class TestTicketShapePreflight:
+    """A truncated/malformed ticket must be rejected instantly (a local regex
+    check), rather than surfacing as sendme's own cryptic 'Hit the end of
+    buffer, expected more data' only after the subprocess has launched."""
+
+    @pytest.mark.parametrize(
+        "bad_ticket",
+        [
+            "notaticket",
+            "blob",  # prefix only, no payload
+            "blob123",  # far too short to be a real ticket
+            "blobabc!def023456789012345678901234567890",  # invalid char '!'
+        ],
+    )
+    def test_malformed_ticket_refuses_before_any_download(self, monkeypatch, bad_ticket):
+        container = FakeReceiveContainer()
+        with pytest.raises(typer.Exit) as excinfo:
+            _run_receive(
+                monkeypatch,
+                container,
+                site="development.localhost",
+                db_filename="20251109_225726-development_localhost-database.sql.gz",
+                yes=True,
+                isatty=False,
+                ticket=bad_ticket,
+            )
+
+        assert excinfo.value.exit_code == 1
+        assert any("doesn't look like a valid sendme ticket" in line for line in container.printed)
+        assert container.sendme_cwd is None
+        assert container.restore_calls() == []
+
+    def test_well_shaped_ticket_proceeds(self, monkeypatch):
+        container = FakeReceiveContainer()
+        _run_receive(
+            monkeypatch,
+            container,
+            site="development.localhost",
+            db_filename="20251109_225726-development_localhost-database.sql.gz",
+            yes=True,
+            isatty=False,
+            ticket=VALID_TICKET,
+        )
+
+        assert container.sendme_cwd is not None
+        assert len(container.restore_calls()) == 1
+
+
+class TestReceiveSitePreflight:
+    """Defect 1: a missing/ambiguous default site must fail in milliseconds,
+    BEFORE the sendme download - the site preflight (``core.receive_preflight``)
+    runs ahead of the download, so this is no longer discovered only once
+    ``receive_plan`` runs post-download against a multi-GiB transfer."""
+
+    def test_missing_default_site_refuses_before_any_download(self, monkeypatch):
+        from caffeinated_whale_cli.core import restore as core_restore
+
+        container = FakeReceiveContainer()
+        monkeypatch.setattr(core_restore.db_utils, "get_default_site", lambda *a, **k: None)
+        monkeypatch.setattr(core_restore.bench_sites, "read_current_site", lambda *a, **k: None)
+
+        with pytest.raises(typer.Exit) as excinfo:
+            _run_receive(
+                monkeypatch,
+                container,
+                site=None,
+                db_filename="20251109_225726-development_localhost-database.sql.gz",
+                yes=True,
+                isatty=False,
+            )
+
+        assert excinfo.value.exit_code == 1
+        # Same error text and tip as today - only the timing moved.
+        assert any(
+            "No site specified and no default site found in config." in line
+            for line in container.printed
+        )
+        assert any("cwcli inspect proj" in line for line in container.printed)
+        # The sendme subprocess is only ever invoked by the fakes below, which
+        # record their cwd; None here means the download was never reached.
+        assert container.sendme_cwd is None
+        assert container.restore_calls() == []
+
+    def test_resolvable_default_site_proceeds_through_the_download(self, monkeypatch):
+        from caffeinated_whale_cli.core import restore as core_restore
+
+        container = FakeReceiveContainer()
+        monkeypatch.setattr(
+            core_restore.db_utils, "get_default_site", lambda *a, **k: "development.localhost"
+        )
+
+        _run_receive(
+            monkeypatch,
+            container,
+            site=None,
+            db_filename="20251109_225726-development_localhost-database.sql.gz",
+            yes=True,
+            isatty=False,
+        )
+
+        assert container.sendme_cwd is not None
+        assert len(container.restore_calls()) == 1
 
 
 # ---------------------------------------------------------------------------
