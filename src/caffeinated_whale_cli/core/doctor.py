@@ -251,6 +251,12 @@ def _check_home_layout() -> tuple:
     home = cwcli_home()
     if not home.exists():
         return _outcome(CheckStatus.PASS, f"{home} (not yet created; created on first use)")
+    if not home.is_dir():
+        return _outcome(
+            CheckStatus.FAIL,
+            f"{home} is not a directory",
+            "replace it with a directory, or set CWCLI_HOME to a directory path",
+        )
     if not os.access(home, os.W_OK):
         return _outcome(
             CheckStatus.FAIL,
@@ -259,6 +265,12 @@ def _check_home_layout() -> tuple:
         )
     cache_dir = home / "cache"
     if cache_dir.exists():
+        if not cache_dir.is_dir():
+            return _outcome(
+                CheckStatus.FAIL,
+                f"{cache_dir} is not a directory",
+                "replace it with a directory",
+            )
         mode = stat.S_IMODE(cache_dir.stat().st_mode)
         if mode != 0o700:
             return _outcome(
@@ -400,7 +412,7 @@ def _check_sendme() -> tuple:
     whole load-time import graph). WARN, never FAIL, when absent - it is optional
     and auto-installs on first ``restore --send/--receive``.
     """
-    from ..utils.sendme_utils import get_sendme_path, is_sendme_installed
+    from ..utils.sendme_utils import get_sendme_command, is_sendme_installed
 
     if not is_sendme_installed():
         return _outcome(
@@ -408,8 +420,7 @@ def _check_sendme() -> tuple:
             "not installed (optional; needed only for `restore --send/--receive`)",
             "auto-installs on first `cwcli restore --send/--receive`",
         )
-    path = get_sendme_path()
-    resolved = str(path) if path.exists() else (shutil.which("sendme") or "sendme")
+    resolved = get_sendme_command()
     version = _probe_version([resolved, "--version"])
     detail = f"{resolved} ({version})" if version else resolved
     return _outcome(CheckStatus.PASS, detail)
