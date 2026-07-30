@@ -36,6 +36,28 @@ from caffeinated_whale_cli.core.where import WhereMatch, WhereResult
 _TIMEOUT = 5.0
 
 
+def _render_template_pattern(source, name):
+    tag = source.split(f'name="{name}"', 1)[1].split(">", 1)[0]
+    encoded = tag.split('pattern="', 1)[1].split('"', 1)[0]
+    rendered = []
+    cursor = 0
+    while cursor < len(encoded):
+        if encoded[cursor] != "\\":
+            rendered.append(encoded[cursor])
+            cursor += 1
+            continue
+        cursor += 1
+        if cursor == len(encoded):
+            rendered.append("\\")
+            break
+        escaped = encoded[cursor]
+        rendered.append(
+            {"\\": "\\", "n": "\n", "r": "\r", "t": "\t"}.get(escaped, escaped)
+        )
+        cursor += 1
+    return tag, "".join(rendered)
+
+
 @pytest.fixture
 def daemon(monkeypatch):
     """A live server on an ephemeral port, plus the fleet behind it."""
@@ -214,10 +236,10 @@ class TestSnapshot:
         """
         with urllib.request.urlopen(daemon.base + "/", timeout=_TIMEOUT) as resp:  # noqa: S310
             body = resp.read().decode()
-        for name in ('name="label"', 'name="app"', 'name="ref"'):
-            tag = body.split(name, 1)[1].split(">", 1)[0]
+        for name in ("label", "app", "ref"):
+            tag, rendered_pattern = _render_template_pattern(body, name)
             assert "required" in tag
-            assert r"pattern=&quot;.*\S.*&quot;" in tag or r'pattern=".*\S.*"' in tag, tag
+            assert rendered_pattern == r".*\S.*"
         # The optional site input keeps blank meaning "default site".
         site_tag = body.split('name="site"', 1)[1].split(">", 1)[0]
         assert "required" not in site_tag

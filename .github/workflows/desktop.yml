@@ -19,13 +19,57 @@ on:
   pull_request:
     branches: ["**"]
 
-# Only run when the shell, its Rust sources, or this workflow actually change.
-# A pure Python/docs change short-circuits with no wasted Rust toolchain setup.
-# (paths: on the job's triggers, not a top-level filter that would leave a
-# required check pending forever - the same reasoning e2e.yml documents.)
 jobs:
+  changes:
+    name: Determine desktop scope
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - name: Checkout code
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Decide whether desktop gates must run
+        id: decide
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+        run: |
+          set -uo pipefail
+          if [ "$CHECKOUT_OUTCOME" != "success" ] || [ -z "$BASE_SHA" ] || [ -z "$HEAD_SHA" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Desktop scope is uncertain - defaulting to the full matrix."
+            exit 0
+          fi
+          if ! merge_base="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Could not compute the merge base - defaulting to the full matrix."
+            exit 0
+          fi
+          if ! changed="$(git diff --name-only "$merge_base" "$HEAD_SHA")"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Could not compute the desktop diff - defaulting to the full matrix."
+            exit 0
+          fi
+          echo "Files changed since the merge base:"
+          echo "$changed"
+          if printf '%s\n' "$changed" | grep -qE '^(desktop/|\.github/workflows/desktop\.yml$)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Desktop change detected - running the full matrix."
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No desktop change - reporting the required matrix contexts green."
+          fi
+
   build:
     name: Build (${{ matrix.name }})
+    needs: changes
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -41,7 +85,17 @@ jobs:
         working-directory: desktop/src-tauri
 
     steps:
+      - name: Desktop scope
+        working-directory: .
+        run: |
+          if [ "${{ needs.changes.outputs.run }}" = "true" ]; then
+            echo "Desktop change detected - running the ${{ matrix.name }} gates."
+          else
+            echo "No desktop change - skipping the ${{ matrix.name }} gates and reporting green."
+          fi
+
       - name: Checkout code
+        if: needs.changes.outputs.run == 'true'
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           persist-credentials: false
@@ -49,7 +103,7 @@ jobs:
       # Tauri 2's Linux prerequisites (WebKitGTK etc.). Windows already ships
       # WebView2 and needs no extra system packages to compile.
       - name: Install Linux WebView dependencies
-        if: runner.os == 'Linux'
+        if: needs.changes.outputs.run == 'true' && runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -62,11 +116,13 @@ jobs:
             pkg-config
 
       - name: Install the Rust toolchain
+        if: needs.changes.outputs.run == 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
       - name: Cache cargo
+        if: needs.changes.outputs.run == 'true'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
         with:
           path: |
@@ -77,13 +133,17 @@ jobs:
           restore-keys: ${{ matrix.os }}-cargo-
 
       - name: Formatting (cargo fmt)
+        if: needs.changes.outputs.run == 'true'
         run: cargo fmt --all --check
 
       - name: Lint (clippy, warnings are errors)
+        if: needs.changes.outputs.run == 'true'
         run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: Compile
+        if: needs.changes.outputs.run == 'true'
         run: cargo build --locked
 
       - name: Unit tests
+        if: needs.changes.outputs.run == 'true'
         run: cargo test --locked

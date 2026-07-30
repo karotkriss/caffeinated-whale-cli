@@ -2,3 +2,5 @@
 /src-tauri/target/
 # Tauri-generated capability schemas (regenerated every build)
 /src-tauri/gen/
+!/dist/
+!/dist/**
