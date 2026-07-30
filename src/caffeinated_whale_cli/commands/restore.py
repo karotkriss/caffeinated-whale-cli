@@ -65,16 +65,16 @@ _REMOTE_SENTINEL = "__restore_from_remote__"
 # from, so ``--receive``/``--send`` must run it from a directory under cwcli's
 # own home rather than the system temp dir, which is tmpfs
 # (RAM-backed) or otherwise small on some hosts and can fail a multi-GiB
-# transfer mid-download. An explicit TMPDIR/TEMP/TMP is the one legitimate
+# transfer. An explicit TMPDIR/TEMP/TMP is the one legitimate
 # override (checked in that order, the same order the stdlib tempfile module
 # searches): the user has deliberately pointed temp storage somewhere with
 # room, so cwcli honors it - but the DEFAULT, when none is set, must never
 # silently fall back to a small system temp dir the way the old container-copy
 # step did (see ``core.restore._put_archive_streamed``'s docstring).
 _TMPDIR_ENV_VARS = ("TMPDIR", "TEMP", "TMP")
-_MIN_TRANSFER_FREE_BYTES = 2 * 1024**3  # 2 GiB floor; sendme only reveals a
-# collection's real size after connecting to the sender/receiver, so a fixed
-# floor is the best pre-transfer guard cwcli can offer, on either side.
+_MIN_TRANSFER_FREE_BYTES = 2 * 1024**3  # 2 GiB floor; the receiver cannot know
+# the collection's real size before connecting, while the sender checks before
+# staging it locally. A fixed floor is the common pre-transfer guard available.
 _SENDME_SPACE_ERROR_SIGNATURES = ("receiver closed", "no space left")
 _SENDME_SPACE_ERROR_BYTES = tuple(
     signature.encode() for signature in _SENDME_SPACE_ERROR_SIGNATURES
@@ -123,9 +123,10 @@ def _sendme_download_root() -> Path:
 
     Defaults under ``cwcli_home()`` rather than the system temp dir. An
     explicit TMPDIR/TEMP/TMP is honored as the user's own escape hatch to a
-    disk with more room (this is the ONLY host-disk write path the receive
-    flow uses - the container-copy step streams via a pipe rather than a
-    second temp file - so checking free space here covers the whole flow).
+    disk with more room. This is the only host-disk write location either
+    transfer flow uses: the sender stages its payload here, and the receiver's
+    container-copy step streams via a pipe rather than making a second file.
+    Checking free space here therefore covers both flows.
     """
     override = next((os.environ[name] for name in _TMPDIR_ENV_VARS if os.environ.get(name)), None)
     root = Path(override) / "cwcli" if override else config_utils.cwcli_home() / "tmp"
