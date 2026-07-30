@@ -363,20 +363,17 @@ pub fn daemon_url(port: u16) -> String {
 /// real escape route, so "loopback is fine" is not the rule; "this daemon's
 /// port" is.
 pub fn navigation_allowed(url: &tauri::Url, daemon_port: u16) -> bool {
-    match url.scheme() {
-        // Bundled asset origin: `tauri://localhost` on Linux/macOS.
-        "tauri" => true,
-        "http" | "https" => {
-            let host = url.host_str().unwrap_or("");
-            // Bundled asset origin on Windows is `http://tauri.localhost`.
-            if host == "tauri.localhost" {
-                return true;
-            }
-            let is_loopback = host == "127.0.0.1" || host == "localhost";
-            is_loopback && url.port() == Some(daemon_port)
-        }
-        _ => false,
-    }
+    let scheme = url.scheme();
+    let host = url.host_str().unwrap_or("");
+    let port = url.port();
+    let bundled =
+        (scheme == "tauri" && host == "localhost" && port.is_none())
+            || (scheme == "http" && host == "tauri.localhost" && port.is_none());
+    let daemon = daemon_port != 0
+        && scheme == "http"
+        && matches!(host, "127.0.0.1" | "localhost")
+        && port == Some(daemon_port);
+    bundled || daemon
 }
 
 /// End the daemon child. On Linux this terminates the process directly; on
@@ -417,11 +414,26 @@ mod tests {
     #[test]
     fn denies_external_and_sibling_ports_and_file_urls() {
         assert!(!navigation_allowed(&url("https://example.com/"), 8765));
-        // A DIFFERENT loopback port is denied - the guard is origin-exact.
         assert!(!navigation_allowed(&url("http://127.0.0.1:8766/"), 8765));
         assert!(!navigation_allowed(&url("file:///etc/passwd"), 8765));
         assert!(!navigation_allowed(
             &url("http://127.0.0.1.evil.com:8765/"),
+            8765
+        ));
+        assert!(!navigation_allowed(
+            &url("https://127.0.0.1:8765/"),
+            8765
+        ));
+        assert!(!navigation_allowed(
+            &url("tauri://elsewhere/index.html"),
+            8765
+        ));
+        assert!(!navigation_allowed(
+            &url("http://tauri.localhost:8765/index.html"),
+            8765
+        ));
+        assert!(!navigation_allowed(
+            &url("https://tauri.localhost/index.html"),
             8765
         ));
     }
