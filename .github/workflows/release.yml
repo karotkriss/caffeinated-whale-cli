@@ -141,8 +141,9 @@ jobs:
           files: dist/*
           # generate_release_notes is deliberately off: it appends a raw commit
           # list, which is not what the card is for. The body is composed by
-          # .github/scripts/release-body.sh - version-aware hand-written release copy
-          # plus a generated footer. See .github/release-notes/README.md.
+          # .github/scripts/release-body.sh - a generated header (version, diff
+          # link, release date) around hand-written release copy. See
+          # .github/release-notes/README.md.
           name: "caffeinated-whale-cli: v${{ steps.version.outputs.version }}"
           body_path: ${{ steps.body.outputs.path }}
         env:

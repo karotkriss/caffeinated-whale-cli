@@ -7,10 +7,20 @@ not have, on every release from 1.0.0 onward. The link was corrected on one
 published note and never in the generator, so the generator reintroduced it each
 time. These tests run the generator in the ordinary `Pytest` gate instead, so a
 regression is caught on the pull request rather than on the release.
+
+The card format itself changed for v2.1.0: from a cwcli-specific "What's
+Changed" advertising-copy shape with a `<!-- flagship -->` marker and a
+generated Installation/CHANGELOG-link footer, to Chris's cross-project
+release-notes template (a generated `## [version](diff url) (date)` header
+over hand-written Upgrade Steps / Breaking Changes / New Features / Bug Fixes
+/ Performance Improvements / Other Changes sections, each omitted entirely
+when unused). These tests cover the new contract only; the old flagship/footer
+behavior is gone, not preserved alongside it.
 """
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -23,19 +33,15 @@ NOTES_DIR = REPO_ROOT / ".github" / "release-notes"
 
 REPO = "karotkriss/caffeinated-whale-cli"
 
+DATE_RE = r"\d{4}-\d{2}-\d{2}"
 
-def _notes_for(version: str) -> str:
-    _, minor, patch = (int(part) for part in version.split("."))
-    is_major = minor == patch == 0
-    heading = "### What's New" if is_major else "### What's Changed"
-    # A major release requires an explicit flagship marker (see
-    # TestTheFlagshipMarker below); a smaller release does not, so the marker
-    # is added here only when it would otherwise be required.
-    marker = "<!-- flagship -->\n" if is_major else ""
-    return f"""{heading}
 
-{marker}**One benefit, stated for the reader.**
-One short sentence of context.
+def _default_notes() -> str:
+    return """> A short description of the release.
+
+### Bug Fixes
+
+* Fixed something.
 """
 
 
@@ -71,9 +77,22 @@ def rendered(tmp_path):
         notes: str | None = None,
         *,
         omit_notes: bool = False,
+        tags: tuple[str, ...] | None = None,
     ):
+        if tags is not None:
+            existing_tags = subprocess.run(
+                ["git", "tag", "--list"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.splitlines()
+            if existing_tags:
+                _git(repo, "tag", "--delete", *existing_tags)
+            for tag in tags:
+                _git(repo, "tag", tag)
         if not omit_notes:
-            note = _notes_for(version) if notes is None else notes
+            note = _default_notes() if notes is None else notes
             (repo / ".github" / "release-notes" / f"v{version}.md").write_text(note)
         return subprocess.run(
             [".github/scripts/release-body.sh", version, REPO],
@@ -85,50 +104,200 @@ def rendered(tmp_path):
     return render
 
 
-class TestTheCardSatisfiesTheStandingRules:
-    def test_whats_new_leads_a_major_release_and_installation_follows_it(self, rendered):
+class TestTheHeaderIsGenerated:
+    def test_the_header_links_the_version_to_the_previous_release(self, rendered):
         body = rendered("2.0.0").stdout
-        assert body.startswith("### What's New")
-        assert body.index("### What's New") < body.index("### Installation")
+        first_line = body.splitlines()[0]
+        expected_prefix = f"## [2.0.0](https://github.com/{REPO}/compare/v1.1.0...v2.0.0) ("
+        assert first_line.startswith(expected_prefix)
+        assert re.fullmatch(rf"{re.escape(expected_prefix)}{DATE_RE}\)", first_line)
+
+    def test_the_first_release_has_no_compare_link(self, rendered):
+        body = rendered("0.35.0", tags=("v0.35.0",)).stdout
+        first_line = body.splitlines()[0]
+        assert re.fullmatch(rf"## \[0\.35\.0\] \({DATE_RE}\)", first_line)
+        assert "compare" not in first_line
+
+    def test_preview_before_the_current_tag_exists_uses_the_previous_release(self, rendered):
+        body = rendered("2.1.0").stdout
+        first_line = body.splitlines()[0]
+        expected_prefix = f"## [2.1.0](https://github.com/{REPO}/compare/v2.0.0...v2.1.0) ("
+        assert first_line.startswith(expected_prefix)
+
+    def test_preview_after_the_current_tag_exists_uses_the_same_previous_release(self, rendered):
+        body = rendered(
+            "2.1.0",
+            tags=("v0.35.0", "v1.0.0", "v1.1.0", "v2.0.0", "v2.1.0"),
+        ).stdout
+        first_line = body.splitlines()[0]
+        expected_prefix = f"## [2.1.0](https://github.com/{REPO}/compare/v2.0.0...v2.1.0) ("
+        assert first_line.startswith(expected_prefix)
 
     def test_the_body_does_not_repeat_the_name_or_version(self, rendered):
-        """The release title carries both; the body heading used to repeat them."""
-        generated = rendered("2.0.0").stdout.split("### Installation", 1)[1]
+        """The release title carries both; the body must not repeat them."""
+        body = rendered("2.0.0").stdout
+        generated = "\n".join(body.splitlines()[1:])
         assert "caffeinated-whale-cli v2.0.0" not in generated
         assert "## caffeinated-whale-cli" not in generated
 
-    def test_installation_offers_every_route_with_the_recommended_one_first(self, rendered):
-        body = rendered("2.0.0").stdout
-        install = body.split("### Installation", 1)[1]
-        assert install.index("uv tool install") < install.index("pip install")
-        assert "uvx --from caffeinated-whale-cli" in install
+    def test_the_hand_written_note_follows_the_header_verbatim(self, rendered):
+        notes = _default_notes()
+        body = rendered("2.0.0", notes=notes).stdout
+        assert body.endswith(notes)
 
-    def test_the_changelog_link_is_pinned_to_the_tag_not_a_branch(self, rendered):
-        """`blob/master/` was dead: this repository's default branch is `develop`."""
-        body = rendered("2.0.0").stdout
-        assert f"https://github.com/{REPO}/blob/v2.0.0/CHANGELOG.md" in body
-        assert "blob/master" not in body
-        assert "blob/develop" not in body
 
-    def test_the_comparison_runs_from_the_previous_tag_to_this_one(self, rendered):
-        """It used to read `compare/v<new>...HEAD`, which is backwards."""
-        body = rendered("2.0.0").stdout
-        assert body.rstrip().endswith(f"https://github.com/{REPO}/compare/v1.1.0...v2.0.0")
-        assert "...HEAD" not in body
+class TestSectionsAreOmittedWhenUnused:
+    def test_a_section_not_written_does_not_appear(self, rendered):
+        notes = """> Only a bug fix this time.
 
-    def test_the_first_release_has_nothing_to_compare_against(self, rendered):
-        body = rendered("0.35.0").stdout
-        assert body.startswith("### What's Changed")
-        assert "/compare/" not in body
-        assert "### Installation" in body
+### Bug Fixes
+
+* Fixed the thing.
+"""
+        body = rendered("1.1.0", notes=notes).stdout
+        for heading in (
+            "### Upgrade Steps",
+            "### Breaking Changes",
+            "### New Features",
+            "### Performance Improvements",
+            "### Other Changes",
+        ):
+            assert heading not in body
+        assert "### Bug Fixes" in body
+
+    def test_all_six_sections_can_appear_together(self, rendered):
+        notes = """> A release with everything.
+
+### Upgrade Steps
+
+* [ACTION REQUIRED] Re-run the migration.
+
+### Breaking Changes
+
+* The old flag is gone.
+
+### New Features
+
+* A new command.
+
+### Bug Fixes
+
+* A fixed bug.
+
+### Performance Improvements
+
+* A faster path.
+
+### Other Changes
+
+* Updated docs.
+"""
+        result = rendered("1.1.0", notes=notes)
+        assert result.returncode == 0
+        for heading in (
+            "### Upgrade Steps",
+            "### Breaking Changes",
+            "### New Features",
+            "### Bug Fixes",
+            "### Performance Improvements",
+            "### Other Changes",
+        ):
+            assert heading in result.stdout
+
+    def test_an_empty_section_before_a_populated_section_is_rejected(self, rendered):
+        notes = """> A release with one empty section.
+
+### Bug Fixes
+
+### Other Changes
+
+* Updated docs.
+"""
+        result = rendered("1.1.0", notes=notes)
+        assert result.returncode != 0
+        assert "empty section: ### Bug Fixes" in result.stderr
+
+    def test_adding_a_bullet_to_the_section_allows_it_to_publish(self, rendered):
+        notes = """> A release with populated sections.
+
+### Bug Fixes
+
+* Fixed the thing.
+
+### Other Changes
+
+* Updated docs.
+"""
+        result = rendered("1.1.0", notes=notes)
+        assert result.returncode == 0
+        assert notes in result.stdout
+
+
+class TestHeadingsAreValidated:
+    def test_an_unrecognised_heading_fails_the_release(self, rendered):
+        notes = """> Typo'd heading.
+
+### Bugfixes
+
+* Something.
+"""
+        result = rendered("1.1.0", notes=notes)
+        assert result.returncode != 0
+        assert "unrecognised heading" in result.stderr
+        assert "### Bugfixes" in result.stderr
+
+    def test_wrong_case_is_also_rejected(self, rendered):
+        notes = """> Wrong case.
+
+### bug fixes
+
+* Something.
+"""
+        result = rendered("1.1.0", notes=notes)
+        assert result.returncode != 0
+        assert "unrecognised heading" in result.stderr
+
+
+class TestUpgradeStepsRequiresTheActionFlag:
+    def test_an_unflagged_bullet_fails_the_release(self, rendered):
+        notes = """> Needs a migration.
+
+### Upgrade Steps
+
+* Run the migration script.
+"""
+        result = rendered("1.1.0", notes=notes)
+        assert result.returncode != 0
+        assert "ACTION REQUIRED" in result.stderr
+
+    def test_a_flagged_bullet_publishes(self, rendered):
+        notes = """> Needs a migration.
+
+### Upgrade Steps
+
+* [ACTION REQUIRED] Run the migration script.
+"""
+        result = rendered("1.1.0", notes=notes)
+        assert result.returncode == 0
+        assert "[ACTION REQUIRED] Run the migration script." in result.stdout
+
+    def test_a_later_section_is_unaffected_by_the_flag_rule(self, rendered):
+        notes = """> Needs a migration.
+
+### Upgrade Steps
+
+* [ACTION REQUIRED] Run the migration script.
+
+### Bug Fixes
+
+* An ordinary bullet with no flag needed here.
+"""
+        result = rendered("1.1.0", notes=notes)
+        assert result.returncode == 0
+        assert "An ordinary bullet with no flag needed here." in result.stdout
 
 
 class TestTheCardCannotBePublishedWithoutItsCopy:
-    """Rule 3 asks for advertising copy, which no template can write.
-
-    Requiring the file is what makes that rule enforceable rather than aspirational.
-    """
-
     def test_a_missing_note_fails_the_release(self, rendered):
         result = rendered("3.0.0", omit_notes=True)
         assert result.returncode != 0
@@ -136,221 +305,6 @@ class TestTheCardCannotBePublishedWithoutItsCopy:
 
     def test_an_empty_note_fails_the_release(self, rendered):
         assert rendered("3.0.0", notes="").returncode != 0
-
-    def test_a_note_without_the_expected_heading_fails_the_release(self, rendered):
-        result = rendered("3.0.0", notes="Some prose with no heading.\n")
-        assert result.returncode != 0
-        assert "What's New" in result.stderr
-
-    def test_a_major_release_rejects_whats_changed(self, rendered):
-        result = rendered("3.0.0", notes=_notes_for("3.1.0"))
-        assert result.returncode != 0
-        assert '"### What\'s New"' in result.stderr
-        assert "major release" in result.stderr
-
-    @pytest.mark.parametrize("version", ["1.2.0", "1.1.1"])
-    def test_a_smaller_release_rejects_whats_new(self, rendered, version):
-        result = rendered(version, notes=_notes_for("3.0.0"))
-        assert result.returncode != 0
-        assert '"### What\'s Changed"' in result.stderr
-        assert "smaller release" in result.stderr
-
-    def test_a_preface_above_the_expected_heading_fails_the_release(self, rendered):
-        notes = f"Preface that must not lead the card.\n{_notes_for('3.0.0')}"
-        result = rendered("3.0.0", notes=notes)
-        assert result.returncode != 0
-        assert '"### What\'s New"' in result.stderr
-
-
-class TestTheFlagshipMarker:
-    """The `<!-- flagship -->` marker (see .github/release-notes/README.md).
-
-    It exists because the card's authoring rule ("lead with the benefit") had
-    no enforcement: a hand-written note could bury the actual headline under
-    lesser entries and still publish cleanly. The marker names which entry is
-    the headline; this script is the one place that guarantees it leads,
-    refusing to publish rather than silently reordering hand-written prose.
-    """
-
-    def test_a_leading_flagship_entry_publishes_with_the_marker_stripped(self, rendered):
-        notes = """### What's Changed
-
-<!-- flagship -->
-**The flagship benefit, stated for the reader.**
-Why it matters.
-
-**A smaller change.**
-Context.
-"""
-        result = rendered("1.1.0", notes=notes)
-        assert result.returncode == 0
-        body = result.stdout
-        assert "<!-- flagship -->" not in body
-        assert body.index("The flagship benefit") < body.index("A smaller change")
-
-    def test_a_buried_flagship_entry_stops_the_release(self, rendered):
-        notes = """### What's Changed
-
-**A smaller change.**
-Context.
-
-<!-- flagship -->
-**The flagship benefit, stated for the reader.**
-Why it matters.
-"""
-        result = rendered("1.1.0", notes=notes)
-        assert result.returncode != 0
-        assert "does not lead the change list" in result.stderr
-
-    def test_a_major_release_without_a_flagship_marker_stops_the_release(self, rendered):
-        notes = """### What's New
-
-**Just an entry, no marker.**
-Context.
-"""
-        result = rendered("3.0.0", notes=notes)
-        assert result.returncode != 0
-        assert "requires an explicit <!-- flagship --> marker" in result.stderr
-
-    def test_a_minor_release_with_no_flagship_at_all_publishes_unchanged(self, rendered):
-        """Preserves the ordinary case: most minor/patch releases have no headline."""
-        notes = """### What's Changed
-
-**An ordinary change.**
-Nothing special.
-"""
-        result = rendered("1.1.0", notes=notes)
-        assert result.returncode == 0
-        assert result.stdout.startswith(notes)
-
-    def test_duplicate_markers_are_rejected(self, rendered):
-        notes = """### What's Changed
-
-<!-- flagship -->
-**First.**
-A.
-
-<!-- flagship -->
-**Second.**
-B.
-"""
-        result = rendered("1.1.0", notes=notes)
-        assert result.returncode != 0
-        assert "multiple <!-- flagship --> markers" in result.stderr
-
-    @pytest.mark.parametrize(
-        "notes",
-        [
-            pytest.param(
-                """### What's Changed
-
-<!--flagship-->
-**First.**
-A.
-""",
-                id="no-spaces",
-            ),
-            pytest.param(
-                """### What's Changed
-
-<!-- Flagship -->
-**First.**
-A.
-""",
-                id="wrong-case",
-            ),
-        ],
-    )
-    def test_a_malformed_marker_is_rejected(self, rendered, notes):
-        result = rendered("1.1.0", notes=notes)
-        assert result.returncode != 0
-        assert "malformed flagship marker" in result.stderr
-
-    @pytest.mark.parametrize("trailing_whitespace", [" ", "\t"])
-    def test_a_marker_with_trailing_whitespace_is_rejected(self, rendered, trailing_whitespace):
-        notes = f"""### What's Changed
-
-<!-- flagship -->{trailing_whitespace}
-**First.**
-A.
-"""
-        result = rendered("1.1.0", notes=notes)
-        assert result.returncode != 0
-        assert "malformed flagship marker" in result.stderr
-
-    def test_a_marker_detached_by_a_blank_line_is_rejected(self, rendered):
-        notes = """### What's Changed
-
-<!-- flagship -->
-
-**First.**
-A.
-"""
-        result = rendered("1.1.0", notes=notes)
-        assert result.returncode != 0
-        assert "is detached from any entry" in result.stderr
-
-    def test_a_marker_above_ordinary_prose_is_rejected(self, rendered):
-        notes = """### What's Changed
-
-<!-- flagship -->
-This is not a bold benefit sentence.
-Context.
-"""
-        result = rendered("1.1.0", notes=notes)
-        assert result.returncode != 0
-        assert "begins with a bold benefit sentence" in result.stderr
-
-    def test_a_marker_glued_mid_entry_is_rejected(self, rendered):
-        """The marker must start its own paragraph, not interrupt one."""
-        notes = """### What's Changed
-
-**First.**
-<!-- flagship -->
-A.
-"""
-        result = rendered("1.1.0", notes=notes)
-        assert result.returncode != 0
-        assert "must start its own paragraph" in result.stderr
-
-    def test_the_marker_never_reaches_the_published_body_even_with_the_footer(self, rendered):
-        """The marker is authoring metadata, not reader-facing copy - it must
-        not survive into the published card even though the whole footer
-        (Installation, CHANGELOG link) is appended after it."""
-        notes = """### What's Changed
-
-<!-- flagship -->
-**One benefit, stated for the reader.**
-Why it matters.
-"""
-        result = rendered("1.1.0", notes=notes)
-        assert result.returncode == 0
-        assert "<!--" not in result.stdout
-        assert "-->" not in result.stdout
-
-    def test_footer_and_version_heading_behavior_is_unchanged_by_a_flagship_entry(self, rendered):
-        """A flagship entry changes ordering only; the footer/version rules from
-        TestTheCardSatisfiesTheStandingRules still hold."""
-        notes = """### What's New
-
-<!-- flagship -->
-**The flagship benefit.**
-Why it matters.
-"""
-        body = rendered("2.0.0", notes=notes).stdout
-        assert body.startswith("### What's New")
-        assert body.index("### What's New") < body.index("### Installation")
-        install = body.split("### Installation", 1)[1]
-        assert install.index("uv tool install") < install.index("pip install")
-        assert f"https://github.com/{REPO}/blob/v2.0.0/CHANGELOG.md" in body
-        assert body.rstrip().endswith(f"https://github.com/{REPO}/compare/v1.1.0...v2.0.0")
-
-    def test_the_checked_in_major_release_note_remains_publishable(self, rendered):
-        notes = (NOTES_DIR / "v2.0.0.md").read_text()
-        result = rendered("2.0.0", notes=notes)
-        assert result.returncode == 0
-        assert "<!-- flagship -->" not in result.stdout
-        assert result.stdout.startswith("### What's New\n\n**Your multi-bench instances")
 
 
 class TestTheWorkflowUsesTheGenerator:
@@ -385,3 +339,19 @@ class TestTheWorkflowUsesTheGenerator:
 
     def test_the_notes_format_is_documented_where_a_release_author_will_look(self):
         assert (NOTES_DIR / "README.md").exists()
+
+    def test_git_safe_directory_is_registered_before_any_step_that_could_run_git(self):
+        """release-body.sh runs git tag/rev-parse in a run: step inside this
+        job's container. actions/checkout only registers a safe.directory
+        exception around its own git calls (and again during its post-job
+        cleanup), never for later run: steps, so the first step to invoke git
+        itself hits git's "detected dubious ownership" refusal (exit 128) -
+        the tag push that shipped v2.1.0 failed exactly this way. The fix must
+        run before the step that needs it.
+        """
+        workflow = WORKFLOW.read_text()
+        assert "safe.directory" in workflow
+        checkout_index = workflow.index("- name: Checkout code")
+        safe_directory_index = workflow.index("safe.directory")
+        compose_body_index = workflow.index("- name: Compose release body")
+        assert checkout_index < safe_directory_index < compose_body_index
