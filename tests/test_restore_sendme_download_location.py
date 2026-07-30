@@ -10,7 +10,11 @@ ENOSPC mid-download and sendme surfaced the cryptic internal error
 These tests pin the four parts of the fix: the download root moves under
 ``cwcli_home()``, a free-space preflight refuses early on a too-small
 filesystem, a known sendme failure signature gets an actionable explanation,
-and a failed download leaves no partial store behind.
+and a failed download leaves no partial store behind. ``TestSendPreflightFreeSpace``
+pins the follow-up: ``--send`` stages its copy-out payload on that same
+disk-backed root, so it got the same preflight (wording adjusted for the
+send direction) rather than only failing once the copy-out write or
+``sendme send`` itself hit ENOSPC.
 """
 
 import shutil
@@ -270,6 +274,97 @@ class TestPreflightFreeSpace:
         assert container.restore_calls() == []
         assert any(expected_action in line for line in container.printed)
         assert any(str(home / "tmp") in line for line in container.printed)
+
+
+def _setup_send_mocks(monkeypatch, *, copy_backup_files_out, popen):
+    """Wire ``_run_send`` up to a picked backup without touching Docker or a
+    real sendme subprocess, so a test can isolate the free-space preflight
+    that now runs before either ``copy_backup_files_out`` or ``Popen``."""
+    monkeypatch.setattr(restore_mod, "_get_frappe_container", lambda project: object())
+    monkeypatch.setattr(
+        restore_mod.core_restore,
+        "scan_backups_for_all_sites",
+        lambda container, bench_path: [object()],
+    )
+    monkeypatch.setattr(
+        restore_mod.core_restore,
+        "group_and_sort_backups",
+        lambda backups, site: ([], []),
+    )
+    monkeypatch.setattr(restore_mod.core_restore, "_menu_options", lambda *args: ["backup"])
+    monkeypatch.setattr(
+        restore_mod, "_render_backup_menu", lambda options, site, offer_remote: "backup"
+    )
+    monkeypatch.setattr(
+        restore_mod.core_restore,
+        "_match_selected",
+        lambda *args: {"database": {"full_path": "/backups/database.sql.gz"}},
+    )
+    monkeypatch.setattr(restore_mod.core_restore, "copy_backup_files_out", copy_backup_files_out)
+    monkeypatch.setattr(subprocess, "Popen", popen)
+
+
+class TestSendPreflightFreeSpace:
+    """The ``--send`` path stages its copy-out payload on the same
+    disk-backed root ``--receive`` downloads into (``_sendme_download_root``),
+    so it shares that same free-space preflight - adjusted wording only -
+    instead of only discovering a full disk once ``sendme send`` (or the
+    copy-out write itself) fails opaquely."""
+
+    def test_refuses_when_free_space_is_below_the_floor(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        monkeypatch.setenv("CWCLI_HOME", str(home))
+        monkeypatch.setattr(
+            shutil, "disk_usage", lambda path: SimpleNamespace(total=10_000_000_000, free=1_000_000)
+        )
+        copy_calls: list[object] = []
+        popen_calls: list[object] = []
+        _setup_send_mocks(
+            monkeypatch,
+            copy_backup_files_out=lambda *a, **k: copy_calls.append(a),
+            popen=lambda *a, **k: popen_calls.append(a),
+        )
+
+        with pytest.raises(typer.Exit) as excinfo:
+            restore_mod._run_send("project", site=SITE, bench_path="/bench", verbose=False)
+
+        assert excinfo.value.exit_code != 0
+        # Refused before staging any files or spawning sendme.
+        assert copy_calls == []
+        assert popen_calls == []
+
+    def test_proceeds_when_free_space_is_above_the_floor(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        monkeypatch.setenv("CWCLI_HOME", str(home))
+        monkeypatch.setattr(
+            shutil,
+            "disk_usage",
+            lambda path: SimpleNamespace(total=100_000_000_000, free=50_000_000_000),
+        )
+        copy_calls: list[object] = []
+
+        class FakeProcess:
+            def __init__(self):
+                self.stdout = StringIO("sendme receive ticket-abc\n")
+                self.stderr = StringIO()
+
+            def poll(self):
+                return None
+
+            def wait(self):
+                return 0
+
+        _setup_send_mocks(
+            monkeypatch,
+            copy_backup_files_out=lambda *a, **k: copy_calls.append(a),
+            popen=lambda *a, **k: FakeProcess(),
+        )
+        monkeypatch.setattr(restore_mod, "get_sendme_command", lambda: "sendme")
+        monkeypatch.setattr(restore_mod, "copy_to_clipboard", lambda ticket: True)
+
+        restore_mod._run_send("project", site=SITE, bench_path="/bench", verbose=False)
+
+        assert len(copy_calls) == 1
 
 
 class TestErrorTranslation:

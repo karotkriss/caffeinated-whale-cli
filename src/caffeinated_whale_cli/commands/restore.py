@@ -72,9 +72,9 @@ _REMOTE_SENTINEL = "__restore_from_remote__"
 # silently fall back to a small system temp dir the way the old container-copy
 # step did (see ``core.restore._put_archive_streamed``'s docstring).
 _TMPDIR_ENV_VARS = ("TMPDIR", "TEMP", "TMP")
-_MIN_RECEIVE_FREE_BYTES = 2 * 1024**3  # 2 GiB floor; sendme only reveals a
-# collection's real size after connecting to the sender, so a fixed floor is
-# the best pre-transfer guard cwcli can offer.
+_MIN_TRANSFER_FREE_BYTES = 2 * 1024**3  # 2 GiB floor; sendme only reveals a
+# collection's real size after connecting to the sender/receiver, so a fixed
+# floor is the best pre-transfer guard cwcli can offer, on either side.
 _SENDME_SPACE_ERROR_SIGNATURES = ("receiver closed", "no space left")
 _SENDME_SPACE_ERROR_BYTES = tuple(
     signature.encode() for signature in _SENDME_SPACE_ERROR_SIGNATURES
@@ -137,18 +137,22 @@ def _sendme_download_root() -> Path:
     return root
 
 
-def _check_receive_free_space(download_root: Path) -> None:
+def _check_transfer_free_space(download_root: Path, *, action: str) -> None:
     """Refuse early when ``download_root`` has too little free space to
-    plausibly hold a backup, naming the location and the shortfall."""
+    plausibly complete a sendme transfer, naming the location and the
+    shortfall. Shared by ``--receive`` (downloading into ``download_root``)
+    and ``--send`` (staging the copy-out payload in ``download_root`` before
+    handing it to ``sendme send``); ``action`` adjusts the wording to the
+    direction so the refusal still reads correctly for either."""
     try:
         free = shutil.disk_usage(download_root).free
     except OSError as e:
         _render_sendme_filesystem_error(download_root, "check available disk space", e)
-    if free < _MIN_RECEIVE_FREE_BYTES:
+    if free < _MIN_TRANSFER_FREE_BYTES:
         stderr_console.print(
-            "[bold red]Error:[/bold red] Not enough free space to receive a backup.\n"
+            f"[bold red]Error:[/bold red] Not enough free space to {action}.\n"
             f"[dim]{download_root} has {_format_bytes(free)} free; "
-            f"cwcli requires at least {_format_bytes(_MIN_RECEIVE_FREE_BYTES)}. "
+            f"cwcli requires at least {_format_bytes(_MIN_TRANSFER_FREE_BYTES)}. "
             "Free up space, or set CWCLI_HOME (or TMPDIR) to a location on a disk "
             "with more room, and retry.[/dim]"
         )
@@ -881,7 +885,7 @@ def _run_receive(
     site = preflight.data
 
     receive_root = _sendme_download_root()
-    _check_receive_free_space(receive_root)
+    _check_transfer_free_space(receive_root, action="receive a backup")
 
     with _new_sendme_temp_dir(receive_root) as temp_dir:
         temp_path = Path(temp_dir).resolve()
@@ -998,7 +1002,10 @@ def _run_send(project_name: str, *, site: str | None, bench_path: str, verbose: 
         stderr_console.print("[bold red]Error:[/bold red] No files to send.")
         raise typer.Exit(code=1)
 
-    with _new_sendme_temp_dir(_sendme_download_root()) as temp_dir:
+    send_root = _sendme_download_root()
+    _check_transfer_free_space(send_root, action="prepare a backup for sending")
+
+    with _new_sendme_temp_dir(send_root) as temp_dir:
         temp_path = Path(temp_dir).resolve()
         payload_path = temp_path / "payload"
         payload_path.mkdir()
