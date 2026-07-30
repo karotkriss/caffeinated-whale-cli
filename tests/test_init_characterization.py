@@ -154,6 +154,8 @@ def run_init(
     downloads: list[str] = []
 
     def fake_run(cmd, cwd=None, capture_output=False, **kwargs):
+        if list(cmd) == ["docker", "compose", "version"]:
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
         host_calls.append({"cmd": list(cmd), "cwd": cwd})
         if host_fail_stage is not None and host_fail_stage in cmd:
             return SimpleNamespace(returncode=1, stdout=b"", stderr=host_fail_output)

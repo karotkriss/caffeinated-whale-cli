@@ -249,6 +249,8 @@ def instance_setup(
     downloads: list[str] = []
 
     def fake_run(cmd, cwd=None, capture_output=False, **kwargs):
+        if list(cmd) == ["docker", "compose", "version"]:
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
         host_calls.append({"cmd": list(cmd), "cwd": cwd})
         return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
 
@@ -358,6 +360,8 @@ class TestInitInstance:
         instance_setup(monkeypatch, tmp_path)
 
         def failing_run(cmd, cwd=None, capture_output=False, **kwargs):
+            if list(cmd) == ["docker", "compose", "version"]:
+                return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
             return SimpleNamespace(returncode=1, stdout=b"", stderr=b"pull exploded")
 
         monkeypatch.setattr(subprocess, "run", failing_run)
@@ -367,6 +371,28 @@ class TestInitInstance:
         assert exc.value.code == "compose.failed"
         assert "Host command failed:" in exc.value.message
         assert exc.value.detail == {"output": "pull exploded"}
+
+    def test_missing_compose_plugin_refuses_before_any_mutation(
+        self, monkeypatch, tmp_path, patched
+    ):
+        s = instance_setup(monkeypatch, tmp_path, seed_compose=False)
+
+        def no_plugin_run(cmd, cwd=None, capture_output=False, **kwargs):
+            if list(cmd) == ["docker", "compose", "version"]:
+                return SimpleNamespace(
+                    returncode=1, stdout=b"", stderr=b"docker: 'compose' is not a docker command"
+                )
+            raise AssertionError(f"unexpected host command before the compose preflight: {cmd}")
+
+        monkeypatch.setattr(subprocess, "run", no_plugin_run)
+        with pytest.raises(CwcliError) as exc:
+            core_init.init_instance(PROJECT, port=18000)
+        assert exc.value.kind is ErrorKind.PRECONDITION
+        assert exc.value.code == "compose.unavailable"
+        assert "docker-compose-plugin" in (exc.value.hint or "")
+        # Refused before the compose file was even downloaded.
+        assert s.downloads == []
+        assert not s.compose_path.exists()
 
     def test_port_conflict_is_typed_conflict(self, monkeypatch, tmp_path, patched):
         instance_setup(monkeypatch, tmp_path)
