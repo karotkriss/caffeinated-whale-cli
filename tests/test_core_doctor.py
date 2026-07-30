@@ -142,6 +142,8 @@ class TestRunAll:
         report = core_doctor.run_all().data
 
         assert report is not None
+        version_check = next(check for check in report.checks if check.id == "c4")
+        assert version_check.version_verified is False
         assert network_calls == []
         assert not (tmp_path / "cache" / "version_check.json").exists()
         assert not config_file.exists()
@@ -268,10 +270,11 @@ class TestVersionCheck:
             lambda: self._info(latest="2.1.0"),
         )
         monkeypatch.setattr(core_doctor.core_version, "build_info", lambda: self._build())
-        status, detail, fix = core_doctor._check_version()
+        status, detail, fix, version_verified = core_doctor._check_version()
         assert status is CheckStatus.PASS
         assert "up to date" in detail
         assert fix is None
+        assert version_verified is True
 
     def test_warn_outdated(self, monkeypatch):
         monkeypatch.setattr(
@@ -280,10 +283,11 @@ class TestVersionCheck:
             lambda: self._info(latest="9.9.9", outdated=True),
         )
         monkeypatch.setattr(core_doctor.core_version, "build_info", lambda: self._build())
-        status, detail, fix = core_doctor._check_version()
+        status, detail, fix, version_verified = core_doctor._check_version()
         assert status is CheckStatus.WARN
         assert "9.9.9" in detail
         assert "self-update" in fix
+        assert version_verified is True
 
     def test_pass_with_honest_unknown_when_cache_is_absent(self, monkeypatch):
         monkeypatch.setattr(
@@ -293,11 +297,11 @@ class TestVersionCheck:
         )
         monkeypatch.setattr(core_doctor.core_version, "current_version", lambda: "2.1.0")
         monkeypatch.setattr(core_doctor.core_version, "build_info", lambda: self._build())
-        status, detail, fix = core_doctor._check_version()
+        status, detail, fix, version_verified = core_doctor._check_version()
         assert status is CheckStatus.PASS
-        assert "freshness unknown" in detail
-        assert "self-update --check" in detail
+        assert "could not verify" in detail
         assert "self-update --check" in fix
+        assert version_verified is False
 
     def test_source_build_provenance_shown(self, monkeypatch):
         monkeypatch.setattr(
@@ -310,10 +314,11 @@ class TestVersionCheck:
             "build_info",
             lambda: self._build(source="source", commit="abc1234", dirty=True),
         )
-        _status, detail, _fix = core_doctor._check_version()
+        _status, detail, _fix, version_verified = core_doctor._check_version()
         assert "source build" in detail
         assert "abc1234" in detail
         assert "dirty" in detail
+        assert version_verified is True
 
 
 class TestHomeLayout:
