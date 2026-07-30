@@ -40,6 +40,7 @@ from ..core import apps as core_apps
 from ..core import backup as core_backup
 from ..core import bench_ops as core_bench_ops
 from ..core import config as core_config
+from ..core import doctor as core_doctor
 from ..core import init as core_init
 from ..core import inspect as core_inspect
 from ..core import label as core_label
@@ -2031,6 +2032,39 @@ def axi_config() -> None:
     assert result.data is not None  # show_config always returns a ConfigReport
     emit_result(result.data, warnings=result.warnings)
     raise typer.Exit(0)
+
+
+# ------------------------------------------------------------------------------ doctor
+
+
+@app.command("doctor")
+def axi_doctor() -> None:
+    """Run the system-wide, read-only environment preflight; emit it as one TOON document.
+
+    Answers "can cwcli operate on this machine at all" - Docker, cwcli's own
+    on-disk footprint, storage, sendme, and the gh/glab credential-bridge
+    dependencies - as a single fast, non-interactive read, so a fleet can gate a
+    run on it before driving any instance. Every check's ``status`` token
+    (``pass``/``warn``/``fail``) is machine-readable; an agent gates on the
+    token, never on parsing ``detail`` prose (the ``where``/``inspect``
+    precedent).
+
+    Strictly read-only: no check starts a container, installs anything, writes a
+    config file, or triggers an interactive login flow. Always runs every check
+    (no ``--fast``/selection flags - the surviving check set is already
+    fast-band).
+
+    Exit codes mirror the human ``cwcli doctor`` (the maintainer's ruled
+    contract, identical on both surfaces): 0 when every check is pass/warn, 1
+    when any check fails. A WARN never blocks - doctor is a chainable preflight
+    gate and cosmetic findings must not stop a script.
+    """
+    result = core_doctor.run_all()
+    report = result.data
+    assert report is not None  # run_all always returns a DoctorReport
+
+    emit_result(report)
+    raise typer.Exit(0 if report.ok else 1)
 
 
 # ------------------------------------------------------------------------------- init

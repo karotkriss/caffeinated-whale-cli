@@ -11,6 +11,7 @@ from .commands import rm as rm_cmd
 from .commands import start as start_cmd
 from .commands import stop as stop_cmd
 from .commands.backup import backup as _backup_cmd
+from .commands.doctor import doctor as _doctor_cmd
 from .commands.init import init as _init_cmd
 from .commands.inspect import inspect as inspect_cmd_func
 from .commands.label import label as _label_cmd
@@ -126,6 +127,7 @@ app.command("unlock")(_unlock_cmd)
 app.command("scale")(_scale_cmd)
 app.command("restore")(_restore_cmd)
 app.command("backup")(_backup_cmd)
+app.command("doctor")(_doctor_cmd)
 
 
 def cli():
