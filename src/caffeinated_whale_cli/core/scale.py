@@ -395,13 +395,13 @@ def scale(
     every serving bench in the instance. A no-op needs no consent.
     """
     project_name = validate_project_slug(project_name)
-    core_docker.ensure_compose_available()
     if to is not None and to < 1:
         raise CwcliError(
             ErrorKind.USAGE,
             "scale.bad_to",
             "--to must be a positive number of benches.",
         )
+    core_docker.ensure_compose_available()
 
     compose_path = _compose_path(project_name)
 

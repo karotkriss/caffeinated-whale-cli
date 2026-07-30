@@ -466,6 +466,21 @@ def test_missing_compose_is_not_found(wiring):
     assert exc.value.kind is ErrorKind.NOT_FOUND
 
 
+def test_bad_to_wins_before_missing_compose_plugin(wiring, monkeypatch):
+    compose_probes = []
+
+    def no_plugin_run(cmd, cwd=None, capture_output=None, **kwargs):
+        compose_probes.append(cmd)
+        return SimpleNamespace(returncode=1, stdout=b"", stderr=b"unknown command")
+
+    monkeypatch.setattr(core_scale.subprocess, "run", no_plugin_run)
+    with pytest.raises(CwcliError) as exc:
+        core_scale.scale("proj", to=0, consent=True)
+    assert exc.value.kind is ErrorKind.USAGE
+    assert exc.value.code == "scale.bad_to"
+    assert compose_probes == []
+
+
 def test_missing_compose_plugin_refuses_before_any_mutation(wiring, monkeypatch):
     wiring.write_compose("proj", _compose())
     wiring.benches = [_bench("/workspace/frappe-bench")]
