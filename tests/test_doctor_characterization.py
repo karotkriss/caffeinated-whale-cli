@@ -29,8 +29,16 @@ def _report(checks):
     return DoctorReport(checks=checks, passed=passed, warned=warned, failed=failed, ok=failed == 0)
 
 
-def _check(id_, title, group, status, detail, fix=None):
-    return CheckResult(id=id_, title=title, group=group, status=status, detail=detail, fix=fix)
+def _check(id_, title, group, status, detail, fix=None, version_verified=None):
+    return CheckResult(
+        id=id_,
+        title=title,
+        group=group,
+        status=status,
+        detail=detail,
+        fix=fix,
+        version_verified=version_verified,
+    )
 
 
 def _patch(monkeypatch, report):
@@ -59,6 +67,27 @@ class TestDoctorRendering:
         _patch(monkeypatch, report)
         result = runner.invoke(app, [])
         assert "unused fix" not in result.stdout
+
+    def test_unverified_version_uses_unknown_glyph_and_shows_refresh_hint(self, monkeypatch):
+        report = _report(
+            [
+                _check(
+                    "c4",
+                    "cwcli version",
+                    "cwcli",
+                    CheckStatus.PASS,
+                    "2.1.0 (release build); could not verify update freshness",
+                    "run `cwcli self-update --check` to refresh",
+                    False,
+                )
+            ]
+        )
+        _patch(monkeypatch, report)
+        result = runner.invoke(app, [])
+        assert "?" in result.stdout
+        assert "could not verify" in result.stdout
+        assert "update freshness" in result.stdout
+        assert "self-update --check" in result.stdout
 
     def test_verbose_shows_check_ids(self, monkeypatch):
         report = _report([_check("c1", "Docker", "Docker", CheckStatus.PASS, "ok")])

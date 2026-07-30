@@ -20,11 +20,23 @@ def _report(checks):
     return DoctorReport(checks=checks, passed=passed, warned=warned, failed=failed, ok=failed == 0)
 
 
-def _check(id_="c1", status=CheckStatus.PASS, detail="ok", fix=None):
+def _check(
+    id_="c1",
+    status=CheckStatus.PASS,
+    detail="ok",
+    fix=None,
+    version_verified=None,
+):
     from caffeinated_whale_cli.core.doctor import CheckResult
 
     return CheckResult(
-        id=id_, title="Docker", group="Docker", status=status, detail=detail, fix=fix
+        id=id_,
+        title="Docker",
+        group="Docker",
+        status=status,
+        detail=detail,
+        fix=fix,
+        version_verified=version_verified,
     )
 
 
@@ -54,6 +66,30 @@ class TestAxiDoctor:
         assert "warn" in out
         assert "c1" in out and "c8" in out
         assert_is_one_toon_document(out)
+
+    def test_version_freshness_is_machine_readable_when_unverified(self, monkeypatch):
+        report = _report(
+            [
+                _check(
+                    "c4",
+                    CheckStatus.PASS,
+                    "2.1.0; could not verify update freshness",
+                    "run cwcli self-update --check",
+                    False,
+                )
+            ]
+        )
+        monkeypatch.setattr(
+            axi_mod.core_doctor,
+            "run_all",
+            lambda: Result(status=Status.OK, data=report),
+        )
+        result = runner.invoke(axi_mod.app, ["doctor"])
+        assert result.exit_code == 0
+        assert "version_verified" in result.stdout
+        assert "false" in result.stdout
+        assert "could not verify update freshness" in result.stdout
+        assert_is_one_toon_document(result.stdout)
 
     def test_warn_exits_zero_chainable_preflight_gate(self, monkeypatch):
         report = _report([_check("c8", CheckStatus.WARN, "not installed", "install it")])

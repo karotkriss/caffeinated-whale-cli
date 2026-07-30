@@ -5,6 +5,11 @@ glyph-checklist rendering and the ``-v`` detail toggle. Every check, its
 severity, and its suggested fix all live in the core so the human and ``axi``
 surfaces render the exact same findings.
 
+The checks do not write state.
+Building cwcli's command tree has one accepted shared-infrastructure exception:
+the pre-existing cache layer idempotently creates cwcli's private cache
+directory and applies mode 0700 at import time.
+
 Exit codes (the maintainer's ruled contract, identical on both surfaces): a
 WARN never blocks (exit 0), a FAIL exits non-zero - doctor is a chainable
 preflight gate, and warnings are never a reason to stop a script.
@@ -30,8 +35,13 @@ def _print_check(check: CheckResult, *, verbose: bool) -> None:
     # escaped bracket (`\\[`) or "[c1]" is silently swallowed as an unknown tag.
     tag = f"[dim]\\[{check.id}][/dim] " if verbose else ""
     name = f"{check.title:<32}"
-    console.print(f"  {_GLYPHS[check.status]} {tag}{name}{check.detail}")
-    if check.fix and check.status is not CheckStatus.PASS:
+    glyph = "[bold yellow]?[/bold yellow]" if check.version_verified is False else _GLYPHS[
+        check.status
+    ]
+    console.print(f"  {glyph} {tag}{name}{check.detail}")
+    if check.fix and (
+        check.status is not CheckStatus.PASS or check.version_verified is False
+    ):
         console.print(f"      [dim]-> {check.fix}[/dim]")
 
 
@@ -42,8 +52,9 @@ def doctor(
 ) -> None:
     """Check whether cwcli can operate on this machine: Docker, storage, tools.
 
-    Strictly read-only: doctor never starts a container, installs anything, or
-    writes a config file - it observes and suggests the fix command to run.
+    The checks never start a container, install anything, or write config.
+    Building cwcli's command tree may idempotently initialize cwcli's private
+    cache directory through the shared cache layer.
     Every check always runs (no tiers, no selection flags).
     """
     result = run_all()

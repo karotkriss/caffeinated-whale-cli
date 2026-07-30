@@ -19,7 +19,7 @@ A command-line interface (CLI) for managing Frappe/ERPNext Docker instances duri
 - **Private App Repos** - `apps install`/`apps update` authenticate private GitHub/GitLab app fetches through your host's already-signed-in `gh`/`glab`, with no token ever entering the container
 - **Update Management** - App updates with automatic migrations and lock cleanup
 - **Self-Update** - Upgrade cwcli itself to the latest release with `cwcli self-update` (install-method aware)
-- **Environment Preflight** - Strictly read-only checks for Docker, disk space, and tool dependencies with `cwcli doctor` (chainable exit code, `cwcli axi doctor` for agents)
+- **Environment Preflight** - Read-only checks for Docker, disk space, and tool dependencies with `cwcli doctor` (chainable exit code, `cwcli axi doctor` for agents; the shared cache layer may idempotently initialize cwcli's private cache directory while building the command tree)
 - **Update Notices** - A passive, once/day "a newer cwcli is available" hint on stderr, shown only to a human at a TTY
 - **Auto-Inspection** - Background process to keep project cache fresh automatically
 - **System Integration** - Auto-start on system boot with platform-specific configurations
@@ -1755,9 +1755,16 @@ cwcli doctor [OPTIONS]
 |--------|-------------|
 | `-v`, `--verbose` | Show each check's stable id (e.g. `[c2]`) alongside its title |
 
-**Strictly read-only:** doctor never starts a container, installs anything, or
-writes a config file - every finding pairs with the command to run to fix it
-yourself.
+**Read-only checks:** doctor never starts a container, installs anything, or
+writes a config file.
+There is one accepted shared-infrastructure exception before the checks run:
+building the command tree for `cwcli doctor` or `cwcli axi doctor` imports the
+pre-existing cache layer, which may idempotently create cwcli's private cache
+directory and apply mode `0700`.
+It does not touch project data.
+Making that initialization lazy is tracked separately as
+`cwcli-cache-dir-lazy-init`; this caveat should disappear when that lands.
+Every finding pairs with the command to run to fix it yourself.
 
 **Checks always run in full** (no tiers, no selection flags), grouped into
 Docker, cwcli, Storage, Transfer, and Git hosting, plus a cross-instance
@@ -1776,7 +1783,11 @@ cwcli doctor -v       # same, with each check's stable id shown
 ```
 
 For agents, `cwcli axi doctor` emits the same checks as one TOON document with
-a machine-readable `status` token per row - see [the `axi` surface](#for-agents-the-cwcli-axi-surface).
+a machine-readable `status` token per row.
+The version row also carries `version_verified`, so `status: pass` with
+`version_verified: false` is explicitly unverified rather than a claim that the
+installed version is current.
+See [the `axi` surface](#for-agents-the-cwcli-axi-surface).
 
 ---
 

@@ -1,4 +1,4 @@
-"""``core.doctor`` - a system-wide, strictly read-only environment preflight.
+"""``core.doctor`` - a system-wide, read-only environment preflight.
 
 ``cwcli doctor`` answers "can cwcli operate on this machine at all", not "is this
 instance healthy" (that stays ``status``/``inspect``'s job - see the project
@@ -16,6 +16,14 @@ Where the tempting mutation sits right next to a read (auto-inspect's
 fix the very thing a uid/gid check reads), this module calls the read-only
 primitive instead - see the report's "read-only tripwires" (T1-T10) section for
 the full list of mutations deliberately not called here.
+
+There is one accepted, narrow exception outside the checks themselves.
+Importing cwcli to build the Typer command tree for ``cwcli doctor`` or
+``cwcli axi doctor`` imports ``utils.db_utils``, whose pre-existing module-load
+initialization creates cwcli's private cache directory and applies mode 0700.
+That cwcli-wide operation is idempotent and never touches project data.
+The structurally correct lazy initialization is tracked separately as
+``cwcli-cache-dir-lazy-init``; this exception should disappear when that lands.
 
 Severity is a closed three-tier set (pass/warn/fail) - no fourth
 "not applicable" state, per the maintainer's ruling. An optional tool that is
@@ -75,6 +83,7 @@ class CheckResult:
     status: CheckStatus
     detail: str
     fix: str | None = None
+    version_verified: bool | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -103,8 +112,15 @@ class Check:
     run: Callable[[], tuple[CheckStatus, str, str | None]]
 
 
-def _outcome(status: CheckStatus, detail: str, fix: str | None = None) -> tuple:
-    return (status, detail, fix)
+def _outcome(
+    status: CheckStatus,
+    detail: str,
+    fix: str | None = None,
+    *,
+    version_verified: bool | None = None,
+) -> tuple:
+    outcome = (status, detail, fix)
+    return (*outcome, version_verified) if version_verified is not None else outcome
 
 
 def _probe_version(cmd: list[str]) -> str | None:
@@ -228,17 +244,22 @@ def _check_version() -> tuple:
     if info is None:
         return _outcome(
             CheckStatus.PASS,
-            f"{current} ({provenance}); update freshness unknown; "
-            "run `cwcli self-update --check` for a live answer",
-            "run `cwcli self-update --check`",
+            f"{current} ({provenance}); could not verify update freshness",
+            "run `cwcli self-update --check` to refresh",
+            version_verified=False,
         )
     if info.is_outdated:
         return _outcome(
             CheckStatus.WARN,
             f"{current} ({provenance}); {info.latest} is available",
             "run `cwcli self-update`",
+            version_verified=True,
         )
-    return _outcome(CheckStatus.PASS, f"{current} ({provenance}); up to date")
+    return _outcome(
+        CheckStatus.PASS,
+        f"{current} ({provenance}); up to date",
+        version_verified=True,
+    )
 
 
 def _check_home_layout() -> tuple:
@@ -552,9 +573,12 @@ def run_all() -> Result[DoctorReport]:
     results: list[CheckResult] = []
     for check in _CHECKS:
         try:
-            status, detail, fix = check.run()
+            outcome = check.run()
+            status, detail, fix = outcome[:3]
+            version_verified = outcome[3] if len(outcome) > 3 else None
         except Exception as e:  # a single check must never take the whole report down
             status, detail, fix = CheckStatus.FAIL, f"check failed unexpectedly: {e}", None
+            version_verified = None
         results.append(
             CheckResult(
                 id=check.id,
@@ -563,6 +587,7 @@ def run_all() -> Result[DoctorReport]:
                 status=status,
                 detail=detail,
                 fix=fix,
+                version_verified=version_verified,
             )
         )
 
