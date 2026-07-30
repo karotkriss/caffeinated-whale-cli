@@ -198,6 +198,7 @@ def command_name(
 def my_command():
     # Automatically handles:
     # - Docker not installed
+    # - Docker Desktop stopped on WSL
     # - Docker daemon not running
     # - Connection errors
     pass

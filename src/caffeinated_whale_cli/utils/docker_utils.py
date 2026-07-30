@@ -26,12 +26,13 @@ def handle_docker_errors(func):
     """
     A decorator that handles Docker errors with clear distinction between:
     - Docker not installed
+    - Docker Desktop stopped on WSL
     - Docker daemon not running
     """
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        # Check if Docker is installed (in PATH)
+        # Check whether the Docker CLI resolves in PATH.
         if not shutil.which("docker"):
             if _is_wsl():
                 # /usr/bin/docker is a symlink into the Docker Desktop WSL
