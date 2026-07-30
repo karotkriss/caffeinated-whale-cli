@@ -317,6 +317,26 @@ class TestHomeLayout:
         assert "not writable" in detail
         assert fix
 
+    def test_fail_when_home_is_a_file(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.write_text("not a directory")
+        monkeypatch.setattr(core_doctor, "cwcli_home", lambda: home)
+        status, detail, fix = core_doctor._check_home_layout()
+        assert status is CheckStatus.FAIL
+        assert "not a directory" in detail
+        assert fix
+
+    def test_fail_when_cache_is_a_file(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / "cache").write_text("not a directory")
+        monkeypatch.setattr(core_doctor, "cwcli_home", lambda: home)
+        status, detail, fix = core_doctor._check_home_layout()
+        assert status is CheckStatus.FAIL
+        assert "cache" in detail
+        assert "not a directory" in detail
+        assert fix
+
 
 class TestAutoInspect:
     def test_pass_when_disabled(self, monkeypatch):
@@ -453,12 +473,32 @@ class TestSendme:
             "caffeinated_whale_cli.utils.sendme_utils.is_sendme_installed", lambda: True
         )
         monkeypatch.setattr(
-            "caffeinated_whale_cli.utils.sendme_utils.get_sendme_path", lambda: fake
+            "caffeinated_whale_cli.utils.sendme_utils.get_sendme_command", lambda: str(fake)
         )
         monkeypatch.setattr(core_doctor, "_probe_version", lambda _cmd: "sendme 0.30.0")
         status, detail, _fix = core_doctor._check_sendme()
         assert status is CheckStatus.PASS
         assert "0.30.0" in detail
+
+    def test_uses_executable_path_resolved_by_sendme_helper(self, monkeypatch, tmp_path):
+        resolved = tmp_path / "path-bin" / "sendme"
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.sendme_utils.is_sendme_installed", lambda: True
+        )
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.sendme_utils.get_sendme_command",
+            lambda: str(resolved),
+        )
+        commands = []
+        monkeypatch.setattr(
+            core_doctor,
+            "_probe_version",
+            lambda command: commands.append(command) or "sendme 0.30.0",
+        )
+        status, detail, _fix = core_doctor._check_sendme()
+        assert status is CheckStatus.PASS
+        assert str(resolved) in detail
+        assert commands == [[str(resolved), "--version"]]
 
 
 class TestGitHostingCli:
