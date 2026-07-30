@@ -174,7 +174,16 @@ class TestSnapshot:
         with urllib.request.urlopen(daemon.base + "/", timeout=_TIMEOUT) as resp:  # noqa: S310
             body = resp.read().decode()
         assert resp.status == 200
-        assert resp.headers["Content-Security-Policy"] == "frame-ancestors 'none'"
+        # The daemon sends the page's OWN content CSP, because in the desktop
+        # shell's remote-origin shape Tauri cannot inject one into a remote
+        # server's response (Phase 0 report section 8.2). connect-src 'self' is
+        # the load-bearing clause: it confines fetch/EventSource to this origin
+        # so instance data cannot be exfiltrated to a remote host.
+        csp = resp.headers["Content-Security-Policy"]
+        assert csp == serve_cmd._CONSOLE_CSP
+        assert "default-src 'none'" in csp
+        assert "connect-src 'self'" in csp
+        assert "frame-ancestors 'none'" in csp
         assert resp.headers["X-Frame-Options"] == "DENY"
         assert 'data-app="cw-console"' in body
         assert "EventSource" in body
@@ -192,6 +201,26 @@ class TestSnapshot:
         assert "throwaway test page" not in body
         assert "rm-site" not in body
         assert "Delete instance" not in body
+
+    def test_required_action_inputs_reject_whitespace_only_natively(self, daemon):
+        """P2-1: a whitespace-only value used to pass ``required``, get dropped
+        by the JS ``.trim()`` guard, and close the modal with no action and no
+        feedback - two adjacent invalid inputs behaving completely differently.
+
+        The fix makes native validation catch whitespace exactly as it catches
+        empty, on every required rail-action input that is then trimmed. The
+        ``site`` input is deliberately NOT in this set: blank there means the
+        bench's default site, a valid choice, not a silent discard.
+        """
+        with urllib.request.urlopen(daemon.base + "/", timeout=_TIMEOUT) as resp:  # noqa: S310
+            body = resp.read().decode()
+        for name in ('name="label"', 'name="app"', 'name="ref"'):
+            tag = body.split(name, 1)[1].split(">", 1)[0]
+            assert "required" in tag
+            assert r"pattern=&quot;.*\S.*&quot;" in tag or r'pattern=".*\S.*"' in tag, tag
+        # The optional site input keeps blank meaning "default site".
+        site_tag = body.split('name="site"', 1)[1].split(">", 1)[0]
+        assert "required" not in site_tag
 
     def test_the_console_ui_keeps_its_tightening_invariants(self, daemon):
         """The phase-4 hardening pins: connection honesty, honest boot state,

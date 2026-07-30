@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "linux-zoom",
+  "description": "Linux ONLY. Tauri implements page zoom on Linux as a JS polyfill that calls the core:webview:allow-set-webview-zoom IPC command; a remote origin can only reach IPC if a capability grants it (Phase 0 report section 6.3). This grants exactly that one command to the daemon's loopback origin and nothing else, so Ctrl +/-/0 and Ctrl+wheel resize text (WCAG 1.4.4). Windows needs no permission - WebView2 maps zoom to a native setting - and keeps the empty default set.",
+  "platforms": ["linux"],
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*", "http://localhost:*"]
+  },
+  "permissions": ["core:webview:allow-set-webview-zoom"]
+}

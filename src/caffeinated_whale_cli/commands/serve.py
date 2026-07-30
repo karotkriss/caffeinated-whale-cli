@@ -153,6 +153,37 @@ CONSOLE_PAGE = (
     files("caffeinated_whale_cli.commands").joinpath("console.html").read_text(encoding="utf-8")
 )
 
+# Content-Security-Policy served WITH the Console page.
+#
+# The desktop shell (the Tauri app) loads this page from the daemon's own
+# loopback origin - a REMOTE origin from the app's point of view - so Tauri's
+# own ``app.security.csp`` cannot govern it: Tauri injects CSP only into assets
+# it serves itself, never into a remote server's response (cwcli-tauri Phase 0
+# report, section 8.2). The policy that protects the page in the remote-origin
+# shape is therefore the one the DAEMON sends here, not one in tauri.conf.json.
+#
+# ``connect-src 'self'`` is the load-bearing clause: it confines every ``fetch``
+# and ``EventSource`` to this origin, so a page rendering instance names, ports
+# and log tails cannot be turned into an exfiltration channel to a remote host.
+# ``default-src 'none'`` denies everything not named below; framing, base-URI
+# hijack and form posts are all shut. ``'unsafe-inline'`` is required because
+# ``console.html`` is a single self-contained file with one inline ``<script>``
+# and one inline ``<style>`` and zero external dependencies (that zero-dep shape
+# is exactly what makes the desktop port free); it has no HTML sink that renders
+# user-controlled markup, so the inline-script surface is small.
+# ponytail: 'unsafe-inline' is the known ceiling; the upgrade path is a per-load
+# nonce on the two inline blocks if the page ever grows a dynamic-HTML sink.
+_CONSOLE_CSP = (
+    "default-src 'none'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "connect-src 'self'; "
+    "base-uri 'none'; "
+    "form-action 'none'; "
+    "frame-ancestors 'none'"
+)
+
 
 def auth_token() -> str | None:
     """The configured bearer token, or None when authentication is off.
@@ -290,7 +321,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
-        self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+        self.send_header("Content-Security-Policy", _CONSOLE_CSP)
         self.send_header("X-Frame-Options", "DENY")
         self.end_headers()
         self.wfile.write(raw)
@@ -1162,3 +1193,23 @@ def serve(
         stop.set()
         httpd.shutdown()
         httpd.server_close()
+
+
+if __name__ == "__main__":
+    # The INTERNAL entry point for the desktop shell.
+    #
+    # ``serve`` is deliberately NOT registered on ``cwcli`` or ``cwcli axi``
+    # (it is absent from ``main.py``) because the Console was not ready to ship
+    # as a released surface. The desktop app is its sanctioned consumer, and it
+    # launches the daemon by running THIS MODULE as a script:
+    #
+    #     <python> -m caffeinated_whale_cli.commands.serve --host 127.0.0.1 --port <p>
+    #
+    # where ``<python>`` is the interpreter that runs the user's installed
+    # ``cwcli`` (the shell reads it from the console script's shebang). Running
+    # the module is an internal path: it adds no ``[project.scripts]`` entry, no
+    # Typer command, and nothing that a ``cwcli --help`` or ``cwcli axi`` listing
+    # can discover, so the public surfaces stay exactly as withheld. ``typer.run``
+    # gives this one function real ``--host/--port/--interval`` parsing without a
+    # registered app.
+    typer.run(serve)
