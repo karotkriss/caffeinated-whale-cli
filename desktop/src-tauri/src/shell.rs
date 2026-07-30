@@ -366,9 +366,8 @@ pub fn navigation_allowed(url: &tauri::Url, daemon_port: u16) -> bool {
     let scheme = url.scheme();
     let host = url.host_str().unwrap_or("");
     let port = url.port();
-    let bundled =
-        (scheme == "tauri" && host == "localhost" && port.is_none())
-            || (scheme == "http" && host == "tauri.localhost" && port.is_none());
+    let bundled = (scheme == "tauri" && host == "localhost" && port.is_none())
+        || (scheme == "http" && host == "tauri.localhost" && port.is_none());
     let daemon = daemon_port != 0
         && scheme == "http"
         && matches!(host, "127.0.0.1" | "localhost")
@@ -420,10 +419,7 @@ mod tests {
             &url("http://127.0.0.1.evil.com:8765/"),
             8765
         ));
-        assert!(!navigation_allowed(
-            &url("https://127.0.0.1:8765/"),
-            8765
-        ));
+        assert!(!navigation_allowed(&url("https://127.0.0.1:8765/"), 8765));
         assert!(!navigation_allowed(
             &url("tauri://elsewhere/index.html"),
             8765
