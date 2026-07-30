@@ -290,8 +290,18 @@ def _check_auto_inspect() -> tuple:
     """
     from ..utils import auto_inspect as daemon
     from ..utils.config_utils import read_auto_inspect_config
+    from toml import TomlDecodeError
 
-    if not read_auto_inspect_config().get("enabled"):
+    try:
+        config = read_auto_inspect_config()
+    except (OSError, TomlDecodeError) as e:
+        return _outcome(
+            CheckStatus.WARN,
+            f"could not read auto-inspect config: {e}",
+            "fix permissions or syntax in the file shown by `cwcli config path`",
+        )
+
+    if not config.get("enabled"):
         return _outcome(CheckStatus.PASS, "disabled")
 
     record = daemon._read_daemon_record()

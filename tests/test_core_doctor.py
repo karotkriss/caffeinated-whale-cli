@@ -374,6 +374,22 @@ class TestHomeLayout:
 
 
 class TestAutoInspect:
+    def test_absent_config_defaults_to_disabled_without_creating_it(
+        self, tmp_path, monkeypatch
+    ):
+        config_file = tmp_path / "config" / "config.toml"
+        monkeypatch.setattr(config_utils, "CONFIG_FILE", config_file)
+        assert config_utils.read_auto_inspect_config()["enabled"] is False
+        assert not config_file.exists()
+        assert not config_file.parent.exists()
+
+    def test_present_invalid_config_does_not_default_to_disabled(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("[auto_inspect\n")
+        monkeypatch.setattr(config_utils, "CONFIG_FILE", config_file)
+        with pytest.raises(config_utils.toml.TomlDecodeError):
+            config_utils.read_auto_inspect_config()
+
     def test_pass_when_disabled(self, monkeypatch):
         monkeypatch.setattr(
             "caffeinated_whale_cli.utils.config_utils.read_auto_inspect_config",
@@ -431,6 +447,17 @@ class TestAutoInspect:
         status, detail, _fix = core_doctor._check_auto_inspect()
         assert status is CheckStatus.WARN
         assert "not running" in detail
+
+    def test_warn_when_existing_config_cannot_be_read(self, monkeypatch):
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.config_utils.read_auto_inspect_config",
+            lambda: (_ for _ in ()).throw(PermissionError("permission denied")),
+        )
+        status, detail, fix = core_doctor._check_auto_inspect()
+        assert status is CheckStatus.WARN
+        assert "could not read" in detail
+        assert "permission denied" in detail
+        assert "config path" in fix
 
 
 class TestFreeSpace:
