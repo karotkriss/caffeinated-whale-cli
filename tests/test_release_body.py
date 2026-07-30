@@ -77,7 +77,20 @@ def rendered(tmp_path):
         notes: str | None = None,
         *,
         omit_notes: bool = False,
+        tags: tuple[str, ...] | None = None,
     ):
+        if tags is not None:
+            existing_tags = subprocess.run(
+                ["git", "tag", "--list"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.splitlines()
+            if existing_tags:
+                _git(repo, "tag", "--delete", *existing_tags)
+            for tag in tags:
+                _git(repo, "tag", tag)
         if not omit_notes:
             note = _default_notes() if notes is None else notes
             (repo / ".github" / "release-notes" / f"v{version}.md").write_text(note)
@@ -100,10 +113,27 @@ class TestTheHeaderIsGenerated:
         assert re.fullmatch(rf"{re.escape(expected_prefix)}{DATE_RE}\)", first_line)
 
     def test_the_first_release_has_no_compare_link(self, rendered):
-        body = rendered("0.35.0").stdout
+        body = rendered("0.35.0", tags=("v0.35.0",)).stdout
         first_line = body.splitlines()[0]
         assert re.fullmatch(rf"## \[0\.35\.0\] \({DATE_RE}\)", first_line)
         assert "compare" not in first_line
+
+    def test_preview_before_the_current_tag_exists_uses_the_previous_release(self, rendered):
+        body = rendered("2.1.0").stdout
+        first_line = body.splitlines()[0]
+        expected_prefix = f"## [2.1.0](https://github.com/{REPO}/compare/v2.0.0...v2.1.0) ("
+        assert first_line.startswith(expected_prefix)
+
+    def test_preview_after_the_current_tag_exists_uses_the_same_previous_release(
+        self, rendered
+    ):
+        body = rendered(
+            "2.1.0",
+            tags=("v0.35.0", "v1.0.0", "v1.1.0", "v2.0.0", "v2.1.0"),
+        ).stdout
+        first_line = body.splitlines()[0]
+        expected_prefix = f"## [2.1.0](https://github.com/{REPO}/compare/v2.0.0...v2.1.0) ("
+        assert first_line.startswith(expected_prefix)
 
     def test_the_body_does_not_repeat_the_name_or_version(self, rendered):
         """The release title carries both; the body must not repeat them."""
@@ -175,6 +205,34 @@ class TestSectionsAreOmittedWhenUnused:
             "### Other Changes",
         ):
             assert heading in result.stdout
+
+    def test_an_empty_section_before_a_populated_section_is_rejected(self, rendered):
+        notes = """> A release with one empty section.
+
+### Bug Fixes
+
+### Other Changes
+
+* Updated docs.
+"""
+        result = rendered("1.1.0", notes=notes)
+        assert result.returncode != 0
+        assert "empty section: ### Bug Fixes" in result.stderr
+
+    def test_adding_a_bullet_to_the_section_allows_it_to_publish(self, rendered):
+        notes = """> A release with populated sections.
+
+### Bug Fixes
+
+* Fixed the thing.
+
+### Other Changes
+
+* Updated docs.
+"""
+        result = rendered("1.1.0", notes=notes)
+        assert result.returncode == 0
+        assert notes in result.stdout
 
 
 class TestHeadingsAreValidated:

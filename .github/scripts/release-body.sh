@@ -24,8 +24,7 @@
 # .github/release-notes/v<version>.md - no template can write that copy, so
 # this script requires the file and refuses to invent a substitute. A section
 # that does not apply to a given release is omitted entirely (heading and
-# all) rather than published empty, which is an authoring discipline this
-# script only partially enforces (see below).
+# all) rather than published empty.
 set -euo pipefail
 
 VERSION="${1:?usage: release-body.sh <version> <owner/repo>}"
@@ -46,40 +45,41 @@ fi
 # fails the release instead of publishing as an unrecognised, never-omitted
 # section.
 ALLOWED_HEADING_RE='^### (Upgrade Steps|Breaking Changes|New Features|Bug Fixes|Performance Improvements|Other Changes)$'
+section_heading=
+section_has_entry=0
 while IFS= read -r line || [ -n "$line" ]; do
-  if [[ "$line" == "###"* ]] && ! [[ "$line" =~ $ALLOWED_HEADING_RE ]]; then
-    echo "error: ${NOTES} has an unrecognised heading: ${line}" >&2
-    echo "Only these are valid: Upgrade Steps, Breaking Changes, New Features, Bug Fixes, Performance Improvements, Other Changes." >&2
-    exit 1
+  if [[ "$line" == "###"* ]]; then
+    if ! [[ "$line" =~ $ALLOWED_HEADING_RE ]]; then
+      echo "error: ${NOTES} has an unrecognised heading: ${line}" >&2
+      echo "Only these are valid: Upgrade Steps, Breaking Changes, New Features, Bug Fixes, Performance Improvements, Other Changes." >&2
+      exit 1
+    fi
+    if [ -n "$section_heading" ] && [ "$section_has_entry" -eq 0 ]; then
+      echo "error: ${NOTES} has an empty section: ${section_heading}" >&2
+      exit 1
+    fi
+    section_heading="$line"
+    section_has_entry=0
+    continue
+  fi
+  if [ -n "$section_heading" ] && [[ "$line" =~ ^\*\ [^[:space:]].* ]]; then
+    section_has_entry=1
+    if [ "$section_heading" = "### Upgrade Steps" ] && [[ "$line" != *"[ACTION REQUIRED]"* ]]; then
+      echo "error: ${NOTES} has an Upgrade Steps entry with no [ACTION REQUIRED] flag: ${line}" >&2
+      exit 1
+    fi
   fi
 done <"$NOTES"
 
-# Upgrade Steps exists to flag manual consumer action, so every bullet in it
-# must carry the [ACTION REQUIRED] flag the template requires.
-if grep -q '^### Upgrade Steps$' "$NOTES"; then
-  in_section=0
-  while IFS= read -r line || [ -n "$line" ]; do
-    if [ "$line" = "### Upgrade Steps" ]; then
-      in_section=1
-      continue
-    fi
-    if [ "$in_section" -eq 1 ]; then
-      if [[ "$line" == "###"* ]]; then
-        in_section=0
-        continue
-      fi
-      if [[ "$line" == \** ]] && [[ "$line" != *"[ACTION REQUIRED]"* ]]; then
-        echo "error: ${NOTES} has an Upgrade Steps entry with no [ACTION REQUIRED] flag: ${line}" >&2
-        exit 1
-      fi
-    fi
-  done <"$NOTES"
+if [ -n "$section_heading" ] && [ "$section_has_entry" -eq 0 ]; then
+  echo "error: ${NOTES} has an empty section: ${section_heading}" >&2
+  exit 1
 fi
 
 # The version tag directly below this one, in version order. Empty for the
 # first release, which has nothing to compare against.
 PREV_TAG=$(git tag --list 'v*.*.*' --sort=-v:refname \
-  | awk -v cur="$TAG" 'found { print; exit } $0 == cur { found = 1 }')
+  | awk -v cur="$TAG" '$0 != cur { print; exit }')
 
 DATE=$(date -u +%F)
 
