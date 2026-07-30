@@ -1,0 +1,89 @@
+name: Desktop shell
+
+# The desktop shell is a NEW artifact class (a Rust/Tauri build) that the Python
+# CI jobs never touch, so it gets its own workflow. A desktop app that only
+# builds on the author's machine is not shipped: this proves the shell compiles,
+# lints clean, and passes its unit tests on BOTH first-class targets - Linux
+# (WebKitGTK) and Windows (WebView2) - on every change that touches it.
+#
+# It is compile + lint + test, NOT a full installer bundle: bundling (with
+# signing, the updater key and multi-resolution icons) is Phase 2 per the
+# feasibility plan, and `bundle.active` is false in tauri.conf.json.
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+# Only run when the shell, its Rust sources, or this workflow actually change.
+# A pure Python/docs change short-circuits with no wasted Rust toolchain setup.
+# (paths: on the job's triggers, not a top-level filter that would leave a
+# required check pending forever - the same reasoning e2e.yml documents.)
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux (WebKitGTK)
+            os: ubuntu-latest
+          - name: Windows (WebView2)
+            os: windows-latest
+
+    defaults:
+      run:
+        working-directory: desktop/src-tauri
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+
+      # Tauri 2's Linux prerequisites (WebKitGTK etc.). Windows already ships
+      # WebView2 and needs no extra system packages to compile.
+      - name: Install Linux WebView dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            pkg-config
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/src-tauri/target
+          key: ${{ matrix.os }}-cargo-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
+          restore-keys: ${{ matrix.os }}-cargo-
+
+      - name: Formatting (cargo fmt)
+        run: cargo fmt --all --check
+
+      - name: Lint (clippy, warnings are errors)
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Compile
+        run: cargo build --locked
+
+      - name: Unit tests
+        run: cargo test --locked

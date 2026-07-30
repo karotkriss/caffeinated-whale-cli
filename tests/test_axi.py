@@ -8,6 +8,7 @@ typed-error rendering + exit codes, needs-choice -> flag-naming usage error exit
 
 import importlib
 import re
+import subprocess
 import sys
 
 import click
@@ -1058,6 +1059,28 @@ class TestServeUnreachable:
         for group in axi_mod.app.registered_groups:
             sub = {c.name for c in group.typer_instance.registered_commands}
             assert "serve" not in sub
+
+    def test_desktop_shell_launches_the_daemon_via_the_internal_module_entry(self):
+        """The desktop app (the sanctioned Console consumer) starts the daemon by
+        running the serve MODULE as a script -
+        ``<python> -m caffeinated_whale_cli.commands.serve`` - never ``cwcli serve``,
+        which does not exist. This keeps the withheld surface withheld: the module
+        entry adds no ``[project.scripts]`` binary and no Typer command, so nothing a
+        ``cwcli --help`` or ``cwcli axi`` listing can discover changes, yet the shell
+        has a real launch path. Run with ``--help`` so it parses argv and exits 0
+        without binding a socket or touching Docker."""
+        result = subprocess.run(
+            [sys.executable, "-m", "caffeinated_whale_cli.commands.serve", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "--host" in result.stdout and "--port" in result.stdout
+        # It is genuinely a module entry, not a re-exposed console script.
+        from caffeinated_whale_cli.main import app as root_app
+
+        assert "cwcli-serve" not in {c.name for c in root_app.registered_commands}
 
 
 class TestNoMutatingAxiSelfUpdate:
