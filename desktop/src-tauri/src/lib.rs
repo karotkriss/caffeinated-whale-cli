@@ -14,7 +14,9 @@
 
 mod shell;
 
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::io;
+use std::process::{Child, ExitStatus};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -25,7 +27,49 @@ use shell::ShellError;
 /// The daemon child, held so it can be ended when the app exits. WSL and Linux
 /// both release the port once this dies (see `shell::stop_daemon`).
 #[derive(Default)]
-struct DaemonHandle(Mutex<Option<std::process::Child>>);
+struct DaemonHandle {
+    shutting_down: AtomicBool,
+    child: Mutex<Option<Child>>,
+}
+
+impl DaemonHandle {
+    fn register(&self, mut child: Child) -> bool {
+        let Ok(mut guard) = self.child.lock() else {
+            shell::stop_daemon(&mut child);
+            return false;
+        };
+        if self.shutting_down.load(Ordering::Acquire) || guard.is_some() {
+            shell::stop_daemon(&mut child);
+            return false;
+        }
+        *guard = Some(child);
+        true
+    }
+
+    fn try_wait(&self) -> io::Result<Option<ExitStatus>> {
+        let mut guard = self
+            .child
+            .lock()
+            .map_err(|_| io::Error::other("daemon handle lock is unavailable"))?;
+        guard
+            .as_mut()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "daemon is not registered"))?
+            .try_wait()
+    }
+
+    fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(Ordering::Acquire)
+    }
+
+    fn shutdown(&self) {
+        self.shutting_down.store(true, Ordering::Release);
+        if let Ok(mut guard) = self.child.lock() {
+            if let Some(mut child) = guard.take() {
+                shell::stop_daemon(&mut child);
+            }
+        }
+    }
+}
 
 /// Entry point invoked from `main`.
 pub fn run() {
@@ -93,6 +137,12 @@ pub fn run() {
 /// Reserve a port, start the daemon, wait for it, then swap the WebView from the
 /// local splash to the live Console. Any failure renders into the splash.
 fn bringup(handle: AppHandle, port_slot: Arc<AtomicU16>) {
+    let Some(daemon) = handle.try_state::<DaemonHandle>() else {
+        return;
+    };
+    if daemon.is_shutting_down() {
+        return;
+    }
     let Some(window) = handle.get_webview_window("main") else {
         return;
     };
@@ -119,18 +169,21 @@ fn bringup(handle: AppHandle, port_slot: Arc<AtomicU16>) {
     };
 
     status("Starting the cwcli daemon\u{2026}");
+    if daemon.is_shutting_down() {
+        return;
+    }
     let child = match shell::spawn_daemon(&argv) {
         Ok(c) => c,
         Err(e) => return fail(&e),
     };
-    if let Some(state) = handle.try_state::<DaemonHandle>() {
-        if let Ok(mut g) = state.0.lock() {
-            *g = Some(child);
-        }
+    if !daemon.register(child) {
+        return;
     }
 
     status("Waiting for the daemon\u{2026}");
-    if let Err(e) = shell::wait_until_ready(port, Duration::from_secs(40)) {
+    if let Err(e) =
+        shell::wait_until_ready(port, Duration::from_secs(40), || daemon.try_wait())
+    {
         end_daemon(&handle); // spawned but never served: leave no orphan
         return fail(&e);
     }
@@ -152,11 +205,7 @@ fn bringup(handle: AppHandle, port_slot: Arc<AtomicU16>) {
 
 fn end_daemon(handle: &AppHandle) {
     if let Some(state) = handle.try_state::<DaemonHandle>() {
-        if let Ok(mut guard) = state.0.lock() {
-            if let Some(mut child) = guard.take() {
-                shell::stop_daemon(&mut child);
-            }
-        }
+        state.shutdown();
     }
 }
 

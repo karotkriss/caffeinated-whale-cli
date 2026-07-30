@@ -7,10 +7,10 @@
 //! Python core reached through that daemon (the feasibility architecture's hard
 //! boundary: the Rust layer renders the Console, it does not reimplement it).
 
-use std::io::{Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::Duration;
 
 /// The daemon is started by running the serve MODULE as a script, never the
@@ -226,13 +226,10 @@ fn decode_utf16le(bytes: &[u8]) -> String {
 
 /// Spawn the daemon. The child is held so the shell can end it on exit.
 pub fn spawn_daemon(argv: &[String]) -> Result<Child, ShellError> {
-    Command::new(&argv[0])
+    let mut child = Command::new(&argv[0])
         .args(&argv[1..])
-        // The daemon's own stdout/stderr are a banner and warnings; keep them off
-        // this process's streams so they cannot corrupt anything, and inherit is
-        // avoided so a detached GUI has no console to write to.
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| {
             ShellError::new(
@@ -240,7 +237,57 @@ pub fn spawn_daemon(argv: &[String]) -> Result<Child, ShellError> {
                 "The cwcli daemon could not be started.",
                 e.to_string(),
             )
-        })
+        })?;
+    if let Some(stdout) = child.stdout.take() {
+        log_daemon_stream("stdout", stdout, log::Level::Info);
+    }
+    if let Some(stderr) = child.stderr.take() {
+        log_daemon_stream("stderr", stderr, log::Level::Warn);
+    }
+    Ok(child)
+}
+
+fn log_daemon_stream(
+    stream_name: &'static str,
+    stream: impl Read + Send + 'static,
+    level: log::Level,
+) {
+    let thread = std::thread::Builder::new()
+        .name(format!("cwcli-daemon-{stream_name}"))
+        .spawn(move || {
+            let mut reader = BufReader::new(stream);
+            let mut line = Vec::new();
+            loop {
+                line.clear();
+                match reader.read_until(b'\n', &mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        while matches!(line.last(), Some(b'\n' | b'\r')) {
+                            line.pop();
+                        }
+                        log::log!(
+                            target: "cwcli_daemon",
+                            level,
+                            "{stream_name}: {}",
+                            String::from_utf8_lossy(&line)
+                        );
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            target: "cwcli_daemon",
+                            "could not read daemon {stream_name}: {error}"
+                        );
+                        break;
+                    }
+                }
+            }
+        });
+    if let Err(error) = thread {
+        log::warn!(
+            target: "cwcli_daemon",
+            "could not start daemon {stream_name} logger: {error}"
+        );
+    }
 }
 
 /// Poll loopback until the daemon answers `HTTP 200` on `/`, bounded.
@@ -248,9 +295,30 @@ pub fn spawn_daemon(argv: &[String]) -> Result<Child, ShellError> {
 /// A plain TCP connect proves only the socket is open; this reads the status
 /// line so "answers" means the handler is actually serving. `bootstrap()` runs
 /// before the daemon binds its port, so an open port here is a served page.
-pub fn wait_until_ready(port: u16, timeout: Duration) -> Result<(), ShellError> {
+pub fn wait_until_ready(
+    port: u16,
+    timeout: Duration,
+    mut child_status: impl FnMut() -> io::Result<Option<ExitStatus>>,
+) -> Result<(), ShellError> {
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {
+        match child_status() {
+            Ok(Some(status)) => {
+                return Err(ShellError::new(
+                    "daemon_exited",
+                    format!("The cwcli daemon exited before it began serving ({status})."),
+                    "Check the app log for the daemon's output, then try reopening.",
+                ));
+            }
+            Err(error) => {
+                return Err(ShellError::new(
+                    "daemon_status_failed",
+                    "The cwcli daemon's status could not be checked.",
+                    format!("{error}. Try reopening the app."),
+                ));
+            }
+            Ok(None) => {}
+        }
         if http_root_ok(port) {
             return Ok(());
         }
@@ -323,6 +391,7 @@ pub fn stop_daemon(child: &mut Child) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     fn url(s: &str) -> tauri::Url {
         tauri::Url::parse(s).unwrap()
@@ -387,5 +456,27 @@ mod tests {
                 "31999"
             ]
         );
+    }
+
+    #[test]
+    fn readiness_fails_promptly_when_the_daemon_exits() {
+        let p = pick_free_port().expect("a loopback port");
+        #[cfg(not(target_os = "windows"))]
+        let mut child = Command::new("sh")
+            .args(["-c", "exit 23"])
+            .spawn()
+            .expect("short-lived child");
+        #[cfg(target_os = "windows")]
+        let mut child = Command::new("cmd")
+            .args(["/C", "exit 23"])
+            .spawn()
+            .expect("short-lived child");
+
+        let started = Instant::now();
+        let error = wait_until_ready(p, Duration::from_secs(5), || child.try_wait())
+            .expect_err("an exited daemon must fail readiness");
+
+        assert_eq!(error.code, "daemon_exited");
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 }
