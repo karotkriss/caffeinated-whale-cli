@@ -82,6 +82,7 @@ jobs:
 
     defaults:
       run:
+        shell: bash
         working-directory: desktop/src-tauri
 
     steps:

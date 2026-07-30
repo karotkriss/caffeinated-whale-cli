@@ -1076,7 +1076,8 @@ class TestServeUnreachable:
             timeout=60,
         )
         assert result.returncode == 0, result.stderr
-        assert "--host" in result.stdout and "--port" in result.stdout
+        help_text = click.unstyle(result.stdout)
+        assert "--host" in help_text and "--port" in help_text
         # It is genuinely a module entry, not a re-exposed console script.
         from caffeinated_whale_cli.main import app as root_app
 

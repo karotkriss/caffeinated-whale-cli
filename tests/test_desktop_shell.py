@@ -14,7 +14,14 @@ def test_the_configured_splash_exists_and_is_tracked():
     assert splash == ROOT / "desktop" / "dist" / "index.html"
     assert splash.is_file()
     tracked = subprocess.run(
-        ["git", "ls-files", "--error-unmatch", splash.relative_to(ROOT).as_posix()],
+        [
+            "git",
+            "-c",
+            f"safe.directory={ROOT}",
+            "ls-files",
+            "--error-unmatch",
+            splash.relative_to(ROOT).as_posix(),
+        ],
         cwd=ROOT,
         capture_output=True,
         text=True,

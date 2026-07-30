@@ -191,9 +191,7 @@ fn bringup(handle: AppHandle, port_slot: Arc<AtomicU16>) {
     }
 
     status("Waiting for the daemon\u{2026}");
-    if let Err(e) =
-        shell::wait_until_ready(port, Duration::from_secs(40), || daemon.try_wait())
-    {
+    if let Err(e) = shell::wait_until_ready(port, Duration::from_secs(40), || daemon.try_wait()) {
         end_daemon(&handle); // spawned but never served: leave no orphan
         return fail(&e);
     }
