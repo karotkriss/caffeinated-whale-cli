@@ -1501,7 +1501,9 @@ Backup: 20251112_105638-development_localhost-database.sql.gz
 ```
 
 For scripted (non-interactive) receives, pass `-y`/`--yes` to skip the confirmation and the missing-apps prompt. Without a TTY and without `--yes`, cwcli refuses and exits non-zero rather than silently overwriting the site's data.
-Before downloading, cwcli validates the target site and requires at least 2 GiB free in its temporary [transfer directory](#architecture).
+Before transferring, cwcli requires at least 2 GiB free in its temporary [transfer directory](#architecture).
+It checks before the sender stages a backup and before the receiver downloads one.
+The receiver also validates the target site before downloading.
 The backup may require more space.
 Set `TMPDIR`, `TEMP`, or `TMP` to place transfers on a larger filesystem, in that priority order, or relocate all cwcli data with `CWCLI_HOME`.
 Copying the downloaded backup into the container streams through a bounded pipe instead of creating another full host-side copy.
