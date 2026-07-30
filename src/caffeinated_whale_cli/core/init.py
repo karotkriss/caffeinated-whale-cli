@@ -513,6 +513,7 @@ def init_instance(
     """
     emit = on_event or _noop
     project_name = validate_project_slug(project_name)
+    core_docker.ensure_compose_available()
 
     # Port conflicts, ahead of any filesystem work (as today). Skipped on the
     # auto_start=True retry: that call shape is the frontend's stage-1 re-invoke
