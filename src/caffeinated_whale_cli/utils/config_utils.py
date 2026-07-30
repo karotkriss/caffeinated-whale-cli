@@ -145,6 +145,20 @@ def get_auto_inspect_config() -> dict:
     return auto_inspect
 
 
+def read_auto_inspect_config() -> dict:
+    """Read auto-inspect configuration without creating config state."""
+    default = {"enabled": False, "interval": 3600, "startup_enabled": False}
+    if not CONFIG_FILE.is_file():
+        return default
+    try:
+        with open(CONFIG_FILE) as f:
+            config = toml.load(f)
+    except (OSError, toml.TomlDecodeError):
+        return default
+    auto_inspect = config.get("auto_inspect", default)
+    return auto_inspect if isinstance(auto_inspect, dict) else default
+
+
 def set_auto_inspect_enabled(enabled: bool):
     """Enable or disable auto-inspect."""
     config = load_config()

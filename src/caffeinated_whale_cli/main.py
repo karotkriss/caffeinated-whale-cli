@@ -29,11 +29,24 @@ from .commands.where import where as _where_cmd
 
 __version__ = importlib.metadata.version("caffeinated-whale-cli")
 
+
+_READ_ONLY_DOCTOR = "cwcli.read_only_doctor"
+
+
+class RootGroup(axi_cmd.ToonGroup):
+    def parse_args(self, ctx: typer.Context, args: list[str]) -> list[str]:
+        ctx.meta[_READ_ONLY_DOCTOR] = args[:1] == ["doctor"] or args[:2] == [
+            "axi",
+            "doctor",
+        ]
+        return super().parse_args(ctx, args)
+
+
 app = typer.Typer(
     # The axi-aware group so `cwcli axi <verb>` parse failures (mounted under this
     # top-level command) render as TOON on stdout; non-axi commands keep Typer's
     # default rich rendering. See commands/axi.py:ToonGroup.
-    cls=axi_cmd.ToonGroup,
+    cls=RootGroup,
     help="""
     A command-line tool to help you create, manage, and back up
     your Frappe and ERPNext Docker instances.
@@ -88,12 +101,12 @@ def main(
     # Initialize context object
     ctx.ensure_object(dict)
 
-    # Passive, once/day, stderr-only "update available" notice (never blocks,
-    # never touches stdout). Covers the human CLI and `cwcli axi` in one seam,
-    # since this root callback runs before every subcommand.
-    from .update_notice import notify_if_outdated
+    # Doctor is exempt because its strict read-only contract forbids even a
+    # detached refresh of the version cache.
+    if not ctx.meta.get(_READ_ONLY_DOCTOR):
+        from .update_notice import notify_if_outdated
 
-    notify_if_outdated()
+        notify_if_outdated()
 
 
 app.command("init")(_init_cmd)
