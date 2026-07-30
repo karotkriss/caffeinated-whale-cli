@@ -128,7 +128,7 @@ Publishes package to PyPI when a version tag is pushed.
 
 **Steps:**
 1. Extract and verify version from `__init__.py`, `pyproject.toml`, and git tag
-2. Compose the release card from the required hand-written note and generated footer
+2. Compose the release card from the generated header and required hand-written note
 3. Build package (`uv build --no-create-gitignore`)
 4. Publish to PyPI (`uv publish --check-url https://pypi.org/simple/`, authenticated with `UV_PUBLISH_TOKEN`)
 5. Create the GitHub release with the composed card and build artifacts

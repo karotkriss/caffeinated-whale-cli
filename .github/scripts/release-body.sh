@@ -3,23 +3,28 @@
 #
 # Usage: release-body.sh <version> <owner/repo>
 #
-# The card is two parts:
-#   - The "What's New" or "What's Changed" copy, written by hand per release in
-#     .github/release-notes/v<version>.md. It is advertising copy in the
-#     reader's terms, which no template can generate, so this script requires
-#     the file and refuses to invent a substitute.
-#   - The footer (Installation, CHANGELOG link, Full Changelog), which is
-#     entirely mechanical and is generated here so it cannot drift: the
-#     CHANGELOG link is pinned to this release's tag, never a branch, and the
-#     comparison runs from the previous version tag to this one.
+# The body is Chris's cross-project release-notes template (see the global
+# agent instructions), not a cwcli-specific shape:
 #
-# A major release must name its flagship entry with a `<!-- flagship -->`
-# marker directly above it; smaller releases may do so (see
-# .github/release-notes/README.md). This script is the one place that
-# guarantees the marked entry leads: it refuses to publish (rather than
-# rewrite hand-written Markdown) when the marker is buried, duplicated, or
-# detached from an entry, and it strips the marker itself so it never reaches
-# the published card.
+#   ## [<version>](<diff url>) (<date>)
+#
+#   > Description
+#
+#   ### Upgrade Steps
+#   ### Breaking Changes
+#   ### New Features
+#   ### Bug Fixes
+#   ### Performance Improvements
+#   ### Other Changes
+#
+# The header (version link + release date) is mechanical and generated here
+# so it cannot drift: the diff link runs from the previous release tag to
+# this one and is empty for the first release, which has nothing to compare
+# against. Everything after it is hand-written per release in
+# .github/release-notes/v<version>.md - no template can write that copy, so
+# this script requires the file and refuses to invent a substitute. A section
+# that does not apply to a given release is omitted entirely (heading and
+# all) rather than published empty.
 set -euo pipefail
 
 VERSION="${1:?usage: release-body.sh <version> <owner/repo>}"
@@ -28,14 +33,6 @@ REPO="${2:?usage: release-body.sh <version> <owner/repo>}"
 TAG="v${VERSION}"
 NOTES=".github/release-notes/${TAG}.md"
 
-if [[ "$VERSION" =~ ^[0-9]+\.0\.0$ ]]; then
-  EXPECTED_HEADING="### What's New"
-  RELEASE_SIZE="major"
-else
-  EXPECTED_HEADING="### What's Changed"
-  RELEASE_SIZE="smaller"
-fi
-
 if [ ! -s "$NOTES" ]; then
   echo "error: ${NOTES} is missing or empty." >&2
   echo "The release card's copy is written by hand per release." >&2
@@ -43,139 +40,54 @@ if [ ! -s "$NOTES" ]; then
   exit 1
 fi
 
-FIRST_LINE=$(head -n 1 "$NOTES")
-if [ "$FIRST_LINE" != "$EXPECTED_HEADING" ]; then
-  echo "error: ${NOTES} must open with exactly \"${EXPECTED_HEADING}\" because ${VERSION} is a ${RELEASE_SIZE} release." >&2
-  exit 1
-fi
-
-IS_MAJOR="false"
-if [ "$RELEASE_SIZE" = "major" ]; then
-  IS_MAJOR="true"
-fi
-
-# Validate and strip the `<!-- flagship -->` marker, optional only for smaller
-# releases (see the header comment above and .github/release-notes/README.md
-# for the authoring rule).
-# A malformed/duplicated/detached marker, or one that does not lead the change
-# list, stops the release rather than silently reordering hand-written prose;
-# a major release with no marker at all also stops, since guessing a headline
-# would be worse than requiring one. This is the ONE place the rule is
-# enforced, so a later change to the format only needs to touch this program.
-# shellcheck disable=SC2016
-FLAGSHIP_AWK='
-{ lines[NR] = $0 }
-END {
-  n = NR
-  malformed = 0
-  canon_count = 0
-  canon_line = 0
-  for (i = 1; i <= n; i++) {
-    line = lines[i]
-    canonical = line
-    sub(/\r$/, "", canonical)
-    if (canonical == "<!-- flagship -->") {
-      canon_count++
-      canon_line = i
-      continue
-    }
-    low = tolower(line)
-    if (index(low, "<!--") > 0 && index(low, "-->") > 0 && index(low, "flagship") > 0) {
-      malformed++
-      malformed_line = i
-    }
-  }
-
-  if (malformed > 0) {
-    print "error: malformed flagship marker on line " malformed_line " - it must be exactly \"<!-- flagship -->\" flush left on its own line" > "/dev/stderr"
-    exit 1
-  }
-  if (canon_count > 1) {
-    print "error: multiple <!-- flagship --> markers found - only one entry may be marked flagship" > "/dev/stderr"
-    exit 1
-  }
-  if (canon_count == 0) {
-    if (is_major == "true") {
-      print "error: a major release requires an explicit <!-- flagship --> marker naming the headline entry - see .github/release-notes/README.md" > "/dev/stderr"
+# Every "### " heading in the hand-written note must be one of the six
+# sections the template allows, so a typo'd heading (e.g. "### Bugfixes")
+# fails the release instead of publishing as an unrecognised, never-omitted
+# section.
+ALLOWED_HEADING_RE='^### (Upgrade Steps|Breaking Changes|New Features|Bug Fixes|Performance Improvements|Other Changes)$'
+section_heading=
+section_has_entry=0
+while IFS= read -r line || [ -n "$line" ]; do
+  if [[ "$line" == "###"* ]]; then
+    if ! [[ "$line" =~ $ALLOWED_HEADING_RE ]]; then
+      echo "error: ${NOTES} has an unrecognised heading: ${line}" >&2
+      echo "Only these are valid: Upgrade Steps, Breaking Changes, New Features, Bug Fixes, Performance Improvements, Other Changes." >&2
       exit 1
-    }
-    for (i = 1; i <= n; i++) print lines[i]
-    exit 0
-  }
+    fi
+    if [ -n "$section_heading" ] && [ "$section_has_entry" -eq 0 ]; then
+      echo "error: ${NOTES} has an empty section: ${section_heading}" >&2
+      exit 1
+    fi
+    section_heading="$line"
+    section_has_entry=0
+    continue
+  fi
+  if [ -n "$section_heading" ] && [[ "$line" =~ ^\*\ [^[:space:]].* ]]; then
+    section_has_entry=1
+    if [ "$section_heading" = "### Upgrade Steps" ] && [[ "$line" != *"[ACTION REQUIRED]"* ]]; then
+      echo "error: ${NOTES} has an Upgrade Steps entry with no [ACTION REQUIRED] flag: ${line}" >&2
+      exit 1
+    fi
+  fi
+done <"$NOTES"
 
-  prev_blank = (lines[canon_line - 1] ~ /^[ \t]*$/)
-  next_exists = (canon_line < n)
-  next_blank = next_exists ? (lines[canon_line + 1] ~ /^[ \t]*$/) : 1
-  if (!prev_blank) {
-    print "error: the <!-- flagship --> marker on line " canon_line " must start its own paragraph - insert a blank line above it" > "/dev/stderr"
-    exit 1
-  }
-  if (!next_exists || next_blank) {
-    print "error: the <!-- flagship --> marker on line " canon_line " is detached from any entry - it must sit directly above the entry'"'"'s first line with no blank line between them" > "/dev/stderr"
-    exit 1
-  }
-  if (lines[canon_line + 1] !~ /^\*\*[^*].*\*\*[ \t\r]*$/) {
-    print "error: the <!-- flagship --> marker on line " canon_line " must sit directly above an entry that begins with a bold benefit sentence" > "/dev/stderr"
-    exit 1
-  }
-
-  ngroups = 0
-  in_group = 0
-  for (i = 2; i <= n; i++) {
-    blank = (lines[i] ~ /^[ \t]*$/)
-    if (!blank && !in_group) {
-      ngroups++
-      group_start[ngroups] = i
-      in_group = 1
-    }
-    if (blank) in_group = 0
-  }
-
-  marked_group = 0
-  for (g = 1; g <= ngroups; g++) {
-    if (group_start[g] == canon_line) { marked_group = g; break }
-  }
-  if (marked_group != 1) {
-    print "error: the flagship entry (line " canon_line ") does not lead the change list - move it to be the first entry after the heading" > "/dev/stderr"
-    exit 1
-  }
-
-  for (i = 1; i <= n; i++) {
-    if (i == canon_line) continue
-    print lines[i]
-  }
-}
-'
-
-if ! NOTES_BODY=$(awk -v is_major="$IS_MAJOR" "$FLAGSHIP_AWK" "$NOTES"); then
+if [ -n "$section_heading" ] && [ "$section_has_entry" -eq 0 ]; then
+  echo "error: ${NOTES} has an empty section: ${section_heading}" >&2
   exit 1
 fi
 
 # The version tag directly below this one, in version order. Empty for the
 # first release, which has nothing to compare against.
 PREV_TAG=$(git tag --list 'v*.*.*' --sort=-v:refname \
-  | awk -v cur="$TAG" 'found { print; exit } $0 == cur { found = 1 }')
+  | awk -v cur="$TAG" '$0 != cur { print; exit }')
 
-printf '%s\n' "$NOTES_BODY"
-cat <<EOF
-
-### Installation
-
-\`\`\`bash
-# with uv (recommended)
-uv tool install --upgrade caffeinated-whale-cli
-
-# or with pip
-pip install --upgrade caffeinated-whale-cli
-
-# or run it once without installing
-uvx --from caffeinated-whale-cli cwcli --version
-\`\`\`
-
-See the [CHANGELOG](https://github.com/${REPO}/blob/${TAG}/CHANGELOG.md) for the full detail.
-EOF
+DATE=$(date -u +%F)
 
 if [ -n "$PREV_TAG" ]; then
-  echo
-  echo "**Full Changelog**: https://github.com/${REPO}/compare/${PREV_TAG}...${TAG}"
+  printf '## [%s](https://github.com/%s/compare/%s...%s) (%s)\n\n' \
+    "$VERSION" "$REPO" "$PREV_TAG" "$TAG" "$DATE"
+else
+  printf '## [%s] (%s)\n\n' "$VERSION" "$DATE"
 fi
+
+cat "$NOTES"
