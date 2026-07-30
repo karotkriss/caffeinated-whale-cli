@@ -150,11 +150,8 @@ def read_auto_inspect_config() -> dict:
     default = {"enabled": False, "interval": 3600, "startup_enabled": False}
     if not CONFIG_FILE.is_file():
         return default
-    try:
-        with open(CONFIG_FILE) as f:
-            config = toml.load(f)
-    except (OSError, toml.TomlDecodeError):
-        return default
+    with open(CONFIG_FILE) as f:
+        config = toml.load(f)
     auto_inspect = config.get("auto_inspect", default)
     return auto_inspect if isinstance(auto_inspect, dict) else default
 
