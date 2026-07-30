@@ -210,12 +210,12 @@ def _check_version() -> tuple:
 
     A stale local binary and a source-build version number that "lies" (does not
     reflect the working tree's actual commits) both recurred as real confusion;
-    surfacing both here is cheap since ``core.version`` already computes them,
-    fail-open, for the passive notice.
+    surfacing both here is cheap since ``core.version`` already computes them.
+    Freshness is read only from an existing fresh cache so this check never
+    fetches or writes.
     """
-    result = core_version.check(use_cache=True)
-    info = result.data
-    assert info is not None
+    info = core_version.read_cached_only()
+    current = info.current if info is not None else core_version.current_version()
     build = core_version.build_info()
     if build.source == "source":
         kind = "editable source build" if build.editable else "source build"
@@ -225,17 +225,20 @@ def _check_version() -> tuple:
     else:
         provenance = "release build"
 
-    if info.latest is None:
+    if info is None:
         return _outcome(
-            CheckStatus.PASS, f"{info.current} ({provenance}); could not check for updates"
+            CheckStatus.PASS,
+            f"{current} ({provenance}); update freshness unknown; "
+            "run `cwcli self-update --check` for a live answer",
+            "run `cwcli self-update --check`",
         )
     if info.is_outdated:
         return _outcome(
             CheckStatus.WARN,
-            f"{info.current} ({provenance}); {info.latest} is available",
+            f"{current} ({provenance}); {info.latest} is available",
             "run `cwcli self-update`",
         )
-    return _outcome(CheckStatus.PASS, f"{info.current} ({provenance}); up to date")
+    return _outcome(CheckStatus.PASS, f"{current} ({provenance}); up to date")
 
 
 def _check_home_layout() -> tuple:
@@ -286,9 +289,9 @@ def _check_auto_inspect() -> tuple:
     ``is_running()``, which prunes a stale/recycled pid file as a side effect.
     """
     from ..utils import auto_inspect as daemon
-    from ..utils.config_utils import get_auto_inspect_config
+    from ..utils.config_utils import read_auto_inspect_config
 
-    if not get_auto_inspect_config().get("enabled"):
+    if not read_auto_inspect_config().get("enabled"):
         return _outcome(CheckStatus.PASS, "disabled")
 
     record = daemon._read_daemon_record()

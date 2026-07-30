@@ -14,10 +14,12 @@ import subprocess
 import pytest
 
 from caffeinated_whale_cli.core import doctor as core_doctor
+from caffeinated_whale_cli.core import version as core_version
 from caffeinated_whale_cli.core.doctor import CheckStatus
 from caffeinated_whale_cli.core.envelope import Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from caffeinated_whale_cli.core.list import InstanceDTO
+from caffeinated_whale_cli.utils import config_utils
 
 
 class TestRegistry:
@@ -112,6 +114,38 @@ class TestRunAll:
         assert report.failed == 1
         assert report.ok is False
         assert "kaboom" in report.checks[0].detail
+
+    def test_version_and_config_checks_create_nothing_and_never_fetch(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("CWCLI_HOME", str(tmp_path))
+        config_file = tmp_path / "config" / "config.toml"
+        monkeypatch.setattr(config_utils, "CONFIG_FILE", config_file)
+        monkeypatch.setattr(core_version, "_current_version", lambda: "2.1.0")
+        monkeypatch.setattr(
+            core_version,
+            "build_info",
+            lambda: core_version.BuildInfo(source="release"),
+        )
+        network_calls = []
+        monkeypatch.setattr(
+            core_version.urllib.request,
+            "urlopen",
+            lambda *_a, **_k: network_calls.append(True),
+        )
+        monkeypatch.setattr(
+            core_doctor,
+            "_CHECKS",
+            [check for check in core_doctor._CHECKS if check.id in {"c4", "c9"}],
+        )
+
+        report = core_doctor.run_all().data
+
+        assert report is not None
+        assert network_calls == []
+        assert not (tmp_path / "cache" / "version_check.json").exists()
+        assert not config_file.exists()
+        assert not config_file.parent.exists()
 
 
 class TestDockerBinary:
@@ -212,7 +246,7 @@ class TestComposePlugin:
 
 
 class TestVersionCheck:
-    def _info(self, *, current="2.1.0", latest=None, outdated=False):
+    def _info(self, *, current="2.1.0", latest="2.1.0", outdated=False):
         return core_doctor.core_version.VersionInfo(
             current=current,
             latest=latest,
@@ -230,8 +264,8 @@ class TestVersionCheck:
     def test_pass_up_to_date(self, monkeypatch):
         monkeypatch.setattr(
             core_doctor.core_version,
-            "check",
-            lambda **_k: core_doctor.Result(status=Status.OK, data=self._info(latest="2.1.0")),
+            "read_cached_only",
+            lambda: self._info(latest="2.1.0"),
         )
         monkeypatch.setattr(core_doctor.core_version, "build_info", lambda: self._build())
         status, detail, fix = core_doctor._check_version()
@@ -242,10 +276,8 @@ class TestVersionCheck:
     def test_warn_outdated(self, monkeypatch):
         monkeypatch.setattr(
             core_doctor.core_version,
-            "check",
-            lambda **_k: core_doctor.Result(
-                status=Status.OK, data=self._info(latest="9.9.9", outdated=True)
-            ),
+            "read_cached_only",
+            lambda: self._info(latest="9.9.9", outdated=True),
         )
         monkeypatch.setattr(core_doctor.core_version, "build_info", lambda: self._build())
         status, detail, fix = core_doctor._check_version()
@@ -253,22 +285,25 @@ class TestVersionCheck:
         assert "9.9.9" in detail
         assert "self-update" in fix
 
-    def test_pass_when_pypi_unreachable_fail_open(self, monkeypatch):
+    def test_pass_with_honest_unknown_when_cache_is_absent(self, monkeypatch):
         monkeypatch.setattr(
             core_doctor.core_version,
-            "check",
-            lambda **_k: core_doctor.Result(status=Status.WARNING, data=self._info(latest=None)),
+            "read_cached_only",
+            lambda: None,
         )
+        monkeypatch.setattr(core_doctor.core_version, "current_version", lambda: "2.1.0")
         monkeypatch.setattr(core_doctor.core_version, "build_info", lambda: self._build())
-        status, detail, _fix = core_doctor._check_version()
+        status, detail, fix = core_doctor._check_version()
         assert status is CheckStatus.PASS
-        assert "could not check" in detail
+        assert "freshness unknown" in detail
+        assert "self-update --check" in detail
+        assert "self-update --check" in fix
 
     def test_source_build_provenance_shown(self, monkeypatch):
         monkeypatch.setattr(
             core_doctor.core_version,
-            "check",
-            lambda **_k: core_doctor.Result(status=Status.OK, data=self._info(latest="2.1.0")),
+            "read_cached_only",
+            lambda: self._info(latest="2.1.0"),
         )
         monkeypatch.setattr(
             core_doctor.core_version,
@@ -341,7 +376,7 @@ class TestHomeLayout:
 class TestAutoInspect:
     def test_pass_when_disabled(self, monkeypatch):
         monkeypatch.setattr(
-            "caffeinated_whale_cli.utils.config_utils.get_auto_inspect_config",
+            "caffeinated_whale_cli.utils.config_utils.read_auto_inspect_config",
             lambda: {"enabled": False},
         )
         status, detail, _fix = core_doctor._check_auto_inspect()
@@ -350,7 +385,7 @@ class TestAutoInspect:
 
     def test_pass_when_enabled_and_alive(self, monkeypatch):
         monkeypatch.setattr(
-            "caffeinated_whale_cli.utils.config_utils.get_auto_inspect_config",
+            "caffeinated_whale_cli.utils.config_utils.read_auto_inspect_config",
             lambda: {"enabled": True},
         )
         monkeypatch.setattr(
@@ -373,7 +408,7 @@ class TestAutoInspect:
             lambda: called.append("is_running") or False,
         )
         monkeypatch.setattr(
-            "caffeinated_whale_cli.utils.config_utils.get_auto_inspect_config",
+            "caffeinated_whale_cli.utils.config_utils.read_auto_inspect_config",
             lambda: {"enabled": True},
         )
         monkeypatch.setattr(
@@ -386,7 +421,7 @@ class TestAutoInspect:
 
     def test_warn_when_pid_dead(self, monkeypatch):
         monkeypatch.setattr(
-            "caffeinated_whale_cli.utils.config_utils.get_auto_inspect_config",
+            "caffeinated_whale_cli.utils.config_utils.read_auto_inspect_config",
             lambda: {"enabled": True},
         )
         monkeypatch.setattr(

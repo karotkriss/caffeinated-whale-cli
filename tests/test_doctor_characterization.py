@@ -9,6 +9,9 @@ ruled exit contract: warn exits clean (0), fail exits non-zero - identical to
 import typer
 from typer.testing import CliRunner
 
+from caffeinated_whale_cli import main as main_mod
+from caffeinated_whale_cli import update_notice
+from caffeinated_whale_cli.commands import axi as axi_mod
 from caffeinated_whale_cli.commands import doctor as doctor_mod
 from caffeinated_whale_cli.core.doctor import CheckResult, CheckStatus, DoctorReport
 from caffeinated_whale_cli.core.envelope import Result, Status
@@ -98,6 +101,30 @@ class TestDoctorExitContract:
         _patch(monkeypatch, report)
         result = runner.invoke(app, [])
         assert result.exit_code == 1
+
+
+class TestDoctorReadOnlyEntrypoint:
+    def test_human_and_axi_doctor_skip_the_passive_update_refresh(self, monkeypatch):
+        report = _report([])
+        calls = []
+        monkeypatch.setattr(update_notice, "notify_if_outdated", lambda: calls.append(True))
+        monkeypatch.setattr(
+            doctor_mod,
+            "run_all",
+            lambda: Result(status=Status.OK, data=report),
+        )
+        monkeypatch.setattr(
+            axi_mod.core_doctor,
+            "run_all",
+            lambda: Result(status=Status.OK, data=report),
+        )
+
+        human = runner.invoke(main_mod.app, ["doctor"])
+        axi = runner.invoke(main_mod.app, ["axi", "doctor"])
+
+        assert human.exit_code == 0
+        assert axi.exit_code == 0
+        assert calls == []
 
     def test_warn_and_fail_together_still_exits_nonzero(self, monkeypatch):
         report = _report(
