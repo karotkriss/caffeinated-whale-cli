@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 
 use shell::ShellError;
@@ -92,12 +93,10 @@ pub fn run() {
         .manage(DaemonHandle::default())
         .setup(|app| {
             let handle = app.handle().clone();
-
-            // The nav guard needs the daemon's port, which is chosen during
-            // bring-up. Share it: 0 means "no daemon origin allowed yet", so the
-            // only thing loadable before the daemon is up is the bundled splash.
             let port_slot = Arc::new(AtomicU16::new(0));
             let nav_slot = port_slot.clone();
+            let bringup_slot = port_slot.clone();
+            let bringup_started = Arc::new(AtomicBool::new(false));
 
             let window =
                 WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
@@ -113,6 +112,13 @@ pub fn run() {
                     .on_navigation(move |url| {
                         shell::navigation_allowed(url, nav_slot.load(Ordering::Relaxed))
                     })
+                    .on_page_load(move |_window, payload| {
+                        if claim_bringup(payload.event(), &bringup_started) {
+                            let handle = handle.clone();
+                            let port_slot = bringup_slot.clone();
+                            std::thread::spawn(move || bringup(handle, port_slot));
+                        }
+                    })
                     .build()?;
 
             // Phase 0 finding: the window opened minimized on Windows. Show,
@@ -120,9 +126,6 @@ pub fn run() {
             let _ = window.show();
             let _ = window.unminimize();
             let _ = window.set_focus();
-
-            // Bring-up must not block the UI thread.
-            std::thread::spawn(move || bringup(handle, port_slot));
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -132,6 +135,13 @@ pub fn run() {
                 end_daemon(handle);
             }
         });
+}
+
+fn claim_bringup(event: PageLoadEvent, started: &AtomicBool) -> bool {
+    matches!(event, PageLoadEvent::Finished)
+        && started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
 }
 
 /// Reserve a port, start the daemon, wait for it, then swap the WebView from the
@@ -212,4 +222,18 @@ fn end_daemon(handle: &AppHandle) {
 /// JSON-encode a string so it is safe to drop into an `eval`'d JS call.
 fn js_string(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bringup_is_claimed_by_only_the_first_finished_load() {
+        let started = AtomicBool::new(false);
+
+        assert!(!claim_bringup(PageLoadEvent::Started, &started));
+        assert!(claim_bringup(PageLoadEvent::Finished, &started));
+        assert!(!claim_bringup(PageLoadEvent::Finished, &started));
+    }
 }
