@@ -2,7 +2,6 @@ import json
 import subprocess
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_DIR = ROOT / "desktop" / "src-tauri"
 CONFIG = MANIFEST_DIR / "tauri.conf.json"

@@ -51,9 +51,7 @@ def _render_template_pattern(source, name):
             rendered.append("\\")
             break
         escaped = encoded[cursor]
-        rendered.append(
-            {"\\": "\\", "n": "\n", "r": "\r", "t": "\t"}.get(escaped, escaped)
-        )
+        rendered.append({"\\": "\\", "n": "\n", "r": "\r", "t": "\t"}.get(escaped, escaped))
         cursor += 1
     return tag, "".join(rendered)
 
