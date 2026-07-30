@@ -1,5 +1,6 @@
 import functools
 import os
+import platform
 import shutil
 
 import docker
@@ -16,6 +17,11 @@ stderr_console = Console(stderr=True)
 # ``typer``/``rich`` at load time). Import them from there, not from here.
 
 
+def _is_wsl() -> bool:
+    """Same idiom as ``commands/serve.py``'s WSL-forwarding hint - do not fork it."""
+    return "microsoft" in platform.uname().release.lower()
+
+
 def handle_docker_errors(func):
     """
     A decorator that handles Docker errors with clear distinction between:
@@ -27,8 +33,18 @@ def handle_docker_errors(func):
     def wrapper(*args, **kwargs):
         # Check if Docker is installed (in PATH)
         if not shutil.which("docker"):
-            stderr_console.print("[bold red]Error: Docker is not installed.[/bold red]")
-            console.print("Please install Docker from https://www.docker.com/get-started")
+            if _is_wsl():
+                # /usr/bin/docker is a symlink into the Docker Desktop WSL
+                # mount (/mnt/wsl/docker-desktop/...), which vanishes while
+                # Desktop is stopped - an unresolvable binary here means
+                # "stopped", not "never installed".
+                stderr_console.print(
+                    "[bold red]Error: Docker Desktop appears to be stopped.[/bold red]"
+                )
+                console.print("Start Docker Desktop on Windows, then re-run this command.")
+            else:
+                stderr_console.print("[bold red]Error: Docker is not installed.[/bold red]")
+                console.print("Please install Docker from https://www.docker.com/get-started")
             raise typer.Exit(code=1)
 
         try:
