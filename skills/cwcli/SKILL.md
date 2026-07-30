@@ -76,6 +76,7 @@ Exit codes: **0** success (a completed operation, including one with warnings, a
   run-tests      Run 'bench run-tests' for ONE app against ONE named site; emit the report as TOON.
   build          Run 'bench build' to compile the bench's assets; emit the report as TOON.
   config         Report the effective cwcli configuration; emit it as one TOON document; READ-ONLY.
+  doctor         Run the system-wide, read-only environment preflight; emit it as one TOON document.
   init           Provision a new instance, bench, and site; emit the report as TOON (never prompts).
   rm             Permanently remove an instance; emit the outcome as TOON (never prompts).
   rm-site        Permanently drop ONE site; emit the outcome as TOON (never prompts).
