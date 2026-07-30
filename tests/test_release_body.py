@@ -124,9 +124,7 @@ class TestTheHeaderIsGenerated:
         expected_prefix = f"## [2.1.0](https://github.com/{REPO}/compare/v2.0.0...v2.1.0) ("
         assert first_line.startswith(expected_prefix)
 
-    def test_preview_after_the_current_tag_exists_uses_the_same_previous_release(
-        self, rendered
-    ):
+    def test_preview_after_the_current_tag_exists_uses_the_same_previous_release(self, rendered):
         body = rendered(
             "2.1.0",
             tags=("v0.35.0", "v1.0.0", "v1.1.0", "v2.0.0", "v2.1.0"),
