@@ -90,14 +90,21 @@ Read `design/readme.md` (or invoke the `caffeinated-whale-design` skill) before 
 ### App icons
 
 The whole icon set under `src-tauri/icons/` derives from the canonical brand mark, `design/assets/logo-whale.png`.
-The pipeline is reproducible from two committed inputs and one command:
+From the repository root, run:
 
 ```bash
+cd desktop/src-tauri
+
 # 1. Source: the 500x500 mark upscaled to 1024x1024 on a transparent canvas,
 #    committed as icons/app-icon.png (uncropped, un-recoloured per the design system).
-node -e "require('sharp')('../../design/assets/logo-whale.png') \
-  .resize(1024,1024,{fit:'contain',background:{r:0,g:0,b:0,alpha:0},kernel:'lanczos3'}) \
-  .png().toFile('icons/app-icon.png')"
+npx --yes sharp-cli@5.2.0 \
+  --input ../../design/assets/logo-whale.png \
+  --output icons/app-icon.png \
+  --format png \
+  resize 1024 1024 \
+  --fit contain \
+  --background "rgba(0,0,0,0)" \
+  --kernel lanczos3
 
 # 2. Generate every desktop size/format from that source.
 npx @tauri-apps/cli@2 icon icons/app-icon.png
