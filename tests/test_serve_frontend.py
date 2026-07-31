@@ -1692,9 +1692,7 @@ class TestDoctorEndpoint:
             httpd.shutdown()
             httpd.server_close()
 
-    def test_it_refuses_cross_origin_reads_without_dispatch_or_cors(
-        self, daemon, monkeypatch
-    ):
+    def test_it_refuses_cross_origin_reads_without_dispatch_or_cors(self, daemon, monkeypatch):
         monkeypatch.setattr(
             core_doctor,
             "run_all",

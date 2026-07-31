@@ -22,6 +22,12 @@ Endpoints:
 * ``GET /api/instance/<project>/logs`` - bounded ``core.read_logs`` tail
   (same-origin only, like the action endpoint - log lines are more sensitive
   than fleet health, so this read is NOT CORS-open)
+* ``GET /api/instance/<project>/url``  - ``core.url.probe_url`` host URL plus a
+  fresh reachability probe (same-origin only and serialized with project
+  actions because it execs ``curl`` in the container)
+* ``GET /api/doctor``                  - system-wide ``core.doctor.run_all``
+  preflight, preserving every check's status and ``version_verified`` qualifier
+  (same-origin only because it exposes local environment details)
 * ``GET /api/where?q=<term>``          - ``core.where`` cache search, its
   per-row ``project_state`` verified/remembered token passed through unchanged
   (same-origin only, like ``/logs``)
