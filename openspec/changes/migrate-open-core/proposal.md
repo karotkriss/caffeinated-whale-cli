@@ -1,7 +1,7 @@
 ## Why
 
 `open` is the batch the inspect migration (batch 7, `migrate-inspect-core`) just unblocked, and its shape is already settled, not re-decided here.
-The `cwcli-open-handover-design-o9` recon (captain-endorsed, recorded in the CLAUDE.md ledger) measured that `open` was never a handover command: only ONE of its four editor branches hands over (`--docker` -> `exec_into_container` -> `os.execvp`), while `--code`/`--code-insiders`/`--cursor` call `open_in_vscode` and return normally.
+The `cwcli-open-handover-design-o9` recon (captain-endorsed, recorded in the CLAUDE.md ledger) measured that `open` was never wholly a handover command: only its `--docker` branch consumes the calling process contract through `exec_into_container`, while `--code`/`--code-insiders`/`--cursor` call `open_in_vscode` and return normally.
 It is 285 lines of ordinary, returning, envelope-shaped logic behind 3 lines of handover, and the `cwcli-inspect-recon-i7` recon Q8 confirmed its only two logic edges (`open.py:135` fallback populate, `open.py:217` in-memory `--app` freshness) are served by batch 7's surface - both already call `core.inspect` / `core.partial_refresh` today, so nothing blocks it.
 
 Three costs of its un-migrated state, all measured:
@@ -30,9 +30,9 @@ The core returns `select_editor`; the CLI keeps rendering it as today's prompt a
 - **The `--app` pass moves verbatim**: cached-bench match by PATH (never `[0]`), the in-memory `core.partial_refresh` freshness pass (degrade-on-error, never persists), the membership check, and the `{bench}/apps/{app}` working-dir assembly - all pinned by the existing suites.
 - **Editor detection lands in the core** via stdlib `shutil.which` (the `core/version.py` host-side-detection precedent); a requested-but-not-installed editor is `CwcliError(NOT_FOUND)` carrying today's install-URL hint; no flag and nothing installed auto-picks `docker` as today.
   `vscode_utils.select_vscode_editor` and the three `is_*_installed` one-liners are deleted once grep proves the migration left them no caller (a named task, not a silent sweep).
-- **`commands/open.py` thins to a renderer plus the handover**: the four-boolean-flag fusion and its mutual-exclusion error stay frontend (the `apps` fused-`--yes` precedent: flag UX is one frontend's choice), the `ensure_containers_running` prologue and capped `confirm_start` retry mirror `run.py`, prompts stay outside the spinner, and the four-way switch performs the handover - `docker` -> `exec_into_container` (`execvp`), editors -> `vscode_utils.open_in_vscode`.
+- **`commands/open.py` thins to a renderer plus the handover**: the four-boolean-flag fusion and its mutual-exclusion error stay frontend (the `apps` fused-`--yes` precedent: flag UX is one frontend's choice), the `ensure_containers_running` prologue and capped `confirm_start` retry mirror `run.py`, prompts stay outside the spinner, and the four-way switch performs the handover - `docker` -> `exec_into_container` (whose docstring owns the platform split), editors -> `vscode_utils.open_in_vscode`.
   `exec_into_container` and `open_in_vscode` are untouched.
-- **There is deliberately NO `axi open` verb, and its absence becomes asserted**: not because the plan will not serialize (it will - four strings), but because `execvp` destroys the process that owes `axi` its TOON document.
+- **There is deliberately NO `axi open` verb, and its absence becomes asserted**: not because the plan will not serialize (it will - four strings), but because the interactive Docker branch consumes the process that owes `axi` its TOON document.
   A test pins the verb's absence (the `axi apps install`/`uninstall` non-verb precedent) so it cannot slip in on the wrong premise.
 
 ## Impact

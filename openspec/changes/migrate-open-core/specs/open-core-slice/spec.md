@@ -27,7 +27,7 @@ It SHALL NOT carry an argv, a command line, or any live Docker object: the mecha
 ### Requirement: open_plan is a plain function and the frontend performs the handover
 
 `open_plan` SHALL be a plain function returning `Result[LaunchTarget]`; it SHALL NOT return an iterator, SHALL NOT be split into a plan/stream or plan/apply pair, and SHALL NOT perform or wrap the launch.
-The handover SHALL stay in the frontend: `commands/open.py` switches on `LaunchTarget.editor` - `"docker"` calls `exec_into_container(container_name, working_dir=...)` (the codebase's only `execvp`, unchanged in `utils/docker_utils.py`), and the editor values call `vscode_utils.open_in_vscode(...)`, which returns normally.
+The handover SHALL stay in the frontend: `commands/open.py` switches on `LaunchTarget.editor` - `"docker"` calls `exec_into_container(container_name, working_dir=...)`, whose docstring owns the POSIX process-replacement and Windows waited-child split, and the editor values call `vscode_utils.open_in_vscode(...)`, which returns normally.
 
 #### Scenario: The docker branch hands over with the planned arguments
 
@@ -114,13 +114,13 @@ Under `app=<name>`, `open_plan` SHALL: raise `CwcliError(NOT_FOUND)` naming `cwc
 
 ### Requirement: There is no axi open verb, and its absence is asserted
 
-The `axi` surface SHALL NOT gain an `open` verb: `execvp` destroys the process that owes `axi` its one-TOON-document contract, and the editor branches are meaningless to an agent with no desktop (the plan's serializability is NOT the reason - it serializes fine).
+The `axi` surface SHALL NOT gain an `open` verb: the interactive Docker branch consumes the process that owes `axi` its one-TOON-document contract, and the editor branches are meaningless to an agent with no desktop (the plan's serializability is NOT the reason - it serializes fine).
 A test SHALL assert the `axi` Typer registry has no `open` command, and `core/open.py`'s docstring SHALL record the structural reason.
 
 #### Scenario: The verb cannot slip in unnoticed
 
 - **WHEN** the axi verb registry is inspected by the test suite
-- **THEN** no `open` command is registered, and the assertion names the execvp reason
+- **THEN** no `open` command is registered, and the assertion names the interactive-process reason
 
 ### Requirement: The human CLI preserves today's observable behavior
 

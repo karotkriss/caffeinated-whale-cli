@@ -942,12 +942,12 @@ class TestVersionGating:
 class TestAxiInitVerbIsRegistered:
     """The ``axi init`` verb SHIPPED (``add-axi-init-verb``, captain-approved
     2026-07-16 in principle, go 2026-07-17). It was DEFERRED, never refused, by
-    ``migrate-init-core`` design Decision 9: unlike ``axi open`` (structurally
-    impossible - execvp destroys the process) this verb is buildable, and the
-    two-call core shape made it thin. It is a thin TOON-rendering frontend over
-    the UNCHANGED ``core.init_instance`` then ``core.init_bench``. This test
-    replaces the former deferral assertion so the shipped verb cannot silently
-    regress out of the registry."""
+    ``migrate-init-core`` design Decision 9: unlike ``axi open`` (whose
+    interactive branch consumes the process that owes the TOON document), this
+    verb is buildable, and the two-call core shape made it thin. It is a thin
+    TOON-rendering frontend over the UNCHANGED ``core.init_instance`` then
+    ``core.init_bench``. This test replaces the former deferral assertion so the
+    shipped verb cannot silently regress out of the registry."""
 
     def test_axi_registry_has_an_init_command(self):
         from caffeinated_whale_cli.commands import axi as axi_mod
