@@ -1,0 +1,12 @@
+/* Caffeinated Whale — typefaces.
+   SUBSTITUTION: the cwcli sources ship no webfonts (it is a terminal program),
+   so the desktop app adopts two Google Fonts that match its character:
+   IBM Plex Sans for UI chrome, JetBrains Mono for every value the tool measured.
+   Swap the @import for self-hosted @font-face rules when licensed files exist. */
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap");
+
+:root {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+  --font-display: var(--font-sans);
+}

@@ -82,6 +82,22 @@ Both first-class targets match the Phase 0 evidence:
 
 macOS is not regressed by any design choice here, but is not a Phase 1 validation target.
 
+## Design system
+
+`design/` (repo root) is the canonical Caffeinated Whale design system and the design authority for this shell: all Console/shell styling derives from its tokens, components, and guidelines.
+Read `design/readme.md` (or invoke the `caffeinated-whale-design` skill) before styling any Console surface.
+
+### Adherence lint
+
+`design/_adherence.oxlintrc.json` is the maintainer-authored canonical adherence policy for frontend JSX.
+Current [oxlint](https://oxc.rs/docs/guide/usage/linter) cannot load it because the policy uses `no-restricted-syntax`, which oxlint does not implement, so oxlint rejects the entire config and enforces none of its rules.
+Enforcing any of the policy requires an ESLint-compatible runner that implements both `no-restricted-imports` and `no-restricted-syntax`.
+It is intentionally **not** yet an installed desktop dependency or a CI gate: Phase 1 ships no bundled JS frontend (the Console page is served by the Python `cwcli serve` daemon), so there is no JSX in `desktop/` to lint.
+
+When frontend JSX lands in the shell, select an ESLint-compatible runner for the policy.
+Add the selected lint commands to `.github/workflows/desktop.yml` at that point with `working-directory: .`, overriding the workflow's `desktop/src-tauri` default.
+Add frontend lint tooling as desktop dev dependencies only, never to the Python runtime deps.
+
 ## Build and run
 
 Prerequisites: the Rust toolchain (MSRV 1.77.2), and on Linux the Tauri system dependencies (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`, `libxdo-dev`, `libssl-dev`, `pkg-config`).

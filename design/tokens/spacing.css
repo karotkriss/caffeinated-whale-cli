@@ -1,0 +1,31 @@
+/* 4px base grid. Chrome sits on multiples of 4; text insets use the odd values
+   (5, 7, 10) where optical alignment against a 1px border needs them. */
+:root {
+  --space-0: 0px;
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 6px;
+  --space-4: 8px;
+  --space-5: 10px;
+  --space-6: 12px;
+  --space-7: 16px;
+  --space-8: 20px;
+  --space-9: 24px;
+  --space-10: 32px;
+  --space-11: 40px;
+  --space-12: 56px;
+  --space-13: 72px;
+
+  /* Application chrome */
+  --rail-width: 56px;
+  --tree-width: 264px;
+  --action-rail-width: 216px;
+  --titlebar-height: 38px;
+  --toolbar-height: 44px;
+  --statusbar-height: 26px;
+  --row-height: 28px;
+  --row-height-lg: 34px;
+  --control-height-sm: 24px;
+  --control-height: 30px;
+  --control-height-lg: 36px;
+}

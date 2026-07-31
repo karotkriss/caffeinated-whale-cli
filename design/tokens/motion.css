@@ -1,0 +1,16 @@
+/* Motion is short and flat. The app reports facts arriving from a daemon;
+   nothing bounces, nothing springs, nothing slides more than a few pixels. */
+:root {
+  --ease-out: cubic-bezier(0.2, 0.6, 0.3, 1); /* @kind other */
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1); /* @kind other */
+  --duration-instant: 80ms; /* @kind other */
+  --duration-fast: 120ms; /* @kind other */
+  --duration-base: 160ms; /* @kind other */
+  --duration-slow: 240ms; /* @kind other */
+  --transition-control: background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+
+@keyframes cw-spin { to { transform: rotate(360deg); } }
+@keyframes cw-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@keyframes cw-delta-in { from { background-color: var(--accent-soft); } to { background-color: transparent; } }

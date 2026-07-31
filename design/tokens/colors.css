@@ -1,0 +1,146 @@
+/* Palette sampled directly from the Caffeinated Whale mark (assets/logo-whale.png):
+   deep-ink outlines, whale cyan, sea-foam whites, and the clay of the coffee cup. */
+:root {
+  color-scheme: dark;
+
+  /* --- Brand: ink (the mark's outline navy) --- */
+  --cw-abyss: #060a18;
+  --cw-ink-900: #0a0f22;
+  --cw-ink-800: #101030;
+  --cw-ink-700: #161c3c;
+  --cw-ink-600: #1e2749;
+
+  /* --- Brand: deep water --- */
+  --cw-deep-600: #0d3560;
+  --cw-deep-500: #104070;
+  --cw-deep-400: #105080;
+
+  /* --- Brand: whale cyan (primary) --- */
+  --cw-whale-700: #0078a8;
+  --cw-whale-600: #0090c0;
+  --cw-whale-500: #00a0d0;
+  --cw-whale-400: #00b0d0;
+  --cw-whale-300: #4fc8e4;
+
+  /* --- Brand: sea foam --- */
+  --cw-foam-400: #c0e0f0;
+  --cw-foam-300: #d0f0ff;
+  --cw-foam-200: #e0f0ff;
+  --cw-foam-100: #f0ffff;
+
+  /* --- Brand: coffee clay (the cup) --- */
+  --cw-clay-400: #d08080;
+  --cw-clay-500: #c06060;
+  --cw-clay-600: #b06060;
+  --cw-clay-800: #703040;
+
+  /* --- Cool neutral ramp (sea, not slate) --- */
+  --cw-n-950: #070b18;
+  --cw-n-900: #0b1124;
+  --cw-n-850: #0f1730;
+  --cw-n-800: #141d3a;
+  --cw-n-700: #1c2748;
+  --cw-n-600: #27345a;
+  --cw-n-500: #3c4b73;
+  --cw-n-400: #5a6b93;
+  --cw-n-300: #8496b8;
+  --cw-n-200: #b4c3da;
+  --cw-n-100: #dce6f2;
+  --cw-n-50: #f2f7fc;
+
+  /* --- Health tokens: exactly the five core.status / core.fleet states --- */
+  --cw-status-running: #2fbf8f;
+  --cw-status-online: #00a0d0;
+  --cw-status-degraded: #e8b23a;
+  --cw-status-offline: #e4574c;
+  --cw-status-unknown: #7c8aa5;
+
+  /* --- Terminal palette: what Rich prints, mapped to pixels --- */
+  --cw-term-cyan: #00a0d0;
+  --cw-term-magenta: #b98be3;
+  --cw-term-green: #2fbf8f;
+  --cw-term-yellow: #e8b23a;
+  --cw-term-red: #e4574c;
+  --cw-term-dim: #5a6b93;
+  --cw-term-fg: #dce6f2;
+  --cw-term-bg: #070b18;
+
+  /* --- Semantic: surfaces --- */
+  --bg-app: var(--cw-n-950);
+  --bg-sunken: #050813;
+  --bg-surface: var(--cw-n-900);
+  --bg-surface-raised: var(--cw-n-850);
+  --bg-overlay: #0d1428;
+  --bg-hover: rgba(132, 150, 184, 0.09);
+  --bg-active: rgba(132, 150, 184, 0.15);
+  --bg-selected: rgba(0, 160, 208, 0.14);
+  --bg-scrim: rgba(6, 10, 24, 0.72);
+
+  /* --- Semantic: text --- */
+  --text-primary: var(--cw-n-100);
+  --text-secondary: var(--cw-n-300);
+  --text-muted: var(--cw-n-400);
+  --text-disabled: var(--cw-n-500);
+  --text-accent: var(--cw-whale-300);
+  --text-danger: var(--cw-status-offline);
+  --text-inverse: var(--cw-ink-900);
+
+  /* --- Semantic: borders --- */
+  --border-subtle: rgba(132, 150, 184, 0.12);
+  --border-default: rgba(132, 150, 184, 0.2);
+  --border-strong: rgba(132, 150, 184, 0.34);
+  --border-accent: rgba(0, 160, 208, 0.55);
+
+  /* --- Semantic: actions --- */
+  --accent: var(--cw-whale-500);
+  --accent-hover: var(--cw-whale-400);
+  --accent-active: var(--cw-whale-600);
+  --accent-fg: #04121c;
+  --accent-soft: rgba(0, 160, 208, 0.14);
+  --danger: var(--cw-status-offline);
+  --danger-hover: #ef6b60;
+  --danger-fg: #1a0705;
+  --danger-soft: rgba(228, 87, 76, 0.14);
+  --focus-ring: rgba(0, 176, 208, 0.6);
+
+  /* --- Link colours (default + hover) --- */
+  --link: var(--cw-whale-300);
+  --link-hover: var(--cw-foam-300);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --bg-app: #eef4fa;
+  --bg-sunken: #e2ebf5;
+  --bg-surface: #ffffff;
+  --bg-surface-raised: #ffffff;
+  --bg-overlay: #ffffff;
+  --bg-hover: rgba(16, 64, 112, 0.06);
+  --bg-active: rgba(16, 64, 112, 0.11);
+  --bg-selected: rgba(0, 160, 208, 0.12);
+  --bg-scrim: rgba(10, 15, 34, 0.4);
+
+  --text-primary: var(--cw-ink-800);
+  --text-secondary: #46557a;
+  --text-muted: #647399;
+  --text-disabled: #93a1bf;
+  --text-accent: var(--cw-whale-700);
+  --text-inverse: #ffffff;
+
+  --border-subtle: rgba(16, 64, 112, 0.12);
+  --border-default: rgba(16, 64, 112, 0.2);
+  --border-strong: rgba(16, 64, 112, 0.32);
+
+  --accent-fg: #ffffff;
+  --accent: var(--cw-whale-600);
+  --accent-hover: var(--cw-whale-500);
+  --accent-active: var(--cw-whale-700);
+  --danger-fg: #ffffff;
+
+  --cw-term-fg: #101030;
+  --cw-term-bg: #f2f7fc;
+  --cw-term-dim: #647399;
+
+  --link: var(--cw-whale-700);
+  --link-hover: var(--cw-deep-500);
+}
