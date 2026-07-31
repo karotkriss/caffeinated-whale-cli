@@ -2,14 +2,16 @@
 
 The settled shape from the ``cwcli-open-handover-design-o9`` recon: ``open`` was
 never a handover command - only one of its four editor branches hands over
-(``--docker`` -> ``exec_into_container`` -> ``os.execvp``, the codebase's one
-``execvp``), the other three return normally. So this is :func:`~.run.run_plan`
-minus ``run_stream``: :func:`open_plan` resolves everything (container,
-run-state, bench, the no-cache fallback populate, ``--app``, editor) and returns
-a ``Result[LaunchTarget]``; the FRONTEND performs the handover. A plain function,
-not a generator - nothing streams, and ``NEEDS_CHOICE`` must be returnable at
-call time for all three forks (``confirm_start``, ``select_bench``,
-``select_editor``).
+(``--docker`` -> ``exec_into_container``), the other three return normally.
+The Docker handover replaces the frontend process with ``os.execvp`` on POSIX;
+on Windows, where ``os.exec*`` does not replace the caller, it runs a waited
+console-inheriting child and exits with that child's return code. So this is
+:func:`~.run.run_plan` minus ``run_stream``: :func:`open_plan` resolves
+everything (container, run-state, bench, the no-cache fallback populate,
+``--app``, editor) and returns a ``Result[LaunchTarget]``; the FRONTEND performs
+the handover. A plain function, not a generator - nothing streams, and
+``NEEDS_CHOICE`` must be returnable at call time for all three forks
+(``confirm_start``, ``select_bench``, ``select_editor``).
 
 :class:`LaunchTarget` is declarative - four strings plus an optional host URL,
 never an argv - so a GUI can perform its own handover (a GUI must spawn detached,
@@ -18,13 +20,14 @@ handover mechanisms consume the name (the vscode-remote URI hex-encodes it), and
 unlike ``run`` there is no phase-2 core call needing to bridge an ID back into a
 handle.
 
-The core never prints, prompts, exits, or execs; the one ``execvp`` in the
-codebase stays in ``utils/docker_utils.py``, called only by the frontend.
+The core never prints, prompts, exits, or launches processes; the platform
+handover stays in ``utils/docker_utils.py``, called only by the frontend.
 
 **There is deliberately NO ``axi open`` verb** (asserted by a test): not because
 the plan will not serialize - its strings and optional URL would - but because
-``execvp`` destroys the process that owes ``axi`` its one-TOON-document contract,
-and the editor branches are meaningless to an agent with no desktop.
+an interactive shell handover cannot satisfy ``axi``'s one-TOON-document
+contract: POSIX replaces the process, while Windows waits for the child and then
+exits. The editor branches are also meaningless to an agent with no desktop.
 """
 
 from __future__ import annotations
