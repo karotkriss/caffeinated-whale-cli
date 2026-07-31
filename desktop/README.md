@@ -92,13 +92,13 @@ Read `design/readme.md` (or invoke the `caffeinated-whale-design` skill) before 
 `design/_adherence.oxlintrc.json` is the [oxlint](https://oxc.rs/docs/guide/usage/linter) config that checks frontend JSX against the design system (no raw hex colors, no raw `px`, only the system's fonts, and per-component prop/tone whitelists).
 It is intentionally **not** yet an installed desktop dependency or a CI gate: Phase 1 ships no bundled JS frontend (the Console page is served by the Python `cwcli serve` daemon), so there is no JSX in `desktop/` to lint.
 
-When frontend JSX lands in the shell, lint it against the committed config with the standalone oxlint binary (no `package.json` needed):
+When frontend JSX lands in the shell, lint it from the repository root against the committed config with the standalone oxlint binary (no `package.json` needed):
 
 ```bash
-npx --yes oxlint --config ../design/_adherence.oxlintrc.json <frontend-src>
+npx --yes oxlint --deny-warnings --config design/_adherence.oxlintrc.json <frontend-src>
 ```
 
-and add that command to `.github/workflows/desktop.yml` at that point.
+Add that command to `.github/workflows/desktop.yml` at that point with `working-directory: .`, overriding the workflow's `desktop/src-tauri` default.
 Add oxlint as a desktop dev dependency only, never to the Python runtime deps.
 
 ## Build and run
