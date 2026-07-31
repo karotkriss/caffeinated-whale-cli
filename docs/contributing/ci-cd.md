@@ -22,6 +22,7 @@ Test's other two jobs also run on host runners rather than the container: `Pytes
 Both install `uv` via `astral-sh/setup-uv`.
 
 `develop` is branch-protected and currently requires ten contexts: `Lint & Format Check`, `Pytest`, `Mypy`, `E2E (runtime-only install)`, and the six `E2E (frappe vNN, shared)` / `E2E (frappe vNN, standalone)` contexts.
+Immediately after this change merges, a repo admin adds `Design-system adherence` to branch protection as the eleventh required context.
 `master` is not branch-protected.
 Job names are load-bearing because renaming a required job also renames its status context; update the required-check list in the same window as any such rename.
 

@@ -127,7 +127,8 @@ The design system's rule is *full-colour only, never recoloured or cropped* (`de
 [oxlint](https://oxc.rs/docs/guide/usage/linter) cannot load it because the policy uses `no-restricted-syntax`, which oxlint does not implement, so oxlint rejects the entire config and enforces none of its rules.
 Enforcing the policy therefore uses **ESLint**, which implements both `no-restricted-imports` and `no-restricted-syntax`.
 
-The runner lives here and is a CI gate (the `Design-system adherence` job in `desktop.yml`):
+The runner lives here in the always-run `Design-system adherence` job in `desktop.yml`, so every change is checked.
+The job becomes a required, merge-blocking context when a repo admin adds it to `develop` branch protection immediately after this change merges.
 
 - **`eslint.config.mjs`** loads the maintainer's `design/_adherence.oxlintrc.json` **verbatim** - it reads that file's `rules`/`overrides` and applies them unchanged.
   The only dropped key is `x-omelette` (design-tooling metadata, not an ESLint rule).
