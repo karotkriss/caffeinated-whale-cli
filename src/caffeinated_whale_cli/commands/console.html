@@ -459,6 +459,7 @@ button { color: inherit; }
   background: var(--bg-selected);
   box-shadow: var(--ring-selected);
 }
+.tree-row.selected:focus-visible { box-shadow: var(--ring-selected), var(--ring-focus); }
 .tree-label {
   display: block;
   min-width: 0;
@@ -572,6 +573,7 @@ button { color: inherit; }
   background: var(--panel);
   box-shadow: inset 0 -2px 0 var(--accent);
 }
+.tab.active:focus-visible { box-shadow: inset 0 -2px 0 var(--accent), var(--ring-focus); }
 .tab small {
   color: var(--quiet);
   margin-left: var(--space-2);
