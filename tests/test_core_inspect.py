@@ -368,7 +368,7 @@ class TestHardenings:
 class _DiscoveryContainer:
     """Answers only the ``find`` + ``_is_bench_directory`` probes discovery issues.
 
-    ``bench_apps`` maps each real bench dir to its ``apps`` path; every ``find``
+    ``bench_dirs`` lists each real bench dir; every ``find``
     returns the ones nested under the queried root, so overlapping roots surface
     the same bench more than once (which the dedup must collapse).
     """
