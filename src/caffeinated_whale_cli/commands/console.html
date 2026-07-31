@@ -113,6 +113,32 @@ button { color: inherit; }
 }
 .dot.open { background: var(--green); }
 .dot.reconnecting { background: var(--amber); }
+.doctor-button {
+  margin-top: 8px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.doctor-button:hover { background: var(--panel); }
+.doctor-summary {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+.doctor-summary .pass { color: var(--green); }
+.doctor-summary .warn { color: var(--amber); }
+.doctor-summary .fail { color: var(--red); }
+.doctor-group { margin: 12px 0 4px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.doctor-check { padding: 8px 0; border-top: 1px solid var(--line); }
+.doctor-check .doctor-head { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.doctor-check .doctor-detail { margin-top: 4px; font-size: 13px; color: var(--muted); }
+.doctor-check .doctor-fix { margin-top: 4px; font-size: 12px; color: var(--blue); }
 .tree {
   min-width: 0;
   overflow: auto;
@@ -218,6 +244,9 @@ button { color: inherit; }
 .pill.online { color: var(--blue); background: var(--blue-bg); }
 .pill.unknown { color: var(--violet); background: var(--violet-bg); }
 .pill.neutral { color: var(--muted); background: #282923; }
+.pill.pass { color: var(--green); background: var(--green-bg); }
+.pill.warn { color: var(--amber); background: var(--amber-bg); }
+.pill.fail { color: var(--red); background: var(--red-bg); }
 .main {
   min-width: 0;
   display: grid;
@@ -725,6 +754,7 @@ dialog input {
     <div class="brand">
       <h1>cwcli Console</h1>
       <div class="connection"><span id="conn-dot" class="dot"></span><span id="conn-text">connecting</span></div>
+      <button id="doctor-button" class="doctor-button" type="button">Run doctor</button>
     </div>
     <nav id="tree" class="tree"></nav>
     <div id="event-log" class="event-log"></div>
@@ -1482,6 +1512,14 @@ dialog input {
         <h3>Process</h3>
         ${actionButton("restart_process", "Restart process", process ? "one process" : "select process", processDisabled)}
       </div>
+      <div class="action-group">
+        <h3>Read</h3>
+        ${readButton("url", "Check URL", "host + reachability", busy)}
+      </div>
+      <!-- Later-phase mutation groups attach here as new action-group blocks;
+           they are deliberately not rendered until their phase ships, because a
+           greyed-out button for a not-yet-shipped verb still counts as building
+           its surface (the Tier A rail ruling, pinned in test_serve_frontend). -->
       ${message}
     </div>`;
     restoreControlFocus(el("rail-body"), focusKey);
@@ -1490,6 +1528,15 @@ dialog input {
   function actionButton(action, label, cost, disabled) {
     const busy = pendingAction === action ? "working" : cost;
     return `<button class="action-button" data-action="${action}" aria-disabled="${disabled ? "true" : "false"}">
+      <span>${esc(label)}</span><span class="action-cost">${esc(busy)}</span>
+    </button>`;
+  }
+
+  // A READ, not a Tier A action - kept off the actionButton() surface so the
+  // pinned action-set stays exact. Its own data-read handler dispatches it.
+  function readButton(read, label, cost, disabled) {
+    const busy = pendingAction === "probe_" + read ? "working" : cost;
+    return `<button class="action-button" data-read="${read}" aria-disabled="${disabled ? "true" : "false"}">
       <span>${esc(label)}</span><span class="action-cost">${esc(busy)}</span>
     </button>`;
   }
@@ -1602,6 +1649,81 @@ dialog input {
       <button type="button" class="modal-cancel">Cancel</button>
       <button value="confirm" class="modal-confirm"${disabled ? " disabled" : ""}>${esc(confirmLabel)}</button>
     </div>`;
+  }
+
+  // ---------------------------------------------------------------- doctor (read)
+
+  async function runDoctor() {
+    openModal(`<h3 id="modal-title">Environment preflight</h3>
+      <div class="doctor-body"><div class="muted">Running checks…</div></div>
+      ${modalButtons("Close")}`, () => true);
+    try {
+      const response = await fetch("/api/doctor");
+      const report = await response.json();
+      if (!response.ok) throw new Error((report.error && report.error.message) || "doctor failed");
+      renderDoctor(report);
+    } catch (error) {
+      const body = modal.querySelector(".doctor-body");
+      if (body) body.innerHTML = `<div class="notice error">${esc(error.message || "doctor failed")}</div>`;
+    }
+  }
+
+  function renderDoctor(report) {
+    const body = modal.querySelector(".doctor-body");
+    if (!body) return;
+    const summary = `<div class="doctor-summary">
+      <span class="pass">${report.passed} pass</span>
+      <span class="warn">${report.warned} warn</span>
+      <span class="fail">${report.failed} fail</span>
+      <span>${report.ok ? "ready" : "action needed"}</span>
+    </div>`;
+    const groups = new Map();
+    for (const check of report.checks || []) {
+      if (!groups.has(check.group)) groups.set(check.group, []);
+      groups.get(check.group).push(check);
+    }
+    const sections = [...groups.entries()].map(([group, checks]) => {
+      const rows = checks.map(check => {
+        // A version-freshness check that could not reach PyPI is honestly
+        // "pass, unverified" - never smoothed to a clean pass.
+        const qualifier = check.version_verified === false ? unknown(" (unverified)") : "";
+        const fix = check.fix ? `<div class="doctor-fix">${esc(check.fix)}</div>` : "";
+        return `<div class="doctor-check">
+          <div class="doctor-head"><span>${esc(check.title)}</span><span class="pill ${esc(check.status)}">${esc(check.status)}${qualifier}</span></div>
+          <div class="doctor-detail">${esc(check.detail)}</div>
+          ${fix}
+        </div>`;
+      }).join("");
+      return `<div class="doctor-group">${esc(group)}</div>${rows}`;
+    }).join("");
+    body.innerHTML = summary + sections;
+  }
+
+  // ------------------------------------------------------------------ url (read)
+
+  async function runUrlProbe(inst, bench) {
+    const selector = benchSelector(bench);
+    const query = selector ? `?bench=${encodeURIComponent(selector)}` : "";
+    pendingAction = "probe_url";
+    lastAction = null;
+    renderRail();
+    try {
+      const response = await fetch(`/api/instance/${encodeURIComponent(inst.project)}/url${query}`);
+      const body = await response.json();
+      if (response.status === 409 && body.error && body.error.kind === "needs_choice") {
+        throw new Error(body.error.message || "select a single bench first");
+      }
+      if (!response.ok || !body.ok) throw new Error((body.error && body.error.message) || "url probe failed");
+      const p = body.outcome;
+      const where = p.url ? p.url : "no host URL (port unresolved)";
+      const reach = p.url ? (p.reachable ? `reachable (HTTP ${p.http_code})` : "unreachable") : "";
+      lastAction = {ok: true, text: `${where}${reach ? " - " + reach : ""}`};
+    } catch (error) {
+      lastAction = {ok: false, text: error.message || "url probe failed"};
+    } finally {
+      pendingAction = null;
+      renderRail();
+    }
   }
 
   function openScaleModal(inst) {
@@ -1798,6 +1920,12 @@ dialog input {
   });
 
   el("rail-body").addEventListener("click", event => {
+    const read = event.target.closest("[data-read]");
+    if (read && read.getAttribute("aria-disabled") !== "true") {
+      const inst = selectedInstance();
+      if (inst && !pendingAction && read.dataset.read === "url") runUrlProbe(inst, selectedBench());
+      return;
+    }
     const button = event.target.closest("[data-action]");
     if (!button || button.getAttribute("aria-disabled") === "true") return;
     const action = button.dataset.action;
@@ -1818,6 +1946,8 @@ dialog input {
   el("detail").addEventListener("click", event => {
     if (event.target.closest("[data-logs-refresh]")) fetchLogs();
   });
+
+  el("doctor-button").addEventListener("click", () => runDoctor());
 
   el("where-form").addEventListener("submit", event => {
     event.preventDefault();

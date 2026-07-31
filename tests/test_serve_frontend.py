@@ -18,10 +18,12 @@ import urllib.request
 import pytest
 
 from caffeinated_whale_cli.commands import serve as serve_cmd
+from caffeinated_whale_cli.core import doctor as core_doctor
 from caffeinated_whale_cli.core import fleet as core_fleet
 from caffeinated_whale_cli.core import inspect as core_inspect
 from caffeinated_whale_cli.core.apps import AppResult, AppsOutput, AppsReport
-from caffeinated_whale_cli.core.envelope import Choice, Result, Status
+from caffeinated_whale_cli.core.doctor import CheckResult, CheckStatus, DoctorReport
+from caffeinated_whale_cli.core.envelope import Choice, Message, Result, Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from caffeinated_whale_cli.core.inspect import BenchInfo, InspectReport, SiteInfo
 from caffeinated_whale_cli.core.label import LabelOutcome
@@ -31,6 +33,7 @@ from caffeinated_whale_cli.core.restart import ProcessRestartOutcome
 from caffeinated_whale_cli.core.start import ProcessLaunch, StartOutcome
 from caffeinated_whale_cli.core.stop import StopOutcome
 from caffeinated_whale_cli.core.unlock import UnlockOutcome
+from caffeinated_whale_cli.core.url import UrlProbe
 from caffeinated_whale_cli.core.where import WhereMatch, WhereResult
 
 _TIMEOUT = 5.0
@@ -1458,3 +1461,264 @@ class TestTierAConsoleUi:
         assert "where-input" not in rail_body_render
         assert '<form id="where-form"' in page
         assert 'id="where-input"' in page
+
+
+class TestUrlEndpoint:
+    """GET /api/instance/<p>/url - the fresh host-URL + reachability probe.
+
+    A pure read, but it execs curl in the container, so it inherits the action
+    guards (same-origin only, serialized under the project lock) - the read_logs
+    precedent - and a NEEDS_CHOICE from the core surfaces as a 409, never an
+    auto-start.
+    """
+
+    def _probe(self, monkeypatch, result_or_exc, seen=None):
+        def _probe_url(project, **kwargs):
+            if seen is not None:
+                seen.update({"project": project, **kwargs})
+            if isinstance(result_or_exc, Exception):
+                raise result_or_exc
+            return result_or_exc
+
+        monkeypatch.setattr(serve_cmd.core_url, "probe_url", _probe_url)
+
+    def test_it_dispatches_the_query_to_the_core_probe(self, daemon, monkeypatch):
+        seen: dict = {}
+        self._probe(
+            monkeypatch,
+            Result(
+                status=Status.OK,
+                data=UrlProbe(
+                    project="p",
+                    bench_path="/workspace/frappe-bench",
+                    site="dev.localhost",
+                    url="http://dev.localhost:8000",
+                    reachable=True,
+                    http_code="200",
+                ),
+            ),
+            seen,
+        )
+
+        status, body = _get(daemon.base + "/api/instance/p/url?bench=0&site=dev.localhost")
+
+        assert status == 200
+        assert body["ok"] is True
+        assert body["outcome"]["url"] == "http://dev.localhost:8000"
+        assert body["outcome"]["reachable"] is True
+        assert seen == {"project": "p", "bench": "0", "site": "dev.localhost"}
+
+    def test_an_unresolved_port_is_reported_honestly_not_guessed(self, daemon, monkeypatch):
+        self._probe(
+            monkeypatch,
+            Result(
+                status=Status.WARNING,
+                data=UrlProbe(
+                    project="p",
+                    bench_path="/workspace/frappe-bench",
+                    site=None,
+                    url=None,
+                    reachable=False,
+                    http_code=None,
+                ),
+                warnings=[Message("url.port_unknown", "Could not resolve the host port.")],
+            ),
+        )
+
+        status, body = _get(daemon.base + "/api/instance/p/url")
+
+        assert status == 200
+        assert body["outcome"]["url"] is None
+        assert body["outcome"]["reachable"] is False
+
+    def test_it_refuses_cross_origin_reads(self, daemon, monkeypatch):
+        self._probe(monkeypatch, AssertionError("cross-origin read must not dispatch"))
+        req = urllib.request.Request(
+            daemon.base + "/api/instance/p/url",
+            headers={"Origin": "https://example.invalid", "Sec-Fetch-Site": "cross-site"},
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(req, timeout=_TIMEOUT)  # noqa: S310 - fixed localhost
+
+        assert e.value.code == 403
+
+    def test_a_multi_bench_choice_is_409_not_an_auto_start(self, daemon, monkeypatch):
+        self._probe(
+            monkeypatch,
+            Result(
+                status=Status.NEEDS_CHOICE,
+                choice=Choice(
+                    kind="select_bench",
+                    param="bench",
+                    prompt="Project 'p' has multiple benches; select one.",
+                    options=[{"value": "0", "label": "/workspace/frappe-bench"}],
+                ),
+            ),
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _get(daemon.base + "/api/instance/p/url")
+
+        assert e.value.code == 409
+        body = json.loads(e.value.read())
+        assert body["error"]["kind"] == "needs_choice"
+        assert body["choice"]["options"][0]["value"] == "0"
+
+    def test_a_core_error_becomes_the_matching_http_status(self, daemon, monkeypatch):
+        self._probe(
+            monkeypatch,
+            CwcliError(ErrorKind.NOT_FOUND, "instance.not_found", "No instance named 'p'."),
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _get(daemon.base + "/api/instance/p/url")
+
+        assert e.value.code == 404
+
+
+class TestDoctorEndpoint:
+    """GET /api/doctor - the system-wide read-only preflight."""
+
+    def _report(self, monkeypatch, report):
+        monkeypatch.setattr(
+            serve_cmd.core_doctor, "run_all", lambda: Result(status=Status.WARNING, data=report)
+        )
+
+    def test_it_serializes_every_tier_and_the_freshness_qualifier(self, daemon, monkeypatch):
+        self._report(
+            monkeypatch,
+            DoctorReport(
+                checks=[
+                    CheckResult(
+                        id="docker",
+                        title="Docker daemon",
+                        group="Docker",
+                        status=CheckStatus.PASS,
+                        detail="reachable",
+                    ),
+                    CheckResult(
+                        id="version",
+                        title="cwcli version",
+                        group="cwcli",
+                        status=CheckStatus.PASS,
+                        detail="1.0.0 installed",
+                        version_verified=False,
+                    ),
+                    CheckResult(
+                        id="sendme",
+                        title="sendme",
+                        group="Optional tools",
+                        status=CheckStatus.WARN,
+                        detail="not found",
+                        fix="install sendme for peer-to-peer transfer",
+                    ),
+                ],
+                passed=2,
+                warned=1,
+                failed=0,
+                ok=True,
+            ),
+        )
+
+        status, body = _get(daemon.base + "/api/doctor")
+
+        assert status == 200
+        assert (body["passed"], body["warned"], body["failed"], body["ok"]) == (2, 1, 0, True)
+        # The enum is flattened to its value token, not left unserializable.
+        assert [c["status"] for c in body["checks"]] == ["pass", "pass", "warn"]
+        # A version check that could not reach PyPI stays honestly unverified.
+        assert body["checks"][1]["version_verified"] is False
+        assert body["checks"][2]["fix"] == "install sendme for peer-to-peer transfer"
+
+    def test_a_failed_check_carries_through_so_the_page_can_render_action_needed(
+        self, daemon, monkeypatch
+    ):
+        self._report(
+            monkeypatch,
+            DoctorReport(
+                checks=[
+                    CheckResult(
+                        id="docker",
+                        title="Docker daemon",
+                        group="Docker",
+                        status=CheckStatus.FAIL,
+                        detail="daemon unreachable",
+                        fix="start Docker",
+                    )
+                ],
+                passed=0,
+                warned=0,
+                failed=1,
+                ok=False,
+            ),
+        )
+
+        status, body = _get(daemon.base + "/api/doctor")
+
+        assert status == 200
+        assert body["ok"] is False
+        assert body["checks"][0]["status"] == "fail"
+
+    def test_it_is_gated_by_authentication(self, monkeypatch):
+        # The read reveals home paths, versions and port collisions, so it sits
+        # behind the same auth gate as every other /api read.
+        token = "s3cret"
+        monkeypatch.setenv("CWCLI_SERVE_TOKEN", token)
+        rows = [InstanceDTO(project_name="p", status="running", ports=["8000"])]
+        monkeypatch.setattr(
+            core_fleet, "list_instances", lambda: Result(status=Status.OK, data=list(rows))
+        )
+        monkeypatch.setattr(
+            core_doctor,
+            "run_all",
+            lambda: pytest.fail("an unauthenticated caller must not reach doctor"),
+        )
+        fleet = core_fleet.Fleet()
+        hub = serve_cmd._Hub(fleet.set_focus)
+        fleet.set_publish(hub.publish)
+        fleet.bootstrap()
+        httpd = serve_cmd.make_server("127.0.0.1", 0, fleet, hub, token)
+        thread = threading.Thread(
+            target=httpd.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
+        )
+        thread.start()
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        try:
+            with pytest.raises(urllib.error.HTTPError) as e:
+                _get(base + "/api/doctor")
+            assert e.value.code in (401, 403)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+
+class TestPhase1ReadSurfaces:
+    """The page carries the doctor and url READ surfaces, kept off the pinned
+    Tier A action-button set (a read is not a mutating action)."""
+
+    @pytest.fixture
+    def page(self, daemon):
+        with urllib.request.urlopen(daemon.base + "/", timeout=_TIMEOUT) as resp:  # noqa: S310
+            return resp.read().decode()
+
+    def test_the_doctor_screen_is_reachable_and_renders_all_three_tiers(self, page):
+        assert 'id="doctor-button"' in page
+        assert "async function runDoctor()" in page
+        assert 'fetch("/api/doctor")' in page
+        # pass/warn/fail all have a pill class, so no tier renders as a blank.
+        for token in (".pill.pass", ".pill.warn", ".pill.fail"):
+            assert token in page
+
+    def test_the_url_read_is_a_read_not_a_tier_a_action(self, page):
+        assert "function runUrlProbe(" in page
+        assert "/url${query}" in page
+        # It must NOT be built as an actionButton - that surface is pinned exact.
+        assert 'actionButton("probe_url"' not in page
+        assert 'readButton("url"' in page
+
+    def test_no_later_phase_mutation_button_is_rendered(self, page):
+        # Phase 1 wires reads + lifecycle; a greyed slot for a later-phase verb
+        # would still be building its surface (the Tier A rail ruling).
+        for token in ("apps_install", "migrate_site", "backup_restore", "remove_instance"):
+            assert f'data-action="{token}"' not in page
