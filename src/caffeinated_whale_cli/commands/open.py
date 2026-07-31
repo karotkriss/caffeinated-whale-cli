@@ -4,8 +4,9 @@ The four editor boolean flags fuse to one ``editor`` value HERE and their
 mutual-exclusion error stays with them (flag UX is one frontend's choice, the
 ``apps`` fused-``--yes`` precedent); the interactive prologue, the prompts, and
 the rendering live here; and the handover is this module's final lines -
-``docker`` execs into the container (``exec_into_container`` -> ``os.execvp``,
-correct BECAUSE it hands over), the editors launch via
+``docker`` execs into the container (``exec_into_container``: ``os.execvp``
+process-replacement on POSIX, a waited console-inheriting child on Windows where
+``os.exec*`` does not replace - see that function's docstring), the editors launch via
 ``vscode_utils.open_in_vscode`` and return. Everything else - container,
 run-state, bench, the no-cache fallback populate, ``--app``, editor detection -
 is ``core.open_plan``'s. See ``core/open.py`` for the boundary and for why
@@ -229,9 +230,10 @@ def open_bench(
     if verbose:
         stderr_console.print(f"[dim]VERBOSE: Selected editor: {target.editor}[/dim]")
 
-    # The bench's real address, printed before the handover (the docker branch execs
-    # away and never returns here). Omitted entirely when it could not be read - a
-    # guessed port in a line the user is meant to click is worse than no line.
+    # The bench's real address, printed before the handover (the Docker branch
+    # terminates this frontend after the shell exits). Omitted entirely when it
+    # could not be read - a guessed port in a line the user is meant to click is
+    # worse than no line.
     if target.web_url:
         stderr_console.print(f"[dim]Web: {target.web_url}[/dim]")
 

@@ -2,6 +2,8 @@ import functools
 import os
 import platform
 import shutil
+import subprocess
+import sys
 
 import docker
 import typer
@@ -101,31 +103,41 @@ def get_frappe_container(project_name: str):
 
 def exec_into_container(container_name: str, working_dir: str | None = None) -> None:
     """
-    Execute into a Docker container using bash.
+    Execute into a Docker container using an interactive bash shell.
 
-    IMPORTANT: This function uses os.execvp() which REPLACES the current process.
-    The function DOES NOT RETURN. After this call:
-    - The Python process is replaced by the docker exec process
-    - No code after this function call will execute
-    - No cleanup handlers in the calling code will run
-    - The process ID (PID) remains unchanged
-    - If execvp fails, OSError is raised (this is the only way the function "returns")
+    Handover is platform-split because ``os.exec*`` semantics differ by OS:
 
-    This is intentional behavior for interactive shell sessions - the user's
-    shell becomes the docker exec session, and when they exit, the entire
-    Python process terminates.
+    - POSIX (``os.name != "nt"``): ``os.execvp`` REPLACES the current process.
+      The function DOES NOT RETURN - the Python process becomes the docker exec
+      session, keeping the same PID and the shell's signal/process-tree behavior
+      intact, and when the user exits, the whole process terminates. If execvp
+      fails, ``OSError`` is raised (the only way the POSIX path "returns").
+
+    - Windows (``os.name == "nt"``): ``os.exec*`` does NOT replace the caller.
+      It spawns a new process via ``CreateProcess`` and terminates Python without
+      the launching shell (PowerShell/cmd) waiting on the child, so both the shell
+      and the docker-exec bash end up reading the same console and keystrokes
+      interleave. Instead we run docker exec as a WAITED child that inherits the
+      console and ``sys.exit`` with its return code, so exactly one process owns
+      the console at a time and the shell resumes only after the session exits.
 
     Args:
         container_name: Docker container name
         working_dir: Working directory to start in (optional)
 
     Raises:
-        OSError: If os.execvp() fails to execute docker command
+        OSError: If ``os.execvp`` fails to execute docker on the POSIX path.
     """
     typer.echo(f"Opening shell in {container_name}...")
 
+    cmd = ["docker", "exec", "-it"]
     if working_dir:
-        # Use -w flag to set working directory
-        os.execvp("docker", ["docker", "exec", "-it", "-w", working_dir, container_name, "bash"])
-    else:
-        os.execvp("docker", ["docker", "exec", "-it", container_name, "bash"])
+        cmd += ["-w", working_dir]
+    cmd += [container_name, "bash"]
+
+    if os.name == "nt":
+        # Windows: no process replacement; run as a waited child owning the console.
+        proc = subprocess.run(cmd)
+        sys.exit(proc.returncode)
+
+    os.execvp("docker", cmd)
