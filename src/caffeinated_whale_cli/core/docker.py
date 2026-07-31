@@ -214,14 +214,17 @@ _CHOWN_HOME_RECURSIVE_DIRS = (
     "/home/frappe/.cache",
     "/home/frappe/.local",
     "/home/frappe/.config",
+    "/home/frappe/.npm",
+    "/home/frappe/.pyenv/cache",
+    "/home/frappe/.pyenv/shims",
+    "/home/frappe/.nvm/.cache",
+    "/home/frappe/.nvm/alias",
 )
 _CHOWN_HOME_SHALLOW_DIRS = (
     "/home/frappe/.pyenv",
     "/home/frappe/.pyenv/versions",
-    "/home/frappe/.pyenv/shims",
     "/home/frappe/.nvm",
     "/home/frappe/.nvm/versions/node",
-    "/home/frappe/.nvm/alias",
 )
 
 
