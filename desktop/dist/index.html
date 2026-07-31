@@ -79,7 +79,7 @@ main {
 }
 .brand-copy span {
   margin-top: 2px;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-family: var(--font-mono);
   font-size: 11px;
 }
@@ -149,7 +149,7 @@ h1 {
 }
 .footnote {
   margin: 22px 0 0;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-family: var(--font-mono);
   font-size: 11px;
 }
@@ -211,7 +211,7 @@ window.__cwcliError = failure => {
   byId("error-hint").textContent = error.hint || "Reopen the app; the shell retries bring-up from the start.";
   byId("error-code").textContent = error.code ? `error: ${error.code}` : "";
   byId("error").setAttribute("aria-hidden", "false");
-  byId("footnote").textContent = "The app log holds the daemon output and the full failure detail.";
+  byId("footnote").textContent = "The app log records the daemon output from this startup attempt.";
 };
 </script>
 </body>
