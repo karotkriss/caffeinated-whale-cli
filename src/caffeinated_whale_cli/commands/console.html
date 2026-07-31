@@ -497,14 +497,26 @@ button { color: inherit; }
 .pill {
   display: inline-flex;
   align-items: center;
+  gap: var(--space-3);
   max-width: 100%;
   min-height: 22px;
-  padding: var(--space-1) var(--space-4);
+  padding: 0 var(--space-4) 0 var(--space-3);
   border-radius: var(--radius-pill);
-  font-size: var(--text-sm);
-  font-weight: var(--weight-bold);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: 0.01em;
   white-space: nowrap;
 }
+.pill::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: currentColor;
+  flex: 0 0 auto;
+}
+.pill.unknown::before { animation: cw-pulse 1.6s var(--ease-in-out) infinite; }
 .pill.running, .pill.up { color: var(--cw-status-running); background: color-mix(in srgb, var(--cw-status-running) 16%, transparent); }
 .pill.degraded { color: var(--cw-status-degraded); background: color-mix(in srgb, var(--cw-status-degraded) 16%, transparent); }
 .pill.down { color: var(--cw-status-offline); background: color-mix(in srgb, var(--cw-status-offline) 16%, transparent); }
@@ -594,18 +606,23 @@ button { color: inherit; }
   background: var(--panel);
   border: 1px solid var(--line-soft);
   border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
   padding: var(--space-6);
 }
 .metric .label {
   color: var(--muted);
-  font-size: var(--text-sm);
+  font: var(--type-label);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
   margin-bottom: var(--space-3);
 }
 .metric .value {
   min-width: 0;
   overflow-wrap: anywhere;
-  font-size: var(--text-lg);
-  font-weight: var(--weight-bold);
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  color: var(--text-primary);
 }
 .section {
   margin-top: var(--space-9);
@@ -672,16 +689,20 @@ td.code, .code {
   flex-wrap: wrap;
   gap: var(--space-3);
 }
+/* Tag - a monospace chip for a machine value (app, port, branch, site). */
 .chip {
   max-width: 100%;
   min-width: 0;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-pill);
-  padding: var(--space-3) var(--space-4);
-  color: var(--text);
-  background: var(--bg-surface-raised);
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-3);
+  color: var(--text-secondary);
+  background: var(--bg-hover);
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
   overflow-wrap: anywhere;
 }
 .rail-body {
@@ -718,47 +739,53 @@ td.code, .code {
   text-transform: uppercase;
   letter-spacing: var(--tracking-wide);
 }
+/* ActionRail RailButton - icon, label, and the disabled reason it always states. */
 .action-button {
   width: 100%;
-  min-height: 40px;
+  min-height: var(--control-height-lg);
   display: flex;
-  justify-content: space-between;
   align-items: center;
   gap: var(--space-5);
-  margin-top: var(--space-4);
-  padding: var(--space-5) var(--space-6);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  background: var(--panel-2);
+  margin-top: var(--space-3);
+  padding: 0 var(--space-5);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
   cursor: pointer;
+  transition: var(--transition-control);
 }
-.action-button:hover:not([aria-disabled="true"]) {
-  border-color: var(--border-accent);
-  background: var(--bg-hover);
-}
+.action-ic { display: flex; color: var(--text-muted); flex: 0 0 auto; }
+.action-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.action-button:hover:not([aria-disabled="true"]) { background: var(--bg-hover); }
+.action-button:hover:not([aria-disabled="true"]) .action-ic { color: var(--text-accent); }
 .action-button[aria-disabled="true"] {
-  color: var(--quiet);
+  color: var(--text-disabled);
   cursor: not-allowed;
-  background: var(--bg-sunken);
+  background: transparent;
 }
+.action-button[aria-disabled="true"] .action-ic { color: var(--text-disabled); }
 .action-cost {
   color: var(--muted);
-  font-size: var(--text-sm);
+  font-size: var(--text-2xs);
   white-space: nowrap;
 }
 .event-log {
   padding: var(--space-6);
   border-top: 1px solid var(--line-soft);
-  color: var(--muted);
+  color: var(--text-secondary);
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
+  line-height: var(--leading-snug);
   max-height: 180px;
   overflow: auto;
 }
-.event-log div { margin-bottom: var(--space-3); overflow-wrap: anywhere; }
-.event-log .instant { color: var(--blue); }
-.event-log .fast { color: var(--green); }
-.event-log .error { color: var(--red); }
+.event-log div { margin-bottom: var(--space-2); overflow-wrap: anywhere; }
+/* EventRow tier colours, from the design system's term palette. */
+.event-log .instant { color: var(--cw-term-magenta); }
+.event-log .fast { color: var(--cw-term-cyan); }
+.event-log .error { color: var(--cw-term-red); }
 .notice {
   margin-top: var(--space-6);
   padding: var(--space-5);
@@ -795,11 +822,12 @@ td.code, .code {
 .where-form input {
   flex: 1;
   min-width: 0;
-  padding: var(--space-4) var(--space-5);
-  background: var(--panel-2);
+  padding: 0;
+  background: none;
   color: var(--text);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
+  border: none;
+  outline: none;
+  font-size: var(--text-md);
 }
 .where-form input::placeholder { color: var(--quiet); }
 .where-form button, .log-toolbar button {
@@ -847,17 +875,19 @@ td.code, .code {
   gap: var(--space-5);
   margin-bottom: var(--space-7);
 }
+/* LogView - a bounded log tail on the terminal surface (term background/foreground). */
 pre.log-lines {
   margin: 0;
   padding: var(--space-6);
-  background: var(--panel);
+  background: var(--cw-term-bg);
+  color: var(--cw-term-fg);
   border: 1px solid var(--line-soft);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   overflow: auto;
   max-height: 320px;
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  line-height: var(--leading-normal);
+  font-size: var(--text-xs);
+  line-height: var(--leading-relaxed);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -867,11 +897,12 @@ pre.log-lines {
   font-weight: var(--weight-regular);
   font-family: var(--font-mono);
 }
+/* Dialog - a decision with consequences: the overlay surface, its radius and lift. */
 dialog {
-  background: var(--panel);
+  background: var(--bg-overlay);
   color: var(--text);
   border: 1px solid var(--line);
-  border-radius: var(--radius-window);
+  border-radius: var(--radius-xl);
   padding: var(--space-8);
   width: min(440px, calc(100vw - 40px));
   box-shadow: var(--shadow);
@@ -954,6 +985,112 @@ dialog input {
   white-space: nowrap;
   border: 0;
 }
+
+/* ---------------------------------------------------------------------------
+   Design-system component classes, adopted into the no-build Console. Each
+   mirrors a design/components primitive's DOM + token styling: Icon, HealthDot,
+   TreeItem node, Banner, EmptyState, Spinner, SearchField.
+   --------------------------------------------------------------------------- */
+.ic { display: block; flex: 0 0 auto; }
+
+/* HealthDot - a bare status dot; unknown slow-pulses rather than sitting green. */
+.hdot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  flex: 0 0 auto;
+}
+.hdot.running { background: var(--cw-status-running); box-shadow: 0 0 0 3px color-mix(in srgb, var(--cw-status-running) 14%, transparent); }
+.hdot.online { background: var(--cw-status-online); }
+.hdot.degraded { background: var(--cw-status-degraded); }
+.hdot.offline { background: var(--cw-status-offline); }
+.hdot.unknown { background: var(--cw-status-unknown); animation: cw-pulse 1.6s var(--ease-in-out) infinite; }
+
+/* TreeItem node - a type icon plus a stacked label/meta, ellipsised. */
+.node { display: flex; align-items: center; gap: var(--space-4); min-width: 0; }
+.node-ic { display: flex; color: var(--text-muted); flex: 0 0 auto; }
+.tree-row.selected .node-ic { color: var(--text-accent); }
+.node-text { min-width: 0; display: block; }
+
+/* Banner - the typed message; tone sets the tint, `help:` reproduces the CLI envelope. */
+.banner {
+  display: flex;
+  gap: var(--space-5);
+  margin-top: var(--space-4);
+  padding: var(--space-6);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-hover);
+  overflow-wrap: anywhere;
+}
+.banner-ic { flex: 0 0 auto; margin-top: 1px; }
+.banner-body { flex: 1; min-width: 0; }
+.banner-title { font: var(--type-body-strong); color: var(--text-primary); }
+.banner-text { color: var(--text-secondary); margin-top: var(--space-1); }
+.banner-hint { margin-top: var(--space-4); font-family: var(--font-mono); font-size: var(--text-xs); overflow-wrap: anywhere; }
+.banner.info { background: color-mix(in srgb, var(--cw-status-online) 10%, transparent); border-color: color-mix(in srgb, var(--cw-status-online) 32%, transparent); }
+.banner.info .banner-ic, .banner.info .banner-hint { color: var(--cw-whale-300); }
+.banner.success { background: color-mix(in srgb, var(--cw-status-running) 10%, transparent); border-color: color-mix(in srgb, var(--cw-status-running) 32%, transparent); }
+.banner.success .banner-ic, .banner.success .banner-hint { color: var(--cw-status-running); }
+.banner.warn { background: color-mix(in srgb, var(--cw-status-degraded) 10%, transparent); border-color: color-mix(in srgb, var(--cw-status-degraded) 40%, transparent); }
+.banner.warn .banner-ic, .banner.warn .banner-hint { color: var(--cw-status-degraded); }
+.banner.danger { background: var(--danger-soft); border-color: color-mix(in srgb, var(--cw-status-offline) 34%, transparent); }
+.banner.danger .banner-ic, .banner.danger .banner-hint { color: var(--cw-status-offline); }
+
+/* EmptyState - the nothing-here surface: icon, what is missing, the command that fixes it. */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-5);
+  padding: var(--space-12) var(--space-8);
+  text-align: center;
+  background: transparent;
+  border: 0;
+}
+.empty-ic { color: var(--text-disabled); }
+.empty-title { font: var(--type-heading); color: var(--text-primary); }
+.empty-body { color: var(--text-muted); max-width: 400px; }
+.empty-cmd {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-accent);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-4);
+}
+
+/* Spinner - the rotating loader over a label, for a pane awaiting data. */
+.spinner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-5);
+  padding: var(--space-10) var(--space-7);
+  text-align: center;
+}
+.spinner-ic { display: block; color: var(--accent); animation: cw-spin 700ms linear infinite; }
+.spinner-label { font: var(--type-body-strong); color: var(--text-primary); }
+
+/* SearchField - the fleet/cache search box: a leading glyph over a sunken field. */
+.searchfield {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  height: var(--control-height);
+  padding: 0 var(--space-4) 0 var(--space-5);
+  background: var(--bg-sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  transition: var(--transition-control);
+}
+.searchfield:focus-within { border-color: var(--border-accent); box-shadow: var(--ring-focus); }
+.searchfield .ic { color: var(--text-muted); flex: 0 0 auto; }
+
 @media (max-width: 1050px) {
   .app {
     grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
@@ -1033,7 +1170,10 @@ dialog input {
     <div class="where-panel">
       <h3 id="where-title">Fleet search</h3>
       <form id="where-form" class="where-form" aria-labelledby="where-title">
-        <input id="where-input" name="q" placeholder="app or site name" autocomplete="off" aria-label="Search cached apps and sites">
+        <span class="searchfield">
+          <svg class="ic" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m21 21-4.34-4.34"></path> <circle cx="11" cy="11" r="8"></circle></svg>
+          <input id="where-input" name="q" placeholder="app or site name" autocomplete="off" aria-label="Search cached apps and sites">
+        </span>
         <button type="submit">Search</button>
       </form>
       <div id="where-results" class="where-results"><div class="muted">Search the cache for apps and sites</div></div>
@@ -1074,6 +1214,70 @@ dialog input {
     "'": "&#39;"
   })[ch]);
   const unknown = text => `<span class="unknown-text">${esc(text || "unknown")}</span>`;
+
+  // Inline Lucide glyphs, path data copied verbatim from the design system's
+  // Icon component (design/components/icons/Icon.jsx). Rendered as the same
+  // 24-grid, 1.5px-stroke, currentColor SVG that component emits, so the Console
+  // wears the design system's iconography without a build step.
+  const ICONS = {
+    "server": '<rect width="20" height="8" x="2" y="2" rx="2" ry="2"></rect> <rect width="20" height="8" x="2" y="14" rx="2" ry="2"></rect> <line x1="6" x2="6.01" y1="6" y2="6"></line> <line x1="6" x2="6.01" y1="18" y2="18"></line>',
+    "layers": '<path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"></path> <path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"></path> <path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"></path>',
+    "terminal": '<path d="M12 19h8"></path> <path d="m4 17 6-6-6-6"></path>',
+    "play": '<path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"></path>',
+    "square": '<rect width="18" height="18" x="3" y="3" rx="2"></rect>',
+    "rotate-cw": '<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"></path> <path d="M21 3v5h-5"></path>',
+    "refresh-cw": '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path> <path d="M21 3v5h-5"></path> <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path> <path d="M8 16H3v5"></path>',
+    "zap": '<path d="M15.914 4a1.5 1.5 0 00-2.474-1.561l-9 9A1.5 1.5 0 005.5 14h4.002a.5.5 0 01.471.666L8.086 20a1.5 1.5 0 002.475 1.56l9-9A1.5 1.5 0 0018.5 10h-3.997a.5.5 0 01-.472-.667z"></path>',
+    "tag": '<path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"></path> <circle cx="7.5" cy="7.5" r=".5" fill="currentColor"></circle>',
+    "git-branch": '<path d="M15 6a9 9 0 0 0-9 9V3"></path> <circle cx="18" cy="6" r="3"></circle> <circle cx="6" cy="18" r="3"></circle>',
+    "lock-open": '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"></rect> <path d="M7 11V7a5 5 0 0 1 9.9-1"></path>',
+    "globe": '<circle cx="12" cy="12" r="10"></circle> <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"></path> <path d="M2 12h20"></path>',
+    "search": '<path d="m21 21-4.34-4.34"></path> <circle cx="11" cy="11" r="8"></circle>',
+    "wrench": '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.106-3.105c.32-.322.863-.22.983.218a6 6 0 0 1-8.259 7.057l-7.91 7.91a1 1 0 0 1-2.999-3l7.91-7.91a6 6 0 0 1 7.057-8.259c.438.12.54.662.219.984z"></path>',
+    "triangle-alert": '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"></path> <path d="M12 9v4"></path> <path d="M12 17h.01"></path>',
+    "circle-alert": '<circle cx="12" cy="12" r="10"></circle> <line x1="12" x2="12" y1="8" y2="12"></line> <line x1="12" x2="12.01" y1="16" y2="16"></line>',
+    "info": '<circle cx="12" cy="12" r="10"></circle> <path d="M12 16v-4"></path> <path d="M12 8h.01"></path>',
+    "box": '<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"></path> <path d="m3.3 7 8.7 5 8.7-5"></path> <path d="M12 22V12"></path>',
+    "scroll-text": '<path d="M15 12h-5"></path> <path d="M15 8h-5"></path> <path d="M19 17V5a2 2 0 0 0-2-2H4"></path> <path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3"></path>',
+    "loader-circle": '<path d="M21 12a9 9 0 1 1-6.219-8.56"></path>'
+  };
+  const icon = (name, size = 16) => {
+    const d = ICONS[name];
+    if (!d) return "";
+    return `<svg class="ic" xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${d}</svg>`;
+  };
+  // A bare health dot for dense tree rows (design HealthDot): its own token, and
+  // "unknown" slow-pulses rather than sitting green.
+  const healthDot = token => {
+    const safe = ["running", "degraded", "offline", "online", "unknown"].includes(token) ? token : "unknown";
+    return `<span class="hdot ${safe}" title="${esc(safe)}"></span>`;
+  };
+  // The nothing-here surface (design EmptyState): an icon, what is missing, and
+  // - where there is one - the cwcli command that answers it.
+  const emptyState = (iconName, title, body, command) =>
+    `<div class="empty empty-state">
+      <span class="empty-ic">${icon(iconName || "box", 26)}</span>
+      <div class="empty-title">${esc(title)}</div>
+      ${body ? `<div class="empty-body">${esc(body)}</div>` : ""}
+      ${command ? `<code class="empty-cmd">${esc(command)}</code>` : ""}
+    </div>`;
+  // A typed message with an actionable hint (design Banner): tone sets the
+  // colour, the optional help line reproduces the CLI's `help:` envelope.
+  const banner = (tone, title, body, hint) => {
+    const ic = tone === "danger" ? "circle-alert" : tone === "warn" ? "triangle-alert" : tone === "success" ? "info" : "info";
+    return `<div class="banner ${tone || "info"}">
+      <span class="banner-ic">${icon(ic, 16)}</span>
+      <div class="banner-body">
+        ${title ? `<div class="banner-title">${esc(title)}</div>` : ""}
+        ${body ? `<div class="banner-text">${esc(body)}</div>` : ""}
+        ${hint ? `<div class="banner-hint">help: ${esc(hint)}</div>` : ""}
+      </div>
+    </div>`;
+  };
+  // The design Spinner: the rotating loader over a label, for a pane awaiting data.
+  const spinner = label =>
+    `<div class="spinner"><span class="spinner-ic">${icon("loader-circle", 22)}</span><div class="spinner-label">${esc(label)}</div></div>`;
+
   const safeKey = value => encodeURIComponent(String(value ?? ""));
   const parseKey = value => decodeURIComponent(value || "");
 
@@ -1123,6 +1327,16 @@ dialog input {
   function statusPill(token) {
     const safe = ["running", "degraded", "offline", "online", "unknown"].includes(token) ? token : "unknown";
     return `<span class="pill ${safe}">${esc(statusText(token))}</span>`;
+  }
+
+  function processHealth(process) {
+    if (!process) return "unknown";
+    const state = process.state;
+    if (state === "RUNNING") return "running";
+    if (state === "STARTING" || state === "BACKOFF") return "degraded";
+    if (state === "UNKNOWN") return "unknown";
+    if (state) return "offline";
+    return process.up ? "running" : "offline";
   }
 
   function processPill(process) {
@@ -1340,8 +1554,8 @@ dialog input {
       // arrives (or when the daemon was never reachable) the honest message
       // is that we could not find out yet.
       el("tree").innerHTML = bootstrapped
-        ? `<div class="tree-empty">No instances found</div>`
-        : `<div class="tree-empty">Waiting for the daemon - no fleet data yet</div>`;
+        ? emptyState("server", "No instances found", "No local Frappe instances are running.", "cwcli init <name>")
+        : emptyState("box", "Waiting for the daemon - no fleet data yet");
       return;
     }
     el("tree").innerHTML = instances.map(instance => {
@@ -1353,9 +1567,14 @@ dialog input {
         <div class="tree-line">
           <button class="twisty" data-toggle="${safeKey(instance.project)}" aria-expanded="${open ? "true" : "false"}" aria-label="${open ? "Collapse" : "Expand"} ${esc(instance.project)}">${open ? "&#9662;" : "&#9656;"}</button>
           <button class="tree-row ${instanceSelected ? "selected" : ""}" data-select="instance" data-project="${safeKey(instance.project)}"${instanceSelected ? ' aria-current="true"' : ""}>
-            <span class="tree-label">${esc(instance.project)}</span>
-            ${statusPill(instance.overall)}
-            <span class="tree-meta">${esc(instance.docker_status)}${esc(pending)}</span>
+            <span class="node">
+              <span class="node-ic">${icon("server", 14)}</span>
+              <span class="node-text">
+                <span class="tree-label">${esc(instance.project)}</span>
+                <span class="tree-meta">${esc(instance.docker_status)}${esc(pending)}</span>
+              </span>
+            </span>
+            ${healthDot(instance.overall)}
           </button>
         </div>
         ${open ? `<div class="children">${benches || renderNoBenchNode(instance)}</div>` : ""}
@@ -1371,11 +1590,14 @@ dialog input {
     const processes = (bench.processes || []).map(process => renderProcessNode(instance, bench, process)).join("");
     return `<div>
       <button class="tree-row bench ${selectedRow ? "selected" : ""}" data-select="bench" data-project="${safeKey(instance.project)}" data-bench="${safeKey(key)}"${selectedRow ? ' aria-current="true"' : ""}>
-        <span>
-          <span class="tree-label">${esc(bench.label || bench.bench_path)}</span>
-          <span class="tree-meta">${esc(meta)}</span>
+        <span class="node">
+          <span class="node-ic">${icon("layers", 14)}</span>
+          <span class="node-text">
+            <span class="tree-label">${esc(bench.label || bench.bench_path)}</span>
+            <span class="tree-meta">${esc(meta)}</span>
+          </span>
         </span>
-        ${statusPill(bench.overall)}
+        ${healthDot(bench.overall)}
       </button>
       <div class="children">${processes || `<div class="tree-meta">processes unknown</div>`}</div>
     </div>`;
@@ -1387,11 +1609,14 @@ dialog input {
       && selected.process === process.label
       && selected.type === "process";
     return `<button class="tree-row process ${selectedRow ? "selected" : ""}" data-select="process" data-project="${safeKey(instance.project)}" data-bench="${safeKey(benchKey(bench))}" data-process="${safeKey(process.label)}"${selectedRow ? ' aria-current="true"' : ""}>
-      <span>
-        <span class="tree-label">PROCESS ${esc(process.label)}</span>
-        <span class="tree-meta">${esc(process.pid == null ? "pid unknown" : "pid " + process.pid)}</span>
+      <span class="node">
+        <span class="node-ic">${icon("terminal", 13)}</span>
+        <span class="node-text">
+          <span class="tree-label">PROCESS ${esc(process.label)}</span>
+          <span class="tree-meta">${esc(process.pid == null ? "pid unknown" : "pid " + process.pid)}</span>
+        </span>
       </span>
-      ${processPill(process)}
+      ${healthDot(processHealth(process))}
     </button>`;
   }
 
@@ -1495,7 +1720,7 @@ dialog input {
   function renderProcesses() {
     const inst = selectedInstance();
     if (!inst) {
-      el("detail").innerHTML = `<div class="empty">No live fleet data</div>`;
+      el("detail").innerHTML = emptyState("server", "No live fleet data", "No probe has answered for the fleet yet.");
       return;
     }
     const benches = selectedBench() ? [selectedBench()] : inst.benches;
@@ -1511,12 +1736,14 @@ dialog input {
       return;
     }
     if (!benches.length) {
-      el("detail").innerHTML = summary + `<div class="empty">${inst.container_running ? "Health unknown - no bench probed yet" : "Instance offline"}</div>`;
+      el("detail").innerHTML = summary + (inst.container_running
+        ? emptyState("box", "Health unknown - no bench probed yet")
+        : emptyState("server", "Instance offline", "Start the instance to probe its benches.", "cwcli start " + inst.project));
       return;
     }
     const rows = benches.flatMap(bench => (bench.processes || []).map(process => ({bench, process})));
     if (!rows.length) {
-      el("detail").innerHTML = summary + `<div class="empty">Process state unknown - could not find out</div>`;
+      el("detail").innerHTML = summary + emptyState("box", "Process state unknown - could not find out");
       return;
     }
     el("detail").innerHTML = summary + `<div class="section"><h3>Processes</h3><div class="table-wrap"><table>
@@ -1567,9 +1794,9 @@ dialog input {
 
   function renderDetailState(kind) {
     const detail = currentDetail();
-    if (!selected.project) return `<div class="empty">No instance selected</div>`;
-    if (!detail || detail.state === "loading") return `<div class="empty">Loading cached ${kind}</div>`;
-    if (detail.state === "error") return `<div class="empty">${esc(detail.message || "could not find out")}</div>`;
+    if (!selected.project) return emptyState("box", "No instance selected", "Choose an instance from the fleet tree.");
+    if (!detail || detail.state === "loading") return spinner(`Loading cached ${kind}`);
+    if (detail.state === "error") return banner("danger", "Could not load cached " + kind, detail.message || "could not find out");
     return null;
   }
 
@@ -1700,17 +1927,17 @@ dialog input {
       <button data-logs-refresh>Refresh</button>
     </div>`;
     if (!entry || entry.state === "loading") {
-      el("detail").innerHTML = `<div class="empty">Loading logs</div>`;
+      el("detail").innerHTML = spinner("Loading logs");
       return;
     }
     if (entry.state === "error") {
-      el("detail").innerHTML = toolbar("logs read failed") + `<div class="empty">${esc(entry.message || "could not find out")}</div>`;
+      el("detail").innerHTML = toolbar("logs read failed") + banner("danger", "Logs read failed", entry.message || "could not find out");
       restoreControlFocus(el("detail"), focusKey);
       return;
     }
     const read = entry.data || {};
     const warn = (entry.warnings || [])
-      .map(w => `<div class="notice">${esc(w.text || w.code || "")}</div>`).join("");
+      .map(w => banner("warn", null, w.text || w.code || "")).join("");
     // bench's own tools colorize freely; in a <pre> those ANSI codes would
     // render as literal escape garbage, so they are stripped, not interpreted.
     const stripAnsi = line => String(line).replace(/\u001b\[[0-9;]*[A-Za-z]/g, "");
@@ -1726,7 +1953,7 @@ dialog input {
         ${metric("Supervision", read.not_cwcli_supervised ? "raw bench logs - not cwcli supervised" : "cwcli supervisord")}
       </div>`
       + warn
-      + (blocks || `<div class="empty">No logs written yet</div>`);
+      + (blocks || emptyState("scroll-text", "No logs written yet", "This bench is running but has written nothing to its logs yet."));
     restoreControlFocus(el("detail"), focusKey);
   }
 
@@ -1751,34 +1978,37 @@ dialog input {
     const targetName = process ? `PROCESS ${process.label}` : bench ? (bench.label || bench.bench_path) : inst.project;
     const targetMeta = process ? `${inst.project} / ${bench ? bench.bench_path : "bench unknown"}` : bench ? inst.project : "instance";
     const busy = pendingAction !== null;
-    const processDisabled = busy || !process;
-    const message = lastAction ? `<div class="notice ${lastAction.ok ? "" : "error"}">${esc(lastAction.text)}</div>` : "";
+    const disabledReason = action => busy
+      ? (pendingAction === action ? "working" : "another action is running")
+      : null;
+    const processDisabledReason = disabledReason("restart_process") || (!process ? "select process" : null);
+    const message = lastAction ? banner(lastAction.ok ? "success" : "danger", null, lastAction.text, lastAction.hint) : "";
     el("rail-body").innerHTML = `<div>
       <div class="target"><div class="target-name">${esc(targetName)}</div><div class="target-meta">${esc(targetMeta)}</div></div>
       <div class="action-group">
         <h3>Instance</h3>
-        ${actionButton("start_instance", "Start instance", "starts bench", busy)}
-        ${actionButton("stop_instance", "Stop instance", "stops containers", busy)}
-        ${actionButton("restart_instance", "Restart instance", "stop then start", busy)}
-        ${actionButton("refresh_status", "Refresh status", "re-probe health", busy)}
-        ${actionButton("scale_instance", "Scale ports…", "asks to confirm", busy)}
+        ${actionButton("start_instance", "Start instance", "starts bench", disabledReason("start_instance"), "play")}
+        ${actionButton("stop_instance", "Stop instance", "stops containers", disabledReason("stop_instance"), "square")}
+        ${actionButton("restart_instance", "Restart instance", "stop then start", disabledReason("restart_instance"), "rotate-cw")}
+        ${actionButton("refresh_status", "Refresh status", "re-probe health", disabledReason("refresh_status"), "refresh-cw")}
+        ${actionButton("scale_instance", "Scale ports…", "asks to confirm", disabledReason("scale_instance"), "zap")}
       </div>
       <div class="action-group">
         <h3>Bench</h3>
-        ${actionButton("set_label", "Set label…", "durable handle", busy)}
-        ${actionButton("checkout_app", "Check out app ref…", "fetch + checkout", busy)}
+        ${actionButton("set_label", "Set label…", "durable handle", disabledReason("set_label"), "tag")}
+        ${actionButton("checkout_app", "Check out app ref…", "fetch + checkout", disabledReason("checkout_app"), "git-branch")}
       </div>
       <div class="action-group">
         <h3>Site</h3>
-        ${actionButton("unlock_site", "Unlock site…", "removes locks", busy)}
+        ${actionButton("unlock_site", "Unlock site…", "removes locks", disabledReason("unlock_site"), "lock-open")}
       </div>
       <div class="action-group">
         <h3>Process</h3>
-        ${actionButton("restart_process", "Restart process", process ? "one process" : "select process", processDisabled)}
+        ${actionButton("restart_process", "Restart process", "one process", processDisabledReason, "rotate-cw")}
       </div>
       <div class="action-group">
         <h3>Read</h3>
-        ${readButton("url", "Check URL", "host + reachability", busy)}
+        ${readButton("url", "Check URL", "host + reachability", disabledReason("probe_url"), "globe")}
       </div>
       <!-- Later-phase mutation groups attach here as new action-group blocks;
            they are deliberately not rendered until their phase ships, because a
@@ -1789,19 +2019,17 @@ dialog input {
     restoreControlFocus(el("rail-body"), focusKey);
   }
 
-  function actionButton(action, label, cost, disabled) {
-    const busy = pendingAction === action ? "working" : cost;
-    return `<button class="action-button" data-action="${action}" aria-disabled="${disabled ? "true" : "false"}">
-      <span>${esc(label)}</span><span class="action-cost">${esc(busy)}</span>
+  function actionButton(action, label, cost, disabledReason, iconName) {
+    return `<button class="action-button" data-action="${action}" aria-disabled="${disabledReason ? "true" : "false"}">
+      <span class="action-ic">${icon(iconName || "zap", 15)}</span><span class="action-label">${esc(label)}</span><span class="action-cost">${esc(disabledReason || cost)}</span>
     </button>`;
   }
 
   // A READ, not a Tier A action - kept off the actionButton() surface so the
   // pinned action-set stays exact. Its own data-read handler dispatches it.
-  function readButton(read, label, cost, disabled) {
-    const busy = pendingAction === "probe_" + read ? "working" : cost;
-    return `<button class="action-button" data-read="${read}" aria-disabled="${disabled ? "true" : "false"}">
-      <span>${esc(label)}</span><span class="action-cost">${esc(busy)}</span>
+  function readButton(read, label, cost, disabledReason, iconName) {
+    return `<button class="action-button" data-read="${read}" aria-disabled="${disabledReason ? "true" : "false"}">
+      <span class="action-ic">${icon(iconName || "globe", 15)}</span><span class="action-label">${esc(label)}</span><span class="action-cost">${esc(disabledReason || cost)}</span>
     </button>`;
   }
 
@@ -1843,7 +2071,9 @@ dialog input {
           return;
         }
         const choice = body.choice && body.choice.options ? " Options: " + body.choice.options.map(o => o.label || o.value).join(", ") : "";
-        throw new Error((error.message || "action failed") + choice);
+        const failure = new Error((error.message || "action failed") + choice);
+        failure.hint = error.hint;
+        throw failure;
       }
       lastAction = {ok: true, text: `${action.replaceAll("_", " ")} accepted for ${inst.project}`};
       addEvent("fast", `ACTION ${action.replaceAll("_", " ")} ${inst.project}`);
@@ -1854,7 +2084,7 @@ dialog input {
         ensureDetail(inst.project);
       }
     } catch (error) {
-      lastAction = {ok: false, text: error.message || "action failed"};
+      lastAction = {ok: false, text: error.message || "action failed", hint: error.hint};
       addEvent("error", `ACTION ${action} failed`);
     } finally {
       pendingAction = null;
@@ -1919,7 +2149,7 @@ dialog input {
 
   async function runDoctor() {
     openModal(`<h3 id="modal-title">Environment preflight</h3>
-      <div class="doctor-body"><div class="muted">Running checks…</div></div>
+      <div class="doctor-body">${spinner("Running checks…")}</div>
       ${modalButtons("Close")}`, () => true);
     try {
       const response = await fetch("/api/doctor");
@@ -1928,7 +2158,7 @@ dialog input {
       renderDoctor(report);
     } catch (error) {
       const body = modal.querySelector(".doctor-body");
-      if (body) body.innerHTML = `<div class="notice error">${esc(error.message || "doctor failed")}</div>`;
+      if (body) body.innerHTML = banner("danger", "Doctor failed", error.message || "doctor failed");
     }
   }
 
@@ -1982,9 +2212,16 @@ dialog input {
       const response = await fetch(`/api/instance/${encodeURIComponent(inst.project)}/url${query}`);
       const body = await response.json();
       if (response.status === 409 && body.error && body.error.kind === "needs_choice") {
-        throw new Error(body.error.message || "select a single bench first");
+        const failure = new Error(body.error.message || "select a single bench first");
+        failure.hint = body.error.hint;
+        throw failure;
       }
-      if (!response.ok || !body.ok) throw new Error((body.error && body.error.message) || "url probe failed");
+      if (!response.ok || !body.ok) {
+        const error = body.error || {};
+        const failure = new Error(error.message || "url probe failed");
+        failure.hint = error.hint;
+        throw failure;
+      }
       const p = body.outcome;
       const where = p.url ? p.url : "no host URL (port unresolved)";
       const reach = p.url ? (p.reachable ? `reachable (HTTP ${p.http_code})` : "unreachable") : "";
@@ -1995,7 +2232,8 @@ dialog input {
     } catch (error) {
       probeResult = {
         ok: false,
-        text: `${origin.project} / ${origin.benchLabel}: ${error.message || "url probe failed"}`
+        text: `${origin.project} / ${origin.benchLabel}: ${error.message || "url probe failed"}`,
+        hint: error.hint
       };
     } finally {
       pendingAction = null;
@@ -2109,7 +2347,7 @@ dialog input {
       }
       renderWhere(term, body);
     } catch (error) {
-      results.innerHTML = `<div class="notice error">${esc(error.message || "could not find out")}</div>`;
+      results.innerHTML = banner("danger", null, error.message || "could not find out");
       el("action-status").textContent = "Fleet search failed.";
     }
   }
@@ -2119,7 +2357,7 @@ dialog input {
     // The daemon-unreachable case must not read as "everything is gone": the
     // core reports it as verified=false + per-row "unverified", and both are
     // shown as exactly that.
-    const head = body.verified ? "" : `<div class="notice">Docker was not reachable - matches are remembered, not verified.</div>`;
+    const head = body.verified ? "" : banner("warn", null, "Docker was not reachable - matches are remembered, not verified.");
     el("action-status").textContent = `${rows.length} match${rows.length === 1 ? "" : "es"} for ${term}`;
     if (!rows.length) {
       el("where-results").innerHTML = head + `<div class="muted">No cached matches for "${esc(term)}"</div>`;
