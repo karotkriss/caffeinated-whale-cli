@@ -40,12 +40,21 @@ def host_1001(monkeypatch):
     monkeypatch.setattr(core_docker.os, "getgid", lambda: 1001)
 
 
-def test_noop_when_ids_already_match(monkeypatch):
+def test_matching_ids_still_repair_home_when_requested(monkeypatch):
     monkeypatch.setattr(core_docker.os, "getuid", lambda: 1000)
     monkeypatch.setattr(core_docker.os, "getgid", lambda: 1000)
     c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
     assert core_docker.align_container_user_to_host(c, chown_home=True) == (False, None)
-    assert c.remap_scripts == []  # nothing ran - the dev-box common case
+    assert c.remap_scripts
+    assert "chown 1000:1000 /home/frappe" in c.remap_scripts[0]
+
+
+def test_matching_ids_without_home_repair_are_a_noop(monkeypatch):
+    monkeypatch.setattr(core_docker.os, "getuid", lambda: 1000)
+    monkeypatch.setattr(core_docker.os, "getgid", lambda: 1000)
+    c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
+    assert core_docker.align_container_user_to_host(c) == (False, None)
+    assert c.remap_scripts == []
 
 
 def test_remaps_uid_and_gid_as_root_with_home_chown(host_1001):
@@ -111,19 +120,36 @@ def test_home_chown_is_narrowed_to_provisioning_write_paths(host_1001):
     c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
     core_docker.align_container_user_to_host(c, chown_home=True)
     script = c.remap_scripts[0]
-    recursive_step = next(s for s in script.split(" && ") if "chown -R" in s)
-    shallow_step = next(s for s in script.split(" && ") if "chown -R" not in s and ".pyenv" in s)
+    steps = script.split(" && ")
+    recursive_steps = [step for step in steps if "chown -R" in step]
+    shallow_steps = [
+        step
+        for step in steps
+        if "chown -R" not in step
+        and any(path in step for path in core_docker._CHOWN_HOME_SHALLOW_DIRS)
+    ]
 
     for path in core_docker._CHOWN_HOME_RECURSIVE_DIRS:
-        assert path in recursive_step
+        assert any(path in step for step in recursive_steps)
     for path in core_docker._CHOWN_HOME_SHALLOW_DIRS:
-        assert path in shallow_step
+        assert any(path in step for step in shallow_steps)
 
     # The recursive re-own is scoped to caches/config, never the toolchain dirs
     # a first provision writes new versions INTO (pyenv/nvm need only their
     # parent directory re-owned, not the tens of thousands of files inside).
-    assert "/home/frappe/.pyenv" not in recursive_step
-    assert "/home/frappe/.nvm" not in recursive_step
+    assert all("/home/frappe/.pyenv" not in step for step in recursive_steps)
+    assert all("/home/frappe/.nvm" not in step for step in recursive_steps)
+
+
+def test_home_chown_skips_missing_paths_without_hiding_failures(host_1001):
+    c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
+    core_docker.align_container_user_to_host(c, chown_home=True)
+    script = c.remap_scripts[0]
+
+    assert "|| true" not in script
+    paths = (*core_docker._CHOWN_HOME_RECURSIVE_DIRS, *core_docker._CHOWN_HOME_SHALLOW_DIRS)
+    for path in paths:
+        assert f"[ ! -e {path} ] || chown" in script
 
 
 def test_start_path_skips_the_slow_home_chown(host_1001):

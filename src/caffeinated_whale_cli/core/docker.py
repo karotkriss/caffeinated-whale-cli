@@ -240,8 +240,8 @@ def align_container_user_to_host(container, *, chown_home: bool = False) -> tupl
     depend on anything walking the workspace itself, so it is unaffected by how the
     uid field gets there (see the ``sed``-vs-``usermod`` note below).
 
-    A no-op when the ids already match (the common dev-box case), so nothing runs
-    and no cost is paid there. ``chown_home`` additionally re-owns the handful of
+    Identity remapping is a no-op when the ids already match (the common dev-box
+    case). ``chown_home`` independently re-owns the handful of
     paths under ``/home/frappe`` that a first provision actually WRITES (the home
     root, pip/npm's caches, and pyenv/nvm's write targets - see
     ``_CHOWN_HOME_RECURSIVE_DIRS``/``_CHOWN_HOME_SHALLOW_DIRS`` above), so callers
@@ -267,7 +267,8 @@ def align_container_user_to_host(container, *, chown_home: bool = False) -> tupl
     cur_gid = _read_frappe_id(container, "-g")
     if cur_uid is None or cur_gid is None:
         return (False, "could not read the container 'frappe' user's uid/gid")
-    if cur_uid == host_uid and cur_gid == host_gid:
+    ids_changed = cur_uid != host_uid or cur_gid != host_gid
+    if not ids_changed and not chown_home:
         return (False, None)
 
     # `-o` allows a non-unique id (the host uid may already exist in the image's
@@ -291,17 +292,14 @@ def align_container_user_to_host(container, *, chown_home: bool = False) -> tupl
     if cur_uid != host_uid:
         steps.append(rf"sed -i 's/^frappe:\([^:]*\):[^:]*:/frappe:\1:{host_uid}:/' /etc/passwd")
     if chown_home:
-        recursive = " ".join(_CHOWN_HOME_RECURSIVE_DIRS)
-        shallow = " ".join(_CHOWN_HOME_SHALLOW_DIRS)
-        # The home root is chowned bare (non-recursive) unconditionally - it always
-        # exists, it's the container's own home. The optional dirs are wrapped in
-        # `|| true`: `chown` still re-owns whichever of them DO exist even when one
-        # is missing (e.g. `.config`, absent on this image), and a missing-path
-        # nonzero exit must not fail the whole align step over an optional dir.
-        steps.append(
-            f"chown {host_uid}:{host_gid} /home/frappe"
-            f" && (chown -R {host_uid}:{host_gid} {recursive} 2>/dev/null || true)"
-            f" && (chown {host_uid}:{host_gid} {shallow} 2>/dev/null || true)"
+        steps.append(f"chown {host_uid}:{host_gid} /home/frappe")
+        steps.extend(
+            f"[ ! -e {path} ] || chown -R {host_uid}:{host_gid} {path}"
+            for path in _CHOWN_HOME_RECURSIVE_DIRS
+        )
+        steps.extend(
+            f"[ ! -e {path} ] || chown {host_uid}:{host_gid} {path}"
+            for path in _CHOWN_HOME_SHALLOW_DIRS
         )
     try:
         code, out = container.exec_run(["bash", "-c", " && ".join(steps)], user="root")
@@ -310,7 +308,7 @@ def align_container_user_to_host(container, *, chown_home: bool = False) -> tupl
     if code != 0:
         detail = out.decode("utf-8", "replace") if isinstance(out, (bytes, bytearray)) else str(out)
         return (False, f"could not align the container 'frappe' user to the host: {detail.strip()}")
-    return (True, None)
+    return (ids_changed, None)
 
 
 def get_frappe_container(project_name: str):
