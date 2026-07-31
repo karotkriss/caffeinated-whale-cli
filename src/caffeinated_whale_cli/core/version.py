@@ -86,15 +86,32 @@ def check(*, use_cache: bool = True, timeout: float = _DEFAULT_TIMEOUT) -> Resul
     passive notice); a successful fetch always refreshes that cache regardless.
     A failed lookup rides as a ``pypi.unreachable`` warning with ``latest=None``.
     """
-    current = _current_version()
-    method, dev_path = _detect_method()
     latest = _latest_version(use_cache=use_cache, timeout=timeout)
 
     warnings: list[Message] = []
     if latest is None:
         warnings.append(Message("pypi.unreachable", "Could not reach PyPI to check for updates."))
 
-    info = VersionInfo(
+    info = _version_info(latest)
+    status = Status.WARNING if warnings else Status.OK
+    return Result(status=status, data=info, warnings=warnings)
+
+
+def read_cached_only() -> VersionInfo | None:
+    """Return fresh cached version information without fetching or writing."""
+    latest = _read_cache()
+    return _version_info(latest) if latest is not None else None
+
+
+def current_version() -> str:
+    """Return the installed cwcli version without consulting the network or cache."""
+    return _current_version()
+
+
+def _version_info(latest: str | None) -> VersionInfo:
+    current = _current_version()
+    method, dev_path = _detect_method()
+    return VersionInfo(
         current=current,
         latest=latest,
         method=method,
@@ -103,8 +120,6 @@ def check(*, use_cache: bool = True, timeout: float = _DEFAULT_TIMEOUT) -> Resul
         is_dev=method == "dev",
         dev_path=dev_path,
     )
-    status = Status.WARNING if warnings else Status.OK
-    return Result(status=status, data=info, warnings=warnings)
 
 
 def passive_notice(*, timeout: float = _DEFAULT_TIMEOUT) -> VersionInfo | None:
