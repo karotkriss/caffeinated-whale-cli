@@ -1,0 +1,38 @@
+<!-- @dsCard group="Components" viewport="700x360" name="Data" subtitle="Fact rows, Rich-style table, terminal log view" -->
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><link rel="stylesheet" href="../../styles.css">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="../../_ds_bundle.js"></script>
+<style>html,body{margin:0}body{background:var(--bg-app);color:var(--text-primary);font:var(--type-body);padding:16px}.cwrow{display:flex;flex-wrap:wrap;align-items:center;gap:10px}.cwcol{display:flex;flex-direction:column;gap:14px}.cwlbl{font:var(--type-label);letter-spacing:var(--tracking-caps);text-transform:uppercase;color:var(--text-muted);margin-bottom:6px}</style>
+</head><body><div id="root"></div>
+<script type="text/babel">
+const { KeyValue, DataTable, LogView } = window.CaffeinatedWhaleDesignSystem_2d9598;
+function Demo(){return (<div className="cwcol">
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20}}>
+      <div>
+        <div className="cwlbl">KeyValue</div>
+        <KeyValue label="Bench path" value="/workspace/frappe-bench" />
+        <KeyValue label="Web" value="console.localhost:8000 → 200" tone="accent" />
+        <KeyValue label="Probe" value="248 ms" tone="muted" />
+        <KeyValue label="Web HTTP" value={null} hint="never probed" />
+      </div>
+      <div>
+        <div className="cwlbl">DataTable — Rich column tints</div>
+        <DataTable
+          columns={[{key:"project",header:"Project name",width:"minmax(0,1.4fr)",tint:"cyan"},{key:"status",header:"Status",width:"90px",tint:"magenta"},{key:"ports",header:"Ports",width:"110px",tint:"green"}]}
+          rows={[{project:"my-erp",status:"running",ports:"8000-8005"},{project:"staging",status:"degraded",ports:"16000-16005"},{project:"old-proj",status:"exited",ports:"N/A"}]} />
+      </div>
+    </div>
+    <div>
+      <div className="cwlbl">LogView</div>
+      <LogView height={130} lines={[
+        {text:"$ cwcli status my-erp",level:"command"},
+        {text:"overall  degraded",level:"warn",time:"14:02:11"},
+        {text:"web             RUNNING  pid 4711",level:"success",time:"14:02:11"},
+        {text:"worker_default  STOPPED  pid —",level:"error",time:"14:02:11"},
+        {text:"web console.localhost:8000 -> 200",level:"info",time:"14:02:12"}]} />
+    </div>
+  </div>);}
+ReactDOM.createRoot(document.getElementById("root")).render(<Demo/>);
+</script></body></html>

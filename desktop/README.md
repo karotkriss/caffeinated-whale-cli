@@ -82,6 +82,25 @@ Both first-class targets match the Phase 0 evidence:
 
 macOS is not regressed by any design choice here, but is not a Phase 1 validation target.
 
+## Design system
+
+`design/` (repo root) is the canonical Caffeinated Whale design system and the design authority for this shell: all Console/shell styling derives from its tokens, components, and guidelines.
+Read `design/readme.md` (or invoke the `caffeinated-whale-design` skill) before styling any Console surface.
+
+### Adherence lint
+
+`design/_adherence.oxlintrc.json` is the [oxlint](https://oxc.rs/docs/guide/usage/linter) config that checks frontend JSX against the design system (no raw hex colors, no raw `px`, only the system's fonts, and per-component prop/tone whitelists).
+It is intentionally **not** yet an installed desktop dependency or a CI gate: Phase 1 ships no bundled JS frontend (the Console page is served by the Python `cwcli serve` daemon), so there is no JSX in `desktop/` to lint.
+
+When frontend JSX lands in the shell, lint it against the committed config with the standalone oxlint binary (no `package.json` needed):
+
+```bash
+npx --yes oxlint --config ../design/_adherence.oxlintrc.json <frontend-src>
+```
+
+and add that command to `.github/workflows/desktop.yml` at that point.
+Add oxlint as a desktop dev dependency only, never to the Python runtime deps.
+
 ## Build and run
 
 Prerequisites: the Rust toolchain (MSRV 1.77.2), and on Linux the Tauri system dependencies (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`, `libxdo-dev`, `libssl-dev`, `pkg-config`).

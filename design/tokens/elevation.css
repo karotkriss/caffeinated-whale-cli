@@ -1,0 +1,13 @@
+/* On dark surfaces depth comes from a hairline plus a wide, low-opacity shadow.
+   Nothing glows; nothing has a coloured drop shadow except the focus ring. */
+:root {
+  --shadow-none: none;
+  --shadow-inset-top: inset 0 1px 0 rgba(220, 230, 242, 0.05);
+  --shadow-sm: 0 1px 2px rgba(4, 8, 20, 0.5);
+  --shadow-md: 0 4px 12px rgba(4, 8, 20, 0.45);
+  --shadow-lg: 0 12px 32px rgba(4, 8, 20, 0.55);
+  --shadow-window: 0 24px 64px rgba(4, 8, 20, 0.65);
+  --ring-focus: 0 0 0 2px var(--focus-ring);
+  --ring-selected: inset 2px 0 0 var(--accent);
+  --blur-overlay: blur(14px) saturate(140%); /* @kind other */
+}

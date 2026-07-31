@@ -1,0 +1,40 @@
+/* Type scale. The UI is dense by intent: a fleet of instances, each with benches,
+   each with processes. 13px is the workhorse body size, 12px the metadata size. */
+:root {
+  --text-2xs: 10px;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-md: 13px;
+  --text-base: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-2xl: 26px;
+  --text-3xl: 34px;
+  --text-4xl: 44px;
+
+  --leading-tight: 1.15;
+  --leading-snug: 1.35;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.65;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  --tracking-tight: -0.02em;
+  --tracking-normal: 0;
+  --tracking-wide: 0.04em;
+  --tracking-caps: 0.09em;
+
+  /* Composite roles */
+  --type-display: var(--weight-semibold) var(--text-3xl) / var(--leading-tight) var(--font-display);
+  --type-title: var(--weight-semibold) var(--text-xl) / var(--leading-snug) var(--font-sans);
+  --type-heading: var(--weight-semibold) var(--text-lg) / var(--leading-snug) var(--font-sans);
+  --type-body: var(--weight-regular) var(--text-md) / var(--leading-normal) var(--font-sans);
+  --type-body-strong: var(--weight-medium) var(--text-md) / var(--leading-normal) var(--font-sans);
+  --type-meta: var(--weight-regular) var(--text-sm) / var(--leading-snug) var(--font-sans);
+  --type-mono: var(--weight-regular) var(--text-sm) / var(--leading-normal) var(--font-mono);
+  --type-mono-strong: var(--weight-medium) var(--text-sm) / var(--leading-normal) var(--font-mono);
+  --type-label: var(--weight-semibold) var(--text-2xs) / 1.2 var(--font-sans);
+}

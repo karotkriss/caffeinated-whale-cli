@@ -1,0 +1,14 @@
+<!-- @dsCard group="Colors" viewport="700x150" name="Health tokens" subtitle="The five states core.status can produce. There is no sixth, and unknown is grey on purpose" -->
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><link rel="stylesheet" href="../styles.css">
+<style>html,body{margin:0}body{background:var(--bg-app);color:var(--text-primary);font:var(--type-body);padding:16px}
+.g{display:grid;gap:8px}.sw{border-radius:var(--radius-md);border:1px solid var(--border-subtle);padding:8px 10px;display:flex;flex-direction:column;justify-content:flex-end;min-height:62px}
+.sw b{font:var(--type-body-strong);font-size:var(--text-sm)}.sw i{font-family:var(--font-mono);font-size:var(--text-2xs);opacity:.72;font-style:normal}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.lb{font:var(--type-label);letter-spacing:var(--tracking-caps);text-transform:uppercase;color:var(--text-muted)}
+</style></head><body>
+
+<div class="g" style="grid-template-columns:repeat(5,1fr)">
+<div class="sw" style="background:var(--cw-status-running);color:#04150f"><b>running</b><i>var(--cw-status-running)</i></div><div class="sw" style="background:var(--cw-status-online);color:#04121c"><b>online</b><i>var(--cw-status-online)</i></div><div class="sw" style="background:var(--cw-status-degraded);color:#1a1204"><b>degraded</b><i>var(--cw-status-degraded)</i></div><div class="sw" style="background:var(--cw-status-offline);color:#1a0705"><b>offline</b><i>var(--cw-status-offline)</i></div><div class="sw" style="background:var(--cw-status-unknown);color:#0a0f22"><b>unknown</b><i>var(--cw-status-unknown)</i></div>
+</div>
+<p style="margin:12px 0 0;font:var(--type-meta);color:var(--text-muted)">A running container is not a healthy bench. Until a probe answers, the token is <code style="font-family:var(--font-mono);color:var(--cw-status-unknown)">unknown</code> — never a dash, a zero, or green.</p>
+</body></html>
