@@ -1,6 +1,8 @@
 # Caffeinated Whale CLI
 
-A command-line interface (CLI) for managing Frappe/ERPNext Docker instances during local development. Simplify container management, bench operations, and development workflows with an intuitive set of commands.
+A command-line interface (CLI) for managing Frappe/ERPNext Docker instances during local development.
+The repository also contains the Phase 1 Tauri desktop shell, which runs the existing Console GUI over the same Python core.
+See [`desktop/README.md`](./desktop/README.md) for its current source-build status, supported platforms, and build instructions.
 
 ## Features
 
@@ -24,6 +26,7 @@ A command-line interface (CLI) for managing Frappe/ERPNext Docker instances duri
 - **Auto-Inspection** - Background process to keep project cache fresh automatically
 - **System Integration** - Auto-start on system boot with platform-specific configurations
 - **Contextual Tips** - Helpful tips displayed during long-running operations to help you discover features
+- **Desktop Console** - A source-build Tauri 2 shell for the existing Console GUI on Linux and Windows; installer bundles are deferred to a later phase
 
 ## Installation
 
@@ -2392,7 +2395,7 @@ The CLI uses:
 - **Questionary** - Interactive prompts
 - **Peewee ORM** - SQLite-based caching
 
-**Logic core:** business logic and I/O live in a UI-pure `core/` package that carries no `rich`/`questionary`/`typer`; it returns a serializable typed envelope (or raises a typed error) so the human CLI, the `cwcli axi` agent surface, and any future GUI are all thin frontends over one implementation.
+**Logic core:** business logic and I/O live in a UI-pure `core/` package that carries no `rich`/`questionary`/`typer`; it returns a serializable typed envelope (or raises a typed error) so the human CLI, the `cwcli axi` agent surface, and the Console GUI are all thin frontends over one implementation.
 `backup`, `unlock`, `stop`, `label`, `run`, `ls`/`list`, `where`, `start`/`status`/`restart`, `logs`, `inspect`, `apps`, `update`, `open`, `init`, `config`, `restore`, `rm`, and `rm-site` are migrated onto it so far.
 
 **Data Directories:**
