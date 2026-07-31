@@ -134,11 +134,24 @@ def test_home_chown_is_narrowed_to_provisioning_write_paths(host_1001):
     for path in core_docker._CHOWN_HOME_SHALLOW_DIRS:
         assert any(path in step for step in shallow_steps)
 
-    # The recursive re-own is scoped to caches/config, never the toolchain dirs
-    # a first provision writes new versions INTO (pyenv/nvm need only their
-    # parent directory re-owned, not the tens of thousands of files inside).
-    assert all("/home/frappe/.pyenv" not in step for step in recursive_steps)
-    assert all("/home/frappe/.nvm" not in step for step in recursive_steps)
+    # Mutable manager state must be recursive: login shells rewrite pyenv's
+    # existing shims, while pyenv, nvm, and npm all write beneath private cache
+    # or alias directories. Leaving their baked files at the old uid makes the
+    # first post-remap login shell or v14 tool install fail with EACCES.
+    for path in (
+        "/home/frappe/.npm",
+        "/home/frappe/.pyenv/cache",
+        "/home/frappe/.pyenv/shims",
+        "/home/frappe/.nvm/.cache",
+        "/home/frappe/.nvm/alias",
+    ):
+        assert any(path in step for step in recursive_steps)
+
+    # Installed interpreters remain shallow. Recursing into either tree is the
+    # expensive baked-toolchain copy-up this change exists to avoid.
+    for path in ("/home/frappe/.pyenv/versions", "/home/frappe/.nvm/versions/node"):
+        assert any(path in step for step in shallow_steps)
+        assert not any(path in step for step in recursive_steps)
 
 
 def test_home_chown_skips_missing_paths_without_hiding_failures(host_1001):
