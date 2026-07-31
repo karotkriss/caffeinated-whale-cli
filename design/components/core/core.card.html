@@ -1,0 +1,40 @@
+<!-- @dsCard group="Components" viewport="700x300" name="Core" subtitle="Buttons, icon buttons, badges, tags, key caps" -->
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><link rel="stylesheet" href="../../styles.css">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="../../_ds_bundle.js"></script>
+<style>html,body{margin:0}body{background:var(--bg-app);color:var(--text-primary);font:var(--type-body);padding:16px}.cwrow{display:flex;flex-wrap:wrap;align-items:center;gap:10px}.cwcol{display:flex;flex-direction:column;gap:14px}.cwlbl{font:var(--type-label);letter-spacing:var(--tracking-caps);text-transform:uppercase;color:var(--text-muted);margin-bottom:6px}</style>
+</head><body><div id="root"></div>
+<script type="text/babel">
+const { Button, IconButton, Badge, Tag, Kbd, Card } = window.CaffeinatedWhaleDesignSystem_2d9598;
+function Demo(){return (<div className="cwcol">
+    <div><div className="cwlbl">Button — variant</div><div className="cwrow">
+      <Button variant="primary" icon="play">Start instance</Button>
+      <Button variant="secondary" icon="rotate-cw">Restart</Button>
+      <Button variant="subtle" icon="refresh-cw">Refresh status</Button>
+      <Button variant="ghost" icon="scroll-text">Logs</Button>
+      <Button variant="danger" icon="trash-2">Remove</Button>
+    </div></div>
+    <div><div className="cwlbl">Size · loading · disabled</div><div className="cwrow">
+      <Button size="sm" icon="plus">New</Button>
+      <Button size="md" icon="plus">New instance</Button>
+      <Button size="lg" variant="primary" icon="plus">New instance</Button>
+      <Button loading>Probing</Button>
+      <Button disabled icon="square">Stop</Button>
+    </div></div>
+    <div><div className="cwlbl">Icon button · badge · tag · key cap</div><div className="cwrow">
+      <IconButton icon="panel-left" title="Toggle tree" />
+      <IconButton icon="refresh-cw" title="Refresh" variant="secondary" />
+      <IconButton icon="trash-2" title="Remove" variant="danger" />
+      <Badge tone="accent">FAST</Badge>
+      <Badge tone="magenta">INSTANT</Badge>
+      <Badge tone="neutral" uppercase={false}>3 benches</Badge>
+      <Tag icon="globe">8000-8005</Tag>
+      <Tag icon="git-branch">version-16</Tag>
+      <Tag icon="tag" mono={false}>staging</Tag>
+      <span style={{display:"flex",gap:3}}><Kbd>⌘</Kbd><Kbd>K</Kbd></span>
+    </div></div>
+  </div>);}
+ReactDOM.createRoot(document.getElementById("root")).render(<Demo/>);
+</script></body></html>
