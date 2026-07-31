@@ -30,7 +30,7 @@ const CONSOLE_HTML = fileURLToPath(
 // entity such as &#9662;).
 const HEX = /(?<!&)#[0-9a-fA-F]{3,8}\b/;
 // A custom-property declaration: `--token: ...;` - the allowed token layer.
-const TOKEN_DEF = /--[\w-]+\s*:[^;]*(?:;|$)/g;
+const TOKEN_DEF = /--[\w-]+\s*:[^;}]*(?:[;}]|$)/g;
 
 /** Return [{line, text}] for consuming raw-hex violations in the CSS/HTML text. */
 export function findRawHex(source) {
@@ -46,6 +46,7 @@ function selfcheck() {
   const bad = ".x { color: #ff00aa; }";
   const tokenOk = "  --accent: #00a0d0;";
   const mixed = "--local: #fff; color: #000;";
+  const semicolonlessMixed = ":root { --local: #fff } .x { color: #000; }";
   const entityOk = '<span>&#9662;</span>';
   const consumeOk = "  color: var(--accent);";
   const assertEq = (got, want, msg) => {
@@ -60,6 +61,11 @@ function selfcheck() {
     findRawHex(mixed).length,
     1,
     "consuming hex beside a token definition must be caught exactly once",
+  );
+  assertEq(
+    findRawHex(semicolonlessMixed).length,
+    1,
+    "consuming hex beside a semicolonless token definition must be caught exactly once",
   );
   assertEq(findRawHex(entityOk).length, 0, "HTML numeric entity must not be flagged");
   assertEq(findRawHex(consumeOk).length, 0, "var() token use must be allowed");
