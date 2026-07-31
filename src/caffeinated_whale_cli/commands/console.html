@@ -1334,8 +1334,8 @@ dialog input {
     const state = process.state;
     if (state === "RUNNING") return "running";
     if (state === "STARTING" || state === "BACKOFF") return "degraded";
-    if (state === "STOPPED" || state === "FATAL" || state === "EXITED") return "offline";
-    if (state) return "unknown";
+    if (state === "UNKNOWN") return "unknown";
+    if (state) return "offline";
     return process.up ? "running" : "offline";
   }
 
@@ -1978,34 +1978,37 @@ dialog input {
     const targetName = process ? `PROCESS ${process.label}` : bench ? (bench.label || bench.bench_path) : inst.project;
     const targetMeta = process ? `${inst.project} / ${bench ? bench.bench_path : "bench unknown"}` : bench ? inst.project : "instance";
     const busy = pendingAction !== null;
-    const processDisabled = busy || !process;
-    const message = lastAction ? banner(lastAction.ok ? "success" : "danger", null, lastAction.text) : "";
+    const disabledReason = action => busy
+      ? (pendingAction === action ? "working" : "another action is running")
+      : null;
+    const processDisabledReason = disabledReason("restart_process") || (!process ? "select process" : null);
+    const message = lastAction ? banner(lastAction.ok ? "success" : "danger", null, lastAction.text, lastAction.hint) : "";
     el("rail-body").innerHTML = `<div>
       <div class="target"><div class="target-name">${esc(targetName)}</div><div class="target-meta">${esc(targetMeta)}</div></div>
       <div class="action-group">
         <h3>Instance</h3>
-        ${actionButton("start_instance", "Start instance", "starts bench", busy, "play")}
-        ${actionButton("stop_instance", "Stop instance", "stops containers", busy, "square")}
-        ${actionButton("restart_instance", "Restart instance", "stop then start", busy, "rotate-cw")}
-        ${actionButton("refresh_status", "Refresh status", "re-probe health", busy, "refresh-cw")}
-        ${actionButton("scale_instance", "Scale ports…", "asks to confirm", busy, "zap")}
+        ${actionButton("start_instance", "Start instance", "starts bench", disabledReason("start_instance"), "play")}
+        ${actionButton("stop_instance", "Stop instance", "stops containers", disabledReason("stop_instance"), "square")}
+        ${actionButton("restart_instance", "Restart instance", "stop then start", disabledReason("restart_instance"), "rotate-cw")}
+        ${actionButton("refresh_status", "Refresh status", "re-probe health", disabledReason("refresh_status"), "refresh-cw")}
+        ${actionButton("scale_instance", "Scale ports…", "asks to confirm", disabledReason("scale_instance"), "zap")}
       </div>
       <div class="action-group">
         <h3>Bench</h3>
-        ${actionButton("set_label", "Set label…", "durable handle", busy, "tag")}
-        ${actionButton("checkout_app", "Check out app ref…", "fetch + checkout", busy, "git-branch")}
+        ${actionButton("set_label", "Set label…", "durable handle", disabledReason("set_label"), "tag")}
+        ${actionButton("checkout_app", "Check out app ref…", "fetch + checkout", disabledReason("checkout_app"), "git-branch")}
       </div>
       <div class="action-group">
         <h3>Site</h3>
-        ${actionButton("unlock_site", "Unlock site…", "removes locks", busy, "lock-open")}
+        ${actionButton("unlock_site", "Unlock site…", "removes locks", disabledReason("unlock_site"), "lock-open")}
       </div>
       <div class="action-group">
         <h3>Process</h3>
-        ${actionButton("restart_process", "Restart process", process ? "one process" : "select process", processDisabled, "rotate-cw")}
+        ${actionButton("restart_process", "Restart process", "one process", processDisabledReason, "rotate-cw")}
       </div>
       <div class="action-group">
         <h3>Read</h3>
-        ${readButton("url", "Check URL", "host + reachability", busy, "globe")}
+        ${readButton("url", "Check URL", "host + reachability", disabledReason("probe_url"), "globe")}
       </div>
       <!-- Later-phase mutation groups attach here as new action-group blocks;
            they are deliberately not rendered until their phase ships, because a
@@ -2016,19 +2019,17 @@ dialog input {
     restoreControlFocus(el("rail-body"), focusKey);
   }
 
-  function actionButton(action, label, cost, disabled, iconName) {
-    const busy = pendingAction === action ? "working" : cost;
-    return `<button class="action-button" data-action="${action}" aria-disabled="${disabled ? "true" : "false"}">
-      <span class="action-ic">${icon(iconName || "zap", 15)}</span><span class="action-label">${esc(label)}</span><span class="action-cost">${esc(busy)}</span>
+  function actionButton(action, label, cost, disabledReason, iconName) {
+    return `<button class="action-button" data-action="${action}" aria-disabled="${disabledReason ? "true" : "false"}">
+      <span class="action-ic">${icon(iconName || "zap", 15)}</span><span class="action-label">${esc(label)}</span><span class="action-cost">${esc(disabledReason || cost)}</span>
     </button>`;
   }
 
   // A READ, not a Tier A action - kept off the actionButton() surface so the
   // pinned action-set stays exact. Its own data-read handler dispatches it.
-  function readButton(read, label, cost, disabled, iconName) {
-    const busy = pendingAction === "probe_" + read ? "working" : cost;
-    return `<button class="action-button" data-read="${read}" aria-disabled="${disabled ? "true" : "false"}">
-      <span class="action-ic">${icon(iconName || "globe", 15)}</span><span class="action-label">${esc(label)}</span><span class="action-cost">${esc(busy)}</span>
+  function readButton(read, label, cost, disabledReason, iconName) {
+    return `<button class="action-button" data-read="${read}" aria-disabled="${disabledReason ? "true" : "false"}">
+      <span class="action-ic">${icon(iconName || "globe", 15)}</span><span class="action-label">${esc(label)}</span><span class="action-cost">${esc(disabledReason || cost)}</span>
     </button>`;
   }
 
@@ -2070,7 +2071,9 @@ dialog input {
           return;
         }
         const choice = body.choice && body.choice.options ? " Options: " + body.choice.options.map(o => o.label || o.value).join(", ") : "";
-        throw new Error((error.message || "action failed") + choice);
+        const failure = new Error((error.message || "action failed") + choice);
+        failure.hint = error.hint;
+        throw failure;
       }
       lastAction = {ok: true, text: `${action.replaceAll("_", " ")} accepted for ${inst.project}`};
       addEvent("fast", `ACTION ${action.replaceAll("_", " ")} ${inst.project}`);
@@ -2081,7 +2084,7 @@ dialog input {
         ensureDetail(inst.project);
       }
     } catch (error) {
-      lastAction = {ok: false, text: error.message || "action failed"};
+      lastAction = {ok: false, text: error.message || "action failed", hint: error.hint};
       addEvent("error", `ACTION ${action} failed`);
     } finally {
       pendingAction = null;
@@ -2209,9 +2212,16 @@ dialog input {
       const response = await fetch(`/api/instance/${encodeURIComponent(inst.project)}/url${query}`);
       const body = await response.json();
       if (response.status === 409 && body.error && body.error.kind === "needs_choice") {
-        throw new Error(body.error.message || "select a single bench first");
+        const failure = new Error(body.error.message || "select a single bench first");
+        failure.hint = body.error.hint;
+        throw failure;
       }
-      if (!response.ok || !body.ok) throw new Error((body.error && body.error.message) || "url probe failed");
+      if (!response.ok || !body.ok) {
+        const error = body.error || {};
+        const failure = new Error(error.message || "url probe failed");
+        failure.hint = error.hint;
+        throw failure;
+      }
       const p = body.outcome;
       const where = p.url ? p.url : "no host URL (port unresolved)";
       const reach = p.url ? (p.reachable ? `reachable (HTTP ${p.http_code})` : "unreachable") : "";
@@ -2222,7 +2232,8 @@ dialog input {
     } catch (error) {
       probeResult = {
         ok: false,
-        text: `${origin.project} / ${origin.benchLabel}: ${error.message || "url probe failed"}`
+        text: `${origin.project} / ${origin.benchLabel}: ${error.message || "url probe failed"}`,
+        hint: error.hint
       };
     } finally {
       pendingAction = null;
