@@ -1741,6 +1741,13 @@ class TestPhase1ReadSurfaces:
         assert "URL check in progress for ${inst.project}" in page
         assert 'el("action-status").textContent = lastAction ? lastAction.text : "";' in page
 
+    def test_the_url_read_binds_results_to_the_originating_selection(self, page):
+        assert "benchKey: benchKey(bench)" in page
+        assert "selected.project === origin.project" in page
+        assert '(selected.benchKey || "") === origin.benchKey' in page
+        assert "lastAction = selectionStillMatches ? probeResult : null;" in page
+        assert "`${p.project} / ${p.bench_path}:" in page
+
     def test_no_later_phase_mutation_button_is_rendered(self, page):
         # Phase 1 wires reads + lifecycle; a greyed slot for a later-phase verb
         # would still be building its surface (the Tier A rail ruling).
