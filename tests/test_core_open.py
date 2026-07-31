@@ -374,10 +374,11 @@ class TestEditorResolution:
 class TestNoAxiOpenVerb:
     """There is deliberately NO ``axi open`` verb (design Decision 6): not
     because ``LaunchTarget`` will not serialize - it is four strings and would -
-    but because ``execvp`` destroys the process that owes ``axi`` its
-    one-TOON-document contract, and the editor branches are meaningless to an
-    agent with no desktop. This test keeps the absence a decision, not an
-    oversight (the ``axi apps install``/``uninstall`` non-verb precedent)."""
+    but because the interactive Docker branch consumes the process that owes
+    ``axi`` its one-TOON-document contract, and the editor branches are
+    meaningless to an agent with no desktop. This test keeps the absence a
+    decision, not an oversight (the ``axi apps install``/``uninstall`` non-verb
+    precedent)."""
 
     def test_axi_registry_has_no_open_command(self):
         from caffeinated_whale_cli.commands import axi as axi_mod
