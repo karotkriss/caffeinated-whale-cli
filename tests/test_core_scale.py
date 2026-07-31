@@ -140,7 +140,9 @@ def wiring(monkeypatch, tmp_path):
     monkeypatch.setattr(core_scale.core_docker, "get_frappe_container", lambda _p: state.container)
     monkeypatch.setattr(core_scale.resolvers, "cached_benches", lambda _p: state.benches)
 
-    def fake_subprocess_run(cmd, cwd=None, capture_output=None):
+    def fake_subprocess_run(cmd, cwd=None, capture_output=None, **kwargs):
+        if list(cmd) == ["docker", "compose", "version"]:
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
         state.recreate_calls.append(cmd)
         return SimpleNamespace(returncode=state.recreate_rc, stdout=b"", stderr=b"err")
 
@@ -462,3 +464,41 @@ def test_missing_compose_is_not_found(wiring):
     with pytest.raises(CwcliError) as exc:
         core_scale.scale("nope", consent=True)
     assert exc.value.kind is ErrorKind.NOT_FOUND
+
+
+def test_bad_to_wins_before_missing_compose_plugin(wiring, monkeypatch):
+    compose_probes = []
+
+    def no_plugin_run(cmd, cwd=None, capture_output=None, **kwargs):
+        compose_probes.append(cmd)
+        return SimpleNamespace(returncode=1, stdout=b"", stderr=b"unknown command")
+
+    monkeypatch.setattr(core_scale.subprocess, "run", no_plugin_run)
+    with pytest.raises(CwcliError) as exc:
+        core_scale.scale("proj", to=0, consent=True)
+    assert exc.value.kind is ErrorKind.USAGE
+    assert exc.value.code == "scale.bad_to"
+    assert compose_probes == []
+
+
+def test_missing_compose_plugin_refuses_before_any_mutation(wiring, monkeypatch):
+    wiring.write_compose("proj", _compose())
+    wiring.benches = [_bench("/workspace/frappe-bench")]
+    wiring.container = FakeContainer(
+        configs={"/workspace/frappe-bench": {"webserver_port": 8000, "socketio_port": 9000}}
+    )
+
+    def no_plugin_run(cmd, cwd=None, capture_output=None, **kwargs):
+        if list(cmd) == ["docker", "compose", "version"]:
+            return SimpleNamespace(returncode=1, stdout=b"", stderr=b"unknown command")
+        raise AssertionError(f"unexpected host command before the compose preflight: {cmd}")
+
+    monkeypatch.setattr(core_scale.subprocess, "run", no_plugin_run)
+    with pytest.raises(CwcliError) as exc:
+        core_scale.scale("proj", consent=True)
+    assert exc.value.kind is ErrorKind.PRECONDITION
+    assert exc.value.code == "compose.unavailable"
+    assert "docker-compose-plugin" in (exc.value.hint or "")
+    # Refused before touching the compose file or any container.
+    assert wiring.recreate_calls == []
+    assert wiring.start_calls == []

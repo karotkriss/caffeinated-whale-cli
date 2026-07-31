@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import subprocess
+from types import SimpleNamespace
+
 import pytest
 
 from caffeinated_whale_cli.core import docker as core_docker
+from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 
 
 class FakeContainer:
@@ -84,3 +88,55 @@ def test_no_op_on_a_platform_without_getuid(monkeypatch):
     c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
     assert core_docker.align_container_user_to_host(c, chown_home=True) == (False, None)
     assert c.remap_scripts == []
+
+
+class TestEnsureComposeAvailable:
+    """The ``docker compose version`` preflight init/scale both run up front, so
+    a bare Docker Engine host missing the v2 plugin fails clean before either
+    command creates any state, instead of mid-run as a raw subprocess error."""
+
+    def test_present_is_a_silent_no_op(self, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(
+                returncode=0, stdout=b"Docker Compose version v2.29.1", stderr=b""
+            )
+
+        monkeypatch.setattr(core_docker.subprocess, "run", fake_run)
+        core_docker.ensure_compose_available()  # must not raise
+        assert calls == [["docker", "compose", "version"]]
+
+    def test_nonzero_exit_is_a_typed_precondition_with_an_install_hint(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            return SimpleNamespace(
+                returncode=1, stdout=b"", stderr=b"docker: 'compose' is not a docker command"
+            )
+
+        monkeypatch.setattr(core_docker.subprocess, "run", fake_run)
+        with pytest.raises(CwcliError) as exc:
+            core_docker.ensure_compose_available()
+        assert exc.value.kind is ErrorKind.PRECONDITION
+        assert exc.value.code == "compose.unavailable"
+        assert "docker-compose-plugin" in (exc.value.hint or "")
+
+    def test_missing_docker_binary_is_also_a_typed_precondition(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            raise FileNotFoundError("docker not found")
+
+        monkeypatch.setattr(core_docker.subprocess, "run", fake_run)
+        with pytest.raises(CwcliError) as exc:
+            core_docker.ensure_compose_available()
+        assert exc.value.kind is ErrorKind.PRECONDITION
+        assert exc.value.code == "compose.unavailable"
+
+    def test_hanging_probe_is_bounded_and_typed(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=10)
+
+        monkeypatch.setattr(core_docker.subprocess, "run", fake_run)
+        with pytest.raises(CwcliError) as exc:
+            core_docker.ensure_compose_available()
+        assert exc.value.kind is ErrorKind.PRECONDITION
+        assert exc.value.code == "compose.unavailable"

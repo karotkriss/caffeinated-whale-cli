@@ -28,6 +28,10 @@ A command-line interface (CLI) for managing Frappe/ERPNext Docker instances duri
 
 `cwcli` requires Python 3.10+.
 
+`cwcli init` and `cwcli scale` also require the Docker CLI with the Docker Compose v2 plugin (`docker compose version`).
+Docker Desktop includes the plugin; on a bare Docker Engine host, install the `docker-compose-plugin` package.
+Both commands verify this prerequisite before changing project state and return an actionable precondition error when it is unavailable.
+
 ### With uv (recommended)
 
 [uv](https://docs.astral.sh/uv/) installs `cwcli` into an isolated environment and puts the `cwcli` command on your `PATH`, without touching your system or project Python.

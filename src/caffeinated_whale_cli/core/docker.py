@@ -17,11 +17,45 @@ from __future__ import annotations
 
 import codecs
 import os
+import subprocess
 
 import docker
 from docker.errors import DockerException
 
 from .errors import CwcliError, ErrorKind
+
+_COMPOSE_INSTALL_HINT = (
+    "Install the Docker Compose v2 plugin: it ships with Docker Desktop, or "
+    "install the 'docker-compose-plugin' package on a bare Docker Engine host."
+)
+
+
+def ensure_compose_available() -> None:
+    """Fail closed, up front, when ``docker compose`` (the v2 plugin) is missing.
+
+    ``init``/``scale`` both shell out to ``docker compose ...`` well after they
+    have already created state (a project dir, a widened compose file, ...); a
+    missing plugin used to surface as a raw ``compose.failed``/
+    ``compose.recreate_failed`` subprocess error mid-run. One cheap
+    ``docker compose version`` probe at the top of each catches it before any
+    of that.
+    """
+    try:
+        result = subprocess.run(["docker", "compose", "version"], capture_output=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "compose.unavailable",
+            f"Could not run 'docker compose version': {e}",
+            hint=_COMPOSE_INSTALL_HINT,
+        ) from e
+    if result.returncode != 0:
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "compose.unavailable",
+            "The Docker Compose v2 plugin is not available ('docker compose version' failed).",
+            hint=_COMPOSE_INSTALL_HINT,
+        )
 
 
 def utf8_stream_decoder() -> codecs.IncrementalDecoder:
