@@ -37,6 +37,8 @@ import shutil
 import subprocess
 import time
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 # CSI escape sequences (SGR colours, the ?2004h/l bracketed-paste toggles, etc.).
@@ -231,6 +233,36 @@ def exec_in_frappe(project: str, script: str, workdir: str | None = None) -> tup
     args += [cid, "bash", "-lc", script]
     r = _docker(*args, timeout=300)
     return (r.returncode, (r.stdout or "") + (r.stderr or ""))
+
+
+@contextmanager
+def quiesce_v14_asset_watcher(project: str, bench: str = DEFAULT_BENCH_PATH) -> Iterator[bool]:
+    """Pause Frappe v14's watcher while an E2E test runs ``bench get-app``.
+
+    The v14 watcher and ``bench get-app`` both rewrite ``assets.json`` without an
+    atomic replace or a shared lock. When the watcher notices the newly cloned app
+    while get-app runs its own build, either process can read the other's truncated
+    file and fail with ``Unexpected end of JSON input``. That is an upstream fixture
+    race, not the cwcli behavior these tests exercise.
+
+    Keep every serving Python process live and restore the watcher unconditionally.
+    Newer Frappe legs run unchanged. The yielded value tells PID assertions that the
+    v14 watcher was deliberately restarted by the harness.
+    """
+    if FRAPPE_MAJOR != 14:
+        yield False
+        return
+
+    python = shlex.quote(f"{bench}/env/bin/python")
+    config = shlex.quote(f"{bench}/logs/.cwcli-supervisor.conf")
+    supervisorctl = f"{python} -m supervisor.supervisorctl -c {config}"
+    stop_code, stop_out = exec_in_frappe(project, f"{supervisorctl} stop watch")
+    assert stop_code == 0, f"could not quiesce Frappe v14 asset watcher: {stop_out}"
+    try:
+        yield True
+    finally:
+        start_code, start_out = exec_in_frappe(project, f"{supervisorctl} start watch")
+        assert start_code == 0, f"could not restore Frappe v14 asset watcher: {start_out}"
 
 
 def project_containers(project: str) -> list[str]:

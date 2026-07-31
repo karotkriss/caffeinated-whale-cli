@@ -88,8 +88,7 @@ def _site_ping_code(inst) -> str:
 def _installed_apps(inst) -> list[str]:
     code, out = harness.exec_in_frappe(
         inst.name,
-        f"cd {inst.bench} && bench --site {inst.site} "
-        "execute frappe.get_installed_apps",
+        f"cd {inst.bench} && bench --site {inst.site} " "execute frappe.get_installed_apps",
     )
     assert code == 0, out
     return json.loads(out.strip().splitlines()[-1])
@@ -104,7 +103,9 @@ def _remove_app_source(inst, *, required: bool = True) -> None:
         assert code == 0, out
 
 
-def _assert_resynchronised(inst, before: dict[str, int], *, verb: str) -> dict[str, int]:
+def _assert_resynchronised(
+    inst, before: dict[str, int], *, verb: str, watcher_quiesced: bool = False
+) -> dict[str, int]:
     """Every code-bearing program got a new PID, the untouched ones kept theirs, and
     the site genuinely serves. Returns the new PID map for the next leg."""
     _wait_supervised_stack(inst.name)
@@ -125,6 +126,8 @@ def _assert_resynchronised(inst, before: dict[str, int], *, verb: str) -> dict[s
 
     for name in _NOT_CODE_BEARING:
         if name in before and name in after:
+            if name == "watch" and watcher_quiesced:
+                continue
             assert after[name] == before[name], (
                 f"{verb}: {name!r} was restarted, but it imports no Frappe app - "
                 "cycling redis drops the cache and the job queue for nothing"
@@ -156,21 +159,24 @@ def test_every_app_code_change_resynchronises_the_whole_bench(running_instance):
 
     restored = False
     try:
-        install = harness.run_cwcli(
-            "axi",
-            "apps",
-            "install",
-            inst.name,
-            _APP,
-            "--site",
-            inst.site,
-            "--branch",
-            harness.FRAPPE_BRANCH,
-        )
+        with harness.quiesce_v14_asset_watcher(inst.name, inst.bench) as watcher_quiesced:
+            install = harness.run_cwcli(
+                "axi",
+                "apps",
+                "install",
+                inst.name,
+                _APP,
+                "--site",
+                inst.site,
+                "--branch",
+                harness.FRAPPE_BRANCH,
+            )
         assert install.returncode == 0, install.stdout + install.stderr
         assert "restart-processes" in install.stdout
         assert _APP in _installed_apps(inst)
-        before = _assert_resynchronised(inst, before, verb="apps install")
+        before = _assert_resynchronised(
+            inst, before, verb="apps install", watcher_quiesced=watcher_quiesced
+        )
 
         # --- checkout: the verb whose "no target site to verify against" was true of
         # its arguments and false of its effect. The sites it changes are the ones
