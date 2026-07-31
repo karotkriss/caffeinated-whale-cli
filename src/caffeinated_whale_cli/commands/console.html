@@ -822,6 +822,7 @@ dialog input {
     }
     if (node.dataset.tab !== undefined) return `tab:${node.dataset.tab}`;
     if (node.dataset.action !== undefined) return `action:${node.dataset.action}`;
+    if (node.dataset.read !== undefined) return `read:${node.dataset.read}`;
     if (node.dataset.logsRefresh !== undefined) return "logs-refresh";
     return null;
   }
@@ -1707,6 +1708,7 @@ dialog input {
     pendingAction = "probe_url";
     lastAction = null;
     renderRail();
+    el("action-status").textContent = `URL check in progress for ${inst.project}`;
     try {
       const response = await fetch(`/api/instance/${encodeURIComponent(inst.project)}/url${query}`);
       const body = await response.json();
@@ -1723,6 +1725,7 @@ dialog input {
     } finally {
       pendingAction = null;
       renderRail();
+      el("action-status").textContent = lastAction ? lastAction.text : "";
     }
   }
 

@@ -504,8 +504,8 @@ class _Handler(BaseHTTPRequestHandler):
     def _refuse_cross_origin(self) -> bool:
         """Send the 403 and return True when the request fails the same-origin check.
 
-        Shared by the action endpoint and the new read endpoints (/logs, /api/where):
-        those reads name sites and carry raw log lines, so unlike the fleet-health
+        Shared by the action endpoint and sensitive read endpoints. Those reads
+        expose local environment or instance details, so unlike the fleet-health
         reads they are deliberately NOT CORS-open and get the action guard instead.
         """
         if self._action_same_origin():
@@ -880,9 +880,11 @@ class _Handler(BaseHTTPRequestHandler):
         check's ``pass``/``warn``/``fail`` and the ``version_verified``
         qualifier ride through unchanged so the page renders staleness honestly.
         """
+        if self._refuse_cross_origin():
+            return
         report = core_doctor.run_all().data
         assert report is not None
-        self._send_json(_doctor_json(report), cors=True)
+        self._send_json(_doctor_json(report))
 
     def _send_where(self, query: dict) -> None:
         """``core.where``: the cache search, verified/remembered tokens intact.
