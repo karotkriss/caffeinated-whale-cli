@@ -365,6 +365,73 @@ class TestHardenings:
         assert writes == []  # crash-without-corruption, now typed
 
 
+class _DiscoveryContainer:
+    """Answers only the ``find`` + ``_is_bench_directory`` probes discovery issues.
+
+    ``bench_apps`` maps each real bench dir to its ``apps`` path; every ``find``
+    returns the ones nested under the queried root, so overlapping roots surface
+    the same bench more than once (which the dedup must collapse).
+    """
+
+    def __init__(self, bench_dirs):
+        self.bench_dirs = list(bench_dirs)
+        self.finds: list[str] = []
+
+    def reload(self):
+        pass
+
+    def exec_run(self, cmd, workdir=None):
+        if cmd.startswith("find "):
+            root = cmd.split()[1].rstrip("/")
+            self.finds.append(root)
+            # a root may be an ancestor of a bench OR the bench dir itself (init
+            # registers the bench dir as its own custom search root).
+            hits = [f"{b}/apps" for b in self.bench_dirs if b == root or b.startswith(root + "/")]
+            return (0, "\n".join(hits).encode())
+        if "test -d" in cmd:  # _is_bench_directory
+            return (0, b"")
+        return (1, b"")
+
+
+class TestDiscoverySearchRoots:
+    def test_bare_workspace_root_is_searched(self, monkeypatch):
+        monkeypatch.setattr(core_inspect.config_utils, "load_config", lambda: {})
+        container = _DiscoveryContainer([])
+
+        core_inspect.discover_benches(container)
+
+        # bare /workspace is added; the deeper roots stay because the devcontainer
+        # bench (/workspace/development/frappe-bench) has its apps at depth 3 from
+        # bare /workspace, out of maxdepth-2 reach.
+        assert "/workspace" in container.finds
+        assert "/workspace/development" in container.finds
+        assert "/home/frappe/workspace/development" in container.finds
+
+    def test_a_hand_made_bench_under_workspace_is_found(self, monkeypatch):
+        monkeypatch.setattr(core_inspect.config_utils, "load_config", lambda: {})
+        container = _DiscoveryContainer(["/workspace/hand-made-bench"])
+
+        found = core_inspect.discover_benches(container)
+
+        assert found == ["/workspace/hand-made-bench"]
+
+    def test_a_path_known_via_custom_root_and_the_default_yields_one_row(self, monkeypatch):
+        # A bench registered as a custom path that ALSO sits under the new default
+        # /workspace root is discovered by both, but must appear exactly once so the
+        # path-keyed numeric identity is never reminted.
+        bench = "/workspace/shared-bench"
+        monkeypatch.setattr(
+            core_inspect.config_utils,
+            "load_config",
+            lambda: {"search_paths": {"custom_bench_paths": [bench]}},
+        )
+        container = _DiscoveryContainer([bench])
+
+        found = core_inspect.discover_benches(container)
+
+        assert found == [bench]  # deduped, and sorted order is the selector contract
+
+
 # ------------------------------------------------------------------ boundary hygiene
 
 
