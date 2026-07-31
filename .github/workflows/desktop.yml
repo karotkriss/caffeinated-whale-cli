@@ -1,0 +1,150 @@
+name: Desktop shell
+
+# The desktop shell is a NEW artifact class (a Rust/Tauri build) that the Python
+# CI jobs never touch, so it gets its own workflow. A desktop app that only
+# builds on the author's machine is not shipped: this proves the shell compiles,
+# lints clean, and passes its unit tests on BOTH first-class targets - Linux
+# (WebKitGTK) and Windows (WebView2) - on every change that touches it.
+#
+# It is compile + lint + test, NOT a full installer bundle: bundling (with
+# signing, the updater key and multi-resolution icons) is Phase 2 per the
+# feasibility plan, and `bundle.active` is false in tauri.conf.json.
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  changes:
+    name: Determine desktop scope
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - name: Checkout code
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Decide whether desktop gates must run
+        id: decide
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+        run: |
+          set -uo pipefail
+          if [ "$CHECKOUT_OUTCOME" != "success" ] || [ -z "$BASE_SHA" ] || [ -z "$HEAD_SHA" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Desktop scope is uncertain - defaulting to the full matrix."
+            exit 0
+          fi
+          if ! merge_base="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Could not compute the merge base - defaulting to the full matrix."
+            exit 0
+          fi
+          if ! changed="$(git diff --name-only "$merge_base" "$HEAD_SHA")"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Could not compute the desktop diff - defaulting to the full matrix."
+            exit 0
+          fi
+          echo "Files changed since the merge base:"
+          echo "$changed"
+          if printf '%s\n' "$changed" | grep -qE '^(desktop/|\.github/workflows/desktop\.yml$)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Desktop change detected - running the full matrix."
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No desktop change - reporting the required matrix contexts green."
+          fi
+
+  build:
+    name: Build (${{ matrix.name }})
+    needs: changes
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux (WebKitGTK)
+            os: ubuntu-latest
+          - name: Windows (WebView2)
+            os: windows-latest
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: desktop/src-tauri
+
+    steps:
+      - name: Desktop scope
+        working-directory: .
+        run: |
+          if [ "${{ needs.changes.outputs.run }}" = "true" ]; then
+            echo "Desktop change detected - running the ${{ matrix.name }} gates."
+          else
+            echo "No desktop change - skipping the ${{ matrix.name }} gates and reporting green."
+          fi
+
+      - name: Checkout code
+        if: needs.changes.outputs.run == 'true'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+
+      # Tauri 2's Linux prerequisites (WebKitGTK etc.). Windows already ships
+      # WebView2 and needs no extra system packages to compile.
+      - name: Install Linux WebView dependencies
+        if: needs.changes.outputs.run == 'true' && runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            pkg-config
+
+      - name: Install the Rust toolchain
+        if: needs.changes.outputs.run == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        if: needs.changes.outputs.run == 'true'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/src-tauri/target
+          key: ${{ matrix.os }}-cargo-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
+          restore-keys: ${{ matrix.os }}-cargo-
+
+      - name: Formatting (cargo fmt)
+        if: needs.changes.outputs.run == 'true'
+        run: cargo fmt --all --check
+
+      - name: Lint (clippy, warnings are errors)
+        if: needs.changes.outputs.run == 'true'
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Compile
+        if: needs.changes.outputs.run == 'true'
+        run: cargo build --locked
+
+      - name: Unit tests
+        if: needs.changes.outputs.run == 'true'
+        run: cargo test --locked

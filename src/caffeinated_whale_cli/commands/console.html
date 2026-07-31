@@ -1643,7 +1643,7 @@ dialog input {
     openModal(`<h3 id="modal-title">Set bench label</h3>
       <p class="modal-help">A durable handle for ${esc(target)} on ${esc(inst.project)}, usable anywhere a bench selector is.</p>
       <label>Label
-        <input name="label" autocomplete="off" required>
+        <input name="label" autocomplete="off" required pattern=".*\\S.*" title="Enter at least one non-whitespace character.">
       </label>
       ${modalButtons("Set label")}`, values => {
       const label = (values.label || "").trim();
@@ -1661,11 +1661,11 @@ dialog input {
     openModal(`<h3 id="modal-title">Check out an app ref</h3>
       <p class="modal-help">Fetches and checks out a branch, tag, or commit into an app already in the bench on ${esc(inst.project)}. A dirty working tree is refused - commit or stash in-instance work first (the CLI's --reset is the way through, on purpose not offered here).</p>
       <label>App
-        <input name="app" autocomplete="off" required list="modal-apps">
+        <input name="app" autocomplete="off" required pattern=".*\\S.*" title="Enter at least one non-whitespace character." list="modal-apps">
       </label>
       <datalist id="modal-apps">${options}</datalist>
       <label>Ref (branch, tag, or commit)
-        <input name="ref" autocomplete="off" required>
+        <input name="ref" autocomplete="off" required pattern=".*\\S.*" title="Enter at least one non-whitespace character.">
       </label>
       ${modalButtons("Check out")}`, values => {
       const app = (values.app || "").trim();

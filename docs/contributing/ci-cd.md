@@ -4,17 +4,22 @@ This guide covers the automated GitHub Actions workflows for caffeinated-whale-c
 
 ## Overview
 
-We use five GitHub Actions workflows:
+We use six GitHub Actions workflows:
 
 | Workflow | Triggers | Purpose |
 |----------|----------|---------|
 | **Lint** | All branches, all PRs | Code quality checks (Black, Ruff) |
 | **Test** | All branches, all PRs | Run the fast `unit` pytest tier (required gate) + mypy (zero-error gate), a narrow `tests/test_auto_inspect.py` leg on `windows-latest`, and a runtime-deps-only clean-install smoke test |
 | **E2E** | PRs into `develop`/`master`, `e2e`-labeled PRs, manual dispatch | Run the real-Docker `e2e` tier on a v14/v15/v16 Frappe matrix, plus a runtime-deps-only full-lifecycle leg (`e2e_pkg`) that drives a `uv tool install .` binary via `CWCLI_BIN` |
+| **Desktop shell** | All branches, all PRs | Compile, format, lint, and test the Tauri shell on Linux/WebKitGTK and Windows/WebView2 when desktop files change |
 | **Build** | Push to `master`, manual dispatch | Build package, verify version consistency |
 | **Release** | Tags `v*.*.*` | Publish to PyPI, create GitHub release |
 
-Lint, Build, and Release, along with Test's `Pytest`/`Mypy` jobs, run inside the `ghcr.io/astral-sh/uv:python3.12-bookworm` Docker image. E2E runs directly on the `ubuntu-latest` host runner (no `container:`) so `docker`/`docker compose` can reach the runner's own daemon; it installs `uv` via `astral-sh/setup-uv` instead. Test's other two jobs also run on host runners rather than the container: `Pytest (Windows, auto-inspect)` runs on `windows-latest` (no Linux container available there), and `Clean install smoke` runs on `ubuntu-latest` so `uv tool install` resolves a real runtime-only environment instead of the container's `--all-extras` sync. Both install `uv` via `astral-sh/setup-uv`.
+Lint, Build, and Release, along with Test's `Pytest`/`Mypy` jobs, run inside the `ghcr.io/astral-sh/uv:python3.12-bookworm` Docker image.
+E2E runs directly on the `ubuntu-latest` host runner (no `container:`) so `docker`/`docker compose` can reach the runner's own daemon; it installs `uv` via `astral-sh/setup-uv` instead.
+The Desktop shell matrix runs directly on `ubuntu-latest` and `windows-latest` so each platform compiles against its native WebView stack.
+Test's other two jobs also run on host runners rather than the container: `Pytest (Windows, auto-inspect)` runs on `windows-latest` (no Linux container available there), and `Clean install smoke` runs on `ubuntu-latest` so `uv tool install` resolves a real runtime-only environment instead of the container's `--all-extras` sync.
+Both install `uv` via `astral-sh/setup-uv`.
 
 `develop` is branch-protected and currently requires ten contexts: `Lint & Format Check`, `Pytest`, `Mypy`, `E2E (runtime-only install)`, and the six `E2E (frappe vNN, shared)` / `E2E (frappe vNN, standalone)` contexts.
 `master` is not branch-protected.
@@ -102,6 +107,29 @@ CWE2E_FRAPPE_MAJOR=16 uv run pytest tests/e2e -m "e2e and not standalone"
 # CWCLI_BIN to run the same lifecycle against the dev binary):
 CWCLI_BIN=/path/to/runtime-only/cwcli uv run pytest tests/e2e -m e2e_pkg -o addopts=""
 ```
+
+---
+
+### Desktop shell (`.github/workflows/desktop.yml`)
+
+Runs on every push and PR.
+A fail-open scope job compares the merge base with the head and runs the full matrix whenever `desktop/` or the workflow itself changes, or whenever the diff cannot be established safely.
+Other changes short-circuit both matrix contexts to green without installing the desktop toolchain.
+
+The matrix covers Linux/WebKitGTK and Windows/WebView2.
+Each active leg runs `cargo fmt --all --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo build --locked`, and `cargo test --locked`.
+This is a compile, lint, and unit-test proof only.
+It does not build an installer bundle; `desktop/src-tauri/tauri.conf.json` keeps `bundle.active` set to `false`.
+
+Run the formatting and lint checks locally:
+
+```bash
+cd desktop/src-tauri
+cargo fmt --all --check
+cargo clippy --all-targets --locked -- -D warnings
+```
+
+The desktop architecture, prerequisites, run recipe, platform boundary, and deferred bundle work are owned by [`desktop/README.md`](../../desktop/README.md).
 
 ---
 

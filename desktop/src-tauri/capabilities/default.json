@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Base capability for the main window. Deliberately EMPTY: the splash is a static local page and the live Console reaches the daemon with the browser's own fetch/EventSource, so the frontend needs no Tauri command. This is the whole permission set on Windows and macOS.",
+  "windows": ["main"],
+  "permissions": []
+}
