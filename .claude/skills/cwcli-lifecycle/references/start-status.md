@@ -107,7 +107,7 @@ are now the whole point. Each note below guards a real bug.
   CLI-frontend host-side pre-step (D6); `core.start` assumes ports are clear. The human frontend skips the
   port check when the frappe container is already up, which lets an idempotent re-run reach the no-op
   instead of self-conflicting on its own ports.
-- **Re-aligns the container's `frappe` user to the host uid/gid on every launch** (`align_container_user_to_host`, with no `chown_home`, so only cheap `usermod`/`groupmod` runs on capable hosts).
+- **Re-aligns the container's `frappe` user to the host uid/gid on every launch** (`align_container_user_to_host`, with no `chown_home`, so only the cheap account database edits run on capable hosts).
   A container recreation resets `frappe` back to the image's default uid 1000, so re-aligning here keeps the bind-mounted workspace host-owned across restarts on hosts with uid/gid information.
   This is the root-cause fix for `cwcli rm`'s CI-only `[Errno 13] Permission denied`.
   See the host-uid alignment note in `references/init.md` for the no-op paths.
