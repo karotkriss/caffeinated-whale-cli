@@ -58,6 +58,15 @@ def _archived_exists(inst, site: str) -> bool:
     return code == 0
 
 
+def _drop_temporary_site(inst, site: str) -> None:
+    """Remove a refusal-path fixture and refresh the shared instance's cache."""
+    if not _site_exists(inst, site):
+        return
+    result = harness.run_cwcli("rm-site", inst.name, site, "--yes")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not _site_exists(inst, site), f"temporary site {site} survived cleanup"
+
+
 def test_rm_site_noninteractive_really_drops_the_site(running_instance):
     """Flags supplied + stdin closed: no prompt, exit 0, and the site is GENUINELY
     gone - its database dropped, its directory gone, and its credential-bearing
@@ -85,10 +94,13 @@ def test_rm_site_without_yes_refuses_noninteractively(running_instance):
     site = "cwe2e-dropsite-b.localhost"
     _create_site(inst, site)
 
-    result = harness.run_cwcli("rm-site", inst.name, site)
+    try:
+        result = harness.run_cwcli("rm-site", inst.name, site)
 
-    assert result.returncode != 0, result.stdout + result.stderr
-    assert _site_exists(inst, site), "site was dropped despite refusing the confirmation"
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert _site_exists(inst, site), "site was dropped despite refusing the confirmation"
+    finally:
+        _drop_temporary_site(inst, site)
 
 
 def test_rm_site_of_a_nonexistent_site_is_not_found(running_instance):
@@ -109,12 +121,15 @@ def test_axi_rm_site_without_yes_is_a_usage_error(running_instance):
     site = "cwe2e-dropsite-c.localhost"
     _create_site(inst, site)
 
-    result = harness.run_cwcli("axi", "rm-site", inst.name, site)
+    try:
+        result = harness.run_cwcli("axi", "rm-site", inst.name, site)
 
-    assert result.returncode == 2, result.stdout + result.stderr
-    assert "error:" in result.stdout, result.stdout
-    assert "--yes" in result.stdout, result.stdout
-    assert _site_exists(inst, site), "site was dropped despite the missing --yes usage error"
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "error:" in result.stdout, result.stdout
+        assert "--yes" in result.stdout, result.stdout
+        assert _site_exists(inst, site), "site was dropped despite the missing --yes usage error"
+    finally:
+        _drop_temporary_site(inst, site)
 
 
 def test_axi_rm_site_emits_toon_and_drops_for_real(running_instance):
@@ -166,13 +181,16 @@ def test_rm_site_interactive_decline_leaves_the_site_untouched(running_instance)
     site = "cwe2e-dropsite-f.localhost"
     _create_site(inst, site)
 
-    child = harness.spawn_cwcli(["rm-site", inst.name, site], timeout=300)
     try:
-        harness.expect_prompt_ready(child)
-        child.send("n")
-        child.send("\r")
-        child.expect(pexpect.EOF, timeout=300)
-    finally:
-        child.close(force=True)
+        child = harness.spawn_cwcli(["rm-site", inst.name, site], timeout=300)
+        try:
+            harness.expect_prompt_ready(child)
+            child.send("n")
+            child.send("\r")
+            child.expect(pexpect.EOF, timeout=300)
+        finally:
+            child.close(force=True)
 
-    assert _site_exists(inst, site), "site was dropped despite declining the confirmation"
+        assert _site_exists(inst, site), "site was dropped despite declining the confirmation"
+    finally:
+        _drop_temporary_site(inst, site)
