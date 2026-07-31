@@ -27,9 +27,9 @@ class TestPhaseAnnouncedBeforeItRuns:
     def test_align_uid_is_announced_before_the_blocking_call_returns(self, monkeypatch):
         """A fake ``align_container_user_to_host`` that appends to ``order`` from
         INSIDE the call proves the InitStepStart lands before that call even
-        starts running - not merely before some later step. A real slow chown
-        would sit between "announced" and "align_finished" for minutes; this
-        fake collapses that time but preserves the ordering that matters."""
+        starts running - not merely before some later step. The real alignment
+        call sits between "announced" and "align_finished"; this fake collapses
+        that time but preserves the ordering that matters."""
         self._patched(monkeypatch)
         container = FakeContainer()
         use_container(monkeypatch, container)

@@ -118,7 +118,7 @@ def start(
 
     # A just-recreated container reverts `frappe` to the image uid (1000), but the
     # workspace on the bind mount is owned by the host uid it was built under. Re-
-    # align `frappe` to the host uid (cheap: usermod only, no home chown) so the
+    # align `frappe` to the host uid (cheap account database edit, no home chown) so the
     # supervisor writes its per-process logs to the host-owned bench dir instead of
     # failing on a permission mismatch. A no-op when the ids already match.
     _, remap_err = align_container_user_to_host(frappe_container)
