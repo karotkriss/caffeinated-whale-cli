@@ -98,17 +98,18 @@ def test_apps_uninstall_destroys_the_sites_app_state(running_instance):
         # --- Establish the POSITIVE state through the human install verb, and prove
         # it on both the site and the command's own read surface. If this does not
         # hold, the destructive assertion below would pass against nothing.
-        install = harness.run_cwcli(
-            "apps",
-            "install",
-            inst.name,
-            _APP,
-            "--site",
-            inst.site,
-            "--branch",
-            harness.FRAPPE_BRANCH,
-            "--yes",
-        )
+        with harness.quiesce_v14_asset_watcher(inst.name, inst.bench):
+            install = harness.run_cwcli(
+                "apps",
+                "install",
+                inst.name,
+                _APP,
+                "--site",
+                inst.site,
+                "--branch",
+                harness.FRAPPE_BRANCH,
+                "--yes",
+            )
         assert install.returncode == 0, install.stdout + install.stderr
         assert _APP in _installed_on_site(inst), "install did not reach the site"
         assert _APP in _apps_list_site(inst), "install is not visible in `apps list --site`"
