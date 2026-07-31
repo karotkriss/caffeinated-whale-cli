@@ -87,6 +87,40 @@ macOS is not regressed by any design choice here, but is not a Phase 1 validatio
 `design/` (repo root) is the canonical Caffeinated Whale design system and the design authority for this shell: all Console/shell styling derives from its tokens, components, and guidelines.
 Read `design/readme.md` (or invoke the `caffeinated-whale-design` skill) before styling any Console surface.
 
+### App icons
+
+The whole icon set under `src-tauri/icons/` derives from the canonical brand mark, `design/assets/logo-whale.png`.
+From the repository root, run:
+
+```bash
+cd desktop/src-tauri
+
+# 1. Source: the 500x500 mark upscaled to 1024x1024 on a transparent canvas,
+#    committed as icons/app-icon.png (uncropped, un-recoloured per the design system).
+npx --yes sharp-cli@5.2.0 \
+  --input ../../design/assets/logo-whale.png \
+  --output icons/app-icon.png \
+  --format png \
+  resize 1024 1024 \
+  --fit contain \
+  --background "rgba(0,0,0,0)" \
+  --kernel lanczos3
+
+# 2. Generate every desktop size/format from that source.
+npx @tauri-apps/cli@2 icon icons/app-icon.png
+```
+
+`tauri icon` also emits `icons/android/` and `icons/ios/`; those are removed, because this shell targets only Linux and Windows (see **Cross-platform**), so the mobile assets are dead weight the desktop bundler never reads.
+The design system's rule is *full-colour only, never recoloured or cropped* (`design/guidelines/brand-mark.card.html`), so the mark is scaled and centred, never simplified into a monochrome glyph.
+
+### Version and bundle metadata
+
+`bundle.active` is still `false` (bundling is Phase 2), but the installer metadata is wired now so a Phase 2 build inherits it:
+
+- **Product name** is `Caffeinated Whale Desktop` (`tauri.conf.json` `productName`, and the window title in `src/lib.rs`), the product name the design system uses.
+- **Publisher / category / descriptions / copyright** live in `tauri.conf.json` `bundle`.
+- **Version has one source.** `tauri.conf.json` sets no `version`, so Tauri reads it from `src-tauri/Cargo.toml` (`package.version`), which stays the desktop shell's own Phase version (`0.1.0`), independent of the Python package's four-file version bump and never duplicated across two files that could drift.
+
 ### Adherence lint
 
 `design/_adherence.oxlintrc.json` is the maintainer-authored canonical adherence policy for frontend JSX.
@@ -118,8 +152,7 @@ This override is compiled **out** of release builds (`#[cfg(debug_assertions)]` 
 
 ## CI
 
-`.github/workflows/desktop.yml` proves the shell compiles, lints clean, and passes its unit tests on **both** targets (Linux and Windows) on every change that touches it.
-It is compile + `cargo fmt` + `cargo clippy -D warnings` + `cargo test`, not a full installer bundle: bundling (with signing, the updater key, and multi-resolution icons) is Phase 2, so `bundle.active` is `false`.
+The desktop workflow and its local formatting and lint commands are documented in [`docs/contributing/ci-cd.md`](../docs/contributing/ci-cd.md#desktop-shell-githubworkflowsdesktopyml).
 
 ## Validation evidence (Linux)
 

@@ -6,9 +6,9 @@ name: Desktop shell
 # lints clean, and passes its unit tests on BOTH first-class targets - Linux
 # (WebKitGTK) and Windows (WebView2) - on every change that touches it.
 #
-# It is compile + lint + test, NOT a full installer bundle: bundling (with
-# signing, the updater key and multi-resolution icons) is Phase 2 per the
-# feasibility plan, and `bundle.active` is false in tauri.conf.json.
+# It is compile + lint + test, NOT a full installer bundle: signing and the
+# updater key remain Phase 2 work, and `bundle.active` is false in
+# tauri.conf.json.
 
 permissions:
   contents: read
