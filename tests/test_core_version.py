@@ -184,6 +184,52 @@ class TestLatestVersionAndCache:
         assert core_version._latest_version(use_cache=False, timeout=1.0) == "0.99.0"
 
 
+class TestReadCachedOnly:
+    def test_fresh_cache_returns_version_info_without_network_or_write(
+        self, isolated_cache, monkeypatch
+    ):
+        cache = isolated_cache / "cache" / "version_check.json"
+        cache.parent.mkdir(parents=True)
+        cache.write_text(json.dumps({"latest": "0.41.0", "checked_at": time.time()}))
+        before = cache.stat().st_mtime_ns
+        monkeypatch.setattr(core_version, "_current_version", lambda: "0.40.0")
+        monkeypatch.setattr(core_version, "_detect_method", lambda: ("uv", None))
+        monkeypatch.setattr(
+            core_version.urllib.request,
+            "urlopen",
+            lambda *_a, **_k: pytest.fail("cache-only read reached the network"),
+        )
+
+        info = core_version.read_cached_only()
+
+        assert info is not None
+        assert info.latest == "0.41.0"
+        assert info.is_outdated is True
+        assert cache.stat().st_mtime_ns == before
+
+    def test_missing_or_stale_cache_returns_none_without_network(self, isolated_cache, monkeypatch):
+        monkeypatch.setattr(
+            core_version.urllib.request,
+            "urlopen",
+            lambda *_a, **_k: pytest.fail("cache-only read reached the network"),
+        )
+        assert core_version.read_cached_only() is None
+
+        cache = isolated_cache / "cache" / "version_check.json"
+        cache.parent.mkdir(parents=True)
+        cache.write_text(
+            json.dumps(
+                {
+                    "latest": "0.41.0",
+                    "checked_at": time.time() - core_version._CACHE_TTL_SECONDS - 1,
+                }
+            )
+        )
+        before = cache.stat().st_mtime_ns
+        assert core_version.read_cached_only() is None
+        assert cache.stat().st_mtime_ns == before
+
+
 class TestRecordAttempt:
     def test_success_writes_latest_checked_at_and_attempted_at(self, isolated_cache):
         core_version._record_attempt("0.42.0")
