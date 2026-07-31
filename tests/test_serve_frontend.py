@@ -1692,6 +1692,25 @@ class TestDoctorEndpoint:
             httpd.shutdown()
             httpd.server_close()
 
+    def test_it_refuses_cross_origin_reads_without_dispatch_or_cors(
+        self, daemon, monkeypatch
+    ):
+        monkeypatch.setattr(
+            core_doctor,
+            "run_all",
+            lambda: pytest.fail("cross-origin doctor must not dispatch"),
+        )
+        req = urllib.request.Request(
+            daemon.base + "/api/doctor",
+            headers={"Origin": "https://example.invalid", "Sec-Fetch-Site": "cross-site"},
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(req, timeout=_TIMEOUT)  # noqa: S310 - fixed localhost
+
+        assert e.value.code == 403
+        assert e.value.headers.get("Access-Control-Allow-Origin") is None
+
 
 class TestPhase1ReadSurfaces:
     """The page carries the doctor and url READ surfaces, kept off the pinned
@@ -1716,6 +1735,11 @@ class TestPhase1ReadSurfaces:
         # It must NOT be built as an actionButton - that surface is pinned exact.
         assert 'actionButton("probe_url"' not in page
         assert 'readButton("url"' in page
+
+    def test_the_url_read_preserves_focus_and_announces_its_lifecycle(self, page):
+        assert "return `read:${node.dataset.read}`" in page
+        assert "URL check in progress for ${inst.project}" in page
+        assert 'el("action-status").textContent = lastAction ? lastAction.text : "";' in page
 
     def test_no_later_phase_mutation_button_is_rendered(self, page):
         # Phase 1 wires reads + lifecycle; a greyed slot for a later-phase verb
