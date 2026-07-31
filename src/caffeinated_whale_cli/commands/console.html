@@ -6,7 +6,7 @@
 <title>cwcli Console</title>
 <style>
 /* ---------------------------------------------------------------------------
-   Design tokens, inlined verbatim from the canonical design system so this
+   Design tokens, adapted from the canonical design system so this
    single-file Console stays self-contained. SOURCE OF TRUTH: design/tokens/*.css
    (base, colors, elevation, fonts, motion, radius, spacing, typography). Do not
    hand-tune values here - edit design/tokens and re-inline. Every Console rule
@@ -14,7 +14,8 @@
    --------------------------------------------------------------------------- */
 
 /* design/tokens/fonts.css */
-@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap");
+/* IBM Plex Sans and JetBrains Mono render only where system-installed until
+   self-hosted @font-face rules land. */
 :root {
   --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
@@ -264,11 +265,12 @@
 @keyframes cw-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 @keyframes cw-delta-in { from { background-color: var(--accent-soft); } to { background-color: transparent; } }
 
-/* design/tokens/base.css */
+/* design/tokens/base.css (adapted: Console body styles are declared below) */
 :root { --cw-selection: rgba(0, 160, 208, 0.32); }
 ::selection { background: var(--cw-selection); }
 a { color: var(--link); text-decoration: none; }
 a:hover { color: var(--link-hover); text-decoration: underline; }
+*:focus-visible { outline: none; box-shadow: var(--ring-focus); border-radius: var(--radius-sm); }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border-default); border: 3px solid transparent; background-clip: content-box; border-radius: var(--radius-pill); }
