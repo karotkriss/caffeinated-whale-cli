@@ -20,6 +20,42 @@ on:
     branches: ["**"]
 
 jobs:
+  # Design-system adherence lint. Runs on EVERY change (not gated by the desktop
+  # scope job) because the Console it also checks lives at
+  # src/caffeinated_whale_cli/commands/console.html, outside desktop/, so an edit
+  # there must still be gated. It is Node-only tooling (eslint + the maintainer's
+  # design/_adherence.oxlintrc.json policy), fast, and never touches the Rust build.
+  adherence:
+    name: Design-system adherence
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a  # v4.2.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install adherence tooling
+        run: npm ci
+
+      - name: Adherence gate self-test (proves the policy still bites)
+        run: npm test
+
+      - name: Lint design-consuming JS/JSX against the policy
+        run: npm run lint
+
+      - name: Check Console inline styles for raw hex outside the token layer
+        run: npm run check:css
+
   changes:
     name: Determine desktop scope
     runs-on: ubuntu-latest
