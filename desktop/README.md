@@ -89,19 +89,12 @@ Read `design/readme.md` (or invoke the `caffeinated-whale-design` skill) before 
 
 ### Adherence lint
 
-`design/_adherence.oxlintrc.json` is the maintainer-authored adherence config for frontend JSX.
-Under [oxlint](https://oxc.rs/docs/guide/usage/linter), only its `no-restricted-imports` rule executes.
-Oxlint does not implement the config's `no-restricted-syntax` rules for raw hex colors, raw `px` values, the font whitelist, or per-component prop and tone whitelists.
-Those checks require an ESLint-compatible runner that implements `no-restricted-syntax`.
+`design/_adherence.oxlintrc.json` is the maintainer-authored canonical adherence policy for frontend JSX.
+Current [oxlint](https://oxc.rs/docs/guide/usage/linter) cannot load it because the policy uses `no-restricted-syntax`, which oxlint does not implement, so oxlint rejects the entire config and enforces none of its rules.
+Enforcing any of the policy requires an ESLint-compatible runner that implements both `no-restricted-imports` and `no-restricted-syntax`.
 It is intentionally **not** yet an installed desktop dependency or a CI gate: Phase 1 ships no bundled JS frontend (the Console page is served by the Python `cwcli serve` daemon), so there is no JSX in `desktop/` to lint.
 
-When frontend JSX lands in the shell, lint the supported import restriction from the repository root with the standalone oxlint binary (no `package.json` needed):
-
-```bash
-npx --yes oxlint --deny-warnings --config design/_adherence.oxlintrc.json <frontend-src>
-```
-
-Before making full adherence a CI gate, select an ESLint-compatible runner for the remaining rules.
+When frontend JSX lands in the shell, select an ESLint-compatible runner for the policy.
 Add the selected lint commands to `.github/workflows/desktop.yml` at that point with `working-directory: .`, overriding the workflow's `desktop/src-tauri` default.
 Add frontend lint tooling as desktop dev dependencies only, never to the Python runtime deps.
 
