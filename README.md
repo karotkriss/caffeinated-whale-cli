@@ -1764,7 +1764,8 @@ directory and apply mode `0700`.
 It does not touch project data.
 Making that initialization lazy is tracked separately as
 `cwcli-cache-dir-lazy-init`; this caveat should disappear when that lands.
-Every finding pairs with the command to run to fix it yourself.
+When a direct remedy is available, the finding includes the command or action
+to apply yourself.
 
 **Checks always run in full** (no tiers, no selection flags), grouped into
 Docker, cwcli, Storage, Transfer, and Git hosting, plus a cross-instance
@@ -1977,7 +1978,11 @@ cwcli self-update --no-cache
 
 **Passive update notices:**
 
-Every `cwcli` and `cwcli axi` run also does a passive, cache-only check: if a newer release is already known (from the same ≤1-day cache `self-update`/`--check` share) and you're at an interactive terminal, cwcli prints a one-line "a newer cwcli is available" hint - with the right upgrade command for how you installed it - to stderr. It never makes a blocking network call itself: PyPI is actually re-checked at most once/day, via a detached background refresh kicked off whenever the cache is missing or stale, so this never delays a command; until that refresh lands, the hint keeps showing on every run. It never touches stdout, so it's invisible to pipes, scripts, CI, and `cwcli axi`'s TOON output. Set `CWCLI_NO_UPDATE_CHECK=1` to suppress it entirely.
+Every `cwcli` and `cwcli axi` run except the strictly read-only doctor commands also does a passive, cache-only check: if a newer release is already known (from the same ≤1-day cache `self-update`/`--check` share) and you're at an interactive terminal, cwcli prints a one-line "a newer cwcli is available" hint with the right upgrade command for how you installed it to stderr.
+`cwcli doctor` and `cwcli axi doctor` skip this check because a stale or missing version cache would otherwise launch a background refresh that writes it.
+The notice never makes a blocking network call itself: PyPI is actually re-checked at most once/day, via a detached background refresh kicked off whenever the cache is missing or stale, so this never delays a command; until that refresh lands, the hint keeps showing on each eligible run.
+It never touches stdout, so it is invisible to pipes, scripts, CI, and `cwcli axi`'s TOON output.
+Set `CWCLI_NO_UPDATE_CHECK=1` to suppress it entirely.
 
 ---
 

@@ -6,7 +6,7 @@ to the human surface, both computed from ``DoctorReport.ok``, never ``Result.sta
 from typer.testing import CliRunner
 
 from caffeinated_whale_cli.commands import axi as axi_mod
-from caffeinated_whale_cli.core.doctor import Check, CheckStatus, DoctorReport
+from caffeinated_whale_cli.core.doctor import CheckStatus, DoctorReport
 from caffeinated_whale_cli.core.envelope import Result, Status
 from tests.test_axi import assert_is_one_toon_document
 

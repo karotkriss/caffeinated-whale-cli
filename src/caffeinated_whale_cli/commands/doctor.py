@@ -35,13 +35,11 @@ def _print_check(check: CheckResult, *, verbose: bool) -> None:
     # escaped bracket (`\\[`) or "[c1]" is silently swallowed as an unknown tag.
     tag = f"[dim]\\[{check.id}][/dim] " if verbose else ""
     name = f"{check.title:<32}"
-    glyph = "[bold yellow]?[/bold yellow]" if check.version_verified is False else _GLYPHS[
-        check.status
-    ]
+    glyph = (
+        "[bold yellow]?[/bold yellow]" if check.version_verified is False else _GLYPHS[check.status]
+    )
     console.print(f"  {glyph} {tag}{name}{check.detail}")
-    if check.fix and (
-        check.status is not CheckStatus.PASS or check.version_verified is False
-    ):
+    if check.fix and (check.status is not CheckStatus.PASS or check.version_verified is False):
         console.print(f"      [dim]-> {check.fix}[/dim]")
 
 
