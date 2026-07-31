@@ -124,13 +124,24 @@ The design system's rule is *full-colour only, never recoloured or cropped* (`de
 ### Adherence lint
 
 `design/_adherence.oxlintrc.json` is the maintainer-authored canonical adherence policy for frontend JSX.
-Current [oxlint](https://oxc.rs/docs/guide/usage/linter) cannot load it because the policy uses `no-restricted-syntax`, which oxlint does not implement, so oxlint rejects the entire config and enforces none of its rules.
-Enforcing any of the policy requires an ESLint-compatible runner that implements both `no-restricted-imports` and `no-restricted-syntax`.
-It is intentionally **not** yet an installed desktop dependency or a CI gate: Phase 1 ships no bundled JS frontend (the Console page is served by the Python `cwcli serve` daemon), so there is no JSX in `desktop/` to lint.
+[oxlint](https://oxc.rs/docs/guide/usage/linter) cannot load it because the policy uses `no-restricted-syntax`, which oxlint does not implement, so oxlint rejects the entire config and enforces none of its rules.
+Enforcing the policy therefore uses **ESLint**, which implements both `no-restricted-imports` and `no-restricted-syntax`.
 
-When frontend JSX lands in the shell, select an ESLint-compatible runner for the policy.
-Add the selected lint commands to `.github/workflows/desktop.yml` at that point with `working-directory: .`, overriding the workflow's `desktop/src-tauri` default.
-Add frontend lint tooling as desktop dev dependencies only, never to the Python runtime deps.
+The runner lives here in the always-run `Design-system adherence` job in `desktop.yml`, so every change is checked.
+The job becomes a required, merge-blocking context when a repo admin adds it to `develop` branch protection immediately after this change merges.
+
+- **`eslint.config.mjs`** loads the maintainer's `design/_adherence.oxlintrc.json` **verbatim** - it reads that file's `rules`/`overrides` and applies them unchanged.
+  The only dropped key is `x-omelette` (design-tooling metadata, not an ESLint rule).
+  `design/` is never modified: the runner adapts to the config, not the reverse.
+  Rule severities are authored as `warn`, so `npm run lint` runs with `--max-warnings 0` to make any adherence warning block.
+- **Scope / honest limits.** ESLint's selectors are AST-based (`Literal`, `JSXOpeningElement`), so the policy's full rule set (raw hex/px, off-system fonts, restricted props/variants, restricted imports) runs on **JS/JSX under `desktop/`** - the DS-T3 Console rebuild is exactly that surface.
+  The current Console (`commands/console.html`) is a single HTML file whose tokens and consuming rules live in a `<style>` block, i.e. raw CSS text that ESLint's AST rules genuinely cannot see.
+  So `tools/check-console-css.mjs` supplements it with the smallest zero-false-positive check there: a raw **hex** colour used in consuming CSS instead of a `var()` token (token-layer `--custom-property` definitions and HTML numeric entities are correctly allowed).
+  Raw **px** is deliberately not grepped in the Console: it documents ~50 legitimate raw-px exceptions (structural layout, hairlines, breakpoints, the focus ring, fixed chrome), so a px grep would be all false positives; px stays enforced by ESLint on JS/JSX, where it is clean.
+- **Proof it bites.** `npm test` (`tools/bites.test.mjs`) runs the real ESLint pass over `tools/fixtures/bad.jsx` (one violation per family) asserting each is flagged, over `good.jsx` asserting zero, and self-checks the hex detector - so a regression back to the oxlint no-op fails CI.
+
+Local commands (`cd desktop`): `npm ci`, then `npm run lint`, `npm test`, `npm run check:css`.
+Frontend lint tooling is a desktop dev dependency only (`desktop/package.json`), never a Python runtime dep.
 
 ## Build and run
 
