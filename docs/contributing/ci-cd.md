@@ -11,7 +11,7 @@ We use six GitHub Actions workflows:
 | **Lint** | All branches, all PRs | Code quality checks (Black, Ruff) |
 | **Test** | All branches, all PRs | Run the fast `unit` pytest tier (required gate) + mypy (zero-error gate), a narrow `tests/test_auto_inspect.py` leg on `windows-latest`, and a runtime-deps-only clean-install smoke test |
 | **E2E** | PRs into `develop`/`master`, `e2e`-labeled PRs, manual dispatch | Run the real-Docker `e2e` tier on a v14/v15/v16 Frappe matrix, plus a runtime-deps-only full-lifecycle leg (`e2e_pkg`) that drives a `uv tool install .` binary via `CWCLI_BIN` |
-| **Desktop shell** | All branches, all PRs | Compile, format, lint, and test the Tauri shell on Linux/WebKitGTK and Windows/WebView2 when desktop files change |
+| **Desktop shell** | All branches, all PRs | Compile, format, lint, and test the Tauri shell on Linux/WebKitGTK and Windows/WebView2 when desktop files change; plus an always-run design-system adherence lint (ESLint over the maintainer's policy) |
 | **Build** | Push to `master`, manual dispatch | Build package, verify version consistency |
 | **Release** | Tags `v*.*.*` | Publish to PyPI, create GitHub release |
 
@@ -121,12 +121,19 @@ Each active leg runs `cargo fmt --all --check`, `cargo clippy --all-targets --lo
 This is a compile, lint, and unit-test proof only.
 It does not build an installer bundle; `desktop/src-tauri/tauri.conf.json` keeps `bundle.active` set to `false`.
 
+A separate `Design-system adherence` job runs on **every** change (not gated by the scope job, because the Console it also checks lives outside `desktop/`).
+It is Node-only tooling that enforces the maintainer's `design/_adherence.oxlintrc.json` policy through ESLint (`npm test`, `npm run lint`, `npm run check:css` under `desktop/`); it never touches the Rust build.
+The runner, its honest reachability limits, and the supplementary Console check are owned by [`desktop/README.md`](../../desktop/README.md#adherence-lint).
+
 Run the formatting and lint checks locally:
 
 ```bash
 cd desktop/src-tauri
 cargo fmt --all --check
 cargo clippy --all-targets --locked -- -D warnings
+
+cd ..            # desktop/
+npm ci && npm run lint && npm test && npm run check:css
 ```
 
 The desktop architecture, prerequisites, run recipe, platform boundary, and deferred bundle work are owned by [`desktop/README.md`](../../desktop/README.md).

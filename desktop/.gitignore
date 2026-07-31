@@ -1,3 +1,6 @@
+# Frontend adherence-lint tooling deps (installed via `npm ci` in CI)
+/node_modules/
+
 # Rust / Tauri build artifacts
 /src-tauri/target/
 # Tauri-generated capability schemas (regenerated every build)
