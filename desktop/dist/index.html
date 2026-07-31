@@ -3,19 +3,34 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Starting cwcli Console</title>
+<title>Starting Caffeinated Whale Desktop</title>
 <style>
+/* Palette, radii, and motion are the Caffeinated Whale design tokens
+   (design/tokens/*.css), inlined because the splash is a self-contained,
+   offline-safe bundled asset: it renders before any network exists, so it
+   cannot @import the token sheets or the Google Fonts they reference. The
+   font stacks are the tokens' own fallbacks (ui-sans-serif / ui-monospace),
+   never the webfonts, for the same reason. */
 :root {
   color-scheme: dark;
-  --bg: #11110f;
-  --panel: #181816;
-  --line: #33342f;
-  --text: #eee9dd;
-  --muted: #b3ad9e;
-  --quiet: #827d72;
-  --amber: #f6c05f;
-  --red: #ff8f78;
-  --red-bg: #3d201a;
+  --bg-app: #070b18;
+  --bg-surface: #0b1124;
+  --bg-surface-raised: #0f1730;
+  --border-subtle: rgba(132, 150, 184, 0.12);
+  --border-default: rgba(132, 150, 184, 0.2);
+  --text-primary: #dce6f2;
+  --text-secondary: #8496b8;
+  --text-muted: #5a6b93;
+  --accent: #00a0d0;
+  --accent-soft: rgba(0, 160, 208, 0.14);
+  --danger: #e4574c;
+  --danger-soft: rgba(228, 87, 76, 0.14);
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-window: 10px;
+  --ease-out: cubic-bezier(0.2, 0.6, 0.3, 1);
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", "IBM Plex Sans", sans-serif;
+  --font-mono: ui-monospace, "JetBrains Mono", "SF Mono", "Cascadia Mono", Consolas, monospace;
 }
 * { box-sizing: border-box; }
 html, body { min-height: 100%; }
@@ -24,120 +39,128 @@ body {
   display: grid;
   place-items: center;
   padding: 28px;
+  /* The one gradient the system allows: a single low-contrast radial wash
+     from --cw-ink-800 to --bg-app. */
   background:
-    radial-gradient(circle at 50% 24%, rgba(246, 192, 95, 0.09), transparent 34rem),
-    var(--bg);
-  color: var(--text);
-  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    radial-gradient(circle at 50% 22%, rgba(16, 16, 48, 0.85), transparent 32rem),
+    var(--bg-app);
+  color: var(--text-primary);
+  font: 400 14px/1.5 var(--font-sans);
 }
 main {
   width: min(100%, 540px);
-  padding: 42px;
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  background: rgba(24, 24, 22, 0.96);
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.38);
+  padding: 40px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-window);
+  background: var(--bg-surface);
+  box-shadow: 0 24px 80px rgba(6, 10, 24, 0.55);
 }
 .brand {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   margin-bottom: 34px;
 }
 .mark {
-  display: grid;
-  width: 42px;
-  height: 42px;
-  place-items: center;
-  border: 1px solid rgba(246, 192, 95, 0.45);
-  border-radius: 12px;
-  background: rgba(246, 192, 95, 0.1);
-  color: var(--amber);
-  font-size: 15px;
-  font-weight: 800;
-  letter-spacing: -0.04em;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  display: block;
 }
 .brand-copy strong,
 .brand-copy span {
   display: block;
 }
 .brand-copy strong {
-  font-size: 16px;
+  font-size: 15px;
+  font-weight: 600;
   line-height: 1.25;
+  letter-spacing: -0.01em;
 }
 .brand-copy span {
   margin-top: 2px;
-  color: var(--muted);
-  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 h1 {
   margin: 0;
-  font-size: clamp(24px, 5vw, 32px);
-  line-height: 1.15;
-  letter-spacing: -0.025em;
+  font-size: clamp(22px, 4.5vw, 28px);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
 }
 .lede {
-  margin: 12px 0 28px;
-  color: var(--muted);
-  font-size: 15px;
+  margin: 10px 0 28px;
+  max-width: 42ch;
+  color: var(--text-secondary);
+  font-size: 14px;
 }
 .status {
   display: flex;
   align-items: center;
   gap: 11px;
-  min-height: 46px;
-  padding: 12px 14px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: rgba(255, 255, 255, 0.025);
+  min-height: 44px;
+  padding: 11px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface-raised);
 }
 .pulse {
   width: 9px;
   height: 9px;
   flex: 0 0 auto;
   border-radius: 999px;
-  background: var(--amber);
-  box-shadow: 0 0 0 0 rgba(246, 192, 95, 0.45);
-  animation: pulse 1.8s ease-out infinite;
+  background: var(--accent);
+  box-shadow: 0 0 0 0 var(--accent-soft);
+  animation: pulse 1.8s var(--ease-out) infinite;
+}
+#status {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 12px;
 }
 .error {
   display: none;
-  margin-top: 18px;
-  padding: 16px;
-  border: 1px solid rgba(255, 143, 120, 0.42);
-  border-radius: 9px;
-  background: var(--red-bg);
+  margin-top: 16px;
+  padding: 15px 16px;
+  border: 1px solid rgba(228, 87, 76, 0.42);
+  border-radius: var(--radius-md);
+  background: var(--danger-soft);
 }
 .error[aria-hidden="false"] { display: block; }
 .error strong {
   display: block;
-  color: var(--red);
-  font-size: 15px;
+  color: var(--danger);
+  font-size: 14px;
+  font-weight: 600;
 }
 .error p {
   margin: 8px 0 0;
-  color: var(--text);
+  color: var(--text-primary);
+  font-size: 13px;
 }
-.error .hint { color: var(--muted); }
+.error .hint { color: var(--text-secondary); }
 .error code {
   display: inline-block;
   margin-top: 12px;
-  color: var(--red);
-  font: 12px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+  color: var(--danger);
+  font: 400 12px/1.4 var(--font-mono);
 }
 .footnote {
   margin: 22px 0 0;
-  color: var(--quiet);
-  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 body.failed .pulse {
-  background: var(--red);
+  background: var(--danger);
   box-shadow: none;
   animation: none;
 }
 @keyframes pulse {
-  70% { box-shadow: 0 0 0 9px rgba(246, 192, 95, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(246, 192, 95, 0); }
+  70% { box-shadow: 0 0 0 9px rgba(0, 160, 208, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(0, 160, 208, 0); }
 }
 @media (max-width: 560px) {
   body { padding: 16px; }
@@ -151,25 +174,25 @@ body.failed .pulse {
 <body>
 <main>
   <div class="brand">
-    <div class="mark" aria-hidden="true">cw</div>
+    <img class="mark" src="logo-whale.png" alt="" width="34" height="34" aria-hidden="true">
     <div class="brand-copy">
-      <strong>cwcli Console</strong>
-      <span>Caffeinated Whale</span>
+      <strong>Caffeinated Whale Desktop</strong>
+      <span>caffeinated-whale-cli</span>
     </div>
   </div>
-  <h1 id="title">Preparing your workspace</h1>
-  <p class="lede" id="lede">The desktop shell is starting the local cwcli service.</p>
+  <h1 id="title">Starting the local service</h1>
+  <p class="lede" id="lede">The shell supervises one cwcli daemon on loopback and opens the Console once it answers.</p>
   <div class="status" role="status" aria-live="polite">
     <span class="pulse" aria-hidden="true"></span>
-    <span id="status">Starting...</span>
+    <span id="status">Starting&hellip;</span>
   </div>
   <section class="error" id="error" aria-hidden="true" aria-labelledby="error-title">
-    <strong id="error-title">cwcli could not start</strong>
+    <strong id="error-title">The Console could not start</strong>
     <p id="error-message"></p>
     <p class="hint" id="error-hint"></p>
     <code id="error-code"></code>
   </section>
-  <p class="footnote" id="footnote">This window will open the Console when the local service is ready.</p>
+  <p class="footnote" id="footnote">This window opens the Console once the daemon answers on loopback.</p>
 </main>
 <script>
 const byId = id => document.getElementById(id);
@@ -181,14 +204,14 @@ window.__cwcliStatus = message => {
 window.__cwcliError = failure => {
   const error = failure || {};
   document.body.classList.add("failed");
-  byId("title").textContent = "Could not open cwcli Console";
-  byId("lede").textContent = "The desktop shell stopped during startup.";
-  byId("status").textContent = "Startup stopped";
-  byId("error-message").textContent = error.message || "An unexpected startup error occurred.";
-  byId("error-hint").textContent = error.hint || "Try reopening the app.";
-  byId("error-code").textContent = error.code ? `Error: ${error.code}` : "";
+  byId("title").textContent = "The Console did not open";
+  byId("lede").textContent = "Bring-up stopped before the daemon answered, so the shell kept this screen instead of a blank window.";
+  byId("status").textContent = "Bring-up stopped";
+  byId("error-message").textContent = error.message || "The shell hit an unexpected error during startup.";
+  byId("error-hint").textContent = error.hint || "Reopen the app; the shell retries bring-up from the start.";
+  byId("error-code").textContent = error.code ? `error: ${error.code}` : "";
   byId("error").setAttribute("aria-hidden", "false");
-  byId("footnote").textContent = "The app log contains the daemon output and additional details.";
+  byId("footnote").textContent = "The app log records the daemon output from this startup attempt.";
 };
 </script>
 </body>
