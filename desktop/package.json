@@ -1,0 +1,16 @@
+{
+  "name": "cwcli-desktop-adherence",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Design-system adherence lint for the Caffeinated Whale Desktop frontend. Not shipped; desktop dev tooling only.",
+  "type": "module",
+  "scripts": {
+    "lint": "eslint . --max-warnings 0 --no-error-on-unmatched-pattern",
+    "check:css": "node tools/check-console-css.mjs",
+    "test": "node tools/bites.test.mjs"
+  },
+  "devDependencies": {
+    "eslint": "^9.18.0",
+    "eslint-plugin-react": "^7.37.0"
+  }
+}
