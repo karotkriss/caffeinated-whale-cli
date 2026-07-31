@@ -119,7 +119,7 @@ The design system's rule is *full-colour only, never recoloured or cropped* (`de
 
 - **Product name** is `Caffeinated Whale Desktop` (`tauri.conf.json` `productName`, and the window title in `src/lib.rs`), the product name the design system uses.
 - **Publisher / category / descriptions / copyright** live in `tauri.conf.json` `bundle`.
-- **Version has one source.** `tauri.conf.json` sets no `version`, so Tauri reads it from `src-tauri/Cargo.toml` (`package.version`), which stays the desktop shell's own Phase version (`0.1.0`) - independent of the Python package's four-file version bump, and never duplicated across two files that could drift.
+- **Version has one source.** `tauri.conf.json` sets no `version`, so Tauri reads it from `src-tauri/Cargo.toml` (`package.version`), which stays the desktop shell's own Phase version (`0.1.0`), independent of the Python package's four-file version bump and never duplicated across two files that could drift.
 
 ### Adherence lint
 
@@ -152,8 +152,7 @@ This override is compiled **out** of release builds (`#[cfg(debug_assertions)]` 
 
 ## CI
 
-`.github/workflows/desktop.yml` proves the shell compiles, lints clean, and passes its unit tests on **both** targets (Linux and Windows) on every change that touches it.
-It is compile + `cargo fmt` + `cargo clippy -D warnings` + `cargo test`, not a full installer bundle: bundling (with signing, the updater key, and multi-resolution icons) is Phase 2, so `bundle.active` is `false`.
+The desktop workflow and its local formatting and lint commands are documented in [`docs/contributing/ci-cd.md`](../docs/contributing/ci-cd.md#desktop-shell-githubworkflowsdesktopyml).
 
 ## Validation evidence (Linux)
 
