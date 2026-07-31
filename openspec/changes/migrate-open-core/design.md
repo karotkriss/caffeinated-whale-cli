@@ -2,7 +2,7 @@
 
 This design implements two prior measurements rather than re-deciding them:
 
-- **`cwcli-open-handover-design-o9`** (captain-endorsed; its correction is the CLAUDE.md ledger's `open` entry): `open` is not a handover command - one of four editor branches hands over (`--docker` -> `exec_into_container` -> `os.execvp`, the only `execvp` in the codebase), the other three return normally.
+- **`cwcli-open-handover-design-o9`** (captain-endorsed; its correction is the CLAUDE.md ledger's `open` entry): `open` is not wholly a handover command - the `--docker` branch consumes the calling process contract through `exec_into_container`, while the other three editor branches return normally.
   The settled shape is `core.open_plan(...) -> Result[LaunchTarget]`, the frontend performs the handover: `RunPlan` minus `run_stream`, no new pattern, no new locked decision.
 - **`cwcli-inspect-recon-i7` Q8** (re-verified against this HEAD): `open`'s only two logic edges are the no-cache fallback populate and the in-memory `--app` freshness pass, both re-pointed at `core.inspect` / `core.partial_refresh` by batch 7.
   Nothing else blocks it; it was sequenced immediately after inspect, no interleaving.
@@ -37,7 +37,7 @@ Assert the absence of `axi open` so the exclusion cannot be re-litigated on the 
 
 **Non-Goals.**
 `exec_into_container` and `open_in_vscode` internals (the mechanisms; untouched).
-Any `axi open` verb (o9's structural reason: `execvp` destroys the process that owes `axi` its TOON document).
+Any `axi open` verb (o9's structural reason: the interactive Docker branch consumes the process that owes `axi` its TOON document).
 The `restore`/`rm`/`config`/`init` migrations and `self_update`'s mutating half (the un-migrated list, stated from the code).
 Re-working the VS Code extension install flow or the dev-containers URI scheme.
 A `--json` for `open` (it has none today; adding surface is not a migration's job).
@@ -63,7 +63,7 @@ class LaunchTarget:
     editor: str           # "docker" | "code" | "code-insiders" | "cursor"
 ```
 
-Never an argv: if `LaunchTarget` carried `["docker","exec","-it",...]`, the core would emit `docker` CLI command lines while the rest of the core speaks docker-py, and a GUI would inherit a mechanism it cannot use (a GUI must spawn detached, never `execvp` itself away).
+Never an argv: if `LaunchTarget` carried `["docker","exec","-it",...]`, the core would emit `docker` CLI command lines while the rest of the core speaks docker-py, and a GUI would inherit a mechanism it cannot use (a GUI must own its launch behavior rather than consume its own process).
 A NAME, not an ID, because `exec_into_container(container_name, ...)` and `open_in_vscode(..., container_name, ...)` both take the name (the vscode-remote URI hex-encodes it), and unlike `run` there is no phase-2 core call needing `core.docker.get_container` to bridge an ID back to a handle.
 Serializable throughout; the live container stays internal to the plan call.
 
@@ -110,7 +110,7 @@ No step is added or removed: `open_plan` deliberately resolves exactly what `ope
 
 ### 6. No `axi open` verb, now asserted
 
-The absence is deliberate and its reason is structural, not serializability: `LaunchTarget` is four strings and would serialize fine, but `execvp` destroys the process that owes `axi` its one-TOON-document contract, and the editor branches are meaningless to an agent with no desktop.
+The absence is deliberate and its reason is structural, not serializability: `LaunchTarget` is four strings and would serialize fine, but the interactive Docker branch consumes the process that owes `axi` its one-TOON-document contract, and the editor branches are meaningless to an agent with no desktop.
 A test asserts the `axi` Typer registry has no `open` command (the `axi apps install`/`uninstall` non-verb precedent from `migrate-apps-core` tasks §7), and `core/open.py`'s docstring records the sharper reason so a future agent cannot reopen the question from the stale premise o9 corrected.
 
 ### 7. The frontend keeps the prologue, the prompts, the rendering, and the handover
@@ -120,7 +120,7 @@ A test asserts the `axi` Typer registry has no `open` command (the `axi apps ins
   Today `open` reaches the same outcome through `resolve_bench_path`'s wrapper rendering; the small wording alignment onto the `run` renderer is disclosed (the `core.backup -v` small-drift precedent).
 - **Events**: `OpenEvent = OpenNotice | OpenTrace` mirroring inspect's family - `OpenNotice` renders unconditionally (the fallback-populate announcement), `OpenTrace` renders as `-v`'s `VERBOSE:` lines.
   Warnings render unconditionally (today's yellow "Using default" lines), a per-frontend rendering choice.
-- **The handover switch stays the frontend's 7 lines**: `editor == "docker"` -> `exec_into_container(target.container_name, working_dir=target.working_dir)` (`execvp`; correct BECAUSE it hands over: exit code inherited for free, no signal-mangling intermediary, no orphan Python process); otherwise `vscode_utils.open_in_vscode(target.editor, target.container_name, target.working_dir, verbose=verbose)`, which returns.
+- **The handover switch stays in the frontend**: `editor == "docker"` -> `exec_into_container(target.container_name, working_dir=target.working_dir)`, whose docstring owns the POSIX process-replacement and Windows waited-child split; otherwise `vscode_utils.open_in_vscode(target.editor, target.container_name, target.working_dir, verbose=verbose)`, which returns.
 - `handle_docker_errors` stays on the command for daemon-unreachable rendering, as on every migrated verb.
 
 ### 8. Zero new primitives, as a falsifiable claim
@@ -143,12 +143,12 @@ If implementation finds a bend, it is reported, per the standing rule.
 `core/open.py` imports no `rich`, no `questionary`, no `typer`; `tests/test_core_envelope.py`'s existing import ban covers it automatically.
 It never prints, prompts, exits, or execs; the diagnostic trace is typed events.
 No live Docker object crosses the return boundary; the container resolved inside the plan stays internal (it feeds `partial_refresh` as a parameter, which remains allowed).
-The one `execvp` in the codebase stays in `utils/docker_utils.py`, called only by the frontend.
+The platform-specific `exec_into_container` handover stays in `utils/docker_utils.py`, called only by the frontend.
 
 ## Risks / Trade-offs
 
 - **`open` has no dedicated test file, so there is no suite to move under the migration** -> characterization-first (batch 4's discipline): the existing incidental coverage is pinned green at base, and new characterization tests pin the currently-untested behaviors (editor flag validation, non-TTY refusal, default-path degrade, error ordering) through surfaces that survive the migration, committed before anything moves.
-- **The handover cannot be exercised in-process** -> the tests keep doing what the shipped suite already does (mock `exec_into_container`, assert its arguments), now alongside direct `LaunchTarget` assertions; the real `execvp` is E2E's job via a pty.
+- **The real interactive shell cannot be exercised in-process** -> the frontend tests mock `exec_into_container` and assert its arguments alongside direct `LaunchTarget` assertions; the mechanism's platform split is unit-tested in `tests/test_docker_utils.py`, while a live shell remains E2E work.
 - **Double resolution on the interactive editor path** -> the re-invoke reads a populated cache; bounded, cheap, interactive-only, and it preserves today's prompt-last ordering, which a prompt-first prologue would visibly change.
 - **Message drift where hand-rolled prints become typed renders** -> messages pinned by existing tests stay byte-identical; the `select_bench` wording alignment onto the `run` renderer is the one named drift, disclosed.
 - **Deleting the dead `vscode_utils` helpers could break an unseen caller** -> gated on grep proving zero callers, as a named task; `select_vscode_editor` already has none at HEAD.
