@@ -247,10 +247,22 @@ def discover_benches(container, *, on_event: OnEvent | None = None) -> list[str]
     emit = on_event or _noop
     benches_found = []
 
+    # Each root's scan is `find <root> -maxdepth 2 -type d -name 'apps'`, so a root
+    # only reaches an apps dir at most two levels below it. That governs which roots
+    # are redundant:
+    #  - /home/frappe/workspace/development stays: its bench's apps sits at depth 3
+    #    from /home/frappe, unreachable from that shallower root.
+    #  - /workspace/development stays: the devcontainer bench is /workspace/development/
+    #    frappe-bench, so its apps is at depth 2 here but depth 3 from bare /workspace
+    #    (verified against the fakes) - bare /workspace does NOT subsume it.
+    #  - /workspace is the addition: it catches a hand-made bench at /workspace/<name>
+    #    (bench init run directly in a container shell, which cwcli's own init never
+    #    registers), whose apps is at depth 2 - the discovery gap this closes.
     default_search_roots = [
         "/home/frappe",
         "/home/frappe/workspace/development",
         "/workspace/development",
+        "/workspace",
     ]
     config = config_utils.load_config()
     custom_search_roots = config.get("search_paths", {}).get("custom_bench_paths", [])
