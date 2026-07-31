@@ -1704,7 +1704,13 @@ dialog input {
 
   async function runUrlProbe(inst, bench) {
     const selector = benchSelector(bench);
+    const origin = {
+      project: inst.project,
+      benchKey: benchKey(bench),
+      benchLabel: bench ? (bench.label || bench.bench_path || selector) : "default bench"
+    };
     const query = selector ? `?bench=${encodeURIComponent(selector)}` : "";
+    let probeResult = null;
     pendingAction = "probe_url";
     lastAction = null;
     renderRail();
@@ -1719,11 +1725,20 @@ dialog input {
       const p = body.outcome;
       const where = p.url ? p.url : "no host URL (port unresolved)";
       const reach = p.url ? (p.reachable ? `reachable (HTTP ${p.http_code})` : "unreachable") : "";
-      lastAction = {ok: true, text: `${where}${reach ? " - " + reach : ""}`};
+      probeResult = {
+        ok: true,
+        text: `${p.project} / ${p.bench_path}: ${where}${reach ? ", " + reach : ""}`
+      };
     } catch (error) {
-      lastAction = {ok: false, text: error.message || "url probe failed"};
+      probeResult = {
+        ok: false,
+        text: `${origin.project} / ${origin.benchLabel}: ${error.message || "url probe failed"}`
+      };
     } finally {
       pendingAction = null;
+      const selectionStillMatches = selected.project === origin.project
+        && (selected.benchKey || "") === origin.benchKey;
+      lastAction = selectionStillMatches ? probeResult : null;
       renderRail();
       el("action-status").textContent = lastAction ? lastAction.text : "";
     }
