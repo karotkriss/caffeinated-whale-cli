@@ -22,6 +22,12 @@ Endpoints:
 * ``GET /api/instance/<project>/logs`` - bounded ``core.read_logs`` tail
   (same-origin only, like the action endpoint - log lines are more sensitive
   than fleet health, so this read is NOT CORS-open)
+* ``GET /api/instance/<project>/url``  - ``core.url.probe_url`` host URL plus a
+  fresh reachability probe (same-origin only and serialized with project
+  actions because it execs ``curl`` in the container)
+* ``GET /api/doctor``                  - system-wide ``core.doctor.run_all``
+  preflight, preserving every check's status and ``version_verified`` qualifier
+  (same-origin only because it exposes local environment details)
 * ``GET /api/where?q=<term>``          - ``core.where`` cache search, its
   per-row ``project_state`` verified/remembered token passed through unchanged
   (same-origin only, like ``/logs``)
@@ -114,6 +120,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import typer
 
 from ..core import apps as core_apps
+from ..core import doctor as core_doctor
 from ..core import fleet as core_fleet
 from ..core import inspect as core_inspect
 from ..core import label as core_label
@@ -124,6 +131,7 @@ from ..core import scale as core_scale
 from ..core import start as core_start
 from ..core import stop as core_stop
 from ..core import unlock as core_unlock
+from ..core import url as core_url
 from ..core import where as core_where
 from ..core.envelope import Message, Result, Status
 from ..core.errors import CwcliError, ErrorKind
@@ -434,6 +442,11 @@ class _Handler(BaseHTTPRequestHandler):
         elif path.startswith("/api/instance/") and path.endswith("/logs"):
             project = unquote(path[len("/api/instance/") : -len("/logs")])
             self._send_logs(project, parse_qs(parsed.query))
+        elif path.startswith("/api/instance/") and path.endswith("/url"):
+            project = unquote(path[len("/api/instance/") : -len("/url")])
+            self._send_url(project, parse_qs(parsed.query))
+        elif path == "/api/doctor":
+            self._send_doctor()
         elif path == "/api/where":
             self._send_where(parse_qs(parsed.query))
         else:
@@ -497,8 +510,8 @@ class _Handler(BaseHTTPRequestHandler):
     def _refuse_cross_origin(self) -> bool:
         """Send the 403 and return True when the request fails the same-origin check.
 
-        Shared by the action endpoint and the new read endpoints (/logs, /api/where):
-        those reads name sites and carry raw log lines, so unlike the fleet-health
+        Shared by the action endpoint and sensitive read endpoints. Those reads
+        expose local environment or instance details, so unlike the fleet-health
         reads they are deliberately NOT CORS-open and get the action guard instead.
         """
         if self._action_same_origin():
@@ -841,6 +854,44 @@ class _Handler(BaseHTTPRequestHandler):
         status, body = _result_response("read_logs", project, result)
         self._send_json(body, status=status)
 
+    def _send_url(self, project: str, query: dict) -> None:
+        """Fresh host-URL + reachability probe for one bench (``core.url.probe_url``).
+
+        A PURE READ, but it execs ``curl`` inside the container, so it is
+        same-origin only and serialized under the project's action lock - the
+        ``read_logs`` precedent. A stopped or ambiguous-multi-bench project comes
+        back as the core's ``NEEDS_CHOICE`` (rendered as a 409), never
+        auto-started.
+        """
+        if self._refuse_cross_origin():
+            return
+        if not project:
+            self._send_json({"error": "no project"}, status=400)
+            return
+        bench = _optional_str((query.get("bench") or [None])[0])
+        site = _optional_str((query.get("site") or [None])[0])
+        try:
+            with self._action_lock(project):
+                result = core_url.probe_url(project, bench=bench, site=site)
+        except CwcliError as e:
+            self._send_core_error(e)
+            return
+        status, body = _result_response("probe_url", project, result)
+        self._send_json(body, status=status)
+
+    def _send_doctor(self) -> None:
+        """System-wide, read-only environment preflight (``core.doctor.run_all``).
+
+        Launches, pulls and mutates nothing (every check is a pure read); each
+        check's ``pass``/``warn``/``fail`` and the ``version_verified``
+        qualifier ride through unchanged so the page renders staleness honestly.
+        """
+        if self._refuse_cross_origin():
+            return
+        report = core_doctor.run_all().data
+        assert report is not None
+        self._send_json(_doctor_json(report))
+
     def _send_where(self, query: dict) -> None:
         """``core.where``: the cache search, verified/remembered tokens intact.
 
@@ -974,6 +1025,32 @@ def _plain(value):
     if isinstance(value, dict):
         return {k: _plain(v) for k, v in value.items()}
     return value
+
+
+def _doctor_json(report) -> dict:
+    """Serialize a ``DoctorReport``, resolving each check's ``CheckStatus`` enum.
+
+    ``_plain``/``asdict`` would leave the nested enum unserializable, so this is
+    the one place the ``pass``/``warn``/``fail`` token is flattened to its value.
+    """
+    return {
+        "checks": [
+            {
+                "id": c.id,
+                "title": c.title,
+                "group": c.group,
+                "status": c.status.value,
+                "detail": c.detail,
+                "fix": c.fix,
+                "version_verified": c.version_verified,
+            }
+            for c in report.checks
+        ],
+        "passed": report.passed,
+        "warned": report.warned,
+        "failed": report.failed,
+        "ok": report.ok,
+    }
 
 
 def _result_response(action: str, project: str, result: Result) -> tuple[int, dict]:

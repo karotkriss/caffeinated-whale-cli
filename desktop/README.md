@@ -14,7 +14,7 @@ The boundary is a hard rule each side obeys.
 | --- | --- | --- |
 | **Rust shell** (`src-tauri/`) | Preflight, starting and supervising one `cwcli serve`, single-instance, window state, native window lifecycle, the log file, and the local first-run/error surface. | Talk to Docker, parse a bench config, know what a site is, decide whether an action is safe, or hold any consent logic. |
 | **Python core** (`src/caffeinated_whale_cli/`) | Every Docker, bench, site, app, supervisord and Frappe rule, consent, and the typed `Result`/`CwcliError` envelope. | Change for the desktop app. Phase 1 touches it in only two small, GUI-agnostic ways (below). |
-| **`cwcli serve`** | The GUI's whole protocol surface (fleet model, SSE deltas, detail/logs/where reads, the Tier A action endpoint). | Grow GUI-only rules the CLI and `axi` do not share. |
+| **`cwcli serve`** | The GUI's whole protocol surface (fleet model, SSE deltas, detail/logs/where/doctor/url reads, the Tier A action endpoint). | Grow GUI-only rules the CLI and `axi` do not share. |
 
 The shell is a few hundred lines of Rust and contains **zero** Docker or Frappe business rules.
 It deliberately does **not** depend on `bollard` (a Rust Docker client), which would fork cwcli's Docker knowledge into a second implementation, and it does **not** install `tauri-plugin-shell`, which would hand the frontend an arbitrary-command surface.
