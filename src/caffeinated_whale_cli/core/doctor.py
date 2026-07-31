@@ -4,7 +4,7 @@
 instance healthy" (that stays ``status``/``inspect``'s job - see the project
 ``CLAUDE.md`` Axis G boundary). It is a thin renderer over primitives that
 already exist and already fail honestly (:func:`core.list.list_instances`,
-:func:`core.version.check`/``build_info``, the auto-inspect read-only trio, ...),
+``core.version.read_cached_only``/``build_info``, the auto-inspect read-only trio, ...),
 plus a handful of genuinely new reads the maintainer's brainstorm
 (``cwcli-doctor-brainstorm/report.md``) flagged as gaps (the compose-plugin
 probe, the send-path temp-dir check, gh/glab auth status).
@@ -309,9 +309,10 @@ def _check_auto_inspect() -> tuple:
     """C9 - auto-inspect daemon health, via the read-only identity trio (T4): NEVER
     ``is_running()``, which prunes a stale/recycled pid file as a side effect.
     """
+    from toml import TomlDecodeError
+
     from ..utils import auto_inspect as daemon
     from ..utils.config_utils import read_auto_inspect_config
-    from toml import TomlDecodeError
 
     try:
         config = read_auto_inspect_config()

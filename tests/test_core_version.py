@@ -207,9 +207,7 @@ class TestReadCachedOnly:
         assert info.is_outdated is True
         assert cache.stat().st_mtime_ns == before
 
-    def test_missing_or_stale_cache_returns_none_without_network(
-        self, isolated_cache, monkeypatch
-    ):
+    def test_missing_or_stale_cache_returns_none_without_network(self, isolated_cache, monkeypatch):
         monkeypatch.setattr(
             core_version.urllib.request,
             "urlopen",

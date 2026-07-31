@@ -1,5 +1,6 @@
 import importlib.metadata
 
+import click
 import typer
 
 from .commands import apps as apps_cmd
@@ -34,7 +35,7 @@ _READ_ONLY_DOCTOR = "cwcli.read_only_doctor"
 
 
 class RootGroup(axi_cmd.ToonGroup):
-    def parse_args(self, ctx: typer.Context, args: list[str]) -> list[str]:
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
         ctx.meta[_READ_ONLY_DOCTOR] = args[:1] == ["doctor"] or args[:2] == [
             "axi",
             "doctor",

@@ -115,9 +115,7 @@ class TestRunAll:
         assert report.ok is False
         assert "kaboom" in report.checks[0].detail
 
-    def test_version_and_config_checks_create_nothing_and_never_fetch(
-        self, tmp_path, monkeypatch
-    ):
+    def test_version_and_config_checks_create_nothing_and_never_fetch(self, tmp_path, monkeypatch):
         monkeypatch.setenv("CWCLI_HOME", str(tmp_path))
         config_file = tmp_path / "config" / "config.toml"
         monkeypatch.setattr(config_utils, "CONFIG_FILE", config_file)
@@ -379,9 +377,7 @@ class TestHomeLayout:
 
 
 class TestAutoInspect:
-    def test_absent_config_defaults_to_disabled_without_creating_it(
-        self, tmp_path, monkeypatch
-    ):
+    def test_absent_config_defaults_to_disabled_without_creating_it(self, tmp_path, monkeypatch):
         config_file = tmp_path / "config" / "config.toml"
         monkeypatch.setattr(config_utils, "CONFIG_FILE", config_file)
         assert config_utils.read_auto_inspect_config()["enabled"] is False
