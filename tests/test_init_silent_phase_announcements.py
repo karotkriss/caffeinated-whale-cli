@@ -133,7 +133,7 @@ class TestNonVerboseSpinnerSurvivesTheStageBoundary:
         renderer(
             core_init.InitStepStart(
                 phase="align_uid",
-                message="Aligning container user to host uid/gid (first run can take several minutes)",
+                message="Aligning container user to host uid/gid",
             )
         )
         assert _RecordingSpinner.instances[-1].active is True
@@ -169,7 +169,7 @@ class TestVerboseAnnouncesBeforeCompletion:
         renderer(
             core_init.InitStepStart(
                 phase="align_uid",
-                message="Aligning container user to host uid/gid (first run can take several minutes)",
+                message="Aligning container user to host uid/gid",
             )
         )
         out_before = capsys.readouterr().err
