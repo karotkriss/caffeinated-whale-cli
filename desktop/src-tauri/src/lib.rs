@@ -100,7 +100,7 @@ pub fn run() {
 
             let window =
                 WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                    .title("cwcli Console")
+                    .title("Caffeinated Whale Desktop")
                     .inner_size(1180.0, 820.0)
                     .min_inner_size(440.0, 520.0)
                     // Linux implements zoom as a JS polyfill behind the

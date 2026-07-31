@@ -87,6 +87,33 @@ macOS is not regressed by any design choice here, but is not a Phase 1 validatio
 `design/` (repo root) is the canonical Caffeinated Whale design system and the design authority for this shell: all Console/shell styling derives from its tokens, components, and guidelines.
 Read `design/readme.md` (or invoke the `caffeinated-whale-design` skill) before styling any Console surface.
 
+### App icons
+
+The whole icon set under `src-tauri/icons/` derives from the canonical brand mark, `design/assets/logo-whale.png`.
+The pipeline is reproducible from two committed inputs and one command:
+
+```bash
+# 1. Source: the 500x500 mark upscaled to 1024x1024 on a transparent canvas,
+#    committed as icons/app-icon.png (uncropped, un-recoloured per the design system).
+node -e "require('sharp')('../../design/assets/logo-whale.png') \
+  .resize(1024,1024,{fit:'contain',background:{r:0,g:0,b:0,alpha:0},kernel:'lanczos3'}) \
+  .png().toFile('icons/app-icon.png')"
+
+# 2. Generate every desktop size/format from that source.
+npx @tauri-apps/cli@2 icon icons/app-icon.png
+```
+
+`tauri icon` also emits `icons/android/` and `icons/ios/`; those are removed, because this shell targets only Linux and Windows (see **Cross-platform**), so the mobile assets are dead weight the desktop bundler never reads.
+The design system's rule is *full-colour only, never recoloured or cropped* (`design/guidelines/brand-mark.card.html`), so the mark is scaled and centred, never simplified into a monochrome glyph.
+
+### Version and bundle metadata
+
+`bundle.active` is still `false` (bundling is Phase 2), but the installer metadata is wired now so a Phase 2 build inherits it:
+
+- **Product name** is `Caffeinated Whale Desktop` (`tauri.conf.json` `productName`, and the window title in `src/lib.rs`), the product name the design system uses.
+- **Publisher / category / descriptions / copyright** live in `tauri.conf.json` `bundle`.
+- **Version has one source.** `tauri.conf.json` sets no `version`, so Tauri reads it from `src-tauri/Cargo.toml` (`package.version`), which stays the desktop shell's own Phase version (`0.1.0`) - independent of the Python package's four-file version bump, and never duplicated across two files that could drift.
+
 ### Adherence lint
 
 `design/_adherence.oxlintrc.json` is the maintainer-authored canonical adherence policy for frontend JSX.
