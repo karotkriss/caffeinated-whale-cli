@@ -29,15 +29,15 @@ const CONSOLE_HTML = fileURLToPath(
 // A hex color literal NOT immediately preceded by '&' (which would be an HTML
 // entity such as &#9662;).
 const HEX = /(?<!&)#[0-9a-fA-F]{3,8}\b/;
-// A custom-property definition line: `--token: ...;` - the allowed token layer.
-const TOKEN_DEF = /^\s*--[\w-]+\s*:/;
+// A custom-property declaration: `--token: ...;` - the allowed token layer.
+const TOKEN_DEF = /--[\w-]+\s*:[^;]*(?:;|$)/g;
 
 /** Return [{line, text}] for consuming raw-hex violations in the CSS/HTML text. */
 export function findRawHex(source) {
   const out = [];
   source.split("\n").forEach((text, i) => {
-    if (TOKEN_DEF.test(text)) return; // token definition: raw hex is allowed here
-    if (HEX.test(text)) out.push({ line: i + 1, text: text.trim() });
+    const consumingText = text.replace(TOKEN_DEF, "");
+    if (HEX.test(consumingText)) out.push({ line: i + 1, text: text.trim() });
   });
   return out;
 }
@@ -45,6 +45,7 @@ export function findRawHex(source) {
 function selfcheck() {
   const bad = ".x { color: #ff00aa; }";
   const tokenOk = "  --accent: #00a0d0;";
+  const mixed = "--local: #fff; color: #000;";
   const entityOk = '<span>&#9662;</span>';
   const consumeOk = "  color: var(--accent);";
   const assertEq = (got, want, msg) => {
@@ -55,6 +56,11 @@ function selfcheck() {
   };
   assertEq(findRawHex(bad).length, 1, "raw consuming hex must be caught");
   assertEq(findRawHex(tokenOk).length, 0, "token definition must be allowed");
+  assertEq(
+    findRawHex(mixed).length,
+    1,
+    "consuming hex beside a token definition must be caught exactly once",
+  );
   assertEq(findRawHex(entityOk).length, 0, "HTML numeric entity must not be flagged");
   assertEq(findRawHex(consumeOk).length, 0, "var() token use must be allowed");
   console.log("check-console-css selfcheck: OK");
