@@ -12,8 +12,8 @@
 // The Console documents legitimate raw-px exceptions (structural layout, hairlines,
 // breakpoints, the focus ring, fixed chrome sizes) and ~50 such uses exist, so a
 // px grep is all false positives with no maintainer-authored allowlist to filter
-// against. px stays enforced where it is clean - the ESLint pass over JS/JSX, which
-// is where DS-T3's JSX volume lands.
+// against. px stays enforced where it is clean - the ESLint pass over JS/JSX,
+// including any future Console JSX build.
 //
 // A hex is a violation unless it is (a) the value of a `--custom-property`
 // declaration (the token layer legitimately holds raw hex) or (b) an HTML numeric
