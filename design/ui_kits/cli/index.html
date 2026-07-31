@@ -1,0 +1,109 @@
+<!-- @dsCard group="CLI" viewport="1000x700" name="cwcli terminal" subtitle="How the CLI prints: Rich tables, TOON, spinners with tips, typed errors" -->
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>cwcli — terminal surface</title>
+<link rel="stylesheet" href="../../styles.css">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="../../_ds_bundle.js"></script>
+<style>html,body{margin:0;height:100%;background:var(--bg-app)}#root{min-height:100vh}</style>
+</head><body><div id="root"></div>
+<script type="text/babel">
+const { Icon, Tabs, IconButton } = window.CaffeinatedWhaleDesignSystem_2d9598;
+const C = { cyan: "var(--cw-term-cyan)", magenta: "var(--cw-term-magenta)", green: "var(--cw-term-green)", yellow: "var(--cw-term-yellow)", red: "var(--cw-term-red)", dim: "var(--cw-term-dim)", fg: "var(--cw-term-fg)" };
+
+function L({ c = "fg", b, children }) {
+  return <span style={{ color: C[c], fontWeight: b ? 600 : 400 }}>{children}</span>;
+}
+function Line({ children }) { return <div style={{ whiteSpace: "pre" }}>{children}</div>; }
+function Prompt({ children }) {
+  return <div style={{ whiteSpace: "pre", marginTop: 14 }}><L c="green" b>~/dev</L><L c="dim"> $ </L><L c="fg" b>{children}</L></div>;
+}
+
+const LS = (
+  <>
+    <Prompt>cwcli ls</Prompt>
+    <Line><L c="dim">          Caffeinated Whale Instances          </L></Line>
+    <Line><L c="dim">┏━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━━━┓</L></Line>
+    <Line><L c="dim">┃ </L><L c="fg" b>Project Name  </L><L c="dim"> ┃ </L><L c="fg" b>Status  </L><L c="dim"> ┃ </L><L c="fg" b>Ports         </L><L c="dim"> ┃</L></Line>
+    <Line><L c="dim">┡━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━━━━━┩</L></Line>
+    <Line><L c="dim">│ </L><L c="cyan">my-erp        </L><L c="dim"> │ </L><L c="green">running </L><L c="dim"> │ </L><L c="green">8000-8005     </L><L c="dim"> │</L></Line>
+    <Line><L c="dim">│ </L><L c="cyan">hr-sandbox    </L><L c="dim"> │ </L><L c="green">running </L><L c="dim"> │ </L><L c="green">16000-16005   </L><L c="dim"> │</L></Line>
+    <Line><L c="dim">│ </L><L c="cyan">old-proj      </L><L c="dim"> │ </L><L c="red">exited  </L><L c="dim"> │ </L><L c="green">N/A           </L><L c="dim"> │</L></Line>
+    <Line><L c="dim">└────────────────┴──────────┴────────────────┘</L></Line>
+  </>
+);
+
+const AXI = (
+  <>
+    <Prompt>cwcli axi status my-erp</Prompt>
+    <Line><L c="fg">overall: degraded</L></Line>
+    <Line><L c="fg">benches[2]{"{"}index,label,overall,webPort,webHttpCode{"}"}:</L></Line>
+    <Line><L c="cyan">  0,main,running,8000,200</L></Line>
+    <Line><L c="yellow">  1,staging,degraded,8001,null</L></Line>
+    <Line><L c="fg">processes[4]{"{"}bench,label,state,pid{"}"}:</L></Line>
+    <Line><L c="fg">  1,web,STOPPED,null</L></Line>
+    <Line><L c="fg">  1,socketio,RUNNING,5120</L></Line>
+    <Line><L c="fg">  1,schedule,RUNNING,5121</L></Line>
+    <Line><L c="fg">  1,worker_default,BACKOFF,null</L></Line>
+    <Line><L c="dim">help: restart one process with 'cwcli axi restart my-erp --bench 1 --process web'</L></Line>
+  </>
+);
+
+const ERR = (
+  <>
+    <Prompt>cwcli backup my-erp</Prompt>
+    <Line><L c="red" b>error: </L><L c="fg">multiple benches; pass --bench &lt;index|label&gt;</L></Line>
+    <Line><L c="fg">options[2]:</L></Line>
+    <Line><L c="cyan">  [0] /workspace/development/frappe-bench</L></Line>
+    <Line><L c="cyan">  [1] /workspace/development/staging-bench</L></Line>
+    <Line><L c="dim">help: re-run with --bench &lt;index|label&gt;</L></Line>
+  </>
+);
+
+function Spin() {
+  const frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+  const tips = [
+    "Use 'cwcli inspect <project>' to cache project structure for faster commands",
+    "Install tab completion with 'cwcli --install-completion' for faster workflows",
+    "Run 'cwcli backup <project> --with-files' before major changes",
+  ];
+  const [i, setI] = React.useState(0);
+  React.useEffect(() => { const t = setInterval(() => setI((n) => n + 1), 90); return () => clearInterval(t); }, []);
+  return (
+    <>
+      <Prompt>cwcli init new-erp --version 16</Prompt>
+      <Line><L c="green" b>{frames[i % frames.length]} Creating bench and installing apps…</L></Line>
+      <Line><L c="dim">  💡 {tips[Math.floor(i / 40) % tips.length]}</L></Line>
+    </>
+  );
+}
+
+const VIEWS = { ls: LS, axi: AXI, error: ERR };
+
+function Terminal() {
+  const [tab, setTab] = React.useState("ls");
+  return (
+    <div style={{ padding: 28, display: "flex", justifyContent: "center" }}>
+      <div style={{ width: 900, borderRadius: "var(--radius-window)", overflow: "hidden", border: "1px solid var(--border-default)", boxShadow: "var(--shadow-window)", background: "var(--cw-term-bg)" }}>
+        <div style={{ height: 34, display: "flex", alignItems: "center", gap: 8, padding: "0 12px", background: "var(--bg-surface)", borderBottom: "1px solid var(--border-subtle)" }}>
+          <span style={{ color: "var(--text-muted)" }}><Icon name="terminal" size={14} /></span>
+          <span style={{ font: "var(--type-meta)", color: "var(--text-secondary)", fontFamily: "var(--font-mono)" }}>chris@dev: ~/dev</span>
+          <span style={{ flex: 1 }} />
+          <IconButton icon="copy" size="sm" title="Copy" />
+        </div>
+        <Tabs value={tab} onChange={setTab} items={[
+          { value: "ls", label: "Rich table", icon: "layers" },
+          { value: "axi", label: "TOON (agent surface)", icon: "zap" },
+          { value: "error", label: "Typed error", icon: "circle-alert" },
+        ]} style={{ background: "var(--bg-surface)" }} />
+        <div style={{ padding: "10px 18px 22px", fontFamily: "var(--font-mono)", fontSize: 12.5, lineHeight: 1.7, color: "var(--cw-term-fg)", minHeight: 330 }}>
+          {VIEWS[tab]}
+          <Spin />
+          <div style={{ marginTop: 14, whiteSpace: "pre" }}><L c="green" b>~/dev</L><L c="dim"> $ </L><span style={{ background: "var(--cw-term-fg)", color: "var(--cw-term-bg)" }}> </span></div>
+        </div>
+      </div>
+    </div>
+  );
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<Terminal />);
+</script></body></html>

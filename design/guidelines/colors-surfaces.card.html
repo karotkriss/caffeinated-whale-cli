@@ -1,0 +1,19 @@
+<!-- @dsCard group="Colors" viewport="700x130" name="Surfaces & borders" subtitle="Three surface levels and three hairlines. Depth is a border, not a glow" -->
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><link rel="stylesheet" href="../styles.css">
+<style>html,body{margin:0}body{background:var(--bg-app);color:var(--text-primary);font:var(--type-body);padding:16px}
+.g{display:grid;gap:8px}.sw{border-radius:var(--radius-md);border:1px solid var(--border-subtle);padding:8px 10px;display:flex;flex-direction:column;justify-content:flex-end;min-height:62px}
+.sw b{font:var(--type-body-strong);font-size:var(--text-sm)}.sw i{font-family:var(--font-mono);font-size:var(--text-2xs);opacity:.72;font-style:normal}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.lb{font:var(--type-label);letter-spacing:var(--tracking-caps);text-transform:uppercase;color:var(--text-muted)}
+</style></head><body>
+
+<div class="g" style="grid-template-columns:repeat(4,1fr)">
+<div class="sw" style="background:var(--bg-sunken);color:#b4c3da"><b>bg-sunken</b><i>var(--bg-sunken)</i></div><div class="sw" style="background:var(--bg-app);color:#b4c3da"><b>bg-app</b><i>var(--bg-app)</i></div><div class="sw" style="background:var(--bg-surface);color:#b4c3da"><b>bg-surface</b><i>var(--bg-surface)</i></div><div class="sw" style="background:var(--bg-surface-raised);color:#b4c3da"><b>bg-surface-raised</b><i>var(--bg-surface-raised)</i></div>
+</div>
+<div class="row" style="margin-top:12px">
+<span style="flex:1;height:1px;background:var(--border-subtle)"></span><span class="lb">subtle</span>
+<span style="flex:1;height:1px;background:var(--border-default)"></span><span class="lb">default</span>
+<span style="flex:1;height:1px;background:var(--border-strong)"></span><span class="lb">strong</span>
+<span style="flex:1;height:1px;background:var(--border-accent)"></span><span class="lb">accent</span>
+</div>
+</body></html>

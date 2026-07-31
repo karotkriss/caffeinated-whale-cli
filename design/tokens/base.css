@@ -1,0 +1,12 @@
+/* Minimal resets that every surface in this system assumes. */
+:root { --cw-selection: rgba(0, 160, 208, 0.32); }
+
+body { margin: 0; background: var(--bg-app); color: var(--text-primary); font: var(--type-body); -webkit-font-smoothing: antialiased; }
+::selection { background: var(--cw-selection); }
+a { color: var(--link); text-decoration: none; }
+a:hover { color: var(--link-hover); text-decoration: underline; }
+*:focus-visible { outline: none; box-shadow: var(--ring-focus); border-radius: var(--radius-sm); }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-default); border: 3px solid transparent; background-clip: content-box; border-radius: var(--radius-pill); }
+::-webkit-scrollbar-thumb:hover { background: var(--border-strong); background-clip: content-box; }

@@ -1,0 +1,86 @@
+<!-- @dsCard group="Desktop app" viewport="1280x820" name="Bring-up & error surface" subtitle="The bundled splash the Rust shell owns before the daemon answers" -->
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Caffeinated Whale Desktop — bring-up</title>
+<link rel="stylesheet" href="../../styles.css">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="../../_ds_bundle.js"></script>
+<style>html,body{margin:0;height:100%}#root{height:100vh}</style>
+</head><body><div id="root"></div>
+<script type="text/babel">
+const { Button, Banner, Spinner, Icon, Kbd } = window.CaffeinatedWhaleDesignSystem_2d9598;
+
+const STEPS = [
+  { label: "Reserve a loopback port", detail: "127.0.0.1:8777" },
+  { label: "Locate cwcli", detail: "/home/chris/.local/bin/cwcli" },
+  { label: "Spawn the daemon", detail: "python -m caffeinated_whale_cli.commands.serve" },
+  { label: "Wait for HTTP 200", detail: "GET /api/snapshot" },
+];
+
+function Step({ step, state }) {
+  const color = state === "done" ? "var(--cw-status-running)" : state === "active" ? "var(--accent)" : "var(--text-disabled)";
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "18px minmax(0,1fr) auto", gap: "var(--space-5)", alignItems: "center", padding: "7px 0" }}>
+      <span style={{ color, display: "flex" }}>
+        {state === "done" ? <Icon name="circle-check" size={15} />
+          : state === "active" ? <span style={{ display: "block", animation: "cw-spin 700ms linear infinite" }}><Icon name="loader-circle" size={15} /></span>
+          : <Icon name="circle-dot" size={15} />}
+      </span>
+      <span style={{ font: "var(--type-body)", color: state === "pending" ? "var(--text-disabled)" : "var(--text-primary)" }}>{step.label}</span>
+      <span style={{ fontFamily: "var(--font-mono)", fontSize: "var(--text-2xs)", color: "var(--text-muted)" }}>{step.detail}</span>
+    </div>
+  );
+}
+
+function Splash() {
+  const [i, setI] = React.useState(0);
+  const [failed, setFailed] = React.useState(false);
+  React.useEffect(() => {
+    if (failed || i >= STEPS.length) return;
+    const t = setTimeout(() => setI(i + 1), 900);
+    return () => clearTimeout(t);
+  }, [i, failed]);
+  const done = i >= STEPS.length;
+
+  return (
+    <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "radial-gradient(120% 90% at 50% 0%, var(--cw-ink-800) 0%, var(--bg-app) 62%)" }}>
+      <div style={{ width: 520, display: "flex", flexDirection: "column", gap: "var(--space-8)", padding: "var(--space-10)" }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "var(--space-5)" }}>
+          <img src="../../assets/logo-whale.png" alt="" width="92" height="92" />
+          <div style={{ font: "var(--type-title)", color: "var(--text-primary)", letterSpacing: "var(--tracking-tight)" }}>Caffeinated Whale</div>
+          <div style={{ font: "var(--type-meta)", fontFamily: "var(--font-mono)", color: "var(--text-muted)" }}>desktop 0.1.0 · cwcli 2.1.0</div>
+        </div>
+
+        {failed ? (
+          <Banner tone="danger" title="cwcli did not answer" code="DAEMON_UNREACHABLE"
+            hint="check that Docker is running, then Retry"
+            actions={<><Button size="sm" variant="primary" icon="refresh-cw" onClick={() => { setFailed(false); setI(0); }}>Retry</Button><Button size="sm" variant="ghost" icon="file-text">Open log file</Button></>}>
+            The shell reserved 127.0.0.1:8777 and spawned the daemon, but nothing answered within 20 seconds.
+            The window stays on this screen rather than showing you a blank page.
+          </Banner>
+        ) : (
+          <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border-subtle)", borderRadius: "var(--radius-lg)", padding: "var(--space-6) var(--space-7)" }}>
+            {STEPS.map((s, n) => <Step key={s.label} step={s} state={n < i ? "done" : n === i ? "active" : "pending"} />)}
+          </div>
+        )}
+
+        {done && !failed ? (
+          <div style={{ textAlign: "center", font: "var(--type-meta)", color: "var(--cw-status-running)", fontFamily: "var(--font-mono)" }}>
+            cwcli daemon ready; navigating to http://127.0.0.1:8777/
+          </div>
+        ) : !failed ? (
+          <div style={{ textAlign: "center", font: "var(--type-meta)", color: "var(--text-muted)" }}>
+            Every fallible step renders here — never a blank page.
+          </div>
+        ) : null}
+
+        <div style={{ display: "flex", justifyContent: "center", gap: "var(--space-4)" }}>
+          <Button size="sm" variant="ghost" onClick={() => { setFailed(true); }}>Simulate a failure</Button>
+          <Button size="sm" variant="ghost" onClick={() => { setFailed(false); setI(0); }}>Replay</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<Splash />);
+</script></body></html>

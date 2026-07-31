@@ -1,0 +1,34 @@
+<!-- @dsCard group="Components" viewport="700x340" name="Status" subtitle="Health pills, dots, process rows, delta log" -->
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><link rel="stylesheet" href="../../styles.css">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="../../_ds_bundle.js"></script>
+<style>html,body{margin:0}body{background:var(--bg-app);color:var(--text-primary);font:var(--type-body);padding:16px}.cwrow{display:flex;flex-wrap:wrap;align-items:center;gap:10px}.cwcol{display:flex;flex-direction:column;gap:14px}.cwlbl{font:var(--type-label);letter-spacing:var(--tracking-caps);text-transform:uppercase;color:var(--text-muted);margin-bottom:6px}</style>
+</head><body><div id="root"></div>
+<script type="text/babel">
+const { StatusPill, HealthDot, ProcessRow, EventRow } = window.CaffeinatedWhaleDesignSystem_2d9598;
+function Demo(){return (<div className="cwcol">
+    <div><div className="cwlbl">StatusPill — the five tokens core.status can produce</div><div className="cwrow">
+      <StatusPill status="running" /><StatusPill status="online" /><StatusPill status="degraded" />
+      <StatusPill status="offline" /><StatusPill status="unknown" />
+      <span style={{width:12}} />
+      <HealthDot status="running" /><HealthDot status="degraded" /><HealthDot status="offline" /><HealthDot status="unknown" />
+    </div></div>
+    <div><div className="cwlbl">ProcessRow</div>
+      <div style={{border:"1px solid var(--border-subtle)",borderRadius:"var(--radius-md)",overflow:"hidden",background:"var(--bg-surface)"}}>
+        <ProcessRow name="web" state="RUNNING" pid={4711} uptime="4h 12m" cpu={1.4} rss="212 MB" />
+        <ProcessRow name="socketio" state="RUNNING" pid={4712} uptime="4h 12m" cpu={0.2} rss="88 MB" />
+        <ProcessRow name="worker_default" state="STOPPED" pid={null} selected />
+      </div>
+    </div>
+    <div><div className="cwlbl">EventRow — the delta log</div>
+      <div style={{border:"1px solid var(--border-subtle)",borderRadius:"var(--radius-md)",background:"var(--cw-term-bg)",padding:"6px 0"}}>
+        <EventRow tier="INSTANT" project="my-erp" message="start(frappe) → unknown" time="14:02:11" />
+        <EventRow tier="FAST" project="my-erp" message="→ degraded" time="14:02:13" />
+        <EventRow tier="ACTION" project="my-erp" message="restart process web" time="14:02:14" />
+      </div>
+    </div>
+  </div>);}
+ReactDOM.createRoot(document.getElementById("root")).render(<Demo/>);
+</script></body></html>
