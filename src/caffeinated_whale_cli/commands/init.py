@@ -52,7 +52,7 @@ _SPINNER_GROUP = {
     "up": "stage1",
     "wait_ready": "stage1",
     # align_uid starts stage 2 after stage 1 closes its spinner, so it needs
-    # a group of its own to keep progress visible during the blocking chown.
+    # a group of its own to keep progress visible during the blocking alignment.
     "align_uid": "align_uid",
     "python_install": "python_install",
     "node_install": "node_install",

@@ -202,6 +202,32 @@ def _read_frappe_id(container, flag: str) -> int | None:
         return None
 
 
+# The only paths first-provision writes under /home/frappe: the home root itself
+# (mkdir/write needs its owner to match), plus pip/npm's caches and pyenv/nvm's
+# write targets. Deliberately excludes the ~34.6k-file baked pyenv/nvm toolchain
+# these parents contain - re-owning it forces a full overlayfs copy-up of ~1.28 GB
+# purely to change owner on files the remapped user only ever reads, which is what
+# made the old `chown -R /home/frappe` take 79s (measured) / minutes on a slow
+# disk instead of ~3s. See `_install_pyenv_python`/`_install_nvm_node` in
+# `core/init.py` for the writes these paths must stay writable for.
+_CHOWN_HOME_RECURSIVE_DIRS = (
+    "/home/frappe/.cache",
+    "/home/frappe/.local",
+    "/home/frappe/.config",
+    "/home/frappe/.npm",
+    "/home/frappe/.pyenv/cache",
+    "/home/frappe/.pyenv/shims",
+    "/home/frappe/.nvm/.cache",
+    "/home/frappe/.nvm/alias",
+)
+_CHOWN_HOME_SHALLOW_DIRS = (
+    "/home/frappe/.pyenv",
+    "/home/frappe/.pyenv/versions",
+    "/home/frappe/.nvm",
+    "/home/frappe/.nvm/versions/node",
+)
+
+
 def align_container_user_to_host(container, *, chown_home: bool = False) -> tuple[bool, str | None]:
     """Align the container's ``frappe`` user's uid/gid with the host user's.
 
@@ -211,13 +237,24 @@ def align_container_user_to_host(container, *, chown_home: bool = False) -> tupl
     commonly 1000 - the host cannot recurse into those directories to delete them
     and ``cwcli rm`` fails with ``[Errno 13] Permission denied``. Remapping
     ``frappe`` to the host uid/gid (the frappe devcontainer's ``updateRemoteUserUID``
-    trick) makes the workspace host-owned and host-removable on ANY host uid.
+    trick) makes the workspace host-owned and host-removable on ANY host uid. This
+    fix depends only on ``/etc/passwd``'s uid mapping being correct BEFORE any bench
+    command writes the workspace (this function runs at that point) - it does not
+    depend on anything walking the workspace itself, so it is unaffected by how the
+    uid field gets there (see the ``sed``-vs-``usermod`` note below).
 
-    A no-op when the ids already match (the common dev-box case), so nothing runs
-    and no cost is paid there. ``chown_home`` additionally rewrites ``/home/frappe``
-    so pyenv/nvm/pip installs during a first provision can write it; it walks tens
-    of thousands of files, so callers pass it only at init, never per start (a
-    remapped ``frappe`` needs only READ access to its pristine home to serve).
+    Identity remapping is a no-op when the ids already match (the common dev-box
+    case). A uid change also re-owns the handful of
+    paths under ``/home/frappe`` that a first provision actually WRITES (the home
+    root, pip/npm's caches, and pyenv/nvm's write targets - see
+    ``_CHOWN_HOME_RECURSIVE_DIRS``/``_CHOWN_HOME_SHALLOW_DIRS`` above). This is
+    required after a container recreation too: a login shell runs ``pyenv rehash``,
+    which must be able to rewrite the existing shims under the new uid.
+    ``chown_home`` forces the same repair during first provisioning even when the
+    ids already match. Deliberately NOT a full ``chown -R /home/frappe``: that
+    re-owns the baked toolchain too, forcing an overlayfs copy-up of the whole
+    1.28 GB/36.7k files it contains, measured at 79s (minutes on a slow disk)
+    versus ~3s narrowed.
 
     Best-effort: returns ``(remapped, failure)``. ``failure`` is a short detail
     string when a step failed (the caller surfaces it as a warning and the bench
@@ -235,18 +272,40 @@ def align_container_user_to_host(container, *, chown_home: bool = False) -> tupl
     cur_gid = _read_frappe_id(container, "-g")
     if cur_uid is None or cur_gid is None:
         return (False, "could not read the container 'frappe' user's uid/gid")
-    if cur_uid == host_uid and cur_gid == host_gid:
+    ids_changed = cur_uid != host_uid or cur_gid != host_gid
+    if not ids_changed and not chown_home:
         return (False, None)
 
     # `-o` allows a non-unique id (the host uid may already exist in the image's
     # passwd/group db). `bash -c` (not `-lc`) avoids sourcing any profile.
+    #
+    # `groupmod -g` is genuinely cheap - verified it only rewrites /etc/group's
+    # gid field plus every /etc/passwd row whose primary gid matched the old
+    # value (here, frappe's own row), never walking the filesystem - so it stays
+    # as-is. `usermod -u` is NOT: shadow-utils' usermod unconditionally chowns
+    # every file under the target's $HOME from the old uid to the new one as a
+    # documented side effect of changing a uid (measured ~90s / a full 1.28 GB
+    # overlayfs copy-up on this image, reproduced twice - the actual cost this
+    # function used to attribute entirely to the separate `chown -R`). The uid
+    # field is edited directly in /etc/passwd instead, which produces the
+    # byte-identical passwd/group state and `id frappe` output usermod would
+    # have (verified), without walking $HOME at all - that walk is replaced by
+    # the narrowed, explicit chown below.
     steps = []
     if cur_gid != host_gid:
         steps.append(f"groupmod -o -g {host_gid} frappe")
     if cur_uid != host_uid:
-        steps.append(f"usermod -o -u {host_uid} frappe")
-    if chown_home:
-        steps.append(f"chown -R {host_uid}:{host_gid} /home/frappe")
+        steps.append(rf"sed -i 's/^frappe:\([^:]*\):[^:]*:/frappe:\1:{host_uid}:/' /etc/passwd")
+    if chown_home or cur_uid != host_uid:
+        steps.append(f"chown {host_uid}:{host_gid} /home/frappe")
+        steps.extend(
+            f"[ ! -e {path} ] || chown -R {host_uid}:{host_gid} {path}"
+            for path in _CHOWN_HOME_RECURSIVE_DIRS
+        )
+        steps.extend(
+            f"[ ! -e {path} ] || chown {host_uid}:{host_gid} {path}"
+            for path in _CHOWN_HOME_SHALLOW_DIRS
+        )
     try:
         code, out = container.exec_run(["bash", "-c", " && ".join(steps)], user="root")
     except DockerException as e:
@@ -254,7 +313,7 @@ def align_container_user_to_host(container, *, chown_home: bool = False) -> tupl
     if code != 0:
         detail = out.decode("utf-8", "replace") if isinstance(out, (bytes, bytearray)) else str(out)
         return (False, f"could not align the container 'frappe' user to the host: {detail.strip()}")
-    return (True, None)
+    return (ids_changed, None)
 
 
 def get_frappe_container(project_name: str):

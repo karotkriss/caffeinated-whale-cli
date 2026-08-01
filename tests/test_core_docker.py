@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import subprocess
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -38,12 +40,21 @@ def host_1001(monkeypatch):
     monkeypatch.setattr(core_docker.os, "getgid", lambda: 1001)
 
 
-def test_noop_when_ids_already_match(monkeypatch):
+def test_matching_ids_still_repair_home_when_requested(monkeypatch):
     monkeypatch.setattr(core_docker.os, "getuid", lambda: 1000)
     monkeypatch.setattr(core_docker.os, "getgid", lambda: 1000)
     c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
     assert core_docker.align_container_user_to_host(c, chown_home=True) == (False, None)
-    assert c.remap_scripts == []  # nothing ran - the dev-box common case
+    assert c.remap_scripts
+    assert "chown 1000:1000 /home/frappe" in c.remap_scripts[0]
+
+
+def test_matching_ids_without_home_repair_are_a_noop(monkeypatch):
+    monkeypatch.setattr(core_docker.os, "getuid", lambda: 1000)
+    monkeypatch.setattr(core_docker.os, "getgid", lambda: 1000)
+    c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
+    assert core_docker.align_container_user_to_host(c) == (False, None)
+    assert c.remap_scripts == []
 
 
 def test_remaps_uid_and_gid_as_root_with_home_chown(host_1001):
@@ -53,15 +64,127 @@ def test_remaps_uid_and_gid_as_root_with_home_chown(host_1001):
     assert c.remap_user == "root"
     script = c.remap_scripts[0]
     assert "groupmod -o -g 1001 frappe" in script
-    assert "usermod -o -u 1001 frappe" in script
-    assert "chown -R 1001:1001 /home/frappe" in script
+    assert "chown 1001:1001 /home/frappe" in script
+    # NEVER a full recursive chown of the home tree - that is what forced the
+    # baked pyenv/nvm toolchain's overlayfs copy-up (79s measured; see
+    # core/docker.py's _CHOWN_HOME_* constants for the narrowed replacement).
+    assert "chown -R 1001:1001 /home/frappe " not in script
+    assert not script.rstrip().endswith("chown -R 1001:1001 /home/frappe")
 
 
-def test_start_path_skips_the_slow_home_chown(host_1001):
+def test_uid_change_never_uses_usermod(host_1001):
+    """`usermod -u` unconditionally chowns the target's entire $HOME as a
+    documented side effect (measured ~90s / a full 1.28 GB overlayfs copy-up on
+    a real image, reproduced twice) - the actual cost this function used to
+    blame entirely on the separate `chown -R`. The uid must be changed by
+    editing /etc/passwd directly, which does not walk the filesystem at all;
+    `usermod` reappearing here would silently reintroduce that walk."""
+    c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
+    core_docker.align_container_user_to_host(c, chown_home=True)
+    assert "usermod" not in c.remap_scripts[0]
+
+
+def test_sed_uid_edit_matches_real_usermod_output():
+    """The sed replacement must produce the exact /etc/passwd row `usermod -u`
+    would have (verified against a real `usermod` run): only the uid field
+    (3rd column) changes, gid/home/shell and every other user's row untouched."""
+    c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
+    with tempfile.TemporaryDirectory() as tmp:
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(core_docker.os, "getuid", lambda: 1001)
+            m.setattr(core_docker.os, "getgid", lambda: 1000)  # gid unchanged this run
+            core_docker.align_container_user_to_host(c)
+        script = c.remap_scripts[0]
+        sed_cmd = next(s for s in script.split(" && ") if s.startswith("sed"))
+
+        passwd = Path(tmp) / "passwd"
+        passwd.write_text(
+            "root:x:0:0:root:/root:/bin/bash\n"
+            "frappe:x:1000:1000::/home/frappe:/bin/sh\n"
+            "other:x:1000:1000::/home/other:/bin/sh\n"
+        )
+        subprocess.run(sed_cmd.replace("/etc/passwd", str(passwd)), shell=True, check=True)
+
+        lines = passwd.read_text().splitlines()
+        assert lines[0] == "root:x:0:0:root:/root:/bin/bash"
+        assert lines[1] == "frappe:x:1001:1000::/home/frappe:/bin/sh"
+        # A different user sharing the OLD uid must be left alone - the edit
+        # is anchored to the "frappe:" row, not a blind uid substitution.
+        assert lines[2] == "other:x:1000:1000::/home/other:/bin/sh"
+
+
+def test_home_chown_is_narrowed_to_provisioning_write_paths(host_1001):
+    """The chown must re-own only what `_install_pyenv_python`/`_install_nvm_node`
+    (core/init.py) actually write, never the baked toolchain beneath them - a
+    drifted list here silently re-introduces the full-tree chown's slowness."""
+    c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
+    core_docker.align_container_user_to_host(c, chown_home=True)
+    script = c.remap_scripts[0]
+    steps = script.split(" && ")
+    recursive_steps = [step for step in steps if "chown -R" in step]
+    shallow_steps = [
+        step
+        for step in steps
+        if "chown -R" not in step
+        and any(path in step for path in core_docker._CHOWN_HOME_SHALLOW_DIRS)
+    ]
+
+    for path in core_docker._CHOWN_HOME_RECURSIVE_DIRS:
+        assert any(path in step for step in recursive_steps)
+    for path in core_docker._CHOWN_HOME_SHALLOW_DIRS:
+        assert any(path in step for step in shallow_steps)
+
+    # Mutable manager state must be recursive: login shells rewrite pyenv's
+    # existing shims, while pyenv, nvm, and npm all write beneath private cache
+    # or alias directories. Leaving their baked files at the old uid makes the
+    # first post-remap login shell or v14 tool install fail with EACCES.
+    for path in (
+        "/home/frappe/.npm",
+        "/home/frappe/.pyenv/cache",
+        "/home/frappe/.pyenv/shims",
+        "/home/frappe/.nvm/.cache",
+        "/home/frappe/.nvm/alias",
+    ):
+        assert any(path in step for step in recursive_steps)
+
+    # Installed interpreters remain shallow. Recursing into either tree is the
+    # expensive baked-toolchain copy-up this change exists to avoid.
+    for path in ("/home/frappe/.pyenv/versions", "/home/frappe/.nvm/versions/node"):
+        assert any(path in step for step in shallow_steps)
+        assert not any(path in step for step in recursive_steps)
+
+
+def test_home_chown_skips_missing_paths_without_hiding_failures(host_1001):
+    c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
+    core_docker.align_container_user_to_host(c, chown_home=True)
+    script = c.remap_scripts[0]
+
+    assert "|| true" not in script
+    paths = (*core_docker._CHOWN_HOME_RECURSIVE_DIRS, *core_docker._CHOWN_HOME_SHALLOW_DIRS)
+    for path in paths:
+        assert f"[ ! -e {path} ] || chown" in script
+
+
+def test_uid_change_repairs_runtime_home_state_without_copying_the_toolchain(host_1001):
     c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
     core_docker.align_container_user_to_host(c)  # chown_home defaults False
-    assert "usermod -o -u 1001 frappe" in c.remap_scripts[0]
-    assert "chown -R" not in c.remap_scripts[0]
+    script = c.remap_scripts[0]
+
+    # A recreated container needs this even outside first provisioning: its login
+    # shell runs `pyenv rehash`, which fails before the requested command when the
+    # existing shims still belong to the image uid.
+    assert "chown -R 1001:1001 /home/frappe/.pyenv/shims" in script
+    assert "chown 1001:1001 /home/frappe/.pyenv/versions" in script
+    assert "chown -R 1001:1001 /home/frappe/.pyenv/versions" not in script
+    assert "chown -R 1001:1001 /home/frappe/.nvm/versions/node" not in script
+
+
+def test_gid_only_change_does_not_repair_home_without_request(monkeypatch):
+    monkeypatch.setattr(core_docker.os, "getuid", lambda: 1000)
+    monkeypatch.setattr(core_docker.os, "getgid", lambda: 1001)
+    c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
+    core_docker.align_container_user_to_host(c)
+    assert "chown" not in c.remap_scripts[0]
 
 
 def test_failed_remap_is_a_soft_warning_not_a_raise(host_1001):
