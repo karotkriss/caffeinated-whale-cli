@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-08-01
+
+`cwcli init` no longer spends minutes aligning the container user to your host UID/GID; that step now takes seconds. A new `cwcli doctor` command checks whether your machine can run cwcli at all, and several bench-discovery and error-reporting gaps are closed.
+
+### Added
+- **`cwcli doctor` / `cwcli axi doctor`** - A read-only preflight check of whether cwcli can operate on this machine at all: Docker and Docker Compose, cwcli's own config and cache directories, free disk space, `sendme`/`gh`/`glab` availability, and port ranges colliding across your instances. A warning exits 0 so it stays safe to chain in a script; a failure exits non-zero
+
+### Changed
+- **`cwcli init`'s container user alignment dropped from minutes to seconds** - Aligning the container's `frappe` user to your host UID/GID (needed so `cwcli rm` can clean up files it creates) used to run `usermod`, which recursively copies the entire container home directory into Docker's writable layer the first time anything in it changes. That copy is what took minutes. The alignment now edits `/etc/passwd`/`/etc/group` directly and limits ownership repair to the paths `init` actually writes to, leaving baked toolchain files (pyenv, nvm) untouched
+- **`cwcli init` and `cwcli scale` check for the Docker Compose plugin up front** - Both used to assume `docker compose` was available and only found out otherwise mid-run, after already creating a project directory or rewriting a compose file. A missing Compose plugin is now reported before anything is touched, with a plain install hint
+- **`cwcli inspect` discovers benches created directly under the container workspace** - A bench created by hand inside the container (rather than through `cwcli init`) at the top level of `/workspace` was invisible to `inspect`, `axi benches`, and `status`. It is now discovered like any other bench, without disturbing existing bench numbers or labels
+
+### Fixed
+- **Docker Desktop reported as "not installed" on WSL2 when it was only stopped** - When Docker Desktop is stopped on the Windows host, its CLI tools disappear from WSL2 the same way as if Docker had never been installed, so cwcli pointed users at the install page instead of telling them to start Docker Desktop. WSL2 is now detected and given the correct instruction
+- **`restore --send` no longer fails with a cryptic transfer error on a full disk** - `restore --receive` already checked for free space before downloading; `--send` now gets the same check before it stages files for transfer, so a full disk is reported plainly instead of surfacing as an opaque sendme failure
+- **`cwcli open`'s interactive Docker shell no longer fights the calling console for input on Windows** - The handover relied on a POSIX process-replacement trick that Windows does not support, so the container shell and the launching PowerShell session could both read the same keystrokes. The shell now runs as a waited child process that Windows console ownership passes to cleanly
+
 ## [2.1.0] - 2026-07-29
 
 Sendme transfers and restores no longer exhaust a small temp partition, long-running `init` phases stay visibly alive instead of looking hung, and a bare `cwcli` now prints help instead of a traceback. The published package itself is also clean for the first time under the new packaging allow-list: no test files ship in the artifact.
