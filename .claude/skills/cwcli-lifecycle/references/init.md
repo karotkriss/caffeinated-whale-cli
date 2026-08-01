@@ -22,34 +22,36 @@ Regression coverage: `tests/test_core_init.py::TestWorkspaceMount` (default/cust
 
 Bench commands exec as the frappe/bench image's DEFAULT `frappe` user (uid 1000), so every file `bench init`/`bench build`/etc. write to the `../data` bind mount above land host-owned by uid 1000.
 A dev box is usually also uid 1000, so this was invisible there; a CI runner is uid 1001, so the host user cannot recurse into those 755-dirs to delete them and `cwcli rm` failed with `[Errno 13] Permission denied` on `data/frappe-bench`.
-The fix is at the SOURCE, not a reclaim/chown-at-`rm` band-aid: on hosts that expose `os.getuid`, `core.docker.align_container_user_to_host(container, *, chown_home=False)` remaps the container's `frappe` user to the HOST uid/gid via `groupmod -o -g <gid> frappe && usermod -o -u <uid> frappe` as root (the frappe devcontainer's own `updateRemoteUserUID` trick), so every file the aligned user writes afterward is already host-owned on any host uid.
+The fix is at the SOURCE, not a reclaim/chown-at-`rm` band-aid: on hosts that expose `os.getuid`, `core.docker.align_container_user_to_host(container, *, chown_home=False)` remaps the container's `frappe` user to the HOST uid/gid as root (the frappe devcontainer's own `updateRemoteUserUID` trick), so every file the aligned user writes afterward is already host-owned on any host uid.
+The gid change is `groupmod -o -g <gid> frappe`, which only rewrites the account databases and never walks the filesystem.
+The uid change is a direct `sed` edit of `/etc/passwd`'s uid field, never `usermod -u`, because shadow-utils recursively changes ownership beneath the user's home as a side effect.
+The direct edit preserves the account state while avoiding an unnecessary walk and overlayfs copy-up of the baked toolchain.
 Platforms without `os.getuid`, such as Windows, return the existing clean no-op `(False, None)` before probing the container.
 This capability check deliberately preserves remapping on macOS, while Docker Desktop's bind-mount ownership handling makes the remap unnecessary on Windows.
 
-The two steady-state call sites have deliberately different costs: `init_bench` calls it with `chown_home=True` BEFORE any provisioning exec (right after the reuse-bench decision, before `_ensure_directory`) - a one-time `chown -R /home/frappe` (~65s on a real image) so the now-remapped user's pyenv/nvm/pip installs during this first provision can still write its own home; `core.start` calls it on every launch WITHOUT `chown_home` (cheap: `usermod`/`groupmod` only) so a container recreation - which resets `frappe` back to the image's default uid 1000 - is re-aligned before supervisord writes its per-process logs to the host-owned bench.
+The two steady-state call sites have deliberately different costs.
+`init_bench` calls it with `chown_home=True` BEFORE any provisioning exec (right after the reuse-bench decision, before `_ensure_directory`) so the remapped user's pyenv/nvm/pip installs can write their required home paths.
+That repair is narrowed to the specific paths a first provision writes (`_CHOWN_HOME_RECURSIVE_DIRS`/`_CHOWN_HOME_SHALLOW_DIRS` in `core/docker.py`), and the baked pyenv/nvm toolchain beneath them is never recursively re-owned.
+`core.start` calls it on every launch WITHOUT `chown_home`, so a matching identity stays a no-op while a container recreation performs the cheap account database edits and the same narrowed writable-path repair.
+The writable-path repair is required when the uid changes because every later login shell runs `pyenv rehash` and must be able to rewrite the existing shims.
+This re-alignment happens before supervisord writes its per-process logs to the host-owned bench.
 A whole-stack restart already routes through `core.start`, and `run`/`apps` are out of scope by that same precedent.
 `core.scale` has one additional conditional caller for old-major toolchain repair after a container recreation; `references/scale.md` owns that specialized path.
-All callers share no-op fast paths: a platform without `os.getuid` skips the container probes entirely, while a capable host uses `_read_frappe_id` to read the container's current `id -u`/`id -g frappe` and skips the remap exec when the ids match.
-Neither clean no-op emits a warning.
+All callers share identity no-op fast paths: a platform without `os.getuid` skips the container probes entirely, while a capable host uses `_read_frappe_id` to read the container's current `id -u`/`id -g frappe` and skips the account remap when the ids match.
+When `chown_home=True`, the narrowed provisioning-path ownership repair still runs even if the ids already match.
+Neither case emits a warning.
 
 Best-effort, never a hard failure: `align_container_user_to_host` returns `(remapped, failure)`, never raises.
 On a capable host, an unreadable uid/gid or a failed remap exec is a soft warning surfaced as `InitNotice(code="init.uid_align_failed")` on init (`commands/init.py` renders it as an unconditional yellow warning, alongside `yarn.install_failed`/`setuptools.pin_failed`) and `Message("start.uid_align_failed", ...)` on start; the bench still builds/starts owned by the original uid - no worse than before this fix existed.
 `commands/start.py` was fixed IN THE SAME BATCH to render `start.uid_align_failed` unconditionally rather than gated behind `--verbose` - a pre-existing sibling bug (`bench.default_used` had the identical gating mistake, unlike every other bench-op frontend's precedent) was fixed alongside it, since both signal the workspace may not behave as expected, not a verbose diagnostic.
 `axi init`/`axi start` need no special-case code: both already fold every `result.warnings` entry into their one TOON document via the generic `emit_result(..., warnings=...)`.
 
-Regression coverage: `tests/test_core_docker.py` (the no-op paths for matching ids and a platform without `os.getuid`, the uid+gid remap with/without the home chown, the root-user exec, and a failed remap or unreadable ids degrading to a soft warning rather than a raise); the `id -u`/`id -g frappe` probe fake plumbing added to `tests/test_core_init.py`/`tests/test_core_supervision.py`'s `FakeContainer` reports the host's own ids so the align step stays a clean no-op in those existing suites.
+Regression coverage: `tests/test_core_docker.py` (the no-op path for matching ids without home repair, matching ids with the narrowed home repair, the platform no-op without `os.getuid`, uid/gid remapping, root-user exec, and failures degrading to soft warnings); the `id -u`/`id -g frappe` probe fake plumbing added to `tests/test_core_init.py`/`tests/test_core_supervision.py`'s `FakeContainer` reports the host's own ids.
 
 ### `init` phases must announce themselves BEFORE they run, not just on completion (`fm/cwcli-init-silent-longphase`)
 
-Observed live 2026-07-29: after the compose containers reported Started, `cwcli init -v` went completely silent for 5-10 minutes on a slow-disk host, then resumed with "Aligned the container 'frappe' user to the host uid/gid." and continued normally.
-In non-verbose mode the `TipSpinner` visibly died at the same point; in verbose mode there was zero output.
-A reasonable user reads either as a hang and Ctrl-Cs a healthy init.
-
-Root cause, confirmed with a timestamped repro (a fake `align_container_user_to_host` that sleeps, driven through the real `_InitRenderer`): the `chown -R {uid}:{gid} /home/frappe` step (see the host-uid-alignment note above) reported only on completion.
-`InitTrace("Aligned the container 'frappe' user...")` fires after `align_container_user_to_host` returns, with no event marking that it started.
-Compounding it, `commands/init.py`'s renderer closes its `TipSpinner` at the end of stage 1 (`init_instance`) and does not reopen one until the next `InitStepStart` fires.
-Before this fix, that was `bench_init`'s event, potentially minutes later.
-The non-verbose spinner therefore had a real dead window, while verbose mode had an empty one, both bounded only by however long the recursive chown took.
+The alignment phase used to recursively re-own all of `/home/frappe`, but it now repairs only provisioning write paths and normally completes in a few seconds.
+It remains a blocking Docker exec at the boundary between init's two stages, so it must announce itself before it starts.
 
 The fix brackets the call in `core/init.py:init_bench` with the existing `InitStepStart` and `InitStepEnd` event family.
 The start event uses phase `"align_uid"` and carries the user-facing progress message.
@@ -61,7 +63,7 @@ The same completion-only shape existed in `_install_pyenv_python` (which can spe
 Each already had an `InitNotice(code="python.installing"/"node.installing")` at the start, but nothing kept a spinner alive or updated during the install itself.
 Both now use the same `InitStepStart`/`InitStepEnd` bracket, with phases `"python_install"` and `"node_install"`, and each has its own spinner group.
 
-**The durable rule for any future long-running phase in `core/init.py`:** emit `InitStepStart(phase=..., message=...)` immediately before the blocking call, and register the phase in `commands/init.py:_SPINNER_GROUP`.
+**The durable rule for any future blocking phase in `core/init.py`:** emit `InitStepStart(phase=..., message=...)` immediately before the blocking call, and register the phase in `commands/init.py:_SPINNER_GROUP`.
 Add a `_group_label` entry when the phase deserves its own group instead of inheriting the current one.
 An `InitTrace` or `InitNotice` emitted only after success is insufficient.
 Keep completion output when it is useful for showing phase duration, but never make it the only progress signal.

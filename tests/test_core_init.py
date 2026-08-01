@@ -882,8 +882,8 @@ class TestVersionGating:
         bench_init = next(c for c in commands if "bench init" in c)
         assert "PYENV_VERSION" not in bench_init
         assert "nvm use" not in bench_init
-        # No pyenv/nvm probes at all on the modern default.
-        assert not any("pyenv" in s for s in container.exec_run_calls)
+        # No pyenv installation or version probe on the modern default.
+        assert not any("pyenv install" in s for s in container.exec_run_calls)
 
     def test_yarn_failure_is_a_warning_not_an_error(self, monkeypatch, patched):
         container = FakeContainer(

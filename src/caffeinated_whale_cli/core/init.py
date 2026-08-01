@@ -850,12 +850,13 @@ def init_bench(
     # files it creates are owned by the host user and `cwcli rm` can remove them on
     # any host uid (a CI runner is 1001; a dev box is often 1000). `chown_home` is
     # paid here, once, so this first provision's pyenv/nvm/pip installs can write
-    # the (now host-owned) home. A no-op when the ids already match. The caller
-    # cannot know that in advance, so announce before the potentially slow chown.
+    # the (now host-owned) home; it re-owns only the paths provisioning writes,
+    # never the baked pyenv/nvm toolchain, so it's a few seconds, not minutes (see
+    # `align_container_user_to_host`). A no-op when the ids already match.
     emit(
         InitStepStart(
             phase="align_uid",
-            message="Aligning container user to host uid/gid (first run can take several minutes)",
+            message="Aligning container user to host uid/gid",
         )
     )
     remapped, remap_err = core_docker.align_container_user_to_host(
