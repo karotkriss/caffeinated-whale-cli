@@ -165,12 +165,26 @@ def test_home_chown_skips_missing_paths_without_hiding_failures(host_1001):
         assert f"[ ! -e {path} ] || chown" in script
 
 
-def test_start_path_skips_the_slow_home_chown(host_1001):
+def test_uid_change_repairs_runtime_home_state_without_copying_the_toolchain(host_1001):
     c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
     core_docker.align_container_user_to_host(c)  # chown_home defaults False
-    assert "1001" in c.remap_scripts[0]  # the uid still gets remapped
-    assert "chown -R" not in c.remap_scripts[0]
-    assert "chown 1001" not in c.remap_scripts[0]  # ...but home is never touched
+    script = c.remap_scripts[0]
+
+    # A recreated container needs this even outside first provisioning: its login
+    # shell runs `pyenv rehash`, which fails before the requested command when the
+    # existing shims still belong to the image uid.
+    assert "chown -R 1001:1001 /home/frappe/.pyenv/shims" in script
+    assert "chown 1001:1001 /home/frappe/.pyenv/versions" in script
+    assert "chown -R 1001:1001 /home/frappe/.pyenv/versions" not in script
+    assert "chown -R 1001:1001 /home/frappe/.nvm/versions/node" not in script
+
+
+def test_gid_only_change_does_not_repair_home_without_request(monkeypatch):
+    monkeypatch.setattr(core_docker.os, "getuid", lambda: 1000)
+    monkeypatch.setattr(core_docker.os, "getgid", lambda: 1001)
+    c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
+    core_docker.align_container_user_to_host(c)
+    assert "chown" not in c.remap_scripts[0]
 
 
 def test_failed_remap_is_a_soft_warning_not_a_raise(host_1001):
