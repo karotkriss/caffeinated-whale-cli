@@ -244,15 +244,17 @@ def align_container_user_to_host(container, *, chown_home: bool = False) -> tupl
     uid field gets there (see the ``sed``-vs-``usermod`` note below).
 
     Identity remapping is a no-op when the ids already match (the common dev-box
-    case). ``chown_home`` independently re-owns the handful of
+    case). A uid change also re-owns the handful of
     paths under ``/home/frappe`` that a first provision actually WRITES (the home
     root, pip/npm's caches, and pyenv/nvm's write targets - see
-    ``_CHOWN_HOME_RECURSIVE_DIRS``/``_CHOWN_HOME_SHALLOW_DIRS`` above), so callers
-    pass it only at init, never per start (a remapped ``frappe`` needs only READ
-    access to the rest of its pristine home - the baked pyenv/nvm toolchain - to
-    serve). Deliberately NOT a full ``chown -R /home/frappe``: that re-owns the
-    baked toolchain too, forcing an overlayfs copy-up of the whole 1.28 GB/36.7k
-    files it contains, measured at 79s (minutes on a slow disk) versus ~3s narrowed.
+    ``_CHOWN_HOME_RECURSIVE_DIRS``/``_CHOWN_HOME_SHALLOW_DIRS`` above). This is
+    required after a container recreation too: a login shell runs ``pyenv rehash``,
+    which must be able to rewrite the existing shims under the new uid.
+    ``chown_home`` forces the same repair during first provisioning even when the
+    ids already match. Deliberately NOT a full ``chown -R /home/frappe``: that
+    re-owns the baked toolchain too, forcing an overlayfs copy-up of the whole
+    1.28 GB/36.7k files it contains, measured at 79s (minutes on a slow disk)
+    versus ~3s narrowed.
 
     Best-effort: returns ``(remapped, failure)``. ``failure`` is a short detail
     string when a step failed (the caller surfaces it as a warning and the bench
@@ -294,7 +296,7 @@ def align_container_user_to_host(container, *, chown_home: bool = False) -> tupl
         steps.append(f"groupmod -o -g {host_gid} frappe")
     if cur_uid != host_uid:
         steps.append(rf"sed -i 's/^frappe:\([^:]*\):[^:]*:/frappe:\1:{host_uid}:/' /etc/passwd")
-    if chown_home:
+    if chown_home or cur_uid != host_uid:
         steps.append(f"chown {host_uid}:{host_gid} /home/frappe")
         steps.extend(
             f"[ ! -e {path} ] || chown -R {host_uid}:{host_gid} {path}"

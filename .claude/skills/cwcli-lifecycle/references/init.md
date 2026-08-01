@@ -32,7 +32,8 @@ This capability check deliberately preserves remapping on macOS, while Docker De
 The two steady-state call sites have deliberately different costs.
 `init_bench` calls it with `chown_home=True` BEFORE any provisioning exec (right after the reuse-bench decision, before `_ensure_directory`) so the remapped user's pyenv/nvm/pip installs can write their required home paths.
 That repair is narrowed to the specific paths a first provision writes (`_CHOWN_HOME_RECURSIVE_DIRS`/`_CHOWN_HOME_SHALLOW_DIRS` in `core/docker.py`), and the baked pyenv/nvm toolchain beneath them is never recursively re-owned.
-`core.start` calls it on every launch WITHOUT `chown_home`, so it performs only the cheap account database edits needed after a container recreation resets `frappe` to the image's default uid 1000.
+`core.start` calls it on every launch WITHOUT `chown_home`, so a matching identity stays a no-op while a container recreation performs the cheap account database edits and the same narrowed writable-path repair.
+The writable-path repair is required when the uid changes because every later login shell runs `pyenv rehash` and must be able to rewrite the existing shims.
 This re-alignment happens before supervisord writes its per-process logs to the host-owned bench.
 A whole-stack restart already routes through `core.start`, and `run`/`apps` are out of scope by that same precedent.
 `core.scale` has one additional conditional caller for old-major toolchain repair after a container recreation; `references/scale.md` owns that specialized path.
