@@ -7,8 +7,8 @@ Three modes, all real shapes from the source:
 
 1. **Rich table** — `cwcli ls`. Column styles come straight from `commands/list.py`:
    Project Name `cyan`, Status `magenta` (overridden green/yellow/red by value), Ports `green`.
-2. **TOON** — `cwcli axi <verb>`. The agent surface prints one TOON document on stdout, never JSON,
-   and every response ends with a `help:` line.
+2. **TOON** — `cwcli axi <verb>`. The agent surface prints one TOON document on stdout, never JSON.
+   Actionable errors end with a `help:` line; self-contained reads omit it.
 3. **Typed error** — the `CwcliError` envelope: `error:`, the options it could not choose between,
    and a `help:` line naming the fix.
 
