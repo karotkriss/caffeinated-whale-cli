@@ -32,7 +32,7 @@ from docker.errors import APIError, NotFound
 from . import resolvers, supervision
 from .docker import get_project_containers
 from .envelope import Message, Result, Status
-from .errors import CwcliError, ErrorKind
+from .errors import DOCKER_UNREACHABLE_HINT, CwcliError, ErrorKind
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -65,6 +65,7 @@ def stop(project_name: str) -> Result[StopOutcome]:
             ErrorKind.DOCKER,
             "docker.unreachable",
             "Could not connect to Docker daemon.",
+            hint=DOCKER_UNREACHABLE_HINT,
         )
 
     if not containers:
@@ -131,7 +132,10 @@ def stop_bench(
     containers = get_project_containers(project_name)
     if containers is None:
         raise CwcliError(
-            ErrorKind.DOCKER, "docker.unreachable", "Could not connect to Docker daemon."
+            ErrorKind.DOCKER,
+            "docker.unreachable",
+            "Could not connect to Docker daemon.",
+            hint=DOCKER_UNREACHABLE_HINT,
         )
     if not containers:
         raise CwcliError(
