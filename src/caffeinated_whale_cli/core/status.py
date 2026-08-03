@@ -102,7 +102,7 @@ from docker.errors import APIError, NotFound
 from . import resolvers, supervision
 from .docker import get_project_containers
 from .envelope import Message, Result, Status
-from .errors import CwcliError, ErrorKind
+from .errors import DOCKER_UNREACHABLE_HINT, CwcliError, ErrorKind
 from .supervision import ProcessHealth
 
 OFFLINE = "offline"
@@ -250,7 +250,10 @@ def status(
     containers = get_project_containers(project_name)
     if containers is None:
         raise CwcliError(
-            ErrorKind.DOCKER, "docker.unreachable", "Could not connect to Docker daemon."
+            ErrorKind.DOCKER,
+            "docker.unreachable",
+            "Could not connect to Docker daemon.",
+            hint=DOCKER_UNREACHABLE_HINT,
         )
     # A truly-nonexistent project (typo / never created) has NO containers with the
     # label at all - distinct from a real-but-stopped project, which has a non-empty

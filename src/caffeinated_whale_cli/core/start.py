@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from . import resolvers, supervision
 from .docker import align_container_user_to_host, get_project_containers
 from .envelope import Message, Result, Status
-from .errors import CwcliError, ErrorKind
+from .errors import DOCKER_UNREACHABLE_HINT, CwcliError, ErrorKind
 
 # Shell metacharacters rejected in the bench path (it is interpolated into the
 # launch shell command; command-injection guard, mirrors core.backup).
@@ -93,7 +93,10 @@ def start(
     containers = get_project_containers(project_name)
     if containers is None:
         raise CwcliError(
-            ErrorKind.DOCKER, "docker.unreachable", "Could not connect to Docker daemon."
+            ErrorKind.DOCKER,
+            "docker.unreachable",
+            "Could not connect to Docker daemon.",
+            hint=DOCKER_UNREACHABLE_HINT,
         )
     if not containers:
         raise CwcliError(
