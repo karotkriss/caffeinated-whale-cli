@@ -120,7 +120,7 @@ Use cwcli whenever a task touches a local Frappe or ERPNext instance: checking w
 2. Drill in with the verb you need: `status <project>`, `benches <project>`, `apps list <project>`, `backup <project> --site <site>`.
 3. A project with several benches needs `--bench <index|label>`.
    When a verb reports `multiple benches; pass --bench`, run `axi benches <project>` - it is the verb that answers every other verb's `--bench`, and it lists the valid values.
-4. List and mutation responses end with `help:` hints; follow them. Self-contained reads (`axi config`, `axi doctor`, `axi self-update --check`, `axi where`, ...) may omit one when there is nothing left to suggest.
+4. When a response includes a `help:` hint, follow it.
 
 ## Reading the output
 
