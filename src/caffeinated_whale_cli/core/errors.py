@@ -28,6 +28,13 @@ class ErrorKind(Enum):
     INTERNAL = "internal"  # unexpected
 
 
+# The one next-step string for every "could not connect to the Docker daemon"
+# CwcliError, so every frontend (axi included) renders the same actionable
+# `help:` line instead of a bare error with no remedy. Mirrors the fix string
+# `core/doctor.py`'s own daemon check already carries.
+DOCKER_UNREACHABLE_HINT = "start Docker (Docker Desktop, or `systemctl start docker`)"
+
+
 class CwcliError(Exception):
     """A hard failure the core cannot recover from.
 
