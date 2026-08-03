@@ -22,7 +22,7 @@ import subprocess
 import docker
 from docker.errors import DockerException
 
-from .errors import CwcliError, ErrorKind
+from .errors import DOCKER_UNREACHABLE_HINT, CwcliError, ErrorKind
 
 _COMPOSE_INSTALL_HINT = (
     "Install the Docker Compose v2 plugin: it ships with Docker Desktop, or "
@@ -332,6 +332,7 @@ def get_frappe_container(project_name: str):
             ErrorKind.DOCKER,
             "docker.unreachable",
             "Could not connect to Docker daemon.",
+            hint=DOCKER_UNREACHABLE_HINT,
         )
 
     if not containers:

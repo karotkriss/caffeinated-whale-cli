@@ -50,7 +50,7 @@ from ..utils import bench_sites, db_utils
 from ..utils.config_utils import PROJECTS_DIR, cwcli_home
 from .docker import get_project_containers, get_project_networks, get_project_volumes
 from .envelope import Result, Status
-from .errors import CwcliError, ErrorKind
+from .errors import DOCKER_UNREACHABLE_HINT, CwcliError, ErrorKind
 from .resolvers import DEFAULT_BENCH_PATH
 
 # Marker in a Frappe backup filename that identifies the database dump - the one
@@ -839,6 +839,7 @@ def remove(
             ErrorKind.DOCKER,
             "docker.unreachable",
             f"Could not connect to Docker to inspect '{project_name}'.",
+            hint=DOCKER_UNREACHABLE_HINT,
         )
 
     project_dir = PROJECTS_DIR / project_name

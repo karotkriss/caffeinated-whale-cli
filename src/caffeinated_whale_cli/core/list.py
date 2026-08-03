@@ -15,7 +15,7 @@ import docker
 from docker.errors import DockerException
 
 from .envelope import Result, Status
-from .errors import CwcliError, ErrorKind
+from .errors import DOCKER_UNREACHABLE_HINT, CwcliError, ErrorKind
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -64,6 +64,7 @@ def list_instances(*, service_name: str = "frappe") -> Result[list[InstanceDTO]]
             ErrorKind.DOCKER,
             "docker.unreachable",
             "Could not connect to Docker daemon.",
+            hint=DOCKER_UNREACHABLE_HINT,
             detail={"output": str(e)},
         ) from e
 
