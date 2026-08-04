@@ -1078,7 +1078,7 @@ cwcli apps checkout [OPTIONS] PROJECT_NAME APP REF
 An app absent from `apps/` is fetched with `bench get-app` (honoring `--branch`); an app already present is not fetched again, so pre-warmed benches install it without failing on the existing directory.
 Each `APP` is a known app name **or** a git URL (passed straight to `bench get-app` when a fetch is needed, so custom apps not in bench's registry work).
 `--fetch-only` ensures the app is present without installing it on any site.
-`--if-not-present` makes install idempotent: an app already installed on a target site is skipped (reported, not reinstalled - its install hooks are never re-run) and the command still exits 0, so "ensure this app is installed" is a single call whose exit code a script can trust; an app the site does not have is still installed normally, and a genuine install failure still exits non-zero.
+`--if-not-present` makes install idempotent: an app already installed on a target site is skipped (reported, not reinstalled, with its install hooks never rerun) and the command still exits 0, so "ensure this app is installed" is a single call whose exit code a script can trust; an app the site does not have is still installed normally, and a genuine install failure still exits non-zero.
 A bench that is already running may still serve code it loaded before the install and fail to see the new app: install therefore **resynchronises** that bench - it restarts every cwcli-supervised program that runs the bench's Python (`web`, `schedule`, and every worker) and requires every changed site to answer Frappe before it reports success.
 Each restart is announced as it happens and the step is reported as a `restart-processes` row, and the command exits non-zero rather than claiming success for a site it could not confirm.
 A running manager that cwcli does not own is verified without being restarted; an unhealthy site fails with a manual-restart remedy.
@@ -2201,7 +2201,7 @@ cwcli axi apps checkout frappe-one myapp feature/new-thing --reset
 
 # Ensure and install ONE app on ONE named site. --site is required (there is no
 # fan-out here), and an app already installed on that site is refused rather
-# than re-installed over its existing data.
+# than reinstalled over its existing data unless --if-not-present requests a skip.
 cwcli axi apps install frappe-one hrms --site erp.localhost
 cwcli axi apps install frappe-one https://github.com/me/myapp --site erp.localhost --branch develop
 # Idempotent: skip (do not reinstall) an app already on the site and exit 0, so a
@@ -2263,14 +2263,14 @@ So the verb ships scoped to the first case and refuses the second, rather than b
 The human verb installs on every site on the bench when you omit it; an unqualified fan-out is how an agent reaches a site nobody named, so on this surface the target is always explicit.
 That follows `cwcli axi run-tests`, which requires its site for the same reason: `install-app` runs the app's `after_install`, which is arbitrary Python from the repository being installed, against a live database, and when the effect is unbounded, defaulting the target is the wrong default.
 
-**An app already installed on that site is refused**, before anything is fetched, as `app.already_installed` with exit `1`.
+**By default, an app already installed on that site is refused**, before anything is fetched, as `app.already_installed` with exit `1`.
 The refusal names what to do instead: `cwcli axi apps checkout` to move the app to another ref, `cwcli axi apps update` to pull and migrate it, or the human `cwcli apps install` for a genuine reinstall.
 A site whose installed-app list cannot be *read* is refused too (`app.install_state_unknown`), because an unreadable state must never be treated as "nothing is installed there".
 There is deliberately **no flag to bypass this by reinstalling**: a `--force` that re-ran the install hooks over existing data has no beneficiary in the workflow the verb serves (install, check out a ref, migrate, test), and its mere existence invites its use.
 The escape hatch for a genuine reinstall is the human verb, which is where a human confirms one.
 
 By default the already-installed case is **not** reported as an idempotent exit-`0` no-op, even though the agent surface generally treats an already-satisfied desired state as a success: the desired state here is "installed from this branch", and cwcli cannot confirm the copy already on the site matches the `--branch` you asked for, so a silent exit `0` would be asserting something it has not verified.
-`--if-not-present` opts into the idempotent reading for a caller that just wants the app present: an app already installed on the site is then **skipped** (reported as a `skip-install` row, its install hooks never re-run) and the verb exits `0`, so a CI step can trust the exit code instead of swallowing every failure with `|| true` - an app the site lacks is still installed, and a genuine install failure still exits non-zero.
+`--if-not-present` opts into the idempotent reading for a caller that just wants the app present: an app already installed on the site is then **skipped** (reported as a `skip-install` row, with its install hooks never rerun) and the verb exits `0`, so a CI step can trust the exit code instead of swallowing every failure with `|| true`; an app the site lacks is still installed, and a genuine install failure still exits non-zero.
 It is not a `--force`: there is still no way to reinstall over an app the site already has.
 Like every other bench-scoped verb it takes `--bench`, has no `--yes`, and reports a stopped project as a usage error naming `cwcli start`.
 Private-repo fetches use the same credential bridge as `apps update`/`apps checkout`, so no token is stored in the container.
