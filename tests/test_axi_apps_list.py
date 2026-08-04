@@ -192,6 +192,11 @@ def test_apps_install_is_a_verb_scoped_to_the_safe_half():
     assert not any(
         name in params for name in ("force", "yes", "allow_installed", "reinstall")
     ), "the already-installed refusal must have no bypass flag"
+    # --if-not-present is the ONE addition and it is NOT a bypass: it skips an
+    # already-installed app (never re-running its hooks), it does not force a
+    # reinstall over existing data. It defaults off, so the refusal stays the default.
+    assert "if_not_present" in params
+    assert params["if_not_present"].default.default is False
 
 
 def _record_steps(monkeypatch) -> list[str]:
@@ -218,7 +223,9 @@ def test_a_failed_install_step_exits_one(container, monkeypatch, capsys):
     monkeypatch.setattr(core_apps, "_run_step", failing_step)
 
     with pytest.raises(typer.Exit) as exit_info:
-        axi_mod.axi_apps_install("proj", "hrms", site="a.localhost", bench=None, branch=None)
+        axi_mod.axi_apps_install(
+            "proj", "hrms", site="a.localhost", bench=None, branch=None, if_not_present=False
+        )
 
     assert exit_info.value.exit_code == 1
     # The document is still emitted, so the agent can see WHICH step failed.
@@ -231,7 +238,12 @@ def test_install_of_an_absent_app_is_permitted(container, monkeypatch, capsys):
 
     with pytest.raises(typer.Exit) as exit_info:
         axi_mod.axi_apps_install(
-            "proj", "hrms", site="a.localhost", bench=None, branch="version-15"
+            "proj",
+            "hrms",
+            site="a.localhost",
+            bench=None,
+            branch="version-15",
+            if_not_present=False,
         )
 
     assert exit_info.value.exit_code == 0
@@ -256,7 +268,9 @@ def test_install_over_an_already_installed_app_is_refused(container, monkeypatch
     ran = _record_steps(monkeypatch)
 
     with pytest.raises(typer.Exit) as exit_info:
-        axi_mod.axi_apps_install("proj", "payments", site="a.localhost", bench=None, branch=None)
+        axi_mod.axi_apps_install(
+            "proj", "payments", site="a.localhost", bench=None, branch=None, if_not_present=False
+        )
 
     assert exit_info.value.exit_code == 1
     # Refused BEFORE any mutation: not even the fetch ran.
@@ -281,11 +295,66 @@ def test_install_refuses_when_the_sites_app_list_cannot_be_read(container, monke
     ran = _record_steps(monkeypatch)
 
     with pytest.raises(typer.Exit) as exit_info:
-        axi_mod.axi_apps_install("proj", "hrms", site="a.localhost", bench=None, branch=None)
+        axi_mod.axi_apps_install(
+            "proj", "hrms", site="a.localhost", bench=None, branch=None, if_not_present=False
+        )
 
     assert exit_info.value.exit_code == 1
     assert not any("get-app" in c for c in ran)
     assert "cannot be confirmed" in capsys.readouterr().out
+
+
+def test_install_if_not_present_skips_an_already_installed_app_and_exits_zero(
+    container, monkeypatch, capsys
+):
+    """The opt-in idempotent path: `payments` is already on a.localhost, so
+    --if-not-present skips it, exits 0, and never re-runs its install hooks."""
+    ran = _record_steps(monkeypatch)
+
+    with pytest.raises(typer.Exit) as exit_info:
+        axi_mod.axi_apps_install(
+            "proj", "payments", site="a.localhost", bench=None, branch=None, if_not_present=True
+        )
+
+    assert exit_info.value.exit_code == 0
+    # Skipped, not re-installed: no install-app step runs for it.
+    assert not any("install-app" in c for c in ran)
+    out = capsys.readouterr().out
+    assert "skip-install" in out
+    assert "ok: true" in out.lower()
+
+
+def test_install_if_not_present_still_installs_an_absent_app(container, monkeypatch, capsys):
+    """--if-not-present does NOT suppress a real install: an app the site lacks is
+    installed normally and exits 0."""
+    ran = _record_steps(monkeypatch)
+
+    with pytest.raises(typer.Exit) as exit_info:
+        axi_mod.axi_apps_install(
+            "proj", "hrms", site="a.localhost", bench=None, branch=None, if_not_present=True
+        )
+
+    assert exit_info.value.exit_code == 0
+    assert any("install-app" in c and "hrms" in c for c in ran)
+    assert "install-app" in capsys.readouterr().out
+
+
+def test_install_if_not_present_still_fails_on_a_real_failure(container, monkeypatch, capsys):
+    """The exit code stays trustworthy under --if-not-present: a genuine install
+    failure still exits 1, so a CI step no longer has to swallow every error."""
+
+    def failing_step(_c, cmd, _workdir, *, emit, phase, app=None, site=None):
+        emit(core_apps.AppsStepEnd(phase=phase, app=app, site=site, ok=False))
+        return 1
+
+    monkeypatch.setattr(core_apps, "_run_step", failing_step)
+
+    with pytest.raises(typer.Exit) as exit_info:
+        axi_mod.axi_apps_install(
+            "proj", "hrms", site="a.localhost", bench=None, branch=None, if_not_present=True
+        )
+
+    assert exit_info.value.exit_code == 1
 
 
 def test_apps_checkout_is_a_verb_decided_on_its_own_evidence():

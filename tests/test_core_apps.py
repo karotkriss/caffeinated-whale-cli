@@ -305,6 +305,94 @@ def test_install_shell_interpolations_are_shlex_quoted(monkeypatch, container):
     assert "'x; whoami'" in fetch
 
 
+# ------------------------------------------------- install_apps(if_not_present=True)
+
+
+def test_install_if_not_present_skips_an_already_installed_app(monkeypatch, container):
+    """The idempotent path: an app already on the site is reported skipped, its
+    install hooks NEVER re-run, and the command succeeds (exit 0 upstream)."""
+    container.available = ["frappe", "payments"]
+    container.installed = {"a.localhost": ["frappe 15.0.0 version-15", "payments 1.2.3 version-15"]}
+    _cache(monkeypatch, [{"path": BENCH}])
+
+    result = core_apps.install_apps(
+        "proj", ["payments"], sites=["a.localhost"], if_not_present=True
+    )
+
+    assert result.status is Status.OK
+    assert result.data.ok is True
+    # The whole point: install-app is NEVER run for the skipped app.
+    assert not any("install-app" in c for c in container.calls)
+    assert ("skip-install", "a.localhost", True) in [
+        (r.action, r.site, r.ok) for r in result.data.results
+    ]
+
+
+def test_install_if_not_present_installs_an_app_absent_from_the_site(monkeypatch, container):
+    """The normal path is unchanged: an app not on the site is fetched and installed
+    even under --if-not-present."""
+    _cache(monkeypatch, [{"path": BENCH}])  # container.installed has only frappe
+
+    result = core_apps.install_apps(
+        "proj", ["payments"], sites=["a.localhost"], if_not_present=True
+    )
+
+    assert result.data.ok is True
+    assert any("install-app payments" in c for c in container.calls)
+    assert not any(r.action == "skip-install" for r in result.data.results)
+
+
+def test_install_if_not_present_skips_only_the_sites_that_have_it(monkeypatch, container):
+    """Multi-site sanity: skip the site that has it, install on the one that does not."""
+    container.available = ["frappe", "payments"]
+    container.installed = {
+        "a.localhost": ["frappe 15.0.0 version-15", "payments 1.2.3 version-15"],
+        "b.localhost": ["frappe 15.0.0 version-15"],
+    }
+    monkeypatch.setattr(
+        core_apps.bench_sites, "list_sites", lambda *a, **k: ["a.localhost", "b.localhost"]
+    )
+    _cache(monkeypatch, [{"path": BENCH}])
+
+    result = core_apps.install_apps("proj", ["payments"], if_not_present=True)
+
+    assert result.data.ok is True
+    outcomes = {(r.site, r.action) for r in result.data.results if r.site is not None}
+    assert ("a.localhost", "skip-install") in outcomes
+    assert ("b.localhost", "install-app") in outcomes
+    # The skipped site's install-app is never issued; the absent one's is.
+    assert any("--site b.localhost install-app payments" in c for c in container.calls)
+    assert not any("--site a.localhost install-app payments" in c for c in container.calls)
+
+
+def test_install_if_not_present_fails_closed_on_an_unreadable_site(monkeypatch, container):
+    """An unreadable site cannot be confirmed clean, so it refuses (PRECONDITION)
+    rather than degrading to "not installed" and (re)installing blindly."""
+    container.available = ["frappe", "payments"]
+    container.fail_on = ["execute frappe.get_installed_apps"]
+    _cache(monkeypatch, [{"path": BENCH}])
+
+    with pytest.raises(CwcliError) as exc:
+        core_apps.install_apps("proj", ["payments"], sites=["a.localhost"], if_not_present=True)
+
+    assert exc.value.code == "app.install_state_unknown"
+    assert not any("install-app" in c for c in container.calls)
+
+
+def test_install_if_not_present_still_fails_on_a_genuine_install_failure(monkeypatch, container):
+    """The exit code stays trustworthy: a real install failure is NOT masked by the
+    idempotent path (the whole reason the change exists)."""
+    container.fail_on = ["install-app"]  # payments is absent from the site, so it installs
+    _cache(monkeypatch, [{"path": BENCH}])
+
+    result = core_apps.install_apps(
+        "proj", ["payments"], sites=["a.localhost"], if_not_present=True
+    )
+
+    assert result.status is Status.WARNING
+    assert result.data.ok is False
+
+
 def _wire_running_bench(monkeypatch, *, restart_code=0, web_state="RUNNING", programs=None):
     """A live cwcli supervisord whose programs are all serving; restarts recorded.
 
