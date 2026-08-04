@@ -774,8 +774,9 @@ def checkout_app(
 ) -> Result[AppsReport]:
     """Fetch and check out an arbitrary ``ref`` into an app that ALREADY EXISTS.
 
-    The gap ``install``/``update`` leave: ``install`` is ``bench get-app`` (a FRESH
-    clone of a new app) and ``update`` is ``bench update --pull`` (the TRACKED
+    The gap ``install``/``update`` leave: ``install`` acquires an app with ``bench
+    get-app`` when it is absent and installs it on sites, while ``update`` uses
+    ``bench update --pull`` against the TRACKED
     upstream on every app). Neither fetches one named branch/tag/commit into an
     existing ``apps/<app>`` checkout, which is exactly what putting a feature branch
     under test in the instance the app lives in needs.

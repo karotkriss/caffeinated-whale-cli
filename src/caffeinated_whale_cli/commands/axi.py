@@ -1563,7 +1563,7 @@ def axi_apps_checkout(
 ) -> None:
     """Fetch and check out a ref into an app already in the bench; emit the report as TOON.
 
-    The gap `apps install` (a fresh get-app clone) and `apps update` (the tracked
+    The gap `apps install` (bench acquisition and site installation) and `apps update` (the tracked
     upstream on every app) leave: putting ONE named branch, tag, or commit under
     test in the EXISTING apps/<app> checkout. There is no `axi run`, so this is
     the only agent-surface route to that step.
@@ -1665,7 +1665,7 @@ def axi_apps_install(
     # Named `app_name` because `app` is this module's Typer instance; the metavar
     # keeps the agent-visible usage line matching the human `cwcli apps install`.
     app_name: str = typer.Argument(
-        ..., metavar="APP", help="App name or git URL to fetch and install."
+        ..., metavar="APP", help="App name or git URL to ensure on the bench and install."
     ),
     site: str = typer.Option(
         ..., "--site", help="The single site to install on. Required: there is no fan-out here."
@@ -1673,7 +1673,10 @@ def axi_apps_install(
     bench: str = typer.Option(None, "--bench", help="Which bench: numeric index or label."),
     branch: str = typer.Option(None, "--branch", help="Git branch to fetch (passed to get-app)."),
 ) -> None:
-    """Fetch and install ONE app on ONE named site; emit the report as TOON.
+    """Ensure and install ONE app on ONE named site; emit the report as TOON.
+
+    An app absent from apps/ is fetched with bench get-app; an app already present
+    skips that fetch and proceeds to the site installation.
 
     Installing an app is the first step of essentially any Frappe app work, and
     without this verb it was the one routine operation with no agent-surface form,
