@@ -550,6 +550,12 @@ def install_apps(
 ) -> Result[AppsReport]:
     """Fetch (``bench get-app``) and install app(s) on the target site(s).
 
+    The fetch is idempotent on bench-presence: an app already present under the
+    bench's ``apps/`` (e.g. a bench built from a pre-warmed base that carries it)
+    would make ``bench get-app`` fail on the existing directory, so it is skipped
+    and the install-app phase proceeds. This is distinct from ``require_absent``
+    below, which is a per-SITE guard, not a per-bench one.
+
     ``require_absent`` refuses, BEFORE fetching anything, if an app is already
     installed on a target site. It defaults off so the human verb is unchanged, and
     the rule lives here rather than in a frontend so ``axi`` and any future GUI share
@@ -580,14 +586,29 @@ def install_apps(
     # so every git-URL fetch is wrapped and torn down; see core.credbridge.
     with credbridge.credential_bridge(frappe_container, path):
         for target in apps:
+            app_name = derive_app_name(target)
+            command, before_apps = _available_apps(frappe_container, path)
+            before = set(before_apps)
+
+            # Idempotent fetch: if the app is already on the BENCH (its apps/ dir
+            # exists), `bench get-app` fails on the existing directory, which used to
+            # fail the whole install of an app a pre-warmed base already carries. Skip
+            # the fetch and install what is present. This is bench-presence, DISTINCT
+            # from the per-site installed-apps guard (`_installed_apps` /
+            # `_refuse_if_installed`): that gates a double SITE-install, this gates the
+            # bench FETCH. The install-app phase below is unchanged either way.
+            if app_name in before:
+                emit(AppsCommand(command=command))
+                results.append(AppResult(app=app_name, site=None, action="get-app", ok=True))
+                fetched.append((target, app_name))
+                continue
+
             get_cmd = f"bench get-app {branch_arg}{shlex.quote(target)}"
 
-            # Announce BEFORE the apps/ read, so --verbose stderr keeps its historical
-            # order: "Fetching x..." then the read's echo then get-app's own echo.
+            # Announce BEFORE the apps/ read echo, so --verbose stderr keeps its
+            # historical order: "Fetching x..." then the read's echo then get-app's own.
             emit(AppsAnnounce(phase="get-app", app=target))
-            command, before_apps = _available_apps(frappe_container, path)
             emit(AppsCommand(command=command))
-            before = set(before_apps)
 
             code = _run_step(
                 frappe_container, get_cmd, path, emit=emit, phase="get-app", app=target
@@ -601,7 +622,7 @@ def install_apps(
             emit(AppsCommand(command=command))
 
             new_dirs = set(after_apps) - before
-            app_name = new_dirs.pop() if len(new_dirs) == 1 else derive_app_name(target)
+            app_name = new_dirs.pop() if len(new_dirs) == 1 else app_name
             fetched.append((target, app_name))
 
     if not fetch_only:
@@ -753,8 +774,9 @@ def checkout_app(
 ) -> Result[AppsReport]:
     """Fetch and check out an arbitrary ``ref`` into an app that ALREADY EXISTS.
 
-    The gap ``install``/``update`` leave: ``install`` is ``bench get-app`` (a FRESH
-    clone of a new app) and ``update`` is ``bench update --pull`` (the TRACKED
+    The gap ``install``/``update`` leave: ``install`` acquires an app with ``bench
+    get-app`` when it is absent and installs it on sites, while ``update`` uses
+    ``bench update --pull`` against the TRACKED
     upstream on every app). Neither fetches one named branch/tag/commit into an
     existing ``apps/<app>`` checkout, which is exactly what putting a feature branch
     under test in the instance the app lives in needs.

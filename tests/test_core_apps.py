@@ -204,9 +204,7 @@ def test_list_does_not_read_sites_unless_asked(monkeypatch, container):
 
 def test_installed_apps_rejects_the_stale_v14_list_surface(monkeypatch, container):
     """The safety read uses the global that install updates, not v14's stale singleton."""
-    container.installed = {
-        "a.localhost": ["frappe 14.0.0 version-14", "payments 1.0.0 version-14"]
-    }
+    container.installed = {"a.localhost": ["frappe 14.0.0 version-14", "payments 1.0.0 version-14"]}
     _cache(monkeypatch, [{"path": BENCH}])
 
     with pytest.raises(CwcliError) as exc:
@@ -240,6 +238,37 @@ def test_install_fans_out_over_every_site_and_reports_each(monkeypatch, containe
         ("install-app", "a.localhost"),
         ("install-app", "b.localhost"),
     ]
+
+
+def test_install_skips_the_fetch_when_the_app_is_already_on_the_bench(monkeypatch, container):
+    """A pre-warmed bench already carries the app: skip get-app (it would fail on the
+    existing apps/ dir) and install it on the site anyway. Bench-presence, not
+    site-install: the app is present under apps/ but not installed on a.localhost."""
+    container.available = ["frappe", "payments"]
+    container.fail_on = ["get-app"]  # prove get-app is never run: it would fail here.
+    _cache(monkeypatch, [{"path": BENCH}])
+
+    result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
+
+    assert result.data.ok is True
+    assert not any(c.startswith("bench get-app") for c in container.calls)
+    assert any("install-app payments" in c for c in container.calls)
+    assert [
+        (r.action, r.site, r.ok) for r in result.data.results if r.action != "restart-processes"
+    ] == [
+        ("get-app", None, True),
+        ("install-app", "a.localhost", True),
+    ]
+
+
+def test_install_still_fetches_when_the_app_is_not_on_the_bench(monkeypatch, container):
+    """The unchanged path: an app absent from apps/ is fetched, then installed."""
+    _cache(monkeypatch, [{"path": BENCH}])
+
+    result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
+
+    assert result.data.ok is True
+    assert any(c.startswith("bench get-app") and "payments" in c for c in container.calls)
 
 
 def test_install_partial_failure_is_a_warning_envelope_carrying_ok_false(monkeypatch, container):
