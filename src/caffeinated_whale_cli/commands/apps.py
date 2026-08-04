@@ -53,6 +53,9 @@ _ANNOUNCE = {
     "install-app": lambda app_name, site: (
         f"[bold cyan]Installing[/bold cyan] {app_name} on [magenta]{site}[/magenta]..."
     ),
+    "skip-install": lambda app_name, site: (
+        f"[dim]Skipping[/dim] {app_name} on [magenta]{site}[/magenta] (already installed)..."
+    ),
     "uninstall-app": lambda app_name, site: (
         f"[bold cyan]Uninstalling[/bold cyan] {app_name} from [magenta]{site}[/magenta]..."
     ),
@@ -285,6 +288,15 @@ def install_apps(
         "--fetch-only",
         help="Fetch the app(s) into the bench without installing on any site.",
     ),
+    if_not_present: bool = typer.Option(
+        False,
+        "--if-not-present",
+        help=(
+            "Idempotent: skip (do not re-install) an app already installed on a "
+            "target site instead of re-running its install hooks. A skipped app is "
+            "reported and the command still exits 0."
+        ),
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Auto-start stopped containers without prompting."
@@ -296,6 +308,8 @@ def install_apps(
     Apps absent from apps/ are fetched with bench get-app; apps already present skip
     that fetch. Each app is a known app name OR a git URL.
     Multi-site by default: with no --site the app is installed on every site.
+    With --if-not-present an app already installed on a target site is skipped rather
+    than re-installed, so "ensure this app is installed" is a single idempotent call.
     """
     ensure_containers_running(project_name, require_running=True, verbose=verbose, auto_start=yes)
     resolved = _resolve_bench(project_name, bench, bench_path, verbose)
@@ -308,6 +322,7 @@ def install_apps(
             sites=sites,
             branch=branch,
             fetch_only=fetch_only,
+            if_not_present=if_not_present,
             on_event=_make_renderer(json_output=json_output, verbose=verbose),
         )
     except CwcliError as e:
@@ -325,13 +340,15 @@ def install_apps(
         _refresh_cache(project_name, verbose)
 
     # The banner must match what actually happened: only claim "installed" when an
-    # install-app step ran (not for --fetch-only or a bench with no sites).
-    installed = any(r.action == "install-app" for r in report.results)
-    _report_and_exit(
-        report,
-        json_output,
-        success_msg="App(s) installed." if installed else "App(s) fetched.",
-    )
+    # install-app step ran (not for --fetch-only, a bench with no sites, or an
+    # --if-not-present run that only skipped already-installed apps).
+    if any(r.action == "install-app" for r in report.results):
+        success_msg = "App(s) installed."
+    elif any(r.action == "skip-install" for r in report.results):
+        success_msg = "App(s) already installed; nothing to do."
+    else:
+        success_msg = "App(s) fetched."
+    _report_and_exit(report, json_output, success_msg=success_msg)
 
 
 # ------------------------------------------------------------------------ uninstall
