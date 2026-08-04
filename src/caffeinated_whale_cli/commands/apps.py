@@ -267,7 +267,9 @@ def install_apps(
     project_name: str = typer.Argument(
         ..., help="The Docker Compose project name.", autocompletion=complete_project_names
     ),
-    apps: list[str] = typer.Argument(..., help="App name(s) or git URL(s) to fetch and install."),
+    apps: list[str] = typer.Argument(
+        ..., help="App name(s) or git URL(s) to ensure on the bench and install."
+    ),
     bench: str = typer.Option(
         None, "--bench", help="Which bench to target: its numeric index or label."
     ),
@@ -289,9 +291,10 @@ def install_apps(
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output."),
 ):
-    """Fetch (bench get-app) and install app(s) on the target site(s).
+    """Ensure app(s) are present on the bench, then install them on the target site(s).
 
-    Each app is a known app name OR a git URL (passed straight to bench get-app).
+    Apps absent from apps/ are fetched with bench get-app; apps already present skip
+    that fetch. Each app is a known app name OR a git URL.
     Multi-site by default: with no --site the app is installed on every site.
     """
     ensure_containers_running(project_name, require_running=True, verbose=verbose, auto_start=yes)
@@ -450,7 +453,7 @@ def checkout_app(
 ):
     """Fetch and check out a branch/ref into an app already installed in the instance.
 
-    Unlike 'apps install' (a fresh get-app clone) and 'apps update' (the tracked
+    Unlike 'apps install' (bench acquisition and site installation) and 'apps update' (the tracked
     upstream on every app), this puts a specific feature branch, tag, or commit
     under test in the EXISTING apps/<app> checkout, authenticated for private repos
     through the same credential bridge as install/update. Use --reset to force a

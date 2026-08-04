@@ -166,7 +166,14 @@ def wired(monkeypatch):
 
 
 def _install_container(fail_on=None):
-    return FakeFrappeContainer(available_apps=["frappe", "payments"], fail_on=fail_on or [])
+    # payments is NOT yet on the bench, so get-app genuinely fetches it (the fake
+    # models that by creating the apps/ dir). A pre-seeded payments would now be an
+    # already-present bench, which install correctly skips the fetch for.
+    return FakeFrappeContainer(
+        available_apps=["frappe"],
+        fail_on=fail_on or [],
+        get_app_creates={"payments": "payments"},
+    )
 
 
 def _set_tty(monkeypatch, is_tty):
