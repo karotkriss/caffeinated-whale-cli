@@ -342,6 +342,26 @@ def test_install_if_not_present_installs_an_app_absent_from_the_site(monkeypatch
     assert not any(r.action == "skip-install" for r in result.data.results)
 
 
+def test_install_if_not_present_skips_a_duplicate_after_installing(monkeypatch, container):
+    container.available = ["frappe", "payments"]
+    _cache(monkeypatch, [{"path": BENCH}])
+
+    result = core_apps.install_apps(
+        "proj", ["payments", "payments"], sites=["a.localhost"], if_not_present=True
+    )
+
+    install_calls = [call for call in container.calls if " install-app " in call]
+    assert len(install_calls) == 1
+    assert [
+        (row.action, row.site, row.ok)
+        for row in result.data.results
+        if row.action in {"install-app", "skip-install"}
+    ] == [
+        ("install-app", "a.localhost", True),
+        ("skip-install", "a.localhost", True),
+    ]
+
+
 def test_install_if_not_present_skips_only_the_sites_that_have_it(monkeypatch, container):
     """Multi-site sanity: skip the site that has it, install on the one that does not."""
     container.available = ["frappe", "payments"]
