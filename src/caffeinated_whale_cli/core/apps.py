@@ -717,6 +717,8 @@ def install_apps(
                 results.append(
                     AppResult(app=app_name, site=site, action="install-app", ok=code == 0)
                 )
+                if if_not_present and code == 0:
+                    installed_by_site.setdefault(site, set()).add(app_name)
 
     # Only the sites an install actually landed on: a site whose install-app failed
     # was not changed, so it has nothing to re-verify and must not fail the restart.
