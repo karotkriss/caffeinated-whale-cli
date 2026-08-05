@@ -669,6 +669,7 @@ def init_instance(
             )
             content = content.replace(working_dir, published_ports, 1)
         if web_mapping not in content or socketio_mapping not in content:
+            compose_path.unlink()
             raise CwcliError(
                 ErrorKind.PRECONDITION,
                 "compose.ports_missing",
