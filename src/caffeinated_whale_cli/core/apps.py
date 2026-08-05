@@ -74,7 +74,7 @@ class AppResult:
 
     app: str
     site: str | None  # None for the bench-wide get-app step
-    action: str  # "get-app" | "install-app" | "uninstall-app" | "restart-processes" | a git step
+    action: str  # "get-app" | "install-app" | "skip-install" | "uninstall-app" | "restart-processes" | a git step
     ok: bool
 
 
@@ -535,6 +535,41 @@ def _refuse_if_installed(
                 )
 
 
+def _read_installed_by_site(
+    frappe_container,
+    path: str,
+    sites: list[str],
+    *,
+    emit: OnEvent,
+) -> dict[str, set[str]]:
+    """Each target site's installed-apps set. FAILS CLOSED on an unreadable site.
+
+    Backs the idempotent ``if_not_present`` install path. A site whose ``list-apps``
+    read fails cannot be confirmed clean, so it refuses (PRECONDITION) rather than
+    proceeding on an unknown - the same fail-honest rule ``_refuse_if_installed``
+    applies, so "could not read the site" never degrades to "the app is not there"
+    and gets silently (re)installed.
+    """
+    installed: dict[str, set[str]] = {}
+    for site in sites:
+        command, ok, site_apps = _installed_apps(frappe_container, path, site)
+        emit(AppsCommand(command=command))
+        if not ok:
+            raise CwcliError(
+                ErrorKind.PRECONDITION,
+                "app.install_state_unknown",
+                f"Could not read the installed apps on site '{site}' (it may not exist "
+                "on this bench), so it cannot be confirmed whether the app is already "
+                "installed there.",
+                hint=(
+                    f"Check the site exists and is readable: 'cwcli axi apps list "
+                    f"<project> --site {site}'."
+                ),
+            )
+        installed[site] = set(site_apps)
+    return installed
+
+
 def install_apps(
     project_name: str,
     apps: list[str],
@@ -546,6 +581,7 @@ def install_apps(
     fetch_only: bool = False,
     auto_start: bool = False,
     require_absent: bool = False,
+    if_not_present: bool = False,
     on_event: OnEvent | None = None,
 ) -> Result[AppsReport]:
     """Fetch (``bench get-app``) and install app(s) on the target site(s).
@@ -566,6 +602,18 @@ def install_apps(
     The check FAILS CLOSED: a site whose ``list-apps`` read fails cannot be confirmed
     clean, so it refuses rather than proceeding on an unknown (``core.where``'s
     fail-honest rule - an unreadable state must never degrade to "nothing is there").
+
+    ``if_not_present`` is the idempotent reading of "install": an app already
+    installed on a target site is SKIPPED (reported as an ``ok`` ``skip-install``
+    result, never re-installed) instead of refused, so a caller that just wants the
+    app present succeeds (exit 0) and can still trust the exit code for a genuine
+    failure. It is the opt-in alternative to ``require_absent``'s refusal: the two
+    answer the same "already installed on the site" case oppositely, so a frontend
+    passes at most one. It does NOT re-run install hooks for a skipped app (that is
+    exactly what the refusal guarded against), and it FAILS CLOSED on an unreadable
+    site the same way - "could not read" is never treated as "not installed". An app
+    absent from a given site still installs there normally, so a multi-site run
+    skips only the sites that already have it.
     """
     emit: OnEvent = on_event or _noop
 
@@ -634,8 +682,25 @@ def install_apps(
                     "no sites on the bench to install on; app(s) fetched only.",
                 )
             )
+        # Idempotent path: read each target site's installed set ONCE (fail-closed),
+        # so an app already installed on a site is skipped below instead of having
+        # its install hooks re-run against that site's existing data.
+        installed_by_site: dict[str, set[str]] = (
+            _read_installed_by_site(frappe_container, path, target_sites, emit=emit)
+            if if_not_present and target_sites
+            else {}
+        )
         for _target, app_name in fetched:
             for site in target_sites:
+                if if_not_present and app_name in installed_by_site.get(site, set()):
+                    # Already present on this site: report it and move on. NOT an
+                    # install-app step, so it drives no resync (nothing changed) and
+                    # never re-runs the app's install hooks.
+                    emit(AppsAnnounce(phase="skip-install", app=app_name, site=site))
+                    results.append(
+                        AppResult(app=app_name, site=site, action="skip-install", ok=True)
+                    )
+                    continue
                 install_cmd = (
                     f"bench --site {shlex.quote(site)} install-app {shlex.quote(app_name)}"
                 )
@@ -652,6 +717,8 @@ def install_apps(
                 results.append(
                     AppResult(app=app_name, site=site, action="install-app", ok=code == 0)
                 )
+                if if_not_present and code == 0:
+                    installed_by_site.setdefault(site, set()).add(app_name)
 
     # Only the sites an install actually landed on: a site whose install-app failed
     # was not changed, so it has nothing to re-verify and must not fail the restart.
