@@ -290,6 +290,29 @@ class TestAxiStatus:
         assert "not_cwcli_supervised: true" in result.stdout
         assert "cwcli start" in result.stdout  # the hint rides in the warnings block
 
+    def test_missing_host_port_warning_is_visible_in_toon(self, monkeypatch):
+        monkeypatch.setattr(
+            axi_mod.core_status,
+            "status",
+            lambda *a, **k: Result(
+                status=Status.OK,
+                data=_status_report(overall="running"),
+                warnings=[
+                    Message(
+                        "status.no_host_port",
+                        "'proj' is running, but container port 8000 is not reachable "
+                        "from outside the container.",
+                    )
+                ],
+            ),
+        )
+
+        result = runner.invoke(axi_mod.app, ["status", "proj"])
+
+        assert result.exit_code == 0
+        assert "container port 8000" in result.stdout
+        assert "not reachable from outside the container" in result.stdout
+
     def test_multi_bench_reports_every_bench_exit_0(self, monkeypatch):
         # REPLACES test_multi_bench_names_the_flag_exit_2 (this class's copy only -
         # TestAxiStart's identically-named test pins `axi start`'s refusal, which this
