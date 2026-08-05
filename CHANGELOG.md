@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.1] - 2026-08-05
+
+`cwcli init` could create an instance with no ports published to the host after an upstream change to the Frappe Docker template, leaving it running but unreachable. It now detects and fixes that itself.
+
+### Fixed
+- **`cwcli init` no longer creates unreachable instances when the upstream Docker template drops its ports block**: An upstream change to the Frappe Docker template `init` relies on could omit the `ports:` block, so a new instance started successfully but published no ports to the host and could not be reached from a browser or `cwcli open`.
+`init` now detects missing ports and writes them itself, retries a transient port conflict left by an instance you just removed, and warns loudly if an instance ever ends up with no reachable host port instead of leaving it silently unreachable.
+
 ## [2.3.0] - 2026-08-05
 
 `cwcli apps install` can now be asked to *ensure* an app is installed rather than to install it fresh, and it no longer fails on a bench that already carries the app.
