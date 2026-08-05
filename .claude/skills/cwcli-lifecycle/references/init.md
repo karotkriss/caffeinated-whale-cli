@@ -152,6 +152,12 @@ The success block resolves the site's host URL from that assigned container port
 If either half cannot be read, it omits the address rather than guessing.
 `--no-start` skips the call entirely (for automation/CI that wants a created-but-idle bench); it is orthogonal to `--auto-start`/container startup, which stage 1 always performs regardless of this flag.
 
+The upstream `frappe_docker` devcontainer compose template no longer publishes development ports because `devcontainer.json` forwards them when an editor owns the lifecycle.
+cwcli runs Compose directly, so a text replacement against the old mappings became a silent no-op and created healthy internal services with no host bindings.
+For a fresh instance, `init_instance` now adds cwcli's web and socketio mappings when the downloaded template omits both, then verifies both mappings exist before invoking Compose.
+This preserves the existing replacement path for older templates and fails closed if a future upstream shape cannot be customized.
+`tests/test_core_init.py::TestInitInstance::test_portless_upstream_compose_gets_explicit_host_mappings` pins the live portless upstream shape and the generated mappings.
+
 ### `init_instance` skips `compose pull`/`up -d` against an already-running instance (`fm/cwcli-bench-add-silently-stops-benches`)
 
 `init_instance` used to run `docker compose pull` then `docker compose up -d` unconditionally on EVERY `cwcli init` call, including one that only adds a bench to an already-running instance (`cwcli init existing --bench second ...`).
