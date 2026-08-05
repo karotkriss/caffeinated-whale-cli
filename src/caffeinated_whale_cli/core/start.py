@@ -159,6 +159,18 @@ def start(
     snapshot = supervision.discover_stack(frappe_container, resolved_path)
     if snapshot.supervisor_up:
         if not restart:
+            idle_processes = _launched_processes(frappe_container, resolved_path, snapshot)
+            idle_warnings = list(warnings)
+            if "web" in {p.label for p in idle_processes}:
+                idle_ports = resolvers.resolve_assigned_ports(
+                    frappe_container, [resolved_path], fill_defaults=False
+                ).get(resolved_path)
+                if idle_ports is not None:
+                    port_warning = _no_host_port_warning(
+                        frappe_container, project_name, resolved_path, idle_ports
+                    )
+                    if port_warning is not None:
+                        idle_warnings.append(port_warning)
             return Result(
                 status=Status.OK,
                 data=StartOutcome(
@@ -168,9 +180,9 @@ def start(
                     supervisor=supervision.SUPERVISOR,
                     log_path=log_path,
                     already_running=True,
-                    processes=_launched_processes(frappe_container, resolved_path, snapshot),
+                    processes=idle_processes,
                 ),
-                warnings=warnings,
+                warnings=idle_warnings,
             )
         supervision.stop_supervisor(frappe_container, resolved_path)
 
@@ -218,6 +230,11 @@ def start(
                         f"on :{ports[0]} in time. Check 'cwcli status' / 'cwcli logs'.",
                     )
                 )
+            port_warning = _no_host_port_warning(
+                frappe_container, project_name, resolved_path, ports
+            )
+            if port_warning is not None:
+                warnings.append(port_warning)
 
     return Result(
         status=Status.OK,
@@ -232,6 +249,29 @@ def start(
             web_ready=web_ready,
         ),
         warnings=warnings,
+    )
+
+
+def _no_host_port_warning(
+    frappe_container, project_name: str, resolved_path: str, ports: tuple[int, int]
+) -> Message | None:
+    """An unmissable warning when this bench's web server has no live HOST
+    publish - "running" must stop meaning "reachable". A bench whose container
+    was created (or recreated) without its port mapping otherwise reports
+    fully healthy here and is only ever discovered by a caller's HTTP request
+    failing. Silent when a host port IS published; ``ports`` is the bench's
+    OWN container port, already resolved by the caller.
+    """
+    if (
+        resolvers.resolve_host_web_url(frappe_container, resolved_path, assigned_ports=ports)
+        is not None
+    ):
+        return None
+    return Message(
+        "start.no_host_port",
+        f"'{project_name}' is running, but no host port is published for this bench's "
+        f"web server (container port {ports[0]}) - it is not reachable from outside the "
+        "container. Recreate the instance with 'cwcli init' to publish its ports.",
     )
 
 

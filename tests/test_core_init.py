@@ -406,6 +406,53 @@ class TestInitInstance:
         assert "The following ports are already in use: 18000" in exc.value.message
         assert "--port" in (exc.value.hint or "")
 
+    def test_transient_port_conflict_clears_within_the_retry_budget(
+        self, monkeypatch, tmp_path, patched
+    ):
+        # A just-removed instance's own port bindings can take a moment to fully
+        # release (docker-proxy teardown lag); a rapid remove-then-reinit must not
+        # be a hard failure if the conflict clears within the retry window.
+        instance_setup(monkeypatch, tmp_path)
+        calls = {"n": 0}
+
+        def flaky_check(ports):
+            calls["n"] += 1
+            in_use = calls["n"] < 3
+            return {p: in_use for p in ports}
+
+        monkeypatch.setattr(core_init, "check_ports_in_use", flaky_check)
+        sleeps: list[float] = []
+        monkeypatch.setattr(core_init.time, "sleep", lambda s: sleeps.append(s))
+        events: list = []
+        result = core_init.init_instance(PROJECT, port=18000, on_event=events.append)
+
+        assert result.status is Status.OK
+        assert calls["n"] == 3
+        assert len(sleeps) == 2, "must retry (and wait) between attempts, not just once"
+        notices = [e for e in events if isinstance(e, core_init.InitNotice)]
+        assert any(n.code == "ports.retry" for n in notices)
+
+    def test_persistent_port_conflict_still_raises_after_the_retry_budget(
+        self, monkeypatch, tmp_path, patched
+    ):
+        instance_setup(monkeypatch, tmp_path)
+        calls = {"n": 0}
+
+        def always_in_use(ports):
+            calls["n"] += 1
+            return {p: True for p in ports}
+
+        monkeypatch.setattr(core_init, "check_ports_in_use", always_in_use)
+        with pytest.raises(CwcliError) as exc:
+            core_init.init_instance(PROJECT, port=18000)
+        assert exc.value.kind is ErrorKind.CONFLICT
+        assert exc.value.code == "ports.in_use"
+        assert calls["n"] == core_init._PORT_CHECK_ATTEMPTS
+        # Actionable for the transient case (the field-confirmed mechanism) as
+        # well as the genuine, persistent conflict.
+        assert "wait" in (exc.value.hint or "").lower()
+        assert "--port" in (exc.value.hint or "")
+
     def test_auto_start_retry_skips_self_port_conflict(self, monkeypatch, tmp_path, patched):
         # The auto_start=True call is the frontend's stage-1 retry AFTER
         # ensure_containers_running already started this project's own

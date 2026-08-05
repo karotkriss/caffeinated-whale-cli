@@ -472,6 +472,43 @@ def _project_containers_running(project_name: str) -> bool:
 
 _EXPECTED_COMPOSE_SERVICES = frozenset({"frappe", "mariadb", "redis-cache", "redis-queue"})
 
+# A just-removed instance's own port bindings can take a moment to fully
+# release (Docker's docker-proxy teardown lag, observed in the field to clear
+# within seconds), so a rapid remove-then-reinit (a CI purge-and-recreate
+# pattern) can see those SAME ports as still "in use" right after the old
+# instance is gone. 5 attempts a second apart absorbs that ordinary teardown
+# window before concluding the conflict is real and persistent.
+_PORT_CHECK_ATTEMPTS = 5
+_PORT_CHECK_RETRY_DELAY = 1.0
+
+
+def _ports_still_in_use(ports: list[int], *, emit: OnEvent) -> list[int]:
+    """Check host ports, retrying briefly before giving up.
+
+    Never silently treats a conflict as "no conflict" - it only delays the
+    verdict to absorb a transient teardown window. A port still in use after
+    every attempt is reported exactly as before: loudly, deterministically,
+    regardless of interactivity.
+    """
+    ports_in_use: list[int] = []
+    for attempt in range(_PORT_CHECK_ATTEMPTS):
+        port_status = check_ports_in_use(ports)
+        ports_in_use = [p for p, in_use in port_status.items() if in_use]
+        if not ports_in_use:
+            return []
+        if attempt < _PORT_CHECK_ATTEMPTS - 1:
+            emit(
+                InitNotice(
+                    code="ports.retry",
+                    text=(
+                        f"Port(s) {format_port_list(ports_in_use)} still in use "
+                        "(may be a just-removed instance releasing them); retrying..."
+                    ),
+                )
+            )
+            time.sleep(_PORT_CHECK_RETRY_DELAY)
+    return ports_in_use
+
 
 def _running_compose_services(project_name: str) -> set[str]:
     """Return this project's running compose service names."""
@@ -532,14 +569,17 @@ def init_instance(
     if not auto_start and not _project_containers_running(project_name):
         web_ports = list(range(port, port + 6))
         socketio_ports = list(range(port + 1000, port + 1006))
-        port_status = check_ports_in_use(web_ports + socketio_ports)
-        ports_in_use = [p for p, in_use in port_status.items() if in_use]
+        ports_in_use = _ports_still_in_use(web_ports + socketio_ports, emit=emit)
         if ports_in_use:
             raise CwcliError(
                 ErrorKind.CONFLICT,
                 "ports.in_use",
                 f"The following ports are already in use: {format_port_list(ports_in_use)}",
-                hint="Use the --port flag to select a different starting port.",
+                hint=(
+                    "If an instance using these ports was just removed, they may still be "
+                    "releasing - wait a few seconds and retry. Otherwise, use --port to "
+                    "select a different starting port."
+                ),
             )
 
     emit(InitStepStart(phase="project_dir", message="Creating project directory"))
