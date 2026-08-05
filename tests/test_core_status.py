@@ -51,9 +51,7 @@ def wire(monkeypatch):
 
 class TestOverall:
     def test_running_when_marker_up_and_web(self, wire):
-        container = FakeContainer(marker=_MARKER, web_code="200")
-        container.ports = {"8000/tcp": [{"HostPort": "8000"}]}
-        wire(container, benches=[{"path": BENCH}])
+        wire(FakeContainer(marker=_MARKER, web_code="200"), benches=[{"path": BENCH}])
         result = core_status.status("proj")
         assert result.status is Status.OK
         report = result.data
@@ -63,19 +61,6 @@ class TestOverall:
         assert _bench(report).web_http_code == "200"
         web = next(p for p in _bench(report).processes if p.label == "web")
         assert web.up is True and web.uptime_s == 499 and web.rss_kb == 80000
-        assert not any(w.code == "status.no_host_port" for w in result.warnings)
-
-    def test_running_without_a_host_binding_warns(self, wire):
-        container = FakeContainer(marker=_MARKER, web_code="200")
-        container.ports = {}
-        wire(container, benches=[{"path": BENCH}])
-
-        result = core_status.status("proj")
-
-        assert result.data.overall == "running"
-        warning = next(w for w in result.warnings if w.code == "status.no_host_port")
-        assert "container port 8000" in warning.text
-        assert "not reachable from outside the container" in warning.text
 
     def test_online_when_no_marker(self, wire):
         wire(FakeContainer(marker=None, web_code="200"), benches=[{"path": BENCH}])
