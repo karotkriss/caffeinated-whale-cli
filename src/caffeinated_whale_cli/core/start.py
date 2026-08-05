@@ -107,6 +107,7 @@ def start(
     for container in containers:
         if container.status != "running":
             container.start()
+            container.reload()
 
     frappe_container = next(
         (c for c in containers if c.labels.get("com.docker.compose.service") == "frappe"),
