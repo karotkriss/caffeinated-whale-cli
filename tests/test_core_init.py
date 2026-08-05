@@ -377,6 +377,28 @@ class TestInitInstance:
         assert '      - "19000-19005:9000-9005"' in content
         assert content.count("    ports:\n") == 1
 
+    def test_ports_missing_failure_removes_downloaded_compose_for_retry(
+        self, monkeypatch, tmp_path, patched
+    ):
+        s = instance_setup(monkeypatch, tmp_path, seed_compose=False)
+
+        def fake_retrieve(url, dest):
+            s.downloads.append(url)
+            dest.write_text("services:\n  frappe:\n    image: docker.io/frappe/bench:latest\n")
+
+        monkeypatch.setattr(urllib.request, "urlretrieve", fake_retrieve)
+        with pytest.raises(CwcliError) as exc:
+            core_init.init_instance(PROJECT, port=18000)
+
+        assert exc.value.kind is ErrorKind.PRECONDITION
+        assert exc.value.code == "compose.ports_missing"
+        assert not s.compose_path.exists()
+
+        with pytest.raises(CwcliError) as retry_exc:
+            core_init.init_instance(PROJECT, port=18000)
+        assert retry_exc.value.code == "compose.ports_missing"
+        assert len(s.downloads) == 2
+
     def test_download_failure_is_typed_precondition(self, monkeypatch, tmp_path, patched):
         instance_setup(monkeypatch, tmp_path, seed_compose=False)
 
