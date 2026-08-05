@@ -219,6 +219,27 @@ class TestNoHostPortWarning:
         assert result.status is Status.OK
         assert not any(w.code == "start.no_host_port" for w in result.warnings)
 
+    def test_stopped_ported_container_reloads_bindings_after_start(self, wire):
+        class StoppedPortedContainer(FakeContainer):
+            def __init__(self):
+                super().__init__(ps="1 0 5 0.0 1000 /sbin/init\n", cwds={})
+                self.status = "exited"
+                self.ports = {}
+                self.reloads = 0
+
+            def start(self):
+                self.status = "running"
+
+            def reload(self):
+                self.reloads += 1
+                self.ports = {"8000/tcp": [{"HostIp": "0.0.0.0", "HostPort": "21000"}]}
+
+        frappe = StoppedPortedContainer()
+        wire(frappe)
+        result = core_start.start("proj")
+        assert frappe.reloads == 1
+        assert not any(w.code == "start.no_host_port" for w in result.warnings)
+
     def test_idempotent_noop_also_warns_when_portless(self, wire):
         frappe = FakeContainer()  # supervisord already up for BENCH
         wire(frappe, benches=[{"path": BENCH}])
