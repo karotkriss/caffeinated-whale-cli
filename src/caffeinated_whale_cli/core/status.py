@@ -316,37 +316,21 @@ def status(
                 )
             )
         read = _bench_status_fused if fused else _bench_status
-        bench_status = replace(
-            read(
-                frappe_container,
-                index=index,
-                bench_path=path,
-                label=label,
-                web_port=web_port,
-                web_site=resolvers.resolve_representative_site(project_name, path),
-                probe_web=probe_web,
-                warnings=warnings,
-            ),
-            bench_present=_present_state(present, path),
+        benches.append(
+            replace(
+                read(
+                    frappe_container,
+                    index=index,
+                    bench_path=path,
+                    label=label,
+                    web_port=web_port,
+                    web_site=resolvers.resolve_representative_site(project_name, path),
+                    probe_web=probe_web,
+                    warnings=warnings,
+                ),
+                bench_present=_present_state(present, path),
+            )
         )
-        benches.append(bench_status)
-        if (
-            bench_status.overall == RUNNING
-            and ports is not None
-            and resolvers.resolve_host_web_url(
-                frappe_container, path, assigned_ports=ports
-            )
-            is None
-        ):
-            warnings.append(
-                Message(
-                    "status.no_host_port",
-                    f"'{project_name}' is running, but no host port is published for "
-                    f"this bench's web server (container port {ports[0]}) - it is not "
-                    "reachable from outside the container. Recreate the instance with "
-                    "'cwcli init' to publish its ports.",
-                )
-            )
 
     stale = [b.bench_path for b in benches if b.bench_present == resolvers.BENCH_ABSENT]
     if stale:
