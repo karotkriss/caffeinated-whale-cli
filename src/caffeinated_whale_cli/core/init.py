@@ -621,11 +621,11 @@ def init_instance(
         )
     )
     content = compose_path.read_text()
-    content = content.replace("8000-8005:8000-8005", f"{port}-{port+5}:8000-8005")
+    web_mapping = f"{port}-{port + 5}:8000-8005"
+    content = content.replace("8000-8005:8000-8005", web_mapping)
     socketio_start = port + 1000
-    content = content.replace(
-        "9000-9005:9000-9005", f"{socketio_start}-{socketio_start+5}:9000-9005"
-    )
+    socketio_mapping = f"{socketio_start}-{socketio_start + 5}:9000-9005"
+    content = content.replace("9000-9005:9000-9005", socketio_mapping)
     # The upstream devcontainer template sets `working_dir: /workspace/development`
     # - a path cwcli never creates (its bench lives at /workspace/frappe-bench).
     # /workspace is a bind mount to CWCLI_HOME/projects/<name>/, so on `compose up`
@@ -657,6 +657,25 @@ def init_instance(
         (project_dir / "data").mkdir(parents=True, exist_ok=True)
         content = content.replace("- ..:/workspace:cached", f"- ../data:{bench_parent_path}:cached")
         content = content.replace("working_dir: /workspace", f"working_dir: {bench_parent_path}")
+        # frappe_docker removed the devcontainer template's ports block in favor
+        # of editor-managed forwarding. cwcli runs the compose project directly,
+        # so it must add the host publications when the downloaded template omits
+        # both mappings. Without them Docker starts a healthy but host-unreachable
+        # instance and every later string replacement remains a silent no-op.
+        if web_mapping not in content and socketio_mapping not in content:
+            working_dir = f"    working_dir: {bench_parent_path}"
+            published_ports = (
+                f'{working_dir}\n    ports:\n      - "{web_mapping}"\n      - "{socketio_mapping}"'
+            )
+            content = content.replace(working_dir, published_ports, 1)
+        if web_mapping not in content or socketio_mapping not in content:
+            raise CwcliError(
+                ErrorKind.PRECONDITION,
+                "compose.ports_missing",
+                "The downloaded Docker Compose template could not be configured "
+                "with the required host port mappings.",
+                hint="Retry init. If the error persists, report the upstream compose change.",
+            )
     compose_path.write_text(content)
 
     compose_base = ["docker", "compose", "-p", project_name, "-f", "docker-compose.yml"]

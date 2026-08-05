@@ -57,6 +57,24 @@ volumes:
   mariadb-data:
 """
 
+# The live frappe_docker devcontainer template stopped publishing ports and now
+# expects an editor to forward them. cwcli invokes Compose directly, so this is
+# the regression input that must still produce explicit host mappings.
+COMPOSE_UPSTREAM_PORTLESS = """services:
+  mariadb:
+    image: docker.io/mariadb:11.8
+    volumes:
+      - mariadb-data:/var/lib/mysql
+  frappe:
+    image: docker.io/frappe/bench:latest
+    volumes:
+      - ..:/workspace:cached
+    working_dir: /workspace/development
+    # Development ports are forwarded by devcontainer.json.
+volumes:
+  mariadb-data:
+"""
+
 
 class FakeApi:
     """Records ``exec_create`` calls; ``fail_command`` marks one failing exec."""
@@ -340,6 +358,24 @@ class TestInitInstance:
         monkeypatch.setattr(urllib.request, "urlretrieve", fake_retrieve)
         core_init.init_instance(PROJECT, port=18000)
         assert len(s.downloads) == 1
+
+    def test_portless_upstream_compose_gets_explicit_host_mappings(
+        self, monkeypatch, tmp_path, patched
+    ):
+        """A fresh compose remains host-reachable when upstream omits ports."""
+        s = instance_setup(monkeypatch, tmp_path, seed_compose=False)
+
+        def fake_retrieve(url, dest):
+            s.downloads.append(url)
+            dest.write_text(COMPOSE_UPSTREAM_PORTLESS)
+
+        monkeypatch.setattr(urllib.request, "urlretrieve", fake_retrieve)
+        core_init.init_instance(PROJECT, port=18000)
+
+        content = s.compose_path.read_text()
+        assert '      - "18000-18005:8000-8005"' in content
+        assert '      - "19000-19005:9000-9005"' in content
+        assert content.count("    ports:\n") == 1
 
     def test_download_failure_is_typed_precondition(self, monkeypatch, tmp_path, patched):
         instance_setup(monkeypatch, tmp_path, seed_compose=False)
