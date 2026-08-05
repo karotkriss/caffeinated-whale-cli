@@ -1672,6 +1672,15 @@ def axi_apps_install(
     ),
     bench: str = typer.Option(None, "--bench", help="Which bench: numeric index or label."),
     branch: str = typer.Option(None, "--branch", help="Git branch to fetch (passed to get-app)."),
+    if_not_present: bool = typer.Option(
+        False,
+        "--if-not-present",
+        help=(
+            "Idempotent: if the app is already installed on the site, skip it and "
+            "exit 0 instead of refusing. Does NOT re-install or re-run install "
+            "hooks - it only reports the app as already present."
+        ),
+    ),
 ) -> None:
     """Ensure and install ONE app on ONE named site; emit the report as TOON.
 
@@ -1714,11 +1723,21 @@ def axi_apps_install(
     `axi migrate`'s absent `--skip-maintenance`. The escape hatch is the human verb,
     which is where a human confirms a reinstall.
 
-    The already-installed case is deliberately NOT reported as an idempotent exit-0
-    no-op, against the general AXI rule that an already-satisfied desired state is a
-    success. The desired state here is "installed FROM this branch", and cwcli
-    cannot confirm the copy already on the site matches the requested `--branch`, so
-    exit 0 would assert something it has not verified.
+    The already-installed case is, BY DEFAULT, deliberately NOT reported as an
+    idempotent exit-0 no-op, against the general AXI rule that an already-satisfied
+    desired state is a success. The desired state here is "installed FROM this
+    branch", and cwcli cannot confirm the copy already on the site matches the
+    requested `--branch`, so a silent exit 0 would assert something it has not
+    verified.
+
+    `--if-not-present` opts INTO the idempotent reading for a caller that just wants
+    the app present: an app already installed on the site is then SKIPPED (reported
+    as an `ok` `skip-install` row, its install hooks NOT re-run) and the verb exits
+    0. It is not a bypass of the safety the refusal guards - it never re-installs
+    over existing data - it is the honest "ensure installed" answer, so a CI step can
+    trust the exit code (a genuine install failure still exits 1) instead of
+    swallowing every failure with `|| true`. It is NOT a `--force`: there is still
+    no way to make the verb re-run install hooks over an app the site already has.
 
     NO --yes and no auto-start: a stopped project is a usage error naming
     `cwcli start`, as every bench-scoped axi verb already does. The private-repo
@@ -1734,7 +1753,10 @@ def axi_apps_install(
             sites=[site],
             branch=branch,
             auto_start=False,
-            require_absent=True,
+            # --if-not-present is the opt-in idempotent path; without it the
+            # already-installed refusal (require_absent) stays the default.
+            require_absent=not if_not_present,
+            if_not_present=if_not_present,
             on_event=_checkout_narrate,
         )
     except CwcliError as error:
