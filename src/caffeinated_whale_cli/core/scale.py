@@ -73,16 +73,17 @@ _WEB_CONTAINER_BASE = 8000
 _SOCKETIO_CONTAINER_BASE = 9000
 
 # The published ``ports:`` lines cwcli writes at init look like
-# ``- 16000-16005:8000-8005`` (web) and ``- 17000-17005:9000-9005`` (socketio).
+# ``- 16000-16005:8000-8005`` (web) and ``- 17000-17005:9000-9005`` (socketio),
+# optionally quoted as YAML strings.
 # Capture the host low bound and the container high bound so we know the current
 # published count and the host base to preserve when widening.
 _WEB_PORTS_RE = re.compile(
-    rf"(?m)^(?P<prefix>\s*-\s*)(?P<host_lo>\d+)-(?P<host_hi>\d+):"
-    rf"{_WEB_CONTAINER_BASE}-(?P<cont_hi>\d+)\s*$"
+    rf"(?m)^(?P<prefix>\s*-\s*)(?P<quote>['\"]?)(?P<host_lo>\d+)-(?P<host_hi>\d+):"
+    rf"{_WEB_CONTAINER_BASE}-(?P<cont_hi>\d+)(?P=quote)\s*$"
 )
 _SOCKETIO_PORTS_RE = re.compile(
-    rf"(?m)^(?P<prefix>\s*-\s*)(?P<host_lo>\d+)-(?P<host_hi>\d+):"
-    rf"{_SOCKETIO_CONTAINER_BASE}-(?P<cont_hi>\d+)\s*$"
+    rf"(?m)^(?P<prefix>\s*-\s*)(?P<quote>['\"]?)(?P<host_lo>\d+)-(?P<host_hi>\d+):"
+    rf"{_SOCKETIO_CONTAINER_BASE}-(?P<cont_hi>\d+)(?P=quote)\s*$"
 )
 
 
@@ -218,15 +219,17 @@ def _widen_ports_block(compose_text: str, published: _PublishedRange, count: int
     sio_hi_cont = _SOCKETIO_CONTAINER_BASE + count - 1
 
     def web_repl(match: re.Match) -> str:
+        quote = match.group("quote")
         return (
-            f"{match.group('prefix')}{published.web_base}-{web_hi_host}:"
-            f"{_WEB_CONTAINER_BASE}-{web_hi_cont}"
+            f"{match.group('prefix')}{quote}{published.web_base}-{web_hi_host}:"
+            f"{_WEB_CONTAINER_BASE}-{web_hi_cont}{quote}"
         )
 
     def sio_repl(match: re.Match) -> str:
+        quote = match.group("quote")
         return (
-            f"{match.group('prefix')}{published.socketio_base}-{sio_hi_host}:"
-            f"{_SOCKETIO_CONTAINER_BASE}-{sio_hi_cont}"
+            f"{match.group('prefix')}{quote}{published.socketio_base}-{sio_hi_host}:"
+            f"{_SOCKETIO_CONTAINER_BASE}-{sio_hi_cont}{quote}"
         )
 
     compose_text = _WEB_PORTS_RE.sub(web_repl, compose_text, count=1)

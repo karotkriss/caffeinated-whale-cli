@@ -322,7 +322,12 @@ def _start_project(
     # be visible here too, since restart's whole-stack path and the auto-start
     # path (ensure_containers_running) both funnel through this helper.
     for warning in result.warnings:
-        if warning.code in ("start.uid_align_failed", "bench.default_used", "start.web_not_ready"):
+        if warning.code in (
+            "start.uid_align_failed",
+            "bench.default_used",
+            "start.web_not_ready",
+            "start.no_host_port",
+        ):
             stderr_console.print(f"[yellow]Warning: {warning.text}[/yellow]")
         elif verbose:
             stderr_console.print(f"[dim]{warning.text}[/dim]")
@@ -522,7 +527,12 @@ def _run_start(
     # init.uid_align_failed precedent for the uid remap failure): both signal the
     # bench workspace may not behave as expected, not just verbose diagnostics.
     for warning in result.warnings:
-        if warning.code in ("start.uid_align_failed", "bench.default_used", "start.web_not_ready"):
+        if warning.code in (
+            "start.uid_align_failed",
+            "bench.default_used",
+            "start.web_not_ready",
+            "start.no_host_port",
+        ):
             stderr_console.print(f"[yellow]Warning: {warning.text}[/yellow]")
         elif verbose:
             stderr_console.print(f"[dim]{warning.text}[/dim]")

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import shlex
+import socket
 
 import pytest
 
@@ -119,6 +120,46 @@ def test_no_start_leaves_dev_services_down(port_allocator):
         assert not _web_reachable(name), "site must not be serving with --no-start"
     finally:
         harness.cwcli_rm(name)
+
+
+# --- fm/cwcli-init-silent-portless-instance: loud, non-interactive refusal - #
+@v16_only
+@pytest.mark.standalone
+def test_noninteractive_init_refuses_loudly_on_an_occupied_port(port_allocator):
+    """A port genuinely held by another process must refuse just as loudly
+    non-interactively (stdin closed, a real non-TTY - the CI shape) as it does
+    interactively: the same "already in use" error naming the port, a nonzero
+    exit, and no containers left behind. Occupies a SOCKETIO-range port (not
+    the base port itself) to prove the whole range is checked, matching the
+    field-confirmed incident. Fails before any bench build - the port check is
+    the very first thing `init` does - so this is fast even with the retry
+    budget that now absorbs a just-freed port's brief teardown window."""
+    name = harness.project_name("portconflict")
+    base = port_allocator.next()
+    occupied_port = base + 1002
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as blocker:
+        blocker.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        blocker.bind(("0.0.0.0", occupied_port))
+        blocker.listen(1)
+        try:
+            result = harness.run_cwcli(
+                "init",
+                name,
+                "--port",
+                str(base),
+                "--admin-password",
+                SESSION_ADMIN_PW,
+                timeout=60,
+            )
+            combined = harness.strip_ansi(result.stdout + result.stderr)
+            assert result.returncode != 0, combined
+            assert str(occupied_port) in combined, combined
+            assert "already in use" in combined, combined
+            assert (
+                harness.frappe_container_id(name) is None
+            ), "a conflicted port must never leave containers behind"
+        finally:
+            harness.cwcli_rm(name)  # idempotent safety net; nothing should exist
 
 
 # --- §4.1 interactive + generated-password print-once (v16 leg only) ------- #

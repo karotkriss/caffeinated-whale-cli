@@ -472,6 +472,43 @@ def _project_containers_running(project_name: str) -> bool:
 
 _EXPECTED_COMPOSE_SERVICES = frozenset({"frappe", "mariadb", "redis-cache", "redis-queue"})
 
+# A just-removed instance's own port bindings can take a moment to fully
+# release (Docker's docker-proxy teardown lag, observed in the field to clear
+# within seconds), so a rapid remove-then-reinit (a CI purge-and-recreate
+# pattern) can see those SAME ports as still "in use" right after the old
+# instance is gone. 5 attempts a second apart absorbs that ordinary teardown
+# window before concluding the conflict is real and persistent.
+_PORT_CHECK_ATTEMPTS = 5
+_PORT_CHECK_RETRY_DELAY = 1.0
+
+
+def _ports_still_in_use(ports: list[int], *, emit: OnEvent) -> list[int]:
+    """Check host ports, retrying briefly before giving up.
+
+    Never silently treats a conflict as "no conflict" - it only delays the
+    verdict to absorb a transient teardown window. A port still in use after
+    every attempt is reported exactly as before: loudly, deterministically,
+    regardless of interactivity.
+    """
+    ports_in_use: list[int] = []
+    for attempt in range(_PORT_CHECK_ATTEMPTS):
+        port_status = check_ports_in_use(ports)
+        ports_in_use = [p for p, in_use in port_status.items() if in_use]
+        if not ports_in_use:
+            return []
+        if attempt < _PORT_CHECK_ATTEMPTS - 1:
+            emit(
+                InitNotice(
+                    code="ports.retry",
+                    text=(
+                        f"Port(s) {format_port_list(ports_in_use)} still in use "
+                        "(may be a just-removed instance releasing them); retrying..."
+                    ),
+                )
+            )
+            time.sleep(_PORT_CHECK_RETRY_DELAY)
+    return ports_in_use
+
 
 def _running_compose_services(project_name: str) -> set[str]:
     """Return this project's running compose service names."""
@@ -532,14 +569,17 @@ def init_instance(
     if not auto_start and not _project_containers_running(project_name):
         web_ports = list(range(port, port + 6))
         socketio_ports = list(range(port + 1000, port + 1006))
-        port_status = check_ports_in_use(web_ports + socketio_ports)
-        ports_in_use = [p for p, in_use in port_status.items() if in_use]
+        ports_in_use = _ports_still_in_use(web_ports + socketio_ports, emit=emit)
         if ports_in_use:
             raise CwcliError(
                 ErrorKind.CONFLICT,
                 "ports.in_use",
                 f"The following ports are already in use: {format_port_list(ports_in_use)}",
-                hint="Use the --port flag to select a different starting port.",
+                hint=(
+                    "If an instance using these ports was just removed, they may still be "
+                    "releasing - wait a few seconds and retry. Otherwise, use --port to "
+                    "select a different starting port."
+                ),
             )
 
     emit(InitStepStart(phase="project_dir", message="Creating project directory"))
@@ -581,11 +621,11 @@ def init_instance(
         )
     )
     content = compose_path.read_text()
-    content = content.replace("8000-8005:8000-8005", f"{port}-{port+5}:8000-8005")
+    web_mapping = f"{port}-{port + 5}:8000-8005"
+    content = content.replace("8000-8005:8000-8005", web_mapping)
     socketio_start = port + 1000
-    content = content.replace(
-        "9000-9005:9000-9005", f"{socketio_start}-{socketio_start+5}:9000-9005"
-    )
+    socketio_mapping = f"{socketio_start}-{socketio_start + 5}:9000-9005"
+    content = content.replace("9000-9005:9000-9005", socketio_mapping)
     # The upstream devcontainer template sets `working_dir: /workspace/development`
     # - a path cwcli never creates (its bench lives at /workspace/frappe-bench).
     # /workspace is a bind mount to CWCLI_HOME/projects/<name>/, so on `compose up`
@@ -617,6 +657,26 @@ def init_instance(
         (project_dir / "data").mkdir(parents=True, exist_ok=True)
         content = content.replace("- ..:/workspace:cached", f"- ../data:{bench_parent_path}:cached")
         content = content.replace("working_dir: /workspace", f"working_dir: {bench_parent_path}")
+        # frappe_docker removed the devcontainer template's ports block in favor
+        # of editor-managed forwarding. cwcli runs the compose project directly,
+        # so it must add the host publications when the downloaded template omits
+        # both mappings. Without them Docker starts a healthy but host-unreachable
+        # instance and every later string replacement remains a silent no-op.
+        if web_mapping not in content and socketio_mapping not in content:
+            working_dir = f"    working_dir: {bench_parent_path}"
+            published_ports = (
+                f'{working_dir}\n    ports:\n      - "{web_mapping}"\n      - "{socketio_mapping}"'
+            )
+            content = content.replace(working_dir, published_ports, 1)
+        if web_mapping not in content or socketio_mapping not in content:
+            compose_path.unlink()
+            raise CwcliError(
+                ErrorKind.PRECONDITION,
+                "compose.ports_missing",
+                "The downloaded Docker Compose template could not be configured "
+                "with the required host port mappings.",
+                hint="Retry init. If the error persists, report the upstream compose change.",
+            )
     compose_path.write_text(content)
 
     compose_base = ["docker", "compose", "-p", project_name, "-f", "docker-compose.yml"]

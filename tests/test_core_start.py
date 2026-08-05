@@ -107,18 +107,14 @@ class TestLaunch:
         wire(frappe, benches=[{"path": "/w/b0"}, {"path": "/w/b1"}])
         result = core_start.start("proj", bench="1")
         assert result.data.web_ready is True
-        probed = {
-            cmd[-1] for cmd in frappe.calls if isinstance(cmd, list) and cmd[0] == "curl"
-        }
+        probed = {cmd[-1] for cmd in frappe.calls if isinstance(cmd, list) and cmd[0] == "curl"}
         assert probed == {"http://localhost:8001"}
 
     def test_an_unresolvable_port_skips_the_wait_rather_than_guessing(self, wire, monkeypatch):
         # Fail honest: with no readable port the wait is SKIPPED and web_ready stays
         # None (its existing "not probed" value). Falling back to 8000 would spend the
         # whole timeout probing a sibling bench's server and then lie about the result.
-        frappe = FakeContainer(
-            ps="1 0 5 0.0 1000 /sbin/init\n", cwds={}, configs={BENCH: None}
-        )
+        frappe = FakeContainer(ps="1 0 5 0.0 1000 /sbin/init\n", cwds={}, configs={BENCH: None})
         wire(frappe)
         called = {"n": 0}
         monkeypatch.setattr(
@@ -197,6 +193,67 @@ class TestIdempotent:
         procs = {p.label: p.pid for p in result.data.processes}
         assert procs["worker:default"] is None
         assert procs["web"] is not None
+
+
+class TestNoHostPortWarning:
+    """A bench whose web port has no live host publish must warn loudly -
+    "running" must stop meaning "reachable" for a container that was created
+    (or recreated) without its port mapping. Covers both the fresh-launch
+    path and the idempotent no-op, since a portless instance that is already
+    running hits the no-op on every later ``cwcli start``."""
+
+    def test_fresh_launch_warns_when_no_host_port_is_published(self, wire):
+        # FakeContainer carries no `.ports` attribute by default - the same
+        # shape as a real container created without any -p mapping.
+        frappe = FakeContainer(ps="1 0 5 0.0 1000 /sbin/init\n", cwds={})
+        wire(frappe)
+        result = core_start.start("proj")
+        assert result.status is Status.OK
+        assert any(w.code == "start.no_host_port" for w in result.warnings)
+
+    def test_fresh_launch_is_silent_when_the_host_port_is_published(self, wire):
+        frappe = FakeContainer(ps="1 0 5 0.0 1000 /sbin/init\n", cwds={})
+        frappe.ports = {"8000/tcp": [{"HostIp": "0.0.0.0", "HostPort": "21000"}]}
+        wire(frappe)
+        result = core_start.start("proj")
+        assert result.status is Status.OK
+        assert not any(w.code == "start.no_host_port" for w in result.warnings)
+
+    def test_stopped_ported_container_reloads_bindings_after_start(self, wire):
+        class StoppedPortedContainer(FakeContainer):
+            def __init__(self):
+                super().__init__(ps="1 0 5 0.0 1000 /sbin/init\n", cwds={})
+                self.status = "exited"
+                self.ports = {}
+                self.reloads = 0
+
+            def start(self):
+                self.status = "running"
+
+            def reload(self):
+                self.reloads += 1
+                self.ports = {"8000/tcp": [{"HostIp": "0.0.0.0", "HostPort": "21000"}]}
+
+        frappe = StoppedPortedContainer()
+        wire(frappe)
+        result = core_start.start("proj")
+        assert frappe.reloads == 1
+        assert not any(w.code == "start.no_host_port" for w in result.warnings)
+
+    def test_idempotent_noop_also_warns_when_portless(self, wire):
+        frappe = FakeContainer()  # supervisord already up for BENCH
+        wire(frappe, benches=[{"path": BENCH}])
+        result = core_start.start("proj")
+        assert result.data.already_running is True
+        assert any(w.code == "start.no_host_port" for w in result.warnings)
+
+    def test_idempotent_noop_is_silent_when_ported(self, wire):
+        frappe = FakeContainer()
+        frappe.ports = {"8000/tcp": [{"HostIp": "0.0.0.0", "HostPort": "21000"}]}
+        wire(frappe, benches=[{"path": BENCH}])
+        result = core_start.start("proj")
+        assert result.data.already_running is True
+        assert not any(w.code == "start.no_host_port" for w in result.warnings)
 
 
 class TestRestart:
