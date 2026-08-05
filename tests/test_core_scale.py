@@ -196,6 +196,19 @@ def test_parse_published_range_reads_base_and_count():
     assert published.count == 6
 
 
+def test_scale_accepts_and_preserves_init_generated_quoted_ports():
+    """Scale reads the quoted YAML mappings generated for portless upstream templates."""
+    compose = _compose('"16000-16005:8000-8005"', '"17000-17005:9000-9005"')
+    published = core_scale._parse_published_range(compose, "proj")
+    widened = core_scale._widen_ports_block(compose, published, 8)
+
+    assert published.web_base == 16000
+    assert published.socketio_base == 17000
+    assert published.count == 6
+    assert '"16000-16007:8000-8007"' in widened
+    assert '"17000-17007:9000-9007"' in widened
+
+
 def test_parse_unrecognized_ports_is_precondition():
     with pytest.raises(CwcliError) as exc:
         core_scale._parse_published_range("services:\n  frappe: {}\n", "proj")

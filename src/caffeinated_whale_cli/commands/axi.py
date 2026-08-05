@@ -2336,7 +2336,7 @@ def axi_init(
             )
         else:
             for warning in start_result.warnings:
-                if warning.code == "start.web_not_ready":
+                if warning.code in ("start.web_not_ready", "start.no_host_port"):
                     print(f"Warning: {warning.text}", file=sys.stderr, flush=True)
 
     emit_result(bench_result.data, warnings=bench_result.warnings)

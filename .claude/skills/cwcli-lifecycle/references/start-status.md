@@ -140,6 +140,15 @@ are now the whole point. Each note below guards a real bug.
   See `tests/e2e/test_start_status_e2e.py::test_status_is_running_immediately_after_start` for the regression
   net (asserts `status` reads `running` the instant `start` returns, with no readiness wait between the two
   calls) and `test_core_start.py`/`test_core_supervision.py` for the unit coverage of the branches above.
+- **A running web process without a live host port binding produces an unconditional warning** (`fm/cwcli-init-silent-portless-instance`).
+  A container created or recreated without its port mapping can serve internally while remaining unreachable from the host.
+  `core.start` therefore calls `resolvers.resolve_host_web_url` after a genuine launch and on the idempotent already-running no-op path.
+  The check uses the bench's resolved container port and Docker's live published bindings, which is the same two-hop reader used by `cwcli axi url` and init's success banner.
+  A missing binding adds `Message("start.no_host_port", ...)` naming the container port and advising recreation with `cwcli init`.
+  The human `cwcli start` renderers and both init frontends surface this warning unconditionally on stderr.
+  `cwcli axi start` carries it in its TOON warning output.
+  The fresh-launch and no-op paths are both load-bearing because every later `cwcli start` against an already-running portless instance takes the no-op path.
+  `tests/test_core_start.py::TestNoHostPortWarning` pins fresh launches and no-ops for both ported and portless containers.
 
 ## `core/restart.py` - single-program restart (the per-process feature)
 

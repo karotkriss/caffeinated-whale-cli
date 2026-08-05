@@ -57,6 +57,24 @@ volumes:
   mariadb-data:
 """
 
+# The live frappe_docker devcontainer template stopped publishing ports and now
+# expects an editor to forward them. cwcli invokes Compose directly, so this is
+# the regression input that must still produce explicit host mappings.
+COMPOSE_UPSTREAM_PORTLESS = """services:
+  mariadb:
+    image: docker.io/mariadb:11.8
+    volumes:
+      - mariadb-data:/var/lib/mysql
+  frappe:
+    image: docker.io/frappe/bench:latest
+    volumes:
+      - ..:/workspace:cached
+    working_dir: /workspace/development
+    # Development ports are forwarded by devcontainer.json.
+volumes:
+  mariadb-data:
+"""
+
 
 class FakeApi:
     """Records ``exec_create`` calls; ``fail_command`` marks one failing exec."""
@@ -341,6 +359,46 @@ class TestInitInstance:
         core_init.init_instance(PROJECT, port=18000)
         assert len(s.downloads) == 1
 
+    def test_portless_upstream_compose_gets_explicit_host_mappings(
+        self, monkeypatch, tmp_path, patched
+    ):
+        """A fresh compose remains host-reachable when upstream omits ports."""
+        s = instance_setup(monkeypatch, tmp_path, seed_compose=False)
+
+        def fake_retrieve(url, dest):
+            s.downloads.append(url)
+            dest.write_text(COMPOSE_UPSTREAM_PORTLESS)
+
+        monkeypatch.setattr(urllib.request, "urlretrieve", fake_retrieve)
+        core_init.init_instance(PROJECT, port=18000)
+
+        content = s.compose_path.read_text()
+        assert '      - "18000-18005:8000-8005"' in content
+        assert '      - "19000-19005:9000-9005"' in content
+        assert content.count("    ports:\n") == 1
+
+    def test_ports_missing_failure_removes_downloaded_compose_for_retry(
+        self, monkeypatch, tmp_path, patched
+    ):
+        s = instance_setup(monkeypatch, tmp_path, seed_compose=False)
+
+        def fake_retrieve(url, dest):
+            s.downloads.append(url)
+            dest.write_text("services:\n  frappe:\n    image: docker.io/frappe/bench:latest\n")
+
+        monkeypatch.setattr(urllib.request, "urlretrieve", fake_retrieve)
+        with pytest.raises(CwcliError) as exc:
+            core_init.init_instance(PROJECT, port=18000)
+
+        assert exc.value.kind is ErrorKind.PRECONDITION
+        assert exc.value.code == "compose.ports_missing"
+        assert not s.compose_path.exists()
+
+        with pytest.raises(CwcliError) as retry_exc:
+            core_init.init_instance(PROJECT, port=18000)
+        assert retry_exc.value.code == "compose.ports_missing"
+        assert len(s.downloads) == 2
+
     def test_download_failure_is_typed_precondition(self, monkeypatch, tmp_path, patched):
         instance_setup(monkeypatch, tmp_path, seed_compose=False)
 
@@ -404,6 +462,53 @@ class TestInitInstance:
         assert exc.value.kind is ErrorKind.CONFLICT
         assert exc.value.code == "ports.in_use"
         assert "The following ports are already in use: 18000" in exc.value.message
+        assert "--port" in (exc.value.hint or "")
+
+    def test_transient_port_conflict_clears_within_the_retry_budget(
+        self, monkeypatch, tmp_path, patched
+    ):
+        # A just-removed instance's own port bindings can take a moment to fully
+        # release (docker-proxy teardown lag); a rapid remove-then-reinit must not
+        # be a hard failure if the conflict clears within the retry window.
+        instance_setup(monkeypatch, tmp_path)
+        calls = {"n": 0}
+
+        def flaky_check(ports):
+            calls["n"] += 1
+            in_use = calls["n"] < 3
+            return {p: in_use for p in ports}
+
+        monkeypatch.setattr(core_init, "check_ports_in_use", flaky_check)
+        sleeps: list[float] = []
+        monkeypatch.setattr(core_init.time, "sleep", lambda s: sleeps.append(s))
+        events: list = []
+        result = core_init.init_instance(PROJECT, port=18000, on_event=events.append)
+
+        assert result.status is Status.OK
+        assert calls["n"] == 3
+        assert len(sleeps) == 2, "must retry (and wait) between attempts, not just once"
+        notices = [e for e in events if isinstance(e, core_init.InitNotice)]
+        assert any(n.code == "ports.retry" for n in notices)
+
+    def test_persistent_port_conflict_still_raises_after_the_retry_budget(
+        self, monkeypatch, tmp_path, patched
+    ):
+        instance_setup(monkeypatch, tmp_path)
+        calls = {"n": 0}
+
+        def always_in_use(ports):
+            calls["n"] += 1
+            return {p: True for p in ports}
+
+        monkeypatch.setattr(core_init, "check_ports_in_use", always_in_use)
+        with pytest.raises(CwcliError) as exc:
+            core_init.init_instance(PROJECT, port=18000)
+        assert exc.value.kind is ErrorKind.CONFLICT
+        assert exc.value.code == "ports.in_use"
+        assert calls["n"] == core_init._PORT_CHECK_ATTEMPTS
+        # Actionable for the transient case (the field-confirmed mechanism) as
+        # well as the genuine, persistent conflict.
+        assert "wait" in (exc.value.hint or "").lower()
         assert "--port" in (exc.value.hint or "")
 
     def test_auto_start_retry_skips_self_port_conflict(self, monkeypatch, tmp_path, patched):

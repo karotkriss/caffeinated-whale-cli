@@ -165,4 +165,30 @@ When frappe is running but MariaDB or either Redis service is stopped, init stil
 This recovers the dependency without allowing Compose to touch or recreate frappe.
 A stopped frappe beside a running MariaDB or Redis still gets the normal pull and whole-stack up path.
 Regression coverage: `tests/test_core_init.py::TestInitInstance` pins the healthy skip, partial-stack recovery, and stopped-frappe paths; `tests/test_init_characterization.py::TestAlreadyRunningNotice` pins the human verbose notice; `tests/e2e/test_init_bench_add_preserves_running_e2e.py` proves on real Docker that a bench add leaves the frappe container's id and `StartedAt` byte-identical and the first bench still answering, with no manual restart in between.
+
+### `init` downloads a compose template with no ports block, and a fresh instance must still get one (`fm/cwcli-init-silent-portless-instance`)
+
+The CONFIRMED root cause of the field incident (three CI runs that exited 0, printed "Successfully initialized", and produced instances with ZERO Docker port mappings, with no "already in use" text anywhere in the logs): the upstream `frappe_docker` devcontainer compose template stopped publishing development ports - it now expects an editor's `devcontainer.json` to forward them instead. cwcli runs the downloaded compose file directly with `docker compose up -d`, so once the template's `ports:` block disappeared upstream, the existing port-customization string replacement had nothing left to replace - a silent no-op - and `compose_path.write_text(content)` wrote out a compose file with NO port mappings at all. `docker compose up -d` succeeds on that file (there is nothing to bind, so nothing can conflict), so `init` completes normally and reports success on a container that is genuinely healthy INSIDE Docker but unreachable from the host - explaining every symptom at once: no conflict message (there was never a conflict to detect), exit 0, and a reliable CI recurrence (an ephemeral runner always downloads the CURRENT upstream template) alongside a clean interactive reproduction (an existing local `~/.cwcli` project directory whose compose file predates the upstream change short-circuits the download via `compose_path.exists()`, so a captain's manual repro against a pre-existing project never re-downloads the now-broken template).
+
+`init_instance` (`core/init.py`) now detects when the downloaded template has NEITHER the web nor the socketio mapping after the usual replace (`web_mapping not in content and socketio_mapping not in content`) and, for a fresh instance only, inserts an explicit `ports:` block after `working_dir:` with cwcli's computed mappings.
+As a fail-closed backstop, if either mapping is STILL missing after that insertion attempt (an unanticipated future upstream shape), `init_instance` removes the invalid download and raises `CwcliError(PRECONDITION, "compose.ports_missing", ...)` rather than ever silently writing a portless compose file.
+Removing it is load-bearing because the error tells the user to retry, and the retry must download the current template instead of reusing the invalid file.
+Regression coverage: `tests/test_core_init.py::TestInitInstance::test_portless_upstream_compose_gets_explicit_host_mappings` pins the live portless upstream shape (fixture `COMPOSE_UPSTREAM_PORTLESS`, matching the real template's current content) and the generated mappings; the real-Docker `tests/e2e` matrix downloads the actual live upstream template on every CI run, so a future upstream shape change surfaces here rather than shipping silently again.
+
+### `init`'s port pre-check also retries a transient conflict, a separate hardening under the same incident (`fm/cwcli-init-silent-portless-instance`)
+
+Also field-confirmed, independently of the root cause above: a just-removed instance's own port bindings can take a moment to fully release because of Docker's `docker-proxy` teardown lag.
+A CI script that purges an instance and re-runs `init` within seconds can therefore see the same ports it just freed as still in use.
+This is a genuine, transient conflict, not a bug in the availability check itself.
+`check_ports_in_use` already detects a real listener regardless of interactivity, and both the pre-check and Docker's own Compose bind fail loudly for a persistent conflict.
+
+`core.init_instance`'s port check (`core/init.py:_ports_still_in_use`) retries up to `_PORT_CHECK_ATTEMPTS` (5) times, one second apart, before raising.
+An `InitNotice(code="ports.retry")` narrates each retry.
+Both the human renderer and `cwcli axi init` surface that notice unconditionally so a caller knows the command is retrying.
+A port still occupied after the full budget raises `CwcliError(CONFLICT, "ports.in_use", ...)` regardless of TTY.
+Its hint names both remedies: wait and retry for a transient hold, or select a different range with `--port`.
+The decision lives only in `core.init_instance`, so `cwcli init` and `cwcli axi init` share the same behavior.
+
+Regression coverage: `tests/test_core_init.py::TestInitInstance::test_transient_port_conflict_clears_within_the_retry_budget` and `test_persistent_port_conflict_still_raises_after_the_retry_budget` pin the retry count, actionable hint, and loud failure after the budget.
+`tests/e2e/test_init_e2e.py::test_noninteractive_init_refuses_loudly_on_an_occupied_port` proves against real Docker that a genuinely occupied socketio-range port causes a non-interactive run to exit nonzero and leave no containers behind.
 Regression coverage: `tests/test_init_characterization.py::TestAutoStartServices` (the human CLI: exact `bench_path` passthrough, the running/not-running/`--no-start` completion messages, the failure-degrades-to-warning-not-exit case) and `tests/test_axi_init.py::TestAutoStartServices` (axi parity: exit 0 on a start failure, the stderr warning, `--no-start`).

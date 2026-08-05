@@ -173,6 +173,10 @@ class _InitRenderer:
             stderr_console.print(f"[yellow]Warning: {event.text}[/yellow]")
         elif code == "instance.already_running" and self.verbose:
             stderr_console.print(f"[dim]{event.text}[/dim]")
+        elif code == "ports.retry":
+            # Unmissable in both rendering modes: a caller waiting on this run
+            # needs to know it's retrying, not stuck.
+            stderr_console.print(f"[yellow]{event.text}[/yellow]")
 
     def _on_trace(self, event) -> None:
         if not self.verbose:
@@ -191,7 +195,11 @@ def _render_error_exit(e: CwcliError, project_name: str, *, verbose: bool = Fals
     stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
     if e.code == "ports.in_use":
         stderr_console.print(
-            "\n[yellow]Tip:[/yellow] Use the [cyan]--port[/cyan] flag to select "
+            "\n[yellow]Tip:[/yellow] If an instance using these ports was just removed, "
+            "they may still be releasing - wait a few seconds and retry."
+        )
+        stderr_console.print(
+            "[yellow]Tip:[/yellow] Otherwise, use the [cyan]--port[/cyan] flag to select "
             "a different starting port."
         )
         stderr_console.print(f"[dim]Example: cwcli init {project_name} --port 10000[/dim]")
@@ -376,10 +384,11 @@ def _start_services(project: str, bench_path: str) -> tuple[bool, bool | None]:
         )
         return False, None
     # core.start now blocks until the web server binds this bench's assigned port, so "running" is
-    # honest by the time we return. If it timed out, surface the warning so the
-    # user isn't told the web is up when it hasn't begun serving yet.
+    # honest by the time we return. If it timed out, or the port never got published
+    # to the host at all, surface the warning so the user isn't told the web is up
+    # when it isn't reachable.
     for warning in result.warnings:
-        if warning.code == "start.web_not_ready":
+        if warning.code in ("start.web_not_ready", "start.no_host_port"):
             stderr_console.print(f"[yellow]Warning:[/yellow] {warning.text}")
     running = result.status is not Status.NEEDS_CHOICE
     web_ready = result.data.web_ready if running and result.data is not None else None

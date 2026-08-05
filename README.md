@@ -280,15 +280,19 @@ Then open http://development.localhost:8000 (or `cwcli open my-project`).
 If the dev services fail to start, init still exits successfully (the bench was already created) and prints a warning telling you to run `cwcli start` yourself.
 The start itself waits for the web server to answer on the bench's own configured port before declaring success; if that times out, init reports the same "not running" output even though the containers and supervisor did launch, since the web isn't actually serving yet.
 If the port cannot be read, start skips the wait and warns instead of probing another bench's port.
+If the web server is running inside the container but its port is not published to the host, init prints a warning naming the missing host binding and advises recreating the instance.
 
 **Port Conflict Handling:**
 
-If the requested ports are in use, you'll see:
+Init retries occupied ports five times, one second apart, to allow bindings from a just-removed instance to finish releasing.
+Each retry is announced in both interactive and non-interactive runs.
+If the ports remain occupied, init exits nonzero before creating the instance and names every conflicting port:
 
 ```
 Error: The following ports are already in use: 8000-8005
 
-Tip: Use the --port flag to select a different starting port.
+Tip: If an instance using these ports was just removed, they may still be releasing - wait a few seconds and retry.
+Tip: Otherwise, use the --port flag to select a different starting port.
 Example: cwcli init my-project --port 10000
 ```
 
@@ -458,6 +462,7 @@ cwcli start [OPTIONS] [PROJECT_NAME]...
 - **Idempotent:** a re-run on an already-running bench is a clean no-op ("already running: N/N processes up"), never a second supervisor stack
 - **Per-process supervision:** each Procfile process runs under supervisord, so one can be restarted or auto-healed without disturbing the others
 - **Waits for the web server:** on a genuine launch, `start` blocks until the bench's **own** web port actually answers before reporting the bench as running, so a scripted `cwcli start && cwcli status` never catches a transient `degraded`. The port is read from that bench's `sites/common_site_config.json`, never assumed - waiting on a hardcoded `:8000` meant `--bench 1` watched bench 0's port and then warned that a healthy bench had not started. If the port cannot be read, the wait is **skipped** (`web_ready` stays unset) rather than spent on a guess. A timeout (60s) does not fail the start (the stack IS launched) - it prints a warning naming the real port and telling you to check `cwcli status` / `cwcli logs`
+- **Host port verification:** on both a genuine launch and an idempotent no-op, `start` warns when the bench's web server has no live host port binding. The warning names the container port and advises recreating the instance with `cwcli init`
 - **Port Conflict Detection:** Automatically checks if required ports are available
 - **Interactive Resolution:** Offers to stop conflicting Frappe projects (use `--yes` to auto-confirm)
 - **Process Identification:** Shows which processes are using ports (cross-platform)
