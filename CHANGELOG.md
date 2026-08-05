@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-08-05
+
+`cwcli apps install` can now be asked to *ensure* an app is installed rather than to install it fresh, and it no longer fails on a bench that already carries the app. The Docker-daemon-unreachable error on the `axi` surface now tells an agent what to do about it.
+
+### Added
+- **`cwcli apps install --if-not-present` (and `cwcli axi apps install --if-not-present`)** - An opt-in idempotent "ensure installed" mode: an app already installed on a target site is reported as a skipped step and the command exits 0 without re-running its install hooks, while an app the site lacks still installs normally and a genuine failure still exits non-zero. This replaces workarounds like `apps install ... || true` that swallowed every failure. Default behaviour is unchanged - without the flag, an already-installed app is still refused - and this is not a `--force`: there is still no way to reinstall over an app the site already has
+
+### Fixed
+- **`cwcli apps install` no longer fails when the app is already present on the bench** - Installing an app whose directory already existed under the bench's `apps/` (as on a pre-warmed base image) failed the whole command at the fetch step. The fetch is now skipped when the app is already on the bench, and installation proceeds to the site. This is distinct from the per-site already-installed guard, which is unchanged
+- **The `axi` Docker-unreachable error now carries a next-step hint** - The most common error an agent hits, a stopped Docker daemon, was the only `axi` error with no guidance line. It now points at the same fix `cwcli doctor` gives
+
 ## [2.2.0] - 2026-08-01
 
 `cwcli init` no longer spends minutes aligning the container user to your host UID/GID; that step now takes seconds. A new `cwcli doctor` command checks whether your machine can run cwcli at all, and several bench-discovery and error-reporting gaps are closed.
