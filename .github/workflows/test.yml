@@ -36,22 +36,30 @@ jobs:
       - name: Run unit tests with coverage
         run: uv run pytest -m unit --cov=caffeinated_whale_cli
 
-  # Every other job here runs ubuntu-latest, which is precisely how a Windows-only
-  # defect lived in utils/auto_inspect.py unnoticed: os.kill(pid, 0) is an inert
-  # liveness probe on POSIX, but on Windows signal.CTRL_C_EVENT == 0 routes it to
-  # GenerateConsoleCtrlEvent, which SUCCEEDS for an already-dead pid - so the
-  # daemon reported itself running off a stale PID file and `auto-inspect start`
-  # refused forever. A mocked platform cannot catch that class of bug (a static
-  # scan of this same code guessed the wrong mechanism for ten days) - only a real
-  # Windows kernel can - and this repo is public, so windows-latest is free.
+  # Every other job here runs ubuntu-latest, which is precisely how Windows-only
+  # defects hide. Two live in this repo's history:
+  #   - utils/auto_inspect.py: os.kill(pid, 0) is an inert liveness probe on POSIX,
+  #     but on Windows signal.CTRL_C_EVENT == 0 routes it to
+  #     GenerateConsoleCtrlEvent, which SUCCEEDS for an already-dead pid - so the
+  #     daemon reported itself running off a stale PID file and `auto-inspect start`
+  #     refused forever.
+  #   - core/credbridge.py: the git credential bridge bound an AF_UNIX socket, but
+  #     Windows CPython has no socket.AF_UNIX, so `cwcli init --frappe-url <private
+  #     fork>` crashed with AttributeError the instant it entered the bridge. The
+  #     fix routes the Windows AND macOS hosts (both Docker Desktop) onto a
+  #     loopback-TCP transport while native Linux keeps AF_UNIX; these tests drive
+  #     that transport on a real Windows kernel.
+  # A mocked platform cannot catch this class of bug (a static scan of auto_inspect
+  # guessed the wrong mechanism for ten days) - only a real Windows kernel can - and
+  # this repo is public, so windows-latest is free.
   #
-  # Deliberately NARROW: this runs tests/test_auto_inspect.py, not the full unit
-  # tier. The other jobs run inside a Linux uv container that a Windows runner
+  # Deliberately NARROW: this runs the two Windows-native test files, not the full
+  # unit tier. The other jobs run inside a Linux uv container that a Windows runner
   # cannot use, and the rest of the suite has never been exercised on Windows, so
   # widening this to `-m unit` is its own piece of work rather than something to
   # bolt on here. See docs/testing/guide.md.
-  windows-auto-inspect:
-    name: Pytest (Windows, auto-inspect)
+  windows-native:
+    name: Pytest (Windows, native)
     runs-on: windows-latest
 
     steps:
@@ -66,8 +74,8 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --all-extras
 
-      - name: Run auto-inspect tests on real Windows
-        run: uv run pytest tests/test_auto_inspect.py
+      - name: Run Windows-native tests on real Windows
+        run: uv run pytest tests/test_auto_inspect.py tests/test_core_credbridge.py
 
   # Clean runtime-only install smoke test. This job exists because cwcli once
   # shipped SHIPPED-BROKEN on develop: commands/config.py imported `click`
