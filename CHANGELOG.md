@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-08-06
+
+`cwcli apps update` can now recover from a per-app git conflict instead of failing outright, the git credential bridge works on Windows and macOS, and cwcli's own releases now keep the Homebrew tap formula in sync automatically.
+
+### Added
+- **`cwcli apps update --force`**: An opt-in flag that recovers from a per-app git conflict during an update by hard-resetting that app to its remote tracking branch (`git fetch` + `git reset --hard @{u}`), discarding local changes so the update completes instead of failing. Without `--force`, a conflict still fails and discards nothing, exactly as before. Available on both `cwcli apps update` and `cwcli axi apps update`.
+
+### Fixed
+- **The git credential bridge now works on Windows and macOS**: `cwcli init --frappe-url <private fork>` used to crash on Windows with `AttributeError: module 'socket' has no attribute 'AF_UNIX'` because the bridge's only transport was a host unix-domain socket, which Windows Python doesn't support and which Docker Desktop bind mounts can't carry into the container on either Windows or macOS. The bridge now uses that proven socket transport on native Linux and a token-gated loopback-TCP transport on Docker Desktop hosts (Windows and macOS).
+
+### Other Changes
+- **Releases now auto-bump the Homebrew tap formula**: a cwcli release now updates `Formula/cwcli.rb` in `karotkriss/homebrew-cwcli` with the newly published PyPI sdist URL and checksum, via a PR that the tap's own CI validates before it lands. A failure in this step can never affect the PyPI publish or GitHub release.
+
 ## [2.4.0] - 2026-08-05
 
 `cwcli init` can now build from a custom Frappe fork instead of the default `frappe/frappe`, and a private fork authenticates automatically.
