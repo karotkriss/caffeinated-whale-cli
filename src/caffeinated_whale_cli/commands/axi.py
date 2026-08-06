@@ -2157,6 +2157,13 @@ def axi_init(
         help="Frappe version resolved by shape: a bare major (16 -> version-16) or a full "
         "semantic version (16.26.3 -> v16.26.3). Mutually exclusive with --frappe-branch.",
     ),
+    frappe_url: str = typer.Option(
+        None,
+        "--frappe-url",
+        help="Custom Frappe repository URL to build from (a fork), passed to 'bench init "
+        "--frappe-path'. Omit for the default frappe/frappe repo. Pair with --frappe-branch "
+        "to check out the fork's branch.",
+    ),
     db_root_password: str = typer.Option(
         None,
         "--db-root-password",
@@ -2283,6 +2290,7 @@ def axi_init(
             site_name=site,
             bench_parent=bench_parent,
             frappe_ref=frappe_ref,
+            frappe_url=frappe_url,
             db_root_password=db_root,
             admin_password=resolved_admin,
             reuse_bench=reuse_bench,
