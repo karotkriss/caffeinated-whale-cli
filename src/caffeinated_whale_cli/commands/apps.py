@@ -543,6 +543,16 @@ def update_apps(
     no_recache: bool = typer.Option(
         False, "--no-recache", help="Skip re-caching after app updates."
     ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help=(
+            "DESTRUCTIVE: if an app's git update hits a conflict, hard-reset that app "
+            "to its remote tracking branch (git fetch + git reset --hard), discarding "
+            "local changes, instead of failing. Applies only on conflict; a clean "
+            "update is untouched."
+        ),
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Auto-start stopped containers without prompting."
@@ -553,6 +563,11 @@ def update_apps(
 
     Updating 'frappe' runs 'bench update --reset'. This is what the deprecated
     'cwcli update' now delegates to.
+
+    With --force, an app whose git update hits a CONFLICT (local changes) is
+    hard-reset to its remote tracking branch, discarding those local changes, so the
+    update completes; without --force such a conflict fails safely and discards
+    nothing. --force never touches an app whose update is clean.
     """
     run_app_update(
         project_name,
@@ -565,6 +580,7 @@ def update_apps(
         build=build,
         skip_maintenance=skip_maintenance,
         no_recache=no_recache,
+        force=force,
         yes=yes,
         sites=sites,
         json_output=json_output,

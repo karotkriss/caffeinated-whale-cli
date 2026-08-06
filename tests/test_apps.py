@@ -66,6 +66,7 @@ class FakeFrappeContainer:
         self.available_apps = available_apps if available_apps is not None else []
         self.installed = installed or {}  # site -> [app names]
         self.fail_on = fail_on or []  # substrings that make a command fail
+        self.porcelain = ""  # what `git status --porcelain` reports (empty = clean tree)
         self.get_app_creates = get_app_creates or {}  # target substring -> apps/ dirname
         self.id = "cid"
         self.status = "running"
@@ -93,6 +94,8 @@ class FakeFrappeContainer:
             return 0, ""
         if cmd_str.strip() == "git remote":
             return 0, "upstream\n"
+        if cmd_str.strip() == "git status --porcelain":
+            return 0, self.porcelain
         if cmd_str.startswith("ls -1") and cmd_str.rstrip().endswith("apps"):
             # Matches both "ls -1 <bench>/apps" and the workdir form "ls -1 apps".
             return 0, "\n".join(self.available_apps) + "\n"

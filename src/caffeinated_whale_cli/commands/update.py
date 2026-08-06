@@ -46,6 +46,15 @@ _PHASES = {
         "ok": "[bold green]✓[/bold green] Frappe framework updated",
         "failed": "[bold red]✗[/bold red] 'bench update --reset' failed",
     },
+    "force_reset": {
+        "header": (
+            "[bold yellow]![/bold yellow] --force: hard-resetting [cyan]{item}[/cyan] to its "
+            "remote tracking branch (discarding local changes)"
+        ),
+        "spinner": "Force-resetting {item} to remote (discarding local changes)...",
+        "ok": "[bold green]✓[/bold green] Force-reset '{item}' to remote and updated it",
+        "failed": "[bold red]✗[/bold red] Failed to force-reset app '{item}'",
+    },
     "migrate": {
         "header": "\n[bold]Migrating site {index}/{total}: {item}[/bold]",
         "spinner": "Migrating site: {item} ({index}/{total})",
@@ -260,6 +269,15 @@ def _report_summary(report: UpdateReport) -> None:
     if successful_apps > 0 and not report.aborted:
         console.print(f"\n[bold green]✓ Successfully updated {successful_apps} app(s)[/bold green]")
 
+    if report.force_reset_apps:
+        # A destructive recovery worth naming even on an otherwise-clean run: these
+        # apps had local changes DISCARDED to force the update past a git conflict.
+        console.print(
+            f"[bold yellow]![/bold yellow] --force hard-reset "
+            f"{len(report.force_reset_apps)} app(s) to upstream, discarding local changes: "
+            f"{', '.join(report.force_reset_apps)}"
+        )
+
     if report.ok:
         return
 
@@ -374,6 +392,7 @@ def run_app_update(
     build: bool = False,
     skip_maintenance: bool = False,
     no_recache: bool = False,
+    force: bool = False,
     yes: bool = False,
     sites: list[str] | None = None,
     json_output: bool = False,
@@ -426,6 +445,7 @@ def run_app_update(
             build=build,
             skip_maintenance=skip_maintenance,
             no_recache=no_recache,
+            force=force,
             auto_start=yes,
             on_event=renderer,
         )
