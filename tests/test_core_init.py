@@ -144,6 +144,36 @@ class FakeContainer:
         return 0, b""
 
 
+class _BridgeSpy:
+    """Stand-in for ``credbridge.credential_bridge`` that records that it wrapped a
+    fetch and which execs ran inside it.
+
+    ``credential_bridge`` is a real context manager, so this is called
+    ``spy(container, bench_path)`` and then entered; it snapshots the container's
+    streamed-exec count at ``__enter__``/``__exit__`` so a test can assert the
+    ``bench init`` clone ran strictly between them (genuinely wrapped, not skipped).
+    """
+
+    def __init__(self):
+        self.calls: list[tuple] = []
+        self.enter_len: int | None = None
+        self.exit_len: int | None = None
+        self._container = None
+
+    def __call__(self, container, bench_path):
+        self.calls.append((container, bench_path))
+        self._container = container
+        return self
+
+    def __enter__(self):
+        self.enter_len = len(self._container.client.api.exec_calls)
+        return None
+
+    def __exit__(self, *exc):
+        self.exit_len = len(self._container.client.api.exec_calls)
+        return False
+
+
 @pytest.fixture
 def patched(monkeypatch, tmp_path):
     """Common seams: cache clear, search paths, no real sleeping."""
@@ -984,6 +1014,42 @@ class TestCustomFrappeUrl:
         commands = [c["command"] for c in container.client.api.exec_calls]
         bench_init = next(c for c in commands if "bench init" in c)
         assert "'https://example.com/frappe.git?a=1&b=2'" in bench_init
+
+    def test_private_frappe_url_fetch_is_wrapped_in_the_credential_bridge(
+        self, monkeypatch, patched
+    ):
+        # A private fork's `bench init` clone must run INSIDE the credential
+        # bridge so it authenticates through the host's gh/glab, exactly as
+        # apps install/update do - not silently unwrapped (PR fix).
+        container = FakeContainer()
+        use_container(monkeypatch, container)
+        spy = _BridgeSpy()
+        monkeypatch.setattr(core_init.credbridge, "credential_bridge", spy)
+
+        core_init.init_bench(
+            PROJECT,
+            **bench_kwargs(frappe_url="https://github.com/me/frappe", frappe_ref="my-feature"),
+        )
+
+        # Stood up for THIS frappe container, keyed on the bench under the mount.
+        assert spy.calls == [(container, BENCH_PATH)]
+        # ...and the `bench init` clone ran while the bridge was active (between
+        # __enter__ and __exit__), proving the fetch is genuinely wrapped.
+        commands = [c["command"] for c in container.client.api.exec_calls]
+        bench_init_idx = next(i for i, c in enumerate(commands) if "bench init" in c)
+        assert spy.enter_len <= bench_init_idx < spy.exit_len
+
+    def test_default_init_never_stands_up_the_credential_bridge(self, monkeypatch, patched):
+        # No custom fork -> upstream public frappe/frappe; the common path is
+        # left untouched (the bridge is never stood up).
+        container = FakeContainer()
+        use_container(monkeypatch, container)
+        spy = _BridgeSpy()
+        monkeypatch.setattr(core_init.credbridge, "credential_bridge", spy)
+
+        core_init.init_bench(PROJECT, **bench_kwargs())
+
+        assert spy.calls == []
 
 
 class TestVersionGating:
