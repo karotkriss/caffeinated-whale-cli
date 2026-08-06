@@ -161,7 +161,7 @@ cwcli init [OPTIONS] [PROJECT_NAME]
 | `--bench-parent TEXT` | Directory inside container where bench is created (default: /workspace); also the container mount point for the persisted host `data/` directory, fixed for the life of the instance - changing it on a re-init errors, naming the mounted directory |
 | `--frappe-branch TEXT` | Frappe branch or tag for bench init, e.g. `version-16` or `v16.26.3` (default: version-16). Mutually exclusive with `--version` |
 | `--version TEXT` | Frappe version for bench init, resolved by shape: a bare major (`16` → `version-16` branch) or a full semantic version (`16.26.3` → `v16.26.3` tag). Malformed values are rejected with a non-zero exit. Mutually exclusive with `--frappe-branch` |
-| `--frappe-url TEXT` | Custom Frappe repository URL to build from (a fork), passed to `bench init --frappe-path`. Omit to use the default `frappe/frappe` repo. Pair with `--frappe-branch` to check out the fork's branch |
+| `--frappe-url TEXT` | Custom Frappe repository URL to build from (a fork), passed to `bench init --frappe-path`. Omit to use the default `frappe/frappe` repo. Pair with `--frappe-branch` to check out the fork's branch. A private fork authenticates through the same credential bridge as `apps install`/`apps update` (host `gh`/`glab`, no token in the container); sign in on the host first |
 | `--db-root-password TEXT` | MariaDB root password (default: 123) |
 | `--admin-password TEXT` | Administrator password for the site, used verbatim. If omitted, a strong password is generated and printed once (interactive runs only); a non-interactive run must supply this flag |
 | `--install-erpnext` | Install ERPNext application after initialization |
