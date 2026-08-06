@@ -93,6 +93,7 @@ class UpdateReport:
     migrated_sites: list[str]  # the load-bearing gate: only what entered maintenance
     failed_apps: list[str]
     unknown_apps: list[str]  # its stream was lost; it MAY still be running
+    force_reset_apps: list[str]  # --force hard-reset these to upstream on a conflict (DESTRUCTIVE)
     failed_maintenance_enable: list[str]  # affected but NOT migrated
     failed_migrations: list[str]
     unknown_migrations: list[str]  # may still be running: do NOT retry blindly
@@ -332,6 +333,75 @@ def _sites_with_app(project_name: str, bench_path: str, app: str, container) -> 
     return found
 
 
+def _tree_is_dirty(container, app_path: str) -> bool:
+    """Does the app have local changes? The CONFLICT signal after a failed ``git pull``.
+
+    A pull that failed on a conflict - local uncommitted changes that would be
+    overwritten, or a merge that hit conflict markers - leaves ``git status
+    --porcelain`` non-empty; a pull that failed on the network or on auth leaves the
+    tree clean. So a dirty tree is what distinguishes a conflict ``--force`` can
+    resolve by resetting from a failure it cannot. FAILS CLOSED: an unreadable
+    status is treated as NOT dirty, so ``--force`` never hard-resets (and discards
+    work) on an unknown - the ``core.where`` fail-honest rule, in the safe direction
+    for a destructive action.
+    """
+    exit_code, output = container.exec_run("git status --porcelain", workdir=app_path)
+    if exit_code != 0:
+        return False
+    return bool(_decode(output).strip())
+
+
+def _force_reset_app(
+    container, app: str, app_path: str, *, emit: OnEvent, warnings: list[Message]
+) -> str:
+    """Hard-reset ``app`` to its upstream, discarding local changes. Returns the status token.
+
+    The ``--force`` recovery for a ``git pull`` that hit a conflict: ``git fetch``
+    then ``git reset --hard @{u}`` (``@{u}`` is the SAME remote-tracking branch
+    ``git pull`` merges, so no remote/branch name has to be resolved), which also
+    aborts an in-progress conflicted merge. DESTRUCTIVE - it discards local changes -
+    so the caller runs it ONLY on a real conflict and only when ``--force`` was given.
+    Untracked files are left in place: ``git reset --hard`` does not delete them.
+    """
+    warnings.append(
+        Message(
+            "app.force_reset",
+            f"--force: app '{app}' hit a git conflict, so it is being HARD-RESET to its "
+            "remote tracking branch, DISCARDING local changes.",
+        )
+    )
+    emit(
+        UpdateStepStart(
+            phase="force_reset",
+            item=app,
+            message=(
+                f"--force: '{app}' hit a git conflict; hard-resetting it to its remote "
+                "tracking branch and DISCARDING local changes"
+            ),
+        )
+    )
+    status = "ok"
+    lost: str | None = None
+    for cmd in ("git fetch", "git reset --hard @{u}"):
+        code, lost = _stream_step(
+            container,
+            cmd,
+            workdir=app_path,
+            phase="force_reset",
+            item=app,
+            emit=emit,
+            warnings=warnings,
+        )
+        if code is None:
+            status = "unknown"
+            break
+        if code != 0:
+            status = "failed"
+            break
+    emit(UpdateStepEnd(phase="force_reset", item=app, status=status, message=lost))
+    return status
+
+
 def _build_report(
     *,
     project_name: str,
@@ -342,6 +412,7 @@ def _build_report(
     migrated: list[str],
     failed_apps: list[str],
     unknown_apps: list[str],
+    force_reset_apps: list[str] | None = None,
     failed_maintenance_enable: list[str],
     failed_migrations: list[str],
     unknown_migrations: list[str],
@@ -389,6 +460,7 @@ def _build_report(
         migrated_sites=list(migrated),
         failed_apps=list(failed_apps),
         unknown_apps=list(unknown_apps),
+        force_reset_apps=list(force_reset_apps or []),
         failed_maintenance_enable=list(failed_maintenance_enable),
         failed_migrations=list(failed_migrations),
         unknown_migrations=list(unknown_migrations),
@@ -566,6 +638,7 @@ def update(
     build: bool = False,
     skip_maintenance: bool = False,
     no_recache: bool = False,
+    force: bool = False,
     auto_start: bool = False,
     on_event: OnEvent | None = None,
 ) -> Result[UpdateReport]:
@@ -631,6 +704,7 @@ def update(
                     ("--clear-website-cache", clear_website_cache),
                     ("--build", build),
                     ("--skip-maintenance", skip_maintenance),
+                    ("--force", force),
                 )
                 if active
             ]
@@ -656,6 +730,7 @@ def update(
             build=build,
             skip_maintenance=skip_maintenance,
             no_recache=no_recache,
+            force=force,
             emit=emit,
             warnings=warnings,
         )
@@ -673,6 +748,7 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
     build: bool,
     skip_maintenance: bool,
     no_recache: bool,
+    force: bool,
     emit: OnEvent,
     warnings: list[Message],
 ) -> Result[UpdateReport]:
@@ -681,6 +757,7 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
     affected: set[str] = set()
     failed_apps: list[str] = []
     unknown_apps: list[str] = []
+    force_reset_apps: list[str] = []  # --force hard-reset these past a conflict
     failed_migrations: list[str] = []
     unknown_migrations: list[str] = []
     failed_builds: list[str] = []
@@ -710,7 +787,7 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
                 warnings.append(Message("app.not_found", not_found))
                 emit(UpdateStepEnd(phase="pull", item=app, status="failed", message=not_found))
                 continue
-            _run_step(
+            status = _run_step(
                 frappe_container,
                 "git pull",
                 workdir=app_path,
@@ -723,6 +800,19 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
                 failed=failed_apps,
                 unknown=unknown_apps,
             )
+            # --force ONLY on a real conflict: a failed pull whose tree is dirty is a
+            # local-changes conflict a hard-reset to upstream can force through; a
+            # clean tree means the pull failed for another reason (network/auth) that
+            # discarding work would not fix, so it is left as the failure it is. A
+            # successful reset resolves the pull's failure - the app is now AT the
+            # upstream tip, so it is un-failed and discovery/migrate proceed for it.
+            if status == "failed" and force and _tree_is_dirty(frappe_container, app_path):
+                if (
+                    _force_reset_app(frappe_container, app, app_path, emit=emit, warnings=warnings)
+                    == "ok"
+                ):
+                    failed_apps.remove(app)
+                    force_reset_apps.append(app)
 
         # An app whose outcome is unknown is not known to have updated, so it is not
         # discovered against - the same treatment a failed pull gets.
@@ -961,6 +1051,7 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
             migrated=sites_to_migrate,
             failed_apps=failed_apps,
             unknown_apps=unknown_apps,
+            force_reset_apps=force_reset_apps,
             failed_maintenance_enable=failed_maintenance_enable,
             failed_migrations=failed_migrations,
             unknown_migrations=unknown_migrations,

@@ -652,3 +652,85 @@ class TestSitesWithAppLiveFallback:
         _seed_cache(monkeypatch, None)
         container = _SiteQueryContainer(sites=[], installed={}, fail_on=["/sites"])
         assert core_update._sites_with_app("proj", BENCH, "frappe", container) == []
+
+
+# ---------------------------------------------------------- the --force conflict reset
+
+
+class TestForceResetOnConflict:
+    """``--force`` hard-resets an app to upstream ONLY when its pull hit a conflict.
+
+    A conflict is signalled by a DIRTY working tree after a failed ``git pull`` (local
+    changes that block the merge, or a conflicted merge): ``git status --porcelain``
+    is non-empty. A pull that failed on the network/auth leaves a clean tree, so
+    ``--force`` must NOT discard work there. And a clean update is untouched by the
+    flag entirely.
+    """
+
+    def test_force_hard_resets_on_conflict_then_completes_clean(self, wired):
+        wired.fail_on = ["git pull"]  # the pull hits a conflict
+        wired.porcelain = " M apps/payments/hooks.py\n"  # dirty tree = the conflict signal
+
+        result = _update(force=True)
+        report = result.data
+
+        # The update completed: the app is un-failed, reported as force-reset, and its
+        # site migrated.
+        assert report.ok is True
+        assert report.force_reset_apps == ["payments"]
+        assert report.failed_apps == []
+        assert report.migrated_sites == ["a.localhost"]
+        # The destructive recovery actually ran: fetch + hard reset to the upstream.
+        assert "git fetch" in wired.calls
+        assert "git reset --hard @{u}" in wired.calls
+        # A clear warning was emitted at the reset.
+        assert any(w.code == "app.force_reset" for w in result.warnings)
+
+    def test_without_force_a_conflict_fails_safe_and_discards_nothing(self, wired):
+        wired.fail_on = ["git pull"]
+        wired.porcelain = " M apps/payments/hooks.py\n"
+
+        result = _update()  # no --force: current behavior preserved
+
+        report = result.data
+        assert report.ok is False
+        assert report.failed_apps == ["payments"]
+        assert report.force_reset_apps == []
+        # NOTHING destructive ran - not even a status probe for the reset decision.
+        assert not any("git reset" in c for c in wired.calls)
+
+    def test_a_clean_update_is_untouched_by_force(self, wired):
+        # git pull succeeds, so --force is a pure no-op.
+        result = _update(force=True)
+
+        report = result.data
+        assert report.ok is True
+        assert report.force_reset_apps == []
+        assert "git pull" in wired.calls
+        assert not any("git reset" in c for c in wired.calls)
+
+    def test_force_does_not_reset_a_non_conflict_failure(self, wired):
+        # The pull fails but the tree is CLEAN: a network/auth failure a reset cannot
+        # fix, so --force leaves it as the honest failure it is.
+        wired.fail_on = ["git pull"]
+        wired.porcelain = ""  # clean
+
+        result = _update(force=True)
+
+        report = result.data
+        assert report.ok is False
+        assert report.failed_apps == ["payments"]
+        assert report.force_reset_apps == []
+        assert not any("git reset" in c for c in wired.calls)
+
+    def test_force_fails_closed_when_the_working_tree_state_is_unreadable(self, wired):
+        # An unreadable `git status` must NOT be guessed as dirty: never discard work
+        # on an unknown (the safe direction for a destructive action).
+        wired.fail_on = ["git pull", "git status --porcelain"]
+
+        result = _update(force=True)
+
+        report = result.data
+        assert report.force_reset_apps == []
+        assert report.failed_apps == ["payments"]
+        assert not any("git reset" in c for c in wired.calls)
