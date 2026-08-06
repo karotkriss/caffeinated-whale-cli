@@ -172,6 +172,10 @@ Publishes package to PyPI when a version tag is pushed.
 The release note must exist before the tag is pushed.
 See [`.github/release-notes/README.md`](../../.github/release-notes/README.md) for its authoritative format and rendering instructions.
 
+A second job, **`bump-homebrew-tap`**, then fans the release out to the `karotkriss/homebrew-cwcli` Homebrew tap.
+It is isolated from the publish (`needs: build-and-publish` plus `continue-on-error: true`), so a tap-bump failure can never fail the PyPI publish or the GitHub release.
+The `cwcli-release` skill owns the detailed contract (isolation mechanism, PyPI-JSON URL/sha256 derivation, action choice, and the known tap-side `test do` gap).
+
 **Trigger a release:**
 ```bash
 # 1. Bump the version (four files move together)
@@ -258,6 +262,16 @@ grep '^version' pyproject.toml
 ```yaml
 run: uv sync --frozen --all-extras
 ```
+
+---
+
+### Every job fails at "Set up job" / "Failed to resolve action download info. Error: Service Unavailable"
+
+**Cause:** A transient GitHub Actions infrastructure outage, not a code defect. When GitHub's action-download service is unavailable, every job in a run fails at step 1 ("Set up job") before any of the repo's own steps execute, so a workflow-only change (or any change) shows a fan of red checks - `Pytest`, `Mypy`, `Clean install smoke`, `Build`, `Design-system adherence` - that all pass locally.
+
+**Signature:** the failing jobs' only step is `Set up job` with conclusion `failure`, and the log shows `Failed to resolve action download info. Error: Service Unavailable`. Nothing in the repo diff maps to the failing checks.
+
+**Fix:** re-run the affected jobs (or push again); no code change resolves an upstream outage.
 
 ---
 
