@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-08-05
+
+`cwcli init` can now build from a custom Frappe fork instead of the default `frappe/frappe`, and a private fork authenticates automatically.
+
+### Added
+- **`cwcli init --frappe-url <url>`**: Builds the bench from a custom Frappe repository instead of the default `frappe/frappe`. Pair it with the existing `--frappe-branch` to check out a specific branch on that fork. Omitting `--frappe-url` builds the default repo exactly as before.
+- **Private `--frappe-url` forks authenticate through the credential bridge**: A private fork passed to `--frappe-url` now authenticates automatically through cwcli's git credential bridge, the same way private app fetches already do, so `bench init` can clone it with no extra setup on your part.
+
 ## [2.3.1] - 2026-08-05
 
 `cwcli init` could create an instance with no ports published to the host after an upstream change to the Frappe Docker template, leaving it running but unreachable. It now detects and fixes that itself.
