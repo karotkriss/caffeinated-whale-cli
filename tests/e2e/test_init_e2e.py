@@ -203,6 +203,54 @@ def test_frappe_url_reaches_bench_init_frappe_path(port_allocator):
         harness.cwcli_rm(name)
 
 
+@v16_only
+def test_frappe_url_clone_engages_the_credential_bridge_on_a_real_bench(session_instance):
+    """A PRIVATE Frappe fork must clone with the host's gh/glab credentials, so
+    `init` now wraps its `bench init` clone in the SAME `core.credbridge` context
+    `apps` install/update use. Proving a private fetch itself needs a real private
+    repo + host auth, which CI cannot supply hermetically; this instead proves the
+    mechanism that wrap relies on is genuinely live on a real bench - entering the
+    bridge points the container `frappe` user's git at the shim (and drops a shim
+    into the workspace mount), leaving it removes both. Network-free and
+    credential-free: the bridge is inert until git hits a 401, so it can wrap every
+    clone. Reuses the shared session container via the app's own resolver and tears
+    everything down (asserted), so the shared instance is left exactly as found."""
+    from caffeinated_whale_cli.core import credbridge
+    from caffeinated_whale_cli.core import docker as core_docker
+
+    inst = session_instance
+    container = core_docker.get_frappe_container(inst.name)
+    assert container is not None, "session frappe container must be up"
+
+    parent = inst.bench.rsplit("/", 1)[0]  # the workspace mount, e.g. /workspace
+
+    def helper_config() -> str:
+        # Read as the same `frappe` user + HOME the bridge writes as (bare exec).
+        _, out = harness.exec_in_frappe(
+            inst.name, "git config --global --get-all credential.helper || true"
+        )
+        return out
+
+    def shim_present() -> bool:
+        code, _ = harness.exec_in_frappe(
+            inst.name,
+            f"ls {shlex.quote(parent)}/.git-credential-bridge-*.py >/dev/null 2>&1",
+        )
+        return code == 0
+
+    assert "git-credential-bridge" not in helper_config(), "a stale bridge helper is set"
+    assert not shim_present(), "a stale bridge shim is present"
+
+    with credbridge.credential_bridge(container, inst.bench):
+        during = helper_config()
+        assert "git-credential-bridge" in during, f"bridge helper not configured: {during}"
+        assert shim_present(), "bridge shim not written into the workspace mount"
+
+    # Torn down by its own exact --unset-by-value + unlink, on a real bench.
+    assert "git-credential-bridge" not in helper_config(), "bridge helper not torn down"
+    assert not shim_present(), "bridge shim not cleaned up"
+
+
 # --- §4.1 interactive + generated-password print-once (v16 leg only) ------- #
 @v16_only
 @pytest.mark.standalone
