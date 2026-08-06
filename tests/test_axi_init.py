@@ -303,6 +303,34 @@ class TestFrappeRef:
         assert calls["instance"] == []
 
 
+class TestFrappeUrl:
+    def test_frappe_url_passes_through_to_the_core(self, monkeypatch):
+        _no_admin_env(monkeypatch)
+        calls = _patch_stages(monkeypatch)
+
+        result = runner.invoke(
+            axi_mod.app,
+            [
+                "init",
+                "proj",
+                "--admin-password",
+                "a",
+                "--frappe-url",
+                "https://github.com/me/frappe",
+            ],
+        )
+        assert result.exit_code == 0
+        assert calls["bench"][0]["frappe_url"] == "https://github.com/me/frappe"
+
+    def test_omitting_frappe_url_defaults_to_none(self, monkeypatch):
+        _no_admin_env(monkeypatch)
+        calls = _patch_stages(monkeypatch)
+
+        result = runner.invoke(axi_mod.app, ["init", "proj", "--admin-password", "a"])
+        assert result.exit_code == 0
+        assert calls["bench"][0]["frappe_url"] is None
+
+
 # ------------------------------------------------------------------ choice surfaces -> errors
 
 

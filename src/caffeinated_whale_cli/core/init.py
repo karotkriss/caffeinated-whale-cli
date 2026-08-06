@@ -866,6 +866,7 @@ def init_bench(
     site_name: str,
     bench_parent: str = "/workspace",
     frappe_ref: str = DEFAULT_FRAPPE_BRANCH,
+    frappe_url: str | None = None,
     db_root_password: str = "123",
     admin_password: str,
     reuse_bench: bool | None = None,
@@ -887,6 +888,12 @@ def init_bench(
     it mirrors - the downloaded compose's hardcoded ``MYSQL_ROOT_PASSWORD:
     123`` - lives in the compose file the core itself downloads; it is
     shielded off the argv/echo, not randomized.
+
+    ``frappe_url`` is the optional custom Frappe repository (a fork) passed
+    through to ``bench init --frappe-path``; ``None`` (the default) builds from
+    the upstream ``frappe/frappe`` repo exactly as before. ``frappe_ref`` is the
+    branch/tag within that repo, so a fork tracking a custom branch pairs the two
+    (``frappe_url=<fork>``, ``frappe_ref=<branch>``).
     """
     emit = on_event or _noop
     warnings: list[Message] = []
@@ -1041,21 +1048,20 @@ def init_bench(
                 else:
                     emit(InitTrace(text="yarn installed successfully."))
 
+        bench_init_args = [
+            "bench",
+            "init",
+            "--skip-redis-config-generation",
+            "--frappe-branch",
+            shlex.quote(frappe_ref),
+        ]
+        # A custom Frappe repo (a fork) rides bench's own --frappe-path; frappe_ref
+        # above is the branch/tag to check out within it. Omitted -> upstream repo.
+        if frappe_url:
+            bench_init_args += ["--frappe-path", shlex.quote(frappe_url)]
+        bench_init_args += [shlex.quote(bench_name), "--verbose"]
         bench_init_cmd = _build_cd_command(
-            bench_parent_path,
-            nvm_prefix
-            + env_prefix
-            + " ".join(
-                [
-                    "bench",
-                    "init",
-                    "--skip-redis-config-generation",
-                    "--frappe-branch",
-                    shlex.quote(frappe_ref),
-                    shlex.quote(bench_name),
-                    "--verbose",
-                ]
-            ),
+            bench_parent_path, nvm_prefix + env_prefix + " ".join(bench_init_args)
         )
 
         emit(InitStepStart(phase="bench_init", item=bench_name))
