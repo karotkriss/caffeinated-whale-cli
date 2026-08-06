@@ -30,6 +30,7 @@ value the old path did not print.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import shlex
@@ -42,8 +43,8 @@ from pathlib import Path
 
 from ..utils import config_utils, db_utils
 from ..utils.port_utils import check_ports_in_use, format_port_list
+from . import credbridge, resolvers
 from . import docker as core_docker
-from . import resolvers
 from .envelope import Choice, Message, Result, Status
 from .errors import CwcliError, ErrorKind
 from .exec_stream import ExecChunk, ExecDone, exec_stream
@@ -893,7 +894,11 @@ def init_bench(
     through to ``bench init --frappe-path``; ``None`` (the default) builds from
     the upstream ``frappe/frappe`` repo exactly as before. ``frappe_ref`` is the
     branch/tag within that repo, so a fork tracking a custom branch pairs the two
-    (``frappe_url=<fork>``, ``frappe_ref=<branch>``).
+    (``frappe_url=<fork>``, ``frappe_ref=<branch>``). When ``frappe_url`` is a
+    PRIVATE fork, the ``bench init`` clone is wrapped in the same
+    :func:`core.credbridge.credential_bridge` context ``apps`` install/update
+    use, so it authenticates through the host's ``gh``/``glab`` with no token
+    ever entering the container.
     """
     emit = on_event or _noop
     warnings: list[Message] = []
@@ -1065,13 +1070,27 @@ def init_bench(
         )
 
         emit(InitStepStart(phase="bench_init", item=bench_name))
-        _run_exec(
-            frappe_container,
-            bench_init_cmd,
-            phase="bench_init",
-            emit=emit,
-            collect=not stream_output,
+        # A custom Frappe fork may be a PRIVATE repo, so bridge the container's
+        # git back to the host's gh/glab for the clone `bench init` performs -
+        # the same context apps install/update wrap their get-app fetch in
+        # (see core.credbridge). The upstream default (frappe_url is None) is the
+        # public frappe/frappe repo and needs no bridge, so that common path is
+        # left untouched; the bridge is inert for a public fork too (git only
+        # calls a credential helper on a 401). bench_full_path is under the
+        # workspace mount, which is what credbridge resolves against.
+        bridge: contextlib.AbstractContextManager[None] = (
+            credbridge.credential_bridge(frappe_container, bench_full_path)
+            if frappe_url
+            else contextlib.nullcontext()
         )
+        with bridge:
+            _run_exec(
+                frappe_container,
+                bench_init_cmd,
+                phase="bench_init",
+                emit=emit,
+                collect=not stream_output,
+            )
         emit(InitStepEnd(phase="bench_init"))
         bench_created = True
 
