@@ -67,6 +67,11 @@ from pathlib import Path
 _SOCK_NAME_FMT = ".git-cred-{}.sock"
 _HELPER_NAME_FMT = ".git-credential-bridge-{}.py"
 
+# A git-credential request is a few short lines; anything larger is a stalled or
+# hostile peer. The listener is single-threaded, so cap the read (and time it out)
+# so one connection cannot wedge the bridge for the whole bench op.
+_MAX_REQUEST_BYTES = 64 * 1024
+
 # The host gateway name Docker Desktop resolves to the host's loopback from inside a
 # container. Only used by the TCP (Windows-host) transport; the container overrides
 # it (and the port) via CWCLI_CRED_HOST/CWCLI_CRED_PORT only when redirected for a
@@ -182,12 +187,18 @@ def _serve(srv: socket.socket, stop: threading.Event, token: bytes | None = None
         except OSError:
             break  # socket closed by teardown
         with conn:
+            conn.settimeout(5)  # an accepted socket does NOT inherit srv's timeout
             req = b""
-            while True:
-                chunk = conn.recv(4096)
-                if not chunk:
-                    break
-                req += chunk
+            try:
+                while len(req) <= _MAX_REQUEST_BYTES:
+                    chunk = conn.recv(4096)
+                    if not chunk:
+                        break
+                    req += chunk
+            except OSError:
+                continue  # stalled/slow peer (timeout) or reset: drop it, keep serving
+            if len(req) > _MAX_REQUEST_BYTES:
+                continue  # oversized: a git-credential request is tiny; drop it
             if token is not None:
                 if not req.startswith(token):
                     continue  # unauthenticated: answer nothing
