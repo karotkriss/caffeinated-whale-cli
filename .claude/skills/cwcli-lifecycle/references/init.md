@@ -77,6 +77,7 @@ The default Frappe branch is `version-16` (`DEFAULT_FRAPPE_BRANCH` in `core/init
 
 - `--frappe-branch <ref>` - a raw git branch/tag (e.g. `version-16`, `v16.26.3`, `develop`), passed to `bench init` unchanged.
 - `--version <value>` - a shape-resolving alias (`core/init.py:resolve_frappe_ref`): a bare integer `N` -> branch `version-N`; a full SemVer 2.0.0 `X.Y.Z` (`_SEMVER_RE`) -> tag `vX.Y.Z`; anything else (e.g. `16.26`, `latest`) raises `CwcliError(USAGE)` with the same message the old `ValueError` carried. The flag fusion and the passing-both error stay in `commands/init.py:_resolve_frappe_branch` (flag UX belongs to one frontend; `Exit(1)`), and it defaults to `DEFAULT_FRAPPE_BRANCH` when neither is given.
+- `--frappe-url <url>` - an optional custom Frappe repo (a fork) threaded through the ONE shared decision point `core.init_bench(frappe_url=...)` onto bench's own `bench init --frappe-path <url>` (purely additive: omitted emits no `--frappe-path` and builds upstream `frappe/frappe` exactly as before). The resolved `frappe_ref` above is the branch/tag checked out WITHIN the fork, so no new branch flag was added - `--frappe-branch` pairs with the URL.
 
 Version gating keys on the MAJOR version parsed from the resolved ref via `core/init.py:_frappe_major_version` (handles BOTH `version-16`->16 and the `v16.26.3`->16 tag form; `develop`->`None`), NOT exact branch strings - so a SemVer tag is gated the same as its branch equivalent:
 
