@@ -106,6 +106,18 @@ To fix this:
 2. **pip:** Run `pip show -f caffeinated-whale-cli` and look for the location of `cwcli.exe` (or `cwcli` on macOS/Linux) - typically a `Scripts` or `bin` folder within your Python installation - then add that directory to your `PATH`.
 3. **Restart your terminal:** Close and reopen your terminal for changes to take effect.
 
+### Locked-down Windows (Application Control / SmartScreen)
+
+On a Windows machine with Application Control, Smart App Control, or SmartScreen blocking unsigned executables, the `cwcli.exe`/`caffeinated-whale-cli.exe` launcher shim that `uv`/`pip` generates is unsigned and may be blocked.
+`cwcli` must still be installed (the shim is written at install time; it's just not the thing you invoke), then run it through the signed Python interpreter instead:
+
+```bash
+python -m caffeinated_whale_cli --version
+python -m caffeinated_whale_cli ls
+```
+
+This bypasses the shim entirely and behaves identically to `cwcli`/`caffeinated-whale-cli`.
+
 ## Quick Start
 
 ```bash
