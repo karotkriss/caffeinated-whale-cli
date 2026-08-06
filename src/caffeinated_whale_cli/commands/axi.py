@@ -1460,6 +1460,15 @@ def axi_apps_update(
     no_recache: bool = typer.Option(
         False, "--no-recache", help="Skip re-caching after app updates."
     ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help=(
+            "DESTRUCTIVE: on a git conflict, hard-reset the app to its remote tracking "
+            "branch (fetch + reset --hard), discarding local changes, instead of "
+            "failing. Only on conflict; a clean update is untouched."
+        ),
+    ),
 ) -> None:
     """Update app(s) and migrate affected sites; emit the report as TOON.
 
@@ -1479,6 +1488,11 @@ def axi_apps_update(
 
     There is no `axi update`: the deprecated `cwcli update` spelling is not worth an
     agent-facing verb.
+
+    `--force` is opt-in and DESTRUCTIVE: an app whose git update hits a conflict is
+    hard-reset to its remote tracking branch (discarding local changes) so the update
+    completes, reported in `force_reset_apps`. It fires ONLY on a conflict - a clean
+    update is untouched - and never on a non-conflict failure (network/auth).
     """
     try:
         result = core_update.update(
@@ -1491,6 +1505,7 @@ def axi_apps_update(
             build=build,
             skip_maintenance=skip_maintenance,
             no_recache=no_recache,
+            force=force,
         )
     except CwcliError as error:
         emit_axi_error(error)
