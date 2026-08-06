@@ -189,22 +189,24 @@ jobs:
           # (its hashed storage path can't be predicted ahead of time) and the
           # sha256 PyPI itself recorded for that file, so one read yields both
           # values the tap formula needs. A short retry loop absorbs the brief
-          # propagation gap right after `uv publish` returns.
-          JSON=""
+          # propagation gap right after `uv publish` returns - and the sdist
+          # lookup lives INSIDE that loop, because the propagation gap can also
+          # surface as a version JSON that already exists but does not yet carry
+          # its sdist entry; retrying the whole read is what absorbs both.
+          URL=""
+          SHA256=""
           for i in $(seq 1 10); do
-            JSON=$(curl -sf "https://pypi.org/pypi/caffeinated-whale-cli/${VERSION}/json") && break
-            echo "caffeinated-whale-cli ${VERSION} not on PyPI yet, retrying in 10s ($i/10)..."
+            JSON=$(curl -sf "https://pypi.org/pypi/caffeinated-whale-cli/${VERSION}/json") || JSON=""
+            if [ -n "$JSON" ]; then
+              URL=$(echo "$JSON" | jq -r '[.urls[] | select(.packagetype=="sdist")][0].url // empty')
+              SHA256=$(echo "$JSON" | jq -r '[.urls[] | select(.packagetype=="sdist")][0].digests.sha256 // empty')
+              [ -n "$URL" ] && [ -n "$SHA256" ] && break
+            fi
+            echo "caffeinated-whale-cli ${VERSION} sdist not resolvable on PyPI yet, retrying in 10s ($i/10)..."
             sleep 10
           done
-          if [ -z "$JSON" ]; then
-            echo "::error::caffeinated-whale-cli ${VERSION} never appeared on PyPI after retries"
-            exit 1
-          fi
-
-          URL=$(echo "$JSON" | jq -r '[.urls[] | select(.packagetype=="sdist")][0].url // empty')
-          SHA256=$(echo "$JSON" | jq -r '[.urls[] | select(.packagetype=="sdist")][0].digests.sha256 // empty')
           if [ -z "$URL" ] || [ -z "$SHA256" ]; then
-            echo "::error::no sdist entry found in PyPI metadata for caffeinated-whale-cli ${VERSION}"
+            echo "::error::caffeinated-whale-cli ${VERSION} sdist never resolved on PyPI after retries"
             exit 1
           fi
 
