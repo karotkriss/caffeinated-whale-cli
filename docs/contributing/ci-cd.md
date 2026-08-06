@@ -265,6 +265,16 @@ run: uv sync --frozen --all-extras
 
 ---
 
+### Every job fails at "Set up job" / "Failed to resolve action download info. Error: Service Unavailable"
+
+**Cause:** A transient GitHub Actions infrastructure outage, not a code defect. When GitHub's action-download service is unavailable, every job in a run fails at step 1 ("Set up job") before any of the repo's own steps execute, so a workflow-only change (or any change) shows a fan of red checks - `Pytest`, `Mypy`, `Clean install smoke`, `Build`, `Design-system adherence` - that all pass locally.
+
+**Signature:** the failing jobs' only step is `Set up job` with conclusion `failure`, and the log shows `Failed to resolve action download info. Error: Service Unavailable`. Nothing in the repo diff maps to the failing checks.
+
+**Fix:** re-run the affected jobs (or push again); no code change resolves an upstream outage.
+
+---
+
 ## Testing CI
 
 ### Test Lint Workflow
