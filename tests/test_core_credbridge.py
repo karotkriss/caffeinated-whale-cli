@@ -21,11 +21,16 @@ import pytest
 
 from caffeinated_whale_cli.core import credbridge
 
-# The AF_UNIX transport is Unix-only: Windows CPython has no ``socket.AF_UNIX`` and
-# these tests connect over one / assert on the ``.sock`` file. The TCP tests below
-# cover the Windows-host transport (and run on every platform), so the windows-latest
-# CI leg runs the whole file with these skipped rather than the AF_UNIX path erroring.
-unix_only = pytest.mark.skipif(os.name == "nt", reason="AF_UNIX transport is Unix-only")
+# The AF_UNIX transport is native-Linux only: it is the default transport only where
+# `_prefer_tcp()` is False (native Linux Docker). On Windows AND macOS the default is
+# the loopback-TCP path (Docker Desktop), and these tests connect over an AF_UNIX
+# socket / assert on the ``.sock`` file. The TCP tests below cover the Docker Desktop
+# transport (and run on every platform), so a Windows/macOS leg runs the whole file
+# with these skipped rather than the AF_UNIX path erroring.
+unix_only = pytest.mark.skipif(
+    credbridge._prefer_tcp(),
+    reason="AF_UNIX transport is native-Linux only; the TCP tests cover Windows and macOS",
+)
 
 
 def _drain(sock: socket.socket) -> bytes:
@@ -291,10 +296,25 @@ def test_bridge_is_noop_without_bind_mount(tmp_path):
     assert not list(tmp_path.glob(".git-cred-*.sock"))
 
 
-# ------------------------------------------------ TCP transport (Windows host)
+@pytest.mark.parametrize(
+    "name, platform, expected_tcp",
+    [
+        ("nt", "win32", True),  # Windows
+        ("posix", "darwin", True),  # macOS Docker Desktop
+        ("posix", "linux", False),  # native Linux Docker
+    ],
+)
+def test_prefer_tcp_selects_transport_by_platform(monkeypatch, name, platform, expected_tcp):
+    """Windows and macOS (both Docker Desktop) use TCP; only native Linux keeps AF_UNIX."""
+    monkeypatch.setattr(credbridge.os, "name", name)
+    monkeypatch.setattr(credbridge.sys, "platform", platform)
+    assert credbridge._prefer_tcp() is expected_tcp
+
+
+# ------------------------------------------------ TCP transport (Docker Desktop host)
 #
 # These run on EVERY platform (loopback TCP works everywhere), forcing the TCP path
-# on Unix via `_prefer_tcp`. On the windows-latest CI leg they are the only tests
+# on Unix via `_prefer_tcp`. On a Windows/macOS CI leg they are the only tests
 # that exercise the bridge, since the AF_UNIX ones above are skipped there. On the
 # OLD AF_UNIX-only code, entering the bridge on Windows raised AttributeError at
 # `socket.AF_UNIX` before any handshake, so `test_tcp_bridge_runs_the_generated_shim`

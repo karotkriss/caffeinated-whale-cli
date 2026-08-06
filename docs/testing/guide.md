@@ -357,7 +357,7 @@ Another job, `Pytest (Windows, native)`, runs `tests/test_auto_inspect.py` and `
 It exists because every other job runs `ubuntu-latest`, and that is exactly how Windows-only defects survive.
 Two are in this repo's history.
 First, `utils/auto_inspect.py`: `os.kill(pid, 0)` is an inert liveness probe on POSIX, but on Windows `signal.CTRL_C_EVENT == 0` routes it to `GenerateConsoleCtrlEvent`, which *succeeds for an already-dead pid*, so the daemon reported itself running off a stale PID file and `auto-inspect start` refused with "already running" from then on.
-Second, `core/credbridge.py`: the git credential bridge bound an `AF_UNIX` socket, but Windows CPython has no `socket.AF_UNIX`, so `cwcli init --frappe-url <private fork>` crashed with `AttributeError` the instant it entered the bridge; the fix routes the Windows host onto a loopback-TCP transport, and the credbridge tests drive that transport on a real Windows kernel.
+Second, `core/credbridge.py`: the git credential bridge bound an `AF_UNIX` socket, but Windows CPython has no `socket.AF_UNIX`, so `cwcli init --frappe-url <private fork>` crashed with `AttributeError` the instant it entered the bridge; the fix routes the Windows AND macOS hosts (both Docker Desktop, whose bind mounts do not carry a unix-socket inode into the container) onto a loopback-TCP transport while native Linux keeps `AF_UNIX`, and the credbridge tests drive that transport on a real Windows kernel.
 No amount of mocking `sys.platform` finds either; only a real Windows kernel does.
 The repo is public, so `windows-latest` minutes are free - there is no cost argument for leaving this class of bug uncovered.
 
