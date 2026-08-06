@@ -487,6 +487,15 @@ def init(
             "(16.26.3 -> v16.26.3 tag). Mutually exclusive with --frappe-branch."
         ),
     ),
+    frappe_url: str | None = typer.Option(
+        None,
+        "--frappe-url",
+        help=(
+            "Custom Frappe repository URL to build from (a fork), passed to "
+            "'bench init --frappe-path'. Omit to use the default frappe/frappe repo. "
+            "Pair with --frappe-branch to check out the fork's branch."
+        ),
+    ),
     db_root_password: str = typer.Option(
         "123",
         "--db-root-password",
@@ -562,6 +571,7 @@ def init(
         cwcli init my-project --version 16 --install-erpnext
         cwcli init my-project --version 16.26.3
         cwcli init my-project --frappe-branch version-16 --admin-password mypass
+        cwcli init my-project --frappe-url https://github.com/me/frappe --frappe-branch my-feature
     """
     # Resolve the Frappe git ref first so a malformed --version fails fast,
     # before any project dir / container work.
@@ -644,6 +654,7 @@ def init(
                     site_name=site,
                     bench_parent=bench_parent,
                     frappe_ref=frappe_branch,
+                    frappe_url=frappe_url,
                     db_root_password=db_root_password,
                     admin_password=admin_password,
                     reuse_bench=reuse_answer,

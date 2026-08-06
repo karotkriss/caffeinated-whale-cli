@@ -206,6 +206,7 @@ def run_init(
         bench_parent="/workspace",
         frappe_branch=None,
         version=None,
+        frappe_url=None,
         db_root_password="123",
         admin_password="pw-x",
         auto_start=False,
@@ -268,6 +269,22 @@ class TestExecOrderAndCommands:
         }
         for call in r.api.exec_calls[:5] + r.api.exec_calls[6:]:
             assert not call["environment"]
+
+    def test_frappe_url_reaches_bench_init_as_frappe_path(self, monkeypatch, tmp_path):
+        # A fork URL threaded through `cwcli init` lands on bench's --frappe-path,
+        # and the branch stays on --frappe-branch (paired for a fork on a branch).
+        r = run_init(
+            monkeypatch,
+            tmp_path,
+            frappe_url="https://github.com/me/frappe",
+            frappe_branch="my-feature",
+        )
+        bench_init = next(c["command"] for c in r.api.exec_calls if "bench init" in c["command"])
+        assert bench_init == (
+            "cd /workspace && bench init --skip-redis-config-generation "
+            "--frappe-branch my-feature --frappe-path https://github.com/me/frappe "
+            "frappe-bench --verbose"
+        )
 
     def test_host_compose_calls_and_compose_rewrite(self, monkeypatch, tmp_path, capsys):
         r = run_init(monkeypatch, tmp_path)
