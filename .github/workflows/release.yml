@@ -22,6 +22,9 @@ jobs:
       name: ${{ vars.PYPI_REPOSITORY || 'pypi' }}
       url: https://pypi.org/project/caffeinated-whale-cli/
 
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
     permissions:
       contents: write  # For creating releases
       id-token: write  # Legacy OIDC permission; current publishing uses UV_PUBLISH_TOKEN
@@ -162,3 +165,71 @@ jobs:
           echo '```bash' >> $GITHUB_STEP_SUMMARY
           echo "pip install caffeinated-whale-cli==${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+
+  bump-homebrew-tap:
+    name: Update Homebrew Tap
+    needs: build-and-publish
+    # `needs:` alone already skips this job if build-and-publish failed, so the
+    # PyPI publish and GitHub release are never at risk from anything below.
+    # `continue-on-error: true` is the second half of the isolation: even a
+    # failure INSIDE this job (missing token, tap CI hiccup, PyPI propagation
+    # delay, rate limit) reports as a non-fatal "success with issues" job and
+    # never turns the overall release workflow run red.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - name: Resolve PyPI sdist URL and checksum
+        id: pypi
+        env:
+          VERSION: ${{ needs.build-and-publish.outputs.version }}
+        run: |
+          # PyPI's JSON API is the single source for both the exact sdist URL
+          # (its hashed storage path can't be predicted ahead of time) and the
+          # sha256 PyPI itself recorded for that file, so one read yields both
+          # values the tap formula needs. A short retry loop absorbs the brief
+          # propagation gap right after `uv publish` returns - and the sdist
+          # lookup lives INSIDE that loop, because the propagation gap can also
+          # surface as a version JSON that already exists but does not yet carry
+          # its sdist entry; retrying the whole read is what absorbs both.
+          URL=""
+          SHA256=""
+          for i in $(seq 1 10); do
+            JSON=$(curl -sf "https://pypi.org/pypi/caffeinated-whale-cli/${VERSION}/json") || JSON=""
+            if [ -n "$JSON" ]; then
+              URL=$(echo "$JSON" | jq -r '[.urls[] | select(.packagetype=="sdist")][0].url // empty')
+              SHA256=$(echo "$JSON" | jq -r '[.urls[] | select(.packagetype=="sdist")][0].digests.sha256 // empty')
+              [ -n "$URL" ] && [ -n "$SHA256" ] && break
+            fi
+            echo "caffeinated-whale-cli ${VERSION} sdist not resolvable on PyPI yet, retrying in 10s ($i/10)..."
+            sleep 10
+          done
+          if [ -z "$URL" ] || [ -z "$SHA256" ]; then
+            echo "::error::caffeinated-whale-cli ${VERSION} sdist never resolved on PyPI after retries"
+            exit 1
+          fi
+
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+
+      - name: Bump karotkriss/homebrew-cwcli formula
+        # mislav/bump-homebrew-formula-action, pinned by commit SHA (tag v4.2):
+        # a Node action that edits the formula file over the GitHub API (no
+        # local git/brew needed) and takes an explicit download-url +
+        # download-sha256, which fits a custom tap whose formula's `url` is a
+        # PyPI sdist rather than a GitHub release tarball. It only rewrites the
+        # FIRST top-level `url`/`sha256` pair in the formula, so the per-dependency
+        # `resource` blocks in Formula/cwcli.rb are left untouched, as intended.
+        uses: mislav/bump-homebrew-formula-action@f865c8b0dbebd6e263cc06782a0e974c61cf12d2 # v4.2
+        with:
+          formula-name: cwcli
+          homebrew-tap: karotkriss/homebrew-cwcli
+          download-url: ${{ steps.pypi.outputs.url }}
+          download-sha256: ${{ steps.pypi.outputs.sha256 }}
+          # Force PR mode even though HOMEBREW_TAP_TOKEN can push directly: the
+          # tap's own test-bot CI (.github/workflows/tests.yml there) must
+          # validate the bumped formula before it lands, not after.
+          create-pullrequest: true
+        env:
+          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
