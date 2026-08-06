@@ -46,7 +46,8 @@ jobs:
   #   - core/credbridge.py: the git credential bridge bound an AF_UNIX socket, but
   #     Windows CPython has no socket.AF_UNIX, so `cwcli init --frappe-url <private
   #     fork>` crashed with AttributeError the instant it entered the bridge. The
-  #     fix routes the Windows host onto a loopback-TCP transport; these tests drive
+  #     fix routes the Windows AND macOS hosts (both Docker Desktop) onto a
+  #     loopback-TCP transport while native Linux keeps AF_UNIX; these tests drive
   #     that transport on a real Windows kernel.
   # A mocked platform cannot catch this class of bug (a static scan of auto_inspect
   # guessed the wrong mechanism for ten days) - only a real Windows kernel can - and

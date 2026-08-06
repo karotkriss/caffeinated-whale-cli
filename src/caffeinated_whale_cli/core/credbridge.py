@@ -7,23 +7,27 @@ back to the HOST's already-authenticated ``gh``/``glab``. The Frappe container i
 always Linux (even under Docker Desktop on Windows), so only the HOST transport
 varies by platform:
 
-* **Unix host (Linux/macOS)** - a unix-domain socket placed in cwcli's existing
-  workspace bind mount (host ``.../data`` <-> container ``/workspace``): a socket a
-  host process holds appears in the container as the same inode, so git reaches it
-  with no network/compose changes. Proven end to end on a real bench
-  (``g6-credbridge-proof``).
-* **Windows host** - a loopback TCP socket. Windows CPython has no
-  ``socket.AF_UNIX``, and a Docker Desktop bind mount does NOT carry a unix-socket
-  inode into the container, so the unix-socket path is unusable there. The host
-  binds ``127.0.0.1:<ephemeral port>`` (loopback only, never routable) and the
-  container reaches it via ``host.docker.internal``, which Docker Desktop forwards
-  to the host's loopback. Because a loopback port has no filesystem-permission
-  boundary (any host process or co-resident container could connect during the
-  brief window it is open), the TCP path is gated by a per-invocation secret token
-  baked into the container shim: a connection whose bytes do not begin with that
-  exact token is answered with nothing. The token lives only in the shim file
-  (same bind-mount readability as the unix-socket path) and host memory, so the TCP
-  path is no weaker than the unix-socket one.
+* **Native Linux host** - a unix-domain socket placed in cwcli's existing
+  workspace bind mount (host ``.../data`` <-> container ``/workspace``): a real
+  bind mount sharing the host kernel, so a socket a host process holds appears in
+  the container as the same inode and git reaches it with no network/compose
+  changes. Proven end to end on a real bench (``g6-credbridge-proof``).
+* **Windows or macOS host (Docker Desktop)** - a loopback TCP socket. Windows
+  CPython has no ``socket.AF_UNIX``; macOS has it, but Docker Desktop for Mac has
+  the SAME limitation as Windows - its bind mounts (Windows file-sharing; macOS
+  VirtioFS/gRPC-FUSE) do NOT carry a host-created unix-socket inode into the Linux
+  container, so the unix-socket path is unusable on both. The host binds
+  ``127.0.0.1:<ephemeral port>`` (loopback only, never routable) and the container
+  reaches it via ``host.docker.internal``, which Docker Desktop forwards to the
+  host's loopback. Because a loopback port has no filesystem-permission boundary
+  (any host process or co-resident container could connect during the brief window
+  it is open), the TCP path is gated by a per-invocation secret token baked into
+  the container shim: a connection whose bytes do not begin with that exact token
+  is answered with nothing (constant-time compare, no timing side channel). The
+  token lives only in the shim file (same bind-mount readability as the unix-socket
+  path) and host memory, so the TCP path is no weaker than the unix-socket one.
+  This transport is unit-tested at the transport level only; no macOS/Windows E2E
+  is feasible in CI.
 
 Three pieces (do not elaborate them):
 
@@ -54,11 +58,13 @@ context manager that always tears everything down, including on failure.
 from __future__ import annotations
 
 import contextlib
+import hmac
 import os
 import re
 import secrets
 import socket
 import subprocess
+import sys
 import threading
 import uuid
 from collections.abc import Iterator
@@ -138,12 +144,16 @@ _ACCEPT_TIMEOUT = 0.5
 def _prefer_tcp() -> bool:
     """True where the unix-socket transport is unusable and TCP must be used.
 
-    Windows CPython lacks ``socket.AF_UNIX``, and even where a build exposes it a
-    Docker Desktop bind mount does not carry the socket inode into the container -
-    so the discriminator is the host platform, not ``AF_UNIX`` availability. Kept a
-    tiny function so tests can force the TCP path on any OS.
+    Windows CPython lacks ``socket.AF_UNIX``, and BOTH Windows and macOS run Docker
+    Desktop, whose bind mounts (Windows file-sharing; macOS VirtioFS/gRPC-FUSE) do
+    NOT carry a host-created unix-socket inode into the Linux container. Only NATIVE
+    LINUX Docker - a real bind mount sharing the host kernel, where the socket inode
+    genuinely appears in the container - can use the AF_UNIX transport. So the
+    discriminator is "Docker Desktop host (Windows/macOS) vs native Linux", not
+    ``AF_UNIX`` availability (macOS exposes ``AF_UNIX`` yet still cannot carry the
+    socket across the mount). Kept a tiny function so tests can force either path.
     """
-    return os.name == "nt"
+    return os.name == "nt" or sys.platform == "darwin"
 
 
 def host_credential(request: bytes) -> bytes:
@@ -176,8 +186,11 @@ def _serve(srv: socket.socket, stop: threading.Event, token: bytes | None = None
     When ``token`` is set (the TCP transport), a request whose bytes do not begin
     with that exact token is dropped with no answer - the loopback port is reachable
     by any host process or co-resident container, so the token is what proves the
-    request came from this invocation's shim. The unix-socket transport passes
-    ``None``: its filesystem boundary already scopes who can connect.
+    request came from this invocation's shim. The comparison is constant-time
+    (``hmac.compare_digest``), so the TCP path has no token-timing side channel -
+    matching the "no weaker than the unix-socket path" claim (AF_UNIX has none). The
+    unix-socket transport passes ``None``: its filesystem boundary already scopes who
+    can connect.
     """
     while not stop.is_set():
         try:
@@ -200,7 +213,7 @@ def _serve(srv: socket.socket, stop: threading.Event, token: bytes | None = None
             if len(req) > _MAX_REQUEST_BYTES:
                 continue  # oversized: a git-credential request is tiny; drop it
             if token is not None:
-                if not req.startswith(token):
+                if not hmac.compare_digest(req[: len(token)], token):
                     continue  # unauthenticated: answer nothing
                 req = req[len(token) :]
             with contextlib.suppress(OSError):
