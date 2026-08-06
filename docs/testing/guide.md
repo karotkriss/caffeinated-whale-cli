@@ -352,11 +352,13 @@ See the [CI/CD Workflows guide](../contributing/ci-cd.md) for the full job list 
 
 ### The Windows job: why it exists and why it is narrow
 
-Another job, `Pytest (Windows, auto-inspect)`, runs `tests/test_auto_inspect.py` on `windows-latest`.
+Another job, `Pytest (Windows, native)`, runs `tests/test_auto_inspect.py` and `tests/test_core_credbridge.py` on `windows-latest`.
 
-It exists because every other job runs `ubuntu-latest`, and that is exactly how a Windows-only defect survived in `utils/auto_inspect.py`: `os.kill(pid, 0)` is an inert liveness probe on POSIX, but on Windows `signal.CTRL_C_EVENT == 0` routes it to `GenerateConsoleCtrlEvent`, which *succeeds for an already-dead pid*.
-The daemon therefore reported itself running off a stale PID file and `auto-inspect start` refused with "already running" from then on.
-No amount of mocking `sys.platform` finds that; only a real Windows kernel does.
+It exists because every other job runs `ubuntu-latest`, and that is exactly how Windows-only defects survive.
+Two are in this repo's history.
+First, `utils/auto_inspect.py`: `os.kill(pid, 0)` is an inert liveness probe on POSIX, but on Windows `signal.CTRL_C_EVENT == 0` routes it to `GenerateConsoleCtrlEvent`, which *succeeds for an already-dead pid*, so the daemon reported itself running off a stale PID file and `auto-inspect start` refused with "already running" from then on.
+Second, `core/credbridge.py`: the git credential bridge bound an `AF_UNIX` socket, but Windows CPython has no `socket.AF_UNIX`, so `cwcli init --frappe-url <private fork>` crashed with `AttributeError` the instant it entered the bridge; the fix routes the Windows AND macOS hosts (both Docker Desktop, whose bind mounts do not carry a unix-socket inode into the container) onto a loopback-TCP transport while native Linux keeps `AF_UNIX`, and the credbridge tests drive that transport on a real Windows kernel.
+No amount of mocking `sys.platform` finds either; only a real Windows kernel does.
 The repo is public, so `windows-latest` minutes are free - there is no cost argument for leaving this class of bug uncovered.
 
 The job is **deliberately narrow**, and the honest reason is that widening it is unproven work rather than a line of YAML.
