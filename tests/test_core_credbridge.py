@@ -9,13 +9,33 @@ against the same bind mount, where each must keep its own socket/shim/config lin
 
 from __future__ import annotations
 
+import os
 import re
 import socket
+import subprocess
+import sys
+import threading
 import time
 
 import pytest
 
 from caffeinated_whale_cli.core import credbridge
+
+# The AF_UNIX transport is Unix-only: Windows CPython has no ``socket.AF_UNIX`` and
+# these tests connect over one / assert on the ``.sock`` file. The TCP tests below
+# cover the Windows-host transport (and run on every platform), so the windows-latest
+# CI leg runs the whole file with these skipped rather than the AF_UNIX path erroring.
+unix_only = pytest.mark.skipif(os.name == "nt", reason="AF_UNIX transport is Unix-only")
+
+
+def _drain(sock: socket.socket) -> bytes:
+    resp = b""
+    while True:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        resp += chunk
+    return resp
 
 
 class FakeContainer:
@@ -81,6 +101,7 @@ def test_host_credential_missing_tool_is_empty(monkeypatch):
 # ------------------------------------------------------------ context manager
 
 
+@unix_only
 def test_bridge_stands_up_and_answers_then_tears_down(tmp_path, monkeypatch):
     def fake_run(argv, input=None, capture_output=None):
         # Prove the request reached the dispatcher, and answer like gh would.
@@ -136,6 +157,7 @@ def test_bridge_stands_up_and_answers_then_tears_down(tmp_path, monkeypatch):
     ]
 
 
+@unix_only
 def test_daemon_survives_accept_timeouts(tmp_path, monkeypatch):
     """The listener must outlive its accept-timeout cycles.
 
@@ -169,6 +191,7 @@ def test_daemon_survives_accept_timeouts(tmp_path, monkeypatch):
         assert resp == b"password=OK\n"
 
 
+@unix_only
 def test_bridge_tears_down_on_exception(tmp_path, monkeypatch):
     monkeypatch.setattr(credbridge.subprocess, "run", lambda *a, **k: None)
     container = FakeContainer(tmp_path)
@@ -208,6 +231,7 @@ def test_bridge_tears_down_on_setup_failure(tmp_path, monkeypatch):
     assert not list(tmp_path.glob(".git-credential-bridge-*.py"))
 
 
+@unix_only
 def test_concurrent_bridges_do_not_clobber_each_other(tmp_path, monkeypatch):
     """Two overlapping bridges against the SAME bind mount (standing in for two
     concurrent `cwcli apps install`/`apps update` runs on the same bench) must each
@@ -265,3 +289,126 @@ def test_bridge_is_noop_without_bind_mount(tmp_path):
         pass
     assert container.exec_calls == []  # never touched git config
     assert not list(tmp_path.glob(".git-cred-*.sock"))
+
+
+# ------------------------------------------------ TCP transport (Windows host)
+#
+# These run on EVERY platform (loopback TCP works everywhere), forcing the TCP path
+# on Unix via `_prefer_tcp`. On the windows-latest CI leg they are the only tests
+# that exercise the bridge, since the AF_UNIX ones above are skipped there. On the
+# OLD AF_UNIX-only code, entering the bridge on Windows raised AttributeError at
+# `socket.AF_UNIX` before any handshake, so `test_tcp_bridge_runs_the_generated_shim`
+# would have failed there and passes after the fix.
+
+
+def test_serve_tcp_requires_the_token(monkeypatch):
+    """The TCP listener answers ONLY a request that leads with the exact token.
+
+    The loopback port is reachable by any host process or co-resident container, so
+    the token is the credential gate: a wrong/absent token gets nothing, the right
+    one gets the credential with the token stripped before dispatch.
+    """
+    seen = {}
+
+    def fake_run(argv, input=None, capture_output=None):
+        seen["input"] = input
+        return type("D", (), {"stdout": b"password=OK\n"})()
+
+    monkeypatch.setattr(credbridge.subprocess, "run", fake_run)
+
+    token = b"s3cr3t-token-abc"
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.bind(("127.0.0.1", 0))
+    port = srv.getsockname()[1]
+    srv.settimeout(credbridge._ACCEPT_TIMEOUT)
+    srv.listen(8)
+    stop = threading.Event()
+    thread = threading.Thread(target=credbridge._serve, args=(srv, stop, token), daemon=True)
+    thread.start()
+    try:
+        # wrong token -> dropped, no answer, dispatcher never called
+        bad = socket.create_connection(("127.0.0.1", port))
+        bad.sendall(b"WRONGTOKEN" + b"host=github.com\n\n")
+        bad.shutdown(socket.SHUT_WR)
+        assert _drain(bad) == b""
+        bad.close()
+        assert "input" not in seen  # the bad request never reached host_credential
+
+        # right token -> the credential, and the token is stripped before dispatch
+        good = socket.create_connection(("127.0.0.1", port))
+        good.sendall(token + b"protocol=https\nhost=github.com\n\n")
+        good.shutdown(socket.SHUT_WR)
+        assert _drain(good) == b"password=OK\n"
+        good.close()
+        assert seen["input"] == b"protocol=https\nhost=github.com\n\n"
+    finally:
+        stop.set()
+        srv.close()
+        thread.join(timeout=2)
+
+
+def test_tcp_bridge_binds_loopback_only(tmp_path, monkeypatch):
+    """The TCP transport binds 127.0.0.1 (never 0.0.0.0 / a routable address) and
+    writes NO socket file into the bind mount."""
+    monkeypatch.setattr(credbridge, "_prefer_tcp", lambda: True)
+    monkeypatch.setattr(credbridge.subprocess, "run", lambda *a, **k: None)
+    container = FakeContainer(tmp_path)
+
+    with credbridge.credential_bridge(container, "/workspace/frappe-bench") as _:
+        # exactly one shim, zero socket files
+        assert len(list(tmp_path.glob(".git-credential-bridge-*.py"))) == 1
+        assert not list(tmp_path.glob(".git-cred-*.sock"))
+
+
+def test_tcp_bridge_runs_the_generated_shim(tmp_path, monkeypatch):
+    """Force the TCP transport and drive the REAL generated shim as the container's
+    git would - redirected from host.docker.internal to 127.0.0.1 so it reaches the
+    listener the test process holds. The token-gated daemon answers, and teardown
+    removes the shim and unsets git config by its own exact value.
+
+    This is the Windows regression test: the old AF_UNIX-only bridge raised
+    AttributeError on entry here on Windows.
+    """
+
+    # Patch host_credential (not subprocess.run): this test launches the real shim
+    # via subprocess.run, and patching credbridge.subprocess.run mutates the shared
+    # module object, so the test's own subprocess.run would hit the fake too.
+    def fake_host_credential(req):
+        # the shim's request reached the dispatcher with the token already stripped
+        assert req.startswith(b"protocol=https")
+        assert b"host=github.com" in req
+        return b"username=karotkriss\npassword=TOKEN\n"
+
+    monkeypatch.setattr(credbridge, "_prefer_tcp", lambda: True)
+    monkeypatch.setattr(credbridge, "host_credential", fake_host_credential)
+    container = FakeContainer(tmp_path)
+
+    with credbridge.credential_bridge(container, "/workspace/frappe-bench"):
+        helper = _only(tmp_path.glob(".git-credential-bridge-*.py"))
+        assert not list(tmp_path.glob(".git-cred-*.sock"))  # TCP: no socket file
+        config_value = f"!/usr/bin/python3 /workspace/{helper.name}"
+        assert container.exec_calls[0] == [
+            "git",
+            "config",
+            "--global",
+            "--add",
+            "credential.helper",
+            config_value,
+        ]
+        out = subprocess.run(
+            [sys.executable, str(helper), "get"],
+            input=b"protocol=https\nhost=github.com\n\n",
+            capture_output=True,
+            env={**os.environ, "CWCLI_CRED_HOST": "127.0.0.1"},
+        )
+        assert out.stdout == b"username=karotkriss\npassword=TOKEN\n"
+
+    assert not helper.exists()  # shim removed on teardown
+    assert container.exec_calls[-1] == [
+        "git",
+        "config",
+        "--global",
+        "--unset",
+        "credential.helper",
+        f"^{re.escape(config_value)}$",
+    ]
