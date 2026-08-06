@@ -172,6 +172,10 @@ Publishes package to PyPI when a version tag is pushed.
 The release note must exist before the tag is pushed.
 See [`.github/release-notes/README.md`](../../.github/release-notes/README.md) for its authoritative format and rendering instructions.
 
+A second job, **`bump-homebrew-tap`**, then fans the release out to the `karotkriss/homebrew-cwcli` Homebrew tap.
+It is isolated from the publish (`needs: build-and-publish` plus `continue-on-error: true`), so a tap-bump failure can never fail the PyPI publish or the GitHub release.
+The `cwcli-release` skill owns the detailed contract (isolation mechanism, PyPI-JSON URL/sha256 derivation, action choice, and the known tap-side `test do` gap).
+
 **Trigger a release:**
 ```bash
 # 1. Bump the version (four files move together)
