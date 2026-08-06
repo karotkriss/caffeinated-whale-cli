@@ -162,6 +162,47 @@ def test_noninteractive_init_refuses_loudly_on_an_occupied_port(port_allocator):
             harness.cwcli_rm(name)  # idempotent safety net; nothing should exist
 
 
+# --- custom Frappe repo URL (a fork) reaches bench init (v16 leg only) ----- #
+@v16_only
+@pytest.mark.standalone
+def test_frappe_url_reaches_bench_init_frappe_path(port_allocator):
+    """`--frappe-url` really flows to `bench init --frappe-path` inside the real
+    container - not silently dropped. Points it at a reserved-TLD host (RFC 2606
+    `.invalid`, guaranteed never to resolve) so the clone `bench init` runs fails
+    fast at the fetch, BEFORE any long build: the failure is the proof the URL was
+    used. A default build carries no such URL and would proceed past the clone, so
+    a non-zero exit whose output names the bogus host distinguishes "reached" from
+    "dropped". Verbose mode streams bench's own git output raw (unwrapped), so the
+    host token is a contiguous, reliable match."""
+    name = harness.project_name("frappeurl")
+    port = port_allocator.next()
+    bogus_url = "https://frappe-fork.invalid/frappe.git"
+    result = harness.run_cwcli(
+        "init",
+        name,
+        "--port",
+        str(port),
+        "--frappe-url",
+        bogus_url,
+        "--frappe-branch",
+        harness.FRAPPE_BRANCH,
+        "--admin-password",
+        SESSION_ADMIN_PW,
+        "--auto-start",
+        "--no-start",
+        "--verbose",
+        timeout=harness.INIT_TIMEOUT,
+    )
+    try:
+        combined = harness.collapse_ws(harness.strip_ansi(result.stdout + result.stderr))
+        assert result.returncode != 0, combined
+        # The bogus host appears because bench init actually tried to clone it via
+        # --frappe-path; a dropped flag would have built the default frappe repo.
+        assert "frappe-fork.invalid" in combined, combined
+    finally:
+        harness.cwcli_rm(name)
+
+
 # --- §4.1 interactive + generated-password print-once (v16 leg only) ------- #
 @v16_only
 @pytest.mark.standalone

@@ -947,6 +947,45 @@ class TestExecOrderAndSecrets:
         assert not any("bench new-site" in c for c in commands)
 
 
+class TestCustomFrappeUrl:
+    """A fork's repo URL reaches `bench init --frappe-path`; omitting it is unchanged."""
+
+    def test_frappe_url_reaches_bench_init_as_frappe_path(self, monkeypatch, patched):
+        container = FakeContainer()
+        use_container(monkeypatch, container)
+        core_init.init_bench(
+            PROJECT,
+            **bench_kwargs(frappe_url="https://github.com/me/frappe", frappe_ref="my-feature"),
+        )
+        commands = [c["command"] for c in container.client.api.exec_calls]
+        bench_init = next(c for c in commands if "bench init" in c)
+        # The custom repo is passed to bench's own --frappe-path, and the ref stays
+        # the branch/tag to check out within it.
+        assert "--frappe-path https://github.com/me/frappe" in bench_init
+        assert "--frappe-branch my-feature" in bench_init
+
+    def test_omitting_frappe_url_never_adds_frappe_path(self, monkeypatch, patched):
+        container = FakeContainer()
+        use_container(monkeypatch, container)
+        core_init.init_bench(PROJECT, **bench_kwargs())
+        commands = [c["command"] for c in container.client.api.exec_calls]
+        bench_init = next(c for c in commands if "bench init" in c)
+        # Default (upstream frappe/frappe) build: no --frappe-path at all.
+        assert "--frappe-path" not in bench_init
+
+    def test_frappe_url_is_shell_quoted(self, monkeypatch, patched):
+        # A URL with a shell metacharacter (a query string's `&`) must not break
+        # out of the bench init command line.
+        container = FakeContainer()
+        use_container(monkeypatch, container)
+        core_init.init_bench(
+            PROJECT, **bench_kwargs(frappe_url="https://example.com/frappe.git?a=1&b=2")
+        )
+        commands = [c["command"] for c in container.client.api.exec_calls]
+        bench_init = next(c for c in commands if "bench init" in c)
+        assert "'https://example.com/frappe.git?a=1&b=2'" in bench_init
+
+
 class TestVersionGating:
     def _v14_container(self, api=None):
         return FakeContainer(
