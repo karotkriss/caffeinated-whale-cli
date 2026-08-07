@@ -245,14 +245,45 @@ class TestValidators:
             core_init.validate_new_site_name(" ")
         assert exc.value.message == "Site name is required."
 
-    def test_site_name_suffix(self):
-        with pytest.raises(CwcliError) as exc:
-            core_init.validate_new_site_name("mysite.dev")
-        assert exc.value.message == "Site name must end with '.localhost'."
+    def test_site_name_accepts_a_real_domain(self):
+        # .localhost is a SUGGESTION for local dev, not a requirement.
+        assert core_init.validate_new_site_name("mysite.example.com") == "mysite.example.com"
 
-    def test_site_name_invalid_chars(self):
+    def test_site_name_accepts_an_ipv4_address(self):
+        assert core_init.validate_new_site_name("192.168.1.50") == "192.168.1.50"
+
+    def test_site_name_accepts_a_single_label_hostname(self):
+        assert core_init.validate_new_site_name("mysite") == "mysite"
+
+    def test_site_name_rejects_a_malformed_ipv4(self):
+        # All-numeric dotted names read as an IP, so a broken one must not
+        # slip through as a "hostname".
         with pytest.raises(CwcliError) as exc:
-            core_init.validate_new_site_name("my_site.localhost")
+            core_init.validate_new_site_name("192.168.1.999")
+        assert exc.value.code == "site.invalid"
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "-mysite.example.com",  # label starts with a hyphen
+            "mysite-.example.com",  # label ends with a hyphen
+            "my..site.localhost",  # empty label
+            ".mysite.localhost",  # leading dot
+            "mysite.localhost.",  # trailing dot
+            "a" * 64 + ".localhost",  # label longer than 63 chars
+            "a." * 127 + "toolong",  # name longer than 253 chars
+        ],
+    )
+    def test_site_name_rejects_malformed_hostnames(self, bad):
+        with pytest.raises(CwcliError) as exc:
+            core_init.validate_new_site_name(bad)
+        assert exc.value.code == "site.invalid"
+
+    @pytest.mark.parametrize("bad", ["my_site.localhost", "my site.localhost", "x;rm.com"])
+    def test_site_name_invalid_chars(self, bad):
+        # The shell-safety charset guard is unchanged by the suffix relaxation.
+        with pytest.raises(CwcliError) as exc:
+            core_init.validate_new_site_name(bad)
         assert exc.value.message == (
             "Site name may only include lowercase letters, numbers, hyphens, and periods."
         )
