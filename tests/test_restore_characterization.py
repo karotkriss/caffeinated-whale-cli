@@ -158,8 +158,8 @@ def _run_normal(
     monkeypatch.setattr(restore_mod, "ensure_containers_running", lambda *a, **k: True)
     monkeypatch.setattr(
         restore_mod,
-        "resolve_bench_path",
-        lambda project, bench, path, *, on_ambiguous="error", verbose=False: BENCH_PATH,
+        "resolve_bench_path_with_fallback",
+        lambda project, bench, path, *, verbose=False: BENCH_PATH,
     )
     monkeypatch.setattr(restore_mod, "TipSpinner", _NullSpinner)
     monkeypatch.setattr(restore_mod.config_utils, "get_show_tips", lambda: False)
@@ -231,7 +231,7 @@ class TestNormalPathSecretOffArgv:
         # The dump full path, credentials, and --force in order.
         assert f"{BENCH_PATH}/sites/{SITE}/private/backups/{DB_FILENAME}" in cmd_str
         assert "--mariadb-root-username root" in cmd_str
-        assert "--mariadb-root-password \"$CWCLI_MARIADB_ROOT_PASSWORD\"" in cmd_str
+        assert '--mariadb-root-password "$CWCLI_MARIADB_ROOT_PASSWORD"' in cmd_str
         assert "--force" in cmd_str
         # The order: db path precedes credentials precede --force.
         assert cmd_str.index(DB_FILENAME) < cmd_str.index("--mariadb-root-username")
@@ -316,13 +316,11 @@ class TestMutualExclusions:
         mono.isatty.return_value = False
         monkeypatch.setattr(restore_mod.sys, "stdin", mono)
         monkeypatch.setattr(docker_utils_mod, "shutil", MagicMock())
-        monkeypatch.setattr(
-            docker_utils_mod, "docker", MagicMock(from_env=lambda: MagicMock())
-        )
+        monkeypatch.setattr(docker_utils_mod, "docker", MagicMock(from_env=lambda: MagicMock()))
         monkeypatch.setattr(
             restore_mod,
-            "resolve_bench_path",
-            lambda project, bench, path, *, on_ambiguous="error", verbose=False: BENCH_PATH,
+            "resolve_bench_path_with_fallback",
+            lambda project, bench, path, *, verbose=False: BENCH_PATH,
         )
         monkeypatch.setattr(restore_mod.console, "print", lambda *a, **k: None)
         monkeypatch.setattr(restore_mod.stderr_console, "print", lambda *a, **k: None)

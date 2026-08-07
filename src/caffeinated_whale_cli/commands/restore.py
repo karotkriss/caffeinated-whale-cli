@@ -11,8 +11,9 @@ consume).
 
 Container/bench/site resolution is a no-spinner PROLOGUE (the ``cwcli backup``
 precedent), because every restore path needs a running container and resolves the
-bench + site BEFORE the scan/download - the shared ``_resolve_bench_prologue``
-collapses the three old per-mode copies of the no-cache inspect fallback.
+bench + site BEFORE the scan/download - ``commands.utils.resolve_bench_path_with_fallback``
+(shared with ``cwcli backup``) collapses the three old per-mode copies of the
+no-cache inspect fallback.
 """
 
 import errno
@@ -56,9 +57,8 @@ from ..utils.sendme_utils import (
     get_sendme_command,
 )
 from ..utils.tips import TipSpinner
-from .utils import ensure_containers_running, resolve_bench_path
+from .utils import ensure_containers_running, resolve_bench_path_with_fallback
 
-DEFAULT_BENCH_PATH = "/workspace/frappe-bench"
 _REMOTE_SENTINEL = "__restore_from_remote__"
 
 # sendme creates its on-disk download store in whatever directory it is run
@@ -316,47 +316,6 @@ def _get_frappe_container(project_name: str):
         )
         raise typer.Exit(code=1)
     return frappe_container
-
-
-def _resolve_bench_prologue(
-    project_name: str, bench: str | None, bench_path: str | None, verbose: bool
-) -> str:
-    """Resolve the bench path, populating the cache via inspect if it is empty.
-
-    The shared no-spinner prologue that collapses the three old per-mode copies of
-    the fallback: ``resolve_bench_path`` (which renders the multi-bench error and
-    returns None only on a cold cache), then run inspect to populate, re-resolve,
-    else the hardcoded default.
-    """
-    resolved = resolve_bench_path(project_name, bench, bench_path, verbose=verbose)
-    if resolved:
-        if verbose:
-            stderr_console.print(f"[dim]Using cached bench path: {resolved}[/dim]")
-        return resolved
-
-    stderr_console.print("[yellow]No cached bench path found. Running inspect...[/yellow]")
-    try:
-        from ..core import inspect as core_inspect
-        from .inspect import render_error_exit
-
-        core_inspect.inspect(project_name, refresh="auto")
-        resolved = resolve_bench_path(project_name, None, None, verbose=verbose)
-        if resolved:
-            if verbose:
-                stderr_console.print(f"[dim]Using cached bench path from inspect: {resolved}[/dim]")
-            return resolved
-    except typer.Exit:
-        raise
-    except CwcliError as e:
-        raise render_error_exit(project_name, e) from None
-    except Exception as e:  # noqa: BLE001 - inspect failed; fall back to the default
-        if verbose:
-            stderr_console.print(f"[dim]Inspect error: {e}[/dim]")
-
-    stderr_console.print(
-        f"[yellow]Warning: Could not detect bench path. Using default: {DEFAULT_BENCH_PATH}[/yellow]"
-    )
-    return DEFAULT_BENCH_PATH
 
 
 def _prompt_mariadb_credentials(
@@ -1233,7 +1192,9 @@ def restore(
     # shared by all three modes; every path needs a running container and a
     # resolved bench BEFORE the scan/download).
     ensure_containers_running(project_name, require_running=True, verbose=verbose)
-    resolved_bench = _resolve_bench_prologue(project_name, bench, bench_path, verbose)
+    resolved_bench = resolve_bench_path_with_fallback(
+        project_name, bench, bench_path, verbose=verbose
+    )
 
     if receive:
         return _run_receive(
