@@ -78,6 +78,14 @@ class TestDevAndUvxNoOp:
         assert "uvx" in result.stdout
         assert no_real_subprocess == []
 
+    def test_standalone_binary_is_noop_exit_0(self, monkeypatch, no_real_subprocess):
+        _patch_check(monkeypatch, _info(method="standalone", upgrade_command=None))
+        result = runner.invoke(app, [])
+        assert result.exit_code == 0
+        assert "standalone binary" in result.stdout
+        assert "winget upgrade" in result.stdout
+        assert no_real_subprocess == []  # never shells out
+
 
 class TestDefaultRun:
     def test_up_to_date_exit_0_no_upgrade(self, monkeypatch, no_real_subprocess):

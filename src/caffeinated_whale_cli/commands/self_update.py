@@ -7,8 +7,8 @@ top-level ``update`` is the (deprecated) Frappe-app updater.
 
 Exit codes (honest, per the AXI idempotency norm):
   0  already up to date (incl. the dev-ahead case), upgraded OK, or a
-     dev/uvx no-op; also a ``--check`` that reached PyPI and found no update, or
-     a ``--check`` whose network lookup failed open.
+     dev/uvx/standalone no-op; also a ``--check`` that reached PyPI and found no
+     update, or a ``--check`` whose network lookup failed open.
   1  the upgrade subprocess failed, a network failure blocked an actual upgrade,
      or ``--check`` found that an update IS available (so scripts/CI can gate).
 """
@@ -69,6 +69,18 @@ def self_update(
         console.print(
             "[yellow]Running via an ephemeral uvx invocation - nothing to update.[/yellow]\n"
             f"Install it persistently with [cyan]uv tool install {core_version.DIST}[/cyan]."
+        )
+        raise typer.Exit(0)
+
+    # Frozen standalone binary (Nuitka onefile / winget portable): self-update
+    # cannot replace the running executable in place.
+    if info.method == "standalone":
+        console.print(
+            "[yellow]Running from a standalone binary - self-update can't replace it "
+            "in place.[/yellow]\n"
+            "Upgrade with [cyan]winget upgrade caffeinated-whale-cli[/cyan] (if you "
+            "installed via winget), or download the latest signed .exe from:\n"
+            "    [cyan]https://github.com/karotkriss/caffeinated-whale-cli/releases/latest[/cyan]"
         )
         raise typer.Exit(0)
 
