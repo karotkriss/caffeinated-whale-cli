@@ -1084,6 +1084,28 @@ class TestServeUnreachable:
         assert "cwcli-serve" not in {c.name for c in root_app.registered_commands}
 
 
+class TestPythonModuleEntryPoint:
+    """``python -m caffeinated_whale_cli`` is the no-signing native path for
+    locked-down Windows hosts where Application Control / Smart App Control /
+    SmartScreen blocks the unsigned ``cwcli.exe``/``caffeinated-whale-cli.exe``
+    launcher shim: it runs the SAME ``caffeinated_whale_cli.main:cli`` entry
+    point through the signed Python interpreter instead. Mirrors
+    ``test_desktop_shell_launches_the_daemon_via_the_internal_module_entry``
+    above - ``--help`` so it parses argv and exits 0 without touching Docker."""
+
+    def test_module_entry_runs_the_same_cli(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "caffeinated_whale_cli", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+        help_text = click.unstyle(result.stdout)
+        assert "Usage:" in help_text
+        assert "init" in help_text and "apps" in help_text
+
+
 class TestNoMutatingAxiSelfUpdate:
     """The mutating ``cwcli axi self-update`` is deliberately deferred; only the
     READ-ONLY ``--check`` form ships. ``--check`` is a REQUIRED option, so the verb
