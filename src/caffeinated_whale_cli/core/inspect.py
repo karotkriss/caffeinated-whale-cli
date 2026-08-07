@@ -806,3 +806,54 @@ def inspect(
         ),
         warnings=warnings,
     )
+
+
+def resolve_bench_with_fallback(
+    project_name: str,
+    bench: str | None,
+    bench_path: str | None,
+    *,
+    auto_start: bool = False,
+) -> Result[str]:
+    """Resolve which bench a command should operate on, populating a cold cache
+    via inspect rather than silently guessing ``resolvers.DEFAULT_BENCH_PATH``.
+
+    The ``core.open`` no-cache fallback (:func:`~.open._fallback_populate`),
+    generalized so ``backup``/``restore`` share it instead of re-implementing
+    it: a fresh or explicitly cleared cache must not dead-end (or silently
+    guess a possibly-wrong path) when the real bench list is one ``inspect``
+    away. Same abort/degrade contract:
+
+    - a hard ``CwcliError`` from the populate PROPAGATES - the guessed default
+      is never used to paper over a real failure;
+    - a non-``CwcliError`` exception, or a populate that still resolves
+      nothing, degrades to ``resolvers.DEFAULT_BENCH_PATH`` with a
+      ``bench.default_used`` warning (the historical behavior).
+
+    Returns ``Result(OK, path)`` or ``Result(NEEDS_CHOICE, ...)`` - never
+    ``None`` - so callers no longer need a separate no-cache branch.
+    """
+    bench_result = resolvers.resolve_bench(project_name, bench, bench_path)
+    if bench_result is not None:
+        return bench_result
+
+    try:
+        inspect(project_name, refresh="auto", auto_start=auto_start, offer_choice=False)
+        re_resolved = resolvers.resolve_bench(project_name, bench, None)
+    except CwcliError:
+        raise
+    except Exception:  # noqa: BLE001 - the disclosed degrade residue (core.open's precedent)
+        re_resolved = None
+
+    if re_resolved is None:
+        return Result(
+            status=Status.OK,
+            data=resolvers.DEFAULT_BENCH_PATH,
+            warnings=[
+                Message(
+                    "bench.default_used",
+                    f"No cached bench path found. Using default: {resolvers.DEFAULT_BENCH_PATH}",
+                )
+            ],
+        )
+    return re_resolved
