@@ -53,6 +53,7 @@ from pathlib import Path
 
 from ..utils import bench_sites, db_utils
 from . import docker as core_docker
+from . import inspect as core_inspect
 from . import resolvers
 from .envelope import Choice, Message, Result, Status
 from .errors import CwcliError, ErrorKind
@@ -448,34 +449,6 @@ def receive_preflight(project_name: str, *, site: str | None, bench_path: str) -
     return Result(status=Status.OK, data=resolved_site, warnings=warnings)
 
 
-def _resolve_bench(
-    project_name: str, bench: str | None, bench_path: str | None, warnings: list[Message]
-) -> Result[str] | None:
-    """Belt-and-suspenders bench resolution (the ``core.backup`` shape).
-
-    The frontend resolves the bench in its no-spinner PROLOGUE (container + bench +
-    site, before the scan/download - byte-exact ordering, and the multi-bench
-    error / no-cache inspect fallback stay in the CLI's ``resolve_bench_path`` +
-    prologue), so this normally receives a concrete ``bench_path`` and passes it
-    straight through. A ``NEEDS_CHOICE`` (multi-bench, no selector) is returned for
-    the frontend; ``None`` means the resolved path is in ``warnings``' caller.
-    """
-    resolved = resolvers.resolve_bench(project_name, bench, bench_path)
-    if resolved is None:
-        warnings.append(
-            Message(
-                "bench.default_used",
-                f"No cached bench path found. Using default: {resolvers.DEFAULT_BENCH_PATH}",
-            )
-        )
-        return None
-    if resolved.status is Status.NEEDS_CHOICE:
-        return Result(status=Status.NEEDS_CHOICE, choice=resolved.choice)
-    assert resolved.data is not None
-    warnings.extend(resolved.warnings)
-    return Result(status=Status.OK, data=resolved.data)
-
-
 # --------------------------------------------------------------------------- #
 # The plan phase.
 # --------------------------------------------------------------------------- #
@@ -587,13 +560,11 @@ def restore_plan(
     if state.status is Status.NEEDS_CHOICE:
         return Result(status=Status.NEEDS_CHOICE, choice=state.choice)
 
-    bench_result = _resolve_bench(project_name, bench, bench_path, warnings)
-    if bench_result is None:
-        bench_path = resolvers.DEFAULT_BENCH_PATH
-    elif bench_result.status is Status.NEEDS_CHOICE:
+    bench_result = core_inspect.resolve_bench_with_fallback(project_name, bench, bench_path)
+    if bench_result.status is Status.NEEDS_CHOICE:
         return Result(status=Status.NEEDS_CHOICE, choice=bench_result.choice)
-    else:
-        bench_path = bench_result.data
+    bench_path = bench_result.data
+    warnings.extend(bench_result.warnings)
     assert bench_path is not None
 
     site, site_warnings = _resolve_site(project_name, frappe_container, bench_path, site)
@@ -668,13 +639,11 @@ def receive_plan(
     if state.status is Status.NEEDS_CHOICE:
         return Result(status=Status.NEEDS_CHOICE, choice=state.choice)
 
-    bench_result = _resolve_bench(project_name, bench, bench_path, warnings)
-    if bench_result is None:
-        bench_path = resolvers.DEFAULT_BENCH_PATH
-    elif bench_result.status is Status.NEEDS_CHOICE:
+    bench_result = core_inspect.resolve_bench_with_fallback(project_name, bench, bench_path)
+    if bench_result.status is Status.NEEDS_CHOICE:
         return Result(status=Status.NEEDS_CHOICE, choice=bench_result.choice)
-    else:
-        bench_path = bench_result.data
+    bench_path = bench_result.data
+    warnings.extend(bench_result.warnings)
     assert bench_path is not None
 
     site, site_warnings = _resolve_site(project_name, frappe_container, bench_path, site)

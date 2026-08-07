@@ -87,3 +87,53 @@ def test_multi_bench_first_mode_returns_first(cache):
 def test_multi_bench_first_mode_still_honors_selector(cache):
     cache["proj"] = [{"path": "/a"}, {"path": "/b", "label": "staging"}]
     assert cmd_utils.resolve_bench_path("proj", "staging", None, on_ambiguous="first") == "/b"
+
+
+# --------------------------------------------------------------------------- #
+# resolve_bench_path_with_fallback - the shared backup/restore prologue
+# (fm/cwcli-backup-restore-autoinspect)
+# --------------------------------------------------------------------------- #
+class TestResolveBenchPathWithFallback:
+    """A cold cache runs ``cwcli inspect`` to populate it before falling back to
+    the hardcoded default, instead of dead-ending or silently guessing wrong."""
+
+    def test_cached_bench_skips_inspect_entirely(self, cache, monkeypatch):
+        cache["proj"] = [{"path": "/only"}]
+        called = []
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.core.inspect.inspect", lambda *a, **k: called.append(True)
+        )
+        assert cmd_utils.resolve_bench_path_with_fallback("proj", None, None) == "/only"
+        assert called == []
+
+    def test_cold_cache_populates_and_resolves_the_real_bench(self, cache, monkeypatch):
+        def fake_inspect(project_name, **kwargs):
+            cache[project_name] = [{"path": "/discovered"}]
+
+        monkeypatch.setattr("caffeinated_whale_cli.core.inspect.inspect", fake_inspect)
+        result = cmd_utils.resolve_bench_path_with_fallback("proj", None, None)
+        assert result == "/discovered"
+
+    def test_populate_finding_nothing_degrades_to_the_default(self, cache, monkeypatch):
+        monkeypatch.setattr("caffeinated_whale_cli.core.inspect.inspect", lambda *a, **k: None)
+        result = cmd_utils.resolve_bench_path_with_fallback("proj", None, None)
+        assert result == resolvers.DEFAULT_BENCH_PATH
+
+    def test_hard_cwcli_error_from_inspect_aborts_with_exit(self, cache, monkeypatch):
+        from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
+
+        def raise_not_found(project_name, **kwargs):
+            raise CwcliError(ErrorKind.NOT_FOUND, "bench.none_found", "No Bench Instances found.")
+
+        monkeypatch.setattr("caffeinated_whale_cli.core.inspect.inspect", raise_not_found)
+        with pytest.raises(typer.Exit) as exc:
+            cmd_utils.resolve_bench_path_with_fallback("proj", None, None)
+        assert exc.value.exit_code == 1
+
+    def test_non_cwcli_exception_from_inspect_degrades_to_default(self, cache, monkeypatch):
+        def boom(project_name, **kwargs):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr("caffeinated_whale_cli.core.inspect.inspect", boom)
+        result = cmd_utils.resolve_bench_path_with_fallback("proj", None, None)
+        assert result == resolvers.DEFAULT_BENCH_PATH

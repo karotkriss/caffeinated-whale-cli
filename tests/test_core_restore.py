@@ -171,6 +171,89 @@ class TestRestorePlan:
 
 
 # --------------------------------------------------------------------------- #
+# no-cache auto-inspect fallback (fm/cwcli-backup-restore-autoinspect)
+# --------------------------------------------------------------------------- #
+def _patch_cold_then_warm(monkeypatch, container, *, warm_bench=BENCH_PATH):
+    """Container/run-state OK, but ``resolve_bench`` returns None (cold cache) on
+    the FIRST call and OK on any subsequent call - simulating a populate that
+    actually filled the cache in between."""
+    monkeypatch.setattr(core_restore.core_docker, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(
+        core_restore.resolvers,
+        "resolve_container_state",
+        lambda *a, **k: SimpleNamespace(status=Status.OK, choice=None),
+    )
+    calls = {"n": 0}
+
+    def fake_resolve_bench(project_name, bench, bench_path):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None
+        return Result(status=Status.OK, data=warm_bench, warnings=[])
+
+    monkeypatch.setattr(core_restore.resolvers, "resolve_bench", fake_resolve_bench)
+
+
+class TestPlanNoCacheAutoInspectFallback:
+    """A cold cache must populate via ``core.inspect`` before ``restore_plan``/
+    ``receive_plan`` fall back to the guessed default bench path."""
+
+    def test_restore_plan_populate_finds_the_real_bench(self, monkeypatch):
+        c = FakeContainer()
+        _patch_cold_then_warm(monkeypatch, c)
+        populated = []
+        monkeypatch.setattr(
+            core_restore.core_inspect, "inspect", lambda *a, **k: populated.append(True)
+        )
+
+        result = core_restore.restore_plan("proj", site=SITE, latest=True)
+
+        assert result.status is Status.OK
+        assert result.data.bench_path == BENCH_PATH
+        assert populated == [True]
+
+    def test_restore_plan_hard_error_propagates_not_default(self, monkeypatch):
+        c = FakeContainer()
+        monkeypatch.setattr(core_restore.core_docker, "get_frappe_container", lambda name: c)
+        monkeypatch.setattr(
+            core_restore.resolvers,
+            "resolve_container_state",
+            lambda *a, **k: SimpleNamespace(status=Status.OK, choice=None),
+        )
+        monkeypatch.setattr(core_restore.resolvers, "resolve_bench", lambda *a, **k: None)
+
+        def raise_not_found(project_name, **kwargs):
+            raise CwcliError(
+                ErrorKind.NOT_FOUND,
+                "bench.none_found",
+                f"No Bench Instances found for project '{project_name}'.",
+            )
+
+        monkeypatch.setattr(core_restore.core_inspect, "inspect", raise_not_found)
+
+        with pytest.raises(CwcliError) as exc:
+            core_restore.restore_plan("proj", site=SITE, latest=True)
+        assert exc.value.code == "bench.none_found"
+
+    def test_receive_plan_populate_finds_the_real_bench(self, monkeypatch, tmp_path):
+        c = FakeContainer()
+        _patch_cold_then_warm(monkeypatch, c)
+        populated = []
+        monkeypatch.setattr(
+            core_restore.core_inspect, "inspect", lambda *a, **k: populated.append(True)
+        )
+
+        db_file = tmp_path / DB_FILENAME
+        db_file.write_bytes(b"DATA")
+
+        result = core_restore.receive_plan("proj", site=SITE, downloaded_files=[str(db_file)])
+
+        assert result.status is Status.OK
+        assert result.data.bench_path == BENCH_PATH
+        assert populated == [True]
+
+
+# --------------------------------------------------------------------------- #
 # restore_apply
 # --------------------------------------------------------------------------- #
 def _plan(**overrides):

@@ -10,7 +10,7 @@ from ..utils.completion_utils import complete_project_names, complete_site_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import handle_docker_errors
 from ..utils.tips import TipSpinner
-from .utils import ensure_containers_running, resolve_bench_path
+from .utils import ensure_containers_running, resolve_bench_path_with_fallback
 
 
 @handle_docker_errors
@@ -70,17 +70,9 @@ def backup(
     ensure_containers_running(project_name, require_running=True, verbose=verbose, auto_start=yes)
 
     # Resolve which bench to back up (--bench/--path, else the single bench, else
-    # error on ambiguity). Falls back to the default path only when nothing is cached.
-    resolved = resolve_bench_path(project_name, bench, bench_path, verbose=verbose)
-    if resolved:
-        bench_path = resolved
-        if verbose:
-            stderr_console.print(f"[dim]Using bench path: {bench_path}[/dim]")
-    else:
-        bench_path = "/workspace/frappe-bench"
-        stderr_console.print(
-            f"[yellow]Warning:[/yellow] No cached bench path found. Using default: {bench_path}"
-        )
+    # error on ambiguity). On a totally cold cache, populates it via inspect before
+    # falling back to the hardcoded default (the `cwcli restore` precedent).
+    bench_path = resolve_bench_path_with_fallback(project_name, bench, bench_path, verbose=verbose)
 
     # Get default site if not provided.
     if not site:

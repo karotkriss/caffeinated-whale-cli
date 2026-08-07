@@ -59,3 +59,35 @@ def test_backup_interactive_creates_real_dump(running_instance, tmp_path):
     finally:
         child.close(force=True)
     _assert_real_dump_on_host(inst, tmp_path, "interactive.sql.gz")
+
+
+def test_backup_after_cache_clear_auto_inspects_and_succeeds(running_instance, tmp_path):
+    """A fresh/cleared cache (fm/cwcli-backup-restore-autoinspect): before the
+    fix, a cold cache made ``resolvers.resolve_bench`` return ``None`` and
+    ``backup`` silently GUESSED ``resolvers.DEFAULT_BENCH_PATH`` instead of
+    running ``cwcli inspect`` to discover the real bench - wrong for any bench
+    not sitting at that hardcoded path (e.g. a multi-bench project). Real proof
+    against a genuinely cleared cache (``cwcli config cache clear``, not a
+    mock): the bench resolves via the auto-inspect populate, not a guess.
+
+    ``--site`` is given explicitly (matching the sibling tests in this file):
+    a freshly ``cwcli init``'d bench records NO default site anywhere (neither
+    ``common_site_config.json`` nor ``currentsite.txt`` - ``bench new-site``
+    does not run ``bench use``), which is a separate, pre-existing gap this
+    change does not touch - the auto-inspect fallback correctly discovers the
+    live bench either way, but cannot invent a default site that was never
+    recorded live.
+    """
+    inst = running_instance
+    cleared = harness.run_cwcli("config", "cache", "clear", inst.name)
+    assert cleared.returncode == 0, cleared.stdout + cleared.stderr
+
+    try:
+        result = harness.run_cwcli("backup", inst.name, "--site", inst.site, "-y")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "Successfully created backup" in result.stdout
+        assert "No cached bench path found. Running inspect" in result.stderr
+        _assert_real_dump_on_host(inst, tmp_path, "cold-cache.sql.gz")
+    finally:
+        # Leave a fully warm cache for any sibling test sharing this instance.
+        harness.run_cwcli("inspect", inst.name, "--update")

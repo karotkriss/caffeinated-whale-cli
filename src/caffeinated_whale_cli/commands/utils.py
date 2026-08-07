@@ -272,6 +272,63 @@ def _prompt_select_bench(project_name: str, benches: list[dict]) -> str:
     return choice_map[answer]
 
 
+def resolve_bench_path_with_fallback(
+    project_name: str,
+    bench: str | None,
+    bench_path: str | None,
+    *,
+    verbose: bool = False,
+) -> str:
+    """Resolve the bench path, populating the cache via inspect if it is empty.
+
+    The shared no-spinner prologue for ``backup``/``restore`` (and any future
+    bench-scoped, prompting command): try :func:`resolve_bench_path`; on a
+    totally cold cache (no ``--bench``/``--path`` override and no cached
+    benches at all - the only case it returns ``None``) run ``cwcli inspect``
+    to populate the cache and re-resolve once, rather than dead-ending or
+    silently guessing ``core.resolvers.DEFAULT_BENCH_PATH`` when the real
+    bench list is one inspect away. Falls back to that historical default,
+    with a warning, only when the populate itself fails or still finds
+    nothing - matching ``core.open``'s fallback-populate contract (a hard
+    ``CwcliError`` from inspect still renders and exits; any other failure
+    degrades).
+
+    Promoted out of ``commands/restore.py``'s ``_resolve_bench_prologue``
+    (originally restore-only) when ``commands/backup.py`` needed the exact
+    same fallback: two identical copies is the signal to share one.
+    """
+    resolved = resolve_bench_path(project_name, bench, bench_path, verbose=verbose)
+    if resolved:
+        if verbose:
+            stderr_console.print(f"[dim]Using cached bench path: {resolved}[/dim]")
+        return resolved
+
+    stderr_console.print("[yellow]No cached bench path found. Running inspect...[/yellow]")
+    try:
+        from ..core import inspect as core_inspect
+        from .inspect import render_error_exit
+
+        core_inspect.inspect(project_name, refresh="auto")
+        resolved = resolve_bench_path(project_name, None, None, verbose=verbose)
+        if resolved:
+            if verbose:
+                stderr_console.print(f"[dim]Using cached bench path from inspect: {resolved}[/dim]")
+            return resolved
+    except typer.Exit:
+        raise
+    except CwcliError as e:
+        raise render_error_exit(project_name, e) from None
+    except Exception as e:  # noqa: BLE001 - inspect failed; fall back to the default
+        if verbose:
+            stderr_console.print(f"[dim]Inspect error: {e}[/dim]")
+
+    stderr_console.print(
+        f"[yellow]Warning: Could not detect bench path. Using default: "
+        f"{resolvers.DEFAULT_BENCH_PATH}[/yellow]"
+    )
+    return resolvers.DEFAULT_BENCH_PATH
+
+
 def confirm_or_exit(
     prompt: str,
     *,
