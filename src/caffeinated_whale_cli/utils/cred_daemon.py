@@ -608,28 +608,93 @@ def _spawn_detached() -> None:
         )
 
 
-def start_daemon() -> None:
-    """Start the credential-bridge daemon if it is not already running.
+def _acquire_startup_lock() -> int | None:
+    """Take an exclusive, blocking lock over the whole check-then-start window.
 
-    Idempotent (unlike auto_inspect's raise-if-running): the ensure step calls
-    this speculatively on every open/start, so an already-up daemon is a clean
-    no-op. Forks + setsids on POSIX; falls back to a detached spawn where
-    ``os.fork`` is unavailable (Windows) or fails.
+    The ensure step calls ``start_daemon`` speculatively on every ``cwcli open`` /
+    ``core.start`` (and ``enable`` -> ``ensure_running_instances``), so without
+    serialization two concurrent invocations can each see ``is_running() == False``
+    and fork RIVAL daemons - whichever writes the pid file last orphans the other,
+    which can then never be stopped (``stop``/``disable`` only signal the recorded
+    pid) and both race the same socket. This lock closes that window.
+
+    Returns the held fd (release with :func:`_release_startup_lock`), or ``None``
+    when locking is unavailable - in which case the caller proceeds UNSERIALIZED
+    rather than refusing to start (a bridge that never comes up is worse than the
+    narrow double-fork race). CRASH-SAFE by construction: ``flock`` / ``msvcrt``
+    locks are released by the kernel when the holder dies, so a lock file left by
+    a killed starter never permanently bricks startup.
     """
-    if is_running():
-        return
+    try:
+        _ensure_run_dir()
+        fd = os.open(PID_DIR / "credbridge.start.lock", os.O_CREAT | os.O_RDWR, 0o644)
+    except OSError:
+        return None
+    try:
+        if sys.platform == "win32":
+            import msvcrt
 
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+        return None
+    return fd
+
+
+def _release_startup_lock(fd: int | None) -> None:
+    """Release the startup lock; POSIX ``flock`` is freed simply by closing it."""
+    if fd is None:
+        return
+    if sys.platform == "win32":
+        with contextlib.suppress(OSError):
+            import msvcrt
+
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    with contextlib.suppress(OSError):
+        os.close(fd)
+
+
+def _await_started(timeout: float = 2.0) -> None:
+    """Poll until the freshly-forked/spawned daemon has written its pid file.
+
+    The startup lock is held across this wait, so a concurrent caller blocked on
+    the lock observes ``is_running() == True`` when it finally acquires and no-ops
+    instead of forking a rival. Bounded (ponytail: 2s ceiling) so a child that
+    dies in its bootstrap can never keep startup blocked.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if is_running():
+            return
+        time.sleep(0.02)
+
+
+def _fork_or_spawn(lock_fd: int | None) -> None:
+    """Fork+setsid (POSIX) or detached spawn (no-fork) the daemon, holding the
+    startup lock until it is confirmed up."""
     try:
         pid = os.fork()
     except (AttributeError, OSError):
-        _spawn_detached()
+        _spawn_detached()  # Popen(close_fds=True) never inherits the lock fd
+        _await_started()
         return
 
     if pid > 0:
-        return  # parent
+        _await_started()  # parent: hold the lock until the child's pid file lands
+        return
 
-    # Child: detach, redirect real fds (stderr -> log, so a crash leaves a
-    # trace), write the pid file, and run the loop.
+    # Child: drop the inherited startup-lock fd FIRST. It shares the parent's open
+    # file description, and the daemon loop never returns, so leaving it open would
+    # pin the flock forever and brick the next start. Then detach, redirect real
+    # fds (stderr -> log, so a crash leaves a trace), write the pid file, run.
+    if lock_fd is not None:
+        with contextlib.suppress(OSError):
+            os.close(lock_fd)
     try:
         os.setsid()
         _ensure_run_dir()
@@ -648,6 +713,30 @@ def start_daemon() -> None:
         _log("credential-bridge daemon exited abnormally", exc_info=True)
         code = 1
     os._exit(code)
+
+
+def start_daemon() -> None:
+    """Start the credential-bridge daemon if it is not already running.
+
+    Idempotent (unlike auto_inspect's raise-if-running): the ensure step calls
+    this speculatively on every open/start, so an already-up daemon is a clean
+    no-op. Startup is serialized by a crash-safe filesystem lock held across the
+    ``is_running`` check AND the fork/spawn, so concurrent open/start/enable calls
+    can never double-fork. Forks + setsids on POSIX; falls back to a detached
+    spawn where ``os.fork`` is unavailable (Windows) or fails.
+    """
+    if is_running():
+        return
+
+    lock_fd = _acquire_startup_lock()
+    try:
+        # Re-check UNDER the lock: a racing caller that beat us to it has already
+        # brought the daemon up, so we must not fork a second one.
+        if is_running():
+            return
+        _fork_or_spawn(lock_fd)
+    finally:
+        _release_startup_lock(lock_fd)
 
 
 def stop_daemon() -> None:
