@@ -31,6 +31,8 @@ class TestShow:
             "Interval: 3600 seconds",
             "Daemon: Stopped",
             "Start on boot: Disabled",
+            "Credential bridge",  # the fourth reported store
+            "Transport:",
             "Tips: Enabled",
         ):
             assert expected in result.output
@@ -52,6 +54,9 @@ class TestShow:
             "boot_installed",
         ):
             assert key in ai
+        cb = data["cred_bridge"]
+        for key in ("enabled", "daemon_running", "daemon_pid", "transport", "registered_projects"):
+            assert key in cb
         assert "[" not in result.output.split("{")[0]  # no rich markup before the JSON
 
     def test_show_reflects_live_state(self, cfg):

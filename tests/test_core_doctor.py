@@ -24,7 +24,10 @@ from caffeinated_whale_cli.utils import config_utils
 
 class TestRegistry:
     def test_ships_exactly_the_ruled_check_ids(self):
-        """C1-C9, C11, C17, C18 - C10 and C12-C16 stay deferred (not built at all)."""
+        """C1-C9, C11, C17-C19 - C10 and C12-C16 stay deferred (not built at all).
+
+        C19 is the persistent credential-bridge daemon health check.
+        """
         ids = {c.id for c in core_doctor._CHECKS}
         assert ids == {
             "c1",
@@ -39,6 +42,7 @@ class TestRegistry:
             "c11",
             "c17",
             "c18",
+            "c19",
         }
 
     def test_is_a_plain_list_not_a_plugin_system(self):
@@ -459,6 +463,73 @@ class TestAutoInspect:
         assert "could not read" in detail
         assert "permission denied" in detail
         assert "config path" in fix
+
+
+class TestCredBridgeCheck:
+    def test_pass_when_disabled(self, monkeypatch):
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.config_utils.read_cred_bridge_config",
+            lambda: {"enabled": False},
+        )
+        status, detail, _fix = core_doctor._check_cred_bridge()
+        assert status is CheckStatus.PASS
+        assert detail == "disabled"
+
+    def test_pass_when_enabled_and_alive(self, monkeypatch):
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.config_utils.read_cred_bridge_config",
+            lambda: {"enabled": True},
+        )
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.daemon_identity.read_daemon_record",
+            lambda _pf: (7070, "start-tok"),
+        )
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.daemon_identity.pid_alive", lambda _p: True
+        )
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.daemon_identity.process_start_time",
+            lambda _p: "start-tok",
+        )
+        monkeypatch.setattr("caffeinated_whale_cli.utils.cred_daemon._read_registry", lambda: {})
+        status, detail, _fix = core_doctor._check_cred_bridge()
+        assert status is CheckStatus.PASS
+        assert "7070" in detail
+
+    def test_warn_uses_read_only_trio_never_is_running(self, monkeypatch):
+        """T4: doctor reads the identity trio, never ``is_running()`` (it prunes)."""
+        called = []
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.cred_daemon.is_running",
+            lambda: called.append("is_running") or False,
+        )
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.config_utils.read_cred_bridge_config",
+            lambda: {"enabled": True},
+        )
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.daemon_identity.read_daemon_record", lambda _pf: None
+        )
+        status, _detail, fix = core_doctor._check_cred_bridge()
+        assert status is CheckStatus.WARN
+        assert fix
+        assert called == []
+
+    def test_warn_when_pid_dead(self, monkeypatch):
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.config_utils.read_cred_bridge_config",
+            lambda: {"enabled": True},
+        )
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.daemon_identity.read_daemon_record",
+            lambda _pf: (1, None),
+        )
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.daemon_identity.pid_alive", lambda _p: False
+        )
+        status, detail, _fix = core_doctor._check_cred_bridge()
+        assert status is CheckStatus.WARN
+        assert "not running" in detail
 
 
 class TestFreeSpace:
