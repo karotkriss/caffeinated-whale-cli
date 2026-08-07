@@ -81,6 +81,13 @@ def wire(monkeypatch):
             lambda name: {"bench_instances": benches} if benches is not None else None,
         )
         monkeypatch.setattr(resolvers.db_utils, "get_default_site", lambda name, path: default_site)
+        # A cold cache (benches=None) now runs the no-cache auto-inspect fallback
+        # (core.inspect.resolve_bench_with_fallback) before defaulting; stub the
+        # populate as a no-op so these tests - which are not ABOUT that fallback -
+        # keep exercising the historical "no cache -> default path" outcome. The
+        # dedicated fallback behavior (successful populate / hard-error propagation)
+        # is pinned separately in TestNoCacheAutoInspectFallback below.
+        monkeypatch.setattr(core_backup.core_inspect, "inspect", lambda *a, **k: None)
 
     return _wire
 
@@ -227,3 +234,46 @@ class TestDefaultSite:
         with pytest.raises(CwcliError) as exc:
             core_backup.backup("proj")
         assert exc.value.code == "site.no_default"
+
+
+class TestNoCacheAutoInspectFallback:
+    """A cold cache (fresh/cleared ``CWCLI_HOME``) must populate via
+    ``core.inspect`` rather than dead-ending or silently guessing a bench that
+    may not be the real one (fm/cwcli-backup-restore-autoinspect)."""
+
+    def test_populate_finds_the_real_bench_and_backup_proceeds(self, monkeypatch, wire):
+        c = FakeContainer()
+        wire(c, default_site="s.localhost")  # no `benches=` -> cold cache
+
+        def fake_inspect(project_name, **kwargs):
+            # Simulate inspect's cache-write side effect: the bench is now cached,
+            # so the fallback's re-resolve finds it.
+            wire(c, benches=[{"path": "/workspace/frappe-bench"}], default_site="s.localhost")
+
+        monkeypatch.setattr(core_backup.core_inspect, "inspect", fake_inspect)
+
+        result = core_backup.backup("proj", site="s.localhost")
+
+        assert result.status is Status.OK
+        assert result.data.bench_path == "/workspace/frappe-bench"
+        # Resolved via the populated cache, not the guessed-default fallback.
+        assert not any(w.code == "bench.default_used" for w in result.warnings)
+
+    def test_hard_error_from_populate_propagates_not_default(self, monkeypatch, wire):
+        """A real inspect failure must abort the backup, never fall back to a
+        guessed (possibly wrong) default bench path."""
+        c = FakeContainer()
+        wire(c, default_site="s.localhost")
+
+        def raise_not_found(project_name, **kwargs):
+            raise CwcliError(
+                ErrorKind.NOT_FOUND,
+                "bench.none_found",
+                f"No Bench Instances found for project '{project_name}'.",
+            )
+
+        monkeypatch.setattr(core_backup.core_inspect, "inspect", raise_not_found)
+
+        with pytest.raises(CwcliError) as exc:
+            core_backup.backup("proj", site="s.localhost")
+        assert exc.value.code == "bench.none_found"

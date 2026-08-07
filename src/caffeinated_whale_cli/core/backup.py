@@ -15,6 +15,7 @@ import shlex
 from dataclasses import dataclass
 
 from . import docker as core_docker
+from . import inspect as core_inspect
 from . import resolvers
 from .envelope import Message, Result, Status
 from .errors import CwcliError, ErrorKind
@@ -55,23 +56,15 @@ def backup(
     if state.status is Status.NEEDS_CHOICE:
         return Result(status=Status.NEEDS_CHOICE, choice=state.choice)
 
-    # 3. Resolve which bench to back up (--bench/--path, else single, else default).
-    bench_result = resolvers.resolve_bench(project_name, bench, bench_path)
-    if bench_result is None:
-        bench_path = resolvers.DEFAULT_BENCH_PATH
-        warnings.append(
-            Message(
-                "bench.default_used",
-                f"No cached bench path found. Using default: {resolvers.DEFAULT_BENCH_PATH}",
-            )
-        )
-    elif bench_result.status is Status.NEEDS_CHOICE:
+    # 3. Resolve which bench to back up (--bench/--path, else single, else the
+    # no-cache auto-inspect fallback, else the historical default).
+    bench_result = core_inspect.resolve_bench_with_fallback(project_name, bench, bench_path)
+    if bench_result.status is Status.NEEDS_CHOICE:
         return Result(status=Status.NEEDS_CHOICE, choice=bench_result.choice)
-    else:
-        bench_path = bench_result.data
-        warnings.extend(bench_result.warnings)
+    bench_path = bench_result.data
+    warnings.extend(bench_result.warnings)
 
-    assert bench_path is not None  # narrowed by the branches above
+    assert bench_path is not None  # OK always carries the resolved path
 
     # 4. Resolve the default site when --site was not given.
     if not site:

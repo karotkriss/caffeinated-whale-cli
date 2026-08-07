@@ -125,6 +125,50 @@ def test_restore_no_migrate_still_restores(running_instance):
     harness.wait_for_site_ready(inst.name, inst.site)
 
 
+def test_restore_after_cache_clear_auto_inspects_and_succeeds(running_instance):
+    """A fresh/cleared cache (fm/cwcli-backup-restore-autoinspect): pins the
+    CORE's own belt-and-suspenders fallback in ``restore_plan`` (the frontend
+    prologue already ran inspect on a cold cache before this fix, but the core
+    function itself - the path ``core_restore.restore_plan`` takes when called
+    directly, e.g. by any future caller that skips the CLI prologue - did not).
+
+    ``--site`` is given explicitly (matching the sibling tests in this file):
+    a freshly ``cwcli init``'d bench records NO default site anywhere (neither
+    ``common_site_config.json`` nor ``currentsite.txt``), a separate,
+    pre-existing gap this change does not touch.
+    """
+    inst = running_instance
+    _seed_marker(inst, "ORIGINAL")
+    r = harness.run_cwcli("backup", inst.name, "--site", inst.site, "-y")
+    assert r.returncode == 0, r.stdout + r.stderr
+    _mutate_marker(inst, "MUTATED")
+
+    cleared = harness.run_cwcli("config", "cache", "clear", inst.name)
+    assert cleared.returncode == 0, cleared.stdout + cleared.stderr
+
+    try:
+        r = harness.run_cwcli(
+            "restore",
+            inst.name,
+            "--site",
+            inst.site,
+            "--latest",
+            "--yes",
+            "--mariadb-root-password",
+            DB_PW,
+            "--no-migrate",
+        )
+        assert r.returncode == 0, f"restore after cache clear failed: {r.stdout}\n{r.stderr}"
+        assert "No cached bench path found. Running inspect" in r.stderr
+        assert "ORIGINAL" in _read_marker(inst)
+    finally:
+        # --no-migrate skips the restart; bring the container back and leave a
+        # fully warm cache for any sibling test sharing this instance.
+        harness.run_cwcli("start", inst.name, "--yes")
+        harness.wait_for_site_ready(inst.name, inst.site)
+        harness.run_cwcli("inspect", inst.name, "--update")
+
+
 # --------------------------------------------------------------------------- #
 # Interactive: the pty menu + destructive confirm + credential prompts.
 # --------------------------------------------------------------------------- #

@@ -697,8 +697,8 @@ def _run_normal(
     monkeypatch.setattr(restore_mod, "ensure_containers_running", lambda *a, **k: True)
     monkeypatch.setattr(
         restore_mod,
-        "resolve_bench_path",
-        lambda project, bench, path, *, on_ambiguous="error", verbose=False: BENCH_PATH,
+        "resolve_bench_path_with_fallback",
+        lambda project, bench, path, *, verbose=False: BENCH_PATH,
     )
     monkeypatch.setattr(restore_mod, "TipSpinner", _NullSpinner)
     monkeypatch.setattr(restore_mod.config_utils, "get_show_tips", lambda: False)
