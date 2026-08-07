@@ -169,7 +169,7 @@ cwcli init [OPTIONS] [PROJECT_NAME]
 |--------|-------------|
 | `-P`, `--port INTEGER` | Starting port for the project (default: 8000). Creates ports {port}-{port+5} for web servers and {port+1000}-{port+1005} for socketio |
 | `-b`, `--bench TEXT` | Bench directory name inside the container (default: frappe-bench) |
-| `-s`, `--site TEXT` | Primary site name, must end with .localhost (default: development.localhost) |
+| `-s`, `--site TEXT` | Primary site name: any hostname/FQDN or IPv4 address (default: development.localhost). `.localhost` names are recommended for local development - they resolve to the machine without DNS. A real domain or IP is accepted too; init prints a one-line note reminding you it must resolve to this machine for browser access |
 | `--bench-parent TEXT` | Directory inside container where bench is created (default: /workspace); also the container mount point for the persisted host `data/` directory, fixed for the life of the instance - changing it on a re-init errors, naming the mounted directory |
 | `--frappe-branch TEXT` | Frappe branch or tag for bench init, e.g. `version-16` or `v16.26.3` (default: version-16). Mutually exclusive with `--version` |
 | `--version TEXT` | Frappe version for bench init, resolved by shape: a bare major (`16` → `version-16` branch) or a full semantic version (`16.26.3` → `v16.26.3` tag). Malformed values are rejected with a non-zero exit. Mutually exclusive with `--frappe-branch` |
@@ -237,6 +237,10 @@ cwcli init my-project --port 10000
 
 # Initialize with ERPNext
 cwcli init my-project --install-erpnext
+
+# Site named a real domain or IP (must resolve to this machine for browser access)
+cwcli init my-project --site erp.example.com
+cwcli init my-project --site 192.168.1.50
 
 # Pick a Frappe version by shape: a bare major -> version-N branch
 cwcli init my-project --version 16

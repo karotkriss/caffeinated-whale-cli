@@ -553,3 +553,52 @@ class TestRegistrationAndFlags:
 
         assert result.exit_code == 2
         assert result.stdout.startswith("error:")
+
+
+# ------------------------------------------------------------------ site-name relaxation
+
+
+class TestSiteName:
+    """`.localhost` is a suggestion, not a requirement - and a BAD site name
+    fails fast BEFORE stage 1, so a usage error can never leave freshly
+    started containers behind (the core re-validates only in init_bench,
+    which runs after compose brought the instance up)."""
+
+    def test_a_domain_site_is_accepted(self, monkeypatch):
+        _no_admin_env(monkeypatch)
+        calls = _patch_stages(monkeypatch)
+
+        result = runner.invoke(
+            axi_mod.app,
+            ["init", "proj", "--admin-password", "s3cret", "--site", "erp.example.com"],
+        )
+
+        assert result.exit_code == 0
+        assert calls["bench"][0]["site_name"] == "erp.example.com"
+
+    def test_an_ipv4_site_is_accepted(self, monkeypatch):
+        _no_admin_env(monkeypatch)
+        calls = _patch_stages(monkeypatch)
+
+        result = runner.invoke(
+            axi_mod.app,
+            ["init", "proj", "--admin-password", "s3cret", "--site", "192.168.1.50"],
+        )
+
+        assert result.exit_code == 0
+        assert calls["bench"][0]["site_name"] == "192.168.1.50"
+
+    def test_a_metachar_site_name_refuses_before_stage_one(self, monkeypatch):
+        _no_admin_env(monkeypatch)
+        calls = _patch_stages(monkeypatch)
+
+        result = runner.invoke(
+            axi_mod.app,
+            ["init", "proj", "--admin-password", "s3cret", "--site", "bad;name.example.com"],
+        )
+
+        assert result.exit_code == 2
+        assert result.stdout.startswith("error:")
+        # Neither core stage ran: no containers were brought up for a usage error.
+        assert calls["instance"] == []
+        assert calls["bench"] == []

@@ -2153,7 +2153,10 @@ def axi_init(
         "verbs use; init creates a bench, it does not select one).",
     ),
     site: str = typer.Option(
-        "development.localhost", "--site", help="Primary site to create (must end with .localhost)."
+        "development.localhost",
+        "--site",
+        help="Primary site to create: any hostname/FQDN or IPv4 address; .localhost names "
+        "are recommended for local development (they resolve without DNS).",
     ),
     bench_parent: str = typer.Option(
         "/workspace",
@@ -2253,6 +2256,15 @@ def axi_init(
         )
         raise typer.Exit(exit_for(ErrorKind.USAGE))
     db_root = db_root_password or os.environ.get("CWCLI_DB_ROOT_PASSWORD") or "123"
+
+    # Fail-fast on a bad site name BEFORE stage 1 (the human init's ordering):
+    # the core re-validates in init_bench, but that runs only after compose has
+    # brought real containers up, which a usage error must never leave behind.
+    try:
+        site = core_init.validate_new_site_name(site)
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
 
     # Resolve the Frappe ref (flag fusion is frontend UX, the human-init precedent).
     if frappe_branch is not None and version is not None:
