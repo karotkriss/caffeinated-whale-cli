@@ -438,7 +438,8 @@ def receive_preflight(project_name: str, *, site: str | None, bench_path: str) -
 
     Requires the container already running and ``bench_path`` already resolved -
     the frontend's no-spinner prologue (``ensure_containers_running`` +
-    ``_resolve_bench_prologue``) guarantees both before any receive-mode call, so
+    ``commands.utils.resolve_bench_path_with_fallback``) guarantees both before
+    any receive-mode call, so
     the only thing left to check here is the site. Returns the resolved site name
     on success; raises ``CwcliError('site.no_default')`` on a missing default,
     the SAME error :func:`receive_plan` would eventually raise post-download.
