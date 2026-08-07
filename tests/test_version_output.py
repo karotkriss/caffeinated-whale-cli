@@ -28,6 +28,9 @@ class TestBuildSuffix:
     def test_release(self, monkeypatch):
         assert _render(monkeypatch, BuildInfo(source="release")) == "(release build)"
 
+    def test_standalone(self, monkeypatch):
+        assert _render(monkeypatch, BuildInfo(source="standalone")) == "(standalone build)"
+
     def test_source_clean(self, monkeypatch):
         build = BuildInfo(source="source", commit="618dfa5", dirty=False)
         assert _render(monkeypatch, build) == "(source build, git 618dfa5)"
