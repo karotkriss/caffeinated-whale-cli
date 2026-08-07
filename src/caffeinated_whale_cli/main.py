@@ -28,7 +28,12 @@ from .commands.unlock import unlock as _unlock_cmd
 from .commands.update import update as _update_cmd
 from .commands.where import where as _where_cmd
 
-__version__ = importlib.metadata.version("caffeinated-whale-cli")
+try:
+    __version__ = importlib.metadata.version("caffeinated-whale-cli")
+except importlib.metadata.PackageNotFoundError:
+    # A frozen standalone build (Nuitka onefile) has no dist-info; fall back to
+    # the literal baked into the package __init__ so --version never crashes.
+    from . import __version__
 
 
 _READ_ONLY_DOCTOR = "cwcli.read_only_doctor"
@@ -73,6 +78,8 @@ def _build_suffix() -> str:
         build = build_info()
         if build.source == "release":
             return "(release build)"
+        if build.source == "standalone":
+            return "(standalone build)"
         parts = ["editable source build" if build.editable else "source build"]
         parts.append(f"git {build.commit}" if build.commit else "git unknown")
         if build.dirty:

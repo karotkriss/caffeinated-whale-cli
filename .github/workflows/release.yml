@@ -233,3 +233,118 @@ jobs:
           create-pullrequest: true
         env:
           COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+  windows-exe:
+    name: Build (and optionally sign) the Windows .exe
+    needs: build-and-publish
+    if: startsWith(github.ref, 'refs/tags/v')
+    # GitHub-HOSTED runner, end to end: SignPath's OSS program verifies that
+    # every job feeding a signing request ran on GitHub-hosted agents, and uses
+    # GitHub-provided run metadata to prove the build was not forged. Keep it so.
+    runs-on: windows-latest
+    # Additive distribution channel. Like bump-homebrew-tap above, a hiccup here
+    # (a Nuitka compile issue, a SignPath timeout) must never turn the release
+    # red or endanger the PyPI publish and the GitHub release. `needs:` already
+    # skips this job if build-and-publish failed; `continue-on-error` is the
+    # second half - a failure INSIDE this job reports as non-fatal.
+    continue-on-error: true
+    permissions:
+      contents: write  # attach the exe asset to the existing GitHub release
+      actions: read  # SignPath origin verification reads this run's metadata
+    env:
+      # Read the SignPath credentials into env ONCE. The signing steps gate on
+      # their presence, and a step `if:` may reference `env` but not `secrets`
+      # directly. ABSENT credentials => the whole signing path is skipped and the
+      # release ships the UNSIGNED exe, so this job is safe to merge before the
+      # SignPath Foundation application is approved. See
+      # docs/contributing/code-signing.md and docs/contributing/signpath-runbook.md.
+      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+      SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Build standalone exe (Nuitka --onefile)
+        # Nuitka compiles Python -> C -> native code, which reads to AV heuristics
+        # like a normal program (far fewer false positives than a PyInstaller
+        # self-extractor). Installing the package (`.`) brings in the runtime deps
+        # and lets --include-package pull the WHOLE package + its console.html
+        # data in, so lazily-imported command modules are not missed by static
+        # analysis. The frozen binary has no dist-info; core.version reads the
+        # baked-in __version__ literal at runtime.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install nuitka .
+          python -m nuitka --onefile --assume-yes-for-downloads `
+            --include-package=caffeinated_whale_cli `
+            --include-package-data=caffeinated_whale_cli `
+            --output-filename=cwcli.exe `
+            --output-dir=dist-win `
+            packaging/nuitka-entry.py
+
+      - name: Smoke-test the exe
+        # A broken build (a missed module, a frozen-context regression) fails here
+        # rather than shipping a dead asset.
+        run: |
+          dist-win\cwcli.exe --version
+          dist-win\cwcli.exe --help
+
+      - name: Determine whether SignPath signing is configured
+        id: gate
+        shell: bash
+        run: |
+          if [ -n "$SIGNPATH_API_TOKEN" ] && [ -n "$SIGNPATH_ORGANIZATION_ID" ]; then
+            echo "signing=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signing=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::SignPath credentials absent - attaching the UNSIGNED exe (see docs/contributing/signpath-runbook.md to enable signing)."
+          fi
+
+      - name: Attach UNSIGNED exe to the release (signing disabled)
+        if: steps.gate.outputs.signing == 'false'
+        # `gh release upload` touches ONLY the asset list - never the hand-written
+        # release body composed by build-and-publish.
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.build-and-publish.outputs.version }}
+        run: gh release upload "v${VERSION}" dist-win/cwcli.exe --clobber
+
+      - name: Upload unsigned exe as a workflow artifact (for SignPath)
+        if: steps.gate.outputs.signing == 'true'
+        id: unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: cwcli-windows-unsigned
+          path: dist-win/cwcli.exe
+          if-no-files-found: error
+
+      - name: Submit to SignPath and download the signed exe
+        if: steps.gate.outputs.signing == 'true'
+        # Pinned to the v2.2 commit (matches the repo convention of pinning
+        # third-party actions by SHA). project-slug/signing-policy-slug must match
+        # the names set during SignPath onboarding - see the runbook.
+        # wait-for-completion blocks on the per-release manual approval SignPath
+        # Foundation requires; that pause is by design, not a hang.
+        uses: signpath/github-action-submit-signing-request@b9d91eadd323de506c0c81cf0c7fe7438f3360fd # v2.2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: caffeinated-whale-cli
+          signing-policy-slug: release-signing
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: dist-signed
+
+      - name: Attach SIGNED exe to the release
+        if: steps.gate.outputs.signing == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.build-and-publish.outputs.version }}
+        run: gh release upload "v${VERSION}" dist-signed/cwcli.exe --clobber

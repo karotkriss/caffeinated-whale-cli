@@ -46,10 +46,15 @@ class BuildInfo:
     exists for: a probe of a published 1.0.0 concluded ``apps checkout`` did not
     exist when it was merged and sitting at the tip of ``develop``.
 
+    ``source`` is ``"standalone"`` for a frozen build (Nuitka onefile / winget
+    portable): it has no dist-info to read provenance from, so it is neither a
+    release nor a working-tree build - the version literal baked into the binary
+    is all that is knowable.
+
     ``commit``/``dirty`` are filled only for a ``source`` build (from the PEP 610
-    ``vcs_info``, else by reading the recorded tree). A ``release`` build NEVER
-    shells to git and never needs a ``.git`` directory to exist at runtime.
-    Serializable: every field is a builtin/None.
+    ``vcs_info``, else by reading the recorded tree). A ``release`` or
+    ``standalone`` build NEVER shells to git and never needs a ``.git`` directory
+    to exist at runtime. Serializable: every field is a builtin/None.
     """
 
     source: str
@@ -64,10 +69,11 @@ class VersionInfo:
     """The install-method + version comparison for the running cwcli.
 
     ``method`` is one of ``uv`` (persistent uv tool), ``pip``, ``dev`` (an
-    editable/source checkout), or ``uvx`` (an ephemeral ``uvx --from`` run).
-    ``upgrade_command`` is the subprocess argv to run, or ``None`` for the two
-    non-upgradable methods (``dev``/``uvx``). ``latest`` is ``None`` iff the
-    PyPI lookup failed open. Serializable: every field is a builtin/None.
+    editable/source checkout), ``uvx`` (an ephemeral ``uvx --from`` run), or
+    ``standalone`` (a frozen Nuitka/winget binary). ``upgrade_command`` is the
+    subprocess argv to run, or ``None`` for the non-upgradable methods
+    (``dev``/``uvx``/``standalone``). ``latest`` is ``None`` iff the PyPI lookup
+    failed open. Serializable: every field is a builtin/None.
     """
 
     current: str
@@ -188,10 +194,29 @@ def _spawn_background_refresh(*, timeout: float = _DEFAULT_TIMEOUT) -> None:
         pass  # a background refresh must never break the caller
 
 
+def _is_frozen() -> bool:
+    """True when cwcli runs as a frozen standalone binary (Nuitka onefile / PyInstaller).
+
+    A frozen build has no dist-info: ``importlib.metadata`` cannot see the
+    distribution, so the version reads fall back to the baked-in literal and the
+    install method is reported ``standalone`` (never upgradable in place). Nuitka
+    marks each compiled module with a ``__compiled__`` global; PyInstaller and
+    cx_Freeze set ``sys.frozen``. Checking both covers whichever freezer built it.
+    """
+    return bool(getattr(sys, "frozen", False)) or "__compiled__" in globals()
+
+
 def _current_version() -> str:
     import importlib.metadata
 
-    return importlib.metadata.version(DIST)
+    try:
+        return importlib.metadata.version(DIST)
+    except importlib.metadata.PackageNotFoundError:
+        # Frozen standalone build: no dist-info. Use the literal baked into the
+        # package __init__ (compiled into the binary).
+        from .. import __version__
+
+        return __version__
 
 
 def build_info() -> BuildInfo:
@@ -202,6 +227,8 @@ def build_info() -> BuildInfo:
     honest reading of "no direct-URL provenance was found".
     """
     try:
+        if _is_frozen():
+            return BuildInfo(source="standalone")
         return _build_info_from_direct_url()
     except Exception:
         return BuildInfo(source="release")
@@ -288,6 +315,11 @@ def _detect_method() -> tuple[str, str | None]:
     """
     import importlib.metadata
 
+    if _is_frozen():
+        # A frozen standalone binary (Nuitka onefile / winget portable) is not a
+        # pip/uv env: it cannot be upgraded in place. self-update no-ops for it.
+        return "standalone", None
+
     try:
         info = _direct_url()
         if info and info.get("dir_info", {}).get("editable"):
@@ -321,7 +353,7 @@ def _upgrade_command(method: str) -> list[str] | None:
     if method == "pip":
         # sys.executable -m pip, never a bare `pip` (which may target a different env).
         return [sys.executable, "-m", "pip", "install", "--upgrade", DIST]
-    return None  # dev / uvx are never upgraded in place
+    return None  # dev / uvx / standalone are never upgraded in place
 
 
 def _is_outdated(current: str, latest: str | None) -> bool:

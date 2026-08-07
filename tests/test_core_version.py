@@ -103,6 +103,27 @@ class TestDetectMethod:
         monkeypatch.setattr(importlib.metadata, "distribution", boom)
         assert core_version._detect_method() == ("pip", None)
 
+    def test_frozen_binary_is_standalone(self, monkeypatch):
+        # A Nuitka/winget standalone binary has no dist-info; it is not pip.
+        monkeypatch.setattr(core_version, "_is_frozen", lambda: True)
+        assert core_version._detect_method() == ("standalone", None)
+
+
+class TestIsFrozen:
+    def test_pyinstaller_style_sys_frozen(self, monkeypatch):
+        import sys
+
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        assert core_version._is_frozen() is True
+
+    def test_nuitka_compiled_global(self, monkeypatch):
+        # Nuitka injects __compiled__ into every compiled module's globals.
+        monkeypatch.setitem(core_version.__dict__, "__compiled__", object())
+        assert core_version._is_frozen() is True
+
+    def test_plain_interpreter_is_not_frozen(self):
+        assert core_version._is_frozen() is False
+
 
 class TestUpgradeCommand:
     def test_uv(self):
@@ -122,6 +143,23 @@ class TestUpgradeCommand:
     def test_dev_and_uvx_have_no_command(self):
         assert core_version._upgrade_command("dev") is None
         assert core_version._upgrade_command("uvx") is None
+
+    def test_standalone_has_no_command(self):
+        assert core_version._upgrade_command("standalone") is None
+
+
+class TestCurrentVersion:
+    def test_frozen_falls_back_to_baked_literal(self, monkeypatch):
+        """A frozen build has no dist-info; the baked package literal is used."""
+        import importlib.metadata
+
+        import caffeinated_whale_cli
+
+        def boom(name):
+            raise importlib.metadata.PackageNotFoundError(name)
+
+        monkeypatch.setattr(importlib.metadata, "version", boom)
+        assert core_version._current_version() == caffeinated_whale_cli.__version__
 
 
 class TestIsOutdated:
@@ -369,6 +407,14 @@ class TestPassiveNotice:
         assert core_version.passive_notice() is None
         assert spawned == []
 
+    def test_standalone_never_fetches_or_spawns(self, isolated_cache, monkeypatch):
+        spawned = self._patch(monkeypatch, method="standalone")
+        monkeypatch.setattr(
+            core_version, "_read_cache", lambda: (_ for _ in ()).throw(AssertionError("no read"))
+        )
+        assert core_version.passive_notice() is None
+        assert spawned == []
+
     def test_fail_open_on_error(self, isolated_cache, monkeypatch):
         self._patch(monkeypatch)
         monkeypatch.setattr(
@@ -482,3 +528,16 @@ class TestBuildInfo:
         """No ``.git`` at the recorded path -> unknown commit, never an exception."""
         assert core_version._git_head(str(tmp_path)) == (None, None)
         assert core_version._git_head(None) == (None, None)
+
+    def test_frozen_build_is_standalone_and_never_shells_to_git(self, monkeypatch):
+        """A frozen binary is neither release nor a working tree; no git, no metadata."""
+        monkeypatch.setattr(core_version, "_is_frozen", lambda: True)
+
+        def no_git(*args, **kwargs):  # pragma: no cover - must never be reached
+            raise AssertionError("a standalone build must not invoke git")
+
+        monkeypatch.setattr(core_version, "_git_head", no_git)
+
+        build = core_version.build_info()
+        assert build.source == "standalone"
+        assert build.commit is None and build.editable is False
