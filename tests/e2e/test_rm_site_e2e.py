@@ -17,6 +17,8 @@ default site, which every other e2e test in the session still depends on).
 from __future__ import annotations
 
 import shlex
+import subprocess
+import warnings
 
 import pytest
 
@@ -59,10 +61,23 @@ def _archived_exists(inst, site: str) -> bool:
 
 
 def _drop_temporary_site(inst, site: str) -> None:
-    """Remove a refusal-path fixture and refresh the shared instance's cache."""
+    """Best-effort teardown of a refusal-path fixture on the shared session bench.
+
+    Bounded (a real drop is seconds) and non-fatal on timeout: this is teardown
+    of a throwaway site no later test depends on, and ``bench drop-site``'s
+    ``DROP DATABASE`` can block for a very long time on a metadata lock held by
+    the shared bench's still-running scheduler/workers - a flaky hang that must
+    never fail a test whose own assertions already passed.
+    """
     if not _site_exists(inst, site):
         return
-    result = harness.run_cwcli("rm-site", inst.name, site, "--yes")
+    try:
+        result = harness.run_cwcli("rm-site", inst.name, site, "--yes", timeout=300)
+    except subprocess.TimeoutExpired:
+        warnings.warn(
+            f"teardown of {site} timed out; leaving it for session sweep", stacklevel=2
+        )
+        return
     assert result.returncode == 0, result.stdout + result.stderr
     assert not _site_exists(inst, site), f"temporary site {site} survived cleanup"
 
