@@ -394,10 +394,47 @@ def test_start_daemon_is_a_noop_when_already_running(run_dir, monkeypatch):
 def test_start_daemon_falls_back_to_spawn_without_fork(run_dir, monkeypatch):
     monkeypatch.setattr(cred_daemon, "is_running", lambda: False)
     monkeypatch.delattr(cred_daemon.os, "fork", raising=False)
+    monkeypatch.setattr(cred_daemon, "_await_started", lambda timeout=2.0: None)
     spawned = []
     monkeypatch.setattr(cred_daemon, "_spawn_detached", lambda: spawned.append(True))
     cred_daemon.start_daemon()
     assert spawned == [True]
+
+
+def test_concurrent_start_forks_at_most_one_daemon(run_dir, monkeypatch):
+    """The startup lock serializes concurrent start_daemon calls: exactly ONE
+    reaches the fork/spawn, the rest re-check is_running() under the lock and
+    no-op - never a rival daemon."""
+    running = {"up": False}
+    monkeypatch.setattr(cred_daemon, "is_running", lambda: running["up"])
+    starts = []
+
+    def fake_start(lock_fd):
+        starts.append(True)
+        time.sleep(0.05)  # widen the window every rival races through
+        running["up"] = True
+
+    monkeypatch.setattr(cred_daemon, "_fork_or_spawn", fake_start)
+
+    threads = [threading.Thread(target=cred_daemon.start_daemon) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert starts == [True]
+
+
+def test_stale_lock_file_does_not_prevent_start(run_dir, monkeypatch):
+    """A lock FILE left behind by a dead starter (flock/msvcrt lock long released
+    by the kernel) never blocks a fresh start."""
+    (run_dir / "run").mkdir(parents=True, exist_ok=True)
+    (run_dir / "run" / "credbridge.start.lock").write_text("")
+    monkeypatch.setattr(cred_daemon, "is_running", lambda: False)
+    started = []
+    monkeypatch.setattr(cred_daemon, "_fork_or_spawn", lambda lock_fd: started.append(True))
+    cred_daemon.start_daemon()
+    assert started == [True]
 
 
 def test_stop_daemon_is_a_noop_when_not_running(run_dir, monkeypatch):
