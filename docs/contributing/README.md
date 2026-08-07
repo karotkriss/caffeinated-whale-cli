@@ -25,6 +25,8 @@ Welcome! This directory contains all documentation related to contributing to th
 | **[Code Quality](./code-quality.md)** | Formatting, linting, standards | You're writing code |
 | **[Chores](./chores.md)** | Maintenance tasks | You're doing version bumps or maintenance |
 | **[CI/CD](./ci-cd.md)** | GitHub Actions workflows | You're setting up CI or releasing |
+| **[Code-signing policy](./code-signing.md)** | Windows `.exe` signing policy | You're reviewing how the signed build is produced |
+| **[SignPath runbook](./signpath-runbook.md)** | Enabling / approving signed releases | You're the maintainer setting up or approving signing |
 
 ### Workflow Overview
 

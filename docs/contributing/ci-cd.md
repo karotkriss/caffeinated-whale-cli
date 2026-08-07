@@ -176,6 +176,13 @@ A second job, **`bump-homebrew-tap`**, then fans the release out to the `karotkr
 It is isolated from the publish (`needs: build-and-publish` plus `continue-on-error: true`), so a tap-bump failure can never fail the PyPI publish or the GitHub release.
 The `cwcli-release` skill owns the detailed contract (isolation mechanism, PyPI-JSON URL/sha256 derivation, action choice, and the known tap-side `test do` gap).
 
+A third job, **`windows-exe`**, builds the standalone Windows binary and optionally signs it.
+It compiles the package with Nuitka (`--onefile`) on `windows-latest` into a single `cwcli.exe` and attaches it to the GitHub release.
+It is isolated exactly like `bump-homebrew-tap` (`needs: build-and-publish` plus `continue-on-error: true`), so a build or signing hiccup can never fail the PyPI publish or the GitHub release.
+Signing through SignPath Foundation is **inert until enabled**: the whole SignPath sequence is gated on the `SIGNPATH_API_TOKEN` secret and `SIGNPATH_ORGANIZATION_ID` variable both existing.
+Absent, the job ships the unsigned exe and skips SignPath; present, it submits the exe, waits for the maintainer's manual approval, and attaches the signed exe instead.
+The policy and setup live in [code-signing.md](./code-signing.md) and [signpath-runbook.md](./signpath-runbook.md).
+
 **Trigger a release:**
 ```bash
 # 1. Bump the version (four files move together)
