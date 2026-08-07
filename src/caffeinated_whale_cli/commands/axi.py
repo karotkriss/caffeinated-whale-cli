@@ -2052,8 +2052,9 @@ def axi_config() -> None:
 
     The aggregate the AXI standard asks a read verb to be: search paths,
     auto-inspect state (config, live daemon, boot hook - three stores,
-    reported separately), tips, and the config-file/cache-DB locations in ONE
-    call, because the follow-up call is the expensive token cost.
+    reported separately), credential-bridge state, tips, and the
+    config-file/cache-DB locations in ONE call, because the follow-up call is
+    the expensive token cost.
 
     Deliberately carries NO mutating flags, and no config-mutating axi verb
     exists (paths add/remove, cache clear, auto-inspect enable/disable): an
