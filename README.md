@@ -1125,7 +1125,7 @@ Files matched by `.gitignore` are not reported by git and so never count, which 
 `--reset` is the explicit opt-in through that refusal: it hard-resets the working tree to the fetched ref, discarding tracked local edits, which guarantees the clean tree a subsequent `build`/`migrate` needs.
 Note one honest limit: `--reset` does **not** delete untracked files, because cwcli never runs `git clean` - it lets the checkout proceed and leaves them where they are.
 
-**Private repos:** `apps install`/`apps update`/`apps checkout` (and the deprecated `update`) transparently authenticate git fetches against private GitHub/GitLab app repos through your host's already-signed-in `gh`/`glab` - nothing to configure, no token ever stored in the container, and public repos are unaffected. Sign in on the host first (`gh auth login` / `glab auth login`).
+**Private repos:** `apps install`/`apps update`/`apps checkout` (and the deprecated `update`) transparently authenticate git fetches against private GitHub/GitLab app repos through your host's already-signed-in `gh`/`glab` - nothing to configure, no token ever stored in the container, and public repos are unaffected. Sign in on the host first (`gh auth login` / `glab auth login`). To extend this to **interactive** git inside `cwcli open` or a `docker exec` shell (not just cwcli's own operations), opt into the persistent [`config cred-bridge`](#config-cred-bridge---persistent-credential-bridge).
 
 **Common Options:**
 
@@ -1782,8 +1782,9 @@ cwcli status -w --interval 5 frappe-one   # refresh every 5s
 ### `doctor` - Preflight Your Environment
 
 Checks whether cwcli can operate on this machine at all - Docker, cwcli's own
-on-disk footprint, disk space, sendme, and the `gh`/`glab` credential-bridge
-dependencies - as a fast, read-only report. `status`/`inspect` answer "is this
+on-disk footprint, disk space, sendme, the `gh`/`glab` credential-bridge
+dependencies, and (when enabled) the persistent credential-bridge daemon's
+health - as a fast, read-only report. `status`/`inspect` answer "is this
 instance healthy"; `doctor` answers "will the next command even work here".
 
 ```bash
@@ -1945,6 +1946,44 @@ Auto-inspect has three state stores - the config flag, the live daemon process, 
 - Process stops on system restart unless the boot hook is installed (`enable --startup`; LaunchAgent on macOS, systemd user service on Linux, Task Scheduler on Windows)
 - Logs stored in `~/.cwcli/run/auto-inspect.log`
 - PID file stored in `~/.cwcli/run/auto-inspect.pid`
+
+##### `config cred-bridge` - Persistent Credential Bridge
+
+Opt-in.
+When enabled, a small detached host daemon lets in-container git reach your host's already-signed-in `gh`/`glab` for private-repo fetches during **interactive** work - `cwcli open`, a plain `docker exec` shell, a VS Code attached-container terminal - not just cwcli's own `apps`/`init`/`update` operations.
+The raw token never enters the container (cwcli forwards credential bytes and never parses or stores a token), and `store`/`erase` are no-ops so nothing is ever written inside the container.
+
+```bash
+cwcli config cred-bridge [SUBCOMMAND]
+```
+
+**How it degrades:** a stopped, crashed, or never-started daemon behaves byte-identically to having no helper configured at all - git simply prompts (at a TTY) or fails auth cleanly (non-TTY), with no added noise.
+The bridge only ever adds an authenticated answer; it can never make git worse than it is without it.
+
+**Security model, in three lines:** the token never enters the container; while the daemon runs, any process in the container can *use* (never read or extract) the credential for a request; disable it at any time with `cwcli config cred-bridge disable`.
+This is the same class of exposure as SSH agent forwarding or VS Code's own credential forwarding, but the window is longer (the daemon's lifetime), which is exactly why it is opt-in - turn it on knowingly.
+Every request is written to an audit log (`~/.cwcli/run/credbridge-audit.log`, one line per request: timestamp, instance, host, answered - never a credential byte).
+For a tighter blast radius, authenticate `gh`/`glab` with a fine-grained, expiring token scoped to only the repos you need; the bridge faithfully forwards whatever the host tools hold, so the token's reach is your auth choice.
+On a shared multi-user host, note the per-instance socket lives in the instance's workspace directory under `~/.cwcli/projects/<name>/data/`.
+
+**Cred-Bridge Subcommands:**
+
+- **`enable`** - Enable the bridge AND start its background daemon, in one verb
+  - Idempotent; missing `gh`/`glab` is a warning, not a refusal (the bridge simply answers nothing until a tool is installed and authenticated).
+  - Takes effect on any running instance immediately, and self-heals onto each instance on the next `cwcli open`/`cwcli start`.
+  - Example: `cwcli config cred-bridge enable`
+
+- **`disable`** - Stop the daemon, set enabled = false, and make every wired shim inert (non-destructive; an `enable` recreates everything)
+  - Example: `cwcli config cred-bridge disable`
+
+- **`start`** / **`stop`** - Start or stop the daemon only, leaving the enabled flag as-is (`start` refuses when disabled; a stopped-while-enabled daemon returns on the next `open`/`start`)
+
+- **`status [--json]`** - Show enabled, daemon state + PID, transport (`unix` on native Linux, `tcp` under Docker Desktop), wired instances, and the most recent audit lines
+
+**Notes:**
+- Not started at system boot in this release; any `cwcli open`/`cwcli start` re-starts it while enabled.
+- Logs stored in `~/.cwcli/run/credbridge.log`; audit log in `~/.cwcli/run/credbridge-audit.log`.
+- There is deliberately no `cwcli axi cred-bridge` verb: standing up a persistent host credential channel is a decision a person makes, not an agent (the read-only state is on `cwcli axi config` / `cwcli axi doctor`).
 
 ##### `config tips` - Manage Contextual Tips
 

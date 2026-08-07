@@ -103,6 +103,34 @@ def test_host_credential_missing_tool_is_empty(monkeypatch):
     assert credbridge.host_credential(b"host=github.com\n\n") == b""
 
 
+def test_host_credential_audit_hook_gets_host_and_answered_never_a_credential(monkeypatch):
+    """The persistent daemon passes an ``audit`` callback; it is called with the
+    host and a bool - and NEVER a credential byte - so the daemon can log one line
+    per request safely. Answered=True when the tool returned something, else False.
+    """
+    monkeypatch.setattr(
+        credbridge.subprocess,
+        "run",
+        lambda *a, **k: type("D", (), {"stdout": b"password=SECRET\n"})(),
+    )
+    seen = []
+    out = credbridge.host_credential(
+        b"protocol=https\nhost=github.com\n\n", audit=lambda host, ok: seen.append((host, ok))
+    )
+    assert out == b"password=SECRET\n"  # credential still flows back to the caller
+    assert seen == [("github.com", True)]  # ...but the audit hook saw only host+bool
+
+    # an empty answer records answered=False
+    monkeypatch.setattr(
+        credbridge.subprocess, "run", lambda *a, **k: type("D", (), {"stdout": b""})()
+    )
+    seen.clear()
+    credbridge.host_credential(
+        b"host=gitlab.com\n\n", audit=lambda host, ok: seen.append((host, ok))
+    )
+    assert seen == [("gitlab.com", False)]
+
+
 # ------------------------------------------------------------ context manager
 
 

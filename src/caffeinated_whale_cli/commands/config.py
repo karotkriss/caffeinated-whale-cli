@@ -30,6 +30,7 @@ from rich.table import Table
 
 from ..core import auto_inspect as core_ai
 from ..core import config as core_config
+from ..core import cred_bridge as core_cred
 from ..core.auto_inspect import AutoInspectState
 from ..core.envelope import Status
 from ..core.errors import CwcliError, ErrorKind
@@ -41,10 +42,12 @@ app = typer.Typer(help="Manage CLI configuration and cache.")
 paths_app = typer.Typer(help="Manage the bench search paths the inspect command scans.")
 cache_app = typer.Typer(help="Manage the cache.")
 auto_inspect_app = typer.Typer(help="Manage automatic project inspection.")
+cred_bridge_app = typer.Typer(help="Manage the persistent git credential bridge.")
 tips_app = typer.Typer(help="Manage contextual tips display.")
 app.add_typer(paths_app, name="paths")
 app.add_typer(cache_app, name="cache")
 app.add_typer(auto_inspect_app, name="auto-inspect")
+app.add_typer(cred_bridge_app, name="cred-bridge")
 app.add_typer(tips_app, name="tips")
 
 
@@ -114,6 +117,20 @@ def show(
     )
     console.print(f"  Daemon: {daemon_words}")
     console.print(f"  Start on boot: {_boot_status_words(state)}")
+
+    bridge = report.cred_bridge
+    console.print("\n[bold]Credential bridge[/bold]")
+    console.print(f"  Enabled: {'Yes' if bridge.enabled else 'No'}")
+    bridge_daemon = (
+        f"[green]Running[/green] (PID {bridge.daemon_pid})"
+        if bridge.daemon_running
+        else "[red]Stopped[/red]"
+    )
+    console.print(f"  Daemon: {bridge_daemon}")
+    console.print(f"  Transport: {bridge.transport}")
+    if bridge.registered_projects:
+        console.print(f"  Instances: {', '.join(bridge.registered_projects)}")
+
     console.print("\n[bold]UI[/bold]")
     console.print(f"  Tips: {'Enabled' if report.show_tips else 'Disabled'}")
 
@@ -460,6 +477,132 @@ def show_auto_inspect_logs(
     assert result.data is not None
     console.print(f"[bold]Last {lines} log lines:[/bold]\n")
     console.print(result.data.content)
+
+
+# ----------------------------------------------------------------- cred-bridge
+
+_CRED_ACTION_LINES = {
+    "config.enabled": "[green]Credential bridge enabled.[/green]",
+    "daemon.started": "[green]Credential bridge daemon started.[/green]",
+    "daemon.already_running": "[yellow]Credential bridge daemon is already running.[/yellow]",
+    "instances.ensured": "[green]Wired currently-running instances into the bridge.[/green]",
+    "daemon.stopped": "[green]Credential bridge daemon stopped.[/green]",
+    "daemon.not_running": "[yellow]Credential bridge daemon is not running.[/yellow]",
+    "artifacts.cleared": "[dim]Cleared bridge shims and sockets.[/dim]",
+    "config.disabled": "[green]Credential bridge disabled.[/green]",
+}
+
+
+def _render_cred_outcome(result) -> None:
+    data = result.data
+    assert data is not None
+    for action in data.actions:
+        line = _CRED_ACTION_LINES.get(action)
+        if line:
+            console.print(line)
+    for warning in result.warnings:
+        console.print(f"[yellow]Warning: {warning.text}[/yellow]")
+
+
+@cred_bridge_app.command("enable")
+def enable_cred_bridge():
+    """
+    Enable the persistent git credential bridge and start its background daemon.
+
+    Opt-in: while enabled, in-container git can reach your host's authenticated
+    gh/glab for private-repo fetches during interactive work (cwcli open, plain
+    docker exec), not just cwcli's own app operations. The raw token never enters
+    the container. Idempotent.
+    """
+    try:
+        result = core_cred.enable()
+    except CwcliError as e:
+        raise _exit_for(e) from None
+    _render_cred_outcome(result)
+    assert result.data is not None
+    console.print(f"[dim]Log file: {result.data.state.log_file}[/dim]")
+
+
+@cred_bridge_app.command("disable")
+def disable_cred_bridge():
+    """
+    Disable the credential bridge: stop the daemon, set enabled = false, and make
+    every wired shim inert. Non-destructive - an 'enable' recreates everything.
+    """
+    try:
+        result = core_cred.disable()
+    except CwcliError as e:
+        raise _exit_for(e) from None
+    _render_cred_outcome(result)
+
+
+@cred_bridge_app.command("start")
+def start_cred_bridge():
+    """
+    Start the credential-bridge daemon only (leaves config as-is).
+
+    Refuses when the feature is disabled - run 'enable' first.
+    """
+    try:
+        result = core_cred.start()
+    except CwcliError as e:
+        raise _exit_for(e) from None
+    _render_cred_outcome(result)
+
+
+@cred_bridge_app.command("stop")
+def stop_cred_bridge():
+    """
+    Stop the credential-bridge daemon only.
+
+    Leaves the enabled flag untouched, so it auto-starts again on the next
+    'cwcli open'/'cwcli start' while enabled. Use 'disable' to tear everything down.
+    """
+    try:
+        result = core_cred.stop()
+    except CwcliError as e:
+        raise _exit_for(e) from None
+    _render_cred_outcome(result)
+
+
+@cred_bridge_app.command("status")
+def status_cred_bridge(
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
+):
+    """
+    Show the credential-bridge state: enabled, daemon, transport, wired
+    instances, and the most recent audit lines.
+    """
+    state = core_cred.status().data
+    assert state is not None
+
+    if json_output:
+        print(json.dumps(asdict(state), indent=2))
+        return
+
+    table = Table(title="Credential Bridge Status")
+    table.add_column("Setting", style="cyan")
+    table.add_column("Value", style="magenta")
+    table.add_row("Enabled", "Yes" if state.enabled else "No")
+    table.add_row(
+        "Daemon",
+        "[green]Running[/green]" if state.daemon_running else "[red]Stopped[/red]",
+    )
+    if state.daemon_running:
+        table.add_row("Process ID (PID)", str(state.daemon_pid))
+    table.add_row("Transport", state.transport)
+    table.add_row(
+        "Instances",
+        ", ".join(state.registered_projects) if state.registered_projects else "(none)",
+    )
+    console.print(table)
+
+    if state.recent_audit:
+        console.print("\n[bold]Recent requests[/bold]")
+        for line in state.recent_audit:
+            console.print(f"  [dim]{line}[/dim]")
+    if state.daemon_running:
+        console.print(f"\n[dim]Log file: {state.log_file}[/dim]")
 
 
 # ------------------------------------------------------------------------- tips
