@@ -463,7 +463,11 @@ def init(
         "development.localhost",
         "--site",
         "-s",
-        help="Primary site to create (must end with .localhost). Defaults to 'development.localhost'.",
+        help=(
+            "Primary site to create: any hostname/FQDN or IPv4 address. '.localhost' names "
+            "are recommended for local development (they resolve without DNS). Defaults to "
+            "'development.localhost'."
+        ),
     ),
     bench_parent: str = typer.Option(
         "/workspace",
@@ -600,6 +604,14 @@ def init(
     # Prompt for the project name if not provided; validate all three names up
     # front (fail-fast ordering preserved - a bad site name fails before ANY work).
     project, bench, site = _prompt_for_inputs(project_name, bench_name, site_name)
+
+    if not site.endswith(".localhost"):
+        # Informational only - never a refusal or a confirm. `.localhost` names
+        # resolve to the machine without DNS; anything else needs help.
+        stderr_console.print(
+            f"[dim]Note: '{site}' must resolve to this machine (DNS or a hosts entry) "
+            "for browser access; .localhost names resolve automatically.[/dim]"
+        )
 
     renderer = _InitRenderer(
         verbose=verbose, show_tips=config_utils.get_show_tips(), project=project

@@ -94,14 +94,23 @@ def test_no_start_leaves_dev_services_down(port_allocator):
     still brings the containers up (unaffected by this flag), the completion
     message points at `cwcli start` instead of claiming success, and the site
     genuinely does not answer - proving the supervisor launch was really
-    skipped, not just under-reported."""
+    skipped, not just under-reported.
+
+    The site is deliberately named a real DOMAIN, not a `.localhost` name:
+    `.localhost` is a suggestion for local dev, never a requirement, so this
+    throwaway instance doubles as the real-bench proof that `bench new-site`
+    succeeds with a custom-domain site name (piggybacked here rather than
+    building a second instance for it)."""
     name = harness.project_name("nostart")
+    site = "nostart.example.com"
     port = port_allocator.next()
     result = harness.run_cwcli(
         "init",
         name,
         "--port",
         str(port),
+        "--site",
+        site,
         "--frappe-branch",
         harness.FRAPPE_BRANCH,
         "--admin-password",
@@ -115,9 +124,18 @@ def test_no_start_leaves_dev_services_down(port_allocator):
         combined = harness.collapse_ws(harness.strip_ansi(result.stdout))
         assert "Dev services were not started (--no-start)" in combined, combined
         assert f"cwcli start {name}" in combined, combined
+        # The non-.localhost note is informational, on stderr, and not a refusal.
+        note = harness.collapse_ws(harness.strip_ansi(result.stderr))
+        assert f"'{site}' must resolve to this machine" in note, note
 
         assert harness.frappe_container_id(name) is not None, "containers should still be up"
         assert not _web_reachable(name), "site must not be serving with --no-start"
+
+        # A real site_config.json proves `bench new-site` genuinely accepted
+        # the custom-domain name.
+        site_config = f"/workspace/frappe-bench/sites/{site}/site_config.json"
+        ok, out = _in_frappe_ok(name, f"test -f {shlex.quote(site_config)}")
+        assert ok, f"custom-domain site was not created: {out}"
     finally:
         harness.cwcli_rm(name)
 

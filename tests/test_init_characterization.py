@@ -605,3 +605,51 @@ class TestAddPathLine:
         assert r.added_paths == [BENCH_PATH]
         out = capsys.readouterr().out
         assert f"'{BENCH_PATH}' already exists in custom search paths." in out
+
+
+class TestSiteNameRelaxation:
+    """`.localhost` is a SUGGESTION, not a requirement: any legal hostname/FQDN
+    or IPv4 address is accepted (flag path and interactive path alike), the
+    shell-safety validation is unchanged, and a non-.localhost name gets one
+    informational stderr note - never a refusal, never a confirm."""
+
+    @staticmethod
+    def _new_site_command(r):
+        return next(c["command"] for c in r.api.exec_calls if "bench new-site" in c["command"])
+
+    def test_flag_path_accepts_a_domain_and_notes_resolution(self, monkeypatch, tmp_path, capsys):
+        r = run_init(monkeypatch, tmp_path, site_name="erp.example.com")
+        assert "erp.example.com" in self._new_site_command(r)
+        err = " ".join(capsys.readouterr().err.split())
+        assert "Note: 'erp.example.com' must resolve to this machine" in err
+
+    def test_flag_path_accepts_an_ipv4_address(self, monkeypatch, tmp_path):
+        r = run_init(monkeypatch, tmp_path, site_name="192.168.1.50")
+        assert "192.168.1.50" in self._new_site_command(r)
+
+    def test_localhost_default_gets_no_note(self, monkeypatch, tmp_path, capsys):
+        run_init(monkeypatch, tmp_path)  # the development.localhost default
+        err = " ".join(capsys.readouterr().err.split())
+        assert "must resolve to this machine" not in err
+
+    def test_interactive_prompt_path_accepts_a_domain(self, monkeypatch, tmp_path):
+        # The interactive path prompts only for the PROJECT name (there is no
+        # site prompt); the site rides the flag through the same validation.
+        class FakeQuestion:
+            def ask(self):
+                return PROJECT
+
+        monkeypatch.setattr(
+            init_mod.questionary, "text", lambda *a, **k: FakeQuestion(), raising=True
+        )
+        r = run_init(
+            monkeypatch, tmp_path, project_name=None, site_name="dev.192-168-1-50.example.com"
+        )
+        assert "dev.192-168-1-50.example.com" in self._new_site_command(r)
+
+    def test_metachar_site_name_still_refuses(self, monkeypatch, tmp_path):
+        # The relaxation broadened what is ACCEPTED, not what is protected
+        # against: a shell-metachar name still fails fast with exit 1.
+        with pytest.raises(typer.Exit) as exc:
+            run_init(monkeypatch, tmp_path, site_name="bad;name.example.com")
+        assert exc.value.exit_code == 1
