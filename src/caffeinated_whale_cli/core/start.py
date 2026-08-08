@@ -153,6 +153,15 @@ def start(
             f"Invalid bench path '{resolved_path}'. Paths cannot contain special shell characters.",
         )
 
+    # Persistent credential bridge (opt-in): wire this instance in on every launch
+    # - the same cheap per-launch fixup slot as the uid re-align above, so a
+    # container recreation self-heals. Gated on the feature being enabled and
+    # fully defensive (never raises, a no-op when disabled), so a stopped/absent
+    # bridge daemon can never affect the start.
+    from ..utils import cred_daemon
+
+    cred_daemon.ensure_bridge(frappe_container, resolved_path, project_name)
+
     log_path = supervision.logs_dir(resolved_path)
 
     # 4. Idempotency: an already-running supervisord for THIS bench is a clean no-op

@@ -67,6 +67,14 @@ startup_enabled = false
 # Show contextual tips during long-running operations (true/false)
 # Tips help you discover features and best practices while waiting
 show_tips = true
+
+[cred_bridge]
+# Persistent git credential bridge (opt-in). When enabled, a detached host
+# daemon lets in-container git reach your host's authenticated gh/glab for
+# private-repo fetches during interactive work (cwcli open, plain docker exec),
+# not just during cwcli's own app operations. The raw token NEVER enters the
+# container. Turn it on with `cwcli config cred-bridge enable`.
+enabled = false
 """
 
 
@@ -100,12 +108,17 @@ def load_config() -> dict:
                 config_data["ui"] = {"show_tips": True}
             elif "show_tips" not in config_data["ui"]:
                 config_data["ui"]["show_tips"] = True
+            if "cred_bridge" not in config_data:
+                config_data["cred_bridge"] = {"enabled": False}
+            elif "enabled" not in config_data["cred_bridge"]:
+                config_data["cred_bridge"]["enabled"] = False
             return config_data
         except toml.TomlDecodeError:
             return {
                 "search_paths": {"custom_bench_paths": []},
                 "auto_inspect": {"enabled": False, "interval": 3600, "startup_enabled": False},
                 "ui": {"show_tips": True},
+                "cred_bridge": {"enabled": False},
             }
 
 
@@ -185,6 +198,42 @@ def set_auto_inspect_startup(enabled: bool):
         config["auto_inspect"] = {"enabled": False, "interval": 3600, "startup_enabled": enabled}
     else:
         config["auto_inspect"]["startup_enabled"] = enabled
+    save_config(config)
+
+
+def get_cred_bridge_config() -> dict:
+    """Get persistent credential-bridge configuration (creates config if absent)."""
+    config = load_config()
+    cred_bridge: dict = config.get("cred_bridge", {"enabled": False})
+    return cred_bridge
+
+
+def read_cred_bridge_config() -> dict:
+    """Read credential-bridge config WITHOUT creating config state.
+
+    Used on the hot path (the ensure step in ``open``/``core.start``), so it must
+    never write a default config file into the user's home as a side effect - it
+    just reports ``enabled: false`` when there is nothing to read.
+    """
+    default = {"enabled": False}
+    if not CONFIG_FILE.is_file():
+        return default
+    try:
+        with open(CONFIG_FILE) as f:
+            config = toml.load(f)
+    except (OSError, toml.TomlDecodeError):
+        return default
+    cred_bridge = config.get("cred_bridge", default)
+    return cred_bridge if isinstance(cred_bridge, dict) else default
+
+
+def set_cred_bridge_enabled(enabled: bool):
+    """Enable or disable the persistent credential bridge."""
+    config = load_config()
+    if "cred_bridge" not in config:
+        config["cred_bridge"] = {"enabled": enabled}
+    else:
+        config["cred_bridge"]["enabled"] = enabled
     save_config(config)
 
 

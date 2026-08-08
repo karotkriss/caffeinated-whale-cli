@@ -350,6 +350,53 @@ def _check_auto_inspect() -> tuple:
     return _outcome(CheckStatus.PASS, f"running (pid {pid})")
 
 
+def _check_cred_bridge() -> tuple:
+    """C-credbridge - persistent credential-bridge daemon health, read-only.
+
+    Uses the identity trio directly (T4): NEVER ``cred_daemon.is_running()``,
+    which prunes a stale/recycled pid file as a side effect. Opt-in and
+    fail-degrades-to-prompt, so an enabled-but-dead daemon (or a registry
+    pointing at a vanished workspace) is WARN, never FAIL.
+    """
+    from ..utils import cred_daemon, daemon_identity
+    from ..utils.config_utils import read_cred_bridge_config
+
+    config = read_cred_bridge_config()
+    if not config.get("enabled"):
+        return _outcome(CheckStatus.PASS, "disabled")
+
+    record = daemon_identity.read_daemon_record(cred_daemon.PID_FILE)
+    if record is None:
+        return _outcome(
+            CheckStatus.WARN,
+            "enabled but no daemon record found",
+            "run `cwcli config cred-bridge enable`",
+        )
+    pid, recorded_start = record
+    if not daemon_identity.pid_alive(pid):
+        return _outcome(
+            CheckStatus.WARN,
+            f"enabled but the daemon (pid {pid}) is not running",
+            "run `cwcli config cred-bridge enable`",
+        )
+    current_start = daemon_identity.process_start_time(pid)
+    if recorded_start and current_start and recorded_start != current_start:
+        return _outcome(
+            CheckStatus.WARN,
+            f"enabled but pid {pid} was recycled by another process; the daemon is not running",
+            "run `cwcli config cred-bridge enable`",
+        )
+
+    vanished = [p for p, ws in cred_daemon._read_registry().items() if not Path(ws).is_dir()]
+    if vanished:
+        return _outcome(
+            CheckStatus.WARN,
+            f"running (pid {pid}); registry references removed instance(s): {', '.join(vanished)}",
+            "re-run `cwcli config cred-bridge enable`, or ignore (pruned automatically)",
+        )
+    return _outcome(CheckStatus.PASS, f"running (pid {pid})")
+
+
 # --------------------------------------------------------------------------- storage
 
 
@@ -550,6 +597,7 @@ _CHECKS: list[Check] = [
     Check(id="c4", title="cwcli version", group="cwcli", run=_check_version),
     Check(id="c7", title="cwcli home", group="cwcli", run=_check_home_layout),
     Check(id="c9", title="auto-inspect", group="cwcli", run=_check_auto_inspect),
+    Check(id="c19", title="credential bridge", group="cwcli", run=_check_cred_bridge),
     Check(id="c5", title="Free space (cwcli home)", group="Storage", run=_check_home_free_space),
     Check(
         id="c6",
