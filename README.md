@@ -1976,24 +1976,38 @@ The bridge only ever adds an authenticated answer; it can never make git worse t
 This is the same class of exposure as SSH agent forwarding or VS Code's own credential forwarding, but the window is longer (the daemon's lifetime), which is exactly why it is opt-in - turn it on knowingly.
 Every request is written to an audit log (`~/.cwcli/run/credbridge-audit.log`, one line per request: timestamp, instance, host, answered - never a credential byte).
 For a tighter blast radius, authenticate `gh`/`glab` with a fine-grained, expiring token scoped to only the repos you need; the bridge faithfully forwards whatever the host tools hold, so the token's reach is your auth choice.
-On a shared multi-user host, note the per-instance socket lives in the instance's workspace directory under `~/.cwcli/projects/<name>/data/`.
+On a shared multi-user host, note the per-instance socket lives in the instance's workspace directory under `~/.cwcli/projects/<name>/data/`; `enable` tightens `~/.cwcli/projects` to owner-only (0700) for exactly that reason.
+
+**Host allowlist:** the daemon only answers credential requests for `github.com` and `gitlab.com` by default.
+Using a self-hosted GitLab (or GitHub Enterprise)?
+Add its host to `allowed_hosts` under `[cred_bridge]` in `cwcli config edit`, exactly as git reports it (include the port if non-default, e.g. `"git.corp.example:8443"`):
+
+```toml
+[cred_bridge]
+allowed_hosts = ["github.com", "gitlab.com", "git.corp.example:8443"]
+```
+
+Edits apply immediately - no daemon restart needed.
+The list scopes only the persistent daemon; cwcli's own `apps install`/`apps update`/`init` operations authenticate as before regardless.
+Honestly stated: the allowlist keeps the long-lived channel from silently widening to *other* credential-bearing hosts your `gh`/`glab` know; it cannot stop a process in the container requesting an allowlisted host's credentials.
 
 **Cred-Bridge Subcommands:**
 
-- **`enable`** - Enable the bridge AND start its background daemon, in one verb
+- **`enable [--startup/--no-startup]`** - Enable the bridge AND start its background daemon, in one verb
   - Idempotent; missing `gh`/`glab` is a warning, not a refusal (the bridge simply answers nothing until a tool is installed and authenticated).
   - Takes effect on any running instance immediately, and self-heals onto each instance on the next `cwcli open`/`cwcli start`/`cwcli run`.
-  - Example: `cwcli config cred-bridge enable`
+  - `--startup` also installs an automatic start at system boot/login (LaunchAgent on macOS, systemd user service on Linux, Task Scheduler on Windows) - this covers reopening VS Code straight after a reboot, before any cwcli verb has run. `--no-startup` removes the boot unit; omit both to leave it untouched.
+  - Example: `cwcli config cred-bridge enable --startup`
 
-- **`disable`** - Stop the daemon, set enabled = false, and make every wired shim inert (non-destructive; an `enable` recreates everything)
+- **`disable`** - Stop the daemon, set enabled = false, make every wired shim inert, and remove the boot unit (non-destructive; an `enable` recreates everything)
   - Example: `cwcli config cred-bridge disable`
 
-- **`start`** / **`stop`** - Start or stop the daemon only, leaving the enabled flag as-is (`start` refuses when disabled; a stopped-while-enabled daemon returns on the next `open`/`start`/`run`)
+- **`start`** / **`stop`** - Start or stop the daemon only, leaving the enabled flag as-is (`start` refuses when disabled, which also keeps a stale boot unit inert; a stopped-while-enabled daemon returns on the next `open`/`start`/`run`)
 
-- **`status [--json]`** - Show enabled, daemon state + PID, transport (`unix` on native Linux, `tcp` under Docker Desktop), wired instances, and the most recent audit lines
+- **`status [--json]`** - Show enabled, daemon state + PID, transport (`unix` on native Linux, `tcp` under Docker Desktop), start-on-boot state, allowed hosts, wired instances, and the most recent audit lines
 
 **Notes:**
-- Not started at system boot in this release; any `cwcli open`/`cwcli start`/`cwcli run` re-starts it while enabled.
+- Without `--startup`, the daemon is not boot-persistent; any `cwcli open`/`cwcli start`/`cwcli run` re-starts it while enabled.
 - Logs stored in `~/.cwcli/run/credbridge.log`; audit log in `~/.cwcli/run/credbridge-audit.log`.
 - There is deliberately no `cwcli axi cred-bridge` verb: standing up a persistent host credential channel is a decision a person makes, not an agent (the read-only state is on `cwcli axi config` / `cwcli axi doctor`).
 

@@ -67,7 +67,7 @@ import subprocess
 import sys
 import threading
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from pathlib import Path
 
 _SOCK_NAME_FMT = ".git-cred-{}.sock"
@@ -254,7 +254,12 @@ def _prefer_tcp() -> bool:
     return os.name == "nt" or sys.platform == "darwin"
 
 
-def host_credential(request: bytes, *, audit: Callable[[str, bool], None] | None = None) -> bytes:
+def host_credential(
+    request: bytes,
+    *,
+    audit: Callable[[str, bool], None] | None = None,
+    allowlist: Collection[str] | None = None,
+) -> bytes:
     """Answer one git-credential request from the host's ``gh``/``glab``.
 
     Dispatches by the ``host=`` field. The raw token is only ever in this
@@ -265,11 +270,24 @@ def host_credential(request: bytes, *, audit: Callable[[str, bool], None] | None
     not) is called with ``(host, answered)`` after the exchange - a bool, never a
     credential byte - so the daemon can write one audit line per request without
     this function needing to know where the log lives.
+
+    ``allowlist`` (again the persistent daemon only; ``None`` means unrestricted)
+    scopes which hosts are answered at all: a request whose ``host=`` is not an
+    EXACT member is answered with nothing, before any host tool runs. It exists
+    to stop the long-lived channel silently widening to *other* credential-
+    bearing hosts the host tools know - honestly, it cannot stop a compromised
+    container asking for an allowlisted host's credentials (``host=`` is the
+    requester's own claim). The per-invocation bridge stays unrestricted: it
+    lives only around an operation the user just initiated with an explicit URL.
     """
     host = ""
     for line in request.decode("utf-8", "replace").splitlines():
         if line.startswith("host="):
             host = line[5:].strip()
+    if allowlist is not None and host not in allowlist:
+        if audit is not None:
+            audit(host, False)
+        return b""
     tool = "gh" if host.endswith("github.com") else "glab"
     try:
         out = subprocess.run(
@@ -292,6 +310,7 @@ def _serve(
     token: bytes | None = None,
     *,
     audit: Callable[[str, bool], None] | None = None,
+    allowlist: Callable[[], Collection[str]] | None = None,
 ) -> None:
     """Accept connections until ``stop`` is set, answering each from the host tool.
 
@@ -303,6 +322,12 @@ def _serve(
     matching the "no weaker than the unix-socket path" claim (AF_UNIX has none). The
     unix-socket transport passes ``None``: its filesystem boundary already scopes who
     can connect.
+
+    ``allowlist`` (the persistent daemon passes one; the per-invocation bridge
+    never does) is a ZERO-ARG CALLABLE evaluated per request, not a static set,
+    so an ``allowed_hosts`` config edit takes effect on the very next request
+    with no daemon restart - a security scope that silently required a hidden
+    restart to apply would teach its user it was already applied.
     """
     while not stop.is_set():
         try:
@@ -331,11 +356,12 @@ def _serve(
             with contextlib.suppress(OSError):
                 # Call byte-identically to the pre-audit shape when no audit hook
                 # is wired (the per-invocation bridge), so its call site and tests
-                # are untouched; only the daemon passes an audit callback.
-                if audit is None:
+                # are untouched; only the daemon passes audit/allowlist.
+                if audit is None and allowlist is None:
                     conn.sendall(host_credential(req))
                 else:
-                    conn.sendall(host_credential(req, audit=audit))
+                    hosts = allowlist() if allowlist is not None else None
+                    conn.sendall(host_credential(req, audit=audit, allowlist=hosts))
 
 
 def _teardown(

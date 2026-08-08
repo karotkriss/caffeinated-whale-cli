@@ -70,7 +70,7 @@ def _exit_for(error: CwcliError) -> "typer.Exit":
     return typer.Exit(code=2 if error.kind is ErrorKind.USAGE else 1)
 
 
-def _boot_status_words(state: AutoInspectState) -> str:
+def _boot_status_words(state: "AutoInspectState | core_cred.CredBridgeState") -> str:
     if state.boot_installed:
         return "Enabled"
     if state.startup_enabled:
@@ -128,6 +128,8 @@ def show(
     )
     console.print(f"  Daemon: {bridge_daemon}")
     console.print(f"  Transport: {bridge.transport}")
+    console.print(f"  Start on boot: {_boot_status_words(bridge)}")
+    console.print(f"  Allowed hosts: {', '.join(bridge.allowed_hosts) or '(none)'}")
     if bridge.registered_projects:
         console.print(f"  Instances: {', '.join(bridge.registered_projects)}")
 
@@ -490,6 +492,9 @@ _CRED_ACTION_LINES = {
     "daemon.not_running": "[yellow]Credential bridge daemon is not running.[/yellow]",
     "artifacts.cleared": "[dim]Cleared bridge shims and sockets.[/dim]",
     "config.disabled": "[green]Credential bridge disabled.[/green]",
+    "projects.hardened": "[dim]Tightened the projects directory to owner-only (0700).[/dim]",
+    "hook.installed": "[green]Boot startup installed.[/green]",
+    "hook.removed": "[green]Boot startup removed.[/green]",
 }
 
 
@@ -505,7 +510,15 @@ def _render_cred_outcome(result) -> None:
 
 
 @cred_bridge_app.command("enable")
-def enable_cred_bridge():
+def enable_cred_bridge(
+    startup: bool | None = typer.Option(
+        None,
+        "--startup/--no-startup",
+        help="Also install (or remove) the automatic start on system boot/login. "
+        "Omit both to leave the boot unit untouched.",
+        show_default=False,
+    ),
+):
     """
     Enable the persistent git credential bridge and start its background daemon.
 
@@ -515,7 +528,7 @@ def enable_cred_bridge():
     the container. Idempotent.
     """
     try:
-        result = core_cred.enable()
+        result = core_cred.enable(at_boot=startup)
     except CwcliError as e:
         raise _exit_for(e) from None
     _render_cred_outcome(result)
@@ -591,6 +604,11 @@ def status_cred_bridge(
     if state.daemon_running:
         table.add_row("Process ID (PID)", str(state.daemon_pid))
     table.add_row("Transport", state.transport)
+    table.add_row("Start on Boot", _boot_status_words(state))
+    table.add_row(
+        "Allowed Hosts",
+        ", ".join(state.allowed_hosts) if state.allowed_hosts else "(none)",
+    )
     table.add_row(
         "Instances",
         ", ".join(state.registered_projects) if state.registered_projects else "(none)",
