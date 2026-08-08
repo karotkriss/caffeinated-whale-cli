@@ -1129,7 +1129,7 @@ Files matched by `.gitignore` are not reported by git and so never count, which 
 `--reset` is the explicit opt-in through that refusal: it hard-resets the working tree to the fetched ref, discarding tracked local edits, which guarantees the clean tree a subsequent `build`/`migrate` needs.
 Note one honest limit: `--reset` does **not** delete untracked files, because cwcli never runs `git clean` - it lets the checkout proceed and leaves them where they are.
 
-**Private repos:** `apps install`/`apps update`/`apps checkout` (and the deprecated `update`) transparently authenticate git fetches against private GitHub/GitLab app repos through your host's already-signed-in `gh`/`glab` - nothing to configure, no token ever stored in the container, and public repos are unaffected. Sign in on the host first (`gh auth login` / `glab auth login`). To extend this to **interactive** git inside `cwcli open` or a `docker exec` shell (not just cwcli's own operations), opt into the persistent [`config cred-bridge`](#config-cred-bridge---persistent-credential-bridge).
+**Private repos:** `apps install`/`apps update`/`apps checkout` (and the deprecated `update`), plus any bench subcommand run through [`cwcli run`](#run---execute-bench-commands) (`cwcli run <project> get-app <private-url>`, `cwcli run <project> update --pull`), transparently authenticate git fetches against private GitHub/GitLab app repos through your host's already-signed-in `gh`/`glab` - nothing to configure, no token ever stored in the container, and public repos are unaffected. Sign in on the host first (`gh auth login` / `glab auth login`). To extend this to **interactive** git inside `cwcli open` or a `docker exec` shell (not just cwcli's own operations), opt into the persistent [`config cred-bridge`](#config-cred-bridge---persistent-credential-bridge).
 
 **Common Options:**
 
@@ -1625,6 +1625,14 @@ cwcli run frappe-one -- build --verbose
 For app management, prefer the [`apps`](#apps---manage-frappe-apps) group, which
 takes these flags directly.
 
+**Private repos:** a git fetch the bench subcommand makes (`get-app
+<private-url>`, `update --pull`) authenticates through the same host `gh`/`glab`
+credential bridge as `apps install` - no token in the container, public repos
+unaffected.
+When the persistent [`config cred-bridge`](#config-cred-bridge---persistent-credential-bridge)
+is enabled and serving the instance, `run` uses it instead of standing up a
+second, per-invocation bridge.
+
 **Bench commands that prompt:** pass `-i`.
 By default nothing is attached to the command's stdin, so a bench command that asks a question - `new-app`, `console`, `mariadb` - reads end-of-file and fails.
 `-i` forwards stdin, which covers both ways the question gets answered: a human types the answers at a terminal, and automation pipes in the same lines.
@@ -1974,18 +1982,18 @@ On a shared multi-user host, note the per-instance socket lives in the instance'
 
 - **`enable`** - Enable the bridge AND start its background daemon, in one verb
   - Idempotent; missing `gh`/`glab` is a warning, not a refusal (the bridge simply answers nothing until a tool is installed and authenticated).
-  - Takes effect on any running instance immediately, and self-heals onto each instance on the next `cwcli open`/`cwcli start`.
+  - Takes effect on any running instance immediately, and self-heals onto each instance on the next `cwcli open`/`cwcli start`/`cwcli run`.
   - Example: `cwcli config cred-bridge enable`
 
 - **`disable`** - Stop the daemon, set enabled = false, and make every wired shim inert (non-destructive; an `enable` recreates everything)
   - Example: `cwcli config cred-bridge disable`
 
-- **`start`** / **`stop`** - Start or stop the daemon only, leaving the enabled flag as-is (`start` refuses when disabled; a stopped-while-enabled daemon returns on the next `open`/`start`)
+- **`start`** / **`stop`** - Start or stop the daemon only, leaving the enabled flag as-is (`start` refuses when disabled; a stopped-while-enabled daemon returns on the next `open`/`start`/`run`)
 
 - **`status [--json]`** - Show enabled, daemon state + PID, transport (`unix` on native Linux, `tcp` under Docker Desktop), wired instances, and the most recent audit lines
 
 **Notes:**
-- Not started at system boot in this release; any `cwcli open`/`cwcli start` re-starts it while enabled.
+- Not started at system boot in this release; any `cwcli open`/`cwcli start`/`cwcli run` re-starts it while enabled.
 - Logs stored in `~/.cwcli/run/credbridge.log`; audit log in `~/.cwcli/run/credbridge-audit.log`.
 - There is deliberately no `cwcli axi cred-bridge` verb: standing up a persistent host credential channel is a decision a person makes, not an agent (the read-only state is on `cwcli axi config` / `cwcli axi doctor`).
 

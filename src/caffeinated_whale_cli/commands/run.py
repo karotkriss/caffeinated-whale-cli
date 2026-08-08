@@ -8,26 +8,66 @@ the exit code is polled rather than read once.
 ``--interactive`` is a SECOND, dedicated mechanism rather than a widening of the
 first - see :func:`_exec_interactive` for why the exec-stream contract cannot
 carry stdin without giving up the decisions that contract exists to own.
+
+Both paths run inside :func:`_credential_bridged`, so a private-repo git fetch
+the bench subcommand makes (``run <p> get-app <private-url>``,
+``run <p> update --pull``; every ``run`` executes ``bench <args>``, never raw
+git) authenticates through the host's ``gh``/``glab`` exactly as ``apps
+install`` does. The wrapping lives HERE, not in ``core.run_stream``: a context
+manager inside an abandoned generator never runs its teardown (the
+``core.update`` try/finally lesson), while a plain ``with`` around the
+consuming loop always does.
 """
 
+import contextlib
 import os
 import shlex
 import subprocess
 import sys
 import uuid
+from collections.abc import Iterator
 
 import typer
 from rich.console import Console
 
+from ..core import docker as core_docker
+from ..core.credbridge import credential_bridge
 from ..core.envelope import Status
 from ..core.errors import CwcliError
 from ..core.exec_stream import ExecChunk
 from ..core.run import RunPlan, run_plan, run_stream
+from ..utils import cred_daemon
 from ..utils.completion_utils import complete_project_names
 from ..utils.docker_utils import handle_docker_errors
 from .utils import ensure_containers_running
 
 stderr_console = Console(stderr=True)
+
+
+@contextlib.contextmanager
+def _credential_bridged(plan: RunPlan) -> Iterator[None]:
+    """Authenticate the planned bench command's git fetches like ``apps install``.
+
+    Both ``run`` paths (streamed and ``-i``) stay in-process, so the same
+    per-invocation :func:`~..core.credbridge.credential_bridge` the ``apps``/
+    ``init``/``update`` git ops wrap works here - and it is inert for public
+    repos and for bench commands that fetch nothing (git only calls a credential
+    helper on a 401), so it wraps EVERY run without pre-detecting a fetch.
+    Before falling back to it,
+    ``ensure_bridge`` wires this instance into the PERSISTENT bridge when
+    that feature is enabled (``run`` is one of its ensure call sites, next to
+    ``open``/``core.start``); a non-``None`` outcome means the stable helper
+    already answers for this instance, so standing up a second, per-invocation
+    helper line for the duration would be redundant - the daemon-skip.
+    ``ensure_bridge`` never raises and returns ``None`` when the feature is
+    disabled, so the common opt-out case goes straight to the ephemeral bridge.
+    """
+    container = core_docker.get_container(plan.container_id)
+    if cred_daemon.ensure_bridge(container, plan.bench_path, plan.project) is not None:
+        yield
+        return
+    with credential_bridge(container, plan.bench_path):
+        yield
 
 
 def _exec_interactive(plan: RunPlan, *, verbose: bool) -> int:
@@ -239,17 +279,20 @@ def run(
         stderr_console.print(f"[dim]$ {plan.command}  (in {plan.bench_path})[/dim]")
 
     if interactive:
-        raise typer.Exit(code=_exec_interactive(plan, verbose=verbose))
+        with _credential_bridged(plan):
+            code = _exec_interactive(plan, verbose=verbose)
+        raise typer.Exit(code=code)
 
     exit_code = 1
     try:
-        for event in run_stream(plan):
-            if isinstance(event, ExecChunk):
-                # Both tags to stdout, reproducing the combined stream this
-                # command has always shown.
-                typer.echo(event.text, nl=False)
-            else:
-                exit_code = event.exit_code
+        with _credential_bridged(plan):
+            for event in run_stream(plan):
+                if isinstance(event, ExecChunk):
+                    # Both tags to stdout, reproducing the combined stream this
+                    # command has always shown.
+                    typer.echo(event.text, nl=False)
+                else:
+                    exit_code = event.exit_code
     except CwcliError as e:
         # An unknown exit code lands here rather than being reported as success.
         stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")

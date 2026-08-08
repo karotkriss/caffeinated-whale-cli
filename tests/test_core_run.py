@@ -680,3 +680,159 @@ def test_run_double_dash_shields_a_bench_dash_i(parsed):
     calls = cli(parsed, "--", "some-cmd", "-i")
 
     assert calls["args"] == ["some-cmd", "-i"]
+
+
+# ------------------------------------------------------------------ credential bridge
+#
+# Phase 2 of the persistent credential bridge (scout report §5.9): both `run`
+# exec paths wrap in the SAME per-invocation `credential_bridge` the apps/init/
+# update git ops use, so `cwcli run <p> get-app <private-url>` authenticates
+# like `apps install` - EXCEPT when the persistent daemon already serves the
+# instance (`ensure_bridge` returns an outcome), where a second helper line for
+# the duration would be redundant: the daemon-skip.
+
+
+@pytest.fixture
+def bridge_spy(monkeypatch):
+    """Fake the per-invocation bridge and default the daemon to not-serving."""
+    import contextlib
+
+    events = []
+
+    @contextlib.contextmanager
+    def fake_bridge(container, bench_path):
+        events.append(("enter", container.id, bench_path))
+        try:
+            yield
+        finally:
+            events.append(("exit",))
+
+    monkeypatch.setattr(run_mod, "credential_bridge", fake_bridge)
+    monkeypatch.setattr(run_mod.cred_daemon, "ensure_bridge", lambda *a, **k: None)
+    return events
+
+
+class TestRunWrapsTheCredentialBridge:
+    def test_streamed_path_execs_inside_the_bridge(self, monkeypatch, frontend, bridge_spy):
+        """The bridge is up before the exec streams and torn down after it drains."""
+
+        def _stream(_plan):
+            bridge_spy.append(("stream",))
+            yield es.ExecDone(exit_code=0)
+
+        monkeypatch.setattr(run_mod, "run_stream", _stream)
+
+        with pytest.raises(typer.Exit) as exc:
+            invoke()
+
+        assert bridge_spy == [
+            ("enter", "container-abc", resolvers.DEFAULT_BENCH_PATH),
+            ("stream",),
+            ("exit",),
+        ]
+        assert exc.value.exit_code == 0
+
+    def test_interactive_path_execs_inside_the_bridge(self, monkeypatch, frontend, bridge_spy):
+        terminals(monkeypatch, stdin=False, stdout=False)
+
+        def fake_run(argv, *a, **k):
+            bridge_spy.append(("exec",))
+            return types.SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(run_mod.subprocess, "run", fake_run)
+
+        with pytest.raises(typer.Exit):
+            invoke(interactive=True)
+
+        assert bridge_spy == [
+            ("enter", "container-abc", resolvers.DEFAULT_BENCH_PATH),
+            ("exec",),
+            ("exit",),
+        ]
+
+    def test_ensure_bridge_is_the_run_call_site(self, monkeypatch, frontend, bridge_spy):
+        """`run` is one of the persistent bridge's ensure call sites (report
+        §5.6, next to open/core.start): the PLANNED container, bench, and
+        project go in, so a recreated container self-heals on the next run."""
+        seen = {}
+
+        def fake_ensure(container, bench_path, project):
+            seen["args"] = (container, bench_path, project)
+            return None
+
+        monkeypatch.setattr(run_mod.cred_daemon, "ensure_bridge", fake_ensure)
+        monkeypatch.setattr(run_mod, "run_stream", stream_of(es.ExecDone(exit_code=0)))
+
+        with pytest.raises(typer.Exit):
+            invoke()
+
+        container, bench_path, project = seen["args"]
+        assert container is frontend  # the planned container, not a re-resolution
+        assert bench_path == resolvers.DEFAULT_BENCH_PATH
+        assert project == "proj"
+
+    def test_daemon_skip_stands_up_no_second_bridge(self, monkeypatch, frontend, bridge_spy):
+        """When the persistent daemon serves this instance, the stable helper
+        already answers - the per-invocation bridge must NOT add a second,
+        redundant helper line for the duration."""
+        from caffeinated_whale_cli.utils import cred_daemon
+
+        outcome = cred_daemon.EnsureOutcome(
+            project="proj",
+            workspace="/tmp/ws",
+            config_value="!/usr/bin/python3 /workspace/.cwcli-git-credential.py",
+            added_config=False,
+            daemon_started=False,
+        )
+        monkeypatch.setattr(run_mod.cred_daemon, "ensure_bridge", lambda *a, **k: outcome)
+        monkeypatch.setattr(run_mod, "run_stream", stream_of(es.ExecDone(exit_code=0)))
+
+        with pytest.raises(typer.Exit) as exc:
+            invoke()
+
+        assert bridge_spy == []  # the exec still ran; only the bridge was skipped
+        assert exc.value.exit_code == 0
+
+    def test_daemon_skip_covers_the_interactive_path_too(self, monkeypatch, frontend, bridge_spy):
+        from caffeinated_whale_cli.utils import cred_daemon
+
+        terminals(monkeypatch, stdin=False, stdout=False)
+        outcome = cred_daemon.EnsureOutcome(
+            project="proj",
+            workspace="/tmp/ws",
+            config_value="!/usr/bin/python3 /workspace/.cwcli-git-credential.py",
+            added_config=False,
+            daemon_started=False,
+        )
+        monkeypatch.setattr(run_mod.cred_daemon, "ensure_bridge", lambda *a, **k: outcome)
+        ran = {}
+        monkeypatch.setattr(
+            run_mod.subprocess,
+            "run",
+            lambda *a, **k: ran.setdefault("done", True) and types.SimpleNamespace(returncode=0),
+        )
+
+        with pytest.raises(typer.Exit):
+            invoke(interactive=True)
+
+        assert bridge_spy == []
+        assert ran["done"] is True
+
+    def test_bridge_tears_down_when_the_stream_dies(self, monkeypatch, frontend, bridge_spy):
+        """A lost stream must still unwind through the bridge's teardown, so the
+        helper line and shim never outlive the run (the apps-op guarantee)."""
+
+        def _raise(_plan):
+            raise CwcliError(ErrorKind.DOCKER, "exec.stream_lost", "Lost the stream")
+            yield  # pragma: no cover - generator marker
+
+        monkeypatch.setattr(run_mod, "run_stream", _raise)
+
+        with pytest.raises(typer.Exit) as exc:
+            invoke()
+
+        assert bridge_spy == [
+            ("enter", "container-abc", resolvers.DEFAULT_BENCH_PATH),
+            ("exit",),
+        ]
+        assert exc.value.exit_code == 1
