@@ -1982,18 +1982,18 @@ On a shared multi-user host, note the per-instance socket lives in the instance'
 
 - **`enable`** - Enable the bridge AND start its background daemon, in one verb
   - Idempotent; missing `gh`/`glab` is a warning, not a refusal (the bridge simply answers nothing until a tool is installed and authenticated).
-  - Takes effect on any running instance immediately, and self-heals onto each instance on the next `cwcli open`/`cwcli start`.
+  - Takes effect on any running instance immediately, and self-heals onto each instance on the next `cwcli open`/`cwcli start`/`cwcli run`.
   - Example: `cwcli config cred-bridge enable`
 
 - **`disable`** - Stop the daemon, set enabled = false, and make every wired shim inert (non-destructive; an `enable` recreates everything)
   - Example: `cwcli config cred-bridge disable`
 
-- **`start`** / **`stop`** - Start or stop the daemon only, leaving the enabled flag as-is (`start` refuses when disabled; a stopped-while-enabled daemon returns on the next `open`/`start`)
+- **`start`** / **`stop`** - Start or stop the daemon only, leaving the enabled flag as-is (`start` refuses when disabled; a stopped-while-enabled daemon returns on the next `open`/`start`/`run`)
 
 - **`status [--json]`** - Show enabled, daemon state + PID, transport (`unix` on native Linux, `tcp` under Docker Desktop), wired instances, and the most recent audit lines
 
 **Notes:**
-- Not started at system boot in this release; any `cwcli open`/`cwcli start` re-starts it while enabled.
+- Not started at system boot in this release; any `cwcli open`/`cwcli start`/`cwcli run` re-starts it while enabled.
 - Logs stored in `~/.cwcli/run/credbridge.log`; audit log in `~/.cwcli/run/credbridge-audit.log`.
 - There is deliberately no `cwcli axi cred-bridge` verb: standing up a persistent host credential channel is a decision a person makes, not an agent (the read-only state is on `cwcli axi config` / `cwcli axi doctor`).
 
