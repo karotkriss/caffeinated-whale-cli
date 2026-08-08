@@ -20,7 +20,9 @@ from dataclasses import dataclass
 
 from ..utils import config_utils, db_utils
 from . import auto_inspect as core_auto_inspect
+from . import cred_bridge as core_cred_bridge
 from .auto_inspect import AutoInspectState
+from .cred_bridge import CredBridgeState
 from .envelope import Choice, Result, Status
 from .errors import CwcliError, ErrorKind
 
@@ -33,6 +35,7 @@ class ConfigReport:
     cache_db: str
     search_paths: list[str]
     auto_inspect: AutoInspectState
+    cred_bridge: CredBridgeState
     show_tips: bool
 
 
@@ -75,6 +78,8 @@ def show_config() -> Result[ConfigReport]:
     """The effective config as one report: paths, auto-inspect, tips, locations."""
     state = core_auto_inspect.status().data
     assert state is not None
+    bridge_state = core_cred_bridge.status().data
+    assert bridge_state is not None
     config = config_utils.load_config()
     return Result(
         status=Status.OK,
@@ -83,6 +88,7 @@ def show_config() -> Result[ConfigReport]:
             cache_db=str(db_utils.DB_PATH),
             search_paths=list(config["search_paths"]["custom_bench_paths"]),
             auto_inspect=state,
+            cred_bridge=bridge_state,
             show_tips=config_utils.get_show_tips(),
         ),
     )

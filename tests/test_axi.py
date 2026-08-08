@@ -1023,6 +1023,23 @@ class TestNoAxiRunVerb:
             assert "exec" not in sub
 
 
+class TestNoAxiCredBridgeMutator:
+    """The persistent credential bridge is opt-in and config-mutating, so it has
+    NO ``axi`` verb (the ``config auto-inspect`` precedent: only the read-only
+    state rides ``cwcli axi config`` / ``cwcli axi doctor``). This keeps the
+    absence a decision, not an oversight - an agent must not be able to stand up a
+    persistent host credential channel on its own."""
+
+    def test_axi_registry_has_no_cred_bridge_command(self):
+        registered = {c.name for c in axi_mod.app.registered_commands}
+        assert "cred-bridge" not in registered
+        for group in axi_mod.app.registered_groups:
+            sub = {c.name for c in group.typer_instance.registered_commands}
+            assert "cred-bridge" not in sub
+        # `cwcli axi config` is a single READ command, never a group of mutators.
+        assert "config" in registered
+
+
 class TestServeUnreachable:
     """``cwcli serve`` (the Console GUI) is UNRELEASED and deliberately not exposed
     in a released build (captain ruling 2026-07-29): it must be unreachable from

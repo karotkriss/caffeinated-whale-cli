@@ -67,11 +67,20 @@ import subprocess
 import sys
 import threading
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 _SOCK_NAME_FMT = ".git-cred-{}.sock"
 _HELPER_NAME_FMT = ".git-credential-bridge-{}.py"
+
+# Stable names for the PERSISTENT bridge (the detached daemon in
+# ``utils/cred_daemon.py``). No per-invocation uuid: the daemon reuses one socket
+# and one shim per workspace across the whole session, and git config points at
+# the shim by a fixed path that survives container stop/start. They are distinct
+# from the per-invocation names above so the two bridges never collide when both
+# are active against the same bench.
+PERSISTENT_SOCK_NAME = ".cwcli-git-cred.sock"
+PERSISTENT_HELPER_NAME = ".cwcli-git-credential.py"
 
 # A git-credential request is a few short lines; anything larger is a stalled or
 # hostile peer. The listener is single-threaded, so cap the read (and time it out)
@@ -135,6 +144,95 @@ while True:
 sys.stdout.buffer.write(resp)
 """
 
+# The PERSISTENT shims (unix + TCP). The load-bearing difference from the
+# per-invocation shims above is that these SWALLOW every failure and exit 0 with
+# empty stdout/stderr. The per-invocation shim is torn down with its own listener
+# so it never needs to catch; the persistent shim outlives its daemon and MUST,
+# because the whole degradation contract rests on it: a dead, stopped, crashed,
+# or never-started daemon has to behave byte-identically to "no helper
+# configured", so git's credential-fill loop falls straight through to its usual
+# prompt (TTY) or clean auth failure (non-TTY). That is guaranteed at git's
+# source level and confirmed empirically (persistent-bridge scout report §5.8).
+# A hung daemon is bounded by the 5s connect/recv timeout, then likewise
+# swallowed. This is the single most important line of the whole design, so it is
+# pinned by a test that runs the GENERATED shim against a dead socket.
+_PERSISTENT_HELPER_SRC = """\
+import os, socket, sys
+try:
+    if (sys.argv[1] if len(sys.argv) > 1 else "get") != "get":
+        sys.exit(0)
+    sock = os.environ.get("CWCLI_CRED_SOCK") or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), {sock_name!r}
+    )
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(5)
+    s.connect(sock)
+    s.sendall(sys.stdin.buffer.read())
+    s.shutdown(socket.SHUT_WR)
+    resp = b""
+    while True:
+        c = s.recv(4096)
+        if not c:
+            break
+        resp += c
+    sys.stdout.buffer.write(resp)
+except SystemExit:
+    raise
+except BaseException:
+    sys.exit(0)
+"""
+
+_PERSISTENT_HELPER_SRC_TCP = """\
+import os, socket, sys
+try:
+    if (sys.argv[1] if len(sys.argv) > 1 else "get") != "get":
+        sys.exit(0)
+    host = os.environ.get("CWCLI_CRED_HOST") or {host!r}
+    port = int(os.environ.get("CWCLI_CRED_PORT") or {port})
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(5)
+    s.connect((host, port))
+    s.sendall({token!r} + sys.stdin.buffer.read())
+    s.shutdown(socket.SHUT_WR)
+    resp = b""
+    while True:
+        c = s.recv(4096)
+        if not c:
+            break
+        resp += c
+    sys.stdout.buffer.write(resp)
+except SystemExit:
+    raise
+except BaseException:
+    sys.exit(0)
+"""
+
+# The inert shim `disable` rewrites every registered workspace's helper into: a
+# host-side write that works regardless of container state, so a container that
+# missed the config `--unset` keeps a helper line that answers nothing.
+_PERSISTENT_HELPER_STUB = "import sys\nsys.exit(0)\n"
+
+
+def persistent_helper_unix() -> str:
+    """The AF_UNIX persistent shim source (stable socket name baked in)."""
+    return _PERSISTENT_HELPER_SRC.format(sock_name=PERSISTENT_SOCK_NAME)
+
+
+def persistent_helper_tcp(port: int, token: bytes) -> str:
+    """The loopback-TCP persistent shim source, carrying this boot's port+token.
+
+    ``host`` is the Docker Desktop host gateway (``host.docker.internal``); a test
+    redirects it with ``CWCLI_CRED_HOST``. The token is baked (the credential gate
+    for the loopback port) and rotates every daemon boot.
+    """
+    return _PERSISTENT_HELPER_SRC_TCP.format(host=_HOST_GATEWAY, port=port, token=token)
+
+
+def persistent_helper_stub() -> str:
+    """The inert exit-0 shim `disable` leaves behind (answers nothing, never fails)."""
+    return _PERSISTENT_HELPER_STUB
+
+
 # How often the accept loop wakes to re-check the stop flag. Small so teardown is
 # deterministic and platform-independent (closing a listening socket does not
 # reliably interrupt a blocked accept()).
@@ -156,12 +254,17 @@ def _prefer_tcp() -> bool:
     return os.name == "nt" or sys.platform == "darwin"
 
 
-def host_credential(request: bytes) -> bytes:
+def host_credential(request: bytes, *, audit: Callable[[str, bool], None] | None = None) -> bytes:
     """Answer one git-credential request from the host's ``gh``/``glab``.
 
     Dispatches by the ``host=`` field. The raw token is only ever in this
     process's memory during the ``subprocess`` exchange, then forwarded verbatim -
     it is never parsed here, never stored, never logged.
+
+    ``audit`` (the persistent daemon passes one; the per-invocation bridge does
+    not) is called with ``(host, answered)`` after the exchange - a bool, never a
+    credential byte - so the daemon can write one audit line per request without
+    this function needing to know where the log lives.
     """
     host = ""
     for line in request.decode("utf-8", "replace").splitlines():
@@ -169,7 +272,7 @@ def host_credential(request: bytes) -> bytes:
             host = line[5:].strip()
     tool = "gh" if host.endswith("github.com") else "glab"
     try:
-        return subprocess.run(
+        out = subprocess.run(
             [tool, "auth", "git-credential", "get"],
             input=request,
             capture_output=True,
@@ -177,10 +280,19 @@ def host_credential(request: bytes) -> bytes:
     except FileNotFoundError:
         # The host lacks gh/glab: return nothing, git falls back to its usual
         # unauthenticated behaviour (which fails for a private repo, as before).
-        return b""
+        out = b""
+    if audit is not None:
+        audit(host, bool(out))
+    return out
 
 
-def _serve(srv: socket.socket, stop: threading.Event, token: bytes | None = None) -> None:
+def _serve(
+    srv: socket.socket,
+    stop: threading.Event,
+    token: bytes | None = None,
+    *,
+    audit: Callable[[str, bool], None] | None = None,
+) -> None:
     """Accept connections until ``stop`` is set, answering each from the host tool.
 
     When ``token`` is set (the TCP transport), a request whose bytes do not begin
@@ -217,7 +329,13 @@ def _serve(srv: socket.socket, stop: threading.Event, token: bytes | None = None
                     continue  # unauthenticated: answer nothing
                 req = req[len(token) :]
             with contextlib.suppress(OSError):
-                conn.sendall(host_credential(req))
+                # Call byte-identically to the pre-audit shape when no audit hook
+                # is wired (the per-invocation bridge), so its call site and tests
+                # are untouched; only the daemon passes an audit callback.
+                if audit is None:
+                    conn.sendall(host_credential(req))
+                else:
+                    conn.sendall(host_credential(req, audit=audit))
 
 
 def _teardown(

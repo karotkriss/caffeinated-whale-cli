@@ -29,6 +29,35 @@ from .utils import ensure_containers_running
 stderr_console = Console(stderr=True)
 
 
+def _ensure_or_hint_cred_bridge(project_name: str, working_dir: str) -> None:
+    """Wire this instance into the persistent credential bridge before the
+    handover, or hint at it when it is off.
+
+    Enabled -> ``ensure_bridge`` writes the stable shim + system git config and
+    auto-starts the daemon, so private-repo git in the opened shell/editor reaches
+    the host ``gh``/``glab`` (the raw token never enters the container). Disabled,
+    but the host actually has a tool to bridge -> one dim stderr discovery hint.
+    Best-effort throughout: it never raises and never blocks the open.
+    """
+    import shutil
+
+    from ..utils import cred_daemon
+
+    try:
+        if cred_daemon.is_enabled():
+            from ..core.docker import get_frappe_container
+
+            container = get_frappe_container(project_name)
+            cred_daemon.ensure_bridge(container, working_dir, project_name)
+        elif shutil.which("gh") or shutil.which("glab"):
+            stderr_console.print(
+                "[dim]Tip: private-repo git in this shell will prompt for credentials. "
+                "Run 'cwcli config cred-bridge enable' to bridge your host gh/glab.[/dim]"
+            )
+    except Exception:
+        pass
+
+
 def _resolve_editor_choice(choice: Choice) -> str:
     """Resolve ``select_editor`` the way this frontend always has: a questionary
     select on a TTY (cancel -> "Operation cancelled.", exit 1), and on a non-TTY
@@ -226,6 +255,11 @@ def open_bench(
 
     target = result.data
     assert target is not None  # OK always carries a LaunchTarget
+
+    # Persistent credential bridge: wire this instance in BEFORE the handover so
+    # interactive git in the shell/editor reaches the host gh/glab, or - when the
+    # bridge is off but the host has gh/glab - print the one-line discovery hint.
+    _ensure_or_hint_cred_bridge(project_name, target.working_dir)
 
     if verbose:
         stderr_console.print(f"[dim]VERBOSE: Selected editor: {target.editor}[/dim]")

@@ -26,7 +26,7 @@ import toml
 from typer.testing import CliRunner
 
 from caffeinated_whale_cli.main import app
-from caffeinated_whale_cli.utils import auto_inspect, config_utils, db_utils, startup
+from caffeinated_whale_cli.utils import auto_inspect, config_utils, cred_daemon, db_utils, startup
 
 runner = CliRunner()
 
@@ -45,6 +45,13 @@ def cfg(tmp_path, monkeypatch):
     monkeypatch.setattr(auto_inspect, "PID_DIR", run_dir)
     monkeypatch.setattr(auto_inspect, "PID_FILE", run_dir / "auto-inspect.pid")
     monkeypatch.setattr(auto_inspect, "LOG_FILE", run_dir / "auto-inspect.log")
+    # `config show` also reads the credential-bridge state; keep it off the real
+    # ~/.cwcli/run too (read-only here - these tests never enable the bridge).
+    monkeypatch.setattr(cred_daemon, "PID_DIR", run_dir)
+    monkeypatch.setattr(cred_daemon, "PID_FILE", run_dir / "credbridge.pid")
+    monkeypatch.setattr(cred_daemon, "LOG_FILE", run_dir / "credbridge.log")
+    monkeypatch.setattr(cred_daemon, "AUDIT_FILE", run_dir / "credbridge-audit.log")
+    monkeypatch.setattr(cred_daemon, "REGISTRY_FILE", run_dir / "credbridge-registry.json")
 
     state = SimpleNamespace(
         running=False,
