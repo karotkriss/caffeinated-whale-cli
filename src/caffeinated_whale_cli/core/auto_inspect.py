@@ -96,24 +96,33 @@ def _stop_daemon() -> None:
         ) from e
 
 
-def _sync_boot_hook(at_boot: bool, actions: list[str], warnings: list[Message]) -> None:
+def sync_boot_hook(
+    at_boot: bool,
+    actions: list[str],
+    warnings: list[Message],
+    *,
+    unit: startup.BootUnit = startup.AUTO_INSPECT,
+) -> None:
     """Bring the OS boot unit to the desired state; a mechanics failure is a warning.
 
     Fail-soft deliberately (the old ``enable --startup`` behavior): the enable
     itself succeeded, and the DTO's ``startup_enabled``/``boot_installed`` split
     keeps the miss visible rather than lying about it.
+
+    Shared (promote, don't copy) with ``core.cred_bridge``, the second
+    config-gated daemon, via the ``unit`` parameter.
     """
     try:
-        installed = startup.is_startup_installed()
+        installed = startup.is_startup_installed(unit)
         if at_boot and not installed:
-            if startup.install_startup():
+            if startup.install_startup(unit):
                 actions.append("hook.installed")
             else:
                 warnings.append(
                     Message("startup.install_failed", "Could not install startup configuration.")
                 )
         elif not at_boot and installed:
-            if startup.uninstall_startup():
+            if startup.uninstall_startup(unit):
                 actions.append("hook.removed")
             else:
                 warnings.append(
@@ -165,7 +174,7 @@ def enable(interval: int | None = None, at_boot: bool | None = None) -> Result[A
 
     warnings: list[Message] = []
     if at_boot is not None:
-        _sync_boot_hook(at_boot, actions, warnings)
+        sync_boot_hook(at_boot, actions, warnings)
 
     return Result(
         status=Status.WARNING if warnings else Status.OK,
@@ -189,7 +198,7 @@ def disable() -> Result[AutoInspectOutcome]:
     config_utils.save_config(config)
     actions.append("config.disabled")
 
-    _sync_boot_hook(False, actions, warnings)
+    sync_boot_hook(False, actions, warnings)
 
     return Result(
         status=Status.WARNING if warnings else Status.OK,

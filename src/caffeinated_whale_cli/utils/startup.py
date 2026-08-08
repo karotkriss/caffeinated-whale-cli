@@ -1,11 +1,17 @@
 """
-Platform-specific startup configuration for auto-inspect service.
+Platform-specific boot-persistence for cwcli's background daemons.
 
-Manages automatic startup of the auto-inspect background process on system boot/login
-using platform-specific mechanisms:
-- macOS: LaunchAgent plist files
-- Linux: systemd user service
-- Windows: Task Scheduler
+Installs, detects, and removes an opt-in "start at boot/login" unit using the
+platform's own mechanism - macOS LaunchAgent plist, Linux systemd user service,
+Windows Task Scheduler task - for any cwcli daemon described by a
+:class:`BootUnit`. Two units exist today: auto-inspect (the original consumer;
+it stays the default so pre-existing callers are untouched) and the persistent
+credential bridge.
+
+Every unit's start command is the daemon's own ``cwcli config <group> start``
+verb, whose refuse-when-disabled guard is load-bearing: a boot unit left
+installed after a ``disable`` execs a start that refuses, so a stale hook stays
+inert rather than resurrecting a daemon the config says should not exist.
 """
 
 import platform
@@ -13,6 +19,42 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
+
+
+class BootUnit(NamedTuple):
+    """One daemon's boot-unit identity across the three platform mechanisms."""
+
+    label: str  # macOS LaunchAgent label (com.cwcli.<name>)
+    service_name: str  # Linux systemd user unit file name (<name>.service)
+    task_name: str  # Windows Task Scheduler task name
+    description: str  # human description (systemd Description=)
+    start_args: tuple[str, ...]  # cwcli argv that starts the daemon
+    stop_args: tuple[str, ...]  # cwcli argv that stops it
+
+    @property
+    def log_stem(self) -> str:
+        """The /tmp log-file stem the macOS LaunchAgent redirects to."""
+        return self.service_name.removesuffix(".service")
+
+
+AUTO_INSPECT = BootUnit(
+    label="com.cwcli.auto-inspect",
+    service_name="cwcli-auto-inspect.service",
+    task_name="CaffeinatedWhaleCliAutoInspect",
+    description="Caffeinated Whale CLI Auto-Inspect Service",
+    start_args=("config", "auto-inspect", "start"),
+    stop_args=("config", "auto-inspect", "stop"),
+)
+
+CRED_BRIDGE = BootUnit(
+    label="com.cwcli.cred-bridge",
+    service_name="cwcli-cred-bridge.service",
+    task_name="CaffeinatedWhaleCliCredBridge",
+    description="Caffeinated Whale CLI Credential Bridge",
+    start_args=("config", "cred-bridge", "start"),
+    stop_args=("config", "cred-bridge", "stop"),
+)
 
 
 def get_platform() -> str:
@@ -38,44 +80,44 @@ def get_cwcli_path() -> str:
     return "cwcli"
 
 
-def is_startup_installed() -> bool:
-    """Check if startup is currently installed for the current platform."""
+def is_startup_installed(unit: BootUnit = AUTO_INSPECT) -> bool:
+    """Check if the unit's startup is currently installed for this platform."""
     plat = get_platform()
 
     if plat == "darwin":
-        return _is_macos_startup_installed()
+        return _is_macos_startup_installed(unit)
     elif plat == "linux":
-        return _is_linux_startup_installed()
+        return _is_linux_startup_installed(unit)
     elif plat == "windows":
-        return _is_windows_startup_installed()
+        return _is_windows_startup_installed(unit)
     else:
         return False
 
 
-def install_startup() -> bool:
-    """Install platform-specific startup configuration."""
+def install_startup(unit: BootUnit = AUTO_INSPECT) -> bool:
+    """Install the unit's platform-specific startup configuration."""
     plat = get_platform()
 
     if plat == "darwin":
-        return _install_macos_startup()
+        return _install_macos_startup(unit)
     elif plat == "linux":
-        return _install_linux_startup()
+        return _install_linux_startup(unit)
     elif plat == "windows":
-        return _install_windows_startup()
+        return _install_windows_startup(unit)
     else:
         raise OSError(f"Unsupported platform: {plat}")
 
 
-def uninstall_startup() -> bool:
-    """Remove platform-specific startup configuration."""
+def uninstall_startup(unit: BootUnit = AUTO_INSPECT) -> bool:
+    """Remove the unit's platform-specific startup configuration."""
     plat = get_platform()
 
     if plat == "darwin":
-        return _uninstall_macos_startup()
+        return _uninstall_macos_startup(unit)
     elif plat == "linux":
-        return _uninstall_linux_startup()
+        return _uninstall_linux_startup(unit)
     elif plat == "windows":
-        return _uninstall_windows_startup()
+        return _uninstall_windows_startup(unit)
     else:
         raise OSError(f"Unsupported platform: {plat}")
 
@@ -85,44 +127,42 @@ def uninstall_startup() -> bool:
 # =============================================================================
 
 
-def _get_macos_plist_path() -> Path:
+def _get_macos_plist_path(unit: BootUnit) -> Path:
     """Get the path to the LaunchAgent plist file."""
-    return Path.home() / "Library" / "LaunchAgents" / "com.cwcli.auto-inspect.plist"
+    return Path.home() / "Library" / "LaunchAgents" / f"{unit.label}.plist"
 
 
-def _is_macos_startup_installed() -> bool:
+def _is_macos_startup_installed(unit: BootUnit) -> bool:
     """Check if macOS LaunchAgent is installed."""
-    return _get_macos_plist_path().exists()
+    return _get_macos_plist_path(unit).exists()
 
 
-def _install_macos_startup() -> bool:
+def _install_macos_startup(unit: BootUnit) -> bool:
     """Install macOS LaunchAgent plist file."""
-    plist_path = _get_macos_plist_path()
+    plist_path = _get_macos_plist_path(unit)
     plist_path.parent.mkdir(parents=True, exist_ok=True)
 
-    cwcli_path = get_cwcli_path()
-
+    argv_lines = "\n".join(
+        f"        <string>{arg}</string>" for arg in (get_cwcli_path(), *unit.start_args)
+    )
     plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.cwcli.auto-inspect</string>
+    <string>{unit.label}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{cwcli_path}</string>
-        <string>config</string>
-        <string>auto-inspect</string>
-        <string>start</string>
+{argv_lines}
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <false/>
     <key>StandardOutPath</key>
-    <string>/tmp/cwcli-auto-inspect.log</string>
+    <string>/tmp/{unit.log_stem}.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/cwcli-auto-inspect.err</string>
+    <string>/tmp/{unit.log_stem}.err</string>
 </dict>
 </plist>
 """
@@ -138,9 +178,9 @@ def _install_macos_startup() -> bool:
     return result.returncode == 0
 
 
-def _uninstall_macos_startup() -> bool:
+def _uninstall_macos_startup(unit: BootUnit) -> bool:
     """Remove macOS LaunchAgent plist file."""
-    plist_path = _get_macos_plist_path()
+    plist_path = _get_macos_plist_path(unit)
 
     if not plist_path.exists():
         return False
@@ -159,31 +199,31 @@ def _uninstall_macos_startup() -> bool:
 # =============================================================================
 
 
-def _get_linux_service_path() -> Path:
+def _get_linux_service_path(unit: BootUnit) -> Path:
     """Get the path to the systemd user service file."""
-    return Path.home() / ".config" / "systemd" / "user" / "cwcli-auto-inspect.service"
+    return Path.home() / ".config" / "systemd" / "user" / unit.service_name
 
 
-def _is_linux_startup_installed() -> bool:
+def _is_linux_startup_installed(unit: BootUnit) -> bool:
     """Check if Linux systemd service is installed."""
-    return _get_linux_service_path().exists()
+    return _get_linux_service_path(unit).exists()
 
 
-def _install_linux_startup() -> bool:
+def _install_linux_startup(unit: BootUnit) -> bool:
     """Install Linux systemd user service."""
-    service_path = _get_linux_service_path()
+    service_path = _get_linux_service_path(unit)
     service_path.parent.mkdir(parents=True, exist_ok=True)
 
     cwcli_path = get_cwcli_path()
 
     service_content = f"""[Unit]
-Description=Caffeinated Whale CLI Auto-Inspect Service
+Description={unit.description}
 After=network.target
 
 [Service]
 Type=forking
-ExecStart="{cwcli_path}" config auto-inspect start
-ExecStop="{cwcli_path}" config auto-inspect stop
+ExecStart="{cwcli_path}" {" ".join(unit.start_args)}
+ExecStop="{cwcli_path}" {" ".join(unit.stop_args)}
 Restart=on-failure
 RestartSec=10
 
@@ -204,7 +244,7 @@ WantedBy=default.target
         return False
 
     result = subprocess.run(
-        ["systemctl", "--user", "enable", "cwcli-auto-inspect.service"],
+        ["systemctl", "--user", "enable", unit.service_name],
         capture_output=True,
         text=True,
     )
@@ -214,7 +254,7 @@ WantedBy=default.target
         return False
 
     result = subprocess.run(
-        ["systemctl", "--user", "start", "cwcli-auto-inspect.service"],
+        ["systemctl", "--user", "start", unit.service_name],
         capture_output=True,
         text=True,
     )
@@ -224,20 +264,20 @@ WantedBy=default.target
     return result.returncode == 0
 
 
-def _uninstall_linux_startup() -> bool:
+def _uninstall_linux_startup(unit: BootUnit) -> bool:
     """Remove Linux systemd user service."""
-    service_path = _get_linux_service_path()
+    service_path = _get_linux_service_path(unit)
 
     if not service_path.exists():
         return False
 
     # Stop and disable the service
     subprocess.run(
-        ["systemctl", "--user", "stop", "cwcli-auto-inspect.service"],
+        ["systemctl", "--user", "stop", unit.service_name],
         capture_output=True,
     )
     subprocess.run(
-        ["systemctl", "--user", "disable", "cwcli-auto-inspect.service"],
+        ["systemctl", "--user", "disable", unit.service_name],
         capture_output=True,
     )
 
@@ -255,11 +295,11 @@ def _uninstall_linux_startup() -> bool:
 # =============================================================================
 
 
-def _is_windows_startup_installed() -> bool:
+def _is_windows_startup_installed(unit: BootUnit) -> bool:
     """Check if Windows Task Scheduler task exists."""
     try:
         result = subprocess.run(
-            ["schtasks", "/Query", "/TN", "CaffeinatedWhaleCliAutoInspect"],
+            ["schtasks", "/Query", "/TN", unit.task_name],
             capture_output=True,
             text=True,
         )
@@ -268,7 +308,7 @@ def _is_windows_startup_installed() -> bool:
         return False
 
 
-def _install_windows_startup() -> bool:
+def _install_windows_startup(unit: BootUnit) -> bool:
     """Install Windows Task Scheduler task."""
     cwcli_path = get_cwcli_path()
 
@@ -277,9 +317,9 @@ def _install_windows_startup() -> bool:
         "schtasks",
         "/Create",
         "/TN",
-        "CaffeinatedWhaleCliAutoInspect",
+        unit.task_name,
         "/TR",
-        f'"{cwcli_path}" config auto-inspect start',
+        f'"{cwcli_path}" {" ".join(unit.start_args)}',
         "/SC",
         "ONLOGON",
         "/RL",
@@ -296,11 +336,11 @@ def _install_windows_startup() -> bool:
         return False
 
 
-def _uninstall_windows_startup() -> bool:
+def _uninstall_windows_startup(unit: BootUnit) -> bool:
     """Remove Windows Task Scheduler task."""
     try:
         subprocess.run(
-            ["schtasks", "/Delete", "/TN", "CaffeinatedWhaleCliAutoInspect", "/F"],
+            ["schtasks", "/Delete", "/TN", unit.task_name, "/F"],
             check=True,
             capture_output=True,
         )

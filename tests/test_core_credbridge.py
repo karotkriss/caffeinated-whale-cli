@@ -131,6 +131,39 @@ def test_host_credential_audit_hook_gets_host_and_answered_never_a_credential(mo
     assert seen == [("gitlab.com", False)]
 
 
+def test_host_credential_allowlist_refuses_before_any_tool_runs(monkeypatch):
+    """A non-member ``host=`` is answered with nothing and the host tool is NEVER
+    invoked; membership is an EXACT string match (a port-qualified self-hosted
+    entry matches only itself); ``None`` means unrestricted - the per-invocation
+    bridge's unchanged behavior."""
+    calls = []
+    monkeypatch.setattr(
+        credbridge.subprocess,
+        "run",
+        lambda *a, **k: calls.append(a) or type("D", (), {"stdout": b"password=SECRET\n"})(),
+    )
+    seen = []
+    out = credbridge.host_credential(
+        b"protocol=https\nhost=git.corp.example\n\n",
+        audit=lambda host, ok: seen.append((host, ok)),
+        allowlist={"github.com", "gitlab.com"},
+    )
+    assert out == b""
+    assert calls == []  # refused BEFORE gh/glab ran
+    assert seen == [("git.corp.example", False)]
+
+    # exact match: the port-qualified entry serves only the port-qualified host
+    out = credbridge.host_credential(
+        b"host=git.corp.example:8443\n\n", allowlist={"git.corp.example:8443"}
+    )
+    assert out == b"password=SECRET\n"
+    assert credbridge.host_credential(b"host=git.corp.example\n\n", allowlist=set()) == b""
+
+    # None = unrestricted (the per-invocation bridge passes nothing)
+    out = credbridge.host_credential(b"host=anything.example\n\n")
+    assert out == b"password=SECRET\n"
+
+
 # ------------------------------------------------------------ context manager
 
 

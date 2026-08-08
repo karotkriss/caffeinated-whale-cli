@@ -75,7 +75,30 @@ show_tips = true
 # not just during cwcli's own app operations. The raw token NEVER enters the
 # container. Turn it on with `cwcli config cred-bridge enable`.
 enabled = false
+
+# Start the bridge daemon at system boot/login (true/false)
+# Managed by `cwcli config cred-bridge enable --startup` / `--no-startup`.
+# Platform-specific: Uses LaunchAgent (macOS), systemd (Linux), or Task Scheduler (Windows)
+startup_enabled = false
+
+# Hosts the persistent daemon will answer credential requests for. Each entry
+# matches the request's `host=` field exactly (include the port if non-default,
+# e.g. "git.corp.example:8443"). Add your self-hosted GitLab/GitHub host here.
+# Applies immediately (no daemon restart needed); cwcli's own per-operation
+# bridge (apps install/update, init) is not restricted by this list.
+allowed_hosts = ["github.com", "gitlab.com"]
 """
+
+DEFAULT_ALLOWED_HOSTS = ("github.com", "gitlab.com")
+
+
+def _cred_bridge_defaults() -> dict:
+    """A FRESH default [cred_bridge] section (fresh list, never a shared mutable)."""
+    return {
+        "enabled": False,
+        "startup_enabled": False,
+        "allowed_hosts": list(DEFAULT_ALLOWED_HOSTS),
+    }
 
 
 def _ensure_config_exists():
@@ -109,16 +132,17 @@ def load_config() -> dict:
             elif "show_tips" not in config_data["ui"]:
                 config_data["ui"]["show_tips"] = True
             if "cred_bridge" not in config_data:
-                config_data["cred_bridge"] = {"enabled": False}
-            elif "enabled" not in config_data["cred_bridge"]:
-                config_data["cred_bridge"]["enabled"] = False
+                config_data["cred_bridge"] = _cred_bridge_defaults()
+            else:
+                for key, value in _cred_bridge_defaults().items():
+                    config_data["cred_bridge"].setdefault(key, value)
             return config_data
         except toml.TomlDecodeError:
             return {
                 "search_paths": {"custom_bench_paths": []},
                 "auto_inspect": {"enabled": False, "interval": 3600, "startup_enabled": False},
                 "ui": {"show_tips": True},
-                "cred_bridge": {"enabled": False},
+                "cred_bridge": _cred_bridge_defaults(),
             }
 
 
@@ -204,7 +228,7 @@ def set_auto_inspect_startup(enabled: bool):
 def get_cred_bridge_config() -> dict:
     """Get persistent credential-bridge configuration (creates config if absent)."""
     config = load_config()
-    cred_bridge: dict = config.get("cred_bridge", {"enabled": False})
+    cred_bridge: dict = config.get("cred_bridge", _cred_bridge_defaults())
     return cred_bridge
 
 
@@ -215,7 +239,7 @@ def read_cred_bridge_config() -> dict:
     never write a default config file into the user's home as a side effect - it
     just reports ``enabled: false`` when there is nothing to read.
     """
-    default = {"enabled": False}
+    default = _cred_bridge_defaults()
     if not CONFIG_FILE.is_file():
         return default
     try:
@@ -231,9 +255,17 @@ def set_cred_bridge_enabled(enabled: bool):
     """Enable or disable the persistent credential bridge."""
     config = load_config()
     if "cred_bridge" not in config:
-        config["cred_bridge"] = {"enabled": enabled}
-    else:
-        config["cred_bridge"]["enabled"] = enabled
+        config["cred_bridge"] = _cred_bridge_defaults()
+    config["cred_bridge"]["enabled"] = enabled
+    save_config(config)
+
+
+def set_cred_bridge_startup(enabled: bool):
+    """Enable or disable starting the credential-bridge daemon at boot/login."""
+    config = load_config()
+    if "cred_bridge" not in config:
+        config["cred_bridge"] = _cred_bridge_defaults()
+    config["cred_bridge"]["startup_enabled"] = enabled
     save_config(config)
 
 

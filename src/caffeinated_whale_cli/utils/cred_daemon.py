@@ -103,6 +103,26 @@ def is_enabled() -> bool:
     return bool(config_utils.read_cred_bridge_config().get("enabled", False))
 
 
+def allowed_hosts() -> set[str]:
+    """The hosts the daemon answers credential requests for (exact ``host=`` match).
+
+    From ``[cred_bridge] allowed_hosts``; an absent or malformed key means the
+    default pair (``github.com``, ``gitlab.com``) - the same scope as no config
+    at all, never wider. An EXPLICIT empty list means answer nothing (the user's
+    own choice; reading ``[]`` as "use the default" would be the config silently
+    widening, the exact drift the allowlist guards against). Defensive because
+    the daemon's serve threads call it per request: any read failure degrades to
+    the default pair, never an exception that would kill a listener.
+    """
+    try:
+        hosts = config_utils.read_cred_bridge_config().get("allowed_hosts")
+    except Exception:
+        return set(config_utils.DEFAULT_ALLOWED_HOSTS)
+    if isinstance(hosts, list):
+        return {str(h).strip() for h in hosts if str(h).strip()}
+    return set(config_utils.DEFAULT_ALLOWED_HOSTS)
+
+
 # ------------------------------------------------------------------------ registry
 
 
@@ -428,7 +448,10 @@ def _start_unix_listener(
         _audit(_p, host, answered)
 
     thread = threading.Thread(
-        target=credbridge._serve, args=(srv, stop, None), kwargs={"audit": _cb}, daemon=True
+        target=credbridge._serve,
+        args=(srv, stop, None),
+        kwargs={"audit": _cb, "allowlist": allowed_hosts},
+        daemon=True,
     )
     thread.start()
     return _Listener(workspace=str(host_dir), srv=srv, thread=thread)
@@ -511,7 +534,7 @@ def _run_daemon_loop() -> None:
         threading.Thread(
             target=credbridge._serve,
             args=(tcp_srv, stop, token),
-            kwargs={"audit": _tcp_cb},
+            kwargs={"audit": _tcp_cb, "allowlist": allowed_hosts},
             daemon=True,
         ).start()
         _log(f"credential-bridge daemon serving loopback TCP :{port}")
