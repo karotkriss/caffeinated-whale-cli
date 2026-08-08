@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-08-08
+
+`cwcli` now offers an opt-in persistent credential bridge so private-repo git authentication also works inside `cwcli open` and interactive shells, not just cwcli's own operations. `cwcli init --site` accepts any hostname, FQDN, or IPv4 address instead of requiring a `.localhost` name, and `cwcli backup`/`cwcli restore` no longer dead-end on a cold cache.
+
+### Added
+- **Persistent credential bridge (`cwcli config cred-bridge`)**: An opt-in, detached host daemon that extends cwcli's private-repo git authentication (host `gh`/`glab`, no token ever entering the container) to interactive git - inside an editor or shell opened via `cwcli open`, or a plain `docker exec` - not just cwcli's own install/update/init operations. Enable with `cwcli config cred-bridge enable`; a stopped or never-started daemon degrades silently to git's normal prompt, so opting in is fully reversible. Includes an opt-in boot-persistence flag (`--startup`) so the bridge survives a reboot, a host allowlist (`[cred_bridge] allowed_hosts`, defaulting to `github.com` and `gitlab.com`) enforced before any credential request is served, and permissions hardening on cwcli's project directory. `cwcli run` now wraps both of its exec paths in the same bridge. There is deliberately no agent-facing verb for this: standing up a persistent host credential channel stays a decision a person makes.
+- **`cwcli init --site` accepts any hostname/FQDN or IPv4 address**: `.localhost` is now a suggestion for local development rather than a requirement, so a site can be named after a real domain or IP address. `.localhost` names still resolve without any DNS setup and remain the default; a non-`.localhost` name prints a one-time note that it needs to resolve to your machine to be reachable from a browser.
+
+### Fixed
+- **`cwcli backup` and `cwcli restore` no longer dead-end on a cold cache**: without a cached bench location, both used to guess a hardcoded default path instead of discovering the real one, which failed outright on any bench not sitting at that path (most visibly `cwcli axi backup`, which has no fallback prologue of its own). They now run the same inspect-based cache-population `cwcli open` already relied on before resolving the bench.
+
+### Other Changes
+- **Standalone Windows build (`cwcli.exe`)**: Tagged releases now also publish a Nuitka-compiled standalone executable for Windows, plus a `python -m caffeinated_whale_cli` entry point for locked-down hosts where Application Control or SmartScreen blocks the unsigned launcher shim. Code-signing through SignPath is wired in but stays inactive until signing credentials are configured, so this release still ships unsigned.
+
 ## [2.5.0] - 2026-08-06
 
 `cwcli apps update` can now recover from a per-app git conflict instead of failing outright, the git credential bridge works on Windows and macOS, and cwcli's own releases now keep the Homebrew tap formula in sync automatically.
