@@ -72,12 +72,14 @@ def cfg(tmp_path, monkeypatch):
         state.running = False
         state.pid = None
 
-    def _install():
+    # The startup fakes take the (defaulted) BootUnit param the real functions
+    # grew when the boot-unit machinery was generalized for the cred bridge.
+    def _install(unit=None):
         state.calls["install"] += 1
         state.installed = True
         return True
 
-    def _uninstall():
+    def _uninstall(unit=None):
         state.calls["uninstall"] += 1
         state.installed = False
         return True
@@ -93,7 +95,7 @@ def cfg(tmp_path, monkeypatch):
     monkeypatch.setattr(auto_inspect, "get_pid", lambda: state.pid)
     monkeypatch.setattr(auto_inspect, "start_daemon", _start)
     monkeypatch.setattr(auto_inspect, "stop_daemon", _stop)
-    monkeypatch.setattr(startup, "is_startup_installed", lambda: state.installed)
+    monkeypatch.setattr(startup, "is_startup_installed", lambda unit=None: state.installed)
     monkeypatch.setattr(startup, "install_startup", _install)
     monkeypatch.setattr(startup, "uninstall_startup", _uninstall)
     monkeypatch.setattr(startup, "get_platform", lambda: "linux")

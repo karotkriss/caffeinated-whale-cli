@@ -38,7 +38,7 @@ def cfg(tmp_path, monkeypatch):
     monkeypatch.setattr(auto_inspect, "PID_FILE", run_dir / "auto-inspect.pid")
     monkeypatch.setattr(auto_inspect, "LOG_FILE", run_dir / "auto-inspect.log")
     monkeypatch.setattr(auto_inspect, "is_running", lambda: False)
-    monkeypatch.setattr(startup, "is_startup_installed", lambda: False)
+    monkeypatch.setattr(startup, "is_startup_installed", lambda unit=None: False)
 
     state = SimpleNamespace(cached=[], cleared_all=0, cleared_projects=[])
     monkeypatch.setattr(db_utils, "get_all_cached_projects", lambda: list(state.cached))
