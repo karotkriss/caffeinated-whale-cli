@@ -1129,7 +1129,7 @@ Files matched by `.gitignore` are not reported by git and so never count, which 
 `--reset` is the explicit opt-in through that refusal: it hard-resets the working tree to the fetched ref, discarding tracked local edits, which guarantees the clean tree a subsequent `build`/`migrate` needs.
 Note one honest limit: `--reset` does **not** delete untracked files, because cwcli never runs `git clean` - it lets the checkout proceed and leaves them where they are.
 
-**Private repos:** `apps install`/`apps update`/`apps checkout` (and the deprecated `update`) transparently authenticate git fetches against private GitHub/GitLab app repos through your host's already-signed-in `gh`/`glab` - nothing to configure, no token ever stored in the container, and public repos are unaffected. Sign in on the host first (`gh auth login` / `glab auth login`). To extend this to **interactive** git inside `cwcli open` or a `docker exec` shell (not just cwcli's own operations), opt into the persistent [`config cred-bridge`](#config-cred-bridge---persistent-credential-bridge).
+**Private repos:** `apps install`/`apps update`/`apps checkout` (and the deprecated `update`), plus any bench subcommand run through [`cwcli run`](#run---execute-bench-commands) (`cwcli run <project> get-app <private-url>`, `cwcli run <project> update --pull`), transparently authenticate git fetches against private GitHub/GitLab app repos through your host's already-signed-in `gh`/`glab` - nothing to configure, no token ever stored in the container, and public repos are unaffected. Sign in on the host first (`gh auth login` / `glab auth login`). To extend this to **interactive** git inside `cwcli open` or a `docker exec` shell (not just cwcli's own operations), opt into the persistent [`config cred-bridge`](#config-cred-bridge---persistent-credential-bridge).
 
 **Common Options:**
 
@@ -1624,6 +1624,14 @@ cwcli run frappe-one -- build --verbose
 
 For app management, prefer the [`apps`](#apps---manage-frappe-apps) group, which
 takes these flags directly.
+
+**Private repos:** a git fetch the bench subcommand makes (`get-app
+<private-url>`, `update --pull`) authenticates through the same host `gh`/`glab`
+credential bridge as `apps install` - no token in the container, public repos
+unaffected.
+When the persistent [`config cred-bridge`](#config-cred-bridge---persistent-credential-bridge)
+is enabled and serving the instance, `run` uses it instead of standing up a
+second, per-invocation bridge.
 
 **Bench commands that prompt:** pass `-i`.
 By default nothing is attached to the command's stdin, so a bench command that asks a question - `new-app`, `console`, `mariadb` - reads end-of-file and fails.
