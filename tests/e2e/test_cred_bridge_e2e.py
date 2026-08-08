@@ -1,7 +1,7 @@
-"""Persistent credential bridge E2E (phase 2) - the committed proofs from the
+"""Persistent credential bridge E2E (phases 2-3) - the committed proofs from the
 scout report's test plan (§7), against a real instance.
 
-Four proofs, each pinning a load-bearing phase-1 contract live:
+Five proofs, each pinning a load-bearing bridge contract live:
 
 - **the credential path**: with a PATH-shimmed fake host ``gh`` answering
   deterministic (obviously fake) credentials, the ensure step rides ``cwcli
@@ -21,7 +21,10 @@ Four proofs, each pinning a load-bearing phase-1 contract live:
   ``cwcli run`` answers via the per-invocation bridge when the feature is off
   (helper line live DURING the exec, torn down after) and via the stable
   system-level helper when the daemon serves - with NO second, per-invocation
-  helper line (the daemon-skip).
+  helper line (the daemon-skip);
+- **the host allowlist** (phase 3): the default ``allowed_hosts`` pair refuses a
+  foreign host before any host tool runs, a config edit serves it on the very
+  next request with no daemon restart, and both outcomes land in the audit log.
 
 Deliberate scoping choice: the tests flip the ``[cred_bridge] enabled`` flag by
 writing the isolated ``CWCLI_HOME`` config directly (a ``python -c`` subprocess,
@@ -62,9 +65,9 @@ v16_only = pytest.mark.skipif(
 
 pytestmark = [pytest.mark.e2e, v16_only]
 
-# Deterministic, obviously-fake credentials the fake host `gh` answers. The fake
-# shadows any real `gh` on PATH for the whole module, so no real host credential
-# can ever flow into a socket, log, assertion, or report here.
+# Deterministic, obviously-fake credentials the fake host `gh`/`glab` answer. The
+# fakes shadow any real tools on PATH for the whole module, so no real host
+# credential can ever flow into a socket, log, assertion, or report here.
 FAKE_USER = "cwe2e-fake-user"
 FAKE_PASSWORD = "cwe2e-fake-password"
 
@@ -113,8 +116,8 @@ def _system_helpers(project: str) -> str:
     return out
 
 
-def _credential_fill(project: str) -> tuple[int, str]:
-    """Ask in-container git to fill github.com credentials, helpers only.
+def _credential_fill(project: str, host: str = "github.com") -> tuple[int, str]:
+    """Ask in-container git to fill credentials for ``host``, helpers only.
 
     ``GIT_TERMINAL_PROMPT=0`` so a non-answering helper chain fails fast and
     clean instead of trying to prompt a terminal that is not there - the
@@ -123,7 +126,7 @@ def _credential_fill(project: str) -> tuple[int, str]:
     """
     return harness.exec_in_frappe(
         project,
-        "printf 'protocol=https\\nhost=github.com\\npath=cwe2e/fake-private.git\\n' | "
+        f"printf 'protocol=https\\nhost={host}\\npath=cwe2e/fake-private.git\\n' | "
         "GIT_TERMINAL_PROMPT=0 git credential fill",
     )
 
@@ -141,29 +144,66 @@ def _wait_bridge_serving(project: str, timeout: int = 60) -> str:
 
 @pytest.fixture(scope="module")
 def fake_gh(tmp_path_factory):
-    """Shadow the host ``gh`` with a deterministic credential answerer.
+    """Shadow the host ``gh`` AND ``glab`` with deterministic credential answerers.
 
-    Both bridges dispatch a github.com request to ``gh auth git-credential get``
-    on the HOST - the detached daemon and the per-invocation bridge alike inherit
-    PATH from the cwcli invocation that starts them - so putting the fake first
-    on PATH makes the whole credential path deterministic and keeps any real,
-    authenticated ``gh`` out of the exchange entirely.
+    Both bridges dispatch a credential request to ``<tool> auth git-credential
+    get`` on the HOST - the detached daemon and the per-invocation bridge alike
+    inherit PATH from the cwcli invocation that starts them - so putting the
+    fakes first on PATH makes the whole credential path deterministic and keeps
+    any real, authenticated ``gh``/``glab`` out of every exchange. The fakes
+    MUST live in this module-scoped fixture, which ``bridge_enabled`` depends
+    on, so they are on PATH BEFORE any daemon starts: a function-scoped PATH
+    prepend after ``bridge_enabled`` would miss the already-started daemon,
+    which inherits its PATH at spawn (a real run caught exactly that).
+
+    Yields the glab invocation-marker path: the fake ``glab`` records every call
+    into it, so the allowlist proof can assert the host tool was NEVER reached
+    for a refused host.
     """
-    bindir = tmp_path_factory.mktemp("cwe2e-fake-gh")
-    gh = bindir / "gh"
-    gh.write_text(
-        "#!/bin/sh\n"
+    bindir = tmp_path_factory.mktemp("cwe2e-fake-tools")
+    answer = (
         '[ "$1" = auth ] && [ "$2" = git-credential ] && [ "$3" = get ] || exit 1\n'
         "cat >/dev/null\n"
         f"printf 'username={FAKE_USER}\\npassword={FAKE_PASSWORD}\\n'\n"
     )
+    gh = bindir / "gh"
+    gh.write_text("#!/bin/sh\n" + answer)
     gh.chmod(0o755)
+    glab_marker = bindir / "glab-invocations"
+    glab = bindir / "glab"
+    glab.write_text(f"#!/bin/sh\necho invoked >> {glab_marker}\n" + answer)
+    glab.chmod(0o755)
     saved = os.environ["PATH"]
     os.environ["PATH"] = f"{bindir}{os.pathsep}{saved}"
     try:
-        yield
+        yield glab_marker
     finally:
         os.environ["PATH"] = saved
+
+
+def _set_allowed_hosts(hosts: list[str] | None) -> None:
+    """Write (or reset to default, with ``None``) ``[cred_bridge] allowed_hosts``
+    in the ISOLATED config - a subprocess for the same import-time-constants
+    reason as ``_set_bridge_enabled``. A direct config write is the phase-3
+    surface (a config key first; no ``hosts`` verbs exist by design)."""
+    if hosts is None:
+        value = "list(config_utils.DEFAULT_ALLOWED_HOSTS)"
+    else:
+        value = repr(hosts)
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from caffeinated_whale_cli.utils import config_utils; "
+            "c = config_utils.load_config(); "
+            f"c['cred_bridge']['allowed_hosts'] = {value}; "
+            "config_utils.save_config(c)",
+        ],
+        check=True,
+        capture_output=True,
+        env=os.environ.copy(),
+        timeout=60,
+    )
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -370,9 +410,9 @@ def test_run_wraps_the_ephemeral_bridge_when_the_daemon_is_off(running_instance,
         r = harness.run_cwcli("run", inst.name, "credential-probe")
         assert r.returncode == 0, r.stdout + r.stderr
         assert f"username={FAKE_USER}" in r.stdout, r.stdout
-        assert EPHEMERAL_HELPER_MARK in r.stdout, (
-            f"the per-invocation helper line was not configured during the exec: {r.stdout}"
-        )
+        assert (
+            EPHEMERAL_HELPER_MARK in r.stdout
+        ), f"the per-invocation helper line was not configured during the exec: {r.stdout}"
         _, out = harness.exec_in_frappe(
             inst.name, "git config --global --get-all credential.helper || true"
         )
@@ -392,8 +432,49 @@ def test_run_skips_the_ephemeral_bridge_when_the_daemon_serves(bridge_enabled):
         r = harness.run_cwcli("run", inst.name, "credential-probe")
         assert r.returncode == 0, r.stdout + r.stderr
         assert f"username={FAKE_USER}" in r.stdout, r.stdout
-        assert EPHEMERAL_HELPER_MARK not in r.stdout, (
-            f"run stood up a redundant second bridge under the daemon: {r.stdout}"
-        )
+        assert (
+            EPHEMERAL_HELPER_MARK not in r.stdout
+        ), f"run stood up a redundant second bridge under the daemon: {r.stdout}"
     finally:
         _remove_bench_shim(inst)
+
+
+# --------------------------------------------------------------------------- #
+# phase 3: the host allowlist, enforced daemon-side and re-read live
+# --------------------------------------------------------------------------- #
+def test_allowlist_scopes_what_the_daemon_serves_and_applies_live(bridge_enabled, fake_gh):
+    """Three properties on ONE live daemon, no restart between them: (1) the
+    default allowlist (github.com, gitlab.com) refuses a foreign host BEFORE any
+    host tool runs; (2) adding the host to ``[cred_bridge] allowed_hosts`` makes
+    the very next request serve it (per-request config read - a security scope
+    must never silently require a hidden restart to apply); (3) every refusal
+    and answer lands in the audit log, never a credential byte."""
+    inst = bridge_enabled
+    glab_marker = fake_gh
+    glab_marker.unlink(missing_ok=True)  # module-scoped fixture; start this proof clean
+    foreign = "git.corp.example"
+    _wait_bridge_serving(inst.name)
+
+    try:
+        # (1) Default allowlist: refused, and the fake glab never invoked.
+        code, out = _credential_fill(inst.name, host=foreign)
+        assert code != 0, f"a non-allowlisted host must not be served: {out}"
+        assert FAKE_PASSWORD not in out
+        assert not glab_marker.exists(), "the host tool ran for a refused host"
+
+        # (2) Config edit, SAME daemon: the foreign host now serves (dispatched
+        # to the host glab, since it is not a github.com host).
+        _set_allowed_hosts(["github.com", "gitlab.com", foreign])
+        code, out = _credential_fill(inst.name, host=foreign)
+        assert code == 0, f"an allowlisted host must serve without a restart: {out}"
+        assert f"username={FAKE_USER}" in out
+        assert glab_marker.exists()
+
+        # (3) The audit trail carries both outcomes, and no credential bytes.
+        audit = (_cwcli_home() / "run" / "credbridge-audit.log").read_text()
+        assert f"host={foreign} answered=no" in audit
+        assert f"host={foreign} answered=yes" in audit
+        assert FAKE_USER not in audit and FAKE_PASSWORD not in audit
+    finally:
+        # Shared-instance discipline: later bridge tests expect the default list.
+        _set_allowed_hosts(None)

@@ -14,13 +14,13 @@ directly and connecting a real client, the way ``test_core_credbridge`` does.
 
 from __future__ import annotations
 
-import json
 import os
 import socket
 import subprocess
 import sys
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -275,7 +275,10 @@ def test_reconcile_starts_a_listener_that_answers_and_audits(run_dir, tmp_path, 
     monkeypatch.setattr(
         credbridge,
         "host_credential",
-        lambda req, audit=None: (audit and audit("github.com", True), b"password=TOKEN\n")[1],
+        lambda req, audit=None, allowlist=None: (
+            audit and audit("github.com", True),
+            b"password=TOKEN\n",
+        )[1],
     )
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -309,7 +312,7 @@ def test_reconcile_starts_a_listener_that_answers_and_audits(run_dir, tmp_path, 
 
 @unix_only
 def test_reconcile_stops_a_listener_and_unlinks_when_deregistered(run_dir, tmp_path, monkeypatch):
-    monkeypatch.setattr(credbridge, "host_credential", lambda req, audit=None: b"")
+    monkeypatch.setattr(credbridge, "host_credential", lambda req, audit=None, allowlist=None: b"")
     ws = tmp_path / "ws"
     ws.mkdir()
     cred_daemon._register("p", str(ws))
@@ -322,6 +325,90 @@ def test_reconcile_stops_a_listener_and_unlinks_when_deregistered(run_dir, tmp_p
     stop.set()
     assert listeners == {}
     assert not (ws / credbridge.PERSISTENT_SOCK_NAME).exists()
+
+
+# ==================================================== the host allowlist (phase 3)
+
+
+def test_allowed_hosts_defaults_to_the_pair_without_config(run_dir):
+    assert cred_daemon.allowed_hosts() == {"github.com", "gitlab.com"}
+
+
+def test_allowed_hosts_reads_the_config_key(run_dir):
+    config_utils.set_cred_bridge_enabled(True)
+    config = config_utils.load_config()
+    config["cred_bridge"]["allowed_hosts"] = ["github.com", "git.corp.example:8443"]
+    config_utils.save_config(config)
+    assert cred_daemon.allowed_hosts() == {"github.com", "git.corp.example:8443"}
+
+
+def test_an_explicit_empty_list_means_answer_nothing(run_dir):
+    """[] is the user's own choice, never read as 'use the default' - that reading
+    would be the config silently widening, the drift the allowlist guards."""
+    config = config_utils.load_config()
+    config["cred_bridge"]["allowed_hosts"] = []
+    config_utils.save_config(config)
+    assert cred_daemon.allowed_hosts() == set()
+
+
+def test_a_malformed_key_degrades_to_the_default_pair(run_dir):
+    config = config_utils.load_config()
+    config["cred_bridge"]["allowed_hosts"] = "github.com"  # not a list
+    config_utils.save_config(config)
+    assert cred_daemon.allowed_hosts() == {"github.com", "gitlab.com"}
+
+
+@unix_only
+def test_daemon_listener_enforces_the_allowlist_and_rereads_it_live(run_dir, tmp_path, monkeypatch):
+    """The REAL ``host_credential`` behind a live listener: a non-allowlisted host
+    is answered with nothing BEFORE any host tool runs (audit answered=no), an
+    allowlisted one answers - and a config edit takes effect on the very next
+    request with NO listener restart, because the allowlist is read per request."""
+    tool_calls: list[list[str]] = []
+
+    def _fake_run(cmd, **kwargs):
+        tool_calls.append(cmd)
+        return SimpleNamespace(stdout=b"password=TOKEN\n")
+
+    monkeypatch.setattr(credbridge.subprocess, "run", _fake_run)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    cred_daemon._register("proj-a", str(ws))
+
+    def ask(host: str) -> bytes:
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.connect(str(ws / credbridge.PERSISTENT_SOCK_NAME))
+        client.sendall(f"protocol=https\nhost={host}\n\n".encode())
+        client.shutdown(socket.SHUT_WR)
+        resp = _drain(client)
+        client.close()
+        return resp
+
+    stop = threading.Event()
+    listeners: dict = {}
+    cred_daemon._reconcile_unix_listeners(listeners, cred_daemon._read_registry(), stop, credbridge)
+    try:
+        # Default allowlist: the foreign host is refused, no tool ever invoked.
+        assert ask("git.corp.example") == b""
+        assert tool_calls == []
+        # An allowlisted host answers.
+        assert ask("github.com") == b"password=TOKEN\n"
+        assert len(tool_calls) == 1
+        # Config edit, SAME listener: the next request already honours it.
+        config = config_utils.load_config()
+        config["cred_bridge"]["allowed_hosts"] = ["git.corp.example"]
+        config_utils.save_config(config)
+        assert ask("git.corp.example") == b"password=TOKEN\n"
+        assert ask("github.com") == b""  # and github.com is now outside the list
+    finally:
+        stop.set()
+        for lst in listeners.values():
+            lst.srv.close()
+
+    audit = cred_daemon.recent_audit()
+    assert any("host=git.corp.example answered=no" in ln for ln in audit)
+    assert any("host=github.com answered=yes" in ln for ln in audit)
+    assert all("TOKEN" not in ln for ln in audit)
 
 
 # ------------------------------------------------------------------------ audit

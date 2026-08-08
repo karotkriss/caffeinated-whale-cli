@@ -15,7 +15,7 @@ import pytest
 from typer.testing import CliRunner
 
 from caffeinated_whale_cli.main import app
-from caffeinated_whale_cli.utils import config_utils
+from caffeinated_whale_cli.utils import config_utils, startup
 from caffeinated_whale_cli.utils import cred_daemon as daemon
 
 runner = CliRunner()
@@ -26,9 +26,10 @@ def bridge(tmp_path, monkeypatch):
     cfg_dir = tmp_path / "config"
     monkeypatch.setattr(config_utils, "CONFIG_DIR", cfg_dir)
     monkeypatch.setattr(config_utils, "CONFIG_FILE", cfg_dir / "config.toml")
+    monkeypatch.setattr(config_utils, "PROJECTS_DIR", tmp_path / "projects")
     monkeypatch.setattr(daemon, "LOG_FILE", tmp_path / "run" / "credbridge.log")
 
-    state = SimpleNamespace(running=False, pid=None, enabled=False)
+    state = SimpleNamespace(running=False, pid=None, enabled=False, installed=False)
     monkeypatch.setattr(daemon, "is_running", lambda: state.running)
     monkeypatch.setattr(daemon, "get_pid", lambda: state.pid)
     monkeypatch.setattr(daemon, "is_enabled", lambda: state.enabled)
@@ -53,6 +54,18 @@ def bridge(tmp_path, monkeypatch):
         state.enabled = val
 
     monkeypatch.setattr(config_utils, "set_cred_bridge_enabled", _set_enabled)
+
+    def _install(unit=None):
+        state.installed = True
+        return True
+
+    def _uninstall(unit=None):
+        state.installed = False
+        return True
+
+    monkeypatch.setattr(startup, "is_startup_installed", lambda unit=None: state.installed)
+    monkeypatch.setattr(startup, "install_startup", _install)
+    monkeypatch.setattr(startup, "uninstall_startup", _uninstall)
     return state
 
 
@@ -104,6 +117,9 @@ def test_status_json_is_one_object(bridge):
     assert data["daemon_pid"] == 9
     assert data["transport"] == "unix"
     assert "registered_projects" in data
+    assert data["startup_enabled"] is False
+    assert data["boot_installed"] is False
+    assert data["allowed_hosts"] == ["github.com", "gitlab.com"]
 
 
 def test_status_human_table(bridge):
@@ -112,3 +128,26 @@ def test_status_human_table(bridge):
     # The title wraps at narrow test widths; assert on the always-present rows.
     assert "Transport" in result.output
     assert "unix" in result.output
+    assert "github.com" in result.output  # the allowlist row
+
+
+def test_enable_startup_installs_the_boot_unit(bridge):
+    result = runner.invoke(app, ["config", "cred-bridge", "enable", "--startup"])
+    assert result.exit_code == 0
+    assert "Boot startup installed." in result.output
+    assert bridge.installed is True
+
+
+def test_enable_no_startup_removes_the_boot_unit(bridge):
+    runner.invoke(app, ["config", "cred-bridge", "enable", "--startup"])
+    result = runner.invoke(app, ["config", "cred-bridge", "enable", "--no-startup"])
+    assert result.exit_code == 0
+    assert "Boot startup removed." in result.output
+    assert bridge.installed is False
+
+
+def test_disable_removes_the_boot_unit(bridge):
+    runner.invoke(app, ["config", "cred-bridge", "enable", "--startup"])
+    result = runner.invoke(app, ["config", "cred-bridge", "disable"])
+    assert result.exit_code == 0
+    assert bridge.installed is False
