@@ -31,6 +31,7 @@ value the old path did not print.
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import json
 import re
 import shlex
@@ -194,19 +195,50 @@ def validate_bench_slug(value: str) -> str:
     return _validate_slug(value, "Bench name")
 
 
+# A DNS label: 1-63 chars, lowercase alphanumeric, hyphens only in the middle.
+# The charset is pre-checked (and lowercased) before this runs.
+_HOSTNAME_LABEL_RE = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
+
+
 def validate_new_site_name(value: str) -> str:
-    """Validate and normalize a new site's name (init's naming policy)."""
+    """Validate and normalize a new site's name (init's naming policy).
+
+    Any syntactically legal hostname/FQDN or IPv4 address is accepted;
+    ``.localhost`` is only the SUGGESTED convention for local development
+    (it resolves without DNS), never a requirement - a site may be named a
+    real domain or an IP. The charset check is the shell-safety guard
+    (the name is interpolated into the ``bench new-site`` command) and is
+    deliberately no looser than before the suffix requirement was dropped.
+    """
     cleaned = value.strip().lower()
     if not cleaned:
         raise CwcliError(ErrorKind.USAGE, "site.required", "Site name is required.")
-    if not cleaned.endswith(".localhost"):
-        raise CwcliError(ErrorKind.USAGE, "site.suffix", "Site name must end with '.localhost'.")
     allowed = "abcdefghijklmnopqrstuvwxyz0123456789-."
     if not all(char in allowed for char in cleaned):
         raise CwcliError(
             ErrorKind.USAGE,
             "site.invalid_chars",
             "Site name may only include lowercase letters, " "numbers, hyphens, and periods.",
+        )
+    if cleaned.replace(".", "").isdigit():
+        # All-numeric dotted names read as an IP address (resolvers never treat
+        # them as hostnames), so they must be a LEGAL IPv4 address.
+        try:
+            ipaddress.IPv4Address(cleaned)
+        except ipaddress.AddressValueError:
+            raise CwcliError(
+                ErrorKind.USAGE,
+                "site.invalid",
+                f"Invalid site name '{cleaned}': not a valid IPv4 address.",
+            ) from None
+    elif len(cleaned) > 253 or not all(
+        _HOSTNAME_LABEL_RE.fullmatch(label) for label in cleaned.split(".")
+    ):
+        raise CwcliError(
+            ErrorKind.USAGE,
+            "site.invalid",
+            f"Invalid site name '{cleaned}': must be a valid hostname "
+            "(e.g. site1.localhost, erp.example.com) or IPv4 address.",
         )
     return cleaned
 
