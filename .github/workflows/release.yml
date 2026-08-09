@@ -250,8 +250,9 @@ jobs:
         # never merges anything itself and never pushes to the tap's main.
         # Requires the tap repo to have "Allow auto-merge" enabled and the
         # test-bot checks marked as required status checks on its default
-        # branch; until that repo-admin change lands (tracked outside this
-        # repo), this step fails harmlessly under the job's continue-on-error.
+        # branch; that repo-admin change (tracked outside this repo) is applied
+        # and verified live, so the mechanism is fully armed. Any transient
+        # failure here stays harmless under the job's continue-on-error.
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
