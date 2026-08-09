@@ -234,6 +234,36 @@ jobs:
         env:
           COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
+      - name: Enable auto-merge on the tap PR
+        # The bump action never exposes the PR it just opened as a step output
+        # (verified against its source: edit-github-blob.ts returns the PR URL
+        # from the function, but the action's entrypoint never core.setOutput's
+        # it). It does always create a fresh branch named
+        # `update-<formula-file-basename>-<unix-timestamp>` and open exactly one
+        # PR from it, so the newest open PR with that head-branch prefix is the
+        # one this run just created.
+        #
+        # `gh pr merge --auto` arms GitHub's native auto-merge: GitHub itself
+        # merges the PR the instant every required status check on the tap's
+        # main branch (its brew test-bot matrix) reports success, and leaves it
+        # open, untouched, if a check fails or is still running - this step
+        # never merges anything itself and never pushes to the tap's main.
+        # Requires the tap repo to have "Allow auto-merge" enabled and the
+        # test-bot checks marked as required status checks on its default
+        # branch; until that repo-admin change lands (tracked outside this
+        # repo), this step fails harmlessly under the job's continue-on-error.
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          PR_NUMBER=$(gh pr list --repo karotkriss/homebrew-cwcli \
+            --state open --json number,headRefName,createdAt \
+            --jq '[.[] | select(.headRefName | startswith("update-cwcli.rb-"))] | sort_by(.createdAt) | last | .number // empty')
+          if [ -z "$PR_NUMBER" ]; then
+            echo "::error::no open update-cwcli.rb-* PR found on karotkriss/homebrew-cwcli to enable auto-merge on"
+            exit 1
+          fi
+          gh pr merge "$PR_NUMBER" --repo karotkriss/homebrew-cwcli --auto --squash
+
   windows-exe:
     name: Build (and optionally sign) the Windows .exe
     needs: build-and-publish
