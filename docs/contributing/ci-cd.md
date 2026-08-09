@@ -172,9 +172,9 @@ Publishes package to PyPI when a version tag is pushed.
 The release note must exist before the tag is pushed.
 See [`.github/release-notes/README.md`](../../.github/release-notes/README.md) for its authoritative format and rendering instructions.
 
-A second job, **`bump-homebrew-tap`**, then fans the release out to the `karotkriss/homebrew-cwcli` Homebrew tap.
+A second job, **`bump-homebrew-tap`**, then fans the release out to the `karotkriss/homebrew-cwcli` Homebrew tap and merges the resulting formula-bump PR itself once the tap's own CI passes - no human step.
 It is isolated from the publish (`needs: build-and-publish` plus `continue-on-error: true`), so a tap-bump failure can never fail the PyPI publish or the GitHub release.
-The `cwcli-release` skill owns the detailed contract (isolation mechanism, PyPI-JSON URL/sha256 derivation, action choice, and the known tap-side `test do` gap).
+The `cwcli-release` skill owns the detailed contract (isolation mechanism, PyPI-JSON URL/sha256 derivation, action choice, the auto-merge step, and the known tap-side `test do` gap).
 
 A third job, **`windows-exe`**, builds the standalone Windows binary and optionally signs it.
 It compiles the package with Nuitka (`--onefile`) on `windows-latest` into a single `cwcli.exe` and attaches it to the GitHub release.
