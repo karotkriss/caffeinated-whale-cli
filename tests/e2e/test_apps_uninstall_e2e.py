@@ -103,6 +103,7 @@ def test_apps_uninstall_destroys_the_sites_app_state(running_instance):
                 "apps",
                 "install",
                 inst.name,
+                "--app",
                 _APP,
                 "--site",
                 inst.site,
@@ -119,7 +120,7 @@ def test_apps_uninstall_destroys_the_sites_app_state(running_instance):
 
         # --- Destroy it.
         uninstall = harness.run_cwcli(
-            "apps", "uninstall", inst.name, _APP, "--site", inst.site, "--yes"
+            "apps", "uninstall", inst.name, "--app", _APP, "--site", inst.site, "--yes"
         )
         assert uninstall.returncode == 0, uninstall.stdout + uninstall.stderr
 
@@ -148,6 +149,7 @@ def test_apps_uninstall_destroys_the_sites_app_state(running_instance):
                             "apps",
                             "uninstall",
                             inst.name,
+                            "--app",
                             _APP,
                             "--site",
                             inst.site,

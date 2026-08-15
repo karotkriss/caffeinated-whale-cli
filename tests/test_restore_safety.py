@@ -359,10 +359,10 @@ class TestReceiveMissingAppsGate:
         assert len(container.restore_calls()) == 1
         assert any("not available on this bench" in line for line in container.printed)
         # The install hint must be a copy-paste-accurate cwcli invocation
-        # (cwcli apps install <project> <app> --site <site>), not the raw
+        # (cwcli apps install <project> --app <app> --site <site>), not the raw
         # `bench get-app`/`bench --site ... install-app` the user cannot run.
         assert any(
-            "cwcli apps install proj <app-name> --site development.localhost" in line
+            "cwcli apps install proj --app <app-name> --site development.localhost" in line
             for line in container.printed
         )
 
