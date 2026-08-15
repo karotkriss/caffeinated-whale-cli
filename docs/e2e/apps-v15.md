@@ -2,6 +2,7 @@
 
 This records the original app-management validation before the verified post-mutation resynchronise step (`restart-processes`) was added.
 For the current serving guarantee, see the `apps` contract in the README and `tests/e2e/test_apps_resync_e2e.py`.
+The apps install and uninstall invocations shown here use the pre-`fm/cwcli-apps-single-positional` positional app-name syntax, superseded by the `--app` option; see `README.md` for current usage.
 
 Real-instance end-to-end run of the new `cwcli apps` command group (task 7.2 of the
 `add-app-management` change) on an **isolated** throwaway instance.
