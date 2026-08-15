@@ -513,7 +513,7 @@ def _render_missing_apps_gate(plan, *, yes: bool, isatty: bool) -> None:
     console.print()
     console.print("[dim]You may need to install these apps before restoring to avoid errors.[/dim]")
     console.print(
-        f"[dim]Install apps with: cwcli apps install {plan.project_name} <app-name> "
+        f"[dim]Install apps with: cwcli apps install {plan.project_name} --app <app-name> "
         f"--site {plan.site}[/dim]"
     )
     console.print()

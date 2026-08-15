@@ -203,7 +203,7 @@ def test_every_app_code_change_resynchronises_the_whole_bench(running_instance):
         _assert_resynchronised(inst, before, verb="apps update")
 
         uninstall = harness.run_cwcli(
-            "apps", "uninstall", inst.name, _APP, "--site", inst.site, "--yes"
+            "apps", "uninstall", inst.name, "--app", _APP, "--site", inst.site, "--yes"
         )
         assert uninstall.returncode == 0, uninstall.stdout + uninstall.stderr
         assert _site_ping_code(inst) == "200"
@@ -215,7 +215,7 @@ def test_every_app_code_change_resynchronises_the_whole_bench(running_instance):
             # Best-effort cleanup that never masks the real assertion failure.
             if _APP in _installed_apps(inst):
                 harness.run_cwcli(
-                    "apps", "uninstall", inst.name, _APP, "--site", inst.site, "--yes"
+                    "apps", "uninstall", inst.name, "--app", _APP, "--site", inst.site, "--yes"
                 )
             _remove_app_source(inst, required=False)
         _ensure_serving(inst.name)

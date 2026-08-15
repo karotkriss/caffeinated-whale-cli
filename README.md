@@ -1091,8 +1091,8 @@ After a successful mutation the bench's cached app lists are refreshed so `where
 
 ```bash
 cwcli apps list [OPTIONS] PROJECT_NAME
-cwcli apps install [OPTIONS] PROJECT_NAME APPS...
-cwcli apps uninstall [OPTIONS] PROJECT_NAME APPS...
+cwcli apps install [OPTIONS] PROJECT_NAME --app APP [--app APP ...]
+cwcli apps uninstall [OPTIONS] PROJECT_NAME --app APP [--app APP ...]
 cwcli apps update [OPTIONS] PROJECT_NAME APPS...
 cwcli apps checkout [OPTIONS] PROJECT_NAME APP REF
 ```
@@ -1101,7 +1101,7 @@ cwcli apps checkout [OPTIONS] PROJECT_NAME APP REF
 
 **`apps install`** - ensures each app is present on the bench, then installs it on the target site(s).
 An app absent from `apps/` is fetched with `bench get-app` (honoring `--branch`); an app already present is not fetched again, so pre-warmed benches install it without failing on the existing directory.
-Each `APP` is a known app name **or** a git URL (passed straight to `bench get-app` when a fetch is needed, so custom apps not in bench's registry work).
+Each `--app` is a known app name **or** a git URL (passed straight to `bench get-app` when a fetch is needed, so custom apps not in bench's registry work); repeat `--app` to install more than one.
 `--fetch-only` ensures the app is present without installing it on any site.
 `--if-not-present` makes install idempotent: an app already installed on a target site is skipped (reported, not reinstalled, with its install hooks never rerun) and the command still exits 0, so "ensure this app is installed" is a single call whose exit code a script can trust; an app the site does not have is still installed normally, and a genuine install failure still exits non-zero.
 A bench that is already running may still serve code it loaded before the install and fail to see the new app: install therefore **resynchronises** that bench - it restarts every cwcli-supervised program that runs the bench's Python (`web`, `schedule`, and every worker) and requires every changed site to answer Frappe before it reports success.
@@ -1137,6 +1137,7 @@ Note one honest limit: `--reset` does **not** delete untracked files, because cw
 |--------|-------------|
 | `--bench TEXT` | Which bench to target: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)) |
 | `-p`, `--path TEXT` | Explicit bench directory inside the container (lower-level alternative to `--bench`) |
+| `-a`, `--app TEXT` | App name or git URL; repeatable (`install`/`uninstall`, required - at least one) |
 | `--site TEXT` | Target site(s); repeatable. Omit for all sites (list/install/uninstall) or all affected sites (update) |
 | `--json` | Machine-readable JSON output (for `install`/`uninstall`, includes the per-`(app, site)` results; for `update`, the full per-phase report). Stdout carries only the document - bench output never corrupts it |
 | `-y`, `--yes` | Auto-start stopped containers without prompting; for `uninstall`, also skip the destructive confirmation |
@@ -1152,16 +1153,19 @@ cwcli apps list frappe-one
 cwcli apps list frappe-one --installed --json
 
 # Install ERPNext on every site of the bench
-cwcli apps install frappe-one erpnext
+cwcli apps install frappe-one --app erpnext
+
+# Install more than one app in the same call
+cwcli apps install frappe-one --app erpnext --app hrms
 
 # Install a custom app from a git URL on one site
-cwcli apps install frappe-one https://github.com/example/custom_app --site dev.localhost
+cwcli apps install frappe-one --app https://github.com/example/custom_app --site dev.localhost
 
 # Fetch an app into the bench without installing it anywhere
-cwcli apps install frappe-one payments --fetch-only
+cwcli apps install frappe-one --app payments --fetch-only
 
 # Uninstall an app from all sites, non-interactively
-cwcli apps uninstall frappe-one payments --yes
+cwcli apps uninstall frappe-one --app payments --yes
 
 # Update an app (or the framework) - multi-bench aware
 cwcli apps update frappe-one erpnext
@@ -2454,7 +2458,7 @@ source ~/.zshrc   # For Zsh
 **What gets completed:**
 
 - **Project names** - All commands that accept project names (start, stop, restart, inspect, label, logs, open, status, run, update, unlock, apps)
-- **App names** - Commands with `--app` option or an `APP` argument (open, update, `apps uninstall`, `apps update`)
+- **App names** - Commands with `--app` option or an `APP` argument (open, update, `apps install`, `apps uninstall`, `apps update`)
 - **Site names** - Commands with `--site` option (unlock)
 
 **Examples:**
