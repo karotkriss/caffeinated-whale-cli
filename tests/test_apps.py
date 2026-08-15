@@ -609,8 +609,11 @@ def test_install_cli_rejects_the_old_second_positional(wired, monkeypatch):
 
     monkeypatch.setattr(core_docker, "get_frappe_container", _boom)
 
-    result = _runner.invoke(apps_mod.app, ["install", "proj", "erpnext"])
+    result = _runner.invoke(
+        apps_mod.app, ["install", "proj", "erpnext", "--app", "hrms"]
+    )
     assert result.exit_code == 2
+    assert "unexpected extra argument" in result.output.lower()
     assert "Traceback" not in result.output
 
 
@@ -646,8 +649,11 @@ def test_uninstall_cli_rejects_the_old_second_positional(wired, monkeypatch):
 
     monkeypatch.setattr(core_docker, "get_frappe_container", _boom)
 
-    result = _runner.invoke(apps_mod.app, ["uninstall", "proj", "payments"])
+    result = _runner.invoke(
+        apps_mod.app, ["uninstall", "proj", "payments", "--app", "hrms"]
+    )
     assert result.exit_code == 2
+    assert "unexpected extra argument" in result.output.lower()
     assert "Traceback" not in result.output
 
 
