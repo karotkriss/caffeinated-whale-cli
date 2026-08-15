@@ -13,8 +13,14 @@ console_err = Console(stderr=True)
 IS_WINDOWS = platform.system() == "Windows"
 
 
+# Cursor aliases the Microsoft Dev Containers extension id to its own
+# publisher id, so `--list-extensions` on Cursor reports the extension under
+# a different id than the one cwcli asks it to install.
+DEV_CONTAINERS_EXTENSION_IDS = ("ms-vscode-remote.remote-containers", "anysphere.remote-containers")
+
+
 def is_dev_containers_installed(vscode_command: str, verbose: bool = False) -> bool:
-    """Check if Dev Containers extension is installed."""
+    """Check if Dev Containers extension is installed (under either its Microsoft or Cursor id)."""
     try:
         cmd = [vscode_command, "--list-extensions"]
         if verbose:
@@ -26,7 +32,8 @@ def is_dev_containers_installed(vscode_command: str, verbose: bool = False) -> b
             timeout=5,
             shell=IS_WINDOWS,
         )
-        return "ms-vscode-remote.remote-containers" in result.stdout.lower()
+        installed = result.stdout.lower()
+        return any(ext_id in installed for ext_id in DEV_CONTAINERS_EXTENSION_IDS)
     except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
         return False
 
@@ -69,11 +76,18 @@ def install_extension(
         if result.returncode == 0:
             console_err.print(f"✓ {extension_name} installed successfully.")
             return True
-        else:
-            console_err.print(
-                f"✗ Failed to install {extension_name}: {result.stderr}",
-            )
-            return False
+
+        # Some editor CLIs report "already installed" with a non-zero exit;
+        # that is success, not a reason to fail the open.
+        output = f"{result.stdout}\n{result.stderr}".lower()
+        if "already installed" in output:
+            console_err.print(f"✓ {extension_name} already installed.")
+            return True
+
+        console_err.print(
+            f"✗ Failed to install {extension_name}: {result.stderr}",
+        )
+        return False
     except subprocess.TimeoutExpired:
         console_err.print("✗ Installation timed out.")
         return False
@@ -165,7 +179,15 @@ def open_in_vscode(
                 console_err.print(
                     "[dim]VERBOSE: Dev Containers extension not found, installing...[/dim]"
                 )
-            if not install_dev_containers_extension(vscode_command, verbose):
+            install_ok = install_dev_containers_extension(vscode_command, verbose)
+            if not install_ok and is_dev_containers_installed(vscode_command, verbose):
+                # Install call failed (e.g. a transient marketplace error) but
+                # the extension is actually present locally - don't block the open.
+                if verbose:
+                    console_err.print(
+                        "[dim]VERBOSE: Extension present locally despite install failure, continuing[/dim]"
+                    )
+            elif not install_ok:
                 console_err.print(
                     "[bold red]✗ Cannot open without Dev Containers extension.[/bold red]"
                 )
