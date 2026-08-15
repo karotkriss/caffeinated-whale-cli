@@ -22,6 +22,7 @@ import types
 
 import pytest
 import typer
+from typer.testing import CliRunner
 
 from caffeinated_whale_cli.commands import apps as apps_mod
 from caffeinated_whale_cli.commands import update as update_mod
@@ -535,6 +536,119 @@ def test_uninstall_yes_fans_out_and_refreshes(wired, monkeypatch, capsys):
     assert len(uninstalls) == 2  # both sites
     assert all("--yes" in c for c in uninstalls)  # bench's own confirm suppressed
     assert wired.recache_calls == ["proj"]
+
+
+# ------------------------------------------------------ install/uninstall --app CLI
+#
+# install/uninstall used to take a SECOND positional (the app list), breaking the
+# human-tier convention of at most one positional (the project) with everything
+# else as options - see e.g. `open --app`. These drive the real Typer/Click parser
+# (unlike the tests above, which call the function directly and so never exercise
+# argument parsing) to prove the new `--app` option resolves to the identical core
+# call, that omitting it is a clear usage error and not a stack trace, and that the
+# old two-positional shape is hard-cut (no deprecated fallback - nothing in this
+# repo invoked it non-interactively).
+
+_runner = CliRunner()
+
+
+def test_install_cli_parses_repeated_app_option_into_the_same_core_call(wired, monkeypatch):
+    container = FakeFrappeContainer(
+        available_apps=["frappe"], get_app_creates={"payments": "payments", "hrms": "hrms"}
+    )
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
+
+    result = _runner.invoke(
+        apps_mod.app,
+        [
+            "install",
+            "proj",
+            "--app",
+            "payments",
+            "--app",
+            "hrms",
+            "--site",
+            "a.localhost",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    out = json.loads(result.stdout)
+    assert out["ok"] is True
+    installed = {r["app"] for r in out["results"] if r["action"] == "install-app"}
+    assert installed == {"payments", "hrms"}
+
+
+def test_install_cli_project_positional_still_resolves(wired, monkeypatch):
+    container = _install_container()
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
+
+    result = _runner.invoke(
+        apps_mod.app,
+        ["install", "proj", "--app", "payments", "--site", "a.localhost", "--json"],
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["ok"] is True
+
+
+def test_install_cli_missing_app_option_fails_with_a_clear_usage_error(wired, monkeypatch):
+    def _boom(name):
+        raise AssertionError("core must not be reached for a rejected invocation")
+
+    monkeypatch.setattr(core_docker, "get_frappe_container", _boom)
+
+    result = _runner.invoke(apps_mod.app, ["install", "proj"])
+    assert result.exit_code == 2
+    assert "--app" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_install_cli_rejects_the_old_second_positional(wired, monkeypatch):
+    def _boom(name):
+        raise AssertionError("core must not be reached for a rejected invocation")
+
+    monkeypatch.setattr(core_docker, "get_frappe_container", _boom)
+
+    result = _runner.invoke(apps_mod.app, ["install", "proj", "erpnext"])
+    assert result.exit_code == 2
+    assert "Traceback" not in result.output
+
+
+def test_uninstall_cli_parses_the_app_option_into_the_same_core_call(wired, monkeypatch):
+    container = _install_container()
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
+
+    result = _runner.invoke(
+        apps_mod.app,
+        ["uninstall", "proj", "--app", "payments", "--site", "a.localhost", "--yes", "--json"],
+    )
+    assert result.exit_code == 0, result.output
+    out = json.loads(result.stdout)
+    assert out["ok"] is True
+    assert any("uninstall-app payments" in c for c in container.calls)
+
+
+def test_uninstall_cli_missing_app_option_fails_with_a_clear_usage_error(wired, monkeypatch):
+    def _boom(name):
+        raise AssertionError("core must not be reached for a rejected invocation")
+
+    monkeypatch.setattr(core_docker, "get_frappe_container", _boom)
+
+    result = _runner.invoke(apps_mod.app, ["uninstall", "proj"])
+    assert result.exit_code == 2
+    assert "--app" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_uninstall_cli_rejects_the_old_second_positional(wired, monkeypatch):
+    def _boom(name):
+        raise AssertionError("core must not be reached for a rejected invocation")
+
+    monkeypatch.setattr(core_docker, "get_frappe_container", _boom)
+
+    result = _runner.invoke(apps_mod.app, ["uninstall", "proj", "payments"])
+    assert result.exit_code == 2
+    assert "Traceback" not in result.output
 
 
 # -------------------------------------------------------------------------- checkout
