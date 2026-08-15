@@ -2,6 +2,7 @@
 
 This records the original app-management validation before the verified post-mutation resynchronise step (`restart-processes`) was added.
 For the current serving guarantee, see the `apps` contract in the README and `tests/e2e/test_apps_resync_e2e.py`.
+The apps install and uninstall invocations shown here use the pre-`fm/cwcli-apps-single-positional` positional app-name syntax, superseded by the `--app` option; see `README.md` for current usage.
 
 Companion to [`apps-v15.md`](apps-v15.md): the same `cwcli apps` behaviors, verified on a real Frappe **version-14** instance to confirm they are not version-sensitive (some Frappe bugs only reproduce on v14).
 Isolated throwaway instance; the captain's real projects and `~/.cwcli` were never touched, and the instance was torn down afterwards.
