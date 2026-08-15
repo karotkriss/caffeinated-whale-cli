@@ -1678,7 +1678,7 @@ def axi_apps_checkout(
 def axi_apps_install(
     project: str = typer.Argument(..., help="The Docker Compose project name."),
     # Named `app_name` because `app` is this module's Typer instance; the metavar
-    # keeps the agent-visible usage line matching the human `cwcli apps install`.
+    # keeps this independent agent-tier positional argument labelled `APP`.
     app_name: str = typer.Argument(
         ..., metavar="APP", help="App name or git URL to ensure on the bench and install."
     ),
