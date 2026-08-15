@@ -1137,7 +1137,7 @@ Note one honest limit: `--reset` does **not** delete untracked files, because cw
 |--------|-------------|
 | `--bench TEXT` | Which bench to target: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)) |
 | `-p`, `--path TEXT` | Explicit bench directory inside the container (lower-level alternative to `--bench`) |
-| `-a`, `--app TEXT` | App name or git URL; repeatable (`install`/`uninstall`, required - at least one) |
+| `-a`, `--app TEXT` | App name (`install` also accepts a git URL); repeatable and required for `install`/`uninstall` |
 | `--site TEXT` | Target site(s); repeatable. Omit for all sites (list/install/uninstall) or all affected sites (update) |
 | `--json` | Machine-readable JSON output (for `install`/`uninstall`, includes the per-`(app, site)` results; for `update`, the full per-phase report). Stdout carries only the document - bench output never corrupts it |
 | `-y`, `--yes` | Auto-start stopped containers without prompting; for `uninstall`, also skip the destructive confirmation |
