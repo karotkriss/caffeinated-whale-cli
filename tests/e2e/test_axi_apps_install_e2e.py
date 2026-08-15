@@ -116,7 +116,7 @@ def test_axi_apps_install_permitted_then_refused_on_rerun(running_instance):
         assert "apps update" in rerun.stdout
 
         uninstall = harness.run_cwcli(
-            "apps", "uninstall", inst.name, _APP, "--site", inst.site, "--yes"
+            "apps", "uninstall", inst.name, "--app", _APP, "--site", inst.site, "--yes"
         )
         assert uninstall.returncode == 0, uninstall.stdout + uninstall.stderr
 
@@ -131,7 +131,7 @@ def test_axi_apps_install_permitted_then_refused_on_rerun(running_instance):
             # Best-effort cleanup that never masks the real assertion failure.
             if _APP in _installed_apps(inst):
                 harness.run_cwcli(
-                    "apps", "uninstall", inst.name, _APP, "--site", inst.site, "--yes"
+                    "apps", "uninstall", inst.name, "--app", _APP, "--site", inst.site, "--yes"
                 )
             harness.run_cwcli("axi", "restart", inst.name, "--process", "web")
 

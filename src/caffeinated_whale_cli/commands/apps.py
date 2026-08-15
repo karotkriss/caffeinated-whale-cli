@@ -270,8 +270,12 @@ def install_apps(
     project_name: str = typer.Argument(
         ..., help="The Docker Compose project name.", autocompletion=complete_project_names
     ),
-    apps: list[str] = typer.Argument(
-        ..., help="App name(s) or git URL(s) to ensure on the bench and install."
+    apps: list[str] = typer.Option(
+        ...,
+        "--app",
+        "-a",
+        help="App name or git URL to ensure on the bench and install. Repeatable.",
+        autocompletion=complete_app_names,
     ),
     bench: str = typer.Option(
         None, "--bench", help="Which bench to target: its numeric index or label."
@@ -360,8 +364,12 @@ def uninstall_apps(
     project_name: str = typer.Argument(
         ..., help="The Docker Compose project name.", autocompletion=complete_project_names
     ),
-    apps: list[str] = typer.Argument(
-        ..., help="App name(s) to uninstall.", autocompletion=complete_app_names
+    apps: list[str] = typer.Option(
+        ...,
+        "--app",
+        "-a",
+        help="App name to uninstall. Repeatable.",
+        autocompletion=complete_app_names,
     ),
     bench: str = typer.Option(
         None, "--bench", help="Which bench to target: its numeric index or label."
