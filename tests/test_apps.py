@@ -20,6 +20,7 @@ import json
 import shlex
 import types
 
+import click
 import pytest
 import typer
 from typer.testing import CliRunner
@@ -599,7 +600,7 @@ def test_install_cli_missing_app_option_fails_with_a_clear_usage_error(wired, mo
 
     result = _runner.invoke(apps_mod.app, ["install", "proj"])
     assert result.exit_code == 2
-    assert "--app" in result.output
+    assert "--app" in click.unstyle(result.output)
     assert "Traceback" not in result.output
 
 
@@ -637,7 +638,7 @@ def test_uninstall_cli_missing_app_option_fails_with_a_clear_usage_error(wired, 
 
     result = _runner.invoke(apps_mod.app, ["uninstall", "proj"])
     assert result.exit_code == 2
-    assert "--app" in result.output
+    assert "--app" in click.unstyle(result.output)
     assert "Traceback" not in result.output
 
 
