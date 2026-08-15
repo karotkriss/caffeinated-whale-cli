@@ -61,7 +61,9 @@ class TestIsDevContainersInstalled:
         monkeypatch.setattr(
             vscode_utils.subprocess,
             "run",
-            lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=DOCKER_EXT_LISTED, stderr=""),
+            lambda cmd, **kw: subprocess.CompletedProcess(
+                cmd, 0, stdout=DOCKER_EXT_LISTED, stderr=""
+            ),
         )
         assert vscode_utils.is_dev_containers_installed("cursor") is False
 
