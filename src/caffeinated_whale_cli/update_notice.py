@@ -47,7 +47,7 @@ def _print_notice(current: str, latest: str | None, command: str) -> None:
     from rich.console import Console
 
     Console(stderr=True, highlight=False).print(
-        f"[dim]cwcli {latest} is available (you have {current}). Upgrade with:[/dim] "
+        f"[yellow]cwcli {latest} is available (you have {current}). Upgrade with:[/yellow] "
         f"[cyan]{command}[/cyan]",
         soft_wrap=True,  # never hard-wrap the upgrade command mid-token
     )
