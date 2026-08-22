@@ -78,9 +78,9 @@ def _site_ping_code(inst) -> str:
 
 
 def _remove_app_source(inst, *, required: bool = True) -> None:
-    """Remove the fetched app source after it has been uninstalled from the site."""
+    """Remove source after the test has proved the app absent from the site."""
     code, out = harness.exec_in_frappe(
-        inst.name, f"cd {inst.bench} && bench remove-app --no-backup {_APP}"
+        inst.name, f"cd {inst.bench} && bench remove-app --no-backup --force {_APP}"
     )
     if required:
         assert code == 0, out
