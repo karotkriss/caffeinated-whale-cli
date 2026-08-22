@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-08-22
+
+**This is a major release because `cwcli apps install` and `cwcli apps uninstall` no longer take app names as a positional argument:** they now ride a repeatable `--app`/`-a` option, so any existing invocation of the old shape needs updating. Opening a Cursor dev container no longer aborts on a transient marketplace error, and the passive update notice is legible again.
+
+### Changed
+- **BREAKING: `cwcli apps install` and `cwcli apps uninstall` take app names on `--app`, not as a positional** - both used to accept a second positional argument holding the app list, which broke the human-tier convention of at most one positional after the subcommand (the project name) with everything else as an option, the shape `cwcli open --app` already followed. App names now ride a repeatable `--app`/`-a` option, matching `open`'s flag name and style: `cwcli apps install myproj --app erpnext --app hrms`. **Anything invoking the old shape needs updating.** At least one `--app` is required, so an omitted flag is a clear usage error rather than a silently accepted old-shape call. This is a hard cut with no deprecated positional fallback, because nothing shipped here invoked the old shape non-interactively; `cwcli axi apps install` is a separate verb and is unchanged.
+
+### Fixed
+- **`cwcli open` no longer aborts a Cursor dev-container open on a transient extension-install error** - Cursor aliases the Microsoft Dev Containers extension id (`ms-vscode-remote.remote-containers`) to its own publisher id (`anysphere.remote-containers`), so listing Cursor's extensions never reported the id cwcli looked for. cwcli therefore believed the extension was always missing on Cursor, ran a needless install on every open, and aborted the open outright when Cursor's marketplace answered that install with a transient 5xx - even though the extension was already installed locally. Both ids are now recognised, an install that reports the extension is already present counts as success, and a failed install rechecks locally before giving up. A genuinely missing extension still refuses and surfaces the real error.
+- **The passive update notice is no longer dim** - the once-a-day "a newer cwcli is available" hint rendered as dim text and was routinely missed. Its body is now yellow, matching the warning styling used elsewhere, with the upgrade command still in cyan. The notice text and when it appears are unchanged.
+
+### Other Changes
+- **The Homebrew tap formula bump now merges itself** - a release already opened a formula-bump PR against `karotkriss/homebrew-cwcli`; that PR now merges automatically once the tap's own CI passes, instead of waiting on a manual click. A failing or still-running tap check leaves the PR open and untouched, and this step can never affect the PyPI publish or the GitHub release.
+
 ## [2.6.0] - 2026-08-08
 
 `cwcli` now offers an opt-in persistent credential bridge so private-repo git authentication also works inside `cwcli open` and interactive shells, not just cwcli's own operations. `cwcli init --site` accepts any hostname, FQDN, or IPv4 address instead of requiring a `.localhost` name, and `cwcli backup`/`cwcli restore` no longer dead-end on a cold cache.
