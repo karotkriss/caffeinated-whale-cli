@@ -50,6 +50,15 @@ def _site_ping_code(inst) -> str:
     return out.strip().splitlines()[-1]
 
 
+def _remove_app_source(inst, *, required: bool = True) -> None:
+    """Remove source after the test has proved the app absent from the site."""
+    code, out = harness.exec_in_frappe(
+        inst.name, f"cd {inst.bench} && bench remove-app --no-backup --force {_APP}"
+    )
+    if required:
+        assert code == 0, out
+
+
 def test_axi_apps_install_permitted_then_refused_on_rerun(running_instance):
     """The full arc against a real bench: fetch+install lands, state genuinely
     changes, and the exact same command re-run is refused before any fetch.
@@ -125,6 +134,7 @@ def test_axi_apps_install_permitted_then_refused_on_rerun(running_instance):
         assert _site_ping_code(inst) == "200"
         assert "restart-processes" in uninstall.stdout + uninstall.stderr
         assert _APP not in _installed_apps(inst)
+        _remove_app_source(inst)
         restored = True
     finally:
         if not restored:
@@ -133,6 +143,7 @@ def test_axi_apps_install_permitted_then_refused_on_rerun(running_instance):
                 harness.run_cwcli(
                     "apps", "uninstall", inst.name, "--app", _APP, "--site", inst.site, "--yes"
                 )
+            _remove_app_source(inst, required=False)
             harness.run_cwcli("axi", "restart", inst.name, "--process", "web")
 
 
