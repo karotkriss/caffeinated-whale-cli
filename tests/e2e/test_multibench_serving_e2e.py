@@ -116,13 +116,16 @@ def _wait_code(project: str, port: int, expected: str, site: str | None = None, 
     )
 
 
-def _bench_blocks(toon: str) -> dict[str, dict[str, str]]:
-    """Every ``benches[...]`` item of an ``axi status`` document, keyed by bench path.
+def _bench_blocks(toon: str, *, key_field: str = "bench_path") -> dict[str, dict[str, str]]:
+    """Every ``benches[...]`` item of a TOON document (``axi status``/``axi
+    inspect``), keyed by ``key_field`` (``bench_path`` for status, ``path`` for
+    inspect - each verb names the field differently).
 
-    Each bench is a ``- key: value`` TOON item whose ``processes`` table is nested
-    deeper. Only the item's own scalar fields are collected, and quoted values
-    (``web_http_code: "200"``) are unquoted, so a caller compares against the value
-    rather than against the encoder's quoting.
+    Each bench is a ``- key: value`` TOON item whose nested tables (``processes``
+    for status, ``sites`` for inspect) sit deeper. Only the item's own scalar
+    fields are collected, and quoted values (``web_http_code: "200"``) are
+    unquoted, so a caller compares against the value rather than the encoder's
+    quoting.
     """
     blocks: dict[str, dict[str, str]] = {}
     current: dict[str, str] | None = None
@@ -152,7 +155,7 @@ def _bench_blocks(toon: str) -> dict[str, dict[str, str]]:
             continue
         value = value.strip().strip('"')
         current[key] = value
-        if key == "bench_path":
+        if key == key_field:
             blocks[value] = current
     return blocks
 
@@ -672,3 +675,77 @@ def test_axi_url_with_no_bench_on_a_multibench_project_is_a_usage_error(two_benc
     assert res.returncode == 2, res.stdout + res.stderr
     out = harness.strip_ansi(res.stdout)
     assert "--bench" in out, out
+
+
+# --------------------------------------------------------------------------- #
+# 6. cwcli axi inspect / cwcli inspect --bench <index|label> (GitHub #226)
+# --------------------------------------------------------------------------- #
+@v16_only
+def test_axi_inspect_bench_narrows_the_toon_document_to_one_bench(two_benches):
+    """The agent surface's most-hit gap: ``axi inspect`` had no ``--bench`` at
+    all, forcing a full-project inspect plus a TOON grep as the workaround on
+    every multi-bench instance. ``--bench <index>`` must narrow the emitted
+    document to exactly that bench, real Docker included."""
+    inst = two_benches
+
+    res = harness.run_cwcli("axi", "inspect", inst.name, "--bench", str(inst.second_index))
+    assert res.returncode == 0, res.stdout + res.stderr
+    out = harness.strip_ansi(res.stdout)
+    assert "benches[1]:" in out, out
+    blocks = _bench_blocks(out, key_field="path")
+    assert set(blocks) == {SECOND_BENCH_PATH}, out
+
+
+@v16_only
+def test_axi_inspect_bench_by_label_narrows_too(two_benches):
+    """The same selector by user label, not just numeric index."""
+    inst = two_benches
+    label = harness.run_cwcli("label", inst.name, str(inst.first_index), "primary")
+    assert label.returncode == 0, label.stdout + label.stderr
+    try:
+        res = harness.run_cwcli("axi", "inspect", inst.name, "--bench", "primary")
+        assert res.returncode == 0, res.stdout + res.stderr
+        out = harness.strip_ansi(res.stdout)
+        blocks = _bench_blocks(out, key_field="path")
+        assert set(blocks) == {FIRST_BENCH_PATH}, out
+    finally:
+        harness.run_cwcli("label", inst.name, str(inst.first_index), "--clear")
+
+
+@v16_only
+def test_axi_inspect_unknown_bench_is_the_shared_not_found_error(two_benches):
+    """An unknown ``--bench`` selector fails the same typed way every other
+    bench-scoped ``axi`` verb does (exit 1, a ``bench.not_found``-style message),
+    never a silent full-project fallback."""
+    inst = two_benches
+
+    res = harness.run_cwcli("axi", "inspect", inst.name, "--bench", "no-such-bench")
+    assert res.returncode == 1, res.stdout + res.stderr
+    out = harness.strip_ansi(res.stdout)
+    assert "no-such-bench" in out, out
+
+
+@v16_only
+def test_axi_inspect_with_no_bench_still_reports_every_bench(two_benches):
+    """The no-flag path is UNCHANGED: every cached bench, in one document."""
+    inst = two_benches
+
+    res = harness.run_cwcli("axi", "inspect", inst.name)
+    assert res.returncode == 0, res.stdout + res.stderr
+    out = harness.strip_ansi(res.stdout)
+    assert "benches[2]:" in out, out
+    blocks = _bench_blocks(out, key_field="path")
+    assert set(blocks) == {FIRST_BENCH_PATH, SECOND_BENCH_PATH}, out
+
+
+@v16_only
+def test_human_inspect_bench_narrows_json_output(two_benches):
+    """The human CLI takes the same selector and narrows the same way."""
+    inst = two_benches
+
+    res = harness.run_cwcli(
+        "inspect", inst.name, "--bench", str(inst.second_index), "--json", "--no-refresh"
+    )
+    assert res.returncode == 0, res.stdout + res.stderr
+    doc = json.loads(res.stdout)
+    assert [b["path"] for b in doc["bench_instances"]] == [SECOND_BENCH_PATH], res.stdout

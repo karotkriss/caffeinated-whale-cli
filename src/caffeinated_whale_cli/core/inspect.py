@@ -491,6 +491,25 @@ def partial_refresh(
 _REFRESH_MODES = ("auto", "cache_only", "full")
 
 
+def _select_bench(benches: list[dict], bench: str | None, project_name: str) -> list[dict]:
+    """Narrow a tier's bench list to ONE, via the same selector every other
+    bench-scoped verb uses (``bench_labels.resolve_bench``: label, then numeric
+    index). ``bench=None`` is a no-op. An unmatched selector raises the same
+    ``bench.not_found`` shape ``resolvers.resolve_bench`` raises, so every
+    bench-scoped verb fails the same way on a typo'd ``--bench``.
+    """
+    if bench is None:
+        return benches
+    chosen = bench_labels.resolve_bench(benches, bench)
+    if chosen is None:
+        raise CwcliError(
+            ErrorKind.NOT_FOUND,
+            "bench.not_found",
+            f"No bench '{bench}' in project '{project_name}'.",
+        )
+    return [chosen]
+
+
 def inspect_raw(
     project_name: str,
     *,
@@ -498,6 +517,7 @@ def inspect_raw(
     auto_start: bool = False,
     offer_choice: bool = True,
     on_event: OnEvent | None = None,
+    bench: str | None = None,
 ) -> Result[RawInspect]:
     """The T1/T2/T3 tier machine over cache-shaped dicts. See the module docstring.
 
@@ -507,6 +527,12 @@ def inspect_raw(
     (T2 is passive by construction); with ``offer_choice=False`` a stopped project
     on the T3 path raises ``CwcliError(NOT_RUNNING)`` instead of returning the
     ``confirm_start`` choice (the spinner-borne caller contract).
+
+    ``bench`` narrows the OUTPUT to one bench (``--bench <index|label>``, the same
+    selector ``status``/``logs``/``apps`` take): every tier still does its full
+    discovery/refresh/cache-write work over EVERY bench (the cache would otherwise
+    go stale for the benches not asked about), and only the returned/rendered list
+    is narrowed at the end. A selector matching nothing raises ``bench.not_found``.
     """
     if refresh not in _REFRESH_MODES:
         raise CwcliError(
@@ -675,7 +701,7 @@ def inspect_raw(
                         project=project_name,
                         served_from="cache",
                         degraded=True,
-                        benches=drift_fallback_benches,
+                        benches=_select_bench(drift_fallback_benches, bench, project_name),
                     ),
                     warnings=warnings,
                 )
@@ -713,7 +739,7 @@ def inspect_raw(
             project=project_name,
             served_from=served_from,
             degraded=False,
-            benches=benches,
+            benches=_select_bench(benches, bench, project_name),
         ),
         warnings=warnings,
     )
@@ -751,14 +777,16 @@ def inspect(
     auto_start: bool = False,
     offer_choice: bool = True,
     on_event: OnEvent | None = None,
+    bench: str | None = None,
 ) -> Result[InspectReport]:
     """The tiered project read, returning the typed (secrets-free) report.
 
     A thin conversion over :func:`inspect_raw`, which owns the tier machine and
-    the cache write; see its docstring for the parameter contract. Frontends that
-    only need the side effect (recache) or the typed report (``axi``, a GUI) call
-    this; the human CLI renderer calls :func:`inspect_raw` for the byte-identical
-    cache-shaped dicts.
+    the cache write; see its docstring for the parameter contract, including
+    ``bench`` (``--bench <index|label>``, narrowing the returned report to one
+    bench). Frontends that only need the side effect (recache) or the typed
+    report (``axi``, a GUI) call this; the human CLI renderer calls
+    :func:`inspect_raw` for the byte-identical cache-shaped dicts.
     """
     raw = inspect_raw(
         project_name,
@@ -766,6 +794,7 @@ def inspect(
         auto_start=auto_start,
         offer_choice=offer_choice,
         on_event=on_event,
+        bench=bench,
     )
     if raw.status is Status.NEEDS_CHOICE:
         return Result(status=Status.NEEDS_CHOICE, choice=raw.choice)
