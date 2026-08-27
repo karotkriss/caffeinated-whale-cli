@@ -554,8 +554,6 @@ def inspect_raw(
     cached_data = None
     if refresh != "full" or bench is not None:
         cached_data = db_utils.get_cached_project_data(project_name)
-    if bench is not None and cached_data:
-        _select_bench(cached_data["bench_instances"], bench, project_name)
 
     if refresh != "full":
         if cached_data:
@@ -654,6 +652,8 @@ def inspect_raw(
             offer_choice=offer_choice,
         )
         if state.status is Status.NEEDS_CHOICE:
+            if bench is not None and cached_data:
+                _select_bench(cached_data["bench_instances"], bench, project_name)
             return Result(status=Status.NEEDS_CHOICE, choice=state.choice)
         # OK: running, or start_requested - the actual (UI-coupled) start is the
         # caller's job, performed before/around this call (cf. core.update).
