@@ -185,6 +185,7 @@ def _run_inspect(**overrides):
     """
     kwargs = dict(
         project_name="proj",
+        bench=None,
         verbose=False,
         json_output=True,
         update=False,

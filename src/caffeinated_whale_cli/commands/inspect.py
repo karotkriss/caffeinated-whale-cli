@@ -83,6 +83,11 @@ def inspect(
     project_name: str = typer.Argument(
         ..., help="The Docker Compose project to inspect.", autocompletion=complete_project_names
     ),
+    bench: str = typer.Option(
+        None,
+        "--bench",
+        help="Narrow the report to one bench: its numeric index or label (multi-bench projects).",
+    ),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Enable verbose diagnostic output."
     ),
@@ -122,6 +127,11 @@ def inspect(
     """
     Inspects a Project to find all Bench Instances, Sites, and Apps within it.
     Caches the results for faster subsequent inspects.
+
+    ``--bench <index|label>`` narrows the report to one bench, on a multi-bench
+    project. Every tier still discovers/refreshes/caches every bench regardless
+    of the selector - only the rendered output is narrowed. An unknown selector
+    exits non-zero.
     """
     if verbose:
         console_err.print(f"VERBOSE: --- Inspecting Project: {project_name} ---")
@@ -141,6 +151,7 @@ def inspect(
                     refresh=refresh,
                     offer_choice=prompt_to_start,
                     on_event=on_event,
+                    bench=bench,
                 )
         except CwcliError as e:
             raise render_error_exit(project_name, e) from None
@@ -185,13 +196,14 @@ def inspect(
             )
 
         assignments: list[tuple[str, str]] = []
-        for position, bench in enumerate(bench_instances_data):
-            index = bench.get("index", position)
-            existing = bench.get("label")
+        for position, bench_instance in enumerate(bench_instances_data):
+            index = bench_instance.get("index", position)
+            existing = bench_instance.get("label")
             existing_hint = f" [current: '{existing}']" if existing else ""
             try:
                 answer = questionary.text(
-                    f"Bench [{index}] at {bench['path']} on '{project_name}'.{existing_hint}\n"
+                    f"Bench [{index}] at {bench_instance['path']} on '{project_name}'."
+                    f"{existing_hint}\n"
                     "Label (blank to keep, letters/digits/.-_ only): "
                 ).ask()
                 if answer is None:  # User pressed Ctrl+C
@@ -205,7 +217,7 @@ def inspect(
                 continue
 
             if answer.strip():  # Blank keeps the existing label.
-                assignments.append((bench["path"], answer))
+                assignments.append((bench_instance["path"], answer))
 
         label_result = core_label.set_labels(project_name, assignments)
         for warning in label_result.warnings:

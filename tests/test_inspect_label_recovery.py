@@ -118,6 +118,7 @@ def wired(monkeypatch):
 def _run_full_inspect():
     inspect_mod.inspect(
         project_name="proj",
+        bench=None,
         verbose=False,
         json_output=True,
         update=True,  # force a full inspect (the DB-loss / cache-miss path)

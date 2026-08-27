@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`cwcli inspect` and `cwcli axi inspect` now accept `--bench <index|label>`**, narrowing the report to one bench on a multi-bench project - the same selector `status`, `logs`, `restart`, `stop`, and every `apps` verb already take.
+Every tier still discovers, refreshes, and caches every bench regardless of the selector; only the rendered/emitted report is narrowed.
+An unknown selector fails the same way every other bench-scoped verb does.
+
 ## [3.0.0] - 2026-08-22
 
 **This is a major release because `cwcli apps install` and `cwcli apps uninstall` no longer take app names as a positional argument:** they now ride a repeatable `--app`/`-a` option, so any existing invocation of the old shape needs updating.
