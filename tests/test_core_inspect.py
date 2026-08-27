@@ -121,6 +121,32 @@ def _seed(store, available_apps=("frappe",), installed=("frappe 15.0.0 version-1
     }
 
 
+def _seed_multi(store):
+    # Durable identities are SPARSE (a removed bench's index is a tombstone, never
+    # reused), so index 2 here at list position 1 pins that narrowing resolves by
+    # the durable ``index`` field, never by position in the (already narrowed) list.
+    store["proj"] = {
+        "project_name": "proj",
+        "bench_instances": [
+            {
+                "index": 0,
+                "path": "/workspace/development/bench-a",
+                "label": "primary",
+                "sites": [{"name": "a.local", "installed_apps": ["frappe 15.0.0 version-15"]}],
+                "available_apps": ["frappe"],
+            },
+            {
+                "index": 2,
+                "path": "/workspace/development/bench-b",
+                "label": None,
+                "sites": [],
+                "available_apps": ["frappe"],
+            },
+        ],
+        "last_updated": "earlier",
+    }
+
+
 def _matching_container():
     return FakeFrappeContainer(apps=["frappe"], sites={"dev.local": ["frappe 15.0.0 version-15"]})
 
@@ -575,3 +601,58 @@ class TestInstalledAppsVerifiedToken:
 
         assert result.data.benches[0].sites[0].installed_apps_verified is False
         assert "inspect.apps_unverified" not in self._warning_codes(result)
+
+
+class TestBenchSelector:
+    """``--bench <index|label>`` narrows the OUTPUT of every tier to one bench,
+    via the same ``bench_labels.resolve_bench`` selector every other bench-scoped
+    verb uses. Exercised against the cache-served tiers (T1/T2), which is where
+    every tier's final ``benches`` list funnels through the one narrowing choke
+    point (``_select_bench``) shared with the T3 full-inspect path.
+    """
+
+    def test_no_selector_reports_every_bench_unchanged(self, wired):
+        store, _writes, _install = wired
+        _seed_multi(store)
+
+        result = core_inspect.inspect_raw("proj", refresh="cache_only")
+
+        assert len(result.data.benches) == 2
+
+    def test_numeric_index_narrows_to_one_bench(self, wired):
+        store, _writes, _install = wired
+        _seed_multi(store)
+
+        # index 2, NOT list position 1 - proves the match is by durable identity.
+        result = core_inspect.inspect_raw("proj", refresh="cache_only", bench="2")
+
+        assert len(result.data.benches) == 1
+        assert result.data.benches[0]["path"] == "/workspace/development/bench-b"
+
+    def test_label_narrows_to_one_bench(self, wired):
+        store, _writes, _install = wired
+        _seed_multi(store)
+
+        result = core_inspect.inspect_raw("proj", refresh="cache_only", bench="primary")
+
+        assert len(result.data.benches) == 1
+        assert result.data.benches[0]["path"] == "/workspace/development/bench-a"
+
+    def test_unknown_selector_raises_the_shared_bench_not_found_error(self, wired):
+        store, _writes, _install = wired
+        _seed_multi(store)
+
+        with pytest.raises(CwcliError) as excinfo:
+            core_inspect.inspect_raw("proj", refresh="cache_only", bench="nope")
+
+        assert excinfo.value.kind is ErrorKind.NOT_FOUND
+        assert excinfo.value.code == "bench.not_found"
+
+    def test_typed_report_is_narrowed_too(self, wired):
+        store, _writes, _install = wired
+        _seed_multi(store)
+
+        result = core_inspect.inspect("proj", refresh="cache_only", bench="0")
+
+        assert len(result.data.benches) == 1
+        assert result.data.benches[0].path == "/workspace/development/bench-a"

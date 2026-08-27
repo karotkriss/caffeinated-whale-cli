@@ -1222,6 +1222,7 @@ def axi_inspect(
         "--no-refresh",
         help="Serve the cached data verbatim; zero container calls (may be stale).",
     ),
+    bench: str = typer.Option(None, "--bench", help="Which bench: numeric index or label."),
 ) -> None:
     """Inspect a project's benches, sites, and apps; emit the report as TOON.
 
@@ -1247,10 +1248,15 @@ def axi_inspect(
     Deliberately NO ``--yes``: an axi verb must never open a start-from-axi path.
     A stopped project on the refresh path is a usage error (exit 2) naming
     ``cwcli start``, matching every other stopped-project fork on this surface.
+
+    ``--bench <index|label>`` narrows the report to one bench (the same selector
+    ``axi status``/``axi logs``/``axi apps`` take); an unknown selector is a
+    ``bench.not_found`` error (exit 1). Every tier still refreshes/caches every
+    bench regardless of the selector - only the emitted report is narrowed.
     """
     refresh = "full" if update else ("cache_only" if no_refresh else "auto")
     try:
-        result = core_inspect.inspect(project, refresh=refresh)
+        result = core_inspect.inspect(project, refresh=refresh, bench=bench)
     except CwcliError as error:
         emit_axi_error(error)
         raise typer.Exit(exit_for(error.kind)) from None

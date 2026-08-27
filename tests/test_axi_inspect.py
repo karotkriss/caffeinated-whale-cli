@@ -151,6 +151,30 @@ class TestAxiInspect:
         assert_is_one_toon_document(result.stdout)
         assert "cwcli start" in result.stdout
 
+    def test_bench_flag_is_forwarded_to_the_core(self, monkeypatch):
+        calls = _patch_inspect(monkeypatch, Result(status=Status.OK, data=REPORT))
+
+        runner.invoke(axi_mod.app, ["inspect", "proj"])
+        runner.invoke(axi_mod.app, ["inspect", "proj", "--bench", "1"])
+
+        assert [c["bench"] for c in calls] == [None, "1"]
+
+    def test_unknown_bench_is_a_toon_error_exit_1(self, monkeypatch):
+        def raise_not_found(project, **kwargs):
+            raise CwcliError(
+                ErrorKind.NOT_FOUND,
+                "bench.not_found",
+                f"No bench 'nope' in project '{project}'.",
+            )
+
+        monkeypatch.setattr(axi_mod.core_inspect, "inspect", raise_not_found)
+
+        result = runner.invoke(axi_mod.app, ["inspect", "proj", "--bench", "nope"])
+
+        assert result.exit_code == 1
+        assert_is_one_toon_document(result.stdout)
+        assert "error:" in result.stdout
+
     def test_no_yes_flag_is_registered(self, monkeypatch):
         # Per the `axi apps update` incident: an axi verb must never open a
         # start-from-axi path, so --yes must not exist on this verb at all.
