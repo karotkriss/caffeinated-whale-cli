@@ -551,8 +551,13 @@ def inspect_raw(
     benches: list[dict] | None = None
     served_from = "cache"
 
-    if refresh != "full":
+    cached_data = None
+    if refresh != "full" or bench is not None:
         cached_data = db_utils.get_cached_project_data(project_name)
+    if bench is not None and cached_data:
+        _select_bench(cached_data["bench_instances"], bench, project_name)
+
+    if refresh != "full":
         if cached_data:
             cached_benches = cached_data["bench_instances"]
             emit(

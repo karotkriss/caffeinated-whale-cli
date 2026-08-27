@@ -648,6 +648,20 @@ class TestBenchSelector:
         assert excinfo.value.kind is ErrorKind.NOT_FOUND
         assert excinfo.value.code == "bench.not_found"
 
+    def test_unknown_selector_precedes_full_refresh_start_choice(self, wired):
+        store, writes, install = wired
+        _seed_multi(store)
+        container = FakeFrappeContainer(apps=[], sites={}, status="exited")
+        install(container)
+
+        with pytest.raises(CwcliError) as excinfo:
+            core_inspect.inspect_raw("proj", refresh="full", bench="nope")
+
+        assert excinfo.value.kind is ErrorKind.NOT_FOUND
+        assert excinfo.value.code == "bench.not_found"
+        assert container.start_calls == 0
+        assert writes == []
+
     def test_typed_report_is_narrowed_too(self, wired):
         store, _writes, _install = wired
         _seed_multi(store)
