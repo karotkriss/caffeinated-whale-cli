@@ -233,6 +233,7 @@ def wired(monkeypatch):
 def _run_inspect(**overrides):
     kwargs = dict(
         project_name="proj",
+        bench=None,
         verbose=False,
         json_output=True,
         update=False,
@@ -312,6 +313,61 @@ class TestJsonBytesAreByteIdentical:
 
         assert capsys.readouterr().out == _expected_json([GATHERED_A, GATHERED_B])
         assert writes == [[GATHERED_A, GATHERED_B]]
+
+
+class TestBenchSelector:
+    """``--bench <index|label>`` narrows the human ``--json`` output to one bench,
+    on every tier, without disturbing the no-flag (every-bench) path.
+    """
+
+    def test_index_narrows_t1_no_refresh_output(self, wired, capsys):
+        store, _writes, install = wired
+        _seed_cache(store)
+        install(MultiBenchContainer())
+
+        _run_inspect(no_refresh=True, bench="1")
+
+        assert capsys.readouterr().out == _expected_json([CACHED_B])
+
+    def test_label_narrows_t3_full_inspect_output_but_still_caches_every_bench(self, wired, capsys):
+        store, writes, install = wired
+        install(MultiBenchContainer())
+
+        _run_inspect(update=True, bench="staging")
+
+        # Bench B's TRUE durable index is 1 (its position among all discovered
+        # benches), which narrowing must preserve rather than reporting 0 (its
+        # position within the now-narrowed one-item list).
+        assert (
+            capsys.readouterr().out
+            == json.dumps(
+                {"project_name": "proj", "bench_instances": [{"index": 1, **GATHERED_B}]}, indent=2
+            )
+            + "\n"
+        )
+        # The bonus, not the requirement: every bench is still discovered and
+        # persisted regardless of the selector - only the emitted report narrows.
+        assert writes == [[GATHERED_A, GATHERED_B]]
+
+    def test_unknown_bench_exits_non_zero(self, wired, capsys):
+        store, _writes, install = wired
+        _seed_cache(store)
+        install(MultiBenchContainer())
+
+        with pytest.raises(typer.Exit) as excinfo:
+            _run_inspect(no_refresh=True, bench="nope")
+
+        assert excinfo.value.exit_code != 0
+        assert "nope" in capsys.readouterr().err
+
+    def test_no_selector_reports_every_bench_unchanged(self, wired, capsys):
+        store, _writes, install = wired
+        _seed_cache(store)
+        install(MultiBenchContainer())
+
+        _run_inspect(no_refresh=True)
+
+        assert capsys.readouterr().out == _expected_json([CACHED_A, CACHED_B])
 
 
 class TestShowAppsRemoved:
