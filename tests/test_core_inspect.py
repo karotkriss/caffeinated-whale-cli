@@ -662,6 +662,43 @@ class TestBenchSelector:
         assert container.start_calls == 0
         assert writes == []
 
+    def test_full_refresh_can_select_a_new_live_bench(self, wired, monkeypatch):
+        store, writes, install = wired
+        _seed(store)
+        container = _matching_container()
+        install(container)
+        gathered = [
+            {
+                "path": "/workspace/development/bench-a",
+                "label": "primary",
+                "sites": [],
+                "available_apps": ["frappe"],
+            },
+            {
+                "path": "/workspace/development/bench-b",
+                "label": "staging",
+                "sites": [],
+                "available_apps": ["frappe"],
+            },
+        ]
+        monkeypatch.setattr(
+            core_inspect,
+            "discover_benches",
+            lambda _container, on_event=None: [b["path"] for b in gathered],
+        )
+        monkeypatch.setattr(
+            core_inspect,
+            "_gather_bench_data",
+            lambda _container, path, _emit: next(b for b in gathered if b["path"] == path),
+        )
+
+        result = core_inspect.inspect_raw("proj", refresh="full", bench="1")
+
+        assert [bench["path"] for bench in result.data.benches] == [
+            "/workspace/development/bench-b"
+        ]
+        assert writes == [gathered]
+
     def test_typed_report_is_narrowed_too(self, wired):
         store, _writes, _install = wired
         _seed_multi(store)
