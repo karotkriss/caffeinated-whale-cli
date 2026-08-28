@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Every `cwcli` command crashed at startup under Typer 0.27** with `AttributeError: module 'typer._click.exceptions' has no attribute 'Abort'`.
+`cwcli axi` reached into Typer's private `typer._click.exceptions` module to catch the exceptions a Click-vendoring Typer raises; a Typer release reshuffled that private module (dropping `Abort` from it), so the lookup failed at import time and made the whole CLI unusable.
+The vendored exception classes are now resolved from Typer's PUBLIC exports (`typer.Abort` and `typer.BadParameter`'s class hierarchy) instead of the private module, so a Typer or Click upgrade can no longer break the CLI.
+No version pin was added - only the public API is used now.
+
 ### Added
 
 - **`cwcli inspect` and `cwcli axi inspect` now accept `--bench <index|label>`**, narrowing the report to one bench on a multi-bench project - the same selector `status`, `logs`, `restart`, `stop`, and every `apps` verb already take.
