@@ -21,4 +21,4 @@ def test_every_command_module_imports():
     names = [m.name for m in pkgutil.iter_modules(commands_pkg.__path__)]
     assert "axi" in names  # the module that carried the bug is actually covered
     for name in names:
-        importlib.import_module(f"caffeinated_whale_cli.commands.{name}")
+        importlib.import_module(f"caffeinated_whale_cli.commands.{name}")  # noqa: TID251
