@@ -89,6 +89,8 @@ ignore = [
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "typer._click" = { msg = "Use Typer's public API instead of its private Click shim." }
+"importlib.import_module" = { msg = "Dynamic imports are forbidden. For a justified exception, add `# noqa: TID251` on that line." }
+"builtins.__import__" = { msg = "The __import__ dynamic import is forbidden. For a justified exception, add `# noqa: TID251` on that line." }
 
 [tool.mypy]
 python_version = "3.10"
