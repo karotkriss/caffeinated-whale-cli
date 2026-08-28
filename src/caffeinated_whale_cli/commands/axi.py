@@ -23,7 +23,6 @@ stderr; stdout carries only TOON.
 
 from __future__ import annotations
 
-import importlib
 import os
 import re
 import sys
@@ -74,32 +73,34 @@ from ..utils import agent_hooks, cache, toon
 # rendering axi-surface parse failures as the same `error:`+`help:` TOON the core
 # errors already use, while leaving the human CLI's rich rendering untouched.
 #
-# Typer >= ~0.17 VENDORS Click as `typer._click`, so a TyperGroup then raises that
-# vendored ClickException/UsageError/Abort - a DIFFERENT class hierarchy from the
+# Typer >= ~0.17 VENDORS Click, so a TyperGroup then raises vendored
+# ClickException/UsageError/Abort - a DIFFERENT class hierarchy from the
 # separately-installed `click` package this module imports. `except click.X` then
 # silently misses them, and a bare `cwcli` (Missing command) escapes uncaught to
-# the top-level rich TRACEBACK instead of the intended usage error (exit 2). Catch
-# and type-test against BOTH flavors; older Typer (<= 0.16) has no `typer._click`
-# and uses standalone click alone. Deliberately paired with the protocol-based
-# `_is_argument`/`_is_option` param checks below, which vendored params also fail.
-try:
-    _vendored_click_exc = importlib.import_module("typer._click.exceptions")
-    _CLICK_EXCEPTIONS: tuple[type[click.ClickException], ...] = (
-        click.ClickException,
-        _vendored_click_exc.ClickException,
-    )
-    _USAGE_ERRORS: tuple[type[click.UsageError], ...] = (
-        click.UsageError,
-        _vendored_click_exc.UsageError,
-    )
-    _ABORTS: tuple[type[click.exceptions.Abort], ...] = (
-        click.exceptions.Abort,
-        _vendored_click_exc.Abort,
-    )
-except ModuleNotFoundError:  # standalone click (Typer <= 0.16)
-    _CLICK_EXCEPTIONS = (click.ClickException,)
-    _USAGE_ERRORS = (click.UsageError,)
-    _ABORTS = (click.exceptions.Abort,)
+# the top-level rich TRACEBACK instead of the intended usage error (exit 2). So we
+# catch and type-test against BOTH flavors.
+#
+# Get the vendored bases from PUBLIC typer exports, never the private `typer._click`
+# module: its layout is not API and shifts across releases (typer 0.27 dropped
+# `Abort` from `typer._click.exceptions`, which crashed this import at module load).
+# `typer.Abort` is the vendored Abort; `typer.BadParameter` subclasses the vendored
+# `UsageError` -> `ClickException`, so its MRO yields those two bases by name. On
+# Typer <= 0.16 (standalone click) these resolve to the same classes as `click.*`,
+# and the sets below dedup - one code path, no version branch. Deliberately paired
+# with the protocol-based `_is_argument`/`_is_option` param checks below, which
+# vendored params also fail.
+_typer_exc_bases: dict[str, type[BaseException]] = {
+    cls.__name__: cls for cls in typer.BadParameter.__mro__ if issubclass(cls, BaseException)
+}
+_CLICK_EXCEPTIONS: tuple[type[click.ClickException], ...] = tuple(
+    {click.ClickException, cast("type[click.ClickException]", _typer_exc_bases["ClickException"])}
+)
+_USAGE_ERRORS: tuple[type[click.UsageError], ...] = tuple(
+    {click.UsageError, cast("type[click.UsageError]", _typer_exc_bases["UsageError"])}
+)
+_ABORTS: tuple[type[click.exceptions.Abort], ...] = tuple(
+    {click.exceptions.Abort, cast("type[click.exceptions.Abort]", typer.Abort)}
+)
 
 
 def _usage_error_message(error: click.UsageError) -> str:
