@@ -20,7 +20,7 @@ def cwcli_home() -> Path:
        so an individual can always opt an invocation back to a private home even
        on a shared box (``CWCLI_HOME=~/.cwcli cwcli ...``).
     2. The opt-in SHARED home (``/var/lib/cwcli`` by default), when an admin has
-       run ``cwcli setup --shared`` and written the machine marker. See
+       run ``cwcli setup shared`` and written the machine marker. See
        :mod:`.shared_home`.
     3. The per-user default ``~/.cwcli`` - unchanged, and what everyone who has
        not opted into shared mode gets.

@@ -18,7 +18,7 @@ This module is the single source of truth for two things:
 
 * the shared-mode GATE and home resolution (``shared_mode`` / ``state_dir`` /
   ``group`` / ``gid`` / ``service_uid``), read from the machine marker written by
-  ``cwcli setup --shared``;
+  ``cwcli setup shared``;
 * the file-mode POLICY threaded through every writer. Per-user modes are
   UNCHANGED - the ``*_mode(per_user)`` helpers return the writer's own per-user
   mode verbatim when shared mode is off, and the ``secure_*_shared_only`` helpers
@@ -42,7 +42,7 @@ from pathlib import Path
 
 import toml
 
-# The machine marker an admin writes with ``cwcli setup --shared``. Its presence
+# The machine marker an admin writes with ``cwcli setup shared``. Its presence
 # (with ``enabled = true``) is what turns shared mode on. ``CWCLI_SHARED_MARKER``
 # relocates it - tests point it at a temp file, since ``/etc/cwcli`` needs root.
 DEFAULT_MARKER_PATH = Path("/etc/cwcli/shared.toml")
