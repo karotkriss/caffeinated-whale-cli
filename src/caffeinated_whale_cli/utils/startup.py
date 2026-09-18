@@ -359,7 +359,7 @@ def _uninstall_windows_startup(unit: BootUnit) -> bool:
 # so it serves the ONE machine-owned read-only service-account token rather than
 # whichever user last logged in (report 5.5). That is a SYSTEM unit in
 # ``/etc/systemd/system`` with ``User=``/``Group=``, installed by
-# ``cwcli setup --shared`` (which already requires root). These functions are
+# ``cwcli setup shared`` (which already requires root). These functions are
 # Linux-only; setup refuses on Windows and defers macOS (which needs a LaunchDaemon).
 
 SYSTEM_UNIT_DIR = Path("/etc/systemd/system")
@@ -374,7 +374,7 @@ def install_system_unit(unit: BootUnit, *, user: str, group: str, pid_file: str)
     """Install + enable a system-wide systemd unit that runs the daemon as ``user``.
 
     Requires root (writes ``/etc/systemd/system`` and runs ``systemctl``); the
-    caller (``cwcli setup --shared``) has already checked. Linux-only.
+    caller (``cwcli setup shared``) has already checked. Linux-only.
     """
     if get_platform() != "linux":
         raise OSError("system units are only supported on Linux (systemd)")

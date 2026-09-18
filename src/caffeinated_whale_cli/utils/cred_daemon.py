@@ -758,7 +758,7 @@ def _may_fork_daemon() -> bool:
     Always True per-user. In shared mode the machine-wide daemon must run as the
     ``cwcli`` service account (so it serves the ONE machine-owned read-only
     service-account token, report 5.5/6.1a) and is started by the system systemd
-    unit ``cwcli setup --shared`` installs. Only the service account itself (the
+    unit ``cwcli setup shared`` installs. Only the service account itself (the
     process systemd starts for that unit) may fork it here; a group member's
     hot-path ``ensure_bridge`` must never fork a rival daemon that would run as
     THEM and serve their own gh/glab.
