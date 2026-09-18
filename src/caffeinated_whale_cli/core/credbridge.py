@@ -70,6 +70,8 @@ import uuid
 from collections.abc import Callable, Collection, Iterator
 from pathlib import Path
 
+from ..utils import shared_home
+
 _SOCK_NAME_FMT = ".git-cred-{}.sock"
 _HELPER_NAME_FMT = ".git-credential-bridge-{}.py"
 
@@ -478,9 +480,14 @@ def credential_bridge(container, bench_path: str) -> Iterator[None]:
                 srv.bind(sock_name)
             finally:
                 os.chdir(prev_cwd)
-            # 0666 so the container frappe user connects regardless of whether its uid was
-            # aligned to the host's; the socket only exists during the op.
-            sock_host.chmod(0o666)
+            # Per-user: 0666 so the container frappe user connects regardless of
+            # whether its uid was aligned to the host's; the socket only exists
+            # during the op. Shared: 0660 + cwcli group, so a non-group uid on the
+            # box cannot reach even this short-lived socket (same leak surface as
+            # the persistent bridge). The aligned container frappe user carries the
+            # cwcli gid, so it still connects.
+            sock_host.chmod(shared_home.socket_mode())
+            shared_home.apply_group(sock_host)
 
         srv.settimeout(_ACCEPT_TIMEOUT)
         srv.listen(8)

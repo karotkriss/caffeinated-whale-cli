@@ -3,6 +3,8 @@ from pathlib import Path
 
 import toml
 
+from . import shared_home
+
 APP_NAME = ".cwcli"
 
 
@@ -11,10 +13,17 @@ def cwcli_home() -> Path:
 
     All of cwcli's footprint - config, the projects registry, the cache
     database, and the auto-inspect run directory - lives under this directory.
-    The ``CWCLI_HOME`` environment variable, when set to a non-empty value,
-    relocates that footprint wholesale in place of the default ``~/.cwcli``,
-    WITHOUT repointing the process ``HOME`` (so git, ssh, and other
-    HOME-derived tooling are unaffected).
+    Resolution precedence (the single chokepoint every path follows):
+
+    1. ``CWCLI_HOME`` env var, when set - relocates the footprint wholesale
+       WITHOUT repointing the process ``HOME`` (git/ssh unaffected). Always wins,
+       so an individual can always opt an invocation back to a private home even
+       on a shared box (``CWCLI_HOME=~/.cwcli cwcli ...``).
+    2. The opt-in SHARED home (``/var/lib/cwcli`` by default), when an admin has
+       run ``cwcli setup --shared`` and written the machine marker. See
+       :mod:`.shared_home`.
+    3. The per-user default ``~/.cwcli`` - unchanged, and what everyone who has
+       not opted into shared mode gets.
 
     ``config_utils`` and ``db_utils`` both resolve their paths through this one
     helper, so they can never disagree on where cwcli's state lives.
@@ -22,6 +31,9 @@ def cwcli_home() -> Path:
     override = os.environ.get("CWCLI_HOME")
     if override:
         return Path(override).expanduser()
+    shared = shared_home.state_dir()
+    if shared is not None:
+        return shared
     return Path.home() / APP_NAME
 
 
@@ -104,9 +116,11 @@ def _cred_bridge_defaults() -> dict:
 def _ensure_config_exists():
     """Ensures the config directory and a default config file exist."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    shared_home.secure_dir_shared_only(CONFIG_DIR)
     if not CONFIG_FILE.is_file():
         with open(CONFIG_FILE, "w") as f:
             f.write(DEFAULT_CONFIG_CONTENT)
+        shared_home.secure_file_shared_only(CONFIG_FILE)
 
 
 def load_config() -> dict:
@@ -151,6 +165,9 @@ def save_config(config_data: dict):
     _ensure_config_exists()
     with open(CONFIG_FILE, "w") as f:
         toml.dump(config_data, f)
+    # Keep group-writable in shared mode so any cwcli-group member can edit the
+    # allowlist/enable flags; a no-op (mode preserved) per-user.
+    shared_home.secure_file_shared_only(CONFIG_FILE)
 
 
 def add_custom_path(path: str) -> bool:

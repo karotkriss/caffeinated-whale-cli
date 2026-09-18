@@ -56,6 +56,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
+from ..utils import shared_home
 from ..utils.config_utils import cwcli_home
 from . import resolvers
 from .envelope import Choice, Message, Result, Status
@@ -218,7 +219,11 @@ def _copy_out_archived_site(container, source_path: str, dest_file: Path) -> boo
         with os.fdopen(fd, "wb") as out:
             for chunk in stream:
                 out.write(chunk)
-        dest_file.chmod(0o600)
+        # 0600 per-user; 0660 + cwcli group in shared mode so group members can
+        # read backups at rest (the shared install treats the cwcli group as able
+        # to read all instance data - see the README security note).
+        dest_file.chmod(shared_home.file_mode(0o600))
+        shared_home.apply_group(dest_file)
     except Exception:
         if created:
             try:
@@ -345,8 +350,9 @@ def drop_site(
 
         archive_dir_ready = False
         try:
-            dest_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-            dest_dir.chmod(0o700)
+            dest_dir.mkdir(parents=True, exist_ok=True, mode=shared_home.dir_mode(0o700))
+            dest_dir.chmod(shared_home.dir_mode(0o700))
+            shared_home.apply_group(dest_dir)
             archive_dir_ready = True
         except OSError:
             pass

@@ -31,7 +31,7 @@ import shutil
 import stat
 from dataclasses import dataclass
 
-from ..utils import config_utils, startup
+from ..utils import config_utils, shared_home, startup
 from ..utils import cred_daemon as daemon
 from .auto_inspect import sync_boot_hook
 from .envelope import Message, Result, Status
@@ -87,7 +87,14 @@ def _harden_projects_dir(actions: list[str]) -> None:
     is long; the cache dir already ships 0700 (the same precedent), and the owner
     sees no behavior change. Best-effort and reported only when the mode actually
     changed - a missing dir or a chmod-less filesystem is silently left alone.
+
+    Skipped entirely in SHARED mode: there the tree is deliberately group-writable
+    (setgid 2770 root:cwcli) so every group member can reach the instance state,
+    and the socket is group-gated (0660 :cwcli) instead. Hardening to 0700 would
+    lock every other group member out - the exact failure shared mode exists to fix.
     """
+    if shared_home.shared_mode():
+        return
     projects = config_utils.PROJECTS_DIR
     with contextlib.suppress(OSError):
         if projects.is_dir():

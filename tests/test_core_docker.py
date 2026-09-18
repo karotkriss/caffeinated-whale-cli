@@ -263,3 +263,40 @@ class TestEnsureComposeAvailable:
             core_docker.ensure_compose_available()
         assert exc.value.kind is ErrorKind.PRECONDITION
         assert exc.value.code == "compose.unavailable"
+
+
+# --------------------------- shared-mode alignment (stable service uid/gid) ------
+
+
+def test_shared_mode_aligns_to_service_uid_not_host(monkeypatch):
+    """Shared mode targets the STABLE cwcli service uid/gid, never os.getuid().
+
+    Aligning to whoever ran cwcli is what ping-pongs the frappe uid between users
+    on a shared container (report 2.4/6.2). Here the host uid (1001) must be
+    IGNORED in favour of the service account (9000)."""
+    monkeypatch.setattr(core_docker.os, "getuid", lambda: 1001)
+    monkeypatch.setattr(core_docker.os, "getgid", lambda: 1001)
+    monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: True)
+    monkeypatch.setattr(core_docker.shared_home, "service_uid", lambda: 9000)
+    monkeypatch.setattr(core_docker.shared_home, "gid", lambda: 9000)
+    c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
+    remapped, err = core_docker.align_container_user_to_host(c)
+    assert (remapped, err) == (True, None)
+    script = c.remap_scripts[0]
+    assert "groupmod -o -g 9000 frappe" in script
+    assert "chown 9000:9000 /home/frappe" in script
+    assert "1001" not in script  # the host uid is deliberately not used in shared mode
+
+
+def test_shared_mode_falls_back_to_host_when_service_account_absent(monkeypatch):
+    """A half-provisioned shared box (no service account yet) degrades to the
+    per-user host target rather than crashing."""
+    monkeypatch.setattr(core_docker.os, "getuid", lambda: 1001)
+    monkeypatch.setattr(core_docker.os, "getgid", lambda: 1001)
+    monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: True)
+    monkeypatch.setattr(core_docker.shared_home, "service_uid", lambda: None)
+    monkeypatch.setattr(core_docker.shared_home, "gid", lambda: None)
+    c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
+    remapped, err = core_docker.align_container_user_to_host(c)
+    assert (remapped, err) == (True, None)
+    assert "chown 1001:1001 /home/frappe" in c.remap_scripts[0]

@@ -136,3 +136,47 @@ class TestWindowsUnits:
         create = next(c for c in home.calls if "/Create" in c)
         assert "CaffeinatedWhaleCliCredBridge" in create
         assert '"/usr/local/bin/cwcli" config cred-bridge start' in create
+
+
+# --------------------------------- shared-mode system unit (as a service account) ---
+
+
+def test_install_system_unit_writes_a_service_account_unit(home, tmp_path, monkeypatch):
+    """The machine-wide bridge unit runs as User=cwcli in /etc/systemd/system
+    (system-wide, at boot), not the per-user `systemctl --user` unit."""
+    monkeypatch.setattr(startup, "SYSTEM_UNIT_DIR", tmp_path / "systemd")
+    (tmp_path / "systemd").mkdir()
+    monkeypatch.setattr(startup, "get_platform", lambda: "linux")
+
+    ok = startup.install_system_unit(
+        startup.CRED_BRIDGE,
+        user="cwcli",
+        group="cwcli",
+        pid_file="/var/lib/cwcli/run/credbridge.pid",
+    )
+    assert ok is True
+    content = startup.system_unit_path(startup.CRED_BRIDGE).read_text()
+    assert "User=cwcli" in content
+    assert "Group=cwcli" in content
+    assert "PIDFile=/var/lib/cwcli/run/credbridge.pid" in content
+    assert '"/usr/local/bin/cwcli" config cred-bridge start' in content
+    assert "WantedBy=multi-user.target" in content
+    # Enabled system-wide (never `--user`).
+    assert ["systemctl", "enable", "--now", "cwcli-cred-bridge.service"] in home.calls
+    assert not any("--user" in c for c in home.calls)
+
+
+def test_install_system_unit_refuses_off_linux(monkeypatch):
+    monkeypatch.setattr(startup, "get_platform", lambda: "darwin")
+    with pytest.raises(OSError):
+        startup.install_system_unit(
+            startup.CRED_BRIDGE, user="cwcli", group="cwcli", pid_file="/x"
+        )
+
+
+def test_is_system_unit_installed_reflects_the_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(startup, "SYSTEM_UNIT_DIR", tmp_path / "systemd")
+    (tmp_path / "systemd").mkdir()
+    assert startup.is_system_unit_installed(startup.CRED_BRIDGE) is False
+    startup.system_unit_path(startup.CRED_BRIDGE).write_text("x")
+    assert startup.is_system_unit_installed(startup.CRED_BRIDGE) is True
