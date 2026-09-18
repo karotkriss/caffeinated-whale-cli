@@ -171,6 +171,26 @@ class TestConsolidate:
         assert shared.get("cred_bridge", {}).get("enabled", False) is False
         assert "allowed_hosts" not in shared.get("cred_bridge", {})
 
+    def test_merges_a_started_instance_with_a_special_file(
+        self, fake_root, stub_identity, marker_at, tmp_path
+    ):
+        _, state = self._provision(tmp_path)
+        src = tmp_path / "homeA"
+        logs = src / "projects" / "foo" / "data" / "bench" / "logs"
+        logs.mkdir(parents=True)
+        (logs / "web.log").write_text("running\n")
+        # A started instance leaves special files (a supervisord/cred socket) on
+        # disk that copytree cannot copy; a fifo stands in and is path-safe.
+        os.mkfifo(logs / ".cwcli-supervisor.sock")
+
+        result = core_setup.consolidate(sources=[src])
+        assert result.status is Status.OK
+        assert result.data.merged_projects == ["foo"]
+        merged_logs = state / "projects" / "foo" / "data" / "bench" / "logs"
+        # Regular files come across; the special file is skipped, not fatal.
+        assert (merged_logs / "web.log").read_text() == "running\n"
+        assert not (merged_logs / ".cwcli-supervisor.sock").exists()
+
     def test_needs_sources(self, fake_root, stub_identity, marker_at, tmp_path):
         self._provision(tmp_path)
         with pytest.raises(CwcliError) as exc:
