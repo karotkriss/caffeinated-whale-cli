@@ -141,6 +141,36 @@ class TestConsolidate:
         assert second.data.merged_projects == []
         assert second.data.conflicts == [f"{src}:bar"]
 
+    def test_does_not_inherit_per_user_cred_bridge_posture(
+        self, fake_root, stub_identity, marker_at, tmp_path
+    ):
+        import toml
+
+        _, state = self._provision(tmp_path)
+        src = tmp_path / "homeA"
+        (src / "config").mkdir(parents=True)
+        (src / "config" / "config.toml").write_text(
+            toml.dumps(
+                {
+                    "search_paths": ["/opt/benches"],
+                    "cred_bridge": {
+                        "enabled": True,
+                        "startup_enabled": True,
+                        "allowed_hosts": ["evil.example.com"],
+                    },
+                }
+            )
+        )
+        result = core_setup.consolidate(sources=[src])
+        assert result.status is Status.OK
+
+        shared = toml.load(state / "config" / "config.toml")
+        # Non-bridge sections carry over.
+        assert shared["search_paths"] == ["/opt/benches"]
+        # The shared bridge posture is never inherited from a per-user home.
+        assert shared.get("cred_bridge", {}).get("enabled", False) is False
+        assert "allowed_hosts" not in shared.get("cred_bridge", {})
+
     def test_needs_sources(self, fake_root, stub_identity, marker_at, tmp_path):
         self._provision(tmp_path)
         with pytest.raises(CwcliError) as exc:

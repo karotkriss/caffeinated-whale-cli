@@ -215,8 +215,10 @@ def _write_marker(state_dir: Path, group: str, service_user: str, actions: list[
             }
         )
     )
-    # World-readable: home resolution reads this on EVERY cwcli invocation by any
-    # user, and it holds no secret (just paths + names).
+    # Holds no secret (just paths + names). It lives inside the group-owned
+    # /etc/cwcli (2770 root:cwcli), so cwcli-group members read it on every
+    # invocation via the group execute bit; a non-group user cannot traverse
+    # that parent and simply falls back to a per-user ~/.cwcli.
     with contextlib.suppress(OSError):
         os.chmod(marker, 0o644)
     actions.append(f"marker.written:{marker}")
@@ -359,9 +361,18 @@ def _copy_config_if_absent(
     src_config = src_home / "config" / "config.toml"
     if shared_config.is_file() or not src_config.is_file():
         return
+    data = {}
+    with contextlib.suppress(OSError, toml.TomlDecodeError):
+        data = toml.load(src_config)
+    if not isinstance(data, dict):
+        data = {}
+    # The machine-wide credential-bridge posture is owned SOLELY by shared
+    # provisioning (the service-account bridge + its system unit), never
+    # inherited from whichever per-user home is consolidated first.
+    data.pop("cred_bridge", None)
     shared_config.parent.mkdir(parents=True, exist_ok=True)
     _secure(shared_config.parent, shared_home.SHARED_DIR_MODE, gid)
-    shutil.copy2(src_config, shared_config)
+    shared_config.write_text(toml.dumps(data))
     _secure(shared_config, shared_home.SHARED_FILE_MODE, gid)
     actions.append(f"config.migrated:{src_home}")
 
