@@ -493,3 +493,26 @@ def test_tcp_bridge_runs_the_generated_shim(tmp_path, monkeypatch):
         "credential.helper",
         f"^{re.escape(config_value)}$",
     ]
+
+
+@unix_only
+def test_per_invocation_socket_is_group_gated_in_shared_mode(tmp_path, monkeypatch):
+    """The short-lived per-invocation socket gets the same 0660 + cwcli-group
+    gating as the persistent daemon's in shared mode (same leak surface, report
+    row for .git-cred-<uuid>.sock)."""
+    import stat
+
+    monkeypatch.setattr(credbridge.shared_home, "shared_mode", lambda: True)
+    monkeypatch.setattr(credbridge.shared_home, "gid", lambda: os.getgid())
+
+    class Done:
+        stdout = b""
+
+    monkeypatch.setattr(credbridge.subprocess, "run", lambda *a, **k: Done())
+    container = FakeContainer(tmp_path)
+    with credbridge.credential_bridge(container, "/workspace/frappe-bench"):
+        sock = _only(tmp_path.glob(".git-cred-*.sock"))
+        mode = stat.S_IMODE(sock.stat().st_mode)
+        assert mode == 0o660
+        assert mode & 0o007 == 0  # world cannot reach it
+        assert sock.stat().st_gid == os.getgid()

@@ -347,3 +347,85 @@ def _uninstall_windows_startup(unit: BootUnit) -> bool:
         return True
     except subprocess.CalledProcessError:
         return False
+
+
+# =============================================================================
+# Linux system unit (opt-in shared mode: a machine-wide daemon as a service account)
+# =============================================================================
+#
+# The per-user systemd unit above (``systemctl --user``) runs only inside a login
+# session and always as the invoking user. Shared mode needs the credential-bridge
+# daemon to run machine-wide, at boot, as a dedicated ``cwcli`` service account -
+# so it serves the ONE machine-owned read-only service-account token rather than
+# whichever user last logged in (report 5.5). That is a SYSTEM unit in
+# ``/etc/systemd/system`` with ``User=``/``Group=``, installed by
+# ``cwcli setup --shared`` (which already requires root). These functions are
+# Linux-only; setup refuses on Windows and defers macOS (which needs a LaunchDaemon).
+
+SYSTEM_UNIT_DIR = Path("/etc/systemd/system")
+
+
+def system_unit_path(unit: BootUnit) -> Path:
+    """Path to the system-wide systemd unit file."""
+    return SYSTEM_UNIT_DIR / unit.service_name
+
+
+def is_system_unit_installed(unit: BootUnit) -> bool:
+    """Whether the system-wide unit file exists."""
+    return system_unit_path(unit).exists()
+
+
+def install_system_unit(unit: BootUnit, *, user: str, group: str, pid_file: str) -> bool:
+    """Install + enable a system-wide systemd unit that runs the daemon as ``user``.
+
+    Requires root (writes ``/etc/systemd/system`` and runs ``systemctl``); the
+    caller (``cwcli setup --shared``) has already checked. Linux-only.
+    """
+    if get_platform() != "linux":
+        raise OSError("system units are only supported on Linux (systemd)")
+
+    cwcli_path = get_cwcli_path()
+    service_path = system_unit_path(unit)
+    service_content = f"""[Unit]
+Description={unit.description} (shared)
+After=network.target docker.service
+
+[Service]
+Type=forking
+User={user}
+Group={group}
+PIDFile={pid_file}
+ExecStart="{cwcli_path}" {" ".join(unit.start_args)}
+ExecStop="{cwcli_path}" {" ".join(unit.stop_args)}
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+"""
+    service_path.write_text(service_content)
+
+    result = subprocess.run(["systemctl", "daemon-reload"], capture_output=True, text=True)
+    if result.returncode != 0:
+        if result.stderr:
+            print(f"systemctl daemon-reload failed: {result.stderr}", file=sys.stderr)
+        return False
+    result = subprocess.run(
+        ["systemctl", "enable", "--now", unit.service_name], capture_output=True, text=True
+    )
+    if result.returncode != 0 and result.stderr:
+        print(f"systemctl enable failed: {result.stderr}", file=sys.stderr)
+    return result.returncode == 0
+
+
+def uninstall_system_unit(unit: BootUnit) -> bool:
+    """Stop, disable, and remove the system-wide unit. Linux-only, root required."""
+    if get_platform() != "linux":
+        return False
+    service_path = system_unit_path(unit)
+    if not service_path.exists():
+        return False
+    subprocess.run(["systemctl", "disable", "--now", unit.service_name], capture_output=True)
+    service_path.unlink()
+    subprocess.run(["systemctl", "daemon-reload"], capture_output=True)
+    return True

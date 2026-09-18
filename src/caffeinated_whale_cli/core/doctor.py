@@ -50,6 +50,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from ..utils import shared_home
 from ..utils.config_utils import cwcli_home
 from . import list as core_list
 from . import version as core_version
@@ -296,11 +297,13 @@ def _check_home_layout() -> tuple:
                 "replace it with a directory",
             )
         mode = stat.S_IMODE(cache_dir.stat().st_mode)
-        if mode != 0o700:
+        # Shared mode expects setgid group-writable (2770 cwcli); per-user 0700.
+        expected = shared_home.dir_mode(0o700)
+        if mode != expected:
             return _outcome(
                 CheckStatus.WARN,
-                f"{home} writable; cache/ mode is {oct(mode)} (expected 0700)",
-                f"chmod 700 {cache_dir}",
+                f"{home} writable; cache/ mode is {oct(mode)} (expected {oct(expected)})",
+                f"chmod {oct(expected)[2:]} {cache_dir}",
             )
     return _outcome(CheckStatus.PASS, f"{home} writable")
 
@@ -395,6 +398,42 @@ def _check_cred_bridge() -> tuple:
             "re-run `cwcli config cred-bridge enable`, or ignore (pruned automatically)",
         )
     return _outcome(CheckStatus.PASS, f"running (pid {pid})")
+
+
+def _check_shared_mode() -> tuple:
+    """C20 - opt-in shared/multi-user install integrity, read-only.
+
+    PASS trivially when shared mode is off (the default). When on, verify the
+    dedicated group and service account resolve and the state tree carries the
+    setgid group-writable mode - a half-provisioned shared box (group missing,
+    tree at the wrong mode) is a WARN that names ``cwcli setup shared``.
+    """
+    if not shared_home.shared_mode():
+        return _outcome(CheckStatus.PASS, "per-user (shared mode off)")
+
+    group = shared_home.group_name()
+    problems: list[str] = []
+    if shared_home.gid() is None:
+        problems.append(f"group '{group}' not found")
+    if shared_home.service_uid() is None:
+        problems.append(f"service user '{shared_home.SERVICE_USER}' not found")
+
+    state = shared_home.state_dir()
+    if state is None or not state.is_dir():
+        problems.append(f"state tree {state} missing")
+    else:
+        mode = stat.S_IMODE(state.stat().st_mode)
+        if mode != shared_home.SHARED_DIR_MODE:
+            problems.append(
+                f"{state} mode is {oct(mode)} (expected {oct(shared_home.SHARED_DIR_MODE)})"
+            )
+    if problems:
+        return _outcome(
+            CheckStatus.WARN,
+            "shared mode on but " + "; ".join(problems),
+            "re-run `sudo cwcli setup shared`",
+        )
+    return _outcome(CheckStatus.PASS, f"shared: {state} (group {group})")
 
 
 # --------------------------------------------------------------------------- storage
@@ -598,6 +637,7 @@ _CHECKS: list[Check] = [
     Check(id="c7", title="cwcli home", group="cwcli", run=_check_home_layout),
     Check(id="c9", title="auto-inspect", group="cwcli", run=_check_auto_inspect),
     Check(id="c19", title="credential bridge", group="cwcli", run=_check_cred_bridge),
+    Check(id="c20", title="shared install", group="cwcli", run=_check_shared_mode),
     Check(id="c5", title="Free space (cwcli home)", group="Storage", run=_check_home_free_space),
     Check(
         id="c6",
