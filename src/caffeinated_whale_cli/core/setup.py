@@ -23,6 +23,7 @@ from __future__ import annotations
 import contextlib
 import os
 import shutil
+import stat
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -340,10 +341,31 @@ def _merge_projects(
         if dest.exists():
             conflicts.append(proj.name)
             continue
-        shutil.copytree(proj, dest)
+        try:
+            shutil.copytree(proj, dest, ignore=_ignore_special_files)
+        except Exception:
+            shutil.rmtree(dest, ignore_errors=True)
+            raise
         _reown_tree(dest, gid)
         merged.append(proj.name)
     return merged, conflicts
+
+
+def _ignore_special_files(directory: str, names: list[str]) -> set[str]:
+    """copytree filter: skip sockets/fifos/devices a running instance leaves on disk.
+
+    A started instance's workspace holds live UNIX sockets (the supervisord and
+    cred-bridge sockets); ``shutil.copytree`` cannot copy those and would abort.
+    """
+    ignored: set[str] = set()
+    for name in names:
+        try:
+            mode = os.lstat(os.path.join(directory, name)).st_mode
+        except OSError:
+            continue
+        if stat.S_ISSOCK(mode) or stat.S_ISFIFO(mode) or stat.S_ISBLK(mode) or stat.S_ISCHR(mode):
+            ignored.add(name)
+    return ignored
 
 
 def _reown_tree(root: Path, gid: int | None) -> None:
