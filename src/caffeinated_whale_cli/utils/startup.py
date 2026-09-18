@@ -370,11 +370,6 @@ def system_unit_path(unit: BootUnit) -> Path:
     return SYSTEM_UNIT_DIR / unit.service_name
 
 
-def is_system_unit_installed(unit: BootUnit) -> bool:
-    """Whether the system-wide unit file exists."""
-    return system_unit_path(unit).exists()
-
-
 def install_system_unit(unit: BootUnit, *, user: str, group: str, pid_file: str) -> bool:
     """Install + enable a system-wide systemd unit that runs the daemon as ``user``.
 
@@ -416,16 +411,3 @@ WantedBy=multi-user.target
     if result.returncode != 0 and result.stderr:
         print(f"systemctl enable failed: {result.stderr}", file=sys.stderr)
     return result.returncode == 0
-
-
-def uninstall_system_unit(unit: BootUnit) -> bool:
-    """Stop, disable, and remove the system-wide unit. Linux-only, root required."""
-    if get_platform() != "linux":
-        return False
-    service_path = system_unit_path(unit)
-    if not service_path.exists():
-        return False
-    subprocess.run(["systemctl", "disable", "--now", unit.service_name], capture_output=True)
-    service_path.unlink()
-    subprocess.run(["systemctl", "daemon-reload"], capture_output=True)
-    return True

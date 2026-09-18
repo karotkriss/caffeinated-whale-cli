@@ -177,11 +177,3 @@ def test_install_system_unit_refuses_off_linux(monkeypatch):
         startup.install_system_unit(
             startup.CRED_BRIDGE, user="cwcli", group="cwcli", pid_file="/x"
         )
-
-
-def test_is_system_unit_installed_reflects_the_file(tmp_path, monkeypatch):
-    monkeypatch.setattr(startup, "SYSTEM_UNIT_DIR", tmp_path / "systemd")
-    (tmp_path / "systemd").mkdir()
-    assert startup.is_system_unit_installed(startup.CRED_BRIDGE) is False
-    startup.system_unit_path(startup.CRED_BRIDGE).write_text("x")
-    assert startup.is_system_unit_installed(startup.CRED_BRIDGE) is True
