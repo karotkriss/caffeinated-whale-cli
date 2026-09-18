@@ -19,6 +19,7 @@ All platform side effects (``systemctl``/``launchctl``/``schtasks``) are faked;
 
 from __future__ import annotations
 
+import configparser
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -156,11 +157,15 @@ def test_install_system_unit_writes_a_service_account_unit(home, tmp_path, monke
     )
     assert ok is True
     content = startup.system_unit_path(startup.CRED_BRIDGE).read_text()
-    assert "User=cwcli" in content
-    assert "Group=cwcli" in content
-    assert "PIDFile=/var/lib/cwcli/run/credbridge.pid" in content
-    assert '"/usr/local/bin/cwcli" config cred-bridge start' in content
-    assert "WantedBy=multi-user.target" in content
+
+    parser = configparser.ConfigParser()
+    parser.optionxform = str
+    parser.read_string(content)
+    assert parser["Service"]["User"] == "cwcli"
+    assert parser["Service"]["Group"] == "cwcli"
+    assert parser["Service"]["PIDFile"] == "/var/lib/cwcli/run/credbridge.pid"
+    assert parser["Service"]["ExecStart"] == '"/usr/local/bin/cwcli" config cred-bridge start'
+    assert parser["Install"]["WantedBy"] == "multi-user.target"
     # Enabled system-wide (never `--user`).
     assert ["systemctl", "enable", "--now", "cwcli-cred-bridge.service"] in home.calls
     assert not any("--user" in c for c in home.calls)
