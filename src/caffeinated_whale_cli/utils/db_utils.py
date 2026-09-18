@@ -12,6 +12,7 @@ from peewee import (
     TextField,
 )
 
+from . import shared_home
 from .config_utils import cwcli_home
 
 # Resolve the cache location through the shared cwcli_home() helper so the
@@ -23,16 +24,20 @@ DB_PATH = CACHE_DIR / "cwc-cache.db"
 # SECURITY: config_json rows are whitelist-filtered by _redact_config_for_cache
 # before write, so the cache never stores DB credentials, encryption keys, or
 # redis URLs. Restrictive filesystem permissions (0700 dir / 0600 file) remain
-# as defense-in-depth. See "Cache never stores secrets" in AGENTS.md.
+# as defense-in-depth. See "Cache never stores secrets" in AGENTS.md. In opt-in
+# shared mode the dir becomes setgid group-writable (2770) owned by the cwcli
+# group so group members can read the cache; per-user is unchanged (see
+# shared_home).
 
 # Create cache directory with restricted permissions (0700 = owner-only access)
 # This prevents other users on the system from reading cached credentials
-CACHE_DIR.mkdir(parents=True, mode=0o700, exist_ok=True)
+CACHE_DIR.mkdir(parents=True, mode=shared_home.dir_mode(0o700), exist_ok=True)
 
 # Ensure existing directory has correct permissions
 if CACHE_DIR.exists():
     try:
-        CACHE_DIR.chmod(0o700)
+        CACHE_DIR.chmod(shared_home.dir_mode(0o700))
+        shared_home.apply_group(CACHE_DIR)
     except (OSError, PermissionError):
         # On Windows or restricted filesystems, chmod may fail
         # Still proceed but permissions may not be as strict
@@ -248,8 +253,10 @@ def _set_secure_db_permissions():
     """
     if DB_PATH.exists():
         try:
-            # Set permissions to 0600 (rw-------)
-            DB_PATH.chmod(0o600)
+            # 0600 per-user; 0660 + cwcli group in shared mode (secrets are
+            # already redacted out of the cache, so group-read is safe here).
+            DB_PATH.chmod(shared_home.file_mode(0o600))
+            shared_home.apply_group(DB_PATH)
         except (OSError, PermissionError):
             # On Windows or restricted filesystems, chmod may fail
             # Still proceed but permissions may not be as strict

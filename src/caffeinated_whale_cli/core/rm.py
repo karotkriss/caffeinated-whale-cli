@@ -46,7 +46,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from ..utils import bench_sites, db_utils
+from ..utils import bench_sites, db_utils, shared_home
 from ..utils.config_utils import PROJECTS_DIR, cwcli_home
 from .docker import get_project_containers, get_project_networks, get_project_volumes
 from .envelope import Result, Status
@@ -435,6 +435,7 @@ def _archive_project_config(
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             archive_dir = archive_base / f"{project_name}_{timestamp}"
         archive_dir.mkdir(parents=True, exist_ok=True)
+        shared_home.secure_dir_shared_only(archive_dir)
 
         emit(RmTrace(text=f"Archiving to {archive_dir}"))
 
@@ -875,6 +876,9 @@ def remove(
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     archive_dir = archive_base / f"{project_name}_{timestamp}"
     archive_dir.mkdir(parents=True, exist_ok=True)
+    # Shared mode: setgid group-writable + cwcli group so backups (DB dumps) land
+    # readable by the cwcli group; per-user is unchanged. See shared_home.
+    shared_home.secure_dir_shared_only(archive_dir)
 
     frappe_container = next(
         (c for c in containers if c.labels.get("com.docker.compose.service") == "frappe"),
@@ -918,6 +922,7 @@ def remove(
                 emit(RmStep(label=f"Backing up databases for bench '{bp}'...", style="cyan"))
                 bench_archive_dir = bench_archive_dirs[bp]
                 bench_archive_dir.mkdir(parents=True, exist_ok=True)
+                shared_home.secure_dir_shared_only(bench_archive_dir)
                 bench_ok = _backup_sites(
                     project_name, frappe_container, bp, bench_archive_dir, emit
                 )

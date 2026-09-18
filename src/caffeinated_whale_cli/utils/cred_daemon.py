@@ -48,7 +48,7 @@ import traceback
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import config_utils, daemon_identity
+from . import config_utils, daemon_identity, shared_home
 
 # All of the daemon's footprint lives under cwcli_home()/run so it honours the
 # CWCLI_HOME override, exactly like the auto-inspect daemon.
@@ -72,6 +72,7 @@ class EnsureOutcome:
 
 def _ensure_run_dir() -> None:
     PID_DIR.mkdir(parents=True, exist_ok=True)
+    shared_home.secure_dir_shared_only(PID_DIR)
 
 
 def _log(message: str, *, exc_info: bool = False) -> None:
@@ -84,6 +85,7 @@ def _log(message: str, *, exc_info: bool = False) -> None:
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         with open(LOG_FILE, "a") as f:
             f.write(f"[{timestamp}] {message}\n")
+        shared_home.secure_file_shared_only(LOG_FILE)
     except OSError as e:
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         print(f"[{timestamp}] {message}", file=sys.stderr)
@@ -146,6 +148,7 @@ def _write_registry(registry: dict[str, str]) -> None:
     with open(tmp, "w") as f:
         json.dump(registry, f)
     os.replace(tmp, REGISTRY_FILE)
+    shared_home.secure_file_shared_only(REGISTRY_FILE)
 
 
 def _register(project: str, workspace: str) -> None:
@@ -197,6 +200,7 @@ def _audit(project: str | None, host: str, answered: bool) -> None:
         )
         with open(AUDIT_FILE, "a") as f:
             f.write(line)
+        shared_home.secure_file_shared_only(AUDIT_FILE)
     except OSError:
         pass
 
@@ -294,8 +298,12 @@ def ensure_bridge(container, bench_path: str, project_name: str) -> EnsureOutcom
 
         config_value, added = _ensure_container_config(container, container_dir)
 
+        # In shared mode a group member must NOT fork a daemon as themselves (the
+        # machine-wide daemon runs as the cwcli service account under a system
+        # unit), so skip the start and report daemon_started=False rather than
+        # calling into a no-op. Per-user is unchanged: start when not running.
         daemon_started = False
-        if not is_running():
+        if not is_running() and _may_fork_daemon():
             start_daemon()
             daemon_started = True
 
@@ -440,7 +448,13 @@ def _start_unix_listener(
     finally:
         os.chdir(prev_cwd)
     with contextlib.suppress(OSError):
-        sock_path.chmod(0o666)  # container frappe user connects regardless of uid
+        # Per-user: 0666 so the container frappe user connects regardless of uid.
+        # Shared: 0660 + cwcli group, so "who may ask the bridge for a token" is
+        # group membership (the container's frappe user is aligned to the cwcli
+        # gid), not everyone - this closes the cross-user credential leak. See
+        # shared_home.socket_mode.
+        sock_path.chmod(shared_home.socket_mode())
+        shared_home.apply_group(sock_path)
     srv.settimeout(credbridge._ACCEPT_TIMEOUT)
     srv.listen(16)
 
@@ -738,6 +752,23 @@ def _fork_or_spawn(lock_fd: int | None) -> None:
     os._exit(code)
 
 
+def _may_fork_daemon() -> bool:
+    """Whether THIS process is allowed to fork the daemon.
+
+    Always True per-user. In shared mode the machine-wide daemon must run as the
+    ``cwcli`` service account (so it serves the ONE machine-owned read-only
+    service-account token, report 5.5/6.1a) and is started by the system systemd
+    unit ``cwcli setup shared`` installs. Only the service account itself (the
+    process systemd starts for that unit) may fork it here; a group member's
+    hot-path ``ensure_bridge`` must never fork a rival daemon that would run as
+    THEM and serve their own gh/glab.
+    """
+    if not shared_home.shared_mode():
+        return True
+    svc = shared_home.service_uid()
+    return svc is not None and hasattr(os, "geteuid") and os.geteuid() == svc
+
+
 def start_daemon() -> None:
     """Start the credential-bridge daemon if it is not already running.
 
@@ -747,8 +778,13 @@ def start_daemon() -> None:
     ``is_running`` check AND the fork/spawn, so concurrent open/start/enable calls
     can never double-fork. Forks + setsids on POSIX; falls back to a detached
     spawn where ``os.fork`` is unavailable (Windows) or fails.
+
+    In shared mode a non-service-account caller is a no-op: the daemon is owned by
+    the system unit and must run as the service account (see :func:`_may_fork_daemon`).
     """
     if is_running():
+        return
+    if not _may_fork_daemon():
         return
 
     lock_fd = _acquire_startup_lock()

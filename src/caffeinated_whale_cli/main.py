@@ -9,6 +9,7 @@ from .commands import config as config_cmd
 from .commands import list as list_cmd
 from .commands import restart as restart_cmd
 from .commands import rm as rm_cmd
+from .commands import setup as setup_cmd
 from .commands import start as start_cmd
 from .commands import stop as stop_cmd
 from .commands.backup import backup as _backup_cmd
@@ -109,6 +110,12 @@ def main(
     # Initialize context object
     ctx.ensure_object(dict)
 
+    # In opt-in shared mode, relax the umask so cwcli's writes stay group-writable
+    # inside the setgid tree; a no-op for the per-user default.
+    from .utils import shared_home
+
+    shared_home.apply_process_umask()
+
     # Doctor is exempt because its strict read-only contract forbids even a
     # detached refresh of the version cache.
     if not ctx.meta.get(_READ_ONLY_DOCTOR):
@@ -129,6 +136,7 @@ app.add_typer(rm_cmd.app, name="rm")
 app.command("rm-site")(_rm_site_cmd)
 app.add_typer(config_cmd.app, name="config")
 app.add_typer(apps_cmd.app, name="apps")
+app.add_typer(setup_cmd.app, name="setup")
 app.add_typer(axi_cmd.app, name="axi")
 
 app.command("where")(_where_cmd)

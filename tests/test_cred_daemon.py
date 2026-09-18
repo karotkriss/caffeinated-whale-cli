@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -25,7 +26,7 @@ from types import SimpleNamespace
 import pytest
 
 from caffeinated_whale_cli.core import credbridge
-from caffeinated_whale_cli.utils import config_utils, cred_daemon
+from caffeinated_whale_cli.utils import config_utils, cred_daemon, shared_home
 
 unix_only = pytest.mark.skipif(
     credbridge._prefer_tcp(),
@@ -530,3 +531,82 @@ def test_stop_daemon_is_a_noop_when_not_running(run_dir, monkeypatch):
     monkeypatch.setattr(cred_daemon.os, "kill", lambda pid, sig: killed.append((pid, sig)))
     cred_daemon.stop_daemon()
     assert killed == []
+
+
+class TestSharedModeSocketGating:
+    """The socket-exposure fix (report row 5 / cred_daemon.py:443).
+
+    Shared mode drops the credential socket from a world-connectable ``0666`` to
+    ``0660`` owned by the ``cwcli`` group, so "who may ask the bridge for a token"
+    is group membership rather than everyone. The live cross-uid connection
+    refusal is proven by the committed two-uid E2E; here we pin the mode + group
+    the daemon actually sets, and that world has no access at all.
+    """
+
+    @unix_only
+    def test_per_user_socket_stays_world_connectable_0666(self, run_dir, tmp_path, monkeypatch):
+        monkeypatch.setattr(shared_home, "shared_mode", lambda: False)
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        stop = threading.Event()
+        listener = cred_daemon._start_unix_listener(str(ws), "proj", stop, credbridge)
+        assert listener is not None
+        try:
+            sock_path = ws / credbridge.PERSISTENT_SOCK_NAME
+            assert stat.S_IMODE(sock_path.stat().st_mode) == 0o666
+        finally:
+            stop.set()
+            listener.srv.close()
+
+    @unix_only
+    def test_shared_socket_is_0660_group_owned_and_denies_world(
+        self, run_dir, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(shared_home, "shared_mode", lambda: True)
+        # chgrp to our own gid so os.chown(-1, gid) succeeds without root.
+        monkeypatch.setattr(shared_home, "gid", lambda: os.getgid())
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        stop = threading.Event()
+        listener = cred_daemon._start_unix_listener(str(ws), "proj", stop, credbridge)
+        assert listener is not None
+        try:
+            sock_path = ws / credbridge.PERSISTENT_SOCK_NAME
+            mode = stat.S_IMODE(sock_path.stat().st_mode)
+            assert mode == 0o660
+            assert mode & 0o007 == 0  # world has NO access -> a non-group uid is refused
+            assert sock_path.stat().st_gid == os.getgid()  # chgrp'd to the cwcli group
+        finally:
+            stop.set()
+            listener.srv.close()
+
+
+class TestSharedModeForkGuard:
+    """In shared mode the machine-wide daemon runs as the cwcli service account
+    under a system unit; a group member must never fork a rival daemon as
+    themselves (which would serve THEIR gh/glab, defeating the single
+    machine-owned service-account model)."""
+
+    def test_per_user_always_may_fork(self, monkeypatch):
+        monkeypatch.setattr(shared_home, "shared_mode", lambda: False)
+        assert cred_daemon._may_fork_daemon() is True
+
+    def test_shared_group_member_may_not_fork(self, monkeypatch):
+        monkeypatch.setattr(shared_home, "shared_mode", lambda: True)
+        monkeypatch.setattr(shared_home, "service_uid", lambda: 9000)
+        monkeypatch.setattr(cred_daemon.os, "geteuid", lambda: 1001, raising=False)
+        assert cred_daemon._may_fork_daemon() is False
+
+    def test_shared_service_account_may_fork(self, monkeypatch):
+        monkeypatch.setattr(shared_home, "shared_mode", lambda: True)
+        monkeypatch.setattr(shared_home, "service_uid", lambda: 9000)
+        monkeypatch.setattr(cred_daemon.os, "geteuid", lambda: 9000, raising=False)
+        assert cred_daemon._may_fork_daemon() is True
+
+    def test_start_daemon_is_a_noop_for_a_group_member(self, run_dir, monkeypatch):
+        monkeypatch.setattr(cred_daemon, "is_running", lambda: False)
+        monkeypatch.setattr(cred_daemon, "_may_fork_daemon", lambda: False)
+        forked: list = []
+        monkeypatch.setattr(cred_daemon, "_fork_or_spawn", lambda fd: forked.append(True))
+        cred_daemon.start_daemon()
+        assert forked == []

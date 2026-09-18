@@ -24,9 +24,11 @@ from caffeinated_whale_cli.utils import config_utils
 
 class TestRegistry:
     def test_ships_exactly_the_ruled_check_ids(self):
-        """C1-C9, C11, C17-C19 - C10 and C12-C16 stay deferred (not built at all).
+        """C1-C9, C11, C17-C20 - C10 and C12-C16 stay deferred (not built at all).
 
-        C19 is the persistent credential-bridge daemon health check.
+        C19 is the persistent credential-bridge daemon health check; C20 is the
+        opt-in shared/multi-user install integrity check (PASS when shared mode
+        is off, the default).
         """
         ids = {c.id for c in core_doctor._CHECKS}
         assert ids == {
@@ -43,6 +45,7 @@ class TestRegistry:
             "c17",
             "c18",
             "c19",
+            "c20",
         }
 
     def test_is_a_plain_list_not_a_plugin_system(self):
