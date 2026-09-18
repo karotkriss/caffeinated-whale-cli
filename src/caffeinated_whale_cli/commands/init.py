@@ -562,6 +562,13 @@ def init(
     Creates project directory, downloads compose files, starts containers,
     initializes bench, and creates a site. Optionally installs ERPNext.
 
+    Blocks for roughly 10-20 minutes (image pulls, bench init, site creation).
+    Running several `cwcli init` invocations in parallel can OOM-kill the host
+    on a memory-constrained machine - serialize them instead. Adding a bench
+    to an already-running instance never disturbs it or its other benches:
+    the frappe container is never pulled, recreated, or restarted, so every
+    already-serving bench keeps running throughout.
+
     If project_name is not provided, prompts interactively.
 
     The site's administrator password is generated and printed once when
