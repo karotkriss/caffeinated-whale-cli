@@ -45,8 +45,8 @@ useradd -m -s /bin/bash alice && usermod -aG cwcli alice
 useradd -m -s /bin/bash bob   && usermod -aG cwcli bob
 useradd -m -s /bin/bash mallory
 
-# Provision the shared tree as root.
-cwcli setup shared --state-dir /var/lib/cwcli --users alice,bob >/dev/null
+# Provision the shared tree as root (state dir is the fixed /var/lib/cwcli).
+cwcli setup shared --users alice,bob >/dev/null
 
 # (1) The second user drives shared state with no permission failure.
 su - bob -c 'cwcli config show >/dev/null 2>/tmp/bob.err && echo BOB_CONFIG_OK || { echo BOB_CONFIG_FAIL; cat /tmp/bob.err; }'
