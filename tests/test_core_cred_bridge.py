@@ -309,3 +309,34 @@ class TestProjectsDirHardening:
         result = core_cred.enable()
         assert "projects.hardened" not in result.data.actions
         assert not (tmp_path / "projects").exists()  # never mkdir'd as a side effect
+
+
+class TestSharedModeSkipsProjectsHardening:
+    """In shared mode ``enable`` must NOT tighten projects/ to 0700 - that tree is
+    deliberately group-writable (2770 :cwcli) so every group member reaches the
+    instance state; hardening it would lock them out, the failure shared mode
+    exists to fix. The socket's own 0660 :cwcli gating is the protection there."""
+
+    def test_harden_is_a_noop_in_shared_mode(self, cfg, monkeypatch):
+        import stat as _stat
+
+        monkeypatch.setattr(core_cred.shared_home, "shared_mode", lambda: True)
+        projects = config_utils.PROJECTS_DIR
+        projects.mkdir(parents=True)
+        projects.chmod(0o2770)
+        actions: list[str] = []
+        core_cred._harden_projects_dir(actions)
+        assert actions == []  # nothing hardened
+        assert _stat.S_IMODE(projects.stat().st_mode) == 0o2770  # left group-writable
+
+    def test_harden_still_runs_per_user(self, cfg, monkeypatch):
+        import stat as _stat
+
+        monkeypatch.setattr(core_cred.shared_home, "shared_mode", lambda: False)
+        projects = config_utils.PROJECTS_DIR
+        projects.mkdir(parents=True)
+        projects.chmod(0o755)
+        actions: list[str] = []
+        core_cred._harden_projects_dir(actions)
+        assert actions == ["projects.hardened"]
+        assert _stat.S_IMODE(projects.stat().st_mode) == 0o700

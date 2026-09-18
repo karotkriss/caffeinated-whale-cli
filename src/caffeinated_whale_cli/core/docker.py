@@ -22,6 +22,7 @@ import subprocess
 import docker
 from docker.errors import DockerException
 
+from ..utils import shared_home
 from .errors import DOCKER_UNREACHABLE_HINT, CwcliError, ErrorKind
 
 _COMPOSE_INSTALL_HINT = (
@@ -267,7 +268,20 @@ def align_container_user_to_host(container, *, chown_home: bool = False) -> tupl
     """
     if not hasattr(os, "getuid"):
         return (False, None)
-    host_uid, host_gid = os.getuid(), os.getgid()
+    if shared_home.shared_mode():
+        # Shared mode: align to the STABLE cwcli service uid/gid, not whoever ran
+        # cwcli. With a shared container and two users, aligning to os.getuid()
+        # ping-pongs the frappe user's uid on every start - each swing risking a
+        # ~79s overlayfs copy-up and thrashing the per-process log / supervisord
+        # socket ownership (report 2.4/6.2). Fall back to the host uid/gid when
+        # the service account is not fully provisioned, so a half-set-up box still
+        # works exactly as per-user.
+        svc_uid = shared_home.service_uid()
+        svc_gid = shared_home.gid()
+        host_uid = svc_uid if svc_uid is not None else os.getuid()
+        host_gid = svc_gid if svc_gid is not None else os.getgid()
+    else:
+        host_uid, host_gid = os.getuid(), os.getgid()
     cur_uid = _read_frappe_id(container, "-u")
     cur_gid = _read_frappe_id(container, "-g")
     if cur_uid is None or cur_gid is None:

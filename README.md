@@ -118,6 +118,47 @@ python -m caffeinated_whale_cli ls
 
 This bypasses the shim entirely and behaves identically to `cwcli`/`caffeinated-whale-cli`.
 
+## Shared (multi-user) install
+
+By default cwcli's on-disk state is **per-user**: everything lives under `~/.cwcli`, the cache is `0700`, the config `0600`, and the credential-bridge daemon runs as you.
+That is correct for one person per machine, and it is unchanged - if you do not opt in, nothing here applies to you.
+
+When several people on **one Linux/UNIX box** need to drive the **same** Frappe instances (they already share the containers through the `docker` group), the per-user modes get in the way: the second person hits `Permission denied` on the cache, cannot edit the shared config, and the credential bridge either locks them out or hands them the first person's token.
+Shared mode fixes this with an opt-in, admin-provisioned layout modelled on Docker's `root:docker` socket and Homebrew-on-Linux's shared tree: a dedicated `cwcli` group, a system state tree with setgid group-writable directories, and one machine-wide credential bridge behind a group-owned socket.
+
+**Enable it (once, by an admin):**
+
+```bash
+sudo cwcli setup shared --users alice,bob            # create the group + tree, add members
+sudo cwcli setup shared --users alice,bob --cred-bridge   # also stand up the machine-wide credential bridge
+```
+
+This creates the `cwcli` group and a `cwcli` service account, provisions `/var/lib/cwcli` (config, cache, projects, archive) as `root:cwcli` with setgid `2770` directories, and writes the marker `/etc/cwcli/shared.toml` that turns shared mode on.
+It is idempotent - safe to re-run to add users or repair modes.
+Members must log out and back in for the new group to take effect.
+Windows is unaffected (shared mode is POSIX-only; cwcli stays per-user there).
+
+**Consolidate existing per-user homes into the shared tree:**
+
+```bash
+sudo cwcli setup migrate --from /home/alice/.cwcli --from /home/bob/.cwcli
+sudo cwcli setup migrate --discover          # find every /home/*/.cwcli and /root/.cwcli
+```
+
+`migrate` copies each user's project state into the shared tree with the correct group ownership and modes.
+It **never deletes a source** and **refuses to overwrite an existing shared project** (a name clash is reported, not clobbered), so it is safe to re-run.
+The per-user SQLite cache is regenerable (`cwcli inspect`) and deliberately not merged.
+
+**Opting an invocation back to a private home:** `CWCLI_HOME` always wins over shared mode, so `CWCLI_HOME=~/.cwcli cwcli ...` uses your own home even on a shared box.
+
+**Security consequences - state them plainly before enabling:**
+
+- **`cwcli` group membership is the trust boundary.** Anyone in the group can read every instance's cache, read the rm/rm-site backups (which contain full database dumps), edit the shared config, and - with `--cred-bridge` - ask the machine-wide bridge for a credential. This is the same "docker group ≈ root-ish capability" trade every shared dev tool makes. Keep membership deliberate.
+- **The credential bridge in shared mode serves one machine-owned, read-only service-account token** to any group member's container git, so its audit log records the host and project but **not which human** triggered a fetch (they all present as the service account). Provision that account with a read-only deploy token; rotate it in one place if it leaks.
+- The group-owned socket (`0660 root:cwcli`) closes the world-connectable `0666` socket that could otherwise leak the first user's token to a second user on the box. A uid outside the `cwcli` group cannot reach it.
+
+Run `cwcli doctor` to verify the shared install (group present, tree modes, service account).
+
 ## Quick Start
 
 ```bash
@@ -1987,6 +2028,7 @@ This is the same class of exposure as SSH agent forwarding or VS Code's own cred
 Every request is written to an audit log (`~/.cwcli/run/credbridge-audit.log`, one line per request: timestamp, instance, host, answered - never a credential byte).
 For a tighter blast radius, authenticate `gh`/`glab` with a fine-grained, expiring token scoped to only the repos you need; the bridge faithfully forwards whatever the host tools hold, so the token's reach is your auth choice.
 On a shared multi-user host, note the per-instance socket lives in the instance's workspace directory under `~/.cwcli/projects/<name>/data/`; `enable` tightens `~/.cwcli/projects` to owner-only (0700) for exactly that reason.
+This per-user daemon is distinct from the **machine-wide** bridge of an opt-in [shared install](#shared-multi-user-install): there the daemon runs once as the `cwcli` service account (started by a system unit at boot), serves a single machine-owned read-only service-account token, and its socket is `0660 root:cwcli` so a uid outside the `cwcli` group cannot reach it. See that section for the security consequences.
 
 **Host allowlist:** the daemon only answers credential requests for `github.com` and `gitlab.com` by default.
 Using a self-hosted GitLab (or GitHub Enterprise)?
