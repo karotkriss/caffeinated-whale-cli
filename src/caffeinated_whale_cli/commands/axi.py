@@ -2230,7 +2230,11 @@ def axi_init(
     update` blocks on a long update - streaming N documents would break the
     one-TOON-document contract. Coarse phase progress goes to STDERR; for live or
     deeper progress, run `cwcli logs <project>` / `cwcli status <project>` from a
-    second shell.
+    second shell. Running several `axi init` calls in parallel can OOM-kill the
+    host on a memory-constrained machine - serialize them. Adding a bench to an
+    already-running instance never disturbs it or its other benches: the frappe
+    container is never pulled, recreated, or restarted, so every already-serving
+    bench keeps running throughout.
 
     After the bench+site is created, dev services start by default (reusing the
     same `core.start` behind `cwcli start`/`axi start`), so this leaves a running
