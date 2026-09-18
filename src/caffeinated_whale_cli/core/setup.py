@@ -268,7 +268,12 @@ def provision(
     users: list[str] | None = None,
     cred_bridge: bool = False,
 ) -> Result[ProvisionOutcome]:
-    """Bring the shared state tree to its provisioned desired state (idempotent)."""
+    """Bring the shared state tree to its provisioned desired state (idempotent).
+
+    ``group``/``state_dir`` default to the fixed shared install (the cwcli group,
+    /var/lib/cwcli); no CLI flag exposes them. They are overridable only so the
+    unit tests can inject a temp state tree they can write as non-root.
+    """
     _require_posix()
     _require_root()
 

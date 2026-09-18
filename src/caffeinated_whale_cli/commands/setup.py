@@ -39,14 +39,6 @@ def _fail(e: CwcliError) -> NoReturn:
 
 @app.command("shared")
 def shared(
-    group: str = typer.Option(
-        core_setup.shared_home.DEFAULT_GROUP, "--group", help="Dedicated group name."
-    ),
-    state_dir: str = typer.Option(
-        None,
-        "--state-dir",
-        help="Shared state tree root (default /var/lib/cwcli).",
-    ),
     users: str = typer.Option(
         None,
         "--users",
@@ -60,18 +52,15 @@ def shared(
 ) -> None:
     """Provision the shared state tree (idempotent; requires sudo).
 
-    Creates the cwcli group and service account, the setgid group-writable state
-    tree, and the machine marker that turns shared mode on. SECURITY: membership
-    of the cwcli group is the trust boundary - anyone in it can read every
-    instance's cache and backups, edit the shared config, and (with --cred-bridge)
-    reach the machine-wide credential bridge. Keep membership deliberate.
+    Creates the cwcli group and service account under /var/lib/cwcli (the setgid
+    group-writable state tree) and the machine marker that turns shared mode on.
+    SECURITY: membership of the cwcli group is the trust boundary - anyone in it
+    can read every instance's cache and backups, edit the shared config, and
+    (with --cred-bridge) reach the machine-wide credential bridge. Keep membership
+    deliberate.
     """
-    from pathlib import Path
-
     try:
         result = core_setup.provision(
-            group=group,
-            state_dir=Path(state_dir) if state_dir else None,
             users=[u.strip() for u in users.split(",") if u.strip()] if users else None,
             cred_bridge=cred_bridge,
         )
