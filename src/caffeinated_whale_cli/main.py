@@ -131,6 +131,10 @@ app.command("inspect")(inspect_cmd_func)
 app.command("label")(_label_cmd)
 
 app.add_typer(list_cmd.app, name="ls")
+# `list`/`instances` are the natural guesses for `ls`; hidden so `--help` still
+# advertises one canonical name, but registered so the guess just works (#231).
+app.add_typer(list_cmd.app, name="list", hidden=True)
+app.add_typer(list_cmd.app, name="instances", hidden=True)
 app.add_typer(start_cmd.app, name="start")
 app.add_typer(stop_cmd.app, name="stop")
 app.add_typer(restart_cmd.app, name="restart")

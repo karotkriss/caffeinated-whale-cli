@@ -170,6 +170,32 @@ def test_nonexistent_project_exits_nonzero(monkeypatch, capsys):
     assert "No such project 'proj'." in captured.err
 
 
+def test_bare_status_prints_the_all_instances_summary(monkeypatch, capsys):
+    """Bare `cwcli status` (GH #231) reads like "how is everything" - it prints
+    the same all-instances summary `cwcli ls` gives, exit 0, never a missing-
+    argument usage error."""
+    monkeypatch.setattr(docker_utils.shutil, "which", lambda _n: "/usr/bin/docker")
+    monkeypatch.setattr(
+        docker_utils.docker, "from_env", lambda: type("C", (), {"ping": lambda s: True})()
+    )
+    calls = []
+    monkeypatch.setattr(
+        status_mod, "render_instances_summary", lambda **k: calls.append(k) or None
+    )
+
+    def _boom(*a, **k):
+        raise AssertionError("bare status must not reach core.status at all")
+
+    monkeypatch.setattr(status_mod.core_status, "status", _boom)
+
+    with pytest.raises(typer.Exit) as exc:
+        status_mod.status(
+            project_name=None, bench=None, verbose=False, watch=False, interval=2.0
+        )
+    assert exc.value.exit_code == 0
+    assert calls == [{"verbose": False}]
+
+
 def test_multi_bench_stdout_is_still_exactly_one_token(monkeypatch, capsys):
     # The one-token contract is load-bearing and survives the restructure: a
     # multi-bench project prints the INSTANCE fold, and every per-bench detail goes
