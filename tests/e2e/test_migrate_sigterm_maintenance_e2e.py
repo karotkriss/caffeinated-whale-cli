@@ -30,10 +30,16 @@ depends on: the blast radius cannot reach a sibling no matter how long the orpha
 runs or whether this test's own assertions pass. A freshly created site also
 migrates quickly (its patches were applied at ``new-site``), so the drain is bounded.
 
-The genuine assertion is unchanged: after SIGTERM, cwcli's own cleanup ran, so once
-the orphan drains the site is out of maintenance. That stays a real proof, because
-on a Frappe that does NOT self-manage maintenance (v14) nothing but cwcli's cleanup
-would ever clear it, and before the fix it stayed 1 forever.
+The SIGTERM is gated on the migrate LOCK being held, not on maintenance==1: cwcli
+sets maintenance ON itself BEFORE it launches ``bench migrate``, so killing on
+maintenance==1 races the orphan's own later maintenance-ON write and can leave the
+flag stuck on if the orphan then dies mid-run. Waiting for the lock guarantees the
+orphan is genuinely underway (its maintenance-ON already written), so cwcli's
+cleanup OFF is the LAST write and the site stays out of maintenance for the rest of
+the run - the assertion catches cwcli's own cleanup, with no dependence on the
+orphan draining. That stays a real proof: on a Frappe that does NOT self-manage
+maintenance (v14) nothing but cwcli's cleanup would ever clear it, and before the
+fix it stayed 1 forever.
 
 The unit-level signal->unwind mechanism is pinned by ``tests/test_signals.py``; this
 is the end-to-end proof against a genuine bench.
@@ -147,15 +153,22 @@ def test_sigterm_mid_migrate_takes_the_site_back_out_of_maintenance(running_inst
             text=True,
         )
         try:
-            # Catch the exact maintenance-ON window (poll fast; cwcli sets maintenance
-            # ON before it runs bench migrate, and bench migrate on a v16 site holds
-            # the window open long enough to catch reliably).
+            # Gate the SIGTERM on the migrate LOCK being held, NOT on maintenance==1.
+            # cwcli sets maintenance ON itself BEFORE it launches `bench migrate`, so a
+            # maintenance==1 gate fires while the orphan `bench migrate` has not yet
+            # booted - cwcli's cleanup then clears the flag, and the orphan's LATER
+            # maintenance-ON re-sets it, stuck on if the orphan dies mid-run (the
+            # observed flake). The lock is held only once `bench migrate` is genuinely
+            # underway and has set maintenance ON for itself, so cwcli's cleanup OFF is
+            # the LAST write and the site stays out of maintenance for the rest of the
+            # (orphaned) migration - no dependence on the orphan finishing.
             harness.wait_until(
-                lambda: _maintenance_mode(inst, MIGRATE_SITE) == 1,
+                lambda: _migrate_lock_held(inst, MIGRATE_SITE),
                 timeout=240,
                 interval=0.25,
-                desc="site enters maintenance mode",
+                desc="orphan migrate is underway (lock held)",
             )
+            assert _maintenance_mode(inst, MIGRATE_SITE) == 1
             # The kill under test: a plain SIGTERM, exactly what `kill`/a service stop
             # sends. Before the fix this killed cwcli with maintenance left ON.
             proc.send_signal(signal.SIGTERM)
@@ -165,26 +178,16 @@ def test_sigterm_mid_migrate_takes_the_site_back_out_of_maintenance(running_inst
                 proc.kill()
                 proc.wait()
 
-        # THE ASSERTION: the SIGTERM unwound the `finally`, so the site is taken back
-        # OUT of maintenance. (Before the fix this stayed 1 forever.)
-        #
-        # cwcli cannot kill the orphaned in-container `bench migrate`, which on v15+
-        # re-asserts maintenance for the rest of its run. Let it drain FIRST (its fcntl
-        # lock releases the instant it ends, stale lock file or not) with a generous
-        # deadline, THEN require the site back out of maintenance. It stays a genuine
-        # proof: on a Frappe that does NOT self-manage maintenance (v14) nothing but
-        # cwcli's cleanup would ever clear it, and before the fix it stayed 1 forever.
-        # The whole exchange is confined to MIGRATE_SITE, so the default site every
-        # sibling probes is never in maintenance regardless of how long the orphan runs.
-        harness.wait_until(
-            lambda: not _migrate_lock_held(inst, MIGRATE_SITE),
-            timeout=600,
-            interval=3,
-            desc="orphaned migrate releases its lock",
-        )
+        # THE ASSERTION: the SIGTERM unwound the `finally`, so cwcli wrote the site back
+        # OUT of maintenance. Because the orphan had already set maintenance ON before
+        # the SIGTERM, cwcli's OFF is the last write and the flag stays 0 - so this
+        # catches cwcli's own cleanup, not the orphan draining. (Before the fix cwcli
+        # died without unwinding and it stayed 1.) The whole exchange is confined to
+        # MIGRATE_SITE, so the default site every sibling probes is never in
+        # maintenance regardless of the orphan's fate.
         harness.wait_until(
             lambda: _maintenance_mode(inst, MIGRATE_SITE) == 0,
-            timeout=180,
+            timeout=120,
             interval=1,
             desc="site taken back out of maintenance after SIGTERM",
         )
