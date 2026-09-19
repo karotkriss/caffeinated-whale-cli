@@ -970,11 +970,14 @@ def remove(
         # fully backed up. Any single bench failure blocks volume deletion.
         if not no_backup:
             all_backups_ok = True
+            any_real_site = False
             for bp in bench_paths:
                 emit(RmStep(label=f"Backing up databases for bench '{bp}'...", style="cyan"))
                 bench_archive_dir = bench_archive_dirs[bp]
                 bench_archive_dir.mkdir(parents=True, exist_ok=True)
                 shared_home.secure_dir_shared_only(bench_archive_dir)
+                if bench_sites.list_sites(frappe_container, bp):
+                    any_real_site = True
                 bench_ok = _backup_sites(
                     project_name, frappe_container, bp, bench_archive_dir, emit
                 )
@@ -1007,14 +1010,24 @@ def remove(
                             ),
                             hint=(
                                 f"Run 'cwcli inspect {project_name} --update' to refresh the "
-                                "cache, then retry."
+                                f"cache, then re-run, or delete without a backup via "
+                                f"'cwcli rm {project_name} --no-backup'."
                             ),
                         )
                     )
-                elif not backup_ok and not any(census.values()):
-                    # Proven site-less: every discovered bench listed empty (a
-                    # half-provisioned instance), so _backup_sites only "failed"
-                    # because there was nothing to back up. Relax the gate.
+                elif (
+                    not backup_ok
+                    and not any_real_site
+                    and census is not None
+                    and not any(census.values())
+                ):
+                    # Proven site-less: relax is keyed on the SAME evidence the
+                    # gate refused on. A real site found anywhere (list_sites), or
+                    # a non-empty/None census, keeps the fail-closed refusal - the
+                    # census alone is never sufficient. Only when the backup step
+                    # positively found zero sites AND every discovered bench listed
+                    # empty (a half-provisioned instance) did _backup_sites "fail"
+                    # solely because there was nothing to back up. Relax the gate.
                     emit(
                         RmNotice(
                             text=(

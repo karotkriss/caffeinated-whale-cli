@@ -260,6 +260,20 @@ class FakeFrappeContainer:
         return any("bench --site " in c and "backup" in c for c in self.calls)
 
 
+class _ReachableFakeFrappeContainer(FakeFrappeContainer):
+    """A ``FakeFrappeContainer`` that also answers ``_live_site_census``'s
+    reachability probe (``test -d /home/frappe`` as a list), so the REAL census
+    runs. Its ``find`` probes fall through to the base ``(1, b"")``, so
+    ``discover_benches`` finds no bench and the census comes back ``{}`` while the
+    bench's ``sites/`` still lists a real site - the corruption edge from #237."""
+
+    def exec_run(self, cmd, workdir=None):
+        if isinstance(cmd, list) and cmd[:2] == ["test", "-d"]:
+            self.calls.append(cmd)
+            return (0, b"")
+        return super().exec_run(cmd, workdir=workdir)
+
+
 def _make_volume(name):
     volume = MagicMock()
     volume.name = name
@@ -728,6 +742,39 @@ class TestSiteLessBackupGate:
         volumes = [_make_volume("proj_sites"), _make_volume("proj_db-data")]
         _wire(monkeypatch, container, volumes)  # get_cached_project_data -> None (empty cache)
         self._census(monkeypatch, {BENCH: [], "/workspace/handmade": ["real.localhost"]})
+
+        result = _remove_project("proj", remove_volumes=True, no_backup=False)
+
+        assert result["backup_ok"] is False
+        assert result["volumes"] == 0
+        assert result["dir_removed"] is False
+        assert result["failures"]
+        for volume in volumes:
+            volume.remove.assert_not_called()
+        assert project_dir.exists()
+
+    def test_empty_census_never_overrides_a_real_site_backup_failed_on(
+        self, cwcli_home, monkeypatch
+    ):
+        # The corruption edge that motivated finding #1: a bench holds a REAL site
+        # whose backup FAILS, but its common_site_config.json/apps were removed, so
+        # discover_benches (which requires them) finds nothing and the REAL census
+        # comes back {} (empty, NOT None). An empty census must never relax the gate
+        # over a site the backup step positively found and failed to back up. This
+        # drives the REAL _live_site_census (no monkeypatch of it) so the census-vs-
+        # backup disagreement is exercised, not mocked away.
+        _patch_docker(monkeypatch)
+        project_dir = _make_project_dir(core_rm.PROJECTS_DIR, "proj")
+        # A running bench whose sites/ still lists a real site, but whose backup
+        # fails. discover_benches' find probes fall through to (1, b"") -> no bench
+        # -> census == {}; the reachability probe is answered so census is {} not None.
+        container = _ReachableFakeFrappeContainer(["site1.localhost"], backup_ok=False)
+        volumes = [_make_volume("proj_sites"), _make_volume("proj_db-data")]
+        _wire(monkeypatch, container, volumes)
+
+        # Sanity: the REAL census sees no bench (corruption) yet the site is real.
+        assert core_rm._live_site_census(container, _render_event) == {}
+        assert bench_sites.list_sites(container, BENCH) == ["site1.localhost"]
 
         result = _remove_project("proj", remove_volumes=True, no_backup=False)
 
