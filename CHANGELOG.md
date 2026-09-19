@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-09-19
+
+### Added
+
+- **`init --uid <n>`, and a root-host fallback for the frappe uid alignment** - cwcli aligns the container's `frappe` user to the host uid so the host can remove the workspace, but on a root (uid 0) host that remapping aliased the container's own root account, dropping bench's `PATH` and failing `bench init` with exit 127 on every root-host/CI-runner box. On a root host cwcli now keeps the image's own default frappe uid instead (root can still delete those files), warns once, and chowns the bind-mounted data directory so that user can write to it, including on a retry after an earlier failed init left it root-owned. An explicit `--uid <n>` override (rejecting `0` and negative values) is available for exotic hosts on both `cwcli init` and `cwcli axi init`, applying only to that invocation's provisioning and end-of-init auto-start. Non-root hosts are unaffected.
+- **Hidden `list`/`instances` aliases for `ls`, and a bare `cwcli status` summary** - `cwcli list` and `cwcli instances` (and `apps ls` for `apps list`) now work instead of failing with "No such command"; a bare `cwcli status` with no project now prints the all-instances summary instead of exiting with a usage error, and the `axi` surface's unknown-subcommand error now lists the valid subcommands.
+- **`cwcli doctor` flags a stale dev/editable install** - a new informational check reports when a source or editable checkout is behind its tracked upstream branch, so a caller does not silently trust output from a stale binary. It never fails doctor or blocks anything: a missing git, missing upstream, or network error is a quiet pass.
+- **`cwcli config cred-bridge enable --project <name>`** (repeatable) scopes the credential-bridge sweep to named, cwcli-managed instances instead of every running Frappe container on the machine; an unscoped sweep touching more than one instance now announces the instances it is about to wire before doing so.
+- **`cwcli status` reports a site stuck in maintenance mode** and names the command that clears it (`cwcli run <project> --site <site> set-maintenance-mode off`).
+- **`inspect` and `apps list` flag wrong-copy app updates** - when `apps/<app>` is a symlink to an external source, or the bench actually imports a different copy of an app than the one on disk, both surfaces now report which directory was really operated on, and `apps update`/`apps checkout` no longer report success when they changed a copy the running site does not use.
+
+### Changed
+
+- **Faster, quieter `cwcli init`** - `bench init` no longer runs with a hardcoded `--verbose` (gated behind cwcli's own `--verbose` instead), and the Docker Hub bench-tag lookup is now cached (short TTL) and skipped entirely when an explicit image tag is pinned.
+- **`cwcli apps install` accepts the app name positionally**, matching `apps update`/`apps checkout`, while `-a/--app` keeps working.
+- **Clearer failure messages** - a failed `apps update` pull now includes a tail of git's real error by default (previously required `--verbose`); a supervisor-install failure during `start`/`restart` no longer asserts a single network cause and shows the captured installer output; "not found" wording is now consistent across verbs.
+- **Single-site fallback for mutating bench verbs** - `backup`, `unlock`, `restore --latest`, and `axi migrate` now fall back to a bench's sole site instead of failing with "No default site found"; a multi-site bench still requires `--site`, now with the available sites listed and no misleading `inspect` tip.
+
+### Fixed
+
+- **A killed terminal or `kill` no longer leaves a site stuck in maintenance mode or leaks credential-bridge leftovers** - SIGTERM and SIGHUP now unwind exactly like Ctrl+C, so the existing cleanup in `migrate`, `apps update`, `apps checkout`, `apps install`, `run-tests`, and `restore` runs on all three signals instead of only SIGINT.
+- **A failed `cwcli apps install` no longer poisons every retry** - a half-fetched `apps/<app>` directory is now removed when the fetch step fails, and a present-but-not-actually-installed directory gets an actionable warning instead of a raw traceback on the next attempt.
+- **`cwcli rm`'s pre-backup database readiness probe no longer false-fails a healthy, slow-to-start instance** - the fixed 60-attempt poll is now a time-bounded 180s wait, and a failure now reports the specific reason (connection refused, unresolvable host, exec failure) instead of a bare timeout.
+- **`cwcli rm` of a nonexistent project no longer prints the destructive-deletion banner and exits 0** - it now reports a plain not-found warning and a non-zero exit, consistent with `rm-site`/`rm-bench`.
+- **`cwcli init` validates the project name before the admin-password check**, so an invalid name is reported on the first attempt instead of the second.
+- **The human `cwcli status` web line now shows the reachable host address** (matching the `init` success banner and `cwcli axi url`) instead of the container-internal port; when it cannot be resolved, the port is labeled `(in-container)`.
+- **A broken pipe (`cwcli ... | head`) now exits quietly instead of returning exit 1** - the default SIGPIPE disposition is restored at startup.
+- Small wording fixes: a stopped instance's cached benches are reported as "not running" instead of "0 benches"; `cwcli init --reuse-bench` says "Reused bench" instead of "Successfully initialized bench"; the human `rm-bench` running-bench refusal substitutes the real bench selector instead of a literal placeholder.
+
 ## [3.1.3] - 2026-09-19
 
 ### Fixed
