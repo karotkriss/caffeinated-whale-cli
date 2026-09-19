@@ -402,7 +402,10 @@ def _render_help_as_toon(command: click.Command, ctx: click.Context) -> str:
 
 def _usage_help_lines(error: click.UsageError) -> list[str]:
     """A one-line ``usage:`` string naming the command's arguments and valid flags,
-    so an agent can self-correct in a single turn."""
+    so an agent can self-correct in a single turn. An unknown-subcommand error
+    (click's ``No such command 'x'.``, raised with the PARENT group's ctx) also
+    gets a second line naming every valid subcommand - without it, the agent's
+    only recourse was a separate `--help` round trip to discover the typo."""
     ctx = getattr(error, "ctx", None)
     if ctx is None:  # pragma: no cover - axi usage errors always carry a ctx
         return []
@@ -413,7 +416,11 @@ def _usage_help_lines(error: click.UsageError) -> list[str]:
             args.append(_param_metavar(param, ctx))
         elif _is_option(param):
             opts.append("[" + "/".join(param.opts + param.secondary_opts) + "]")
-    return ["usage: " + " ".join([ctx.command_path, *args, *opts])]
+    lines = ["usage: " + " ".join([ctx.command_path, *args, *opts])]
+    if _is_group(ctx.command) and _usage_error_message(error).startswith("No such command"):
+        names = cast(Any, ctx.command).list_commands(ctx)
+        lines.append("valid subcommands: " + ", ".join(names))
+    return lines
 
 
 def emit_usage_error_as_toon(error: click.UsageError) -> None:

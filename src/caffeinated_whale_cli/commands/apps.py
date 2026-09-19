@@ -299,6 +299,10 @@ def list_apps(
         raise typer.Exit(code=1)
 
 
+# `ls` is the natural guess for `list` (#231); hidden so `--help` keeps one name.
+app.command("ls", hidden=True)(list_apps)
+
+
 # -------------------------------------------------------------------------- install
 
 

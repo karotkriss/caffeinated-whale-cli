@@ -91,3 +91,39 @@ class TestLsOtherModes:
         result = runner.invoke(list_mod.app, [])
         assert result.exit_code == 0
         assert "No Frappe instances found" in result.stdout
+
+
+class TestListInstancesAliases:
+    """`cwcli list` / `cwcli instances` are natural guesses for `ls` (GH #231):
+    hidden aliases registered on the root app so they just work, without
+    appearing in `--help` (which still advertises one canonical name)."""
+
+    def test_list_alias_behaves_like_ls(self, wired, monkeypatch):
+        from caffeinated_whale_cli.main import app as root_app
+
+        _patch_instances(
+            monkeypatch, [InstanceDTO(project_name="p1", status="running", ports=[])]
+        )
+        result = runner.invoke(root_app, ["list", "--quiet"])
+        assert result.exit_code == 0
+        assert result.stdout.split() == ["p1"]
+
+    def test_instances_alias_behaves_like_ls(self, wired, monkeypatch):
+        from caffeinated_whale_cli.main import app as root_app
+
+        _patch_instances(
+            monkeypatch, [InstanceDTO(project_name="p1", status="running", ports=[])]
+        )
+        result = runner.invoke(root_app, ["instances", "--quiet"])
+        assert result.exit_code == 0
+        assert result.stdout.split() == ["p1"]
+
+    def test_aliases_are_hidden_from_help(self):
+        from typer.main import get_command
+
+        from caffeinated_whale_cli.main import app as root_app
+
+        click_root = get_command(root_app)
+        assert click_root.commands["ls"].hidden is not True
+        assert click_root.commands["list"].hidden is True
+        assert click_root.commands["instances"].hidden is True

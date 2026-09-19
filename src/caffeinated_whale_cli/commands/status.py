@@ -40,6 +40,7 @@ from ..core.status import BenchStatus, StatusReport
 from ..utils.completion_utils import complete_project_names
 from ..utils.console import stderr_console
 from ..utils.docker_utils import handle_docker_errors
+from .list import render_instances_summary
 
 _MIN_INTERVAL = 1.0
 
@@ -47,7 +48,9 @@ _MIN_INTERVAL = 1.0
 @handle_docker_errors
 def status(
     project_name: str = typer.Argument(
-        ..., help="The Docker Compose project name to check.", autocompletion=complete_project_names
+        None,
+        help="The Docker Compose project name to check. Omit for the all-instances summary.",
+        autocompletion=complete_project_names,
     ),
     bench: str = typer.Option(
         None,
@@ -84,7 +87,15 @@ def status(
     ``--watch`` shows a live refreshing view without probing the web server (so
     repeated ticks leave no HTTP requests in the bench's access logs); it degrades
     to a single snapshot when stdout or stderr is not a TTY.
+
+    With no project name, this prints the all-instances summary (the same table
+    `cwcli ls` gives) instead of erring - a bare `status` reads like "how is
+    everything", not a missing-argument mistake.
     """
+    if project_name is None:
+        render_instances_summary(verbose=verbose)
+        raise typer.Exit(code=0)
+
     if watch and sys.stdout.isatty() and sys.stderr.isatty():
         # Live view: quiet (probe_web=False) so repeated ticks never hit :8000.
         _watch_loop(project_name, bench, verbose, max(_MIN_INTERVAL, interval))
