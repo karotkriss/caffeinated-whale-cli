@@ -202,3 +202,43 @@ class TestAxiBenchesHintRePoint:
 
         assert result.exit_code == 1
         assert "cwcli axi inspect proj" in result.stdout
+
+
+def test_axi_inspect_surfaces_app_copies_flags(monkeypatch):
+    """BUG-10: a full read's per-bench app_copies (symlink / wrong-copy) reach TOON."""
+    from caffeinated_whale_cli.core.resolvers import AppImport
+
+    report = InspectReport(
+        project="proj",
+        served_from="full",
+        degraded=False,
+        benches=[
+            BenchInfo(
+                index=0,
+                path="/workspace/frappe-bench",
+                label=None,
+                current_site="a.localhost",
+                default_site="a.localhost",
+                available_apps=["frappe", "srcapp"],
+                sites=[],
+                app_copies=[
+                    AppImport(
+                        app="srcapp",
+                        entry="/workspace/frappe-bench/apps/srcapp",
+                        is_symlink=False,
+                        resolved_path="/workspace/frappe-bench/apps/srcapp",
+                        imported_path="/workspace/.hdsrc/srcapp",
+                        diverged=True,
+                        checked=True,
+                    )
+                ],
+            )
+        ],
+    )
+    _patch_inspect(monkeypatch, Result(status=Status.OK, data=report))
+
+    result = runner.invoke(axi_mod.app, ["inspect", "proj"])
+
+    assert result.exit_code == 0
+    assert "app_copies" in result.stdout
+    assert "/workspace/.hdsrc/srcapp,true,true" in result.stdout  # imported,diverged,checked

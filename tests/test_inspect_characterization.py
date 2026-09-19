@@ -580,3 +580,48 @@ class TestInteractiveLabeling:
         assert order[0] == "warning"
         assert order.count("warning") == 1  # not echoed again after set_labels
         assert order.count("prompt") == 2
+
+
+class TestAppCopyFlagsInTheTree:
+    """BUG-10: the human tree annotates a symlinked / wrong-copy app on a full read."""
+
+    def _patch(self, monkeypatch):
+        from caffeinated_whale_cli.core import resolvers as core_resolvers
+
+        def _fake(_c, bench, apps):
+            out = {}
+            for a in apps:
+                if a == "erpnext":
+                    out[a] = core_resolvers.AppImport(
+                        app=a,
+                        entry=f"{bench}/apps/{a}",
+                        is_symlink=False,
+                        resolved_path=f"{bench}/apps/{a}",
+                        imported_path="/workspace/.hdsrc/erpnext",
+                        diverged=True,
+                        checked=True,
+                    )
+                else:
+                    out[a] = core_resolvers.AppImport(
+                        app=a,
+                        entry=f"{bench}/apps/{a}",
+                        is_symlink=True,
+                        resolved_path="/workspace/.hdsrc/frappe",
+                        imported_path="/workspace/.hdsrc/frappe",
+                        diverged=False,
+                        checked=True,
+                    )
+            return out
+
+        monkeypatch.setattr(inspect_mod.core_inspect.resolvers, "resolve_app_imports", _fake)
+
+    def test_tree_flags_a_wrong_copy_and_a_symlink(self, wired, monkeypatch, capsys):
+        store, _writes, install = wired
+        install(MultiBenchContainer())
+        self._patch(monkeypatch)
+
+        _run_inspect(json_output=False)
+
+        out = capsys.readouterr().out
+        assert "bench imports /workspace/.hdsrc/erpnext" in out
+        assert "/workspace/.hdsrc/frappe" in out

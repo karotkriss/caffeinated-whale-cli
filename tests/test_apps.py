@@ -1467,3 +1467,173 @@ def test_update_reports_a_dead_daemon_as_unknown_and_still_exits_nonzero(monkeyp
     assert "Could not start the command" in captured.err
     assert "Lost track of 1 app(s)" in out
     assert "payments: Git pull failed" not in out
+
+
+# ------------------------------------------------------ BUG-10: wrong-copy renderers
+
+
+def _patch_imports(monkeypatch, spec):
+    """spec: app -> dict(is_symlink, resolved, imported, diverged)."""
+
+    def _fake(_c, bench, apps):
+        out = {}
+        for a in apps:
+            s = spec.get(a, {})
+            out[a] = core_apps.resolvers.AppImport(
+                app=a,
+                entry=f"{bench}/apps/{a}",
+                is_symlink=s.get("is_symlink", False),
+                resolved_path=s.get("resolved", f"{bench}/apps/{a}"),
+                imported_path=s.get("imported"),
+                diverged=s.get("diverged", False),
+                checked=True,
+            )
+        return out
+
+    monkeypatch.setattr(core_apps.resolvers, "resolve_app_imports", _fake)
+
+
+def test_checkout_human_flags_a_wrong_copy_and_exits_nonzero(wired, monkeypatch, capsys):
+    container = _install_container()
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
+    _patch_imports(
+        monkeypatch,
+        {"payments": {"diverged": True, "imported": "/workspace/.hdsrc/payments"}},
+    )
+
+    with pytest.raises(typer.Exit) as exc:
+        apps_mod.checkout_app(
+            "proj",
+            "payments",
+            "feature/x",
+            bench=None,
+            bench_path=None,
+            reset=False,
+            json_output=False,
+            yes=False,
+            verbose=False,
+        )
+
+    assert exc.value.exit_code == 1
+    err = capsys.readouterr().err
+    assert "verify-import" in err
+    assert "/workspace/.hdsrc/payments" in err
+
+
+def test_checkout_human_json_carries_app_imports_when_diverged(wired, monkeypatch, capsys):
+    container = _install_container()
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
+    _patch_imports(
+        monkeypatch,
+        {"payments": {"diverged": True, "imported": "/workspace/.hdsrc/payments"}},
+    )
+
+    with pytest.raises(typer.Exit) as exc:
+        apps_mod.checkout_app(
+            "proj",
+            "payments",
+            "feature/x",
+            bench=None,
+            bench_path=None,
+            reset=False,
+            json_output=True,
+            yes=False,
+            verbose=False,
+        )
+
+    assert exc.value.exit_code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["ok"] is False
+    assert out["app_imports"][0]["diverged"] is True
+    assert out["app_imports"][0]["imported_path"] == "/workspace/.hdsrc/payments"
+
+
+def test_list_human_flags_symlink_and_wrong_copy(wired, monkeypatch, capsys):
+    container = FakeFrappeContainer(available_apps=["frappe", "payments"])
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
+    _patch_imports(
+        monkeypatch,
+        {
+            "payments": {"diverged": True, "imported": "/workspace/.hdsrc/payments"},
+            "frappe": {"is_symlink": True, "resolved": "/workspace/.hdsrc/frappe"},
+        },
+    )
+
+    apps_mod.list_apps(
+        "proj",
+        bench=None,
+        bench_path=None,
+        sites=[],
+        installed=False,
+        json_output=False,
+        yes=False,
+        verbose=False,
+    )
+
+    out = capsys.readouterr().out
+    assert "bench imports /workspace/.hdsrc/payments" in out
+    assert "/workspace/.hdsrc/frappe" in out
+
+
+def _update_report(app_imports, ok):
+    """A minimal UpdateReport for driving the update summary renderer directly."""
+    return core_update._build_report(
+        project_name="proj",
+        bench_path="/workspace/frappe-bench",
+        apps=["payments"],
+        frappe_reset=False,
+        affected=set(),
+        migrated=[],
+        failed_apps=[],
+        unknown_apps=[],
+        failed_maintenance_enable=[],
+        failed_migrations=[],
+        unknown_migrations=[],
+        failed_builds=[],
+        unknown_builds=[],
+        failed_cache_clears=[],
+        failed_website_cache_clears=[],
+        failed_maintenance_disable=[],
+        app_imports=app_imports,
+        aborted=False,
+    )
+
+
+def test_update_summary_reports_a_wrong_copy_pull(capsys):
+    imp = core_update.resolvers.AppImport(
+        app="payments",
+        entry="/workspace/frappe-bench/apps/payments",
+        is_symlink=False,
+        resolved_path="/workspace/frappe-bench/apps/payments",
+        imported_path="/workspace/.hdsrc/payments",
+        diverged=True,
+        checked=True,
+    )
+    report = _update_report([imp], ok=False)
+    assert report.ok is False
+
+    update_mod._report_summary(report)
+
+    out = capsys.readouterr().out
+    assert "WRONG copy" in out
+    assert "/workspace/.hdsrc/payments" in out
+
+
+def test_update_summary_names_a_symlink_target_on_a_clean_run(capsys):
+    imp = core_update.resolvers.AppImport(
+        app="payments",
+        entry="/workspace/frappe-bench/apps/payments",
+        is_symlink=True,
+        resolved_path="/workspace/.hdsrc/payments",
+        imported_path="/workspace/.hdsrc/payments",
+        diverged=False,
+        checked=True,
+    )
+    report = _update_report([imp], ok=True)
+    assert report.ok is True
+
+    update_mod._report_summary(report)
+
+    out = capsys.readouterr().out
+    assert "/workspace/.hdsrc/payments" in out
+    assert "symlink" in out

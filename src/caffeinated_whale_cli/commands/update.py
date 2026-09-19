@@ -278,10 +278,31 @@ def _report_summary(report: UpdateReport) -> None:
             f"{', '.join(report.force_reset_apps)}"
         )
 
+    # Name the real directory operated on when apps/<app> is a symlink (e.g. a
+    # .hdsrc source dir), even on a fully-clean run - the update went somewhere the
+    # bare app name did not say. Informational, so it prints before the ok short-circuit.
+    for imp in report.app_imports:
+        if imp.is_symlink and imp.resolved_path and not imp.diverged:
+            console.print(
+                f"[dim]• apps/{imp.app} → {imp.resolved_path} (updated via symlink)[/dim]"
+            )
+
     if report.ok:
         return
 
     console.print("\n[bold red]Update completed with errors:[/bold red]")
+
+    diverged = [imp for imp in report.app_imports if imp.diverged]
+    if diverged:
+        console.print(
+            f"[bold red]✗[/bold red] Updated the WRONG copy for {len(diverged)} app(s) - the "
+            "running site imports a different copy, so it keeps executing stale code:"
+        )
+        for imp in diverged:
+            console.print(
+                f"  • {imp.app}: updated [cyan]{imp.resolved_path}[/cyan], but the bench "
+                f"imports [cyan]{imp.imported_path}[/cyan]"
+            )
 
     if report.aborted:
         # No per-site record exists for the sites the fan-out never reached, so say

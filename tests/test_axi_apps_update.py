@@ -277,3 +277,40 @@ class TestAxiVerb:
         out = capsys.readouterr().out
         assert "help:" in out
         assert "start it first with 'cwcli start <project>'" in out
+
+
+class TestAxiWrongCopy:
+    """BUG-10: a pull that lands in a copy the bench does not import is not-ok."""
+
+    def _patch(self, monkeypatch):
+        def _fake(_c, bench, apps):
+            return {
+                a: core_update.resolvers.AppImport(
+                    app=a,
+                    entry=f"{bench}/apps/{a}",
+                    is_symlink=False,
+                    resolved_path=f"{bench}/apps/{a}",
+                    imported_path="/workspace/.hdsrc/payments",
+                    diverged=True,
+                    checked=True,
+                )
+                for a in apps
+            }
+
+        monkeypatch.setattr(core_update.resolvers, "resolve_app_imports", _fake)
+
+    def test_a_wrong_copy_update_exits_one_with_the_divergence_in_toon(
+        self, wired, monkeypatch, capsys
+    ):
+        self._patch(monkeypatch)
+
+        with pytest.raises(typer.Exit) as exc:
+            _axi_update()
+
+        assert exc.value.exit_code == 1
+        out = capsys.readouterr().out
+        assert "ok: false" in out
+        assert "app_imports" in out
+        assert "/workspace/.hdsrc/payments,true,true" in out  # imported,diverged,checked
+        # The warning naming both copies rides the TOON document too.
+        assert "other copy" in out.lower()

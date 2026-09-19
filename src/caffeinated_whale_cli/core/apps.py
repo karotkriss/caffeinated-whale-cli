@@ -60,6 +60,10 @@ class AppsListing:
     # load-bearing: "no apps" and "could not tell" are different facts, and only the
     # second one makes the command exit non-zero.
     installed: dict[str, list[str] | None] = field(default_factory=dict)
+    # Per available app: whether apps/<app> is a symlink, and whether the bench
+    # imports a DIFFERENT copy than apps/<app> (the BUG-10 hint). See
+    # resolvers.resolve_app_imports.
+    app_copies: list[resolvers.AppImport] = field(default_factory=list)
     ok: bool = True  # False iff any site's read failed
 
 
@@ -85,6 +89,11 @@ class AppsReport:
     project: str
     bench_path: str
     results: list[AppResult]
+    # Set by verbs that change an app's code on disk (update/checkout): where each
+    # touched app physically lives vs where the bench actually imports it from, so a
+    # symlinked source is named and a wrong-copy update is caught. Empty for verbs
+    # that do not resolve it. See resolvers.resolve_app_imports.
+    app_imports: list[resolvers.AppImport] = field(default_factory=list)
     ok: bool
 
 
@@ -458,6 +467,12 @@ def list_apps(
     command, available = _available_apps(frappe_container, path)
     emit(AppsCommand(command=command))
 
+    # Flag any app whose apps/<app> is a symlink, or whose imported copy differs from
+    # apps/<app> (BUG-10). One exec; a probe failure degrades to unchecked, never an
+    # error - `apps list` must stay a read even on a bench whose venv cannot be probed.
+    imports = resolvers.resolve_app_imports(frappe_container, path, available)
+    app_copies = [imports[name] for name in available if name in imports]
+
     installed_by_site: dict[str, list[str] | None] = {}
     if installed or sites:
         for site in _target_sites(frappe_container, path, sites):
@@ -474,6 +489,7 @@ def list_apps(
             bench_path=path,
             available=available,
             installed=installed_by_site,
+            app_copies=app_copies,
             ok=not any_fail,
         ),
         warnings=warnings,
@@ -914,6 +930,7 @@ def checkout_app(
     # Gated on the CHECKOUT step, not on the whole run: `git fetch` writes only into
     # `.git`, so a run that stopped there changed no code any process could be
     # serving, while a failed `--reset` AFTER a good checkout did move the tree.
+    app_imports: list[resolvers.AppImport] = []
     if any(r.action == "checkout" and r.ok for r in results):
         _resync_after_mutation(
             frappe_container,
@@ -923,11 +940,29 @@ def checkout_app(
             warnings,
             emit=emit,
         )
+        # BUG-10: the checkout landed on whatever apps/<app> physically resolves to;
+        # verify the bench actually imports THAT copy. When it imports a different
+        # one, the checkout did not reach the running site - report it as a failed
+        # `verify-import` step (so report.ok flips and scripts notice) plus a warning
+        # naming both paths. A symlinked-but-not-diverged app carries its resolved
+        # target for the renderer but is NOT a failure.
+        imp = resolvers.resolve_app_imports(frappe_container, path, [app]).get(app)
+        if imp is not None:
+            app_imports.append(imp)
+            if imp.diverged:
+                results.append(AppResult(app=app, site=None, action="verify-import", ok=False))
+        warnings.extend(resolvers.app_import_divergence_warnings(app_imports))
 
     any_fail = any(not r.ok for r in results)
     return Result(
         status=Status.WARNING if any_fail else Status.OK,
-        data=AppsReport(project=project_name, bench_path=path, results=results, ok=not any_fail),
+        data=AppsReport(
+            project=project_name,
+            bench_path=path,
+            results=results,
+            app_imports=app_imports,
+            ok=not any_fail,
+        ),
         warnings=warnings,
     )
 

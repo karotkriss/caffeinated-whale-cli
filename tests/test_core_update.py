@@ -781,3 +781,49 @@ class TestForceReownsADubiousOwnedAppRepo:
         result = _update(force=True)
         assert "git pull" in wired.calls
         assert any(w.code == "app.force_reown_failed" for w in result.warnings)
+
+
+# ------------------------------------------------------ BUG-10: wrong-copy detection
+
+
+class TestWrongCopyDetection:
+    """`git pull` lands on apps/<app>, but the bench may import a different copy."""
+
+    def _patch_diverged(self, monkeypatch, imported="/workspace/.hdsrc/payments"):
+        def _fake(_container, bench, apps):
+            return {
+                a: core_update.resolvers.AppImport(
+                    app=a,
+                    entry=f"{bench}/apps/{a}",
+                    is_symlink=False,
+                    resolved_path=f"{bench}/apps/{a}",
+                    imported_path=imported,
+                    diverged=True,
+                    checked=True,
+                )
+                for a in apps
+            }
+
+        monkeypatch.setattr(core_update.resolvers, "resolve_app_imports", _fake)
+
+    def test_a_wrong_copy_pull_is_not_ok_and_names_both_paths(self, monkeypatch, wired):
+        self._patch_diverged(monkeypatch)
+
+        result = _update()
+
+        assert result.data.ok is False
+        assert result.data.app_imports[0].diverged is True
+        assert result.data.app_imports[0].imported_path == "/workspace/.hdsrc/payments"
+        warning = next(w for w in result.warnings if w.code == "app.wrong_copy")
+        assert f"{BENCH}/apps/payments" in warning.text
+        assert "/workspace/.hdsrc/payments" in warning.text
+
+    def test_a_skipped_app_is_not_checked_for_divergence(self, monkeypatch, wired):
+        """A failed pull skips the app, so there is no updated copy to verify."""
+        wired.fail_on = ["git pull"]
+        self._patch_diverged(monkeypatch)
+
+        result = _update()
+
+        # The pull failed (already not-ok); the app was skipped, so no divergence row.
+        assert result.data.app_imports == []
