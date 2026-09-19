@@ -193,8 +193,12 @@ HOOKS
 : > "$APPDIR/patches.txt"
 touch "$APPDIR/patches/__init__.py"
 env/bin/pip install -q -e apps/{SLOW_APP}
-# Register the app bench-wide so install-app can find it.
-grep -qxF '{SLOW_APP}' sites/apps.txt 2>/dev/null || echo '{SLOW_APP}' >> sites/apps.txt
+# Register the app bench-wide so install-app can find it. The leading newline is
+# load-bearing: apps.txt may lack a trailing newline, and a plain append would
+# concatenate this entry onto the last app ('frappe' -> 'frappecwe2e_slowmigrate'),
+# corrupting the SHARED bench's app list for every later test. frappe's
+# get_file_items() strips the resulting blank line, so this is safe either way.
+grep -qxF '{SLOW_APP}' sites/apps.txt 2>/dev/null || printf '\\n{SLOW_APP}\\n' >> sites/apps.txt
 bench --site {SLOW_SITE} install-app {SLOW_APP}
 # Prove the app is genuinely installed on the site before we rely on its patch.
 bench --site {SLOW_SITE} list-apps | grep -qw {SLOW_APP}
