@@ -549,3 +549,54 @@ def test_per_invocation_helper_is_readable_by_the_container_uid(tmp_path, monkey
             assert mode & 0o022 == 0, f"shim must not be group/world writable (mode {mode:o})"
     finally:
         os.umask(old_umask)
+
+
+# --------------------------------------------------------------------------- #
+# issue #237: the per-invocation shim must GUIDE raw git on a connect failure
+# --------------------------------------------------------------------------- #
+
+
+def _run_shim(shim_path, env=None):
+    return subprocess.run(
+        [sys.executable, str(shim_path), "get"],
+        input=b"protocol=https\nhost=github.com\n\n",
+        capture_output=True,
+        env={**os.environ, **(env or {})},
+    )
+
+
+@unix_only
+def test_per_invocation_unix_shim_guides_raw_git_on_a_dead_socket(tmp_path):
+    """A raw `git` reaching a leftover per-invocation helper line (outside a live
+    cwcli op) hits a dead socket. It must exit 0 with EMPTY stdout so git falls
+    through to its own prompt, and print ONE guidance line to stderr naming
+    `cwcli run` / the persistent bridge - not a bare Python traceback."""
+    shim = tmp_path / "shim.py"
+    shim.write_text(credbridge._CONTAINER_HELPER_SRC.format(sock_name="dead.sock"))
+    dead_sock = tmp_path / "nonexistent.sock"
+
+    out = _run_shim(shim, env={"CWCLI_CRED_SOCK": str(dead_sock)})
+
+    assert out.returncode == 0  # git treats empty output as "no credentials"
+    assert out.stdout == b""  # never emit a partial/garbage credential
+    assert b"Traceback" not in out.stderr
+    stderr = out.stderr.decode()
+    assert "cwcli run" in stderr
+    assert "cred-bridge enable" in stderr
+
+
+def test_per_invocation_tcp_shim_guides_raw_git_on_a_dead_port(tmp_path):
+    """Same guidance on the Docker Desktop (TCP) transport: a dead loopback port
+    exits 0 empty with the one-line hint on stderr."""
+    # A port nothing is listening on; the shim's connect refuses.
+    shim = tmp_path / "shim.py"
+    shim.write_text(
+        credbridge._CONTAINER_HELPER_SRC_TCP.format(host="127.0.0.1", port=1, token=b"tok")
+    )
+
+    out = _run_shim(shim, env={"CWCLI_CRED_HOST": "127.0.0.1", "CWCLI_CRED_PORT": "1"})
+
+    assert out.returncode == 0
+    assert out.stdout == b""
+    assert b"Traceback" not in out.stderr
+    assert "cwcli run" in out.stderr.decode()

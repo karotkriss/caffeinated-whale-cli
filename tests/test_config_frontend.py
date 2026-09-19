@@ -125,6 +125,91 @@ class TestPathsGroup:
         assert "not found" in result.output
 
 
+class TestPathsPrune:
+    """`config paths prune` (issue #237): drop search paths no live instance
+    references. Dry-run by default, `--yes` to apply, never dropping a referenced
+    or unverifiable path."""
+
+    def _fake(self, existing=(), running=True):
+        existing = set(existing)
+
+        class _F:
+            status = "running" if running else "exited"
+            labels = {"com.docker.compose.service": "frappe"}
+
+            def exec_run(self, cmd, workdir=None):
+                paths = cmd[4:]
+                lines = [p for p in paths if p in existing] + ["__CWCLI_PRUNE_END__"]
+                return (0, ("\n".join(lines) + "\n").encode())
+
+        return [_F()]
+
+    def _wire(self, monkeypatch, instances, containers):
+        from caffeinated_whale_cli.core import config as core_config
+        from caffeinated_whale_cli.core.envelope import Result, Status
+        from caffeinated_whale_cli.core.list import InstanceDTO
+
+        dtos = [
+            InstanceDTO(project_name=n, status="running" if r else "exited", ports=[])
+            for n, r in instances
+        ]
+        monkeypatch.setattr(
+            core_config.core_list, "list_instances", lambda **k: Result(status=Status.OK, data=dtos)
+        )
+        monkeypatch.setattr(
+            core_config, "get_project_containers", lambda name: containers.get(name)
+        )
+
+    def test_dry_run_lists_dead_without_removing(self, cfg, monkeypatch):
+        runner.invoke(app, ["config", "paths", "add", "/live"])
+        runner.invoke(app, ["config", "paths", "add", "/dead"])
+        self._wire(monkeypatch, [("a", True)], {"a": self._fake(existing={"/live"})})
+
+        result = runner.invoke(app, ["config", "paths", "prune"])
+        assert result.exit_code == 0
+        assert "Would prune" in result.output
+        assert "/dead" in result.output
+        assert "--yes" in result.output
+        # Dry-run writes nothing.
+        assert json.loads(runner.invoke(app, ["config", "paths", "--json"]).output) == [
+            "/live",
+            "/dead",
+        ]
+
+    def test_yes_removes_only_dead_paths(self, cfg, monkeypatch):
+        runner.invoke(app, ["config", "paths", "add", "/live"])
+        runner.invoke(app, ["config", "paths", "add", "/dead"])
+        self._wire(monkeypatch, [("a", True)], {"a": self._fake(existing={"/live"})})
+
+        result = runner.invoke(app, ["config", "paths", "prune", "--yes"])
+        assert result.exit_code == 0
+        assert "Pruned" in result.output
+        assert json.loads(runner.invoke(app, ["config", "paths", "--json"]).output) == ["/live"]
+
+    def test_json_reports_per_path_verdicts(self, cfg, monkeypatch):
+        runner.invoke(app, ["config", "paths", "add", "/dead"])
+        self._wire(monkeypatch, [], {})
+        data = json.loads(runner.invoke(app, ["config", "paths", "prune", "--json"]).output)
+        assert data["applied"] is False
+        assert any(s["path"] == "/dead" and s["prunable"] for s in data["statuses"])
+
+    def test_stopped_instance_blocks_and_is_noted(self, cfg, monkeypatch):
+        runner.invoke(app, ["config", "paths", "add", "/dead"])
+        self._wire(monkeypatch, [("a", False)], {"a": self._fake(running=False)})
+
+        result = runner.invoke(app, ["config", "paths", "prune", "--yes"])
+        assert result.exit_code == 0
+        assert "could not be checked" in result.stderr
+        # A stopped instance might reference the path, so nothing is dropped.
+        assert json.loads(runner.invoke(app, ["config", "paths", "--json"]).output) == ["/dead"]
+
+    def test_empty_config_is_explicit(self, cfg, monkeypatch):
+        self._wire(monkeypatch, [], {})
+        result = runner.invoke(app, ["config", "paths", "prune"])
+        assert result.exit_code == 0
+        assert "No custom search paths configured." in result.output
+
+
 class TestCacheJson:
     def test_cache_list_json_empty_is_an_empty_array(self, cfg):
         result = runner.invoke(app, ["config", "cache", "list", "--json"])
