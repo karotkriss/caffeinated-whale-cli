@@ -172,11 +172,13 @@ def is_valid_project_name(name: str) -> bool:
     """Reject names that are not a single, safe directory entry under ``PROJECTS_DIR``.
 
     A project name is only ever one directory beneath the projects root. Empty,
-    ``.``, ``..``, absolute, or separator-bearing names let a ``pathlib`` join
-    escape that root (see :func:`is_safe_project_dir`), so ``cwcli rm ..`` could
-    otherwise archive-and-``rmtree`` the entire cwcli-state tree.
+    blank, ``.``, ``..``, absolute, or separator-bearing names let a ``pathlib``
+    join escape that root (see :func:`is_safe_project_dir`) or resolve to a
+    phantom project, so ``cwcli rm ..`` could otherwise archive-and-``rmtree``
+    the entire cwcli-state tree, and ``cwcli rm "   "`` would run against a
+    directory made of spaces (issue #237).
     """
-    if not name or name in (".", ".."):
+    if not name.strip() or name in (".", ".."):
         return False
     if "/" in name or "\\" in name or "\0" in name:
         return False
@@ -778,6 +780,53 @@ def _resolve_bench_paths(project_name: str, frappe_container, emit: OnEvent) -> 
         return bench_paths
 
 
+def _live_site_census(frappe_container, emit: OnEvent) -> dict[str, list[str]] | None:
+    """Live ``{bench_path: sites}`` for every discovered bench, or None if ambiguous.
+
+    The AUTHORITY on what site data the instance actually holds, cross-checking
+    the cache-derived backup targets against reality - because the cache OUTLIVES
+    the benches it describes and can name a bench that no longer exists OR omit a
+    hand-made one that does. It is deliberately LIVE, never a cache read (issue
+    #237: "no site exists on any bench" must be proven from the instance).
+
+    Returns None - the fail-closed verdict the caller keeps the refusal on - when
+    the census cannot be trusted: the frappe home is unreachable, live discovery
+    raised, or ANY discovered bench's sites directory could not be listed (the
+    same ambiguity :func:`bench_sites.list_sites` reports as None). A trustworthy
+    census maps each discovered bench to its (possibly empty) list of real sites,
+    so a genuinely half-provisioned instance maps every bench to ``[]``.
+    """
+    from . import inspect as core_inspect
+
+    # A reachable frappe home confirms exec works AND that the standard discovery
+    # root exists, so an EMPTY discovery below means "no bench", not "could not
+    # look" - the distinction that separates a proven-empty instance (proceed)
+    # from an unreadable one (keep the refusal).
+    try:
+        probe_code, _ = frappe_container.exec_run(["test", "-d", "/home/frappe"])
+    except Exception as e:
+        emit(RmTrace(text=f"Live site census: reachability probe failed: {e}"))
+        return None
+    if probe_code != 0:
+        emit(RmTrace(text="Live site census: /home/frappe not reachable; census inconclusive"))
+        return None
+
+    try:
+        benches = core_inspect.discover_benches(frappe_container)
+    except Exception as e:
+        emit(RmTrace(text=f"Live site census: bench discovery failed: {e}"))
+        return None
+
+    census: dict[str, list[str]] = {}
+    for bench_path in benches:
+        sites = bench_sites.list_sites(frappe_container, bench_path)
+        if sites is None:
+            emit(RmTrace(text=f"Live site census: could not list sites at '{bench_path}'"))
+            return None
+        census[bench_path] = sites
+    return census
+
+
 def remove(
     project_name: str,
     *,
@@ -825,10 +874,13 @@ def remove(
     # The CLI already filters these, but a core function must not trust its
     # caller's discipline for its own contract.
     if not is_valid_project_name(project_name):
+        # Never render an empty/blank name as a bare empty quote (issue #237): a
+        # message reading "Refusing to remove ''." names nothing actionable.
+        shown = repr(project_name) if project_name.strip() else "(empty)"
         raise CwcliError(
             ErrorKind.USAGE,
             "project.invalid_name",
-            f"Refusing to remove invalid project name {project_name!r}.",
+            f"Refusing to remove invalid project name {shown}.",
         )
 
     containers = get_project_containers(project_name)
@@ -929,6 +981,49 @@ def remove(
                 if not bench_ok:
                     all_backups_ok = False
             backup_ok = all_backups_ok
+
+            # The cache-derived bench_paths above can be stale (a removed bench
+            # lingers) or incomplete (a hand-made bench is absent), so they are
+            # NOT the authority on whether there is data to protect. Cross-check
+            # against a LIVE census before the gate decides (issue #237), the same
+            # "recheck rather than blindly refuse" the volume-free-orphan path
+            # already does. Only a positive proof moves the gate; anything
+            # ambiguous keeps today's fail-closed refusal.
+            census = _live_site_census(frappe_container, emit)
+            if census is not None:
+                targeted = {bp.rstrip("/") for bp in bench_paths}
+                unbacked = {bp.rstrip("/") for bp, sites in census.items() if sites} - targeted
+                if unbacked:
+                    # A live bench holds sites the cache-derived backup never
+                    # targeted: it was NOT backed up, so removing the volumes would
+                    # lose it. Fail closed and name the refresh that would capture
+                    # it on the next run.
+                    backup_ok = False
+                    emit(
+                        RmWarning(
+                            text=(
+                                f"'{project_name}' has a bench with sites the cache did not "
+                                f"know about, so it was not backed up: {', '.join(sorted(unbacked))}."
+                            ),
+                            hint=(
+                                f"Run 'cwcli inspect {project_name} --update' to refresh the "
+                                "cache, then retry."
+                            ),
+                        )
+                    )
+                elif not backup_ok and not any(census.values()):
+                    # Proven site-less: every discovered bench listed empty (a
+                    # half-provisioned instance), so _backup_sites only "failed"
+                    # because there was nothing to back up. Relax the gate.
+                    emit(
+                        RmNotice(
+                            text=(
+                                f"No site exists on any bench for '{project_name}'; "
+                                "there is nothing to back up."
+                            )
+                        )
+                    )
+                    backup_ok = True
 
         # Archive configuration for each bench. A failed config archive is a
         # warning only -- it does not block cache clearing (unlike backup, volume,
