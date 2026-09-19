@@ -47,6 +47,7 @@ from ..core import list as core_list
 from ..core import logs as core_logs
 from ..core import restart as core_restart
 from ..core import rm as core_rm
+from ..core import rm_bench as core_rm_bench
 from ..core import rm_site as core_rm_site
 from ..core import scale as core_scale
 from ..core import start as core_start
@@ -578,6 +579,11 @@ def _choice_error_message(choice: Choice) -> str:
         # `axi rm-site` only. Dropping a site deletes its database and files;
         # the agent must consent. The --yes flag rides the `help:` line below.
         return "dropping this site permanently deletes its database and files"
+    if choice.kind == "confirm_remove_bench":
+        # `axi rm-bench` only. Removing a bench drops every site on it (their
+        # databases and files) and deletes the bench directory; the agent must
+        # consent. The --yes flag rides the `help:` line below.
+        return "removing this bench drops every site on it and deletes its directory"
     return f"a decision is required: {choice.prompt}"
 
 
@@ -602,6 +608,8 @@ def emit_axi_choice_as_usage_error(choice: Choice) -> None:
         typer.echo(toon.kv("help", "re-run with --yes to accept the whole-instance restart"))
     elif choice.kind == "confirm_drop_site":
         typer.echo(toon.kv("help", "re-run with --yes to consent to permanently dropping it"))
+    elif choice.kind == "confirm_remove_bench":
+        typer.echo(toon.kv("help", "re-run with --yes to consent to permanently removing it"))
     elif choice.kind == "confirm_reuse_bench":
         typer.echo(
             toon.kv(
@@ -2670,6 +2678,122 @@ def axi_rm_site(
     # ok, NOT result.status: a drop with an unsafe archive is a WARNING-shaped
     # envelope, which maps to exit 0 everywhere else and would hide leftover
     # in-container credentials behind a green exit code.
+    raise typer.Exit(0 if outcome.ok else 1)
+
+
+# --------------------------------------------------------------------------- rm-bench
+
+
+def _rm_bench_narrate(event) -> None:
+    """Every rm-bench event to STDERR (the `_drop_site_narrate` reasoning): the
+    per-site `bench drop-site` output and progress notes are not supervised-process
+    logs, and they must not touch stdout, which carries the one TOON document.
+    """
+    if isinstance(event, core_rm_bench.BenchRmCommand):
+        print(f"$ {event.command}", file=sys.stderr, flush=True)
+    elif isinstance(event, core_rm_bench.BenchRmOutput):
+        print(event.text, end="", file=sys.stderr, flush=True)
+    elif isinstance(event, (core_rm_bench.BenchRmNotice, core_rm_bench.BenchRmStep)):
+        text = getattr(event, "text", None) or getattr(event, "label", "")
+        print(text, file=sys.stderr, flush=True)
+    elif isinstance(event, core_rm_bench.BenchRmWarning):
+        print(f"Warning: {event.text}", file=sys.stderr, flush=True)
+        if event.hint:
+            print(event.hint, file=sys.stderr, flush=True)
+
+
+@app.command("rm-bench")
+def axi_rm_bench(
+    project: str = typer.Argument(..., help="The Docker Compose project name."),
+    bench: str = typer.Option(
+        None, "--bench", help="Which bench to remove: numeric index or label (see 'axi benches')."
+    ),
+    db_root_password: str = typer.Option(
+        "123", "--db-root-password", help="MariaDB root password used by 'bench drop-site'."
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        help="REQUIRED consent to permanently remove this bench and drop its sites.",
+    ),
+) -> None:
+    """Permanently remove ONE bench; emit the outcome as TOON (never prompts).
+
+    The bench-scoped sibling of `axi rm` (whole instance) and `axi rm-site` (one
+    site). A bench has no dedicated container or named volume - it is a directory
+    on the instance's shared workspace bind mount whose sites live in the shared
+    database - so this backs up and drops every site on the bench (deleting each
+    site's database and files) and then deletes the bench directory. Every OTHER
+    bench and every container keep running; it never touches the instance's
+    containers, named volumes, or project directory.
+
+    `--yes` is REQUIRED: without it this is a usage error naming the flag, never
+    a prompt. NO auto-start: a stopped project is a usage error naming
+    `cwcli start`, exactly as every other bench-scoped axi verb refuses it.
+
+    A bench that is still running is refused (exit 1) naming
+    `cwcli stop <project> --bench <selector>`: a live bench is never deleted out
+    from under its own running code.
+
+    Each site is dropped through the same verified copy-out `axi rm-site` uses:
+    `bench drop-site` backs the site up, and cwcli copies that archive out to the
+    managed host location (`archived_host_paths` in the report) and verifies it on
+    disk before the bench directory is deleted. If any site's archive could not be
+    copied out, the directory is kept (to preserve that trapped archive), the site
+    is reported in `sites_failed`, and `ok: false` with a non-zero exit.
+
+    Each `bench drop-site`'s own output goes to stderr in full and unparsed.
+    """
+    if not yes:
+        emit_axi_error(
+            CwcliError(
+                ErrorKind.USAGE,
+                "rm_bench.consent_required",
+                f"Refusing to remove a bench from '{project}' without explicit consent.",
+                hint=(
+                    "re-run with --yes to permanently remove this bench and drop its "
+                    "sites' databases and files"
+                ),
+            )
+        )
+        raise typer.Exit(exit_for(ErrorKind.USAGE))
+
+    try:
+        result = core_rm_bench.remove_bench(
+            project,
+            bench=bench,
+            consent=yes,
+            db_root_password=db_root_password,
+            on_event=_rm_bench_narrate,
+        )
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    if result.status is CoreStatus.NEEDS_CHOICE:
+        assert result.choice is not None  # NEEDS_CHOICE always carries a Choice
+        emit_axi_choice_as_usage_error(result.choice)
+        raise typer.Exit(2)
+
+    assert result.data is not None  # OK/WARNING always carries a BenchRemovalOutcome
+    outcome = result.data
+
+    # Removing a bench changes the instance's bench set, so refresh the cache.
+    # A failed recache is a stderr warning, NOT a non-zero exit: the removal
+    # already happened, and failing here would make an agent retry a bench that
+    # is already gone.
+    if not cache.recache_project(project):
+        print(
+            f"Warning: bench removed, but re-caching '{project}' failed; "
+            "run 'cwcli inspect --update' to refresh.",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    emit_result(outcome, warnings=result.warnings)
+    # ok, NOT result.status: a partial removal (a site's backup trapped in the
+    # container) is a WARNING-shaped envelope, which maps to exit 0 everywhere
+    # else and would report a green exit for an incomplete removal.
     raise typer.Exit(0 if outcome.ok else 1)
 
 
