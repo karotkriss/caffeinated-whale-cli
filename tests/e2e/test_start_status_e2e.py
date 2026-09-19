@@ -407,13 +407,13 @@ def test_start_interactive_port_conflict_prompt_is_driven(running_instance):
 @pytest.mark.standalone
 def test_status_nonexistent_fails_honestly():
     """2.1 A truly-nonexistent project (never created - no containers at all) is NOT
-    ``offline``: it exits non-zero with a "no such project" error, distinct from a
+    ``offline``: it exits non-zero with a "not found" error, distinct from a
     real-but-stopped instance (which stays ``offline``/exit 0, covered in 1.2)."""
     ghost = harness.project_name("status-ghost")
     result = harness.run_cwcli("status", ghost)
     assert result.returncode != 0, result.stdout + result.stderr
     combined = (result.stdout + result.stderr).lower()
-    assert "no such project" in combined, result.stdout + result.stderr
+    assert "not found" in combined, result.stdout + result.stderr
     # Never the misleading offline token on stdout for a name that doesn't exist.
     assert result.stdout.strip() != "offline", result.stdout + result.stderr
 
