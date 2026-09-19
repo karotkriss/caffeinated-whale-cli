@@ -349,3 +349,193 @@ def test_set_maintenance_is_shared_with_core_update_not_copied(monkeypatch):
     core_update._set_maintenance(object(), BENCH, SITE, enable=True)
 
     assert seen == [(SITE, True)]
+
+
+# --------------------------------------- interrupt cleanup: end the orphan, clear last
+#
+# The v16 race BUG-11 fix. cwcli cannot kill the in-container `bench migrate` by closing
+# the exec socket (Docker has no kill-exec API), so on an interrupt the migrate keeps
+# running orphaned; on v15+ it self-manages maintenance mode and re-asserts it AFTER
+# cwcli's cleanup clears it, stranding the site at HTTP 503. The fix ends the process
+# cwcli started FIRST (by a unique marker in its environ), waits for it to exit, then
+# clears maintenance LAST with a settle + re-check. The fake below re-asserts maintenance
+# after the first clear exactly like the real orphan, so the discriminating test fails on
+# the pre-fix single-clear cleanup and passes with the fix.
+
+
+class _InterruptAPI:
+    """The migrate exec is where the interrupt lands: reading its stream raises
+    KeyboardInterrupt (the SIGTERM/SIGHUP/Ctrl+C unwind), leaving the in-container
+    migrate orphaned and still running (``orphan_alive``)."""
+
+    def __init__(self, owner):
+        self.owner = owner
+
+    def exec_create(self, cid, cmd, workdir=None, tty=False, environment=None):
+        self.owner.migrate_env = environment
+        return {"Id": "exec-migrate"}
+
+    def exec_start(self, exec_id, stream=True, demux=True):
+        self.owner.orphan_alive = True  # the migrate is now running in-container
+
+        def _stream():
+            raise KeyboardInterrupt
+            yield  # pragma: no cover - only makes this a generator
+
+        return _stream()
+
+    def exec_inspect(self, exec_id):
+        return {"ExitCode": 0}
+
+
+class InterruptedMigrateContainer:
+    """A migrate that is interrupted mid-run, with an orphan modelling the v16 race."""
+
+    labels = {"com.docker.compose.service": "frappe"}
+    name = "proj-frappe-1"
+    id = "cid"
+
+    def __init__(self, *, killable=True):
+        import types
+
+        self.status = "running"
+        self.maintenance = False  # the site is not in maintenance to start with
+        self.orphan_alive = False
+        self.killable = killable  # False models an orphan cwcli cannot stop
+        self.migrate_env = None
+        self.calls: list[str] = []
+        self.client = types.SimpleNamespace(api=_InterruptAPI(self))
+
+    def reload(self):
+        pass
+
+    def _run(self, cmd):
+        s = cmd if isinstance(cmd, str) else " ".join(cmd)
+        self.calls.append(s)
+        if "set-maintenance-mode on" in s:
+            self.maintenance = True
+            return 0, ""
+        if "set-maintenance-mode off" in s:
+            self.maintenance = False
+            # THE RACE: while the orphan migrate is still alive it turns maintenance
+            # back ON right after cwcli clears it (v15+ self-manages it), then dies
+            # without clearing it again.
+            if self.orphan_alive:
+                self.maintenance = True
+            return 0, ""
+        if s.startswith("cat sites/") and s.endswith("site_config.json"):
+            import json
+
+            return 0, json.dumps({"maintenance_mode": 1 if self.maintenance else 0})
+        if "/proc/[0-9]*" in s and "kill -" in s:  # _signal_marked
+            if self.killable:
+                self.orphan_alive = False
+            return 0, ""
+        if "/proc/[0-9]*" in s:  # _marked_process_alive probe
+            return (0, "") if self.orphan_alive else (1, "")
+        return 0, ""
+
+    def exec_run(self, cmd, workdir=None, **kwargs):
+        code, out = self._run(cmd)
+        return code, out.encode() if isinstance(out, str) else out
+
+
+@pytest.fixture()
+def _no_sleep(monkeypatch):
+    """No real sleeps: the settle and the kill-wait polls are instant in tests."""
+    monkeypatch.setattr(bench_ops.time, "sleep", lambda *_a, **_k: None)
+
+
+def _drive_interrupted_migrate(monkeypatch, container):
+    monkeypatch.setattr(
+        bench_ops.resolvers,
+        "resolve_container_and_bench",
+        lambda *a, **k: (container, BENCH, []),
+    )
+    monkeypatch.setattr(bench_ops, "_resolve_site", lambda *a, **k: SITE)
+    monkeypatch.setattr(bench_ops, "_migrate_lock_held", lambda *a, **k: False)
+    events: list = []
+    with pytest.raises(KeyboardInterrupt):
+        bench_ops.migrate_site("proj", site=SITE, on_event=events.append)
+    return events
+
+
+def test_an_interrupted_migrate_ends_the_orphan_then_leaves_the_site_out_of_maintenance(
+    monkeypatch, _no_sleep
+):
+    """DISCRIMINATING: fails on the pre-fix single-clear cleanup (the orphan re-asserts
+    and wins), passes with the fix (the orphan is ended first, so the clear is last)."""
+    container = InterruptedMigrateContainer(killable=True)
+    _drive_interrupted_migrate(monkeypatch, container)
+
+    assert container.orphan_alive is False  # the orphan was terminated
+    assert container.maintenance is False  # and the site is OUT of maintenance
+
+
+def test_the_migrate_exec_carries_a_unique_marker_and_cleanup_targets_only_it(
+    monkeypatch, _no_sleep
+):
+    """The orphan is found by a unique per-invocation marker in its environ, never a
+    name pattern that could match another site's or another user's migrate."""
+    container = InterruptedMigrateContainer(killable=True)
+    _drive_interrupted_migrate(monkeypatch, container)
+
+    assert container.migrate_env is not None
+    assert list(container.migrate_env) == [bench_ops._MIGRATE_MARKER_ENV]
+    token = container.migrate_env[bench_ops._MIGRATE_MARKER_ENV]
+    assert token  # a non-empty per-invocation token
+
+    kill_scans = [c for c in container.calls if "/proc/[0-9]*" in c and "kill -" in c]
+    assert kill_scans, "the orphan must be signalled"
+    assert all(token in c for c in kill_scans), "cleanup must target exactly this token"
+    assert not any("pkill" in c for c in container.calls)  # never a name pattern
+
+
+def test_cleanup_order_is_terminate_then_clear_maintenance_last(monkeypatch, _no_sleep):
+    """terminate -> wait -> clear. The first clear must come AFTER the first kill, or
+    the orphan re-asserts maintenance behind the clear."""
+    container = InterruptedMigrateContainer(killable=True)
+    _drive_interrupted_migrate(monkeypatch, container)
+
+    first_kill = next(i for i, c in enumerate(container.calls) if "kill -" in c)
+    first_clear = next(
+        i for i, c in enumerate(container.calls) if "set-maintenance-mode off" in c
+    )
+    assert first_kill < first_clear
+
+
+def test_an_orphan_cwcli_cannot_kill_still_clears_maintenance_and_says_so(
+    monkeypatch, _no_sleep
+):
+    """The 'cannot stop the process' path: cwcli must STILL clear maintenance, escalate
+    SIGTERM -> SIGKILL, and say plainly the migrate may still be running, naming the
+    command to re-check and clear the site."""
+    container = InterruptedMigrateContainer(killable=False)
+    events = _drive_interrupted_migrate(monkeypatch, container)
+
+    signals = [c for c in container.calls if "kill -" in c]
+    assert any("kill -TERM" in c for c in signals)
+    assert any("kill -KILL" in c for c in signals)  # escalated
+    # It still ATTEMPTED to clear maintenance (the last write it can make).
+    assert any("set-maintenance-mode off" in c for c in container.calls)
+    # And it said so plainly, naming how to re-check + clear.
+    notices = [e for e in events if isinstance(e, bench_ops.BenchOpNotice)]
+    assert notices, "an unconfirmed orphan must be surfaced"
+    msg = notices[0].message
+    assert "may still be running" in msg
+    assert "cwcli status proj" in msg
+    assert "set-maintenance-mode off" in msg
+
+
+def test_a_normal_migrate_does_not_touch_the_interrupt_cleanup(container, monkeypatch):
+    """No interrupt: no /proc scan, no kill, no settle re-check - the normal path is
+    byte-for-byte the old single disable, so nothing here slows a clean migrate."""
+    no_sleep_calls: list = []
+    monkeypatch.setattr(bench_ops.time, "sleep", lambda *a, **k: no_sleep_calls.append(a))
+
+    result = bench_ops.migrate_site("proj", site=SITE)
+
+    assert result.status is Status.OK
+    assert not any("/proc/" in c for c in container.calls)
+    assert not any("kill -" in c for c in container.calls)
+    assert no_sleep_calls == []  # no settle sleep on the clean path

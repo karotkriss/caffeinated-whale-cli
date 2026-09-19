@@ -10,11 +10,13 @@ The command-level behaviour lives in `test_apps.py` and
 """
 
 import dataclasses
+import json
 import shlex
 import types
 
 import pytest
 
+from caffeinated_whale_cli.core import bench_ops
 from caffeinated_whale_cli.core import docker as core_docker
 from caffeinated_whale_cli.core import exec_stream as exec_stream_mod
 from caffeinated_whale_cli.core import resolvers
@@ -28,7 +30,7 @@ from caffeinated_whale_cli.core.update import (
     UpdateStepStart,
 )
 
-from .test_apps import FakeFrappeContainer, _wire_stopped_bench
+from .test_apps import _FakeAPI, FakeFrappeContainer, _wire_stopped_bench
 
 BENCH = "/workspace/frappe-bench"
 
@@ -827,3 +829,146 @@ class TestWrongCopyDetection:
 
         # The pull failed (already not-ok); the app was skipped, so no divergence row.
         assert result.data.app_imports == []
+
+
+# ------------------------------------ interrupt cleanup: end the orphan, clear last
+#
+# The v16 race BUG-11 fix, wired into the apps-update fan-out. The shared mechanism
+# lives in core.bench_ops (proven in test_core_bench_ops); here what matters is that
+# `_update_apps` routes its interrupt cleanup through that ONE shared place: the
+# migrate exec carries the marker, the orphan is ended BEFORE maintenance is cleared,
+# and the clear re-checks on the abort path.
+
+
+class _OrphanAPI(_FakeAPI):
+    """The migrate exec raises KeyboardInterrupt when read (the interrupt), leaving an
+    orphan alive; every other exec (git pull, ...) streams normally."""
+
+    def exec_create(self, cid, cmd, workdir=None, tty=False, environment=None):
+        if "migrate" in cmd:
+            self.container.migrate_envs.append(environment)
+        return super().exec_create(cid, cmd, workdir=workdir, tty=tty, environment=environment)
+
+    def exec_start(self, exec_id, stream=True, demux=False):
+        cmd, _ = self._pending
+        if "migrate" in cmd:
+            self.container.orphan_alive = True
+
+            def _boom():
+                raise KeyboardInterrupt
+                yield  # pragma: no cover - only makes this a generator
+
+            return _boom()
+        return super().exec_start(exec_id, stream=stream, demux=demux)
+
+
+class _OrphanMigrateContainer(FakeFrappeContainer):
+    """Models the v16 race in the fan-out: an orphan re-asserts maintenance after cwcli
+    clears it, until cwcli kills it by its marker (see test_core_bench_ops for the same
+    model on the standalone migrate verb)."""
+
+    def __init__(self, *, killable=True, **kw):
+        super().__init__(**kw)
+        self.maintenance: dict[str, bool] = {}
+        self.orphan_alive = False
+        self.killable = killable
+        self.migrate_envs: list = []
+        self.client = types.SimpleNamespace(api=_OrphanAPI(self))
+
+    def _run(self, cmd, workdir=None):
+        s = cmd if isinstance(cmd, str) else " ".join(cmd)
+        if "set-maintenance-mode on" in s:
+            self.calls.append(s)
+            self.maintenance[_site_of(s)] = True
+            return 0, ""
+        if "set-maintenance-mode off" in s:
+            self.calls.append(s)
+            site = _site_of(s)
+            self.maintenance[site] = False
+            # THE RACE: the still-running orphan re-asserts maintenance right after the
+            # clear, then dies without clearing it again.
+            if self.orphan_alive:
+                self.maintenance[site] = True
+            return 0, ""
+        if s.startswith("cat sites/") and s.endswith("site_config.json"):
+            self.calls.append(s)
+            site = s.split("sites/")[1].split("/")[0]
+            return 0, json.dumps({"maintenance_mode": 1 if self.maintenance.get(site) else 0})
+        if "/proc/[0-9]*" in s and "kill -" in s:  # _signal_marked
+            self.calls.append(s)
+            if self.killable:
+                self.orphan_alive = False
+            return 0, ""
+        if "/proc/[0-9]*" in s:  # _marked_process_alive probe
+            self.calls.append(s)
+            return (0, "") if self.orphan_alive else (1, "")
+        return super()._run(cmd, workdir)
+
+
+def _site_of(cmd: str) -> str:
+    parts = cmd.split()
+    return parts[parts.index("--site") + 1] if "--site" in parts else ""
+
+
+def _wire_orphan(monkeypatch, container):
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(core_update.core_docker, "get_frappe_container", lambda name: container)
+    monkeypatch.setattr(core_update.cache, "recache_project", lambda *a, **k: True)
+    # core_update.time and bench_ops.time are the SAME module; one patch kills both the
+    # inter-migrate settle and the interrupt-cleanup settle/poll sleeps.
+    monkeypatch.setattr(core_update.time, "sleep", lambda *a, **k: None)
+    monkeypatch.setattr(core_update, "_sites_with_app", lambda *a, **k: ["a.localhost"])
+    _wire_stopped_bench(monkeypatch)
+
+
+def test_apps_update_interrupt_ends_the_orphan_and_leaves_the_site_out_of_maintenance(
+    monkeypatch,
+):
+    """DISCRIMINATING: on the pre-fix single-disable finally the orphan re-asserts and
+    the site stays stuck in maintenance; with the fix the orphan is ended first, so the
+    clear is the last write and the site is out of maintenance."""
+    container = _OrphanMigrateContainer(available_apps=["frappe", "payments"], killable=True)
+    _wire_orphan(monkeypatch, container)
+
+    with pytest.raises(KeyboardInterrupt):
+        core_update.update("proj", ["payments"], bench_path=BENCH)
+
+    assert container.orphan_alive is False
+    assert container.maintenance.get("a.localhost") is False
+    # The migrate exec carried the interrupt marker the cleanup used.
+    assert container.migrate_envs and container.migrate_envs[0]
+    assert bench_ops._MIGRATE_MARKER_ENV in container.migrate_envs[0]
+
+
+def test_apps_update_interrupt_terminates_before_it_clears_maintenance(monkeypatch):
+    container = _OrphanMigrateContainer(available_apps=["frappe", "payments"], killable=True)
+    _wire_orphan(monkeypatch, container)
+
+    with pytest.raises(KeyboardInterrupt):
+        core_update.update("proj", ["payments"], bench_path=BENCH)
+
+    first_kill = next(i for i, c in enumerate(container.calls) if "kill -" in c)
+    first_clear = next(i for i, c in enumerate(container.calls) if "set-maintenance-mode off" in c)
+    assert first_kill < first_clear
+
+
+def test_apps_update_interrupt_with_an_unkillable_orphan_still_clears_and_says_so(monkeypatch):
+    container = _OrphanMigrateContainer(available_apps=["frappe", "payments"], killable=False)
+    _wire_orphan(monkeypatch, container)
+    events: list = []
+
+    with pytest.raises(KeyboardInterrupt):
+        core_update.update(
+            "proj", ["payments"], bench_path=BENCH, on_event=events.append
+        )
+
+    # Escalated SIGTERM -> SIGKILL and still attempted the clear.
+    assert any("kill -TERM" in c for c in container.calls)
+    assert any("kill -KILL" in c for c in container.calls)
+    assert any("set-maintenance-mode off" in c for c in container.calls)
+    # Said so plainly, naming the re-check + clear commands.
+    notice = next(
+        e for e in events if isinstance(e, UpdateStepEnd) and e.phase == "interrupt_cleanup"
+    )
+    assert "may still be running" in notice.message
+    assert "set-maintenance-mode off" in notice.message

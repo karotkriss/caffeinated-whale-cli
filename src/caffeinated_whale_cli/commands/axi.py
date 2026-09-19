@@ -1872,6 +1872,10 @@ def _bench_op_narrate(event) -> None:
         print(f"$ {event.command}", file=sys.stderr, flush=True)
     elif isinstance(event, core_bench_ops.BenchOpOutput):
         print(event.text, end="", file=sys.stderr, flush=True)
+    elif isinstance(event, core_bench_ops.BenchOpNotice):
+        # Interrupt cleanup could not confirm the orphaned migrate stopped: say so
+        # plainly on stderr (an interrupt returns no TOON report to carry it).
+        print(event.message, file=sys.stderr, flush=True)
 
 
 @app.command("migrate")
