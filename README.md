@@ -214,6 +214,7 @@ cwcli init [OPTIONS] [PROJECT_NAME]
 | `-b`, `--bench TEXT` | Bench directory name inside the container (default: frappe-bench) |
 | `-s`, `--site TEXT` | Primary site name: any hostname/FQDN or IPv4 address (default: development.localhost). `.localhost` names are recommended for local development - they resolve to the machine without DNS. A real domain or IP is accepted too; init prints a one-line note reminding you it must resolve to this machine for browser access |
 | `--bench-parent TEXT` | Directory inside container where bench is created (default: /workspace); also the container mount point for the persisted host `data/` directory, fixed for the life of the instance - changing it on a re-init errors, naming the mounted directory |
+| `--bench-image-tag TEXT` | Pin the `frappe/bench` Docker image to this exact tag (e.g. `v5.29.1`), skipping the Docker Hub latest-tag lookup entirely. Omit to use the short-lived cached tag or a fresh lookup |
 | `--frappe-branch TEXT` | Frappe branch or tag for bench init, e.g. `version-16` or `v16.26.3` (default: version-16). Mutually exclusive with `--version` |
 | `--version TEXT` | Frappe version for bench init, resolved by shape: a bare major (`16` → `version-16` branch) or a full semantic version (`16.26.3` → `v16.26.3` tag). Malformed values are rejected with a non-zero exit. Mutually exclusive with `--frappe-branch` |
 | `--frappe-url TEXT` | Custom Frappe repository URL to build from (a fork), passed to `bench init --frappe-path`. Omit to use the default `frappe/frappe` repo. Pair with `--frappe-branch` to check out the fork's branch. A private fork authenticates through the same credential bridge as `apps install`/`apps update` (host `gh`/`glab`, no token in the container); sign in on the host first |
@@ -232,7 +233,7 @@ cwcli init [OPTIONS] [PROJECT_NAME]
 2. Downloads `docker-compose.yml` from frappe_docker GitHub repository
 3. Customizes port mappings based on `--port` flag
 4. Binds the bench workspace to a host `~/.cwcli/projects/{project_name}/data/` directory at `--bench-parent` inside the container (default `/workspace`), so bench files stay directly accessible on the host and survive container recreation
-5. Resolves the latest stable `frappe/bench` image tag from Docker Hub (never uses `:latest`)
+5. Resolves the `frappe/bench` image tag to pin (never uses `:latest`): `--bench-image-tag` is used verbatim and skips the lookup; otherwise a short-lived on-disk cache serves repeated inits and only a cache miss queries Docker Hub for the latest stable tag
 6. Pulls Docker images and starts containers
 7. On hosts that expose uid/gid information, aligns the container's `frappe` user to the host user so bench files written to the mounted workspace stay host-owned and removable by `cwcli rm` (no-op when the ids already match; platforms without `os.getuid`, such as Windows, cleanly skip alignment because Docker Desktop handles bind-mount ownership; a failed attempted remap degrades to a warning and bench creation still proceeds)
 8. Pins the correct Python version via `PYENV_VERSION` for the branch (installs via pyenv if missing)
@@ -1798,14 +1799,14 @@ read from that bench's `sites/common_site_config.json`, which is what bench's ow
 `make_ports` writes - so a bench's HTTP code always describes that bench.
 
 ```bash
-cwcli status [OPTIONS] PROJECT_NAME
+cwcli status [OPTIONS] [PROJECT_NAME]
 ```
 
 **Arguments:**
 
 | Argument | Description |
 |----------|-------------|
-| `PROJECT_NAME` | The Docker Compose project name to check (required) |
+| `PROJECT_NAME` | The Docker Compose project name to check. Omit it for the all-instances summary (the same table `cwcli ls` gives) - a bare `cwcli status` reads like "how is everything", not a missing-argument error |
 
 **Options:**
 
