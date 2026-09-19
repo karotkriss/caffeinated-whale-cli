@@ -22,17 +22,17 @@ every sibling bench (and every container) keeps running. There is no per-bench
 volume to remove; the whole-instance named volumes belong to ``core.rm``.
 
 **Composition, not a reimplemented gate.** Each site is removed by reusing the
-proven, real-instance-validated :func:`core.rm_site.drop_site`: it runs
-``bench drop-site --force`` (which backs the site up before dropping its
-database), then copies that credential-bearing archive OUT to the managed host
+proven, real-instance-validated :func:`core.rm_site.drop_site`: ``bench
+drop-site --force`` backs the site up AND drops its database in one command, and
+cwcli then copies that credential-bearing archive OUT to the managed host
 archive (``cwcli_home()/archive/<project>_dropped_sites/``) and verifies it
-landed before the in-container copy is pruned. A site is therefore only ever
-dropped AFTER its own backup is verified on the host, so no site's data is
-destroyed unbacked - the ``core.rm`` C1 gate's own property, reached by reuse.
-The bench directory is deleted ONLY once EVERY site's archive is confirmed on
-the host; if any site's archive could not be copied out, the directory (which
-still holds that trapped archive) is kept and the failure is reported, so the
-one place the backup survives is never destroyed.
+landed non-empty on the host. This is not ``core.rm``'s verified-backup-BEFORE-
+destroy gate (bench's own backup runs first, but as part of the same drop): the
+data-safety property here is that the bench DIRECTORY is deleted ONLY once EVERY
+site's archive is confirmed on the host, so no site's backup is destroyed
+unverified. If any site's archive could not be copied out, the directory (which
+still holds that trapped in-container archive) is kept and the failure is
+reported, so the one place the backup survives is never destroyed.
 
 **Refuse while running.** A bench whose dev processes are up (cwcli supervisord
 OR a honcho / ``bench start`` manager) is refused with ``CONFLICT`` before
