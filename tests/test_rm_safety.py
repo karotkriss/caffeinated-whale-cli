@@ -293,6 +293,10 @@ def cwcli_home(tmp_path, monkeypatch):
     projects_dir = tmp_path / "projects"
     projects_dir.mkdir()
     _patch_attr(monkeypatch, "PROJECTS_DIR", projects_dir)
+    # CWCLI_HOME wins over HOME and over the session hermetic home in
+    # tests/conftest.py, and matches the <home>/.cwcli layout the archive
+    # assertions expect, so the archive root resolves under tmp.
+    monkeypatch.setenv("CWCLI_HOME", str(tmp_path / ".cwcli"))
     monkeypatch.setenv("HOME", str(tmp_path))
     return tmp_path
 
