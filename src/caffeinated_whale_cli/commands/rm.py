@@ -104,44 +104,102 @@ def _project_run_state(project_name: str) -> str:
     return "stopped"
 
 
+# The DB service cwcli init pins (`bench set-config -g db_host mariadb`); the
+# frappe container reaches it by this compose service alias on the shared network.
+_DB_HOST = "mariadb"
+_DB_PORT = 3306
+
+# Runs in the frappe container's own Python (always present in a bench image).
+# Unlike the old one-liner it CATCHES every failure and writes a human reason to
+# stdout, so `_probe_db_once` can report WHAT came back instead of collapsing a
+# refused connect, an unresolvable `mariadb` alias (a stopped/other-network DB
+# raises `gaierror`), and a connect timeout into an indistinguishable exit 1.
+_DB_PROBE = (
+    "import socket, os, sys\n"
+    "try:\n"
+    "    s = socket.socket(); s.settimeout(3)\n"
+    f"    e = s.connect_ex(({_DB_HOST!r}, {_DB_PORT})); s.close()\n"
+    "    if e == 0:\n"
+    "        sys.exit(0)\n"
+    "    sys.stdout.write('%s (errno %d)' % (os.strerror(e), e)); sys.exit(1)\n"
+    "except Exception as ex:\n"
+    "    sys.stdout.write('%s: %s' % (type(ex).__name__, ex)); sys.exit(1)\n"
+)
+
+
+def _probe_db_once(container) -> tuple[int, str]:
+    """One readiness probe. Returns ``(exit_code, human_reason)``.
+
+    The reason is the probe's own stdout - ``os.strerror(errno)`` for a failed
+    connect, the exception name+text for a DNS/timeout error, or an exec failure -
+    so a caller can report it. Never raises: an ``exec_run`` failure (container
+    gone, daemon unreachable) is captured as a non-ready reason, not an exception.
+    """
+    try:
+        exit_code, output = container.exec_run(["python3", "-c", _DB_PROBE])
+    except Exception as ex:
+        return 1, f"could not exec the probe in the frappe container: {type(ex).__name__}: {ex}"
+    reason = ""
+    if output:
+        reason = output.decode("utf-8", "replace").strip()
+    if exit_code == 0:
+        return 0, "accepting connections"
+    code = exit_code if isinstance(exit_code, int) else 1
+    return code, (reason or f"probe exited {exit_code} with no output")
+
+
 def _wait_for_db_ready(
     container,
     *,
-    attempts: int = 60,
+    timeout: float = 180.0,
     delay: float = 1.0,
     verbose: bool = False,
-) -> bool:
+) -> tuple[bool, str]:
     """Poll until MariaDB accepts connections, from inside the frappe container.
 
-    A cold ``docker start`` returns before MariaDB has finished crash-recovery and
-    init, so a ``bench backup`` run immediately after would fail to connect and
-    spuriously fail the backup. MariaDB binds its 3306 port only once it is ready
-    to serve, so a successful TCP connect to the ``mariadb`` service (``cwcli init``
-    pins ``db_host mariadb``) is a reliable, credential-free readiness signal. Uses
-    the frappe container's own Python (always present in a bench image). Bounded, so
-    a DB that never comes up fails closed instead of hanging - the caller then
-    aborts and keeps all data.
+    A cold ``docker start`` returns before MariaDB has finished init, so a
+    ``bench backup`` run immediately after would fail to connect and spuriously
+    fail the backup. MariaDB binds its 3306 port only once it is ready to serve, so
+    a successful TCP connect to the ``mariadb`` service (``cwcli init`` pins
+    ``db_host mariadb``) is a reliable, credential-free readiness signal.
+
+    Returns ``(ready, reason)``. ``reason`` is the LAST thing the probe observed -
+    empty when ready, else the specific failure (``Connection refused (errno 111)``
+    while the DB is still coming up, a ``gaierror`` when the ``mariadb`` alias does
+    not resolve, a timeout, or an exec failure) - so the caller's warning can say
+    WHAT it tried and what came back. Time-bounded by ``timeout`` (not a fixed
+    attempt count, so the reported wait is the real elapsed time, not a misleading
+    ``attempts * delay``); the default is generous enough for a large multi-site
+    database cold-starting under load, because a genuinely-slow-but-healthy DB used
+    to false-fail this gate. Fails CLOSED: a DB that never comes up returns
+    ``(False, reason)`` so the caller aborts and keeps all data.
     """
-    probe = (
-        "import socket,sys; s=socket.socket(); s.settimeout(3); "
-        "sys.exit(0 if s.connect_ex(('mariadb',3306))==0 else 1)"
-    )
-    for attempt in range(attempts):
-        try:
-            exit_code, _ = container.exec_run(["python3", "-c", probe])
-        except Exception:
-            exit_code = 1
+    start = time.monotonic()
+    deadline = start + timeout
+    last_reason = "no probe attempt completed"
+    while True:
+        exit_code, reason = _probe_db_once(container)
+        elapsed = time.monotonic() - start
         if exit_code == 0:
             if verbose:
-                stderr_console.print("[dim]VERBOSE: MariaDB is accepting connections[/dim]")
-            return True
-        if attempt < attempts - 1:
-            time.sleep(delay)
+                stderr_console.print(
+                    f"[dim]VERBOSE: MariaDB at {_DB_HOST}:{_DB_PORT} is accepting "
+                    f"connections after {elapsed:.0f}s[/dim]"
+                )
+            return True, ""
+        last_reason = reason
+        if verbose:
+            stderr_console.print(
+                f"[dim]VERBOSE: MariaDB at {_DB_HOST}:{_DB_PORT} not ready after "
+                f"{elapsed:.0f}s: {reason}[/dim]"
+            )
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(delay)
+    total = time.monotonic() - start
     if verbose:
-        stderr_console.print(
-            "[dim]VERBOSE: MariaDB did not become ready within " f"{attempts * delay:.0f}s[/dim]"
-        )
-    return False
+        stderr_console.print(f"[dim]VERBOSE: gave up waiting for MariaDB after {total:.0f}s[/dim]")
+    return False, last_reason
 
 
 def _transient_start_for_backup(
@@ -205,10 +263,13 @@ def _transient_start_for_backup(
         return (False, started)
 
     # 3. Wait for MariaDB to accept connections before the caller runs `bench backup`.
-    if not _wait_for_db_ready(frappe_container, verbose=verbose):
+    ready, reason = _wait_for_db_ready(frappe_container, verbose=verbose)
+    if not ready:
         stderr_console.print(
-            f"[yellow]Warning:[/yellow] MariaDB for '{project_name}' did not become ready; "
-            "a backup could not be taken."
+            f"[yellow]Warning:[/yellow] MariaDB for '{project_name}' did not become ready, "
+            "so a backup could not be taken (nothing was deleted).\n"
+            f"[dim]Probed a TCP connect to {_DB_HOST}:{_DB_PORT} from the frappe container; "
+            f"last result: {reason}[/dim]"
         )
         return (False, started)
 
