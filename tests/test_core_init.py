@@ -11,6 +11,7 @@ import dataclasses
 import json
 import os
 import subprocess
+import time
 import urllib.request
 from types import SimpleNamespace
 
@@ -176,9 +177,11 @@ class _BridgeSpy:
 
 @pytest.fixture
 def patched(monkeypatch, tmp_path):
-    """Common seams: cache clear, search paths, no real sleeping."""
+    """Common seams: cache clear, search paths, no real sleeping, an isolated
+    CWCLI_HOME so the bench-image-tag cache never touches a real ~/.cwcli."""
     cleared: list[str] = []
     added: list[str] = []
+    monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "cwcli-home"))
     monkeypatch.setattr(db_utils, "clear_cache_for_project", lambda name: cleared.append(name))
     monkeypatch.setattr(config_utils, "add_custom_path", lambda path: (added.append(path), True)[1])
     monkeypatch.setattr(core_init.time, "sleep", lambda _s: None)
@@ -354,6 +357,13 @@ def instance_setup(
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setattr(urllib.request, "urlretrieve", lambda url, dest: downloads.append(url))
     monkeypatch.setattr(config_utils, "PROJECTS_DIR", tmp_path)
+    # Stub the port-availability probe at its seam: it otherwise binds REAL host
+    # sockets on 18000-18005/19000-19005, so a test run on a box that genuinely
+    # has those ports bound (another running instance) would false-fail here
+    # with nothing to do with the behavior under test. Tests that specifically
+    # exercise "port in use" override this afterward with their own
+    # `monkeypatch.setattr(core_init, "check_ports_in_use", ...)` call.
+    monkeypatch.setattr(core_init, "check_ports_in_use", lambda ports: {p: False for p in ports})
     own = container or FakeContainer()
     if project_containers is None:
         project_containers = [own] if running else []
@@ -408,6 +418,63 @@ class TestInitInstance:
         assert "docker.io/frappe/bench:v5.99.0" in s.compose_path.read_text()
         traces = [e.text for e in events if isinstance(e, core_init.InitTrace)]
         assert "Resolved latest bench image tag: v5.99.0" in traces
+
+    def test_bench_tag_is_cached_across_calls(self, monkeypatch, tmp_path, patched):
+        # GH #230: a second init within the TTL must not hit Docker Hub again.
+        s = instance_setup(monkeypatch, tmp_path, hub_tags=["latest", "v5.99.0"])
+        core_init.init_instance(PROJECT, port=18000)
+        assert "docker.io/frappe/bench:v5.99.0" in s.compose_path.read_text()
+
+        conf_dir = tmp_path / PROJECT / "conf"
+        conf_dir.mkdir(parents=True, exist_ok=True)
+        compose_path = conf_dir / "docker-compose.yml"
+        compose_path.write_text(COMPOSE_TEMPLATE)
+
+        def _boom(*a, **k):
+            raise AssertionError("cached tag lookup must not hit the network again")
+
+        monkeypatch.setattr(urllib.request, "urlopen", _boom)
+        events = []
+        core_init.init_instance(PROJECT, port=18000, on_event=events.append)
+        assert "docker.io/frappe/bench:v5.99.0" in compose_path.read_text()
+        traces = [e.text for e in events if isinstance(e, core_init.InitTrace)]
+        assert "Using cached bench image tag: v5.99.0" in traces
+
+    def test_stale_cache_falls_back_to_a_live_lookup(self, monkeypatch, tmp_path, patched):
+        cache_file = core_init._bench_tag_cache_file()
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(
+            json.dumps({"tag": "v0.0.1", "checked_at": time.time() - 999_999})
+        )
+        s = instance_setup(monkeypatch, tmp_path, hub_tags=["latest", "v5.99.0"])
+        core_init.init_instance(PROJECT, port=18000)
+        assert "docker.io/frappe/bench:v5.99.0" in s.compose_path.read_text()
+
+    def test_unreadable_cache_fails_open_to_a_live_lookup(self, monkeypatch, tmp_path, patched):
+        cache_file = core_init._bench_tag_cache_file()
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text("not json")
+        s = instance_setup(monkeypatch, tmp_path, hub_tags=["latest", "v5.99.0"])
+        core_init.init_instance(PROJECT, port=18000)
+        assert "docker.io/frappe/bench:v5.99.0" in s.compose_path.read_text()
+
+    def test_explicit_pin_skips_the_lookup_and_the_cache_entirely(
+        self, monkeypatch, tmp_path, patched
+    ):
+        s = instance_setup(monkeypatch, tmp_path, hub_tags=["latest", "v5.99.0"])
+
+        def _boom(*a, **k):
+            raise AssertionError("an explicit image pin must never hit the network")
+
+        monkeypatch.setattr(urllib.request, "urlopen", _boom)
+        events = []
+        core_init.init_instance(
+            PROJECT, port=18000, bench_image_tag="v1.2.3", on_event=events.append
+        )
+        assert "docker.io/frappe/bench:v1.2.3" in s.compose_path.read_text()
+        assert not core_init._bench_tag_cache_file().exists()
+        traces = [e.text for e in events if isinstance(e, core_init.InitTrace)]
+        assert "Using pinned bench image tag: v1.2.3" in traces
 
     def test_missing_compose_is_downloaded(self, monkeypatch, tmp_path, patched):
         s = instance_setup(monkeypatch, tmp_path, seed_compose=False)
@@ -928,7 +995,7 @@ class TestExecOrderAndSecrets:
         commands = [c["command"] for c in container.client.api.exec_calls]
         assert commands == [
             "cd /workspace && bench init --skip-redis-config-generation "
-            "--frappe-branch version-16 frappe-bench --verbose",
+            "--frappe-branch version-16 frappe-bench",
             "cd /workspace/frappe-bench && bench set-config -g db_host mariadb",
             "cd /workspace/frappe-bench && bench set-config -g redis_cache "
             "redis://redis-cache:6379",
@@ -947,6 +1014,20 @@ class TestExecOrderAndSecrets:
             "cd /workspace/frappe-bench && bench --site development.localhost "
             "install-app erpnext",
         ]
+
+    def test_bench_init_verbose_is_gated_behind_stream_output(self, monkeypatch, patched):
+        # bench's OWN --verbose streams ~23k lines cwcli would otherwise just
+        # decode and discard (GH #230); it must only appear when cwcli's own
+        # --verbose (stream_output) is set.
+        container = FakeContainer()
+        use_container(monkeypatch, container)
+        core_init.init_bench(PROJECT, **bench_kwargs(stream_output=True))
+
+        bench_init_cmd = container.client.api.exec_calls[0]["command"]
+        assert bench_init_cmd == (
+            "cd /workspace && bench init --skip-redis-config-generation "
+            "--frappe-branch version-16 frappe-bench --verbose"
+        )
 
     def test_secrets_ride_environment_and_reach_no_surface(self, monkeypatch, patched):
         # The Decision 3 audit, pinned: values in environment= ONLY; no event,

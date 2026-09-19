@@ -52,37 +52,13 @@ def _format_ports_as_ranges(ports: list[str]) -> str:
     return ", ".join(ranges)
 
 
-@app.callback(invoke_without_command=True)
-@handle_docker_errors
-def default(
-    ctx: typer.Context,
-    verbose: bool = typer.Option(
-        False,
-        "--verbose",
-        "-v",
-        help="Display all ports individually, without condensing them into ranges.",
-        rich_help_panel="Output Formatting",  # Changed panel name for clarity
-    ),
-    quiet: bool = typer.Option(
-        False,
-        "--quiet",
-        "-q",
-        help="Only display project names, one per line. Useful for scripting.",
-        rich_help_panel="Output Formatting",
-    ),
-    json_output: bool = typer.Option(
-        False,
-        "--json",
-        help="Output the list of instances as a raw JSON string.",
-        rich_help_panel="Output Formatting",
-    ),
-):
+def render_instances_summary(
+    *, verbose: bool = False, quiet: bool = False, json_output: bool = False
+) -> None:
+    """The ``ls`` table/JSON/quiet rendering, callable directly with real Python
+    defaults (not ``typer.Option`` objects) so another command - bare `cwcli
+    status` - can reuse it without going through Click's parameter resolution.
     """
-    List all Frappe instances managed by Docker Compose.
-    """
-    if ctx.invoked_subcommand is not None:
-        return
-
     # In quiet or json mode, we don't want the spinner.
     try:
         if not quiet and not json_output:
@@ -139,3 +115,36 @@ def default(
         table.add_row(instance.project_name, status_style, ports_str)
 
     console.print(table)
+
+
+@app.callback(invoke_without_command=True)
+@handle_docker_errors
+def default(
+    ctx: typer.Context,
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Display all ports individually, without condensing them into ranges.",
+        rich_help_panel="Output Formatting",  # Changed panel name for clarity
+    ),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        "-q",
+        help="Only display project names, one per line. Useful for scripting.",
+        rich_help_panel="Output Formatting",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Output the list of instances as a raw JSON string.",
+        rich_help_panel="Output Formatting",
+    ),
+):
+    """
+    List all Frappe instances managed by Docker Compose.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+    render_instances_summary(verbose=verbose, quiet=quiet, json_output=json_output)

@@ -146,6 +146,7 @@ def _drive_init_to_bench_ref(monkeypatch, **overrides) -> str:
         bench_name="frappe-bench",
         site_name="development.localhost",
         bench_parent="/workspace",
+        bench_image_tag=None,
         frappe_branch=None,
         version=None,
         db_root_password="123",
