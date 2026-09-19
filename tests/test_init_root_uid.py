@@ -17,6 +17,7 @@ together.
 from __future__ import annotations
 
 import urllib.request
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
@@ -26,7 +27,7 @@ from caffeinated_whale_cli.core import init as core_init
 from caffeinated_whale_cli.core.envelope import Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from caffeinated_whale_cli.main import app
-from caffeinated_whale_cli.utils import config_utils, db_utils
+from caffeinated_whale_cli.utils import config_utils, db_utils, docker_utils
 
 from .test_core_init import (
     COMPOSE_TEMPLATE,
@@ -75,9 +76,20 @@ class TestCheckUidOverride:
 
 
 class TestHumanCliRejectsBadUid:
+    @staticmethod
+    def _bypass_docker_precheck(monkeypatch):
+        """Neutralize @handle_docker_errors so the uid validation is reached even on
+        a runner with no Docker daemon (the CI unit tier), where the decorator would
+        otherwise exit 1 before the command body runs."""
+        monkeypatch.setattr(docker_utils.shutil, "which", lambda _name: "/usr/bin/docker")
+        monkeypatch.setattr(
+            docker_utils.docker, "from_env", lambda: SimpleNamespace(ping=lambda: True)
+        )
+
     def test_uid_zero_is_a_usage_error_before_any_work(self, monkeypatch):
         """--uid 0 exits 2 (a usage error) before init_instance runs, so no project
         dir or containers are left behind."""
+        self._bypass_docker_precheck(monkeypatch)
 
         def fail_if_called(*a, **k):
             raise AssertionError("init_instance ran despite an invalid --uid")
@@ -87,6 +99,7 @@ class TestHumanCliRejectsBadUid:
         assert result.exit_code == 2
 
     def test_negative_uid_is_a_usage_error(self, monkeypatch):
+        self._bypass_docker_precheck(monkeypatch)
         monkeypatch.setattr(
             core_init, "init_instance", lambda *a, **k: (_ for _ in ()).throw(AssertionError())
         )
@@ -131,9 +144,9 @@ class TestInitBenchSurfacesTheRootHostNote:
         (no root-host warning) - the unchanged common path."""
         _patch_common(monkeypatch)
         container = FakeContainer()
+        # use_container wires a non-root host resolver (no note), the common path;
+        # assert init_bench leaks no root-host warning when resolve returns none.
         use_container(monkeypatch, container)
-        # The default FakeContainer reports the host's own ids, so the real align is
-        # a no-op and resolve returns no note; assert nothing leaks in.
         result = core_init.init_bench(PROJECT, **bench_kwargs())
         codes = [w.code for w in result.warnings]
         assert "init.uid_align_root_host" not in codes

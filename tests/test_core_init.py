@@ -195,6 +195,16 @@ def use_container(monkeypatch, container, *, project_containers=None):
         "get_project_containers",
         lambda name: list(project_containers or []),
     )
+    # Force a non-root host so the uid-alignment step is a clean no-op regardless of
+    # the runner's own uid (CI runs as root, where the real resolver would emit the
+    # root-host fallback note). Mirrors the FakeContainer `id` probe above, which
+    # neutralizes the container side; this neutralizes the host side. A test that
+    # cares about the root-host path overrides this after calling use_container.
+    monkeypatch.setattr(
+        core_init.core_docker,
+        "resolve_frappe_alignment_ids",
+        lambda uid=None: ((uid, uid, None) if uid else (1000, 1000, None)),
+    )
 
 
 def bench_kwargs(**overrides):
