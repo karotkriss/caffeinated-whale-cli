@@ -734,3 +734,50 @@ class TestForceResetOnConflict:
         assert report.force_reset_apps == []
         assert report.failed_apps == ["payments"]
         assert not any("git reset" in c for c in wired.calls)
+
+
+class TestForceReownsADubiousOwnedAppRepo:
+    """``--force`` clears a git "dubious ownership" refusal at its root by re-owning
+    the app repo to the container user BEFORE the pull.
+
+    On a shared-mode/migrated instance the app source (often symlinked out of the
+    bench to a shared tree like ``/workspace/.hdsrc/<app>``) is owned by the
+    pre-shared uid, so git run as ``frappe`` refuses it and NEITHER the pull nor the
+    ``git status`` the conflict path relies on can run - so plain ``--force`` was
+    powerless. The fix re-owns the repo up front, which is what lets the pull proceed.
+    """
+
+    def test_force_reowns_each_app_before_pulling(self, wired, monkeypatch):
+        seen = []
+        monkeypatch.setattr(
+            core_update.core_docker,
+            "reown_app_repo_to_frappe",
+            lambda container, app_path: seen.append(app_path) or (True, None),
+        )
+        result = _update(force=True)
+        assert result.data.ok is True
+        # re-owned the exact app repo path, and the pull still ran
+        assert seen == [f"{BENCH}/apps/payments"]
+        assert "git pull" in wired.calls
+        # a re-own reports itself so the operator sees why ownership changed
+        assert any(w.code == "app.force_reown" for w in result.warnings)
+
+    def test_without_force_no_repo_is_reowned(self, wired, monkeypatch):
+        seen = []
+        monkeypatch.setattr(
+            core_update.core_docker,
+            "reown_app_repo_to_frappe",
+            lambda container, app_path: seen.append(app_path) or (True, None),
+        )
+        _update()  # no --force
+        assert seen == []
+
+    def test_a_failed_reown_is_a_warning_and_the_pull_still_runs(self, wired, monkeypatch):
+        monkeypatch.setattr(
+            core_update.core_docker,
+            "reown_app_repo_to_frappe",
+            lambda container, app_path: (False, "could not re-own the app repo: denied"),
+        )
+        result = _update(force=True)
+        assert "git pull" in wired.calls
+        assert any(w.code == "app.force_reown_failed" for w in result.warnings)
