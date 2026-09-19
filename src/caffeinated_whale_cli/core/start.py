@@ -120,15 +120,6 @@ def start(
             f"No 'frappe' service found for project '{project_name}'.",
         )
 
-    # A just-recreated container reverts `frappe` to the image uid (1000), but the
-    # workspace on the bind mount is owned by the host uid it was built under. Re-
-    # align `frappe` to the host uid and re-own only its mutable home state so the
-    # supervisor writes its per-process logs to the host-owned bench dir and later
-    # login-shell execs can refresh pyenv's shims. A no-op when the ids already match.
-    _, remap_err = align_container_user_to_host(frappe_container)
-    if remap_err:
-        warnings.append(Message("start.uid_align_failed", remap_err))
-
     # 3. Resolve which bench to run (--bench/--path, else single, else default).
     resolved = resolvers.resolve_bench(project_name, bench, bench_path)
     if resolved is None:
@@ -152,6 +143,18 @@ def start(
             "bench_path.invalid_chars",
             f"Invalid bench path '{resolved_path}'. Paths cannot contain special shell characters.",
         )
+
+    # A just-recreated container reverts `frappe` to the image uid (1000), but the
+    # workspace on the bind mount is owned by the host uid it was built under. Re-
+    # align `frappe` to the host uid and re-own only its mutable home state so the
+    # supervisor writes its per-process logs to the host-owned bench dir and later
+    # login-shell execs can refresh pyenv's shims. A no-op when the ids already match.
+    # In shared mode a remap also re-owns the resolved bench dir, so a migrated
+    # instance's workspace stays writable by the remapped user (the path is
+    # resolved and validated above, so it is safe to pass into align's shell).
+    _, remap_err = align_container_user_to_host(frappe_container, bench_paths=[resolved_path])
+    if remap_err:
+        warnings.append(Message("start.uid_align_failed", remap_err))
 
     # Persistent credential bridge (opt-in): wire this instance in on every launch
     # - the same cheap per-launch fixup slot as the uid re-align above, so a

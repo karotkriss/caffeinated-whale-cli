@@ -149,7 +149,7 @@ def wiring(monkeypatch, tmp_path):
     monkeypatch.setattr(core_scale.subprocess, "run", fake_subprocess_run)
     monkeypatch.setattr(core_scale, "_wait_for_frappe_running", lambda *a, **k: True)
 
-    def fake_align(container, *, chown_home=False):
+    def fake_align(container, *, chown_home=False, bench_paths=()):
         state.align_calls.append(chown_home)
         return (True, None)
 

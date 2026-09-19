@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import codecs
 import os
+import shlex
 import subprocess
+from collections.abc import Sequence
 
 import docker
 from docker.errors import DockerException
@@ -203,6 +205,31 @@ def _read_frappe_id(container, flag: str) -> int | None:
         return None
 
 
+def _bench_paths_needing_reown(
+    container, bench_paths: Sequence[str], host_uid: int, host_gid: int
+) -> list[str]:
+    """Bench paths that exist and are NOT already owned by ``host_uid:host_gid``.
+
+    Stats each path's current owner via a root exec. A path that is absent (a
+    fresh init whose bench dir does not exist yet) or whose owner cannot be read
+    is skipped, so it stays a no-op. A path whose owner differs from the target -
+    a migrated instance's workspace still owned by the pre-shared uid, OR a path
+    the align just remapped away from - is returned for re-owning.
+    """
+    needing: list[str] = []
+    for path in bench_paths:
+        try:
+            code, out = container.exec_run(["stat", "-c", "%u:%g", path], user="root")
+        except DockerException:
+            continue
+        if code != 0:
+            continue
+        owner = out.decode("utf-8", "replace") if isinstance(out, (bytes, bytearray)) else str(out)
+        if owner.strip() != f"{host_uid}:{host_gid}":
+            needing.append(path)
+    return needing
+
+
 # The only paths first-provision writes under /home/frappe: the home root itself
 # (mkdir/write needs its owner to match), plus pip/npm's caches and pyenv/nvm's
 # write targets. Deliberately excludes the ~34.6k-file baked pyenv/nvm toolchain
@@ -229,7 +256,9 @@ _CHOWN_HOME_SHALLOW_DIRS = (
 )
 
 
-def align_container_user_to_host(container, *, chown_home: bool = False) -> tuple[bool, str | None]:
+def align_container_user_to_host(
+    container, *, chown_home: bool = False, bench_paths: Sequence[str] = ()
+) -> tuple[bool, str | None]:
     """Align the container's ``frappe`` user's uid/gid with the host user's.
 
     Bench commands run as the image's default ``frappe`` user (uid 1000), so every
@@ -257,6 +286,21 @@ def align_container_user_to_host(container, *, chown_home: bool = False) -> tupl
     1.28 GB/36.7k files it contains, measured at 79s (minutes on a slow disk)
     versus ~3s narrowed.
 
+    In SHARED mode (``shared_home.shared_mode()``) each path in ``bench_paths`` (the
+    resolved bench dirs) is re-owned to the target identity when its CURRENT owner
+    differs, not merely when the ids change this call. The remap target is the
+    stable ``cwcli`` service account, NOT ``os.getuid()``, so a migrated instance's
+    bind-mounted workspace - built under the pre-shared uid - is not owned by the
+    remapped ``frappe`` user and ``bench start`` can no longer write
+    ``<bench>/logs/bench.log``, crash-looping the instance. An instance already
+    bricked by v3.1.0 has ``frappe`` remapped to the service uid ALREADY (its ids
+    match now), so gating the re-own on an id change alone would never recover it;
+    gating on the real owner mismatch (stat'd per path) recovers it in place on the
+    next ``cwcli start``/``restart``. A normal box - where align targets
+    ``os.getuid()`` and the id already owns the workspace - reads no mismatch and
+    emits no workspace chown. ``/workspace`` is a bind mount, not the image overlay,
+    so ``chown -R`` there is cheap (no copy-up).
+
     Best-effort: returns ``(remapped, failure)``. ``failure`` is a short detail
     string when a step failed (the caller surfaces it as a warning and the bench
     still builds owned by the original uid, exactly as before this remap existed);
@@ -268,7 +312,8 @@ def align_container_user_to_host(container, *, chown_home: bool = False) -> tupl
     """
     if not hasattr(os, "getuid"):
         return (False, None)
-    if shared_home.shared_mode():
+    in_shared_mode = shared_home.shared_mode()
+    if in_shared_mode:
         # Shared mode: align to the STABLE cwcli service uid/gid, not whoever ran
         # cwcli. With a shared container and two users, aligning to os.getuid()
         # ping-pongs the frappe user's uid on every start - each swing risking a
@@ -287,7 +332,19 @@ def align_container_user_to_host(container, *, chown_home: bool = False) -> tupl
     if cur_uid is None or cur_gid is None:
         return (False, "could not read the container 'frappe' user's uid/gid")
     ids_changed = cur_uid != host_uid or cur_gid != host_gid
-    if not ids_changed and not chown_home:
+
+    # Shared mode only: which bench dirs are actually owned by someone other than
+    # the target identity. An instance already bricked by v3.1.0 has `frappe`
+    # remapped to the service uid ALREADY (so ids match, `ids_changed` is False),
+    # yet its bind-mounted workspace is still owned by the pre-shared uid - gating
+    # the re-own on `ids_changed` alone would leave it bricked. Gating on the real
+    # owner mismatch recovers it in place on the next `cwcli start`/`restart`, and
+    # a normal shared box whose workspace already matches gets no chown -R.
+    reown_paths: list[str] = []
+    if in_shared_mode and bench_paths:
+        reown_paths = _bench_paths_needing_reown(container, bench_paths, host_uid, host_gid)
+
+    if not ids_changed and not chown_home and not reown_paths:
         return (False, None)
 
     # `-o` allows a non-unique id (the host uid may already exist in the image's
@@ -320,6 +377,16 @@ def align_container_user_to_host(container, *, chown_home: bool = False) -> tupl
             f"[ ! -e {path} ] || chown {host_uid}:{host_gid} {path}"
             for path in _CHOWN_HOME_SHALLOW_DIRS
         )
+    # Shared mode only: reconcile the bind-mounted bench workspace's ownership
+    # with the service identity. `reown_paths` already holds exactly the bench
+    # dirs whose owner differs from the target (a migrated instance's workspace
+    # still owned by the pre-shared uid, OR one the remap just moved away from) -
+    # a normal box has none. Existence-guarded so a dir that vanished between the
+    # stat and here is a no-op.
+    steps.extend(
+        f"[ ! -e {q} ] || chown -R {host_uid}:{host_gid} {q}"
+        for q in (shlex.quote(p) for p in reown_paths)
+    )
     try:
         code, out = container.exec_run(["bash", "-c", " && ".join(steps)], user="root")
     except DockerException as e:
