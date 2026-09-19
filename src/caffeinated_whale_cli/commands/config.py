@@ -487,7 +487,6 @@ _CRED_ACTION_LINES = {
     "config.enabled": "[green]Credential bridge enabled.[/green]",
     "daemon.started": "[green]Credential bridge daemon started.[/green]",
     "daemon.already_running": "[yellow]Credential bridge daemon is already running.[/yellow]",
-    "instances.ensured": "[green]Wired currently-running instances into the bridge.[/green]",
     "daemon.stopped": "[green]Credential bridge daemon stopped.[/green]",
     "daemon.not_running": "[yellow]Credential bridge daemon is not running.[/yellow]",
     "artifacts.cleared": "[dim]Cleared bridge shims and sockets.[/dim]",
@@ -505,12 +504,27 @@ def _render_cred_outcome(result) -> None:
         line = _CRED_ACTION_LINES.get(action)
         if line:
             console.print(line)
+    ensured = getattr(data, "ensured_projects", [])
+    if len(ensured) == 1:
+        console.print(f"[green]Wired instance '{ensured[0]}' into the bridge.[/green]")
+    elif len(ensured) > 1:
+        names = ", ".join(ensured)
+        console.print(
+            f"[green]Wired {len(ensured)} running instances into the bridge: {names}.[/green]"
+        )
     for warning in result.warnings:
         console.print(f"[yellow]Warning: {warning.text}[/yellow]")
 
 
 @cred_bridge_app.command("enable")
 def enable_cred_bridge(
+    project: list[str] = typer.Option(
+        None,
+        "--project",
+        help="Only wire the named instance(s) into the bridge. Repeatable. "
+        "Default: every currently-running cwcli instance.",
+        show_default=False,
+    ),
     startup: bool | None = typer.Option(
         None,
         "--startup/--no-startup",
@@ -526,9 +540,19 @@ def enable_cred_bridge(
     gh/glab for private-repo fetches during interactive work (cwcli open, plain
     docker exec), not just cwcli's own app operations. The raw token never enters
     the container. Idempotent.
+
+    By default every currently-running instance cwcli manages is wired; pass
+    --project to scope the sweep to one or more named instances.
     """
+
+    def _announce_plan(names: list[str]) -> None:
+        console.print(
+            f"[cyan]About to wire {len(names)} running instances into the bridge: "
+            f"{', '.join(names)}.[/cyan]"
+        )
+
     try:
-        result = core_cred.enable(at_boot=startup)
+        result = core_cred.enable(at_boot=startup, projects=project or None, on_plan=_announce_plan)
     except CwcliError as e:
         raise _exit_for(e) from None
     _render_cred_outcome(result)
@@ -739,14 +763,16 @@ def start_auto_inspect(
         console.print(f"[dim]Log file: {auto_inspect.LOG_FILE}[/dim]")
 
         if enable_startup:
-            if startup.install_startup():
+            ok, reason = startup.install_startup()
+            if ok:
                 config_utils.set_auto_inspect_startup(True)
                 console.print(
                     "\n[green]Startup enabled. Auto-inspect will start automatically on system boot.[/green]"
                 )
             else:
+                detail = f" ({reason})" if reason else ""
                 console.print(
-                    "\n[yellow]Warning: Could not install startup configuration.[/yellow]"
+                    f"\n[yellow]Warning: Could not install startup configuration{detail}.[/yellow]"
                 )
     except typer.Exit:
         raise
@@ -845,13 +871,15 @@ def install_startup_cmd():
         console.print("[cyan]Installing startup configuration...[/cyan]")
         plat = startup.get_platform()
 
-        if startup.install_startup():
+        ok, reason = startup.install_startup()
+        if ok:
             config_utils.set_auto_inspect_startup(True)
             console.print("[green]Startup configuration installed successfully![/green]")
             console.print(f"[cyan]Platform: {plat.title()}[/cyan]")
             console.print("[dim]Auto-inspect will start automatically on system boot/login.[/dim]")
         else:
-            console.print("[red]Failed to install startup configuration.[/red]")
+            detail = f" ({reason})" if reason else ""
+            console.print(f"[red]Failed to install startup configuration{detail}.[/red]")
             raise typer.Exit(code=1)
 
     except typer.Exit:
@@ -878,7 +906,8 @@ def uninstall_startup_cmd():
 
         console.print("[cyan]Removing startup configuration...[/cyan]")
 
-        if startup.uninstall_startup():
+        ok, reason = startup.uninstall_startup()
+        if ok:
             config_utils.set_auto_inspect_startup(False)
             console.print("[green]Startup configuration removed successfully![/green]")
             console.print("[dim]Auto-inspect will no longer start automatically on boot.[/dim]")
@@ -886,7 +915,8 @@ def uninstall_startup_cmd():
                 "[dim]You can still start it manually with 'cwcli config auto-inspect start'.[/dim]"
             )
         else:
-            console.print("[red]Failed to remove startup configuration.[/red]")
+            detail = f" ({reason})" if reason else ""
+            console.print(f"[red]Failed to remove startup configuration{detail}.[/red]")
             raise typer.Exit(code=1)
 
     except typer.Exit:
