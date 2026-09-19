@@ -707,3 +707,57 @@ class TestBenchSelector:
 
         assert len(result.data.benches) == 1
         assert result.data.benches[0].path == "/workspace/development/bench-a"
+
+
+class TestAppCopiesFlags:
+    """BUG-10: a full inspect flags a symlinked or wrong-copy app; cheap tiers don't."""
+
+    def _patch(self, monkeypatch, *, diverged=False, is_symlink=False):
+        def _fake(_c, bench, apps):
+            return {
+                a: core_inspect.resolvers.AppImport(
+                    app=a,
+                    entry=f"{bench}/apps/{a}",
+                    is_symlink=is_symlink,
+                    resolved_path=("/workspace/.hdsrc/frappe" if is_symlink else f"{bench}/apps/{a}"),
+                    imported_path=("/workspace/.hdsrc/frappe" if diverged else None),
+                    diverged=diverged,
+                    checked=True,
+                )
+                for a in apps
+            }
+
+        monkeypatch.setattr(core_inspect.resolvers, "resolve_app_imports", _fake)
+
+    def test_full_inspect_flags_a_wrong_copy(self, wired, monkeypatch):
+        store, _writes, install = wired
+        _seed(store)
+        install(_matching_container())
+        self._patch(monkeypatch, diverged=True)
+
+        result = core_inspect.inspect("proj", refresh="full")
+
+        assert result.data.served_from == "full"
+        copies = result.data.benches[0].app_copies
+        assert copies and copies[0].diverged is True
+        assert copies[0].imported_path == "/workspace/.hdsrc/frappe"
+
+    def test_full_inspect_flags_a_symlink(self, wired, monkeypatch):
+        store, _writes, install = wired
+        _seed(store)
+        install(_matching_container())
+        self._patch(monkeypatch, is_symlink=True)
+
+        result = core_inspect.inspect("proj", refresh="full")
+
+        copies = result.data.benches[0].app_copies
+        assert copies and copies[0].is_symlink is True
+
+    def test_a_cache_only_read_carries_no_app_copies(self, wired, monkeypatch):
+        store, _writes, _install = wired
+        _seed(store)
+        self._patch(monkeypatch, diverged=True)  # must be ignored: no live read happens
+
+        result = core_inspect.inspect("proj", refresh="cache_only")
+
+        assert result.data.benches[0].app_copies == []

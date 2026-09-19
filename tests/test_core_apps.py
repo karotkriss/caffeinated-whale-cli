@@ -1204,3 +1204,85 @@ def test_checkout_guards_a_dash_prefixed_ref_from_being_parsed_as_an_option(monk
     core_apps.checkout_app("proj", "payments", "--upload-pack=touch pwned")
 
     assert "git fetch upstream -- '--upload-pack=touch pwned'" in container.calls
+
+
+# ------------------------------------------------------ BUG-10: wrong-copy detection
+
+
+def _patch_app_import(monkeypatch, *, diverged=False, is_symlink=False, resolved=None, imported=None):
+    """Force resolve_app_imports to return one crafted AppImport per requested app."""
+
+    def _fake(_container, bench_path, apps):
+        return {
+            app: resolvers.AppImport(
+                app=app,
+                entry=f"{bench_path}/apps/{app}",
+                is_symlink=is_symlink,
+                resolved_path=resolved or f"{bench_path}/apps/{app}",
+                imported_path=imported,
+                diverged=diverged,
+                checked=True,
+            )
+            for app in apps
+        }
+
+    monkeypatch.setattr(core_apps.resolvers, "resolve_app_imports", _fake)
+
+
+def test_checkout_of_a_wrong_copy_is_not_ok_and_names_both_paths(monkeypatch, container):
+    """The headline BUG-10 fix: the git checkout succeeded, but the bench imports a
+    different copy, so cwcli must NOT report plain success."""
+    _cache(monkeypatch, [{"path": BENCH}])
+    _bridge_spy(monkeypatch)
+    _patch_app_import(
+        monkeypatch,
+        diverged=True,
+        resolved=f"{BENCH}/apps/payments",
+        imported="/workspace/.hdsrc/payments",
+    )
+
+    result = core_apps.checkout_app("proj", "payments", "feature/x")
+
+    # The git steps still succeeded ...
+    assert ("checkout", True) in [(r.action, r.ok) for r in result.data.results]
+    # ... but the verify-import step fails the whole result.
+    assert ("verify-import", False) in [(r.action, r.ok) for r in result.data.results]
+    assert result.data.ok is False
+    # Both paths are named, and the app_imports field carries the divergence.
+    assert result.data.app_imports[0].diverged is True
+    assert result.data.app_imports[0].imported_path == "/workspace/.hdsrc/payments"
+    warning = next(w for w in result.warnings if w.code == "app.wrong_copy")
+    assert f"{BENCH}/apps/payments" in warning.text
+    assert "/workspace/.hdsrc/payments" in warning.text
+
+
+def test_checkout_reports_a_symlink_target_without_failing(monkeypatch, container):
+    """The NORMAL symlink layout (apps/<app> -> its source, and the bench imports
+    that same source) is reported but NOT flagged as a failure."""
+    _cache(monkeypatch, [{"path": BENCH}])
+    _bridge_spy(monkeypatch)
+    _patch_app_import(
+        monkeypatch,
+        is_symlink=True,
+        diverged=False,
+        resolved="/workspace/.hdsrc/payments",
+        imported="/workspace/.hdsrc/payments",
+    )
+
+    result = core_apps.checkout_app("proj", "payments", "feature/x")
+
+    assert result.data.ok is True
+    assert "verify-import" not in [r.action for r in result.data.results]
+    assert result.data.app_imports[0].is_symlink is True
+    assert result.data.app_imports[0].resolved_path == "/workspace/.hdsrc/payments"
+    assert not any(w.code == "app.wrong_copy" for w in result.warnings)
+
+
+def test_list_populates_app_copies_for_each_available_app(monkeypatch, container):
+    _cache(monkeypatch, [{"path": BENCH}])
+    _patch_app_import(monkeypatch, is_symlink=True, resolved="/workspace/.hdsrc/frappe")
+
+    result = core_apps.list_apps("proj")
+
+    assert result.data.app_copies
+    assert result.data.app_copies[0].is_symlink is True

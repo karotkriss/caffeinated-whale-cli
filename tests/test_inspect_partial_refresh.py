@@ -74,6 +74,9 @@ class FakeFrappeContainer:
         pass
 
     def exec_run(self, cmd, workdir=None):
+        # Normalize list-form argv (e.g. the app-import probe) to a string so the
+        # string-matching branches and the recorded-call predicates below stay valid.
+        cmd = cmd if isinstance(cmd, str) else " ".join(cmd)
         self.calls.append(cmd)
         b = self.bench_path
 
