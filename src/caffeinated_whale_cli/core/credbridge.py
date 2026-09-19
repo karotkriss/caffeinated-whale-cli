@@ -100,7 +100,11 @@ _HOST_GATEWAY = "host.docker.internal"
 # baked in per invocation (the `{sock_name!r}` below) rather than a fixed name, so
 # two concurrent bridges never read each other's socket even if CWCLI_CRED_SOCK is
 # unset. Only `get` does anything; store/erase exit 0 without persisting, so no
-# credential is ever written in the container.
+# credential is ever written in the container. A failed CONNECT is caught only to
+# print one guidance line and exit 0 (git then prompts as usual) - so a stray raw
+# `git` reaching a leftover helper line outside a cwcli op learns that this bridge
+# only serves cwcli-run operations, instead of a bare Python traceback (issue
+# #237). It does NOT otherwise swallow errors the way the persistent shim must.
 _CONTAINER_HELPER_SRC = """\
 import os, socket, sys
 if (sys.argv[1] if len(sys.argv) > 1 else "get") != "get":
@@ -109,7 +113,16 @@ sock = os.environ.get("CWCLI_CRED_SOCK") or os.path.join(
     os.path.dirname(os.path.abspath(__file__)), {sock_name!r}
 )
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-s.connect(sock)
+try:
+    s.connect(sock)
+except OSError:
+    sys.stderr.write(
+        "cwcli: this git credential helper only serves operations run through "
+        "cwcli (e.g. 'cwcli run', 'cwcli apps update'). Raw git in the container "
+        "is not bridged; run it via 'cwcli run', or enable the persistent bridge "
+        "with 'cwcli config cred-bridge enable'.\\n"
+    )
+    sys.exit(0)
 s.sendall(sys.stdin.buffer.read())
 s.shutdown(socket.SHUT_WR)
 resp = b""
@@ -134,7 +147,16 @@ if (sys.argv[1] if len(sys.argv) > 1 else "get") != "get":
 host = os.environ.get("CWCLI_CRED_HOST") or {host!r}
 port = int(os.environ.get("CWCLI_CRED_PORT") or {port})
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.connect((host, port))
+try:
+    s.connect((host, port))
+except OSError:
+    sys.stderr.write(
+        "cwcli: this git credential helper only serves operations run through "
+        "cwcli (e.g. 'cwcli run', 'cwcli apps update'). Raw git in the container "
+        "is not bridged; run it via 'cwcli run', or enable the persistent bridge "
+        "with 'cwcli config cred-bridge enable'.\\n"
+    )
+    sys.exit(0)
 s.sendall({token!r} + sys.stdin.buffer.read())
 s.shutdown(socket.SHUT_WR)
 resp = b""
@@ -148,8 +170,9 @@ sys.stdout.buffer.write(resp)
 
 # The PERSISTENT shims (unix + TCP). The load-bearing difference from the
 # per-invocation shims above is that these SWALLOW every failure and exit 0 with
-# empty stdout/stderr. The per-invocation shim is torn down with its own listener
-# so it never needs to catch; the persistent shim outlives its daemon and MUST,
+# empty stdout AND empty stderr. The per-invocation shim is torn down with its own
+# listener, so its only catch is the CONNECT (to print one guidance line, not to
+# tolerate a normal failure mode); the persistent shim outlives its daemon and MUST,
 # because the whole degradation contract rests on it: a dead, stopped, crashed,
 # or never-started daemon has to behave byte-identically to "no helper
 # configured", so git's credential-fill loop falls straight through to its usual
