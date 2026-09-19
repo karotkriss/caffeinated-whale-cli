@@ -1203,7 +1203,7 @@ cwcli apps checkout [OPTIONS] PROJECT_NAME APP REF
 It flags an app whose `apps/<app>` is a symlink (naming the real directory it points at) and, more seriously, an app whose imported copy differs from `apps/<app>` (the bench's Python actually imports a different copy, so operating on `apps/<app>` leaves the site running stale code); in `--json` an `app_copies` array carries the same detail for any flagged app.
 
 **`apps install`** - ensures each app is present on the bench, then installs it on the target site(s).
-An app absent from `apps/` is fetched with `bench get-app` (honoring `--branch`); an app already present is not fetched again, so pre-warmed benches install it without failing on the existing directory.
+An app absent from `apps/` is fetched with `bench get-app` (honoring `--branch`); an app already present **and registered** (in `sites/apps.txt`) is not fetched again, so pre-warmed benches install it without failing on the existing directory. A present directory that is *not* a valid install - the leftover of an earlier fetch that cloned but failed at its `pip install` step - is refused with an actionable message telling you to remove it and re-run, rather than reporting a false "get-app ok" and then dumping a raw install traceback on every retry. When a fresh fetch itself fails, the partial `apps/<app>` directory it created is removed so a retry genuinely re-fetches (a pre-existing app directory is never touched).
 Each `--app` is a known app name **or** a git URL (passed straight to `bench get-app` when a fetch is needed, so custom apps not in bench's registry work); repeat `--app` to install more than one.
 `--fetch-only` ensures the app is present without installing it on any site.
 `--if-not-present` makes install idempotent: an app already installed on a target site is skipped (reported, not reinstalled, with its install hooks never rerun) and the command still exits 0, so "ensure this app is installed" is a single call whose exit code a script can trust; an app the site does not have is still installed normally, and a genuine install failure still exits non-zero.
@@ -1866,6 +1866,16 @@ in the human heading, `not_cwcli_supervised: true` in `cwcli axi status`) with a
 hint to run `cwcli start` to bring it under cwcli's supervisor. In this mode the
 per-process supervisord `state` is unavailable (there is no supervisord to ask);
 `up` comes straight from `ps`. `status` only reads - it never launches supervisord.
+
+**Maintenance mode is called out plainly.** A site stuck in maintenance mode answers
+HTTP 503 to every user with no other signal - the state a `migrate` / `apps update`
+killed mid-run (a closed terminal, a `kill`, a service stop) leaves behind. When a
+bench's site is in maintenance mode, `status` prints `MAINTENANCE MODE ON` for that
+site (even without `-v`, since it is a fault, not detail) and names the way out
+(`cwcli run <project> --site <site> set-maintenance-mode off`); `cwcli axi status`
+carries it as `maintenance_mode` plus a `status.maintenance_mode` warning. It is read
+live from the site's `site_config.json`, not inferred from the 503, and is skipped in
+the `--watch` loop (which makes no web probe).
 
 **Per-bench, per-process detail (stderr):** one sub-block per bench, headed by its
 index, path, label, and own aggregate, with a web line naming the port that was
