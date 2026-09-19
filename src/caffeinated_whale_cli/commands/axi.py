@@ -1335,7 +1335,21 @@ def axi_benches(
         raise typer.Exit(exit_for(error.kind)) from None
 
     assert result.data is not None  # OK always carries a BenchList
-    emit_result(result.data, warnings=result.warnings)
+    # A hand-made bench (bench init run directly in a container shell) is not in
+    # the cache and so never appears here until a full refresh; the verified rows
+    # cannot reveal one that was never discovered. Always name the refresh so an
+    # agent that expected a bench and does not see it knows the next move (#237).
+    warnings = list(result.warnings)
+    warnings.append(
+        Message(
+            code="benches.maybe_incomplete",
+            text=(
+                f"A bench not listed here may be missing from the cache; run "
+                f"'cwcli axi inspect {project} --update' to rediscover hand-made benches."
+            ),
+        )
+    )
+    emit_result(result.data, warnings=warnings)
     raise typer.Exit(0)
 
 

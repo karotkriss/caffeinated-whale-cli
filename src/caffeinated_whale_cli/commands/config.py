@@ -228,6 +228,77 @@ def paths_remove(
     _render_path_change(result, added=False)
 
 
+@paths_app.command("prune")
+def paths_prune(
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Actually remove the dead paths (default: dry-run)."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
+):
+    """Remove custom search paths that no live instance references.
+
+    Search paths accumulate a graveyard: a path added for an instance later
+    removed lingers forever and is re-scanned on every inspect. This checks each
+    path LIVE against every instance and, with --yes, drops the ones absent from
+    all of them. Without --yes it is a dry-run that only lists what it would drop.
+
+    Safe by construction: a path present in any instance is never dropped, and if
+    any instance cannot be checked (stopped or unreachable) nothing is dropped -
+    so a path a stopped instance still needs is never lost.
+    """
+    try:
+        result = core_config.prune_search_paths(apply=yes)
+    except CwcliError as e:
+        raise _exit_for(e) from None
+    plan = result.data
+    assert plan is not None
+
+    if json_output:
+        print(json.dumps(asdict(plan), indent=2))
+        return
+
+    if not plan.statuses:
+        console.print("[yellow]No custom search paths configured.[/yellow]")
+        return
+
+    prunable = [s.path for s in plan.statuses if s.prunable]
+
+    if plan.applied:
+        if plan.pruned:
+            console.print(f"[green]Pruned {len(plan.pruned)} dead search path(s):[/green]")
+            for path in plan.pruned:
+                console.print(f"  [red]- {path}[/red]")
+        elif plan.unchecked_instances:
+            console.print(
+                "[yellow]Nothing pruned: no path could be confirmed dead while instances "
+                "are unchecked.[/yellow]"
+            )
+        else:
+            console.print("[green]Nothing to prune; every search path is still referenced.[/green]")
+    else:
+        if prunable:
+            console.print(
+                f"[bold]Would prune {len(prunable)} dead search path(s)[/bold] "
+                "(absent from every instance):"
+            )
+            for path in prunable:
+                console.print(f"  [red]- {path}[/red]")
+            console.print("[dim]Re-run with --yes to remove them.[/dim]")
+        elif plan.unchecked_instances:
+            console.print(
+                "[yellow]No path could be confirmed dead while instances are unchecked.[/yellow]"
+            )
+        else:
+            console.print("[green]Nothing to prune; every search path is still referenced.[/green]")
+
+    if plan.unchecked_instances:
+        stderr_console.print(
+            f"[yellow]Note:[/yellow] {len(plan.unchecked_instances)} instance(s) could not be "
+            f"checked ({', '.join(plan.unchecked_instances)}); no path they might still "
+            "reference was pruned. Start them and re-run to prune those too."
+        )
+
+
 # ------------------------------------------------------------------------ cache
 
 

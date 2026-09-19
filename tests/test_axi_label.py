@@ -112,6 +112,22 @@ class TestAxiBenches:
         assert "verified: false" in result.stdout
         assert "present" not in result.stdout
 
+    def test_output_hints_at_update_for_a_missing_bench(self, monkeypatch):
+        # Issue #237: a hand-made bench is not in the cache and never appears here
+        # until a full refresh, so the verb always names the refresh - an agent
+        # that expected a bench and does not see it must not learn --update by
+        # trial.
+        monkeypatch.setattr(
+            axi_mod.core_label,
+            "list_benches",
+            lambda p, *, verify=True: Result(status=Status.OK, data=_bench_list()),
+        )
+        result = runner.invoke(axi_mod.app, ["benches", "proj"])
+
+        assert result.exit_code == 0
+        assert "inspect proj --update" in result.stdout
+        assert "missing from the cache" in result.stdout
+
     def test_uninspected_project_is_a_structured_error_naming_inspect(self, monkeypatch):
         def _raise(p, *, verify=True):
             raise CwcliError(
