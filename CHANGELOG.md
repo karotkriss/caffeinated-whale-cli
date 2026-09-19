@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.3] - 2026-09-19
+
+### Fixed
+
+- **The git-credential-bridge shim is now readable by a remapped `frappe` uid** - in shared mode, `align_container_user_to_host` remaps the container `frappe` user to the low `cwcli` service uid, but the credential-bridge shim was written into the workspace bind mount with only an umask-derived mode.
+The socket was always chmod'd explicitly; the shim was not, so under shared mode's `0007` umask it landed group-only with a group the remapped `frappe` user was not in, and `cwcli apps update` (and any in-container git through the bridge) died with `[Errno 13] Permission denied` opening the shim, followed by `fatal: could not read Username`.
+`shared_home.secure_bridge_helper` now chmods the shim world-readable (`0644`) after every AF_UNIX and persistent shim (re)write, in both normal and shared mode; the shim carries no secret (the credential stays behind the group-gated socket), so this is safe.
+
 ## [3.1.2] - 2026-09-19
 
 ### Fixed
