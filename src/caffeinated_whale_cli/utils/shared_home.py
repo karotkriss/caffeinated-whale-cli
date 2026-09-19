@@ -196,6 +196,33 @@ def secure_file_shared_only(path: Path | str) -> None:
     apply_group(path)
 
 
+def secure_bridge_helper(path: Path | str) -> None:
+    """Make a credential-bridge helper SCRIPT readable by the container git process.
+
+    git runs the shim via ``!/usr/bin/python3 <shim>``, so python OPENS the ``.py``
+    as the container's ``frappe`` user - a DIFFERENT identity from whoever wrote
+    it: the image default uid 1000, the aligned host uid, or (shared mode) the low
+    ``cwcli`` service uid. An umask-derived mode plus incidental setgid group
+    inheritance does not reliably grant that user READ, so git dies with
+    ``[Errno 13] Permission denied`` opening the shim before it can even reach the
+    socket. Make it world-READABLE (``0644``) so any container uid can open it
+    regardless of alignment - the 0666-socket rationale, for a file that only
+    needs read. Called after EVERY shim (re)write, because the shim is regenerated
+    per invocation / per boot.
+
+    Safe to widen the read: the AF_UNIX shim carries NO secret (the credential
+    lives behind the socket, which stays group-gated), so exposing the shim only
+    reveals the socket path a non-group user still cannot connect to. ``0644`` is
+    NOT group/world WRITABLE, so it is no code-injection vector for a file git
+    executes - it in fact TIGHTENS the prior umask-``0660`` group-writable shim in
+    shared mode. NOT for the TCP shim, which bakes the per-invocation auth token;
+    that transport is Docker Desktop, which has no host-uid remap and reads the
+    bind mount through its file-sharing layer regardless of host perms.
+    """
+    with contextlib.suppress(OSError):
+        os.chmod(path, 0o644)
+
+
 def apply_process_umask() -> None:
     """Relax the process umask to 0007 in shared mode, so incidental files cwcli
     (or a library) creates inside the setgid tree stay group-writable without an
