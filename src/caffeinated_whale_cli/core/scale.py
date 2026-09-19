@@ -324,7 +324,10 @@ def _repair_toolchains(
         return []
 
     _emit(on_event, "Re-aligning the container 'frappe' user to the host")
-    _, remap_err = align_container_user_to_host(container, chown_home=True)
+    # In shared mode a remap re-owns each bench dir too, so a recreated container's
+    # remapped `frappe` user keeps write access to the bind-mounted workspaces it
+    # supervises (a no-op on a normal box, where the ids already match).
+    _, remap_err = align_container_user_to_host(container, chown_home=True, bench_paths=bench_paths)
     if remap_err:
         warnings.append(Message("scale.uid_align_failed", remap_err))
 

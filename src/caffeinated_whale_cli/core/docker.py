@@ -18,6 +18,7 @@ from __future__ import annotations
 import codecs
 import os
 import subprocess
+from collections.abc import Sequence
 
 import docker
 from docker.errors import DockerException
@@ -229,7 +230,9 @@ _CHOWN_HOME_SHALLOW_DIRS = (
 )
 
 
-def align_container_user_to_host(container, *, chown_home: bool = False) -> tuple[bool, str | None]:
+def align_container_user_to_host(
+    container, *, chown_home: bool = False, bench_paths: Sequence[str] = ()
+) -> tuple[bool, str | None]:
     """Align the container's ``frappe`` user's uid/gid with the host user's.
 
     Bench commands run as the image's default ``frappe`` user (uid 1000), so every
@@ -257,6 +260,18 @@ def align_container_user_to_host(container, *, chown_home: bool = False) -> tupl
     1.28 GB/36.7k files it contains, measured at 79s (minutes on a slow disk)
     versus ~3s narrowed.
 
+    In SHARED mode (``shared_home.shared_mode()``) a uid/gid change ALSO re-owns
+    each path in ``bench_paths`` (the resolved bench dirs) to the new id. There the
+    remap target is the stable ``cwcli`` service account, NOT ``os.getuid()``, so a
+    migrated instance's bind-mounted workspace - built under the pre-shared uid -
+    is no longer owned by the remapped ``frappe`` user and ``bench start`` can no
+    longer write ``<bench>/logs/bench.log``, crash-looping the instance. Re-owning
+    the bench dir reconciles the ownership with the identity align just changed.
+    Gated on shared mode AND an actual id change, so a normal box - where align
+    targets ``os.getuid()``, the id already owns the workspace, and the ids match -
+    emits no workspace chown. ``/workspace`` is a bind mount, not the image
+    overlay, so ``chown -R`` there is cheap (no copy-up).
+
     Best-effort: returns ``(remapped, failure)``. ``failure`` is a short detail
     string when a step failed (the caller surfaces it as a warning and the bench
     still builds owned by the original uid, exactly as before this remap existed);
@@ -268,7 +283,8 @@ def align_container_user_to_host(container, *, chown_home: bool = False) -> tupl
     """
     if not hasattr(os, "getuid"):
         return (False, None)
-    if shared_home.shared_mode():
+    in_shared_mode = shared_home.shared_mode()
+    if in_shared_mode:
         # Shared mode: align to the STABLE cwcli service uid/gid, not whoever ran
         # cwcli. With a shared container and two users, aligning to os.getuid()
         # ping-pongs the frappe user's uid on every start - each swing risking a
@@ -319,6 +335,17 @@ def align_container_user_to_host(container, *, chown_home: bool = False) -> tupl
         steps.extend(
             f"[ ! -e {path} ] || chown {host_uid}:{host_gid} {path}"
             for path in _CHOWN_HOME_SHALLOW_DIRS
+        )
+    # Shared mode only: reconcile the bind-mounted bench workspace's ownership
+    # with the identity we just remapped. On a migrated instance the workspace is
+    # owned by the pre-shared uid, so the now-service-uid `frappe` user cannot
+    # write its own `<bench>/logs/bench.log` and `bench start` crash-loops. A
+    # normal box never reaches here for the workspace: its ids match (no remap) or
+    # it targets os.getuid(), which already owns the workspace. Existence-guarded
+    # so a fresh init (bench dir not yet created) is a no-op.
+    if ids_changed and in_shared_mode:
+        steps.extend(
+            f"[ ! -e {path} ] || chown -R {host_uid}:{host_gid} {path}" for path in bench_paths
         )
     try:
         code, out = container.exec_run(["bash", "-c", " && ".join(steps)], user="root")

@@ -949,6 +949,9 @@ def init_bench(
     if state.status is Status.NEEDS_CHOICE:
         return Result(status=Status.NEEDS_CHOICE, choice=state.choice)
 
+    bench_parent_path = bench_parent.rstrip("/") or "/workspace"
+    bench_full_path = f"{bench_parent_path}/{bench_name}"
+
     # Align the container's `frappe` user (uid 1000 by image default) with the
     # host user BEFORE any bench command writes the bind-mounted workspace, so the
     # files it creates are owned by the host user and `cwcli rm` can remove them on
@@ -956,7 +959,10 @@ def init_bench(
     # paid here, once, so this first provision's pyenv/nvm/pip installs can write
     # the (now host-owned) home; it re-owns only the paths provisioning writes,
     # never the baked pyenv/nvm toolchain, so it's a few seconds, not minutes (see
-    # `align_container_user_to_host`). A no-op when the ids already match.
+    # `align_container_user_to_host`). A no-op when the ids already match. In shared
+    # mode a remap also re-owns the bench dir when it already exists (a re-init
+    # against a migrated instance); a fresh init's dir does not exist yet, so the
+    # existence-guarded chown is a no-op there.
     emit(
         InitStepStart(
             phase="align_uid",
@@ -964,7 +970,7 @@ def init_bench(
         )
     )
     remapped, remap_err = core_docker.align_container_user_to_host(
-        frappe_container, chown_home=True
+        frappe_container, chown_home=True, bench_paths=[bench_full_path]
     )
     emit(InitStepEnd(phase="align_uid"))
     if remap_err:
@@ -973,10 +979,8 @@ def init_bench(
     elif remapped:
         emit(InitTrace(text="Aligned the container 'frappe' user to the host uid/gid."))
 
-    bench_parent_path = bench_parent.rstrip("/") or "/workspace"
     _ensure_directory(frappe_container, bench_parent_path)
 
-    bench_full_path = f"{bench_parent_path}/{bench_name}"
     bench_exists = _directory_exists(frappe_container, bench_full_path)
 
     if bench_exists:
