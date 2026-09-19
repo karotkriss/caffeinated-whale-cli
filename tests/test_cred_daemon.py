@@ -538,6 +538,53 @@ def test_ensure_running_instances_scopes_to_named_projects(run_dir, tmp_path, mo
     assert cred_daemon.ensure_running_instances(only={"mine-a"}) == ["mine-a"]
 
 
+def test_unscoped_multi_instance_sweep_announces_the_plan_before_wiring(
+    run_dir, tmp_path, monkeypatch
+):
+    """The unscoped sweep of >1 managed instance calls on_plan with the sorted
+    target names BEFORE it wires any of them - an operator is never surprised."""
+    projects_dir = tmp_path / "projects"
+    for name in ("mine-a", "mine-b"):
+        (projects_dir / name).mkdir(parents=True)
+    monkeypatch.setattr(config_utils, "PROJECTS_DIR", projects_dir)
+    monkeypatch.setattr(cred_daemon, "is_enabled", lambda: True)
+    _fake_docker([_LabelledContainer("mine-b"), _LabelledContainer("mine-a")], monkeypatch)
+
+    events: list[str] = []
+    monkeypatch.setattr(
+        cred_daemon, "ensure_bridge", lambda c, b, p: events.append(f"wire:{p}") or object()
+    )
+
+    planned: list[list[str]] = []
+
+    def _plan(names):
+        planned.append(names)
+        events.append("plan")
+
+    result = cred_daemon.ensure_running_instances(on_plan=_plan)
+
+    assert result == ["mine-a", "mine-b"]
+    assert planned == [["mine-a", "mine-b"]]  # sorted target names
+    assert events[0] == "plan"  # announced before any wiring
+    assert events[1:] == ["wire:mine-b", "wire:mine-a"]
+
+
+def test_single_instance_sweep_does_not_pre_announce(run_dir, tmp_path, monkeypatch):
+    """One instance (or a scoped --project) needs no pre-announcement."""
+    projects_dir = tmp_path / "projects"
+    (projects_dir / "solo").mkdir(parents=True)
+    monkeypatch.setattr(config_utils, "PROJECTS_DIR", projects_dir)
+    monkeypatch.setattr(cred_daemon, "is_enabled", lambda: True)
+    _fake_docker([_LabelledContainer("solo")], monkeypatch)
+    monkeypatch.setattr(cred_daemon, "ensure_bridge", lambda c, b, p: object())
+
+    planned: list[list[str]] = []
+    result = cred_daemon.ensure_running_instances(on_plan=lambda names: planned.append(names))
+
+    assert result == ["solo"]
+    assert planned == []  # a single instance is not pre-announced
+
+
 # ------------------------------------------------------------------- lifecycle
 
 
