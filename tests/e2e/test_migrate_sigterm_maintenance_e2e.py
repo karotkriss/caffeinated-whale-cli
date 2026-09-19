@@ -66,9 +66,7 @@ def _maintenance_mode(inst, site: str) -> int | None:
     Returns 1/0, or None when the file is unreadable/unparseable (fail-honest, so a
     transient read miss never masquerades as "not in maintenance").
     """
-    code, out = harness.exec_in_frappe(
-        inst.name, f"cat {inst.bench}/sites/{site}/site_config.json"
-    )
+    code, out = harness.exec_in_frappe(inst.name, f"cat {inst.bench}/sites/{site}/site_config.json")
     if code != 0:
         return None
     try:
