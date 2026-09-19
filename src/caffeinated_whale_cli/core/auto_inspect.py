@@ -115,21 +115,42 @@ def sync_boot_hook(
     try:
         installed = startup.is_startup_installed(unit)
         if at_boot and not installed:
-            if startup.install_startup(unit):
+            ok, reason = startup.install_startup(unit)
+            if ok:
                 actions.append("hook.installed")
             else:
                 warnings.append(
-                    Message("startup.install_failed", "Could not install startup configuration.")
+                    Message("startup.install_failed", _install_failed_text(unit, reason))
                 )
         elif not at_boot and installed:
-            if startup.uninstall_startup(unit):
+            ok, reason = startup.uninstall_startup(unit)
+            if ok:
                 actions.append("hook.removed")
             else:
+                detail = f" ({reason})" if reason else ""
                 warnings.append(
-                    Message("startup.uninstall_failed", "Could not remove startup configuration.")
+                    Message(
+                        "startup.uninstall_failed",
+                        f"Could not remove the start-on-boot unit{detail}.",
+                    )
                 )
     except OSError as e:  # e.g. an unsupported platform
         warnings.append(Message("startup.sync_failed", f"Could not update boot startup: {e}"))
+
+
+def _install_failed_text(unit: startup.BootUnit, reason: str | None) -> str:
+    """The single, in-order line for a failed start-on-boot install.
+
+    States what happened, why (the underlying tool's reason when known), that the
+    feature is otherwise fine, and the manual start verb - so it reads as "enabled,
+    but boot persistence unavailable" rather than a bare failure ahead of success.
+    """
+    detail = f" ({reason})" if reason else ""
+    suggestion = "cwcli " + " ".join(unit.start_args)
+    return (
+        f"Could not set up start-on-boot{detail}. The feature is enabled and running now, "
+        f"but it will not start automatically after a reboot - start it with `{suggestion}`."
+    )
 
 
 def enable(interval: int | None = None, at_boot: bool | None = None) -> Result[AutoInspectOutcome]:

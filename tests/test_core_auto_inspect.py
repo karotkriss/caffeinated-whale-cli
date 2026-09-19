@@ -62,13 +62,13 @@ def cfg(tmp_path, monkeypatch):
         state.calls["install"] += 1
         if state.install_result:
             state.installed = True
-        return state.install_result
+        return (state.install_result, None if state.install_result else "systemctl enable failed")
 
     def _uninstall(unit=None):
         state.calls["uninstall"] += 1
         if state.uninstall_result:
             state.installed = False
-        return state.uninstall_result
+        return (state.uninstall_result, None if state.uninstall_result else "unit not found")
 
     monkeypatch.setattr(auto_inspect, "is_running", lambda: state.running)
     monkeypatch.setattr(auto_inspect, "get_pid", lambda: state.pid)

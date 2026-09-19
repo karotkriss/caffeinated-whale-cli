@@ -482,9 +482,107 @@ def test_transport_reports_unix_or_tcp():
     assert cred_daemon.transport() in {"unix", "tcp"}
 
 
-def test_ensure_running_instances_zero_when_disabled(run_dir, monkeypatch):
+def test_ensure_running_instances_empty_when_disabled(run_dir, monkeypatch):
     monkeypatch.setattr(cred_daemon, "is_enabled", lambda: False)
-    assert cred_daemon.ensure_running_instances() == 0
+    assert cred_daemon.ensure_running_instances() == []
+
+
+class _LabelledContainer:
+    """A running frappe container carrying only its compose project label."""
+
+    def __init__(self, project):
+        self.labels = {"com.docker.compose.project": project} if project else {}
+
+
+def _fake_docker(containers, monkeypatch):
+    client = SimpleNamespace(containers=SimpleNamespace(list=lambda **kw: containers))
+    monkeypatch.setattr("docker.from_env", lambda: client)
+
+
+def test_ensure_running_instances_only_wires_cwcli_managed(run_dir, tmp_path, monkeypatch):
+    """A frappe container cwcli did not create (no PROJECTS_DIR/{name}) is never wired."""
+    projects_dir = tmp_path / "projects"
+    (projects_dir / "mine-a").mkdir(parents=True)
+    (projects_dir / "mine-b").mkdir(parents=True)
+    monkeypatch.setattr(config_utils, "PROJECTS_DIR", projects_dir)
+    monkeypatch.setattr(cred_daemon, "is_enabled", lambda: True)
+    _fake_docker(
+        [
+            _LabelledContainer("mine-a"),
+            _LabelledContainer("stranger"),  # not cwcli-managed - no project dir
+            _LabelledContainer("mine-b"),
+            _LabelledContainer(None),  # unlabelled - skipped
+        ],
+        monkeypatch,
+    )
+    wired: list[str] = []
+    monkeypatch.setattr(
+        cred_daemon, "ensure_bridge", lambda c, b, p: wired.append(p) or object()
+    )
+
+    result = cred_daemon.ensure_running_instances()
+
+    assert result == ["mine-a", "mine-b"]
+    assert "stranger" not in wired  # the container cwcli does not manage stays untouched
+
+
+def test_ensure_running_instances_scopes_to_named_projects(run_dir, tmp_path, monkeypatch):
+    projects_dir = tmp_path / "projects"
+    for name in ("mine-a", "mine-b"):
+        (projects_dir / name).mkdir(parents=True)
+    monkeypatch.setattr(config_utils, "PROJECTS_DIR", projects_dir)
+    monkeypatch.setattr(cred_daemon, "is_enabled", lambda: True)
+    _fake_docker([_LabelledContainer("mine-a"), _LabelledContainer("mine-b")], monkeypatch)
+    monkeypatch.setattr(cred_daemon, "ensure_bridge", lambda c, b, p: object())
+
+    assert cred_daemon.ensure_running_instances(only={"mine-a"}) == ["mine-a"]
+
+
+def test_unscoped_multi_instance_sweep_announces_the_plan_before_wiring(
+    run_dir, tmp_path, monkeypatch
+):
+    """The unscoped sweep of >1 managed instance calls on_plan with the sorted
+    target names BEFORE it wires any of them - an operator is never surprised."""
+    projects_dir = tmp_path / "projects"
+    for name in ("mine-a", "mine-b"):
+        (projects_dir / name).mkdir(parents=True)
+    monkeypatch.setattr(config_utils, "PROJECTS_DIR", projects_dir)
+    monkeypatch.setattr(cred_daemon, "is_enabled", lambda: True)
+    _fake_docker([_LabelledContainer("mine-b"), _LabelledContainer("mine-a")], monkeypatch)
+
+    events: list[str] = []
+    monkeypatch.setattr(
+        cred_daemon, "ensure_bridge", lambda c, b, p: events.append(f"wire:{p}") or object()
+    )
+
+    planned: list[list[str]] = []
+
+    def _plan(names):
+        planned.append(names)
+        events.append("plan")
+
+    result = cred_daemon.ensure_running_instances(on_plan=_plan)
+
+    assert result == ["mine-a", "mine-b"]
+    assert planned == [["mine-a", "mine-b"]]  # sorted target names
+    assert events[0] == "plan"  # announced before any wiring
+    assert events[1:] == ["wire:mine-b", "wire:mine-a"]
+
+
+def test_single_instance_sweep_does_not_pre_announce(run_dir, tmp_path, monkeypatch):
+    """One instance (or a scoped --project) needs no pre-announcement."""
+    projects_dir = tmp_path / "projects"
+    (projects_dir / "solo").mkdir(parents=True)
+    monkeypatch.setattr(config_utils, "PROJECTS_DIR", projects_dir)
+    monkeypatch.setattr(cred_daemon, "is_enabled", lambda: True)
+    _fake_docker([_LabelledContainer("solo")], monkeypatch)
+    monkeypatch.setattr(cred_daemon, "ensure_bridge", lambda c, b, p: object())
+
+    planned: list[list[str]] = []
+    result = cred_daemon.ensure_running_instances(on_plan=lambda names: planned.append(names))
+
+    assert result == ["solo"]
+    assert planned == []  # a single instance is not pre-announced
 
 
 # ------------------------------------------------------------------- lifecycle
