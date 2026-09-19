@@ -84,28 +84,64 @@ class TestWaitForDbReady:
     def test_ready_immediately(self):
         container = MagicMock()
         container.exec_run.return_value = (0, b"")
-        assert rm._wait_for_db_ready(container, attempts=5, delay=0) is True
+        ready, reason = rm._wait_for_db_ready(container, timeout=5, delay=0)
+        assert ready is True
+        assert reason == ""
         assert container.exec_run.call_count == 1
 
     def test_becomes_ready_after_retries(self, monkeypatch):
         monkeypatch.setattr(rm.time, "sleep", lambda *_a: None)
         container = MagicMock()
-        container.exec_run.side_effect = [(1, b""), (1, b""), (0, b"")]
-        assert rm._wait_for_db_ready(container, attempts=5, delay=0) is True
+        container.exec_run.side_effect = [
+            (1, b"Connection refused (errno 111)"),  # DB still cold-starting
+            (1, b"Connection refused (errno 111)"),
+            (0, b""),
+        ]
+        ready, reason = rm._wait_for_db_ready(container, timeout=100, delay=0)
+        assert ready is True
         assert container.exec_run.call_count == 3
 
-    def test_never_ready_fails_closed(self, monkeypatch):
+    def test_never_ready_fails_closed_with_reason(self, monkeypatch):
         monkeypatch.setattr(rm.time, "sleep", lambda *_a: None)
         container = MagicMock()
-        container.exec_run.return_value = (1, b"")
-        assert rm._wait_for_db_ready(container, attempts=4, delay=0) is False
-        assert container.exec_run.call_count == 4
+        container.exec_run.return_value = (1, b"Connection refused (errno 111)")
+        # timeout=0: exactly one attempt, then the deadline has already passed.
+        ready, reason = rm._wait_for_db_ready(container, timeout=0, delay=0)
+        assert ready is False
+        assert "Connection refused (errno 111)" in reason  # the specific reason survives
 
-    def test_exec_exception_is_not_ready(self, monkeypatch):
+    def test_dns_failure_reason_is_distinct_from_refused(self, monkeypatch):
+        # The regression this fix targets: a stopped/unreachable DB whose `mariadb`
+        # alias does not resolve makes the probe raise gaierror. That reason must
+        # reach the caller instead of collapsing into the same opaque failure as a
+        # plain refused connect - the operator could not otherwise tell a
+        # too-short wait apart from a wrong host/compose layout.
+        monkeypatch.setattr(rm.time, "sleep", lambda *_a: None)
+        container = MagicMock()
+        container.exec_run.return_value = (
+            1,
+            b"gaierror: [Errno -3] Temporary failure in name resolution",
+        )
+        ready, reason = rm._wait_for_db_ready(container, timeout=0, delay=0)
+        assert ready is False
+        assert "gaierror" in reason
+
+    def test_exec_exception_is_reported_not_swallowed(self, monkeypatch):
         monkeypatch.setattr(rm.time, "sleep", lambda *_a: None)
         container = MagicMock()
         container.exec_run.side_effect = RuntimeError("boom")
-        assert rm._wait_for_db_ready(container, attempts=2, delay=0) is False
+        ready, reason = rm._wait_for_db_ready(container, timeout=0, delay=0)
+        assert ready is False
+        assert "boom" in reason  # an exec failure names itself instead of a bare False
+
+    def test_verbose_and_timeout_are_honest_about_elapsed(self, monkeypatch):
+        # The old message reported a fixed `attempts * delay`; the real wait is now
+        # measured, so a large-DB false-fail is diagnosable by its true duration.
+        monkeypatch.setattr(rm.time, "sleep", lambda *_a: None)
+        container = MagicMock()
+        container.exec_run.return_value = (1, b"Connection refused (errno 111)")
+        ready, reason = rm._wait_for_db_ready(container, timeout=0, delay=0, verbose=True)
+        assert ready is False
 
 
 # --------------------------------------------------------------------------- #
@@ -121,7 +157,7 @@ class TestTransientStart:
         self._no_port_conflict(monkeypatch)
         frappe, db = _frappe("exited"), _db("exited")
         monkeypatch.setattr(rm, "get_project_containers", lambda n: [frappe, db])
-        monkeypatch.setattr(rm, "_wait_for_db_ready", lambda *a, **k: True)
+        monkeypatch.setattr(rm, "_wait_for_db_ready", lambda *a, **k: (True, ""))
 
         ok, started = rm._transient_start_for_backup("p")
 
@@ -133,7 +169,7 @@ class TestTransientStart:
         self._no_port_conflict(monkeypatch)
         frappe, db = _frappe("running"), _db("exited")
         monkeypatch.setattr(rm, "get_project_containers", lambda n: [frappe, db])
-        monkeypatch.setattr(rm, "_wait_for_db_ready", lambda *a, **k: True)
+        monkeypatch.setattr(rm, "_wait_for_db_ready", lambda *a, **k: (True, ""))
 
         ok, started = rm._transient_start_for_backup("p")
 
@@ -145,7 +181,9 @@ class TestTransientStart:
         self._no_port_conflict(monkeypatch)
         frappe = _frappe("exited")
         monkeypatch.setattr(rm, "get_project_containers", lambda n: [frappe])
-        monkeypatch.setattr(rm, "_wait_for_db_ready", lambda *a, **k: False)
+        monkeypatch.setattr(
+            rm, "_wait_for_db_ready", lambda *a, **k: (False, "Connection refused (errno 111)")
+        )
 
         ok, started = rm._transient_start_for_backup("p")
 
@@ -156,7 +194,7 @@ class TestTransientStart:
         self._no_port_conflict(monkeypatch)
         db = _db("exited")
         monkeypatch.setattr(rm, "get_project_containers", lambda n: [db])
-        monkeypatch.setattr(rm, "_wait_for_db_ready", lambda *a, **k: True)
+        monkeypatch.setattr(rm, "_wait_for_db_ready", lambda *a, **k: (True, ""))
 
         ok, started = rm._transient_start_for_backup("p")
 
