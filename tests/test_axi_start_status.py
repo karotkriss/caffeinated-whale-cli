@@ -290,6 +290,34 @@ class TestAxiStatus:
         assert "not_cwcli_supervised: true" in result.stdout
         assert "cwcli start" in result.stdout  # the hint rides in the warnings block
 
+    def test_maintenance_mode_is_in_the_toon_and_the_warning(self, monkeypatch):
+        # BUG-11: an agent driving `cwcli axi status` must be able to read the stuck
+        # maintenance state without parsing prose - both the per-bench field and the
+        # remedy warning ride the structured document.
+        import dataclasses
+
+        bench = dataclasses.replace(_bench_status(overall="degraded"), maintenance_mode=True)
+        report = _status_report(overall="degraded", benches=[bench])
+        monkeypatch.setattr(
+            axi_mod.core_status,
+            "status",
+            lambda *a, **k: Result(
+                status=Status.OK,
+                data=report,
+                warnings=[
+                    Message(
+                        "status.maintenance_mode",
+                        "Site 'site.localhost' is in MAINTENANCE MODE ... "
+                        "cwcli run proj --site site.localhost set-maintenance-mode off",
+                    )
+                ],
+            ),
+        )
+        result = runner.invoke(axi_mod.app, ["status", "proj"])
+        assert result.exit_code == 0
+        assert "maintenance_mode: true" in result.stdout
+        assert "set-maintenance-mode off" in result.stdout
+
     def test_multi_bench_reports_every_bench_exit_0(self, monkeypatch):
         # REPLACES test_multi_bench_names_the_flag_exit_2 (this class's copy only -
         # TestAxiStart's identically-named test pins `axi start`'s refusal, which this

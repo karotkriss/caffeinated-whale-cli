@@ -97,9 +97,10 @@ def status(
     assert report is not None  # OK/WARNING always carries a StatusReport
     if verbose:
         for warning in result.warnings:
-            # The not-cwcli-supervised hint is rendered by _render_detail (in BOTH
-            # modes), so don't also echo it here as a warning - it would double up.
-            if warning.code == "supervisor.not_cwcli":
+            # The not-cwcli-supervised hint and the maintenance-mode fault are
+            # rendered by _render_detail (in BOTH modes), so don't also echo them
+            # here as warnings - they would double up.
+            if warning.code in ("supervisor.not_cwcli", "status.maintenance_mode"):
                 continue
             stderr_console.print(f"[dim]{warning.text}[/dim]")
     _render_detail(report, verbose)
@@ -289,6 +290,15 @@ def _render_detail(report: StatusReport, verbose: bool) -> None:
         line = _web_line(bench, verbose, _host_web_target(container, bench))
         if line is not None:
             stderr_console.print(f"  {line}")
+        if bench.maintenance_mode:
+            # A site stuck in maintenance answers 503 with no other signal; say so
+            # plainly and name the way out (this is the SIGTERM/SIGHUP-killed-migrate
+            # state). Rendered even without --verbose - it is a fault, not detail.
+            stderr_console.print(
+                f"  [bold red]MAINTENANCE MODE ON[/bold red] for site '{bench.web_site}' "
+                f"(answers 503). Take it out with: [bold]cwcli run {report.project} "
+                f"--site {bench.web_site} set-maintenance-mode off[/bold]"
+            )
 
         for p in bench.processes:
             mark = _up_mark(p.up)

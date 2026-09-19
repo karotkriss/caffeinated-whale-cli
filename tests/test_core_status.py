@@ -723,3 +723,52 @@ class TestFusedFastPath:
         assert _bench(report).web_http_code is None
         assert _bench(report).web_site is None
         assert report.overall == "running"  # no web signal must not degrade it
+
+
+class TestMaintenanceMode:
+    """``status`` says PLAINLY when a site is stuck in maintenance mode and names the
+    way out (BUG-11: a SIGTERM/SIGHUP-killed migrate leaves a site 503 forever with
+    no other signal)."""
+
+    def test_reports_a_site_stuck_in_maintenance_and_names_the_way_out(self, wire, monkeypatch):
+        monkeypatch.setattr(
+            core_status.resolvers, "resolve_representative_site", lambda *a, **k: "dev.localhost"
+        )
+        monkeypatch.setattr(core_status.supervision, "maintenance_mode_on", lambda *a, **k: True)
+        wire(FakeContainer(marker=_MARKER, web_code="503"), benches=[{"path": BENCH}])
+
+        result = core_status.status("proj")
+
+        assert _bench(result.data).maintenance_mode is True
+        w = next(w for w in result.warnings if w.code == "status.maintenance_mode")
+        assert "dev.localhost" in w.text
+        assert "set-maintenance-mode off" in w.text
+
+    def test_no_warning_when_not_in_maintenance(self, wire, monkeypatch):
+        monkeypatch.setattr(
+            core_status.resolvers, "resolve_representative_site", lambda *a, **k: "dev.localhost"
+        )
+        monkeypatch.setattr(core_status.supervision, "maintenance_mode_on", lambda *a, **k: False)
+        wire(FakeContainer(marker=_MARKER, web_code="200"), benches=[{"path": BENCH}])
+
+        result = core_status.status("proj")
+
+        assert _bench(result.data).maintenance_mode is False
+        assert not any(w.code == "status.maintenance_mode" for w in result.warnings)
+
+    def test_watch_mode_skips_the_maintenance_read(self, wire, monkeypatch):
+        calls: list = []
+        monkeypatch.setattr(
+            core_status.resolvers, "resolve_representative_site", lambda *a, **k: "dev.localhost"
+        )
+        monkeypatch.setattr(
+            core_status.supervision,
+            "maintenance_mode_on",
+            lambda *a, **k: calls.append(1) or True,
+        )
+        wire(FakeContainer(marker=_MARKER, web_code="200"), benches=[{"path": BENCH}])
+
+        result = core_status.status("proj", probe_web=False)
+
+        assert calls == []  # the quiet --watch loop leaves the site untouched
+        assert _bench(result.data).maintenance_mode is None

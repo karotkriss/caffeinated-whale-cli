@@ -1213,3 +1213,43 @@ class TestSiteVerificationBudget:
         assert probe_budgets == [5.0]
         assert pending == ["a.localhost", "b.localhost", "c.localhost"]
         assert codes == {"a.localhost": None, "b.localhost": None, "c.localhost": None}
+
+
+class TestMaintenanceModeOn:
+    """``maintenance_mode_on`` - the live read ``status`` uses to say a site is stuck
+    in maintenance (BUG-11). Fail-honest: unreadable/unparseable is None, never a
+    silent "not in maintenance"."""
+
+    class _CfgFake:
+        def __init__(self, resp):
+            self.resp = resp
+            self.calls: list = []
+
+        def exec_run(self, cmd, workdir=None, environment=None):
+            self.calls.append((cmd, workdir))
+            return self.resp
+
+    def test_true_when_flag_set(self):
+        c = self._CfgFake((0, b'{"maintenance_mode": 1}'))
+        assert supervision.maintenance_mode_on(c, BENCH, "dev.localhost") is True
+        # Read via workdir + a relative path (the quoting guard), never bench_path
+        # interpolated into the command.
+        cmd, workdir = c.calls[0]
+        assert workdir == BENCH
+        assert cmd == "cat sites/dev.localhost/site_config.json"
+
+    def test_false_when_flag_zero(self):
+        c = self._CfgFake((0, b'{"maintenance_mode": 0}'))
+        assert supervision.maintenance_mode_on(c, BENCH, "dev.localhost") is False
+
+    def test_false_when_key_absent(self):
+        c = self._CfgFake((0, b'{"db_name": "x"}'))
+        assert supervision.maintenance_mode_on(c, BENCH, "dev.localhost") is False
+
+    def test_none_when_unreadable(self):
+        c = self._CfgFake((1, b""))
+        assert supervision.maintenance_mode_on(c, BENCH, "dev.localhost") is None
+
+    def test_none_when_unparseable(self):
+        c = self._CfgFake((0, b"not json at all"))
+        assert supervision.maintenance_mode_on(c, BENCH, "dev.localhost") is None

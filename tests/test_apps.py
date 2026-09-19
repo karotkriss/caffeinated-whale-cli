@@ -63,13 +63,24 @@ class _FakeAPI:
 class FakeFrappeContainer:
     """Records every exec, and serves programmable app/site listings + failures."""
 
-    def __init__(self, *, available_apps=None, installed=None, fail_on=None, get_app_creates=None):
+    def __init__(
+        self,
+        *,
+        available_apps=None,
+        installed=None,
+        fail_on=None,
+        get_app_creates=None,
+        apps_txt=None,
+    ):
         self.calls = []
         self.available_apps = available_apps if available_apps is not None else []
         self.installed = installed or {}  # site -> [app names]
         self.fail_on = fail_on or []  # substrings that make a command fail
         self.porcelain = ""  # what `git status --porcelain` reports (empty = clean tree)
         self.get_app_creates = get_app_creates or {}  # target substring -> apps/ dirname
+        # sites/apps.txt = the registry of INSTALLED apps. Defaults to available_apps
+        # (a normal bench lists its apps in both); set it to model a leftover clone.
+        self.apps_txt = list(apps_txt) if apps_txt is not None else None
         self.id = "cid"
         self.status = "running"
         self.labels = {"com.docker.compose.service": "frappe"}
@@ -85,9 +96,17 @@ class FakeFrappeContainer:
         # startswith) works uniformly.
         cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
         self.calls.append(cmd_str)
+        if cmd_str.startswith("rm -rf apps/"):
+            dirname = cmd_str[len("rm -rf apps/") :].strip().strip("'\"")
+            if dirname in self.available_apps:
+                self.available_apps.remove(dirname)
+            return 0, ""
         for sub in self.fail_on:
             if sub in cmd_str:
                 return 1, f"error running: {cmd_str}"
+        if cmd_str.strip() == "cat sites/apps.txt":
+            registered = self.available_apps if self.apps_txt is None else self.apps_txt
+            return 0, "\n".join(registered) + "\n"
         if cmd_str.startswith("bench get-app"):
             for target, dirname in self.get_app_creates.items():
                 if target in cmd_str and dirname not in self.available_apps:
@@ -475,6 +494,37 @@ def test_install_fetch_only_banner_says_fetched(wired, monkeypatch, capsys):
     out = capsys.readouterr().out.lower()
     assert "fetched" in out
     assert "installed" not in out
+
+
+def test_install_present_but_unregistered_dir_warns_instead_of_tracebacking(
+    wired, monkeypatch, capsys
+):
+    # BUG-12: a leftover clone (present under apps/ but not in apps.txt) must NOT
+    # falsely report get-app ok then dump a raw install-app traceback. The human gets
+    # an actionable Warning on stderr and the command exits non-zero.
+    container = FakeFrappeContainer(available_apps=["frappe", "payments"], apps_txt=["frappe"])
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
+
+    with pytest.raises(typer.Exit) as exc:
+        apps_mod.install_apps(
+            "proj",
+            ["payments"],
+            bench=None,
+            bench_path=None,
+            sites=["a.localhost"],
+            branch=None,
+            fetch_only=False,
+            if_not_present=False,
+            json_output=False,
+            yes=False,
+            verbose=False,
+        )
+
+    assert exc.value.exit_code != 0
+    err = capsys.readouterr().err
+    assert "apps.txt" in err and "payments" in err
+    # It never reaches install-app, so no ModuleNotFound traceback.
+    assert not any("install-app" in c for c in container.calls)
 
 
 # ------------------------------------------------------------------------ uninstall

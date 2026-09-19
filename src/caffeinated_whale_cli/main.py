@@ -173,6 +173,13 @@ def cli():
     # only; Windows has no SIGPIPE.
     if hasattr(signal, "SIGPIPE"):
         signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    # Turn SIGTERM (a `kill`/service stop) and SIGHUP (a closed terminal) into the
+    # same clean unwind Ctrl+C already gets, so a killed `migrate`/`apps update`
+    # runs its maintenance-mode and credential-bridge cleanup instead of leaving a
+    # site stuck in maintenance and the bridge leaking. See utils/signals.py.
+    from .utils.signals import install_unwind_handlers
+
+    install_unwind_handlers()
     app()
 
 

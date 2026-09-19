@@ -269,3 +269,19 @@ def test_a_removed_bench_heading_says_gone_before_its_health(monkeypatch, capsys
     assert "inspect" in captured.err
     # stdout stays exactly one token, as ever.
     assert captured.out.strip() == "online"
+
+
+def test_maintenance_mode_is_named_plainly_with_the_way_out(monkeypatch, capsys):
+    # BUG-11: a site stuck in maintenance answers 503 with no other signal, so the
+    # human surface says so plainly (even without --verbose) and names the remedy.
+    import dataclasses
+
+    bench = dataclasses.replace(_bench("degraded"), maintenance_mode=True)
+    report = _report("degraded", benches=[bench])
+    captured = _run(monkeypatch, capsys, report)
+
+    assert "MAINTENANCE MODE ON" in captured.err
+    assert "site.localhost" in captured.err
+    assert "set-maintenance-mode off" in captured.err
+    # stdout stays exactly one machine token.
+    assert captured.out.strip() == "degraded"
