@@ -49,12 +49,21 @@ def _maintenance_mode(inst) -> int | None:
         return None
 
 
-def _migrate_lock_present(inst) -> bool:
+def _migrate_lock_held(inst) -> bool:
+    """True only while frappe's migrate lock is GENUINELY held by a live process.
+
+    Mirrors ``core.bench_ops._migrate_lock_held``: ``bench migrate`` wraps its run
+    in an ``fcntl`` advisory lock but leaves the lock FILE on disk after releasing
+    it, so ``test -f`` stays True forever and can never signal that the orphaned
+    migrate finished. ``flock -n`` acquires the SAME kernel primitive and succeeds
+    (exit 0) the instant the lock is released, whether or not the file remains.
+    """
+    lock = f"{inst.bench}/sites/{inst.site}/locks/bench_migrate.lock"
     code, _ = harness.exec_in_frappe(
         inst.name,
-        f"test -f {inst.bench}/sites/{inst.site}/locks/bench_migrate.lock && echo yes",
+        f"test -f {lock} || exit 0; flock -n -E 200 {lock} -c true",
     )
-    return code == 0
+    return code == 200
 
 
 def test_sigterm_mid_migrate_takes_the_site_back_out_of_maintenance(running_instance):
@@ -101,7 +110,7 @@ def test_sigterm_mid_migrate_takes_the_site_back_out_of_maintenance(running_inst
     # Good-citizen cleanup for the shared session instance: let the orphaned migrate
     # finish and confirm the site serves again, so a sibling test finds it quiescent.
     harness.wait_until(
-        lambda: not _migrate_lock_present(inst),
+        lambda: not _migrate_lock_held(inst),
         timeout=600,
         interval=3,
         desc="orphaned migrate releases its lock",
