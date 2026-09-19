@@ -178,6 +178,31 @@ def test_ensure_writes_shim_registers_configures_and_starts(run_dir, tmp_path, m
 
 
 @unix_only
+def test_ensure_shim_is_readable_by_the_container_uid(run_dir, tmp_path, monkeypatch):
+    """The persistent shim ensure writes runs as whoever launched open/start -
+    often NOT the service account the daemon and remapped frappe user share - so
+    it must be world-readable for that frappe uid, never writable (git executes
+    it; the credential stays behind the socket). Same read bug as the per-
+    invocation bridge, reached via the operator-run ensure."""
+    monkeypatch.setattr(cred_daemon, "is_enabled", lambda: True)
+    monkeypatch.setattr(cred_daemon, "is_running", lambda: True)
+    monkeypatch.setattr(cred_daemon, "start_daemon", lambda: None)
+
+    # Restrictive umask so the raw write is 0600 (the failing state); the explicit
+    # chmod is what must make it readable, so this fails without the fix.
+    old_umask = os.umask(0o077)
+    try:
+        cred_daemon.ensure_bridge(FakeContainer(tmp_path), "/workspace/frappe-bench", "proj")
+    finally:
+        os.umask(old_umask)
+
+    shim = tmp_path / credbridge.PERSISTENT_HELPER_NAME
+    mode = stat.S_IMODE(shim.stat().st_mode)
+    assert mode & 0o004, f"world-readable bit missing (mode {mode:o})"
+    assert mode & 0o022 == 0, f"shim must not be group/world writable (mode {mode:o})"
+
+
+@unix_only
 def test_ensure_is_idempotent_config_added_once(run_dir, tmp_path, monkeypatch):
     monkeypatch.setattr(cred_daemon, "is_enabled", lambda: True)
     monkeypatch.setattr(cred_daemon, "is_running", lambda: True)  # already up

@@ -295,6 +295,11 @@ def ensure_bridge(container, bench_path: str, project_name: str) -> EnsureOutcom
         else:
             with contextlib.suppress(OSError):
                 helper_host.write_text(credbridge.persistent_helper_unix())
+                # This ensure runs as whoever launched open/start (often NOT the
+                # service account the daemon and remapped frappe user share), so
+                # make the shim world-readable for that frappe uid. See
+                # shared_home.secure_bridge_helper.
+                shared_home.secure_bridge_helper(helper_host)
 
         config_value, added = _ensure_container_config(container, container_dir)
 
@@ -370,9 +375,12 @@ def disable_bridge_artifacts() -> None:
     for project, ws in registry.items():
         host_dir = Path(ws)
         with contextlib.suppress(OSError):
-            (host_dir / credbridge.PERSISTENT_HELPER_NAME).write_text(
-                credbridge.persistent_helper_stub()
-            )
+            stub = host_dir / credbridge.PERSISTENT_HELPER_NAME
+            stub.write_text(credbridge.persistent_helper_stub())
+            # git may still be pointed at this shim (a container that missed the
+            # config unset); the frappe uid must be able to READ it or git hard-
+            # errors instead of the intended silent no-op. See secure_bridge_helper.
+            shared_home.secure_bridge_helper(stub)
         with contextlib.suppress(OSError):
             (host_dir / credbridge.PERSISTENT_SOCK_NAME).unlink(missing_ok=True)
         _best_effort_container_unset(project)
@@ -432,9 +440,12 @@ def _start_unix_listener(
     with contextlib.suppress(FileNotFoundError):
         sock_path.unlink()
     with contextlib.suppress(OSError):
-        (host_dir / credbridge.PERSISTENT_HELPER_NAME).write_text(
-            credbridge.persistent_helper_unix()
-        )
+        helper = host_dir / credbridge.PERSISTENT_HELPER_NAME
+        helper.write_text(credbridge.persistent_helper_unix())
+        # Readable by the container frappe uid regardless of alignment (the shim
+        # carries no secret; the credential stays behind the socket below). See
+        # shared_home.secure_bridge_helper.
+        shared_home.secure_bridge_helper(helper)
 
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     prev_cwd = os.getcwd()

@@ -465,6 +465,11 @@ def credential_bridge(container, bench_path: str) -> Iterator[None]:
             sock_name = _SOCK_NAME_FMT.format(uid)
             sock_host = host_dir / sock_name
             helper_host.write_text(_CONTAINER_HELPER_SRC.format(sock_name=sock_name))
+            # The container's frappe git process (a different uid - image default,
+            # aligned host uid, or the low shared-mode service uid) must be able to
+            # OPEN this shim; make it world-readable so it can, regardless of
+            # alignment. See shared_home.secure_bridge_helper.
+            shared_home.secure_bridge_helper(helper_host)
             with contextlib.suppress(FileNotFoundError):
                 sock_host.unlink()
 

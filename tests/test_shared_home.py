@@ -97,6 +97,32 @@ class TestSharedModeGate:
             os.umask(old)
 
 
+class TestBridgeHelperReadable:
+    """secure_bridge_helper makes a credential-shim world-readable (so the
+    container frappe uid can open it) but never writable - in BOTH modes, since
+    the shim carries no secret yet git executes it. This is mode-independent by
+    design: the read bug bites regardless of whether shared mode is on."""
+
+    @pytest.mark.parametrize("shared", [False, True])
+    def test_shim_becomes_world_readable_never_writable(self, tmp_path, monkeypatch, shared):
+        if shared:
+            marker_file = tmp_path / "shared.toml"
+            marker_file.write_text('enabled = true\nstate_dir = "/var/lib/cwcli"\n')
+            monkeypatch.setenv("CWCLI_SHARED_MARKER", str(marker_file))
+        else:
+            monkeypatch.setenv("CWCLI_SHARED_MARKER", "/nonexistent/shared.toml")
+        assert shared_home.shared_mode() is shared
+
+        shim = tmp_path / "shim.py"
+        shim.write_text("import sys\nsys.exit(0)\n")
+        shim.chmod(0o600)  # start owner-only, as an umask 0077 writer would
+        shared_home.secure_bridge_helper(shim)
+
+        mode = stat.S_IMODE(shim.stat().st_mode)
+        assert mode & 0o004, f"world-readable bit missing (mode {mode:o})"
+        assert mode & 0o022 == 0, f"must not be group/world writable (mode {mode:o})"
+
+
 class TestHomeResolutionPrecedence:
     def test_cwcli_home_env_wins_over_shared(self, marker, tmp_path, monkeypatch):
         private = tmp_path / "private"
