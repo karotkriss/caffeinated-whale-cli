@@ -97,9 +97,10 @@ def status(
     assert report is not None  # OK/WARNING always carries a StatusReport
     if verbose:
         for warning in result.warnings:
-            # The not-cwcli-supervised hint is rendered by _render_detail (in BOTH
-            # modes), so don't also echo it here as a warning - it would double up.
-            if warning.code == "supervisor.not_cwcli":
+            # The not-cwcli-supervised hint and the maintenance-mode fault are
+            # rendered by _render_detail (in BOTH modes), so don't also echo them
+            # here as warnings - they would double up.
+            if warning.code in ("supervisor.not_cwcli", "status.maintenance_mode"):
                 continue
             stderr_console.print(f"[dim]{warning.text}[/dim]")
     _render_detail(report, verbose)

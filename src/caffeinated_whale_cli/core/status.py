@@ -538,7 +538,7 @@ def _bench_status(
         supervisor_up=snapshot.supervisor_up,
         web_port=web_port,
         web_port_verified=web_port is not None,
-        web_site=web_site if probed else None,
+        web_site=web_site if (probed or maintenance is not None) else None,
         web_http_code=web_code,
         maintenance_mode=maintenance,
         processes=processes,
