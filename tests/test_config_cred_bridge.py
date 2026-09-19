@@ -36,7 +36,7 @@ def bridge(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon, "transport", lambda: "unix")
     monkeypatch.setattr(daemon, "registered_projects", lambda: [])
     monkeypatch.setattr(daemon, "recent_audit", lambda: [])
-    monkeypatch.setattr(daemon, "ensure_running_instances", lambda: 0)
+    monkeypatch.setattr(daemon, "ensure_running_instances", lambda only=None: [])
     monkeypatch.setattr(daemon, "disable_bridge_artifacts", lambda: None)
 
     def _start():
@@ -57,11 +57,11 @@ def bridge(tmp_path, monkeypatch):
 
     def _install(unit=None):
         state.installed = True
-        return True
+        return (True, None)
 
     def _uninstall(unit=None):
         state.installed = False
-        return True
+        return (True, None)
 
     monkeypatch.setattr(startup, "is_startup_installed", lambda unit=None: state.installed)
     monkeypatch.setattr(startup, "install_startup", _install)
@@ -151,3 +151,63 @@ def test_disable_removes_the_boot_unit(bridge):
     result = runner.invoke(app, ["config", "cred-bridge", "disable"])
     assert result.exit_code == 0
     assert bridge.installed is False
+
+
+# --------------------------------------------------------- `enable --project` scope
+
+
+def test_enable_project_scopes_and_names_the_instance(bridge, monkeypatch):
+    from caffeinated_whale_cli.core import cred_bridge as core_cred
+
+    monkeypatch.setattr(core_cred, "get_frappe_container", lambda name: object())
+    seen = {}
+
+    def _ensure(only=None):
+        seen["only"] = only
+        return sorted(only or [])
+
+    monkeypatch.setattr(daemon, "ensure_running_instances", _ensure)
+    result = runner.invoke(app, ["config", "cred-bridge", "enable", "--project", "alpha"])
+    assert result.exit_code == 0
+    assert seen["only"] == {"alpha"}  # the sweep was scoped
+    assert "Wired instance 'alpha' into the bridge." in result.output
+
+
+def test_enable_unscoped_lists_every_instance_it_wires(bridge, monkeypatch):
+    monkeypatch.setattr(daemon, "ensure_running_instances", lambda only=None: ["a", "b", "c"])
+    result = runner.invoke(app, ["config", "cred-bridge", "enable"])
+    assert result.exit_code == 0
+    # A multi-instance sweep names every instance so an operator is never surprised.
+    assert "Wired 3 running instances into the bridge: a, b, c." in result.output
+
+
+def test_enable_unknown_project_errors_not_found(bridge, monkeypatch):
+    from caffeinated_whale_cli.core import cred_bridge as core_cred
+    from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
+
+    def _resolve(name):
+        raise CwcliError(ErrorKind.NOT_FOUND, "project.not_found", f"Project '{name}' not found.")
+
+    monkeypatch.setattr(core_cred, "get_frappe_container", _resolve)
+    result = runner.invoke(app, ["config", "cred-bridge", "enable", "--project", "ghost"])
+    assert result.exit_code == 1
+    assert "Project 'ghost' not found." in result.output
+    assert bridge.enabled is False  # fail-fast: nothing was enabled
+
+
+def test_enable_startup_failure_states_reason_after_enabled(bridge, monkeypatch):
+    """The startup miss is stated once, in order: enabled first, then the reason."""
+    monkeypatch.setattr(
+        startup,
+        "install_startup",
+        lambda unit=None: (False, "systemctl enable failed: Unit file does not exist"),
+    )
+    result = runner.invoke(app, ["config", "cred-bridge", "enable", "--startup"])
+    assert result.exit_code == 0
+    # Flatten Rich's word-wrapping so long lines are matched as one string.
+    flat = " ".join(result.output.split())
+    assert "Credential bridge enabled." in flat
+    assert "systemctl enable failed: Unit file does not exist" in flat
+    # Order: the success line comes before the startup-unavailable warning.
+    assert flat.index("Credential bridge enabled.") < flat.index("systemctl enable failed")
+    assert "cwcli config cred-bridge start" in flat  # the manual-start next step

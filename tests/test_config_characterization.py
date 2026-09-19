@@ -77,12 +77,12 @@ def cfg(tmp_path, monkeypatch):
     def _install(unit=None):
         state.calls["install"] += 1
         state.installed = True
-        return True
+        return (True, None)
 
     def _uninstall(unit=None):
         state.calls["uninstall"] += 1
         state.installed = False
-        return True
+        return (True, None)
 
     def _clear_all():
         state.calls["clear_all"] += 1

@@ -29,11 +29,12 @@ from __future__ import annotations
 import contextlib
 import shutil
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..utils import config_utils, shared_home, startup
 from ..utils import cred_daemon as daemon
 from .auto_inspect import sync_boot_hook
+from .docker import get_frappe_container
 from .envelope import Message, Result, Status
 from .errors import CwcliError, ErrorKind
 
@@ -60,6 +61,9 @@ class CredBridgeOutcome:
 
     actions: list[str]
     state: CredBridgeState
+    # Instances this call wired into the bridge (``enable`` only), named so a
+    # multi-instance sweep is never a silent surprise. Empty for disable/start/stop.
+    ensured_projects: list[str] = field(default_factory=list)
 
 
 def _state() -> CredBridgeState:
@@ -121,18 +125,36 @@ def _stop_daemon() -> None:
         ) from e
 
 
-def enable(at_boot: bool | None = None) -> Result[CredBridgeOutcome]:
+def enable(
+    at_boot: bool | None = None, projects: list[str] | None = None
+) -> Result[CredBridgeOutcome]:
     """Bring the credential bridge to the enabled-and-running desired state.
 
     Idempotent. Missing ``gh``/``glab`` is a WARNING, never a refusal - the
     daemon degrades per-tool exactly as ``host_credential`` already does (a host
     without the tool simply answers nothing), so a user may enable it before
     installing them. Writes the config, hardens the projects dir to owner-only,
-    starts the daemon, best-effort ensures every currently-running instance so
-    the bridge takes effect without waiting for the next open, then syncs the
-    boot unit when ``at_boot`` was requested (``None`` leaves it untouched -
-    the ``core.auto_inspect.enable`` shape).
+    starts the daemon, best-effort ensures every currently-running CWCLI-MANAGED
+    instance so the bridge takes effect without waiting for the next open, then
+    syncs the boot unit when ``at_boot`` was requested (``None`` leaves it
+    untouched - the ``core.auto_inspect.enable`` shape).
+
+    ``projects`` scopes the sweep to the named instance(s) (the default ``None``
+    keeps the wire-everything semantics, restricted to instances cwcli itself
+    manages). Each named project is resolved up front with the same
+    :func:`~.docker.get_frappe_container` resolver every verb uses, so a typo
+    fails fast with the canonical ``project.not_found`` error and NO config write
+    or daemon start happens. The instances actually wired are returned in
+    ``ensured_projects`` so the frontend can name them - a multi-instance sweep is
+    never a silent surprise.
     """
+    only: set[str] | None = None
+    if projects:
+        # Validate FIRST (fail fast, no side effects) with the canonical resolver.
+        for name in projects:
+            get_frappe_container(name)  # raises NOT_FOUND / DOCKER
+        only = set(projects)
+
     warnings: list[Message] = []
     if shutil.which("gh") is None and shutil.which("glab") is None:
         warnings.append(
@@ -156,16 +178,14 @@ def enable(at_boot: bool | None = None) -> Result[CredBridgeOutcome]:
         _start_daemon()
         actions.append("daemon.started")
 
-    ensured = daemon.ensure_running_instances()
-    if ensured:
-        actions.append("instances.ensured")
+    ensured = daemon.ensure_running_instances(only=only)
 
     if at_boot is not None:
         sync_boot_hook(at_boot, actions, warnings, unit=startup.CRED_BRIDGE)
 
     return Result(
         status=Status.WARNING if warnings else Status.OK,
-        data=CredBridgeOutcome(actions=actions, state=_state()),
+        data=CredBridgeOutcome(actions=actions, state=_state(), ensured_projects=ensured),
         warnings=warnings,
     )
 

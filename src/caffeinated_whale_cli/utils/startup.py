@@ -94,8 +94,15 @@ def is_startup_installed(unit: BootUnit = AUTO_INSPECT) -> bool:
         return False
 
 
-def install_startup(unit: BootUnit = AUTO_INSPECT) -> bool:
-    """Install the unit's platform-specific startup configuration."""
+def install_startup(unit: BootUnit = AUTO_INSPECT) -> tuple[bool, str | None]:
+    """Install the unit's platform-specific startup configuration.
+
+    Returns ``(ok, reason)``: ``reason`` carries the underlying failure (e.g. the
+    raw ``systemctl``/``launchctl``/``schtasks`` stderr) when ``ok`` is False, and
+    is ``None`` on success. The reason is RETURNED rather than printed so the
+    caller can state it in order alongside its own structured output instead of
+    leaking a bare error line ahead of "enabled".
+    """
     plat = get_platform()
 
     if plat == "darwin":
@@ -108,8 +115,11 @@ def install_startup(unit: BootUnit = AUTO_INSPECT) -> bool:
         raise OSError(f"Unsupported platform: {plat}")
 
 
-def uninstall_startup(unit: BootUnit = AUTO_INSPECT) -> bool:
-    """Remove the unit's platform-specific startup configuration."""
+def uninstall_startup(unit: BootUnit = AUTO_INSPECT) -> tuple[bool, str | None]:
+    """Remove the unit's platform-specific startup configuration.
+
+    Returns ``(ok, reason)`` - see :func:`install_startup`.
+    """
     plat = get_platform()
 
     if plat == "darwin":
@@ -137,7 +147,7 @@ def _is_macos_startup_installed(unit: BootUnit) -> bool:
     return _get_macos_plist_path(unit).exists()
 
 
-def _install_macos_startup(unit: BootUnit) -> bool:
+def _install_macos_startup(unit: BootUnit) -> tuple[bool, str | None]:
     """Install macOS LaunchAgent plist file."""
     plist_path = _get_macos_plist_path(unit)
     plist_path.parent.mkdir(parents=True, exist_ok=True)
@@ -172,18 +182,18 @@ def _install_macos_startup(unit: BootUnit) -> bool:
 
     # Load the LaunchAgent
     result = subprocess.run(["launchctl", "load", str(plist_path)], capture_output=True, text=True)
-    if result.returncode != 0 and result.stderr:
-        # Log error for debugging but still return the result
-        print(f"launchctl load failed: {result.stderr}", file=sys.stderr)
-    return result.returncode == 0
+    if result.returncode == 0:
+        return True, None
+    reason = f"launchctl load failed: {result.stderr.strip()}" if result.stderr else None
+    return False, reason
 
 
-def _uninstall_macos_startup(unit: BootUnit) -> bool:
+def _uninstall_macos_startup(unit: BootUnit) -> tuple[bool, str | None]:
     """Remove macOS LaunchAgent plist file."""
     plist_path = _get_macos_plist_path(unit)
 
     if not plist_path.exists():
-        return False
+        return False, "the LaunchAgent plist was not found"
 
     # Unload the LaunchAgent
     subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True)
@@ -191,12 +201,19 @@ def _uninstall_macos_startup(unit: BootUnit) -> bool:
     # Remove the plist file
     plist_path.unlink()
 
-    return True
+    return True, None
 
 
 # =============================================================================
 # Linux (systemd)
 # =============================================================================
+
+
+def _systemctl_reason(step: str, stderr: str) -> str:
+    """A one-line reason for a failed ``systemctl --user`` step (no session, unit
+    missing, ...). Trimmed so it renders as a single structured warning line."""
+    detail = stderr.strip().replace("\n", " ") if stderr else ""
+    return f"systemctl {step} failed: {detail}" if detail else f"systemctl {step} failed"
 
 
 def _get_linux_service_path(unit: BootUnit) -> Path:
@@ -209,7 +226,7 @@ def _is_linux_startup_installed(unit: BootUnit) -> bool:
     return _get_linux_service_path(unit).exists()
 
 
-def _install_linux_startup(unit: BootUnit) -> bool:
+def _install_linux_startup(unit: BootUnit) -> tuple[bool, str | None]:
     """Install Linux systemd user service."""
     service_path = _get_linux_service_path(unit)
     service_path.parent.mkdir(parents=True, exist_ok=True)
@@ -239,9 +256,7 @@ WantedBy=default.target
         ["systemctl", "--user", "daemon-reload"], capture_output=True, text=True
     )
     if result.returncode != 0:
-        if result.stderr:
-            print(f"systemctl daemon-reload failed: {result.stderr}", file=sys.stderr)
-        return False
+        return False, _systemctl_reason("daemon-reload", result.stderr)
 
     result = subprocess.run(
         ["systemctl", "--user", "enable", unit.service_name],
@@ -249,27 +264,25 @@ WantedBy=default.target
         text=True,
     )
     if result.returncode != 0:
-        if result.stderr:
-            print(f"systemctl enable failed: {result.stderr}", file=sys.stderr)
-        return False
+        return False, _systemctl_reason("enable", result.stderr)
 
     result = subprocess.run(
         ["systemctl", "--user", "start", unit.service_name],
         capture_output=True,
         text=True,
     )
-    if result.returncode != 0 and result.stderr:
-        print(f"systemctl start failed: {result.stderr}", file=sys.stderr)
+    if result.returncode != 0:
+        return False, _systemctl_reason("start", result.stderr)
 
-    return result.returncode == 0
+    return True, None
 
 
-def _uninstall_linux_startup(unit: BootUnit) -> bool:
+def _uninstall_linux_startup(unit: BootUnit) -> tuple[bool, str | None]:
     """Remove Linux systemd user service."""
     service_path = _get_linux_service_path(unit)
 
     if not service_path.exists():
-        return False
+        return False, "the systemd user unit was not found"
 
     # Stop and disable the service
     subprocess.run(
@@ -287,7 +300,7 @@ def _uninstall_linux_startup(unit: BootUnit) -> bool:
     # Reload systemd
     subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
 
-    return True
+    return True, None
 
 
 # =============================================================================
@@ -308,7 +321,7 @@ def _is_windows_startup_installed(unit: BootUnit) -> bool:
         return False
 
 
-def _install_windows_startup(unit: BootUnit) -> bool:
+def _install_windows_startup(unit: BootUnit) -> tuple[bool, str | None]:
     """Install Windows Task Scheduler task."""
     cwcli_path = get_cwcli_path()
 
@@ -329,14 +342,13 @@ def _install_windows_startup(unit: BootUnit) -> bool:
 
     try:
         subprocess.run(command, check=True, capture_output=True, text=True)
-        return True
+        return True, None
     except subprocess.CalledProcessError as e:
-        if e.stderr:
-            print(f"schtasks create failed: {e.stderr}", file=sys.stderr)
-        return False
+        detail = e.stderr.strip() if e.stderr else ""
+        return False, f"schtasks create failed: {detail}" if detail else "schtasks create failed"
 
 
-def _uninstall_windows_startup(unit: BootUnit) -> bool:
+def _uninstall_windows_startup(unit: BootUnit) -> tuple[bool, str | None]:
     """Remove Windows Task Scheduler task."""
     try:
         subprocess.run(
@@ -344,9 +356,10 @@ def _uninstall_windows_startup(unit: BootUnit) -> bool:
             check=True,
             capture_output=True,
         )
-        return True
-    except subprocess.CalledProcessError:
-        return False
+        return True, None
+    except subprocess.CalledProcessError as e:
+        detail = (e.stderr.decode(errors="replace").strip() if e.stderr else "") or ""
+        return False, f"schtasks delete failed: {detail}" if detail else "schtasks delete failed"
 
 
 # =============================================================================
