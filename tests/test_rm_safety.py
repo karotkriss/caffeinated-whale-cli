@@ -28,10 +28,11 @@ import pytest
 import typer
 
 from caffeinated_whale_cli.commands import rm
+from caffeinated_whale_cli.core import inspect as core_inspect
 from caffeinated_whale_cli.core import rm as core_rm
 from caffeinated_whale_cli.core.envelope import Result, Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
-from caffeinated_whale_cli.utils import db_utils, docker_utils
+from caffeinated_whale_cli.utils import bench_sites, db_utils, docker_utils
 
 BENCH = "/workspace/frappe-bench"
 
@@ -145,6 +146,7 @@ class FakeFrappeContainer:
         backup_ok=True,
         artifacts=None,
         list_ok=True,
+        sites_listable=True,
         bench_path=BENCH,
         name="proj-frappe-1",
     ):
@@ -156,6 +158,11 @@ class FakeFrappeContainer:
         self.get_archive_calls: list[str] = []
         self.stopped = False
         self.removed = False
+        # sites_listable=False models a half-provisioned bench whose sites/ dir
+        # does not exist, so `ls -1 {bench}/sites` fails and list_sites returns
+        # None (the ambiguous "could not look" verdict) - the case that used to
+        # false-fail the backup gate (issue #237).
+        self._sites_listable = sites_listable
         self.sites = list(sites)
         self.extra_entries = list(extra_entries or [])
         self.ambiguous_entries = list(ambiguous_entries or [])
@@ -176,6 +183,8 @@ class FakeFrappeContainer:
         b = self.bench_path
 
         if cmd == f"ls -1 {b}/sites":
+            if not self._sites_listable:
+                return (1, b"")
             listing = [
                 "apps.txt",
                 "common_site_config.json",
@@ -249,6 +258,20 @@ class FakeFrappeContainer:
 
     def ran_backup(self) -> bool:
         return any("bench --site " in c and "backup" in c for c in self.calls)
+
+
+class _ReachableFakeFrappeContainer(FakeFrappeContainer):
+    """A ``FakeFrappeContainer`` that also answers ``_live_site_census``'s
+    reachability probe (``test -d /home/frappe`` as a list), so the REAL census
+    runs. Its ``find`` probes fall through to the base ``(1, b"")``, so
+    ``discover_benches`` finds no bench and the census comes back ``{}`` while the
+    bench's ``sites/`` still lists a real site - the corruption edge from #237."""
+
+    def exec_run(self, cmd, workdir=None):
+        if isinstance(cmd, list) and cmd[:2] == ["test", "-d"]:
+            self.calls.append(cmd)
+            return (0, b"")
+        return super().exec_run(cmd, workdir=workdir)
 
 
 def _make_volume(name):
@@ -615,6 +638,196 @@ class TestBackupGate:
         assert not any(
             f"20250101_000000-{site}-database.sql.gz" in p for p in container.get_archive_calls
         )
+
+
+class TestSiteLessBackupGate:
+    """Issue #237: a half-provisioned instance (containers up, no bench/site yet)
+    has nothing to back up, so the gate must PROCEED - but only on a LIVE proof of
+    zero sites, never on a stale/empty cache. These drive the gate with a
+    controlled ``_live_site_census`` verdict so the relax/tighten decision is
+    pinned independent of discovery's probe details (``TestLiveSiteCensus`` covers
+    the census itself)."""
+
+    def _census(self, monkeypatch, verdict):
+        monkeypatch.setattr(core_rm, "_live_site_census", lambda *a, **k: verdict)
+
+    def test_siteless_instance_proceeds(self, cwcli_home, monkeypatch):
+        # The bench's sites/ dir does not exist (list_sites -> None), so
+        # _backup_sites returns False and the OLD gate refused, forcing a
+        # --no-backup retry. A live census that proves zero sites relaxes it.
+        _patch_docker(monkeypatch)
+        project_dir = _make_project_dir(core_rm.PROJECTS_DIR, "proj")
+        container = FakeFrappeContainer([], sites_listable=False)
+        volumes = [_make_volume("proj_sites"), _make_volume("proj_db-data")]
+        _wire(monkeypatch, container, volumes)
+        self._census(monkeypatch, {})  # discovery ran, found no bench/site anywhere
+
+        result = _remove_project("proj", remove_volumes=True, no_backup=False)
+
+        assert result["backup_ok"] is True  # relaxed on proven-empty census
+        assert not result["failures"]
+        assert result["volumes"] == 2
+        assert result["dir_removed"] is True
+        for volume in volumes:
+            volume.remove.assert_called_once_with(force=True)
+        assert not project_dir.exists()
+
+    def test_siteless_empty_bench_proceeds(self, cwcli_home, monkeypatch):
+        # A bench exists but its sites list is empty -> also proven site-less.
+        _patch_docker(monkeypatch)
+        _make_project_dir(core_rm.PROJECTS_DIR, "proj")
+        container = FakeFrappeContainer([], sites_listable=False)
+        volumes = [_make_volume("proj_db-data")]
+        _wire(monkeypatch, container, volumes)
+        self._census(monkeypatch, {BENCH: []})
+
+        result = _remove_project("proj", remove_volumes=True, no_backup=False)
+
+        assert result["backup_ok"] is True
+        assert not result["failures"]
+        assert result["volumes"] == 1
+
+    def test_one_site_backup_failure_still_gated(self, cwcli_home, monkeypatch):
+        # A real site whose backup FAILS must still block deletion; the census
+        # (which reports the site) must NOT relax the gate.
+        _patch_docker(monkeypatch)
+        project_dir = _make_project_dir(core_rm.PROJECTS_DIR, "proj")
+        container = FakeFrappeContainer(["site1.localhost"], backup_ok=False)
+        volumes = [_make_volume("proj_sites"), _make_volume("proj_db-data")]
+        _wire(monkeypatch, container, volumes)
+        self._census(monkeypatch, {BENCH: ["site1.localhost"]})
+
+        result = _remove_project("proj", remove_volumes=True, no_backup=False)
+
+        assert result["backup_ok"] is False
+        assert result["volumes"] == 0
+        assert result["dir_removed"] is False
+        assert result["failures"]
+        for volume in volumes:
+            volume.remove.assert_not_called()
+        assert project_dir.exists()
+
+    def test_ambiguous_census_keeps_refusal(self, cwcli_home, monkeypatch):
+        # The census could not run (unreachable / discovery raised / a sites dir
+        # could not be listed) -> None -> the fail-closed refusal stands even
+        # though _backup_sites returned False. "If the check cannot run or is
+        # ambiguous, keep today's refusal."
+        _patch_docker(monkeypatch)
+        project_dir = _make_project_dir(core_rm.PROJECTS_DIR, "proj")
+        container = FakeFrappeContainer([], sites_listable=False)
+        volumes = [_make_volume("proj_sites")]
+        _wire(monkeypatch, container, volumes)
+        self._census(monkeypatch, None)  # ambiguous
+
+        result = _remove_project("proj", remove_volumes=True, no_backup=False)
+
+        assert result["backup_ok"] is False
+        assert result["volumes"] == 0
+        assert result["dir_removed"] is False
+        assert result["failures"]
+        volumes[0].remove.assert_not_called()
+        assert project_dir.exists()
+
+    def test_stale_cache_default_empty_but_live_site_elsewhere_is_gated(
+        self, cwcli_home, monkeypatch
+    ):
+        # The empty cache points the backup loop at the default bench, whose sites
+        # list is empty (so _backup_sites "succeeds" with nothing to do), but a
+        # LIVE bench the cache never knew about holds a real site. The census
+        # TIGHTENS the gate: that site was not backed up, so removal is refused -
+        # a stale cache must never let a real site slip the gate.
+        _patch_docker(monkeypatch)
+        project_dir = _make_project_dir(core_rm.PROJECTS_DIR, "proj")
+        container = FakeFrappeContainer([])  # default bench lists empty -> backup_ok True
+        volumes = [_make_volume("proj_sites"), _make_volume("proj_db-data")]
+        _wire(monkeypatch, container, volumes)  # get_cached_project_data -> None (empty cache)
+        self._census(monkeypatch, {BENCH: [], "/workspace/handmade": ["real.localhost"]})
+
+        result = _remove_project("proj", remove_volumes=True, no_backup=False)
+
+        assert result["backup_ok"] is False
+        assert result["volumes"] == 0
+        assert result["dir_removed"] is False
+        assert result["failures"]
+        for volume in volumes:
+            volume.remove.assert_not_called()
+        assert project_dir.exists()
+
+    def test_empty_census_never_overrides_a_real_site_backup_failed_on(
+        self, cwcli_home, monkeypatch
+    ):
+        # The corruption edge that motivated finding #1: a bench holds a REAL site
+        # whose backup FAILS, but its common_site_config.json/apps were removed, so
+        # discover_benches (which requires them) finds nothing and the REAL census
+        # comes back {} (empty, NOT None). An empty census must never relax the gate
+        # over a site the backup step positively found and failed to back up. This
+        # drives the REAL _live_site_census (no monkeypatch of it) so the census-vs-
+        # backup disagreement is exercised, not mocked away.
+        _patch_docker(monkeypatch)
+        project_dir = _make_project_dir(core_rm.PROJECTS_DIR, "proj")
+        # A running bench whose sites/ still lists a real site, but whose backup
+        # fails. discover_benches' find probes fall through to (1, b"") -> no bench
+        # -> census == {}; the reachability probe is answered so census is {} not None.
+        container = _ReachableFakeFrappeContainer(["site1.localhost"], backup_ok=False)
+        volumes = [_make_volume("proj_sites"), _make_volume("proj_db-data")]
+        _wire(monkeypatch, container, volumes)
+
+        # Sanity: the REAL census sees no bench (corruption) yet the site is real.
+        assert core_rm._live_site_census(container, _render_event) == {}
+        assert bench_sites.list_sites(container, BENCH) == ["site1.localhost"]
+
+        result = _remove_project("proj", remove_volumes=True, no_backup=False)
+
+        assert result["backup_ok"] is False
+        assert result["volumes"] == 0
+        assert result["dir_removed"] is False
+        assert result["failures"]
+        for volume in volumes:
+            volume.remove.assert_not_called()
+        assert project_dir.exists()
+
+
+class TestLiveSiteCensus:
+    """``_live_site_census`` is the LIVE authority on what site data exists. It
+    fails CLOSED (returns None) on any ambiguity so the delete-path gate keeps its
+    refusal, and returns a per-bench site map only on a trustworthy read."""
+
+    def _reachable(self, probe_ok=True):
+        container = MagicMock()
+        container.exec_run = MagicMock(return_value=(0 if probe_ok else 1, b""))
+        return container
+
+    def test_unreachable_home_is_none(self):
+        assert core_rm._live_site_census(self._reachable(probe_ok=False), _render_event) is None
+
+    def test_probe_exception_is_none(self):
+        container = MagicMock()
+        container.exec_run = MagicMock(side_effect=RuntimeError("daemon gone"))
+        assert core_rm._live_site_census(container, _render_event) is None
+
+    def test_discovery_exception_is_none(self, monkeypatch):
+        def _boom(*a, **k):
+            raise RuntimeError("discovery blew up")
+
+        monkeypatch.setattr(core_inspect, "discover_benches", _boom)
+        assert core_rm._live_site_census(self._reachable(), _render_event) is None
+
+    def test_unlistable_bench_is_none(self, monkeypatch):
+        monkeypatch.setattr(core_inspect, "discover_benches", lambda *a, **k: ["/w/b0"])
+        monkeypatch.setattr(bench_sites, "list_sites", lambda cont, bp: None)
+        assert core_rm._live_site_census(self._reachable(), _render_event) is None
+
+    def test_no_benches_is_empty_map(self, monkeypatch):
+        monkeypatch.setattr(core_inspect, "discover_benches", lambda *a, **k: [])
+        assert core_rm._live_site_census(self._reachable(), _render_event) == {}
+
+    def test_maps_each_bench_to_its_sites(self, monkeypatch):
+        monkeypatch.setattr(core_inspect, "discover_benches", lambda *a, **k: ["/w/b0", "/w/b1"])
+        monkeypatch.setattr(
+            bench_sites, "list_sites", lambda cont, bp: ["s.localhost"] if bp == "/w/b0" else []
+        )
+        census = core_rm._live_site_census(self._reachable(), _render_event)
+        assert census == {"/w/b0": ["s.localhost"], "/w/b1": []}
 
 
 class TestMultiBench:
@@ -1051,11 +1264,44 @@ class TestProjectNameValidation:
 
     @pytest.mark.parametrize(
         "name",
-        ["", ".", "..", "/", "/etc", "a/b", "..\\x", "sub/../../etc", "\0evil"],
+        # Blank names (issue #237) join the path-escaping set: "   " used to pass
+        # validation and run rm against a phantom directory made of spaces.
+        ["", "   ", "\t", " ", ".", "..", "/", "/etc", "a/b", "..\\x", "sub/../../etc", "\0evil"],
     )
     def test_escaping_names_rejected(self, cwcli_home, name):
-        """`_is_valid_project_name` rejects path-escaping project names."""
+        """`_is_valid_project_name` rejects path-escaping and blank project names."""
         assert core_rm.is_valid_project_name(name) is False
+
+    @pytest.mark.parametrize("name", ["", "   ", "\t"])
+    def test_core_never_quotes_an_empty_name(self, cwcli_home, monkeypatch, name):
+        # Issue #237: a blank name must never render as a bare empty quote ('' or
+        # '   ') as if it were a real project. The core raises USAGE and the
+        # message says "(empty)" instead of quoting nothing.
+        _patch_docker(monkeypatch)
+        with pytest.raises(CwcliError) as exc:
+            core_rm.remove(name, remove_volumes=True, no_backup=True)
+        assert exc.value.kind is ErrorKind.USAGE
+        assert "''" not in exc.value.message
+        assert repr(name) not in exc.value.message
+        assert "(empty)" in exc.value.message
+
+    def test_cli_never_prints_an_empty_quoted_name(self, cwcli_home, monkeypatch, capsys):
+        # The human frontend's invalid-name loop must not print "''" either.
+        _patch_docker(monkeypatch)
+        monkeypatch.setattr(rm.sys.stdin, "isatty", lambda: True)
+        with pytest.raises(typer.Exit) as exc:
+            rm.rm(
+                ctx=MagicMock(),
+                verbose=False,
+                volumes=True,
+                no_backup=True,
+                yes=True,
+                project_name=[""],
+            )
+        assert exc.value.exit_code == 1
+        err = capsys.readouterr().err
+        assert "''" not in err
+        assert "(empty)" in err
 
     def test_delete_directory_refuses_escaping_path(self, cwcli_home):
         # PROJECTS_DIR/.. resolves to the tmp root; a sentinel there must survive.
