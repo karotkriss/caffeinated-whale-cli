@@ -146,8 +146,11 @@ def test_sigterm_mid_migrate_takes_the_site_back_out_of_maintenance(running_inst
                 interval=0.5,
                 desc="the in-container migrate is running",
             )
-            # cwcli has set maintenance ON by the time its migrate is running.
-            assert _maintenance_mode(inst, MIGRATE_SITE) == 1
+            # No intermediate maintenance==1 assertion: on a fast fresh-site migrate,
+            # v15+'s bench migrate self-manages maintenance and can already have toggled
+            # it back OFF while the process lingers, so that read races. The guarantee
+            # under test is the FINAL state below; the deliberately-slow orphan_kill
+            # sibling is what pins maintenance ON at the moment of the kill.
             # The kill under test: a plain SIGTERM, exactly what `kill`/a service stop
             # sends. Before the fix this killed cwcli with maintenance left ON.
             proc.send_signal(signal.SIGTERM)
