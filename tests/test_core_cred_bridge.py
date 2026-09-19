@@ -58,12 +58,12 @@ def cfg(tmp_path, monkeypatch):
     def _install(unit=None):
         state.calls["install"] += 1
         state.installed = True
-        return True
+        return (True, None)
 
     def _uninstall(unit=None):
         state.calls["uninstall"] += 1
         state.installed = False
-        return True
+        return (True, None)
 
     monkeypatch.setattr(startup, "is_startup_installed", lambda unit=None: state.installed)
     monkeypatch.setattr(startup, "install_startup", _install)
@@ -87,11 +87,12 @@ def cfg(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon, "transport", lambda: "unix")
     monkeypatch.setattr(daemon, "registered_projects", lambda: [])
     monkeypatch.setattr(daemon, "recent_audit", lambda: [])
-    monkeypatch.setattr(
-        daemon,
-        "ensure_running_instances",
-        lambda: state.calls.__setitem__("ensure_running", state.calls["ensure_running"] + 1) or 0,
-    )
+    def _ensure_running(only=None):
+        state.calls["ensure_running"] += 1
+        state.ensure_only = only
+        return sorted(only) if only else []
+
+    monkeypatch.setattr(daemon, "ensure_running_instances", _ensure_running)
     monkeypatch.setattr(
         daemon,
         "disable_bridge_artifacts",
@@ -138,6 +139,48 @@ class TestEnable:
     def test_enable_ensures_running_instances(self, cfg):
         core_cred.enable()
         assert cfg.calls["ensure_running"] == 1
+
+    def test_unscoped_enable_sweeps_every_managed_instance(self, cfg):
+        """No --project means the sweep is unrestricted (only=None)."""
+        core_cred.enable()
+        assert cfg.ensure_only is None
+
+    def test_enable_reports_the_instances_it_wired(self, cfg, monkeypatch):
+        # The mock returns the `only` set as the ensured list; drive it with a scope.
+        monkeypatch.setattr(core_cred, "get_frappe_container", lambda name: object())
+        result = core_cred.enable(projects=["alpha", "beta"])
+        assert sorted(result.data.ensured_projects) == ["alpha", "beta"]
+
+
+class TestScopedEnable:
+    """`enable --project` scopes the sweep and validates each name up front."""
+
+    def test_scopes_the_sweep_to_the_named_projects(self, cfg, monkeypatch):
+        monkeypatch.setattr(core_cred, "get_frappe_container", lambda name: object())
+        core_cred.enable(projects=["alpha"])
+        assert cfg.ensure_only == {"alpha"}
+
+    def test_validates_every_named_project_with_the_canonical_resolver(self, cfg, monkeypatch):
+        seen: list[str] = []
+        monkeypatch.setattr(
+            core_cred, "get_frappe_container", lambda name: seen.append(name) or object()
+        )
+        core_cred.enable(projects=["alpha", "beta"])
+        assert seen == ["alpha", "beta"]
+
+    def test_a_missing_project_fails_fast_with_no_side_effects(self, cfg, monkeypatch):
+        def _resolve(name):
+            raise CwcliError(ErrorKind.NOT_FOUND, "project.not_found", f"Project '{name}' not found.")
+
+        monkeypatch.setattr(core_cred, "get_frappe_container", _resolve)
+        with pytest.raises(CwcliError) as exc:
+            core_cred.enable(projects=["ghost"])
+        assert exc.value.kind is ErrorKind.NOT_FOUND
+        assert exc.value.code == "project.not_found"
+        # Validation precedes every mutation: nothing was enabled or started.
+        assert cfg.enabled is False
+        assert cfg.calls["start"] == 0
+        assert cfg.calls["ensure_running"] == 0
 
     def test_daemon_start_failure_is_a_typed_internal_error(self, cfg, monkeypatch):
         def _boom():
@@ -281,11 +324,20 @@ class TestBootPersistence:
         assert startup.AUTO_INSPECT.label == "com.cwcli.auto-inspect"
         assert startup.CRED_BRIDGE.service_name == "cwcli-cred-bridge.service"
 
-    def test_a_failed_install_is_a_warning_never_a_refusal(self, cfg, monkeypatch):
-        monkeypatch.setattr(startup, "install_startup", lambda unit=None: False)
+    def test_a_failed_install_is_a_warning_never_a_refusal(self, cfg, monkeypatch, capsys):
+        monkeypatch.setattr(
+            startup,
+            "install_startup",
+            lambda unit=None: (False, "systemctl enable failed: no session"),
+        )
         result = core_cred.enable(at_boot=True)
         assert result.status is Status.WARNING
-        assert "startup.install_failed" in [w.code for w in result.warnings]
+        warning = next(w for w in result.warnings if w.code == "startup.install_failed")
+        # The reason travels IN the structured warning (stated once, in order by the
+        # renderer) - not leaked to stderr ahead of "enabled".
+        assert "systemctl enable failed: no session" in warning.text
+        assert "cwcli config cred-bridge start" in warning.text  # the manual-start verb
+        assert capsys.readouterr() == ("", "")  # the core prints nothing
         assert cfg.enabled is True  # the enable itself still landed
 
 

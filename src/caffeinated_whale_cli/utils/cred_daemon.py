@@ -332,15 +332,31 @@ def ensure_bridge(container, bench_path: str, project_name: str) -> EnsureOutcom
 _DEFAULT_BENCH_PATH = "/workspace/frappe-bench"
 
 
-def ensure_running_instances() -> int:
-    """Best-effort: ``ensure_bridge`` every currently-running frappe instance.
+def _is_cwcli_managed(project: str) -> bool:
+    """True only for an instance cwcli itself created.
+
+    The distinguishing signal is the local project directory ``PROJECTS_DIR/{name}``
+    that ``cwcli init`` writes and ``cwcli rm`` deletes - so a Frappe container
+    started outside cwcli (or under a different ``CWCLI_HOME``) has no matching
+    dir and is never touched by the sweep. Read via the module attribute so the
+    active ``CWCLI_HOME``/shared-mode home (and test monkeypatching) is honoured.
+    """
+    return (config_utils.PROJECTS_DIR / project).is_dir()
+
+
+def ensure_running_instances(only: set[str] | None = None) -> list[str]:
+    """Best-effort: ``ensure_bridge`` each currently-running CWCLI-MANAGED instance.
 
     Called by ``enable`` so the bridge takes effect immediately rather than only
-    on the next ``open``/``start`` of each instance. Returns how many instances
-    were ensured; swallows all Docker errors (0 on any failure).
+    on the next ``open``/``start`` of each instance. Only instances cwcli manages
+    (see :func:`_is_cwcli_managed`) are ever wired - a Frappe container cwcli did
+    not create is left untouched. ``only`` narrows the sweep to the named projects
+    (the ``enable --project`` scope); ``None`` sweeps every managed instance.
+    Returns the sorted names actually wired; swallows all Docker errors (``[]`` on
+    any failure).
     """
     if not is_enabled():
-        return 0
+        return []
     try:
         import docker
 
@@ -349,15 +365,19 @@ def ensure_running_instances() -> int:
             filters={"label": "com.docker.compose.service=frappe", "status": "running"}
         )
     except Exception:
-        return 0
-    count = 0
+        return []
+    ensured: list[str] = []
     for container in containers:
         project = container.labels.get("com.docker.compose.project")
         if not project:
             continue
+        if only is not None and project not in only:
+            continue
+        if not _is_cwcli_managed(project):
+            continue
         if ensure_bridge(container, _DEFAULT_BENCH_PATH, project) is not None:
-            count += 1
-    return count
+            ensured.append(project)
+    return sorted(ensured)
 
 
 def disable_bridge_artifacts() -> None:

@@ -89,13 +89,13 @@ _AUTO_INSPECT_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
 class TestLinuxUnits:
     def test_auto_inspect_service_is_byte_stable_across_the_refactor(self, home, monkeypatch):
         monkeypatch.setattr(startup, "get_platform", lambda: "linux")
-        assert startup.install_startup() is True  # the pre-existing no-arg call shape
+        assert startup.install_startup() == (True, None)  # the pre-existing no-arg call shape
         service = home.root / ".config" / "systemd" / "user" / "cwcli-auto-inspect.service"
         assert service.read_text() == _AUTO_INSPECT_SERVICE
 
     def test_cred_bridge_service_execs_the_guarded_start_verb(self, home, monkeypatch):
         monkeypatch.setattr(startup, "get_platform", lambda: "linux")
-        assert startup.install_startup(startup.CRED_BRIDGE) is True
+        assert startup.install_startup(startup.CRED_BRIDGE) == (True, None)
         service = home.root / ".config" / "systemd" / "user" / "cwcli-cred-bridge.service"
         text = service.read_text()
         assert 'ExecStart="/usr/local/bin/cwcli" config cred-bridge start' in text
@@ -108,20 +108,20 @@ class TestLinuxUnits:
         startup.install_startup(startup.CRED_BRIDGE)
         assert startup.is_startup_installed(startup.CRED_BRIDGE) is True
         assert startup.is_startup_installed() is False  # auto-inspect untouched
-        assert startup.uninstall_startup(startup.CRED_BRIDGE) is True
+        assert startup.uninstall_startup(startup.CRED_BRIDGE) == (True, None)
         assert startup.is_startup_installed(startup.CRED_BRIDGE) is False
 
 
 class TestMacosUnits:
     def test_auto_inspect_plist_is_byte_stable_across_the_refactor(self, home, monkeypatch):
         monkeypatch.setattr(startup, "get_platform", lambda: "darwin")
-        assert startup.install_startup() is True
+        assert startup.install_startup() == (True, None)
         plist = home.root / "Library" / "LaunchAgents" / "com.cwcli.auto-inspect.plist"
         assert plist.read_text() == _AUTO_INSPECT_PLIST
 
     def test_cred_bridge_plist_carries_its_own_label_argv_and_logs(self, home, monkeypatch):
         monkeypatch.setattr(startup, "get_platform", lambda: "darwin")
-        assert startup.install_startup(startup.CRED_BRIDGE) is True
+        assert startup.install_startup(startup.CRED_BRIDGE) == (True, None)
         plist = home.root / "Library" / "LaunchAgents" / "com.cwcli.cred-bridge.plist"
         text = plist.read_text()
         assert "<string>com.cwcli.cred-bridge</string>" in text
@@ -133,7 +133,7 @@ class TestMacosUnits:
 class TestWindowsUnits:
     def test_cred_bridge_task_uses_its_own_name_and_argv(self, home, monkeypatch):
         monkeypatch.setattr(startup, "get_platform", lambda: "windows")
-        assert startup.install_startup(startup.CRED_BRIDGE) is True
+        assert startup.install_startup(startup.CRED_BRIDGE) == (True, None)
         create = next(c for c in home.calls if "/Create" in c)
         assert "CaffeinatedWhaleCliCredBridge" in create
         assert '"/usr/local/bin/cwcli" config cred-bridge start' in create

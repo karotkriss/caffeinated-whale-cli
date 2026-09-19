@@ -482,9 +482,60 @@ def test_transport_reports_unix_or_tcp():
     assert cred_daemon.transport() in {"unix", "tcp"}
 
 
-def test_ensure_running_instances_zero_when_disabled(run_dir, monkeypatch):
+def test_ensure_running_instances_empty_when_disabled(run_dir, monkeypatch):
     monkeypatch.setattr(cred_daemon, "is_enabled", lambda: False)
-    assert cred_daemon.ensure_running_instances() == 0
+    assert cred_daemon.ensure_running_instances() == []
+
+
+class _LabelledContainer:
+    """A running frappe container carrying only its compose project label."""
+
+    def __init__(self, project):
+        self.labels = {"com.docker.compose.project": project} if project else {}
+
+
+def _fake_docker(containers, monkeypatch):
+    client = SimpleNamespace(containers=SimpleNamespace(list=lambda **kw: containers))
+    monkeypatch.setattr("docker.from_env", lambda: client)
+
+
+def test_ensure_running_instances_only_wires_cwcli_managed(run_dir, tmp_path, monkeypatch):
+    """A frappe container cwcli did not create (no PROJECTS_DIR/{name}) is never wired."""
+    projects_dir = tmp_path / "projects"
+    (projects_dir / "mine-a").mkdir(parents=True)
+    (projects_dir / "mine-b").mkdir(parents=True)
+    monkeypatch.setattr(config_utils, "PROJECTS_DIR", projects_dir)
+    monkeypatch.setattr(cred_daemon, "is_enabled", lambda: True)
+    _fake_docker(
+        [
+            _LabelledContainer("mine-a"),
+            _LabelledContainer("stranger"),  # not cwcli-managed - no project dir
+            _LabelledContainer("mine-b"),
+            _LabelledContainer(None),  # unlabelled - skipped
+        ],
+        monkeypatch,
+    )
+    wired: list[str] = []
+    monkeypatch.setattr(
+        cred_daemon, "ensure_bridge", lambda c, b, p: wired.append(p) or object()
+    )
+
+    result = cred_daemon.ensure_running_instances()
+
+    assert result == ["mine-a", "mine-b"]
+    assert "stranger" not in wired  # the container cwcli does not manage stays untouched
+
+
+def test_ensure_running_instances_scopes_to_named_projects(run_dir, tmp_path, monkeypatch):
+    projects_dir = tmp_path / "projects"
+    for name in ("mine-a", "mine-b"):
+        (projects_dir / name).mkdir(parents=True)
+    monkeypatch.setattr(config_utils, "PROJECTS_DIR", projects_dir)
+    monkeypatch.setattr(cred_daemon, "is_enabled", lambda: True)
+    _fake_docker([_LabelledContainer("mine-a"), _LabelledContainer("mine-b")], monkeypatch)
+    monkeypatch.setattr(cred_daemon, "ensure_bridge", lambda c, b, p: object())
+
+    assert cred_daemon.ensure_running_instances(only={"mine-a"}) == ["mine-a"]
 
 
 # ------------------------------------------------------------------- lifecycle
