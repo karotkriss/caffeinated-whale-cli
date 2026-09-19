@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import shlex
 
 import pytest
 
@@ -56,11 +57,24 @@ class FakeContainer:
     name = "proj-frappe-1"
     id = "cid"
 
-    def __init__(self, *, status="running", available=("frappe",), installed=None, fail_on=()):
+    def __init__(
+        self,
+        *,
+        status="running",
+        available=("frappe",),
+        installed=None,
+        fail_on=(),
+        apps_txt=None,
+    ):
         self.status = status
         self.available = list(available)
         self.installed = installed or {}
         self.fail_on = list(fail_on)
+        # sites/apps.txt = bench's registry of INSTALLED apps. Defaults to `available`
+        # because a normally-provisioned bench lists its apps in both apps/ and
+        # apps.txt; set it explicitly to model a leftover clone (in apps/ but never
+        # registered, because its pip-install failed).
+        self.apps_txt = list(apps_txt) if apps_txt is not None else None
         self.calls: list[str] = []
         self._last_code = 0
         import types
@@ -70,9 +84,28 @@ class FakeContainer:
     def reload(self):
         pass
 
+    @staticmethod
+    def _derive_dir(target):
+        base = target.rstrip("/").split("/")[-1]
+        return base[:-4] if base.endswith(".git") else base
+
     def _run(self, cmd):
         cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
         self.calls.append(cmd_str)
+        if cmd_str.startswith("bench get-app "):
+            # get-app clones the dir FIRST, then pip-installs it; a clone that lands
+            # while the pip-install fails leaves a partial dir behind. Model that so
+            # the fetch-failure cleanup has something to remove.
+            dirname = self._derive_dir(shlex.split(cmd_str)[-1])
+            if dirname not in self.available:
+                self.available.append(dirname)
+        if cmd_str.startswith("rm -rf apps/"):
+            dirname = cmd_str[len("rm -rf apps/") :].strip().strip("'\"")
+            if dirname in self.available:
+                self.available.remove(dirname)
+            if self.apps_txt is not None and dirname in self.apps_txt:
+                self.apps_txt.remove(dirname)
+            return 0, ""
         for sub in self.fail_on:
             if sub in cmd_str:
                 return 1, f"boom: {cmd_str}"
@@ -80,11 +113,12 @@ class FakeContainer:
             return 0, getattr(self, "dirty", "")
         if cmd_str.strip() == "git remote":
             return 0, "\n".join(getattr(self, "remotes", ["upstream"])) + "\n"
+        if cmd_str.strip() == "cat sites/apps.txt":
+            registered = self.available if self.apps_txt is None else self.apps_txt
+            return 0, "\n".join(registered) + "\n"
         if cmd_str.startswith("ls -1") and cmd_str.rstrip().endswith("apps"):
             return 0, "\n".join(self.available) + "\n"
         if "execute frappe.get_installed_apps" in cmd_str:
-            import shlex
-
             parts = shlex.split(cmd_str)
             site = parts[parts.index("--site") + 1] if "--site" in parts else ""
             apps = [line.split()[0] for line in self.installed.get(site, [])]
@@ -269,6 +303,89 @@ def test_install_still_fetches_when_the_app_is_not_on_the_bench(monkeypatch, con
 
     assert result.data.ok is True
     assert any(c.startswith("bench get-app") and "payments" in c for c in container.calls)
+
+
+def test_a_failed_fetch_removes_the_partial_dir_so_a_retry_refetches(monkeypatch, container):
+    """BUG-12: a get-app that cloned then failed at pip-install must NOT leave a
+    poisoned apps/ dir behind - that dir would make every retry skip the fetch,
+    falsely report `get-app ok`, then traceback at install-app forever."""
+    container.fail_on = ["get-app"]
+    _cache(monkeypatch, [{"path": BENCH}])
+
+    result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
+
+    assert result.data.ok is False
+    assert any(c.startswith("bench get-app") and "payments" in c for c in container.calls)
+    # The partial dir the failed clone left is removed, so a retry re-attempts it.
+    assert any(c == "rm -rf apps/payments" for c in container.calls)
+    assert "payments" not in container.available
+    # It never proceeds to install-app on a broken app.
+    assert not any("install-app" in c for c in container.calls)
+
+
+def test_a_failed_fetch_never_deletes_a_preexisting_app_dir(monkeypatch, container):
+    """Only a dir THIS fetch created (absent before it ran) is removed; a sibling app
+    already on the bench is never touched, even when the fetch fails."""
+    container.available = ["frappe", "erpnext"]  # erpnext pre-exists on the bench
+    container.fail_on = ["get-app"]
+    _cache(monkeypatch, [{"path": BENCH}])
+
+    result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
+
+    assert result.data.ok is False
+    assert "payments" not in container.available  # the partial is gone
+    assert any(c == "rm -rf apps/payments" for c in container.calls)
+    # The pre-existing sibling survives.
+    assert "erpnext" in container.available
+    assert not any(c.startswith("rm -rf apps/erpnext") for c in container.calls)
+
+
+def test_a_present_but_unregistered_dir_is_refused_not_tracebacked(monkeypatch, container):
+    """BUG-12: a leftover clone (present under apps/ but never registered in apps.txt,
+    because its pip-install failed) must NOT report a false `get-app ok` and must NOT
+    reach install-app (whose ModuleNotFound traceback is the reported symptom). It
+    gets an actionable message instead, and get-app never runs on the skip path."""
+    container.available = ["frappe", "payments"]
+    container.apps_txt = ["frappe"]  # payments cloned but was never installed
+    container.fail_on = ["get-app"]  # a real get-app here would be a bug (skip path)
+    _cache(monkeypatch, [{"path": BENCH}])
+
+    result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
+
+    assert result.data.ok is False
+    get = next(r for r in result.data.results if r.action == "get-app")
+    assert get.ok is False
+    assert not any("install-app" in c for c in container.calls)
+    w = next(w for w in result.warnings if w.code == "app.present_not_installed")
+    assert "payments" in w.text and "apps.txt" in w.text
+
+
+def test_a_present_and_registered_app_still_skips_the_fetch_and_installs(monkeypatch, container):
+    """The legitimate pre-warmed-base path: a dir present AND listed in apps.txt is a
+    valid install, so the fetch is skipped and the app is installed on the site."""
+    container.available = ["frappe", "payments"]
+    container.apps_txt = ["frappe", "payments"]
+    container.fail_on = ["get-app"]  # prove the fetch is skipped
+    _cache(monkeypatch, [{"path": BENCH}])
+
+    result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
+
+    assert result.data.ok is True
+    assert not any(c.startswith("bench get-app") for c in container.calls)
+    assert any("install-app payments" in c for c in container.calls)
+
+
+def test_a_present_dir_proceeds_when_apps_txt_is_unreadable(monkeypatch, container):
+    """Fail-honest: an unreadable apps.txt must NOT refuse a legitimately pre-warmed
+    base (an unknown state is never treated as 'invalid')."""
+    container.available = ["frappe", "payments"]
+    container.fail_on = ["get-app", "cat sites/apps.txt"]  # apps.txt read fails
+    _cache(monkeypatch, [{"path": BENCH}])
+
+    result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
+
+    assert result.data.ok is True
+    assert any("install-app payments" in c for c in container.calls)
 
 
 def test_install_partial_failure_is_a_warning_envelope_carrying_ok_false(monkeypatch, container):
