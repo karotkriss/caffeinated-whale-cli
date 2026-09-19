@@ -3,11 +3,10 @@
 import json
 import os
 import stat
-from pathlib import Path
 
 import pytest
 
-from caffeinated_whale_cli.utils import db_utils
+from caffeinated_whale_cli.utils import config_utils, db_utils
 
 
 class TestCacheDirectoryPermissions:
@@ -190,13 +189,20 @@ class TestSecurityBestPractices:
                         pytest.fail(f"Possible hardcoded credential found: {line.strip()[:100]}")
 
     def test_cache_dir_location_is_user_specific(self):
-        """Test that cache directory is in user's home directory."""
+        """Test that the cache directory lives under cwcli's own home.
+
+        The real invariant is that the cache sits under ``cwcli_home()`` (the
+        user's ``~/.cwcli`` by default, or a ``CWCLI_HOME`` override) - not a
+        world-shared location. Asserting against ``cwcli_home()`` rather than
+        ``Path.home()`` keeps this true under the hermetic session home the unit
+        tier uses (tests/conftest.py).
+        """
         cache_dir_str = str(db_utils.CACHE_DIR)
-        home_str = str(Path.home())
+        home_str = str(config_utils.cwcli_home())
 
         assert cache_dir_str.startswith(
             home_str
-        ), "Cache directory should be in user's home directory"
+        ), "Cache directory should be under cwcli's own home directory"
 
 
 @pytest.fixture()

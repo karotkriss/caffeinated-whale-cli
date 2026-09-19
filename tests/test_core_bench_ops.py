@@ -159,9 +159,13 @@ def test_a_site_left_in_maintenance_is_reported_and_fails_the_operation(containe
     assert "cwcli run" in off.message
 
 
-def test_maintenance_is_disabled_even_when_the_migrate_raises(monkeypatch, container):
+def test_maintenance_is_disabled_even_when_the_migrate_raises(monkeypatch, container, _no_sleep):
     """Why this is a plain function and not a generator: an abandoned generator's
-    `finally` does not run, and the cost here is a site left down."""
+    `finally` does not run, and the cost here is a site left down.
+
+    ``_no_sleep`` controls the interrupt-cleanup clock: the raise unwinds through
+    ``end_migrate_on_interrupt``, whose 10s+5s wait must be reached by the fake
+    clock rather than really waited (else this is a 15s unit test)."""
 
     def _boom(*_a, **_k):
         raise RuntimeError("stream exploded")
@@ -442,8 +446,18 @@ class InterruptedMigrateContainer:
 
 @pytest.fixture()
 def _no_sleep(monkeypatch):
-    """No real sleeps: the settle and the kill-wait polls are instant in tests."""
-    monkeypatch.setattr(bench_ops.time, "sleep", lambda *_a, **_k: None)
+    """Control time in the interrupt cleanup: sleeps are instant AND they advance a
+    fake ``time.monotonic`` clock, so ``_wait_marked_gone``'s real 10s+5s deadline is
+    reached by the clock, never by really waiting. Without this a killable=False
+    orphan spins the loop flat-out for 15s while ``container.calls`` grows to
+    gigabytes - the class the tests/conftest.py memory/slow guard fails on."""
+    clock = [0.0]
+
+    def _sleep(seconds=0.0, *_a, **_k):
+        clock[0] += seconds or bench_ops._INTERRUPT_POLL_INTERVAL
+
+    monkeypatch.setattr(bench_ops.time, "sleep", _sleep)
+    monkeypatch.setattr(bench_ops.time, "monotonic", lambda: clock[0])
 
 
 def _drive_interrupted_migrate(monkeypatch, container):
