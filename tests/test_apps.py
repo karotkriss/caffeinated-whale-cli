@@ -543,14 +543,13 @@ def test_uninstall_yes_fans_out_and_refreshes(wired, monkeypatch, capsys):
 
 # ------------------------------------------------------ install/uninstall --app CLI
 #
-# install/uninstall used to take a SECOND positional (the app list), breaking the
-# human-tier convention of at most one positional (the project) with everything
-# else as options - see e.g. `open --app`. These drive the real Typer/Click parser
-# (unlike the tests above, which call the function directly and so never exercise
-# argument parsing) to prove the new `--app` option resolves to the identical core
-# call, that omitting it is a clear usage error and not a stack trace, and that the
-# old two-positional shape is hard-cut (no deprecated fallback - nothing in this
-# repo invoked it non-interactively).
+# `install` accepts the app POSITIONALLY (matching `apps update`/`apps checkout` and
+# `axi apps install`, which all take the app positionally) as well as with -a/--app;
+# the two forms combine. `uninstall` still takes the app only via -a/--app. These
+# drive the real Typer/Click parser (unlike the tests above, which call the function
+# directly and so never exercise argument parsing) to prove the app resolves to the
+# identical core call whichever form is used, and that omitting the app entirely is a
+# clear usage error, not a stack trace.
 
 _runner = CliRunner()
 
@@ -606,16 +605,23 @@ def test_install_cli_missing_app_option_fails_with_a_clear_usage_error(wired, mo
     assert "Traceback" not in result.output
 
 
-def test_install_cli_rejects_the_old_second_positional(wired, monkeypatch):
-    def _boom(name):
-        raise AssertionError("core must not be reached for a rejected invocation")
+def test_install_cli_accepts_the_positional_app_and_merges_with_option(wired, monkeypatch):
+    # The human `apps install` now takes the app positionally too (matching
+    # `apps update`/`apps checkout` and `axi apps install`); the positional and
+    # -a/--app forms combine into the same core call.
+    container = FakeFrappeContainer(
+        available_apps=["frappe"], get_app_creates={"payments": "payments", "hrms": "hrms"}
+    )
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
 
-    monkeypatch.setattr(core_docker, "get_frappe_container", _boom)
-
-    result = _runner.invoke(apps_mod.app, ["install", "proj", "erpnext", "--app", "hrms"])
-    assert result.exit_code == 2
-    assert "unexpected extra argument" in result.output.lower()
-    assert "Traceback" not in result.output
+    result = _runner.invoke(
+        apps_mod.app,
+        ["install", "proj", "payments", "--app", "hrms", "--site", "a.localhost", "--json"],
+    )
+    assert result.exit_code == 0, result.output
+    out = json.loads(result.stdout)
+    installed = {r["app"] for r in out["results"] if r["action"] == "install-app"}
+    assert installed == {"payments", "hrms"}
 
 
 def test_uninstall_cli_parses_the_app_option_into_the_same_core_call(wired, monkeypatch):

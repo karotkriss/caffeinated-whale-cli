@@ -1193,7 +1193,7 @@ After a successful mutation the bench's cached app lists are refreshed so `where
 
 ```bash
 cwcli apps list [OPTIONS] PROJECT_NAME
-cwcli apps install [OPTIONS] PROJECT_NAME --app APP [--app APP ...]
+cwcli apps install [OPTIONS] PROJECT_NAME [APP ...]   # or -a/--app APP
 cwcli apps uninstall [OPTIONS] PROJECT_NAME --app APP [--app APP ...]
 cwcli apps update [OPTIONS] PROJECT_NAME APPS...
 cwcli apps checkout [OPTIONS] PROJECT_NAME APP REF
@@ -1204,7 +1204,7 @@ It flags an app whose `apps/<app>` is a symlink (naming the real directory it po
 
 **`apps install`** - ensures each app is present on the bench, then installs it on the target site(s).
 An app absent from `apps/` is fetched with `bench get-app` (honoring `--branch`); an app already present is not fetched again, so pre-warmed benches install it without failing on the existing directory.
-Each `--app` is a known app name **or** a git URL (passed straight to `bench get-app` when a fetch is needed, so custom apps not in bench's registry work); repeat `--app` to install more than one.
+Each app is a known app name **or** a git URL (passed straight to `bench get-app` when a fetch is needed, so custom apps not in bench's registry work). Apps may be given positionally (matching `apps update`/`apps checkout` and `axi apps install`) or with `-a`/`--app`; both forms combine, and repeat either to install more than one.
 `--fetch-only` ensures the app is present without installing it on any site.
 `--if-not-present` makes install idempotent: an app already installed on a target site is skipped (reported, not reinstalled, with its install hooks never rerun) and the command still exits 0, so "ensure this app is installed" is a single call whose exit code a script can trust; an app the site does not have is still installed normally, and a genuine install failure still exits non-zero.
 A bench that is already running may still serve code it loaded before the install and fail to see the new app: install therefore **resynchronises** that bench - it restarts every cwcli-supervised program that runs the bench's Python (`web`, `schedule`, and every worker) and requires every changed site to answer Frappe before it reports success.
@@ -1243,7 +1243,7 @@ Like `apps update`, checkout names the real directory when `apps/<app>` is a sym
 |--------|-------------|
 | `--bench TEXT` | Which bench to target: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)) |
 | `-p`, `--path TEXT` | Explicit bench directory inside the container (lower-level alternative to `--bench`) |
-| `-a`, `--app TEXT` | App name (`install` also accepts a git URL); repeatable and required for `install`/`uninstall` |
+| `-a`, `--app TEXT` | App name (`install` also accepts a git URL); repeatable. Required for `uninstall`; for `install` the app may instead be given positionally |
 | `--site TEXT` | Target site(s); repeatable. Omit for all sites (list/install/uninstall) or all affected sites (update) |
 | `--json` | Machine-readable JSON output (for `install`/`uninstall`, includes the per-`(app, site)` results; for `update`, the full per-phase report). Stdout carries only the document - bench output never corrupts it |
 | `-y`, `--yes` | Auto-start stopped containers without prompting; for `uninstall`, also skip the destructive confirmation |
@@ -1258,8 +1258,8 @@ cwcli apps list frappe-one
 # List apps installed across every site, as JSON
 cwcli apps list frappe-one --installed --json
 
-# Install ERPNext on every site of the bench
-cwcli apps install frappe-one --app erpnext
+# Install ERPNext on every site of the bench (positional app, or -a/--app)
+cwcli apps install frappe-one erpnext
 
 # Install more than one app in the same call
 cwcli apps install frappe-one --app erpnext --app hrms
@@ -1390,7 +1390,7 @@ cwcli unlock [OPTIONS] PROJECT_NAME
 
 | Option | Description |
 |--------|-------------|
-| `-s`, `--site TEXT` | Site name to unlock. If not provided, uses the default site (from `common_site_config.json`'s `default_site` or `sites/currentsite.txt`) |
+| `-s`, `--site TEXT` | Site name to unlock. If not provided, uses the default site (from `common_site_config.json`'s `default_site` or `sites/currentsite.txt`), falling back to the sole site of a single-site bench |
 | `--bench TEXT` | Which bench to target: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)) |
 | `-p`, `--path TEXT` | Explicit bench directory inside the container (lower-level alternative to `--bench`; cannot be combined with it) |
 | `-y`, `--yes` | Auto-start stopped containers without prompting |
@@ -1402,9 +1402,9 @@ Removes the `{bench_path}/sites/{site_name}/locks` directory, which can help res
 A site with no locks folder is reported as an honest "already unlocked" success rather than a generic "unlocked" message.
 
 **Smart Defaults:**
-- If `--site` is not specified, automatically uses your bench's default site (from `common_site_config.json`'s `default_site`, or `sites/currentsite.txt` when that key is absent)
-- Shows "Using default site: {site}" when using the default
-- Run `cwcli inspect {project}` first to cache the configuration
+- If `--site` is not specified, uses your bench's configured default site (from `common_site_config.json`'s `default_site`, or `sites/currentsite.txt` when that key is absent); when no default is configured it falls back to the sole site of a single-site bench (the shape a fresh `cwcli init` leaves)
+- A multi-site bench with no configured default still requires `--site`, and the error lists the available sites
+- Shows "Using site '{site}'" when the site was resolved for you
 
 **Examples:**
 
@@ -1412,9 +1412,9 @@ A site with no locks folder is reported as an honest "already unlocked" success 
 # Unlock a specific site
 cwcli unlock my-project --site development.localhost
 
-# Use default site (no --site flag needed)
+# Use the resolved site (no --site flag needed)
 cwcli unlock my-project
-# Output: Using default site: development.localhost
+# Output: Using site 'development.localhost'
 
 # Verbose mode with default site
 cwcli unlock my-project -v
@@ -1465,7 +1465,7 @@ cwcli backup [OPTIONS] PROJECT_NAME
 
 | Option | Description |
 |--------|-------------|
-| `-s`, `--site TEXT` | Site name to back up. If not provided, uses the default site (from `common_site_config.json`'s `default_site` or `sites/currentsite.txt`) |
+| `-s`, `--site TEXT` | Site name to back up. If not provided, uses the default site (from `common_site_config.json`'s `default_site` or `sites/currentsite.txt`), falling back to the sole site of a single-site bench; a multi-site bench with no default requires `--site` and the error lists the sites |
 | `--bench TEXT` | Which bench to target: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)) |
 | `-p`, `--path TEXT` | Explicit bench directory inside the container (lower-level alternative to `--bench`; cannot be combined with it) |
 | `--with-files` | Include public and private files in the backup |
@@ -1508,7 +1508,7 @@ cwcli restore [OPTIONS] PROJECT_NAME
 
 | Option | Description |
 |--------|-------------|
-| `-s`, `--site TEXT` | Site name to restore. If not provided, uses the default site (from `common_site_config.json`'s `default_site` or `sites/currentsite.txt`) |
+| `-s`, `--site TEXT` | Site name to restore. If not provided, uses the default site (from `common_site_config.json`'s `default_site` or `sites/currentsite.txt`), falling back to the sole site of a single-site bench; a multi-site bench with no default requires `--site` and the error lists the sites |
 | `--latest` | Non-interactive: select the most recent backup set for the target site (bypasses the backup menu). A non-TTY without any selector exits non-zero instead of hanging |
 | `--backup-file TEXT` | Non-interactive: select the backup set whose database file matches this filename (or full container path). Bypasses the backup menu |
 | `--bench TEXT` | Which bench to target: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)) |
@@ -1585,7 +1585,7 @@ cwcli restore my-project --site production.localhost --latest --yes \
 **Example Session:**
 
 ```
-Using default site: development.localhost
+Using site 'development.localhost'
 
 ? Select a backup to restore: (Use arrow keys)
 
@@ -1846,15 +1846,20 @@ is a gap in cwcli's knowledge, not a fault in the bench.
 `Host` header, so a request naming no site is correctly answered `404` by a
 perfectly healthy bench - which is what `status` used to report on every read. The
 probe now sends the bench's site as its `Host`, so a healthy bench reads `200`, and
-the report says which site it asked for (`web_site`, shown as `web <site>:<port> ->
-<code>`). That keeps the code attributable the same way the port does: it is that
-site's code, not a claim about the bench as a whole. A bench with no site recorded
-probes without a `Host` header, as before, and reports `web_site: null`.
+the report says which site it asked for (`web_site`). That keeps the code
+attributable the same way the port does: it is that site's code, not a claim about
+the bench as a whole. A bench with no site recorded probes without a `Host` header,
+as before, and reports `web_site: null`. The human `cwcli status` web line shows the
+**host-reachable** address (`web <site>:<host-port> -> <code>`) - the same one the
+init banner and `cwcli axi url` print, so it is copy-pasteable - resolved by mapping
+the bench's container web port through the container's live host bindings; when that
+host binding cannot be resolved it falls back to the container port labelled
+`(in-container)` so nobody tries to open an unreachable address.
 
 A truly-nonexistent project name (a typo, or one never created - no containers
-with the label at all) is NOT `offline`: it exits non-zero with a "no such
-project" error on stderr, so a script can tell a stopped instance apart from a
-name that does not exist.
+with the label at all) is NOT `offline`: it exits non-zero with a "Project
+'<name>' not found." error on stderr, so a script can tell a stopped instance apart
+from a name that does not exist.
 
 **Not under cwcli supervision:** if a bench is running but was NOT started by
 cwcli's supervisord - a plain `bench start`, or an instance already running before
@@ -1868,8 +1873,9 @@ per-process supervisord `state` is unavailable (there is no supervisord to ask);
 `up` comes straight from `ps`. `status` only reads - it never launches supervisord.
 
 **Per-bench, per-process detail (stderr):** one sub-block per bench, headed by its
-index, path, label, and own aggregate, with a web line naming the port that was
-actually probed (`web :8001 -> 404`). Beneath each, every Procfile process (`web`, `socketio`,
+index, path, label, and own aggregate, with a web line naming the host-reachable
+address that was probed (`web dev.localhost:17001 -> 200`, or the container port
+labelled `(in-container)` when the host binding cannot be resolved). Beneath each, every Procfile process (`web`, `socketio`,
 `worker`, `schedule`, `watch`, `redis_cache`, `redis_queue`) with up/down plus
 its PID, uptime, CPU%, RSS, and supervisord's authoritative `state`
 (`RUNNING`/`STARTING`/`BACKOFF`/`EXITED`/`FATAL`/`STOPPED`) - so a crash-looping or

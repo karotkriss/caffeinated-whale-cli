@@ -62,7 +62,19 @@ def _report(overall, processes=None, *, not_cwcli_supervised=False, benches=None
     )
 
 
-def _run(monkeypatch, capsys, report):
+class _FakeContainer:
+    """A frappe container whose live port bindings publish each container port P at
+    host port P+10000 - so the human web line can resolve a HOST-reachable address
+    (BUG-5). ``get_frappe_container=None`` (below) simulates the unresolvable case.
+    """
+
+    ports = {
+        "8000/tcp": [{"HostPort": "18000"}],
+        "8001/tcp": [{"HostPort": "18001"}],
+    }
+
+
+def _run(monkeypatch, capsys, report, *, container=_FakeContainer):
     # Neutralize @handle_docker_errors' real docker CLI/daemon preflight (this
     # unit tier runs without Docker; see test_yes_flag.py's `_neutralize`).
     monkeypatch.setattr(docker_utils.shutil, "which", lambda _n: "/usr/bin/docker")
@@ -71,6 +83,13 @@ def _run(monkeypatch, capsys, report):
     )
     monkeypatch.setattr(
         status_mod.core_status, "status", lambda *a, **k: Result(status=Status.OK, data=report)
+    )
+    # The human web line resolves the HOST address from the container's live
+    # bindings; ``container=None`` makes that unresolvable (the in-container fallback).
+    monkeypatch.setattr(
+        status_mod.core_docker,
+        "get_frappe_container",
+        lambda name: None if container is None else container(),
     )
     with pytest.raises(typer.Exit) as exc:
         status_mod.status(project_name="proj", bench=None, verbose=False, watch=False, interval=2.0)
@@ -176,24 +195,42 @@ def test_multi_bench_stdout_is_still_exactly_one_token(monkeypatch, capsys):
     assert "/w/b0" in captured.err and "/w/b1" in captured.err
 
 
-def test_the_web_line_names_the_port_and_site_it_probed(monkeypatch, capsys):
+def test_the_web_line_names_the_host_address_and_site_it_probed(monkeypatch, capsys):
     # An unattributed "web http: 404" is what let one bench's code stand in for
     # another's, so the port is part of the answer - and so is the site, because
-    # Frappe answers per Host and the code is that site's code.
+    # Frappe answers per Host and the code is that site's code. The address shown is
+    # the HOST-published one a person can open (container 8001 -> host 18001), not the
+    # container-internal port (BUG-5).
     report = _report(
         "running",
         benches=[_bench("running", index=1, path="/w/b1", web_port=8001, web_site="two.localhost")],
     )
     captured = _run(monkeypatch, capsys, report)
-    assert "web two.localhost:8001 -> 200" in captured.err
+    assert "web two.localhost:18001 -> 200" in captured.err
+    # The unreachable container port is never presented as the address.
+    assert "two.localhost:8001 ->" not in captured.err
 
 
-def test_the_web_line_still_names_the_port_when_no_site_is_known(monkeypatch, capsys):
+def test_the_web_line_still_names_the_host_address_when_no_site_is_known(monkeypatch, capsys):
     report = _report(
         "running", benches=[_bench("running", index=1, path="/w/b1", web_port=8001, web_site=None)]
     )
     captured = _run(monkeypatch, capsys, report)
-    assert "web :8001 -> 200" in captured.err
+    assert "web localhost:18001 -> 200" in captured.err
+
+
+def test_the_web_line_labels_the_container_port_when_the_host_binding_is_unresolvable(
+    monkeypatch, capsys
+):
+    # When the host binding cannot be resolved (no container, or no published port),
+    # the container port is shown but labelled "(in-container)" so nobody tries to
+    # open a port that is unreachable from the host (BUG-5).
+    report = _report(
+        "running",
+        benches=[_bench("running", index=1, path="/w/b1", web_port=8001, web_site="two.localhost")],
+    )
+    captured = _run(monkeypatch, capsys, report, container=None)
+    assert "web two.localhost:8001 (in-container) -> 200" in captured.err
 
 
 def test_an_unknown_port_says_so_rather_than_implying_8000(monkeypatch, capsys):
