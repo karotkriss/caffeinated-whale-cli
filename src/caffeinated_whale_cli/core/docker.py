@@ -230,6 +230,93 @@ def _bench_paths_needing_reown(
     return needing
 
 
+def _decode(out) -> str:
+    return out.decode("utf-8", "replace") if isinstance(out, (bytes, bytearray)) else str(out)
+
+
+def _external_app_source_dirs(container, bench_path: str) -> list[str]:
+    """Real source dirs of each app under ``<bench>/apps`` that live OUTSIDE the bench.
+
+    A cwcli-native bench holds its apps as real directories under ``<bench>/apps``,
+    so the bench re-own already covers them. A devcontainer/externally-provisioned
+    bench instead symlinks each app to a shared source tree - e.g.
+    ``apps/erpnext -> /workspace/.hdsrc/erpnext`` - which a ``chown -R <bench>`` does
+    NOT follow (it changes the link, not its target), leaving the real app repo owned
+    by the pre-shared uid. That is exactly the repo ``bench update``/``git pull``
+    operates on, so an ownership mismatch there is git's "dubious ownership" refusal.
+
+    Resolves each ``apps/*`` entry through its symlink (``readlink -f``) and returns
+    only the targets that resolve OUTSIDE ``bench_path`` (in-bench targets are already
+    covered by the bench re-own). One exec; ``[]`` when ``apps/`` is absent or the
+    probe fails - the caller stays a no-op on any layout it cannot read.
+    """
+    q = shlex.quote(bench_path)
+    prog = (
+        f"for d in {q}/apps/*/; do "
+        f'[ -e "$d" ] || continue; '
+        f't=$(readlink -f "$d" 2>/dev/null) || continue; '
+        f'[ -n "$t" ] || continue; '
+        f'case "$t/" in {q}/*) continue;; esac; '
+        f'printf "%s\\n" "$t"; '
+        f"done"
+    )
+    try:
+        code, out = container.exec_run(["bash", "-c", prog])
+    except DockerException:
+        return []
+    if code != 0:
+        return []
+    return [line.strip() for line in _decode(out).splitlines() if line.strip()]
+
+
+def reown_app_repo_to_frappe(container, app_path: str) -> tuple[bool, str | None]:
+    """Re-own an app's real source dir to the container ``frappe`` user when a
+    different uid owns it - the root cause of git's "dubious ownership" refusal.
+
+    ``git`` run as ``frappe`` refuses a repository owned by another uid, and neither
+    the pull nor ``git status`` can proceed, so ``apps update --force``'s existing
+    conflict recovery (which needs a readable ``git status``) never even fires. This
+    fixes the mismatch itself rather than silencing the check with a stray
+    ``safe.directory``: it resolves ``app_path`` through any symlink (so the real
+    repo under e.g. ``/workspace/.hdsrc`` is chowned, not the link) and ``chown -R``s
+    it to the ``frappe`` user's CURRENT uid/gid - which after alignment is whoever
+    git will actually run as.
+
+    Best-effort, so ``--force`` degrades to the pull's own error rather than raising:
+    returns ``(reowned, failure)``. ``reowned`` is True only when a chown actually
+    ran; an already-correctly-owned repo is ``(False, None)`` (a plain no-op, not the
+    cause of any failure).
+    """
+    uid = _read_frappe_id(container, "-u")
+    gid = _read_frappe_id(container, "-g")
+    if uid is None or gid is None:
+        return (False, "could not read the container 'frappe' user's uid/gid")
+    q = shlex.quote(app_path)
+    try:
+        code, out = container.exec_run(
+            ["bash", "-c", f'p=$(readlink -f {q}) && printf "%s\\n" "$p" && stat -c "%u:%g" "$p"']
+        )
+    except DockerException as e:
+        return (False, f"could not read the app repo owner: {e}")
+    if code != 0:
+        return (False, None)  # unresolvable; let the pull surface its own error
+    lines = _decode(out).splitlines()
+    if len(lines) < 2:
+        return (False, None)
+    real_path, owner = lines[0].strip(), lines[1].strip()
+    if not real_path or owner == f"{uid}:{gid}":
+        return (False, None)  # already owned by the frappe user: not the cause
+    try:
+        code, out = container.exec_run(
+            ["bash", "-c", f"chown -R {uid}:{gid} {shlex.quote(real_path)}"], user="root"
+        )
+    except DockerException as e:
+        return (False, f"could not re-own the app repo: {e}")
+    if code != 0:
+        return (False, f"could not re-own the app repo: {_decode(out).strip()}")
+    return (True, None)
+
+
 # The only paths first-provision writes under /home/frappe: the home root itself
 # (mkdir/write needs its owner to match), plus pip/npm's caches and pyenv/nvm's
 # write targets. Deliberately excludes the ~34.6k-file baked pyenv/nvm toolchain
@@ -287,8 +374,12 @@ def align_container_user_to_host(
     versus ~3s narrowed.
 
     In SHARED mode (``shared_home.shared_mode()``) each path in ``bench_paths`` (the
-    resolved bench dirs) is re-owned to the target identity when its CURRENT owner
-    differs, not merely when the ids change this call. The remap target is the
+    resolved bench dirs) AND the real source dir of any app symlinked outside a bench
+    (``apps/<app> -> /workspace/.hdsrc/<app>`` on a devcontainer bench; see
+    ``_external_app_source_dirs``) is re-owned to the target identity when its CURRENT
+    owner differs, not merely when the ids change this call. Covering the app repos is
+    what lets a subsequent ``apps update`` git pull run without a "dubious ownership"
+    refusal - a bench re-own alone does not follow those symlinks. The remap target is the
     stable ``cwcli`` service account, NOT ``os.getuid()``, so a migrated instance's
     bind-mounted workspace - built under the pre-shared uid - is not owned by the
     remapped ``frappe`` user and ``bench start`` can no longer write
@@ -342,7 +433,21 @@ def align_container_user_to_host(
     # a normal shared box whose workspace already matches gets no chown -R.
     reown_paths: list[str] = []
     if in_shared_mode and bench_paths:
-        reown_paths = _bench_paths_needing_reown(container, bench_paths, host_uid, host_gid)
+        # Each bench dir PLUS the real source dir of any app symlinked outside it
+        # (a devcontainer bench points `apps/<app>` at a shared tree like
+        # `/workspace/.hdsrc/<app>`, which a `chown -R <bench>` does not follow).
+        # Those app repos are what `bench update`/`git pull` operate on, so leaving
+        # them owned by the pre-shared uid is exactly git's "dubious ownership"
+        # refusal on the next `apps update`. Owner-mismatch gated per path, so the
+        # bench dir being already correct never hides an app repo that is not.
+        candidates: list[str] = []
+        seen: set[str] = set()
+        for path in bench_paths:
+            for candidate in (path, *_external_app_source_dirs(container, path)):
+                if candidate not in seen:
+                    seen.add(candidate)
+                    candidates.append(candidate)
+        reown_paths = _bench_paths_needing_reown(container, candidates, host_uid, host_gid)
 
     if not ids_changed and not chown_home and not reown_paths:
         return (False, None)

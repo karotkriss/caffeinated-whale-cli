@@ -77,6 +77,146 @@ def _exec(container, cmd, **kwargs) -> tuple[int, str]:
     return code, out.decode("utf-8", "replace") if isinstance(out, (bytes, bytearray)) else str(out)
 
 
+# The shared app-source tree a devcontainer/externally-provisioned bench symlinks
+# its apps at, OUTSIDE the bench dir. A `chown -R <bench>` never follows the
+# `apps/<app>` symlink into here, which is why the pre-shared uid strands the real
+# app repo and git refuses it with "dubious ownership" on the next `apps update`.
+_HDSRC = "/workspace/.hdsrc"
+_APP = "erpnext"
+_APP_SRC = f"{_HDSRC}/{_APP}"
+_APP_LINK = f"{_BENCH}/apps/{_APP}"
+
+
+def _app_source_setup(frappe_uid: int, frappe_gid: int) -> str:
+    """A bench whose dir is ALREADY correctly owned (v3.1.1 re-owned it) but whose
+    app is symlinked to a REAL git repo under /workspace/.hdsrc still stranded at the
+    pre-shared uid - the exact state that makes `apps update` hit dubious ownership."""
+    return f"""
+set -e
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq >/dev/null && apt-get install -y -qq --no-install-recommends git >/dev/null
+groupadd -o -g {frappe_gid} frappe
+useradd -o -u {frappe_uid} -g {frappe_gid} -m -d /home/frappe frappe
+mkdir -p {_BENCH}/apps/logs {_HDSRC}
+git init -q {_APP_SRC}
+git -C {_APP_SRC} -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+ln -s {_APP_SRC} {_APP_LINK}
+chown -R {frappe_uid}:{frappe_gid} /home/frappe {_BENCH}
+chown -R {_OLD_UID}:{_OLD_GID} {_HDSRC}
+echo SETUP_OK
+"""
+
+
+def _git_status_dubious(container, host_uid: int) -> tuple[int, str]:
+    """Run `git status` in the app checkout AS the frappe user (with a real HOME so no
+    stray safe.directory rescues it). Returns (exit_code, combined output)."""
+    return _exec(
+        container,
+        ["git", "-C", _APP_LINK, "status", "--porcelain"],
+        user="frappe",
+        environment={"HOME": "/home/frappe"},
+    )
+
+
+def test_shared_mode_reowns_an_app_repo_symlinked_out_of_the_bench(tmp_path, monkeypatch):
+    """FIX 2: a `cwcli start`/`restart` (align) must re-own the app SOURCE repos too,
+    not just the bench dir. A migrated instance whose bench was already re-owned still
+    strands its `.hdsrc` app repos at the pre-shared uid, so a plain `apps update`
+    git pull hits git's "dubious ownership" refusal. Align now discovers the app
+    source through its symlink and re-owns it, clearing the refusal at its root."""
+    import docker
+
+    marker = tmp_path / "shared.toml"
+    marker.write_text("enabled = true\n")
+    monkeypatch.setenv("CWCLI_SHARED_MARKER", str(marker))
+    assert shared_home.shared_mode(), "expected shared mode on with the marker present"
+
+    host_uid = os.getuid()
+    host_gid = os.getgid()
+    assert host_uid != _OLD_UID, "host uid must differ from the pre-shared uid"
+
+    client = docker.from_env()
+    container = client.containers.run(
+        "python:3.12-slim", ["sleep", "600"], detach=True, auto_remove=False
+    )
+    try:
+        code, out = _exec(container, ["bash", "-c", _app_source_setup(host_uid, host_gid)])
+        assert code == 0 and "SETUP_OK" in out, f"container setup failed:\n{out}"
+
+        # Precondition: the bench is already correct, but the app source is stranded
+        # at the pre-shared uid, so git as frappe REFUSES it (dubious ownership).
+        code, owner = _exec(container, ["stat", "-c", "%u", _APP_SRC])
+        assert code == 0 and owner.strip() == str(_OLD_UID), owner
+        code, out = _git_status_dubious(container, host_uid)
+        assert code != 0 and "dubious ownership" in out, (
+            "precondition not reproduced: git should refuse the stranded app repo, "
+            f"got exit {code}:\n{out}"
+        )
+
+        # Run the REAL align in shared mode, passing only the bench dir as a caller does.
+        remapped, err = core_docker.align_container_user_to_host(container, bench_paths=[_BENCH])
+        assert err is None, f"align reported a failure: {err}"
+        assert remapped is False, "no id change was needed; the fix keys on the owner mismatch"
+
+        # The app source (outside the bench, reached only through the symlink) was
+        # re-owned to the frappe user...
+        code, owner = _exec(container, ["stat", "-c", "%u", _APP_SRC])
+        assert code == 0 and owner.strip() == str(host_uid), (
+            f"{_APP_SRC} still owned by {owner.strip()}, not {host_uid} - the app-repo "
+            "re-own did not run (a `chown -R <bench>` cannot follow the symlink)"
+        )
+        # ...so the very `git` an `apps update` runs now trusts the repo.
+        code, out = _git_status_dubious(container, host_uid)
+        assert code == 0, f"git still refuses the app repo after align (exit {code}):\n{out}"
+    finally:
+        container.remove(force=True)
+
+
+def test_force_reown_clears_dubious_ownership_on_a_git_repo(tmp_path, monkeypatch):
+    """FIX 1: `apps update --force` re-owns an app repo the container user does not
+    own BEFORE pulling, so `--force` overcomes git's dubious-ownership refusal without
+    a prior restart. This drives the exact primitive the update flow calls
+    (`reown_app_repo_to_frappe`) against a REAL git repo and REAL chown - a mock
+    cannot exercise git's ownership check."""
+    import docker
+
+    # No shared marker needed: reown targets the container frappe user's OWN uid,
+    # whoever git will run as, in any mode.
+    host_uid = os.getuid()
+    host_gid = os.getgid()
+    assert host_uid != _OLD_UID, "host uid must differ from the pre-shared uid"
+
+    client = docker.from_env()
+    container = client.containers.run(
+        "python:3.12-slim", ["sleep", "600"], detach=True, auto_remove=False
+    )
+    try:
+        code, out = _exec(container, ["bash", "-c", _app_source_setup(host_uid, host_gid)])
+        assert code == 0 and "SETUP_OK" in out, f"container setup failed:\n{out}"
+
+        # Precondition: git as frappe refuses the stranded app repo.
+        code, out = _git_status_dubious(container, host_uid)
+        assert code != 0 and "dubious ownership" in out, (
+            f"precondition not reproduced (exit {code}):\n{out}"
+        )
+
+        # The exact call `apps update --force` makes, on the symlinked app path.
+        reowned, err = core_docker.reown_app_repo_to_frappe(container, _APP_LINK)
+        assert (reowned, err) == (True, None), f"reown failed: reowned={reowned} err={err}"
+
+        # It re-owned the RESOLVED real repo (not the link), so git now trusts it.
+        code, owner = _exec(container, ["stat", "-c", "%u", _APP_SRC])
+        assert code == 0 and owner.strip() == str(host_uid), owner
+        code, out = _git_status_dubious(container, host_uid)
+        assert code == 0, f"git still refuses the app repo after reown (exit {code}):\n{out}"
+
+        # Idempotent: a second call finds it already owned and re-owns nothing.
+        reowned, err = core_docker.reown_app_repo_to_frappe(container, _APP_LINK)
+        assert (reowned, err) == (False, None)
+    finally:
+        container.remove(force=True)
+
+
 def test_shared_mode_remap_keeps_a_migrated_workspace_writable(tmp_path, monkeypatch):
     import docker
 

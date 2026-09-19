@@ -94,6 +94,8 @@ class FakeFrappeContainer:
                     self.available_apps.append(dirname)
                     break
             return 0, ""
+        if cmd_str.strip() in ("id -u frappe", "id -g frappe"):
+            return 0, "9000\n"
         if cmd_str.strip() == "git remote":
             return 0, "upstream\n"
         if cmd_str.strip() == "git status --porcelain":
