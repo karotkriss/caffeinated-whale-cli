@@ -266,8 +266,23 @@ def inspect(
             apps_branch = bench_node.add(
                 f"Available Apps ({len(bench_instance['available_apps'])})"
             )
+            # BUG-10 flags: apps/<app> a symlink, or the bench importing a different
+            # copy. Present only on a full inspect (see core.inspect); absent (empty)
+            # on a cache-served read.
+            copies = {c["app"]: c for c in bench_instance.get("app_copies", [])}
             for app in bench_instance["available_apps"]:
-                apps_branch.add(f"[dim]{app}[/dim]")
+                c = copies.get(app)
+                if c and c.get("diverged"):
+                    apps_branch.add(
+                        f"[dim]{app}[/dim] [red](bench imports {c.get('imported_path')}, "
+                        f"not apps/{app})[/red]"
+                    )
+                elif c and c.get("is_symlink"):
+                    apps_branch.add(
+                        f"[dim]{app}[/dim] [yellow](→ {c.get('resolved_path')})[/yellow]"
+                    )
+                else:
+                    apps_branch.add(f"[dim]{app}[/dim]")
 
             # Resolve the default site from EITHER common_site_config.json's
             # `default_site` OR the currentsite.txt pointer (recorded as

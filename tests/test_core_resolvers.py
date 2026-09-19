@@ -428,3 +428,174 @@ class TestPresentBenchPaths:
         c = _ProbeContainer()
         assert resolvers.present_bench_paths(c, []) == set()
         assert c.calls == []
+
+
+# ------------------------------------------------------- resolve_app_imports (BUG-10)
+
+
+class _AppImportContainer:
+    """A fake frappe container answering the app-import probe with canned records.
+
+    ``records`` is the JSON list the in-container python would print; ``exit_code``,
+    ``output`` and ``raises`` let a test drive the fail-soft branches.
+    """
+
+    def __init__(self, *, records=None, exit_code=0, output=None, raises=None):
+        self._records = records if records is not None else []
+        self._exit_code = exit_code
+        self._output = output
+        self._raises = raises
+        self.calls: list = []
+
+    def exec_run(self, cmd, workdir=None, **kwargs):
+        self.calls.append(cmd)
+        if self._raises is not None:
+            raise self._raises
+        if self._output is not None:
+            return self._exit_code, self._output
+        import json as _json
+
+        return self._exit_code, _json.dumps(self._records).encode()
+
+
+BENCH = "/workspace/frappe-bench"
+
+
+def _rec(app, *, is_symlink=False, resolved=None, origin=None):
+    return {
+        "app": app,
+        "entry": f"{BENCH}/apps/{app}",
+        "is_symlink": is_symlink,
+        "resolved_path": resolved,
+        "imported_origin": origin,
+    }
+
+
+class TestResolveAppImports:
+    def test_normal_real_dir_is_not_diverged(self):
+        c = _AppImportContainer(
+            records=[
+                _rec(
+                    "srcapp",
+                    resolved=f"{BENCH}/apps/srcapp",
+                    origin=f"{BENCH}/apps/srcapp/srcapp/__init__.py",
+                )
+            ]
+        )
+        imp = resolvers.resolve_app_imports(c, BENCH, ["srcapp"])["srcapp"]
+        assert imp.checked is True
+        assert imp.diverged is False
+        assert imp.is_symlink is False
+        assert imp.resolved_path == f"{BENCH}/apps/srcapp"
+        assert imp.imported_path == f"{BENCH}/apps/srcapp"
+
+    def test_normal_symlink_layout_is_not_flagged_as_diverged(self):
+        """apps/<app> is a symlink whose target IS what the bench imports: fine."""
+        target = "/workspace/.hdsrc/srcapp"
+        c = _AppImportContainer(
+            records=[
+                _rec(
+                    "srcapp",
+                    is_symlink=True,
+                    resolved=target,
+                    origin=f"{target}/srcapp/__init__.py",
+                )
+            ]
+        )
+        imp = resolvers.resolve_app_imports(c, BENCH, ["srcapp"])["srcapp"]
+        assert imp.is_symlink is True
+        assert imp.resolved_path == target
+        assert imp.diverged is False
+
+    def test_real_dir_but_bench_imports_a_different_copy_is_diverged(self):
+        """Orientation B: apps/srcapp is real, the bench imports .hdsrc/srcapp."""
+        c = _AppImportContainer(
+            records=[
+                _rec(
+                    "srcapp",
+                    resolved=f"{BENCH}/apps/srcapp",
+                    origin="/workspace/.hdsrc/srcapp/srcapp/__init__.py",
+                )
+            ]
+        )
+        imp = resolvers.resolve_app_imports(c, BENCH, ["srcapp"])["srcapp"]
+        assert imp.diverged is True
+        assert imp.resolved_path == f"{BENCH}/apps/srcapp"
+        assert imp.imported_path == "/workspace/.hdsrc/srcapp"
+
+    def test_symlink_pointing_away_from_the_imported_copy_is_diverged(self):
+        """Orientation A: apps/srcapp is a symlink, but the site imports elsewhere."""
+        c = _AppImportContainer(
+            records=[
+                _rec(
+                    "srcapp",
+                    is_symlink=True,
+                    resolved="/workspace/.hdsrc/srcapp",
+                    origin=f"{BENCH}/apps/srcapp-real/srcapp/__init__.py",
+                )
+            ]
+        )
+        imp = resolvers.resolve_app_imports(c, BENCH, ["srcapp"])["srcapp"]
+        assert imp.is_symlink is True
+        assert imp.diverged is True
+
+    def test_one_exec_for_many_apps(self):
+        c = _AppImportContainer(records=[_rec("a"), _rec("b"), _rec("c")])
+        resolvers.resolve_app_imports(c, BENCH, ["a", "b", "c"])
+        assert len(c.calls) == 1
+        argv = c.calls[0]
+        # The bench venv python, run with -c and the apps as positional args.
+        assert argv[0] == f"{BENCH}/env/bin/python"
+        assert argv[1] == "-c"
+        assert argv[3] == BENCH
+        assert argv[4:] == ["a", "b", "c"]
+
+    def test_no_apps_needs_no_exec(self):
+        c = _AppImportContainer()
+        assert resolvers.resolve_app_imports(c, BENCH, []) == {}
+        assert c.calls == []
+
+    def test_a_probe_that_cannot_run_is_unchecked_never_a_crash(self):
+        c = _AppImportContainer(exit_code=1, output=b"boom")
+        imp = resolvers.resolve_app_imports(c, BENCH, ["srcapp"])["srcapp"]
+        assert imp.checked is False
+        assert imp.diverged is False
+
+    def test_a_transport_error_is_unchecked(self):
+        c = _AppImportContainer(raises=RuntimeError("daemon gone"))
+        imp = resolvers.resolve_app_imports(c, BENCH, ["srcapp"])["srcapp"]
+        assert imp.checked is False
+
+    def test_unparseable_output_is_unchecked(self):
+        c = _AppImportContainer(output=b"not json")
+        imp = resolvers.resolve_app_imports(c, BENCH, ["srcapp"])["srcapp"]
+        assert imp.checked is False
+
+    def test_an_app_whose_import_is_not_locatable_is_checked_but_not_diverged(self):
+        c = _AppImportContainer(records=[_rec("srcapp", resolved=f"{BENCH}/apps/srcapp")])
+        imp = resolvers.resolve_app_imports(c, BENCH, ["srcapp"])["srcapp"]
+        assert imp.checked is True
+        assert imp.imported_path is None
+        assert imp.diverged is False
+
+    def test_divergence_warnings_name_both_paths(self):
+        diverged = resolvers.AppImport(
+            app="srcapp",
+            entry=f"{BENCH}/apps/srcapp",
+            is_symlink=False,
+            resolved_path=f"{BENCH}/apps/srcapp",
+            imported_path="/workspace/.hdsrc/srcapp",
+            diverged=True,
+            checked=True,
+        )
+        clean = dataclasses.replace(diverged, diverged=False)
+        msgs = resolvers.app_import_divergence_warnings([diverged, clean])
+        assert len(msgs) == 1
+        assert msgs[0].code == "app.wrong_copy"
+        assert f"{BENCH}/apps/srcapp" in msgs[0].text
+        assert "/workspace/.hdsrc/srcapp" in msgs[0].text
+
+    def test_app_import_dto_is_plain_serializable_data(self):
+        c = _AppImportContainer(records=[_rec("srcapp", resolved=f"{BENCH}/apps/srcapp")])
+        imp = resolvers.resolve_app_imports(c, BENCH, ["srcapp"])["srcapp"]
+        assert isinstance(dataclasses.asdict(imp), dict)

@@ -28,6 +28,7 @@ in JSON mode so it can never corrupt the JSON on stdout. The core emits both as
 events and this module picks the consumption mode - that choice is rendering.
 """
 
+import dataclasses
 import json
 import sys
 
@@ -159,29 +160,51 @@ def _report_and_exit(report, json_output, *, success_msg):
     results = [
         {"app": r.app, "site": r.site, "action": r.action, "ok": r.ok} for r in report.results
     ]
+    app_imports = getattr(report, "app_imports", [])
     if json_output:
-        typer.echo(
-            json.dumps(
-                {
-                    "project": report.project,
-                    "bench": report.bench_path,
-                    "results": results,
-                    "ok": report.ok,
-                },
-                indent=2,
-            )
-        )
+        doc: dict[str, object] = {
+            "project": report.project,
+            "bench": report.bench_path,
+            "results": results,
+            "ok": report.ok,
+        }
+        # Only verbs that resolve it carry app_imports; keep it out of the document
+        # (and unchanged for install/uninstall) when there is nothing to report.
+        if app_imports:
+            doc["app_imports"] = [dataclasses.asdict(imp) for imp in app_imports]
+        typer.echo(json.dumps(doc, indent=2))
     else:
         for r in results:
             mark = "[green]✓[/green]" if r["ok"] else "[red]✗[/red]"
             where = f" on [magenta]{r['site']}[/magenta]" if r.get("site") else ""
             stderr_console.print(f"  {mark} {r['action']} [cyan]{r['app']}[/cyan]{where}")
+        _render_app_imports(app_imports)
         if not report.ok:
             stderr_console.print("[bold red]Completed with errors.[/bold red]")
         else:
             console.print(f"[bold green]✓[/bold green] {success_msg}")
     if not report.ok:
         raise typer.Exit(code=1)
+
+
+def _render_app_imports(app_imports) -> None:
+    """Name the real dir operated on (symlink), and flag a wrong-copy update (BUG-10).
+
+    A symlinked-but-matching app is informational (which dir the change really
+    landed in); a diverged one is the wrong-result the `verify-import` failed row
+    already exits non-zero on - this line says why, naming both paths.
+    """
+    for imp in app_imports:
+        if imp.diverged and imp.resolved_path and imp.imported_path:
+            stderr_console.print(
+                f"  [bold red]![/bold red] '{imp.app}': operated on [cyan]{imp.resolved_path}"
+                f"[/cyan], but the bench imports [cyan]{imp.imported_path}[/cyan]; the site "
+                "keeps running the OTHER copy"
+            )
+        elif imp.is_symlink and imp.resolved_path:
+            stderr_console.print(
+                f"  [dim]↳ apps/{imp.app} → {imp.resolved_path} (operated on via symlink)[/dim]"
+            )
 
 
 # ----------------------------------------------------------------------------- list
@@ -229,6 +252,10 @@ def list_apps(
     listing = result.data
     assert listing is not None  # OK/WARNING always carries a listing
 
+    # app -> its copy info, for the symlink / wrong-copy flags (BUG-10).
+    copies = {c.app: c for c in getattr(listing, "app_copies", [])}
+    flagged = [c for c in copies.values() if c.diverged or c.is_symlink]
+
     if json_output:
         # The historical shape: `installed` appears ONLY when it was asked for, so
         # its absence stays distinguishable from an empty result.
@@ -239,6 +266,9 @@ def list_apps(
         }
         if installed or sites:
             doc["installed"] = listing.installed
+        # Only apps with something to flag; a clean bench keeps the historical shape.
+        if flagged:
+            doc["app_copies"] = [dataclasses.asdict(c) for c in flagged]
         typer.echo(json.dumps(doc, indent=2))
         if not listing.ok:
             raise typer.Exit(code=1)
@@ -246,7 +276,15 @@ def list_apps(
 
     console.print(f"[bold]Available apps[/bold] ([dim]{listing.bench_path}[/dim]):")
     for a in listing.available:
-        console.print(f"  • [cyan]{a}[/cyan]")
+        c = copies.get(a)
+        if c and c.diverged:
+            console.print(
+                f"  • [cyan]{a}[/cyan] [red](bench imports {c.imported_path}, not apps/{a})[/red]"
+            )
+        elif c and c.is_symlink and c.resolved_path:
+            console.print(f"  • [cyan]{a}[/cyan] [dim](→ {c.resolved_path})[/dim]")
+        else:
+            console.print(f"  • [cyan]{a}[/cyan]")
     if not listing.available:
         console.print("  [dim](none)[/dim]")
     if installed or sites:

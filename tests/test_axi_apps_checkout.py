@@ -311,3 +311,41 @@ def test_the_verb_carries_no_yes_json_path_or_verbose_flag():
     assert "reset" in names
     for absent in ("yes", "json_output", "bench_path", "verbose"):
         assert absent not in names
+
+
+# ------------------------------------------------------ BUG-10: wrong-copy detection
+
+
+def _patch_diverged(monkeypatch):
+    def _fake(_c, bench, apps):
+        return {
+            a: resolvers.AppImport(
+                app=a,
+                entry=f"{bench}/apps/{a}",
+                is_symlink=False,
+                resolved_path=f"{bench}/apps/{a}",
+                imported_path="/workspace/.hdsrc/payments",
+                diverged=True,
+                checked=True,
+            )
+            for a in apps
+        }
+
+    monkeypatch.setattr(resolvers, "resolve_app_imports", _fake)
+
+
+def test_a_wrong_copy_checkout_is_not_ok_and_exits_one(monkeypatch, container, capsys):
+    _patch_diverged(monkeypatch)
+
+    with pytest.raises(typer.Exit) as exc:
+        _checkout()
+
+    assert exc.value.exit_code == 1
+    out = capsys.readouterr().out
+    # One TOON document naming the divergence, the failed verify-import row, ok:false,
+    # and a warning naming both paths.
+    assert "ok: false" in out
+    assert "verify-import" in out
+    assert "/workspace/.hdsrc/payments" in out
+    assert "app_imports" in out
+    assert not out.lstrip().startswith("{")  # TOON, never JSON

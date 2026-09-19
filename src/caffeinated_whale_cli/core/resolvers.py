@@ -10,6 +10,7 @@ wrappers in ``commands/utils.py`` that call these.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 
 from docker.errors import APIError, NotFound
@@ -544,3 +545,172 @@ def _decode(output) -> str:
     if isinstance(output, (bytes, bytearray)):
         return bytes(output).decode("utf-8", errors="replace")
     return str(output) if output is not None else ""
+
+
+# --------------------------------------------------- which copy of an app is live
+#
+# Every apps verb operates on the literal path `<bench>/apps/<app>` and reports
+# `ok` from that copy's git exit code alone. Two real layouts make that a
+# WRONG-RESULT: `apps/<app>` is a symlink to a source dir outside the bench (a
+# `.hdsrc`-style deploy), or `apps/<app>` is a real dir while the bench venv
+# imports a SEPARATE copy (a hand-installed app). In both, an `apps update` /
+# `apps checkout` can succeed while the running site keeps executing stale code.
+#
+# The one honest answer is Python's own: ask the bench virtualenv where it imports
+# the app from, and compare that dir (symlinks resolved on BOTH sides) against the
+# dir cwcli operated on. The normal symlink layout - import path and `apps/<app>`
+# resolve to the same real dir - is deliberately NOT flagged. One exec, and a
+# failure of the probe itself is reported as `checked=False`, never a crash or a
+# blocked update.
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class AppImport:
+    """Where an app physically lives vs where the bench actually imports it from."""
+
+    app: str
+    entry: str  # {bench}/apps/{app} - the literal path every apps verb operates on
+    is_symlink: bool  # apps/<app> is a symlink (its real target is resolved_path)
+    resolved_path: str | None  # realpath of apps/<app> - the copy cwcli operated on
+    imported_path: str | None  # repo dir the bench venv imports <app> from
+    diverged: bool  # True iff the imported copy differs from the operated-on copy
+    checked: bool  # False => the probe could not run at all (a warning, not a fact)
+
+
+# Emits one JSON list of raw facts per app; the comparison stays in Python so it is
+# unit-testable without a container. `find_spec` LOCATES the module (respecting the
+# venv's editable-install finders) without importing it, so no app code or DB
+# connection runs. Run by the bench venv's own python, so "what Python imports" is
+# the bench runtime's answer, not a directory-name guess.
+_APP_IMPORT_PROBE = (
+    "import json,os,sys,importlib.util\n"
+    "bench=sys.argv[1]\n"
+    "out=[]\n"
+    "for app in sys.argv[2:]:\n"
+    "    entry=bench.rstrip('/')+'/apps/'+app\n"
+    "    rec={'app':app,'entry':entry,'is_symlink':False,"
+    "'resolved_path':None,'imported_origin':None}\n"
+    "    try:\n"
+    "        rec['is_symlink']=os.path.islink(entry)\n"
+    "    except OSError:\n"
+    "        pass\n"
+    "    try:\n"
+    "        if os.path.exists(entry):\n"
+    "            rec['resolved_path']=os.path.realpath(entry)\n"
+    "    except OSError:\n"
+    "        pass\n"
+    "    try:\n"
+    "        spec=importlib.util.find_spec(app)\n"
+    "    except Exception:\n"
+    "        spec=None\n"
+    "    origin=getattr(spec,'origin',None) if spec is not None else None\n"
+    "    if origin and origin not in ('built-in','frozen'):\n"
+    "        try:\n"
+    "            rec['imported_origin']=os.path.realpath(origin)\n"
+    "        except OSError:\n"
+    "            rec['imported_origin']=origin\n"
+    "    out.append(rec)\n"
+    "sys.stdout.write(json.dumps(out))\n"
+)
+
+
+def _is_under(child: str, parent: str) -> bool:
+    """Is ``child`` the same path as, or nested inside, ``parent``? (real paths)."""
+    parent = parent.rstrip("/")
+    return child == parent or child.startswith(parent + "/")
+
+
+def resolve_app_imports(container, bench_path: str, apps) -> dict[str, AppImport]:
+    """For each app, resolve ``apps/<app>``'s real dir + symlink flag and the repo
+    the bench venv actually imports it from, in ONE exec.
+
+    Returns a mapping app -> :class:`AppImport`. Fails soft: if the probe itself
+    cannot run (no bench venv python, an exec error, unparseable output), every app
+    comes back ``checked=False`` with no divergence, so a caller never crashes or
+    blocks on it. An app whose import cannot be located is ``checked=True`` but not
+    ``diverged`` - "could not tell" is never "wrong copy".
+    """
+    names = list(dict.fromkeys(a for a in apps if a))
+    bench = bench_path.rstrip("/")
+    unchecked = {
+        name: AppImport(
+            app=name,
+            entry=f"{bench}/apps/{name}",
+            is_symlink=False,
+            resolved_path=None,
+            imported_path=None,
+            diverged=False,
+            checked=False,
+        )
+        for name in names
+    }
+    if not names:
+        return {}
+
+    venv_python = f"{bench}/env/bin/python"
+    try:
+        exit_code, output = container.exec_run(
+            [venv_python, "-c", _APP_IMPORT_PROBE, bench, *names]
+        )
+    except Exception:  # noqa: BLE001 - any transport failure is "could not check"
+        return unchecked
+    if exit_code != 0:
+        return unchecked
+    try:
+        records = json.loads(_decode(output))
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return unchecked
+    if not isinstance(records, list):
+        return unchecked
+
+    resolved = dict(unchecked)
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        app = rec.get("app")
+        if not isinstance(app, str) or app not in resolved:
+            continue
+        operated = rec.get("resolved_path")
+        operated = operated if isinstance(operated, str) and operated else None
+        origin = rec.get("imported_origin")
+        origin = origin if isinstance(origin, str) and origin else None
+        imported_repo: str | None = None
+        diverged = False
+        if origin is not None:
+            imported_repo = os.path.dirname(os.path.dirname(origin))
+            if operated is not None:
+                diverged = not _is_under(origin, operated)
+        entry = rec.get("entry")
+        resolved[app] = AppImport(
+            app=app,
+            entry=entry if isinstance(entry, str) else f"{bench}/apps/{app}",
+            is_symlink=bool(rec.get("is_symlink")),
+            resolved_path=operated,
+            imported_path=imported_repo,
+            diverged=diverged,
+            checked=True,
+        )
+    return resolved
+
+
+def app_import_divergence_warnings(imports) -> list[Message]:
+    """A :class:`Message` per diverged app, naming BOTH copies. Shared by every verb
+    that mutates an app's code so the wording never drifts between them."""
+    messages: list[Message] = []
+    for imp in imports:
+        if not imp.diverged:
+            continue
+        messages.append(
+            Message(
+                "app.wrong_copy",
+                f"App '{imp.app}': cwcli operated on {imp.resolved_path}, but the bench "
+                f"imports it from {imp.imported_path}. The running site keeps executing the "
+                "other copy, so this change did NOT reach it.",
+                detail={
+                    "app": imp.app,
+                    "operated_on": imp.resolved_path,
+                    "imported": imp.imported_path,
+                },
+            )
+        )
+    return messages
