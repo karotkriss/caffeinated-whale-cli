@@ -97,23 +97,29 @@ def test_sigterm_mid_migrate_takes_the_site_back_out_of_maintenance(running_inst
             proc.wait()
 
     # THE ASSERTION: the SIGTERM unwound the `finally`, so the site is taken back OUT
-    # of maintenance. (Before the fix this stayed 1 forever.) The orphaned in-container
-    # `bench migrate` keeps running and does not manage maintenance, so once cwcli's
-    # cleanup clears it, it stays clear.
-    harness.wait_until(
-        lambda: _maintenance_mode(inst) == 0,
-        timeout=180,
-        interval=1,
-        desc="site taken back out of maintenance after SIGTERM",
-    )
-
-    # Good-citizen cleanup for the shared session instance: let the orphaned migrate
-    # finish and confirm the site serves again, so a sibling test finds it quiescent.
+    # of maintenance. (Before the fix this stayed 1 forever.)
+    #
+    # cwcli cannot kill the in-container `bench migrate` it launched (Docker has no
+    # kill-exec API), so it keeps running orphaned after cwcli exits. On a Frappe major
+    # whose `bench migrate` manages maintenance mode ITSELF (v15+), that orphaned run
+    # re-asserts maintenance for the rest of its run - so cwcli's cleanup clearing the
+    # flag is not the last write until the orphan drains. Let it drain FIRST (its fcntl
+    # lock releases the instant it ends, stale lock file or not), THEN require the site
+    # back out of maintenance: this stays a genuine proof, because on a Frappe that does
+    # NOT self-manage maintenance (v14) nothing but cwcli's cleanup would ever clear it,
+    # and before the fix it stayed 1 forever. This also leaves the shared session
+    # instance quiescent, so a sibling test finds it serving.
     harness.wait_until(
         lambda: not _migrate_lock_held(inst),
         timeout=600,
         interval=3,
         desc="orphaned migrate releases its lock",
+    )
+    harness.wait_until(
+        lambda: _maintenance_mode(inst) == 0,
+        timeout=180,
+        interval=1,
+        desc="site taken back out of maintenance after SIGTERM",
     )
     harness.wait_for_site_ready(inst.name, inst.site)
     assert _maintenance_mode(inst) == 0
