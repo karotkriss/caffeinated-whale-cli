@@ -2107,7 +2107,7 @@ Honestly stated: the allowlist keeps the long-lived channel from silently wideni
 - **`enable [--project <name>] [--startup/--no-startup]`** - Enable the bridge AND start its background daemon, in one verb
   - Idempotent; missing `gh`/`glab` is a warning, not a refusal (the bridge simply answers nothing until a tool is installed and authenticated).
   - Takes effect immediately on every currently-running instance cwcli manages (a Frappe container cwcli did not create is never touched), and self-heals onto each instance on the next `cwcli open`/`cwcli start`/`cwcli run`. When the default sweep wires more than one instance it names them, so an operator on a multi-instance machine is never surprised.
-  - `--project <name>` scopes the sweep to the named instance(s) (repeatable; an unknown name is the usual `not found` error). Omit it to wire every running managed instance.
+  - `--project <name>` scopes the sweep to the named instance(s) (repeatable; an unknown name is the usual `not found` error, and a running container cwcli does not manage is refused rather than wired). Omit it to wire every running managed instance.
   - `--startup` also installs an automatic start at system boot/login (LaunchAgent on macOS, systemd user service on Linux, Task Scheduler on Windows) - this covers reopening VS Code straight after a reboot, before any cwcli verb has run. `--no-startup` removes the boot unit; omit both to leave it untouched. If the boot unit cannot be installed (for example a host with no systemd user session), the bridge still enables and runs - the message says so and names `cwcli config cred-bridge start` for a manual start.
   - Example: `cwcli config cred-bridge enable --project my-instance --startup`
 
