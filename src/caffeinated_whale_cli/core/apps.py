@@ -213,6 +213,42 @@ def _available_apps(frappe_container, bench_path: str) -> tuple[str, list[str]]:
     return command, [a for a in _decode(output).split("\n") if a.strip()]
 
 
+def _app_registered(frappe_container, bench_path: str, app_name: str) -> bool | None:
+    """Is ``app_name`` a real, installed bench app (listed in ``sites/apps.txt``)?
+
+    A DIRECTORY under ``apps/`` is NOT proof the app is a valid install: a
+    ``bench get-app`` that cloned but failed at the ``pip install`` step leaves the
+    dir behind WITHOUT registering the app, so a later run would see the dir, skip
+    the fetch, report a false ``get-app ok``, then dump a ``ModuleNotFoundError``
+    traceback at install-app forever. ``sites/apps.txt`` is bench's own registry and
+    is written only after the pip install succeeds, so membership distinguishes a
+    genuinely pre-warmed app from a leftover clone.
+
+    Returns None (fail-honest) when ``apps.txt`` cannot be read: an unknown state
+    must not REFUSE a legitimately pre-warmed base, so the caller proceeds as before.
+    """
+    exit_code, output = frappe_container.exec_run("cat sites/apps.txt", workdir=bench_path)
+    if exit_code not in (0, None):
+        return None
+    listed = {line.strip() for line in _decode(output).splitlines() if line.strip()}
+    return app_name in listed
+
+
+def _remove_app_dir(frappe_container, bench_path: str, dirname: str, *, emit: OnEvent) -> None:
+    """Remove one ``apps/<dirname>`` directory. Guarded against traversal.
+
+    Only ever a plain child of ``apps/`` (no ``/`` component, never ``.``/``..``), and
+    the caller only ever passes a dir THIS invocation just created (in ``after`` but
+    not ``before`` the fetch), so a pre-existing app dir is never deleted. Run via
+    ``workdir`` so ``bench_path`` is never interpolated into the command.
+    """
+    if not dirname or dirname in (".", "..") or "/" in dirname:
+        return
+    cmd = f"rm -rf apps/{shlex.quote(dirname)}"
+    emit(AppsCommand(command=f"{cmd} (in {bench_path})"))
+    frappe_container.exec_run(cmd, workdir=bench_path)
+
+
 def _installed_apps(frappe_container, bench_path: str, site: str) -> tuple[str, bool, list[str]]:
     """Authoritative apps installed on ``site``.
 
@@ -663,6 +699,26 @@ def install_apps(
             # bench FETCH. The install-app phase below is unchanged either way.
             if app_name in before:
                 emit(AppsCommand(command=command))
+                # A dir under apps/ is NOT proof the app is a valid install: a leftover
+                # from an earlier fetch that cloned but failed at pip-install satisfies
+                # this skip, so it used to report a false `get-app ok` then traceback at
+                # install-app forever. Only proceed when apps.txt confirms the app (or
+                # when apps.txt is unreadable - never refuse a legit pre-warmed base on
+                # an unknown). A confirmed-invalid dir gets an actionable message, not a
+                # traceback, and is NOT installed.
+                if _app_registered(frappe_container, path, app_name) is False:
+                    emit(AppsStepEnd(phase="get-app", app=app_name, site=None, ok=False))
+                    results.append(AppResult(app=app_name, site=None, action="get-app", ok=False))
+                    warnings.append(
+                        Message(
+                            "app.present_not_installed",
+                            f"'{app_name}' has a directory under apps/ but is not a valid, "
+                            "installed app (not in sites/apps.txt) - an earlier fetch likely "
+                            f"failed partway. Remove the apps/{app_name} directory in the bench "
+                            "and run this command again to fetch it cleanly.",
+                        )
+                    )
+                    continue
                 results.append(AppResult(app=app_name, site=None, action="get-app", ok=True))
                 fetched.append((target, app_name))
                 continue
@@ -679,6 +735,14 @@ def install_apps(
             )
             if code != 0:
                 results.append(AppResult(app=target, site=None, action="get-app", ok=False))
+                # A failed get-app (e.g. clone ok but pip-install failed) leaves a
+                # PARTIAL apps/<app> dir behind, which would poison every retry: the
+                # next run sees the dir, skips the fetch, and fails at install-app. Undo
+                # it here so a retry genuinely re-fetches - but ONLY dirs THIS fetch
+                # created (absent from `before`), never a pre-existing app dir.
+                _command, after_apps = _available_apps(frappe_container, path)
+                for created in set(after_apps) - before:
+                    _remove_app_dir(frappe_container, path, created, emit=emit)
                 continue
             results.append(AppResult(app=target, site=None, action="get-app", ok=True))
 

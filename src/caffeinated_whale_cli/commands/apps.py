@@ -404,6 +404,10 @@ def install_apps(
     for warning in result.warnings:
         if warning.code == "sites.none":
             stderr_console.print(f"[yellow]Note:[/yellow] {warning.text}")
+        elif warning.code == "app.present_not_installed":
+            # A dir is present under apps/ but is not a valid install; the human gets
+            # the actionable remedy instead of the raw install-app traceback (BUG-12).
+            stderr_console.print(f"[bold yellow]Warning:[/bold yellow] {warning.text}")
 
     # Refresh the cache if any step succeeded: a fetch changes available apps, an
     # install changes a site's installed apps - both make the cache stale.
