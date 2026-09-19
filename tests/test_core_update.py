@@ -35,6 +35,23 @@ from .test_apps import _FakeAPI, FakeFrappeContainer, _wire_stopped_bench
 BENCH = "/workspace/frappe-bench"
 
 
+def _fake_clock(monkeypatch):
+    """Instant sleeps that advance a fake ``time.monotonic`` clock, so the interrupt
+    cleanup's wait (``bench_ops._wait_marked_gone``'s real 10s+5s deadline, reached via
+    ``core_update.time`` since it and ``bench_ops.time`` are the SAME module object) is
+    satisfied by the clock rather than really waited. Patching only ``sleep`` would leave
+    a real deadline: a still-alive orphan then spins the loop flat-out for 15s while the
+    fake container records every /proc probe - the gigabyte spike tests/conftest.py's
+    memory/slow guard exists to catch."""
+    clock = [0.0]
+
+    def _sleep(seconds=0.0, *_a, **_k):
+        clock[0] += seconds or bench_ops._INTERRUPT_POLL_INTERVAL
+
+    monkeypatch.setattr(core_update.time, "sleep", _sleep)
+    monkeypatch.setattr(core_update.time, "monotonic", lambda: clock[0])
+
+
 @pytest.fixture()
 def wired(monkeypatch):
     """Container resolution + recache + sleep, faked. Returns the fake container."""
@@ -42,7 +59,7 @@ def wired(monkeypatch):
     monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
     monkeypatch.setattr(core_update.core_docker, "get_frappe_container", lambda name: container)
     monkeypatch.setattr(core_update.cache, "recache_project", lambda *a, **k: True)
-    monkeypatch.setattr(core_update.time, "sleep", lambda *a, **k: None)
+    _fake_clock(monkeypatch)
     monkeypatch.setattr(core_update, "_sites_with_app", lambda *a, **k: ["a.localhost"])
     _wire_stopped_bench(monkeypatch)
     return container
@@ -927,9 +944,10 @@ def _wire_orphan(monkeypatch, container):
     monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
     monkeypatch.setattr(core_update.core_docker, "get_frappe_container", lambda name: container)
     monkeypatch.setattr(core_update.cache, "recache_project", lambda *a, **k: True)
-    # core_update.time and bench_ops.time are the SAME module; one patch kills both the
-    # inter-migrate settle and the interrupt-cleanup settle/poll sleeps.
-    monkeypatch.setattr(core_update.time, "sleep", lambda *a, **k: None)
+    # core_update.time and bench_ops.time are the SAME module; _fake_clock makes sleeps
+    # instant AND advances a fake monotonic clock, so the interrupt-cleanup deadline is
+    # reached by the clock rather than really waited or spun (see _fake_clock).
+    _fake_clock(monkeypatch)
     monkeypatch.setattr(core_update, "_sites_with_app", lambda *a, **k: ["a.localhost"])
     _wire_stopped_bench(monkeypatch)
 
