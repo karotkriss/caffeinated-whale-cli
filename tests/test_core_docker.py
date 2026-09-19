@@ -564,3 +564,184 @@ def test_reown_app_repo_reports_a_failed_chown():
     reowned, err = core_docker.reown_app_repo_to_frappe(c, "/workspace/frappe-bench/apps/erpnext")
     assert reowned is False
     assert err is not None and "could not re-own" in err
+
+
+# ------------------- root-host uid alignment (issue #229) ------------------------
+# On a host running as uid 0, remapping the container `frappe` user to 0 collides
+# with the container's own root row in /etc/passwd, so `docker exec -u frappe`
+# resolves HOME=/root, drops bench's PATH, and `bench init` fails with exit 127.
+# resolve_frappe_alignment_ids is the shared target decision; align must never
+# emit a remap to uid 0; align_bind_mount_source_owner keeps the host data dir
+# writable by the fallback/override uid.
+
+
+class TestResolveFrappeAlignmentIds:
+    """The uid/gid decision table shared by align and init's data-dir chown."""
+
+    def test_non_root_host_no_override_uses_the_host_ids(self, host_1001):
+        assert core_docker.resolve_frappe_alignment_ids() == (1001, 1001, None)
+
+    def test_root_host_no_override_falls_back_to_the_image_default_with_a_note(self, monkeypatch):
+        monkeypatch.setattr(core_docker.os, "getuid", lambda: 0)
+        monkeypatch.setattr(core_docker.os, "getgid", lambda: 0)
+        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
+        uid, gid, note = core_docker.resolve_frappe_alignment_ids()
+        assert (uid, gid) == (
+            core_docker.ROOT_HOST_FALLBACK_UID,
+            core_docker.ROOT_HOST_FALLBACK_GID,
+        )
+        assert note is not None and "root" in note and "--uid" in note
+
+    def test_explicit_override_wins_and_carries_no_note(self, monkeypatch):
+        monkeypatch.setattr(core_docker.os, "getuid", lambda: 0)
+        monkeypatch.setattr(core_docker.os, "getgid", lambda: 0)
+        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
+        # Even on a root host, an explicit --uid is honoured verbatim (no fallback).
+        assert core_docker.resolve_frappe_alignment_ids(1005) == (1005, 1005, None)
+
+    def test_shared_service_uid_wins_over_a_root_host(self, monkeypatch):
+        """A properly provisioned shared install on a root host resolves to its
+        non-zero service uid FIRST, so the root fallback is never reached - the
+        service uid wins over root."""
+        monkeypatch.setattr(core_docker.os, "getuid", lambda: 0)
+        monkeypatch.setattr(core_docker.os, "getgid", lambda: 0)
+        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: True)
+        monkeypatch.setattr(core_docker.shared_home, "service_uid", lambda: 9000)
+        monkeypatch.setattr(core_docker.shared_home, "gid", lambda: 9000)
+        assert core_docker.resolve_frappe_alignment_ids() == (9000, 9000, None)
+
+    def test_shared_mode_unprovisioned_on_root_host_falls_back(self, monkeypatch):
+        """A half-set-up shared box degrades to os.getuid(); on a root host that is
+        0, so the root fallback still applies rather than aligning frappe to 0."""
+        monkeypatch.setattr(core_docker.os, "getuid", lambda: 0)
+        monkeypatch.setattr(core_docker.os, "getgid", lambda: 0)
+        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: True)
+        monkeypatch.setattr(core_docker.shared_home, "service_uid", lambda: None)
+        monkeypatch.setattr(core_docker.shared_home, "gid", lambda: None)
+        uid, gid, note = core_docker.resolve_frappe_alignment_ids()
+        assert (uid, gid) == (
+            core_docker.ROOT_HOST_FALLBACK_UID,
+            core_docker.ROOT_HOST_FALLBACK_GID,
+        )
+        assert note is not None
+
+    def test_non_posix_host_has_nothing_to_align_to(self, monkeypatch):
+        monkeypatch.delattr(core_docker.os, "getuid", raising=False)
+        assert core_docker.resolve_frappe_alignment_ids() == (None, None, None)
+
+
+class TestAlignNeverRemapsFrappeToRoot:
+    def test_root_host_leaves_a_default_frappe_untouched(self, monkeypatch):
+        """Frappe already at the image default (1000): a root host resolves the same
+        1000 target, so there is no id change and NO remap to 0 is ever emitted."""
+        monkeypatch.setattr(core_docker.os, "getuid", lambda: 0)
+        monkeypatch.setattr(core_docker.os, "getgid", lambda: 0)
+        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
+        c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
+        remapped, err = core_docker.align_container_user_to_host(c, chown_home=True)
+        assert err is None
+        # No step anywhere sets frappe's uid to 0.
+        joined = " ".join(c.remap_scripts)
+        assert ":0:" not in joined and "chown 0:0" not in joined and "-g 0 " not in joined
+
+    def test_root_host_remaps_a_stray_uid_to_the_default_not_zero(self, monkeypatch):
+        """If frappe is at some other uid, a root host remaps it to the image default
+        1000 (making it host-removable by root), never to 0."""
+        monkeypatch.setattr(core_docker.os, "getuid", lambda: 0)
+        monkeypatch.setattr(core_docker.os, "getgid", lambda: 0)
+        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
+        c = FakeContainer(frappe_uid=1234, frappe_gid=1234)
+        remapped, err = core_docker.align_container_user_to_host(c, chown_home=True)
+        assert (remapped, err) == (True, None)
+        script = c.remap_scripts[0]
+        assert "groupmod -o -g 1000 frappe" in script
+        assert "frappe:\\1:1000:" in script  # sed sets the passwd uid to 1000
+        assert ":0:" not in script
+
+    def test_explicit_override_on_a_root_host_remaps_to_that_uid(self, monkeypatch):
+        monkeypatch.setattr(core_docker.os, "getuid", lambda: 0)
+        monkeypatch.setattr(core_docker.os, "getgid", lambda: 0)
+        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
+        c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
+        remapped, err = core_docker.align_container_user_to_host(c, uid_override=1005)
+        assert (remapped, err) == (True, None)
+        script = c.remap_scripts[0]
+        assert "groupmod -o -g 1005 frappe" in script
+        assert "frappe:\\1:1005:" in script
+
+
+class TestAlignBindMountSourceOwner:
+    """Keep the host-side bind-mount source dir writable by the aligned frappe user."""
+
+    def _record_chown(self, monkeypatch):
+        chowns: list[tuple] = []
+        monkeypatch.setattr(core_docker.os, "chown", lambda p, u, g: chowns.append((str(p), u, g)))
+        return chowns
+
+    def test_root_host_chowns_the_data_dir_to_the_fallback(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(core_docker.os, "getuid", lambda: 0)
+        monkeypatch.setattr(core_docker.os, "getgid", lambda: 0)
+        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
+        chowns = self._record_chown(monkeypatch)
+        data = tmp_path / "data"
+        data.mkdir()
+        aligned = core_docker.align_bind_mount_source_owner(data)
+        assert aligned == core_docker.ROOT_HOST_FALLBACK_UID
+        assert chowns == [(str(data), 1000, 1000)]
+
+    def test_root_host_retry_reowns_a_root_owned_dir(self, monkeypatch, tmp_path):
+        """A prior failed init left the dir root-owned; the chown is idempotent, so a
+        retry re-applies it (the dir already existing must not skip the fix)."""
+        monkeypatch.setattr(core_docker.os, "getuid", lambda: 0)
+        monkeypatch.setattr(core_docker.os, "getgid", lambda: 0)
+        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
+        chowns = self._record_chown(monkeypatch)
+        data = tmp_path / "data"
+        data.mkdir()  # already exists from the failed run
+        assert core_docker.align_bind_mount_source_owner(data) == 1000
+        assert chowns == [(str(data), 1000, 1000)]
+
+    def test_non_root_host_no_override_is_a_noop(self, monkeypatch, tmp_path):
+        """The common case: frappe aligns to this process's own uid, which already
+        owns the dir it created - byte-identical to before this existed (no chown)."""
+        monkeypatch.setattr(core_docker.os, "getuid", lambda: 1001)
+        monkeypatch.setattr(core_docker.os, "getgid", lambda: 1001)
+        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
+        chowns = self._record_chown(monkeypatch)
+        data = tmp_path / "data"
+        data.mkdir()
+        assert core_docker.align_bind_mount_source_owner(data) is None
+        assert chowns == []
+
+    def test_non_root_host_override_follows_the_override(self, monkeypatch, tmp_path):
+        """--uid different from the host uid must not leave an unwritable bench: the
+        data dir ownership follows the override."""
+        monkeypatch.setattr(core_docker.os, "getuid", lambda: 1000)
+        monkeypatch.setattr(core_docker.os, "getgid", lambda: 1000)
+        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
+        chowns = self._record_chown(monkeypatch)
+        data = tmp_path / "data"
+        data.mkdir()
+        assert core_docker.align_bind_mount_source_owner(data, uid_override=1001) == 1001
+        assert chowns == [(str(data), 1001, 1001)]
+
+    def test_shared_mode_is_skipped(self, monkeypatch, tmp_path):
+        """Shared mode's group-writable model owns bind-mount permissions; the
+        per-uid chown must not fight it."""
+        monkeypatch.setattr(core_docker.os, "getuid", lambda: 0)
+        monkeypatch.setattr(core_docker.os, "getgid", lambda: 0)
+        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: True)
+        chowns = self._record_chown(monkeypatch)
+        data = tmp_path / "data"
+        data.mkdir()
+        assert core_docker.align_bind_mount_source_owner(data) is None
+        assert chowns == []
+
+    def test_absent_dir_is_a_noop(self, monkeypatch, tmp_path):
+        """An old '..:/workspace' instance has no data/ dir - a clean no-op."""
+        monkeypatch.setattr(core_docker.os, "getuid", lambda: 0)
+        monkeypatch.setattr(core_docker.os, "getgid", lambda: 0)
+        monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
+        chowns = self._record_chown(monkeypatch)
+        assert core_docker.align_bind_mount_source_owner(tmp_path / "nope") is None
+        assert chowns == []

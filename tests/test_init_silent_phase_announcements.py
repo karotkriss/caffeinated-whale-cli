@@ -36,7 +36,7 @@ class TestPhaseAnnouncedBeforeItRuns:
 
         order: list[str] = []
 
-        def fake_align(container, *, chown_home=False, bench_paths=()):
+        def fake_align(container, *, chown_home=False, bench_paths=(), uid_override=None):
             order.append("align_running")
             return (True, None)
 

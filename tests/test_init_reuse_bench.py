@@ -100,6 +100,7 @@ def harness(monkeypatch):
             verbose=False,
             install_erpnext=False,
             erpnext_branch="version-16",
+            uid=None,
         )
         params.update(overrides)
         init_mod.init.__wrapped__(**params)
@@ -225,6 +226,7 @@ class TestInitContainerReadiness:
             bench_parent="/workspace",
             auto_start=False,
             stream_output=False,
+            uid=None,
             on_event=None,
         ):
             instance_calls.append(auto_start)
@@ -274,6 +276,7 @@ class TestInitContainerReadiness:
             verbose=False,
             install_erpnext=False,
             erpnext_branch="version-15",
+            uid=None,
         )
 
         # The promptable ensure_containers_running ran exactly once, OUTSIDE the
