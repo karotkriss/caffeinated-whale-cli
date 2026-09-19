@@ -45,16 +45,35 @@ one of them stops disabling, and a site stuck in maintenance is a site that is d
 
 from __future__ import annotations
 
+import secrets
 import shlex
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from . import resolvers
+from . import resolvers, supervision
 from .envelope import Message, Result, Status
 from .errors import CwcliError, ErrorKind
 from .exec_stream import ExecChunk, exec_stream
 
 _MIGRATE_LOCK_CONFLICT_EXIT_CODE = 200
+
+# The env var cwcli stamps on every migrate exec so interrupt cleanup can find EXACTLY
+# the process tree it started - never a name pattern that could match another site's or
+# another user's migrate. A marker, not a secret; it is inherited by every child.
+_MIGRATE_MARKER_ENV = "CWCLI_MIGRATE_TOKEN"
+
+# Interrupt-cleanup timings. cwcli runs these while it is unwinding to exit on Ctrl+C /
+# SIGTERM / SIGHUP, so the user is waiting: keep them short. After SIGTERM the orphan
+# gets a bounded window to exit on its own (bench migrate handles SIGTERM and unwinds);
+# if it does not, SIGKILL and a shorter window.
+_INTERRUPT_TERM_TIMEOUT = 10.0
+_INTERRUPT_KILL_TIMEOUT = 5.0
+_INTERRUPT_POLL_INTERVAL = 0.25
+# After clearing maintenance on the interrupt path, settle briefly then re-read the
+# LIVE flag: a migrate dying just after our clear can re-assert it, and this backstop
+# catches that last write so it cannot win.
+_MAINTENANCE_SETTLE = 1.0
 
 # ------------------------------------------------------------------------------ DTOs
 
@@ -124,7 +143,19 @@ class BenchOpStepEnd:
     ok: bool
 
 
-BenchOpEvent = BenchOpCommand | BenchOpOutput | BenchOpStepEnd
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BenchOpNotice:
+    """A plain-language message to surface in run order (interrupt cleanup only today).
+
+    Carries the one thing a Ctrl+C / SIGTERM cannot say through the returned report
+    (there is none - the exception is unwinding): that cwcli could not confirm the
+    in-container migrate stopped, and how to re-check and clear the site.
+    """
+
+    message: str
+
+
+BenchOpEvent = BenchOpCommand | BenchOpOutput | BenchOpStepEnd | BenchOpNotice
 OnEvent = Callable[[BenchOpEvent], None]
 
 
@@ -150,7 +181,15 @@ def set_maintenance(container, bench_path: str, site: str, *, enable: bool) -> b
     return bool(exit_code == 0)
 
 
-def _run_step(container, cmd: str, bench_path: str, *, action: str, emit: OnEvent) -> int:
+def _run_step(
+    container,
+    cmd: str,
+    bench_path: str,
+    *,
+    action: str,
+    emit: OnEvent,
+    environment: dict[str, str] | None = None,
+) -> int:
     """Run one bench command, narrating it as events. Returns the honest exit code.
 
     Every chunk is emitted rather than written anywhere: the frontend picks its
@@ -158,16 +197,154 @@ def _run_step(container, cmd: str, bench_path: str, *, action: str, emit: OnEven
     on this surface - neither a migrate nor a test run is a supervised process, so
     neither writes to a log ``cwcli logs`` can serve afterwards, and the name of the
     patch that blew up (or the assertion that failed) exists ONLY in those bytes.
+
+    ``environment`` rides through to the exec (``migrate`` stamps its interrupt marker
+    there so cleanup can find the process cwcli started; see :func:`migrate_env`).
     """
     emit(BenchOpCommand(command=cmd))
     exit_code = 1
-    for event in exec_stream(container, cmd, workdir=bench_path):
+    for event in exec_stream(container, cmd, workdir=bench_path, environment=environment):
         if isinstance(event, ExecChunk):
             emit(BenchOpOutput(action=action, stream=event.stream, text=event.text))
         else:
             exit_code = event.exit_code
     emit(BenchOpStepEnd(action=action, ok=exit_code == 0))
     return exit_code
+
+
+# --------------------------------------------- interrupt cleanup (migrate/apps update)
+#
+# The ONE place ``migrate`` and ``apps update`` both route their "end what I started,
+# then clear maintenance LAST" cleanup, so the two maintenance-owning verbs cannot
+# drift apart. cwcli launches ``bench migrate`` as a docker exec; Docker has no
+# kill-exec API and closing the exec socket does NOT kill the process, so on an
+# interrupt (Ctrl+C / SIGTERM / SIGHUP) that migrate keeps running orphaned. On Frappe
+# v15+ ``bench migrate`` manages maintenance mode ITSELF, so a surviving orphan
+# re-asserts maintenance AFTER cwcli clears it and then dies without clearing it,
+# leaving the site stuck at HTTP 503 with nothing to clear it. The remedy is to end
+# the process cwcli started FIRST, then clear maintenance last with a settle/re-check.
+
+
+def new_migrate_token() -> str:
+    """A unique per-invocation marker for the migrate exec(s) cwcli launches.
+
+    Rides the exec's environment as ``CWCLI_MIGRATE_TOKEN`` (see :func:`migrate_env`)
+    and is inherited by every child process, so :func:`end_migrate_on_interrupt` finds
+    EXACTLY the process tree cwcli started - never a name pattern that could match
+    another site's or another user's migrate. A marker, not a secret.
+    """
+    return secrets.token_hex(16)
+
+
+def migrate_env(token: str) -> dict[str, str]:
+    """The environment to hand a migrate exec so it carries the interrupt marker."""
+    return {_MIGRATE_MARKER_ENV: token}
+
+
+def _signal_marked(container, token: str, *, sig: str) -> None:
+    """Send ``sig`` to every in-container process whose environ carries ``token``.
+
+    Scans ``/proc/<pid>/environ`` for the exact ``CWCLI_MIGRATE_TOKEN=<token>`` record
+    (``grep -a`` reads the NUL-separated environ as text, ``-z`` splits on NUL, ``-F``
+    fixed string). Runs as the container's default user - the SAME user the migrate
+    runs as - so it can read the environ and signal the process. Best-effort: a process
+    that already exited, or a container that has gone away, is fine.
+    """
+    quoted = shlex.quote(f"{_MIGRATE_MARKER_ENV}={token}")
+    script = (
+        "for d in /proc/[0-9]*; do "
+        f'grep -aqzF -- {quoted} "$d/environ" 2>/dev/null && '
+        f'kill -{sig} "${{d##*/}}" 2>/dev/null; '
+        "done"
+    )
+    try:
+        container.exec_run(["sh", "-c", script])
+    except Exception:  # noqa: BLE001 - best-effort; a failed kill must not abort cleanup
+        pass
+
+
+def _marked_process_alive(container, token: str) -> bool:
+    """True while any in-container process still carries ``token`` (the migrate tree
+    cwcli started, and its children, which inherited the env).
+
+    Fail-honest toward 'gone': an unreadable ``/proc`` or a lost container returns
+    False so cleanup never blocks - the settle/re-check backstop in
+    :func:`clear_maintenance` still guards a stray late write.
+    """
+    quoted = shlex.quote(f"{_MIGRATE_MARKER_ENV}={token}")
+    script = (
+        "for d in /proc/[0-9]*; do "
+        f'grep -aqzF -- {quoted} "$d/environ" 2>/dev/null && exit 0; '
+        "done; exit 1"
+    )
+    try:
+        exit_code, _ = container.exec_run(["sh", "-c", script])
+    except Exception:  # noqa: BLE001 - can't tell means don't block cleanup
+        return False
+    return bool(exit_code == 0)
+
+
+def _wait_marked_gone(container, token: str, *, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while True:
+        if not _marked_process_alive(container, token):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_INTERRUPT_POLL_INTERVAL)
+
+
+def end_migrate_on_interrupt(container, token: str) -> bool:
+    """Interrupt-cleanup step ONE: make sure the migrate cwcli started is GONE before
+    maintenance mode is cleared. Returns True iff it is confirmed gone.
+
+    Terminates it precisely - only a process carrying THIS token - and waits for it to
+    exit, escalating SIGTERM -> SIGKILL. Returning False means cwcli could not confirm
+    it stopped, and the caller says so plainly and names the re-check command (see
+    :func:`interrupt_recheck_hint`). This must run BEFORE :func:`clear_maintenance`, so
+    the clear is the LAST write and the orphan cannot re-assert maintenance behind it.
+    """
+    _signal_marked(container, token, sig="TERM")
+    if _wait_marked_gone(container, token, timeout=_INTERRUPT_TERM_TIMEOUT):
+        return True
+    _signal_marked(container, token, sig="KILL")
+    return _wait_marked_gone(container, token, timeout=_INTERRUPT_KILL_TIMEOUT)
+
+
+def clear_maintenance(container, bench_path: str, site: str, *, recheck: bool) -> bool:
+    """Disable maintenance mode for ``site`` - the LAST cleanup step - and report
+    whether the site ends OUT of maintenance.
+
+    On the normal path (``recheck`` False) the migrate has already exited, so one
+    disable is enough and the settle is skipped. On the interrupt path (``recheck``
+    True), after :func:`end_migrate_on_interrupt` has stopped the orphan, this settles
+    briefly and re-reads the LIVE flag, disabling once more if a late write by the
+    dying migrate re-asserted it - so the dying migrate's last write cannot win.
+    """
+    ok = set_maintenance(container, bench_path, site, enable=False)
+    if not recheck:
+        return ok
+    time.sleep(_MAINTENANCE_SETTLE)
+    state = supervision.maintenance_mode_on(container, bench_path, site)
+    if state:
+        ok = set_maintenance(container, bench_path, site, enable=False)
+        state = supervision.maintenance_mode_on(container, bench_path, site)
+    if state is None:
+        return ok  # could not read it back; trust bench's exit code
+    return not state
+
+
+def interrupt_recheck_hint(project: str, site: str, bench: str | None = None) -> str:
+    """The plain-language warning when cwcli could not confirm the orphaned migrate
+    stopped: it may still be running, so name how to re-check and clear the site."""
+    bench_flag = f" --bench {bench}" if bench else ""
+    return (
+        f"cwcli was interrupted and could not confirm the in-container 'bench migrate' "
+        f"for '{site}' stopped; it may still be running. Re-check with "
+        f"'cwcli status {project}'. If '{site}' is left in maintenance mode (HTTP 503), "
+        f"clear it with: cwcli run {project} --site {site}{bench_flag} "
+        "set-maintenance-mode off"
+    )
 
 
 def _migrate_lock_held(container, bench_path: str, site: str) -> bool:
@@ -344,6 +521,11 @@ def migrate_site(
     emit(BenchOpStepEnd(action="maintenance_on", ok=True))
     results.append(BenchOpResult(action="maintenance_on", ok=True))
 
+    # Stamp the migrate exec with a unique marker so an interrupt can end EXACTLY the
+    # process cwcli started before clearing maintenance (see end_migrate_on_interrupt).
+    token = new_migrate_token()
+    interrupted = False
+
     try:
         code = _run_step(
             container,
@@ -351,12 +533,24 @@ def migrate_site(
             path,
             action="migrate",
             emit=emit,
+            environment=migrate_env(token),
         )
         results.append(BenchOpResult(action="migrate", ok=code == 0))
+    except BaseException:
+        # An interrupt (Ctrl+C / SIGTERM / SIGHUP unwind) leaves the in-container
+        # migrate running orphaned. End it FIRST - and wait for it to exit - so the
+        # maintenance clear in the finally is the LAST write; on v15+ the orphan would
+        # otherwise re-assert maintenance behind us and strand the site at 503.
+        interrupted = True
+        if not end_migrate_on_interrupt(container, token):
+            emit(BenchOpNotice(message=interrupt_recheck_hint(project_name, target, bench)))
+        raise
     finally:
         # Plain function, NOT a generator, precisely so this runs: an abandoned
-        # generator's finally does not, and the cost here is a site left down.
-        if set_maintenance(container, path, target, enable=False):
+        # generator's finally does not, and the cost here is a site left down. On the
+        # interrupt path the orphan has already been ended above, so the settle/re-check
+        # (recheck=True) catches any last write by the dying migrate.
+        if clear_maintenance(container, path, target, recheck=interrupted):
             emit(BenchOpStepEnd(action="maintenance_off", ok=True))
             results.append(BenchOpResult(action="maintenance_off", ok=True))
         else:
