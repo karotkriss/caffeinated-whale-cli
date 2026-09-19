@@ -516,3 +516,36 @@ def test_per_invocation_socket_is_group_gated_in_shared_mode(tmp_path, monkeypat
         assert mode == 0o660
         assert mode & 0o007 == 0  # world cannot reach it
         assert sock.stat().st_gid == os.getgid()
+
+
+@unix_only
+@pytest.mark.parametrize("shared", [False, True])
+def test_per_invocation_helper_is_readable_by_the_container_uid(tmp_path, monkeypatch, shared):
+    """The AF_UNIX shim git executes must be READABLE by the container's frappe
+    user, which is a different uid from the writer (image default, aligned host,
+    or the low shared-mode service uid). Relying on umask + setgid group
+    inheritance let a shared-mode run write it 0660 with a group the remapped
+    frappe user was not in, so git died opening it with [Errno 13]. It is now
+    world-readable in BOTH modes, and never group/world WRITABLE (it carries no
+    secret - the credential stays behind the group-gated socket - but git runs it,
+    so a writable shim would be an injection vector)."""
+    import stat
+
+    monkeypatch.setattr(credbridge.shared_home, "shared_mode", lambda: shared)
+    monkeypatch.setattr(credbridge.shared_home, "gid", lambda: os.getgid())
+    monkeypatch.setattr(
+        credbridge.subprocess, "run", lambda *a, **k: type("D", (), {"stdout": b""})()
+    )
+    container = FakeContainer(tmp_path)
+    # Restrictive umask so the raw write would be 0600 (owner-only, the failing
+    # state) - the explicit chmod is what has to make it readable, so this fails
+    # without the fix rather than riding a lenient default umask to 0644.
+    old_umask = os.umask(0o077)
+    try:
+        with credbridge.credential_bridge(container, "/workspace/frappe-bench"):
+            helper = _only(tmp_path.glob(".git-credential-bridge-*.py"))
+            mode = stat.S_IMODE(helper.stat().st_mode)
+            assert mode & 0o004, f"world-readable bit missing (mode {mode:o})"
+            assert mode & 0o022 == 0, f"shim must not be group/world writable (mode {mode:o})"
+    finally:
+        os.umask(old_umask)
