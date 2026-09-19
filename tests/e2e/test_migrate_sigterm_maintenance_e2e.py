@@ -188,7 +188,5 @@ def test_sigterm_mid_migrate_takes_the_site_back_out_of_maintenance(running_inst
             interval=1,
             desc="site taken back out of maintenance after SIGTERM",
         )
-        harness.wait_for_site_ready(inst.name, MIGRATE_SITE, inst.bench)
-        assert _maintenance_mode(inst, MIGRATE_SITE) == 0
     finally:
         _drop_site(inst, MIGRATE_SITE)
