@@ -846,6 +846,58 @@ See [For agents: the `cwcli axi` surface](#for-agents-the-cwcli-axi-surface).
 
 ---
 
+### `rm-bench` - Remove One Bench
+
+Permanently removes ONE bench from an instance, leaving every other bench and every container running.
+Like `rm-site`, this is a separate, noun-scoped command rather than a `--bench` flag on `cwcli rm`: `cwcli rm` destroys the whole instance, while `rm-bench` only ever touches the one bench you name, so forgetting a flag can never turn a single-bench cleanup into an instance-wide deletion.
+
+A bench is a directory on the instance's shared workspace bind mount, and its sites' data lives in the shared database - a bench has **no** dedicated container or named volume of its own.
+So `cwcli rm-bench` backs up and drops every site on the target bench (deleting each site's database and files), then deletes the bench directory.
+
+**WARNING:** This action is destructive and cannot be undone.
+Each site is dropped through the same verified copy-out that `cwcli rm-site` uses: `bench drop-site` backs the site up, and cwcli copies that archive out to `~/.cwcli/archive/{project}_dropped_sites/` (or `$CWCLI_HOME/archive/...` when that override is set) and verifies it on disk before the bench directory is deleted.
+If any site's backup cannot be copied out, the bench directory is kept (so the trapped backup is never destroyed) and the command exits non-zero.
+
+A bench that is still running is refused: stop it first with `cwcli stop <project> --bench <selector>`.
+`cwcli rm-bench` never deletes a bench out from under its own running code.
+
+```bash
+cwcli rm-bench [OPTIONS] PROJECT_NAME
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `PROJECT_NAME` | The Docker Compose project name (required) |
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--bench TEXT` | Which bench to remove: its numeric index or label (see [Working with Multiple Benches](#working-with-multiple-benches)) |
+| `-p`, `--path TEXT` | Explicit bench directory inside the container (lower-level alternative to `--bench`; cannot be combined with it) |
+| `--db-root-password TEXT` | MariaDB root password used by `bench drop-site` (default: `123`, matching the compose file's own default) |
+| `-y`, `--yes` | Skip the destructive confirmation and auto-start the container |
+| `-v`, `--verbose` | Enable verbose output |
+
+**Examples:**
+
+```bash
+# Remove a bench (with confirmation)
+cwcli rm-bench my-project --bench 2
+
+# Skip the confirmation prompt
+cwcli rm-bench my-project --bench staging --yes
+```
+
+**Agent surface:** `cwcli axi rm-bench <project> --bench <index|label> --yes` emits the outcome as TOON, including `sites_dropped`, `archived_host_paths`, `dir_removed`, and `ok`.
+`--yes` is required (never a prompt) and grants ONLY consent - it never auto-starts a stopped project, exactly like every other bench-scoped `axi` verb.
+A running bench is a non-zero refusal naming `cwcli stop`.
+See [For agents: the `cwcli axi` surface](#for-agents-the-cwcli-axi-surface).
+
+---
+
 ### `logs` - View Bench Logs
 
 View the bench's process logs. supervisord writes one log file per Procfile
@@ -2164,7 +2216,7 @@ cwcli run my-project migrate --bench 1          # by index
 cwcli update my-project --app erpnext --bench staging   # by label
 ```
 
-`--bench` is available on `run`, `backup`, `update`, `open`, `unlock`, `restore`, `rm-site`, `start`, `stop`, `restart`, `status`, and `logs`. Setting labels lives in the [`label`](#label---manage-bench-labels) command.
+`--bench` is available on `run`, `backup`, `update`, `open`, `unlock`, `restore`, `rm-site`, `rm-bench`, `start`, `stop`, `restart`, `status`, and `logs`. Setting labels lives in the [`label`](#label---manage-bench-labels) command.
 
 **No silent guessing on data commands:**
 
