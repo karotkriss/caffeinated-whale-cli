@@ -14,13 +14,29 @@ from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 
 
 class FakeContainer:
-    """Answers the ``id -u/-g frappe`` probe and captures the root remap exec."""
+    """Answers the ``id -u/-g frappe`` and ``stat`` probes, captures the remap exec.
 
-    def __init__(self, *, frappe_uid, frappe_gid, remap_code=0, remap_out=b""):
+    ``workspace_owner`` is what a ``stat -c '%u:%g' <bench>`` returns for every
+    bench path (defaults to the container frappe user's own uid/gid, the migrated
+    workspace's real owner); ``workspace_present=False`` makes stat report the path
+    absent (a fresh init whose bench dir does not exist yet)."""
+
+    def __init__(
+        self,
+        *,
+        frappe_uid,
+        frappe_gid,
+        remap_code=0,
+        remap_out=b"",
+        workspace_owner=None,
+        workspace_present=True,
+    ):
         self.frappe_uid = frappe_uid
         self.frappe_gid = frappe_gid
         self.remap_code = remap_code
         self.remap_out = remap_out
+        self.workspace_owner = workspace_owner or f"{frappe_uid}:{frappe_gid}"
+        self.workspace_present = workspace_present
         self.remap_scripts: list[str] = []
         self.remap_user: str | None = None
 
@@ -28,6 +44,10 @@ class FakeContainer:
         if cmd and cmd[0] == "id":
             val = self.frappe_uid if "-u" in cmd else self.frappe_gid
             return 0, (b"" if val is None else f"{val}\n".encode())
+        if cmd and cmd[0] == "stat":
+            if not self.workspace_present:
+                return 1, b"stat: cannot statx: No such file or directory\n"
+            return 0, f"{self.workspace_owner}\n".encode()
         # the `bash -c "<remap>"` root exec
         self.remap_user = kwargs.get("user")
         self.remap_scripts.append(cmd[2])
@@ -280,12 +300,21 @@ def test_shared_mode_aligns_to_service_uid_not_host(monkeypatch):
     monkeypatch.setattr(core_docker.shared_home, "service_uid", lambda: 9000)
     monkeypatch.setattr(core_docker.shared_home, "gid", lambda: 9000)
     c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
-    remapped, err = core_docker.align_container_user_to_host(c)
+    remapped, err = core_docker.align_container_user_to_host(
+        c, bench_paths=["/workspace/frappe-bench"]
+    )
     assert (remapped, err) == (True, None)
     script = c.remap_scripts[0]
     assert "groupmod -o -g 9000 frappe" in script
     assert "chown 9000:9000 /home/frappe" in script
     assert "1001" not in script  # the host uid is deliberately not used in shared mode
+    # The remap moves `frappe` off the pre-shared uid that owns a migrated
+    # instance's bind-mounted workspace, so align must ALSO re-own each resolved
+    # bench dir to the new id - otherwise the remapped `frappe` user can no longer
+    # write `<bench>/logs/bench.log` and `bench start` crash-loops the instance.
+    assert (
+        "[ ! -e /workspace/frappe-bench ] || chown -R 9000:9000 /workspace/frappe-bench" in script
+    )
 
 
 def test_shared_mode_falls_back_to_host_when_service_account_absent(monkeypatch):
@@ -300,3 +329,77 @@ def test_shared_mode_falls_back_to_host_when_service_account_absent(monkeypatch)
     remapped, err = core_docker.align_container_user_to_host(c)
     assert (remapped, err) == (True, None)
     assert "chown 1001:1001 /home/frappe" in c.remap_scripts[0]
+
+
+def test_normal_box_remap_never_chowns_the_workspace(monkeypatch):
+    """The workspace re-own is a SHARED-mode-only reconciliation. On a normal box
+    align targets os.getuid(), which already owns the workspace it built, so even a
+    real id change (a CI runner is uid 1001, the image frappe is 1000) must leave
+    the bench dirs untouched when the caller passes them."""
+    monkeypatch.setattr(core_docker.os, "getuid", lambda: 1001)
+    monkeypatch.setattr(core_docker.os, "getgid", lambda: 1001)
+    monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: False)
+    c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
+    remapped, err = core_docker.align_container_user_to_host(
+        c, chown_home=True, bench_paths=["/workspace/frappe-bench"]
+    )
+    assert (remapped, err) == (True, None)
+    assert "/workspace/frappe-bench" not in c.remap_scripts[0]
+
+
+def test_shared_mode_matching_owner_skips_the_workspace_reown(monkeypatch):
+    """The true no-op: the frappe ids match the target AND the workspace is already
+    owned by that identity, so align must not chown it even in shared mode with
+    chown_home forcing the /home/frappe repair."""
+    monkeypatch.setattr(core_docker.os, "getuid", lambda: 1000)
+    monkeypatch.setattr(core_docker.os, "getgid", lambda: 1000)
+    monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: True)
+    monkeypatch.setattr(core_docker.shared_home, "service_uid", lambda: 1000)
+    monkeypatch.setattr(core_docker.shared_home, "gid", lambda: 1000)
+    c = FakeContainer(frappe_uid=1000, frappe_gid=1000, workspace_owner="1000:1000")
+    remapped, err = core_docker.align_container_user_to_host(
+        c, chown_home=True, bench_paths=["/workspace/frappe-bench"]
+    )
+    assert (remapped, err) == (False, None)
+    assert "/workspace/frappe-bench" not in c.remap_scripts[0]
+
+
+def test_shared_mode_matching_ids_still_recover_a_v3_1_0_armed_workspace(monkeypatch):
+    """A v3.1.0-armed instance already has `frappe` remapped to the service uid, so
+    the ids match now (no id change), yet its bind-mounted workspace is still owned
+    by the pre-shared uid and `bench start` crash-loops writing its log. Gating the
+    re-own on the real owner MISMATCH recovers it in place: align must chown the
+    bench dir to the service identity even though no id changed this call."""
+    monkeypatch.setattr(core_docker.os, "getuid", lambda: 1001)
+    monkeypatch.setattr(core_docker.os, "getgid", lambda: 1001)
+    monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: True)
+    monkeypatch.setattr(core_docker.shared_home, "service_uid", lambda: 9000)
+    monkeypatch.setattr(core_docker.shared_home, "gid", lambda: 9000)
+    # frappe is ALREADY at the service uid (armed by v3.1.0), but the workspace is
+    # still owned by the pre-shared uid 500.
+    c = FakeContainer(frappe_uid=9000, frappe_gid=9000, workspace_owner="500:500")
+    remapped, err = core_docker.align_container_user_to_host(
+        c, bench_paths=["/workspace/frappe-bench"]
+    )
+    assert err is None
+    assert remapped is False  # no id change this call
+    script = c.remap_scripts[0]
+    assert (
+        "[ ! -e /workspace/frappe-bench ] || chown -R 9000:9000 /workspace/frappe-bench" in script
+    )
+
+
+def test_shared_mode_absent_bench_dir_is_a_noop(monkeypatch):
+    """A fresh init whose bench dir does not exist yet stats as absent, so there is
+    no workspace to reconcile and no reown step is emitted."""
+    monkeypatch.setattr(core_docker.os, "getuid", lambda: 1000)
+    monkeypatch.setattr(core_docker.os, "getgid", lambda: 1000)
+    monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: True)
+    monkeypatch.setattr(core_docker.shared_home, "service_uid", lambda: 1000)
+    monkeypatch.setattr(core_docker.shared_home, "gid", lambda: 1000)
+    c = FakeContainer(frappe_uid=1000, frappe_gid=1000, workspace_present=False)
+    remapped, err = core_docker.align_container_user_to_host(
+        c, bench_paths=["/workspace/frappe-bench"]
+    )
+    assert (remapped, err) == (False, None)
+    assert c.remap_scripts == []
