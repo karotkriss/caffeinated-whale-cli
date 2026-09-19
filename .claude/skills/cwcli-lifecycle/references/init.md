@@ -22,7 +22,7 @@ Regression coverage: `tests/test_core_init.py::TestWorkspaceMount` (default/cust
 
 Bench commands exec as the frappe/bench image's DEFAULT `frappe` user (uid 1000), so every file `bench init`/`bench build`/etc. write to the `../data` bind mount above land host-owned by uid 1000.
 A dev box is usually also uid 1000, so this was invisible there; a CI runner is uid 1001, so the host user cannot recurse into those 755-dirs to delete them and `cwcli rm` failed with `[Errno 13] Permission denied` on `data/frappe-bench`.
-The fix is at the SOURCE, not a reclaim/chown-at-`rm` band-aid: on hosts that expose `os.getuid`, `core.docker.align_container_user_to_host(container, *, chown_home=False)` remaps the container's `frappe` user to the HOST uid/gid as root (the frappe devcontainer's own `updateRemoteUserUID` trick), so every file the aligned user writes afterward is already host-owned on any host uid.
+The fix is at the SOURCE, not a reclaim/chown-at-`rm` band-aid: on hosts that expose `os.getuid`, `core.docker.align_container_user_to_host(container, *, chown_home=False, bench_paths=())` remaps the container's `frappe` user to the HOST uid/gid as root (the frappe devcontainer's own `updateRemoteUserUID` trick), so every file the aligned user writes afterward is already host-owned on any host uid.
 The gid change is `groupmod -o -g <gid> frappe`, which only rewrites the account databases and never walks the filesystem.
 The uid change is a direct `sed` edit of `/etc/passwd`'s uid field, never `usermod -u`, because shadow-utils recursively changes ownership beneath the user's home as a side effect.
 The direct edit preserves the account state while avoiding an unnecessary walk and overlayfs copy-up of the baked toolchain.
@@ -40,6 +40,14 @@ A whole-stack restart already routes through `core.start`, and `run`/`apps` are 
 All callers share identity no-op fast paths: a platform without `os.getuid` skips the container probes entirely, while a capable host uses `_read_frappe_id` to read the container's current `id -u`/`id -g frappe` and skips the account remap when the ids match.
 When `chown_home=True`, the narrowed provisioning-path ownership repair still runs even if the ids already match.
 Neither case emits a warning.
+
+SHARED-MODE companion (v3.1.1, the migrated-instance brick fix): in shared mode the remap target is the STABLE `cwcli` service uid/gid, not `os.getuid()`, so a migrated instance's bind-mounted workspace - built under the pre-shared uid - is not owned by the remapped `frappe` user, and `bench start` can no longer write `<bench>/logs/bench.log`, crash-looping the instance.
+`align_container_user_to_host` therefore takes `bench_paths` (the resolved bench dir(s)) and, in shared mode ONLY, `chown -R`s each path to the target identity whenever that path's CURRENT owner (stat'd per path via `_bench_paths_needing_reown`) differs - gated on the real owner MISMATCH, NOT on `ids_changed`.
+An instance already bricked by v3.1.0 has `frappe` remapped to the service uid ALREADY (ids match, no change this call), so an ids-only gate would never recover it; the mismatch gate recovers it in place on the next `cwcli start`/`restart`.
+Each chown is existence-guarded (an absent fresh-init bench dir is a no-op) and `shlex`-quoted; `/workspace` is a bind mount, so `chown -R` there is cheap (no copy-up).
+A normal box (align targets `os.getuid()`, which already owns the workspace) reads no mismatch and emits no chown.
+All three callers pass their resolved path(s): `init_bench` (`[bench_full_path]`, computed before the align call), `core.start` (`[resolved_path]`, so align now runs AFTER bench resolution rather than before), and `core.scale`'s `_repair_toolchains` (its `bench_paths`).
+Guarded by `tests/test_core_docker.py` (the armed-recovery reown assertion plus the matching-owner/absent-dir/normal-box negatives) and real-Docker E2E `tests/e2e/test_shared_workspace_reown_e2e.py`.
 
 Best-effort, never a hard failure: `align_container_user_to_host` returns `(remapped, failure)`, never raises.
 On a capable host, an unreadable uid/gid or a failed remap exec is a soft warning surfaced as `InitNotice(code="init.uid_align_failed")` on init (`commands/init.py` renders it as an unconditional yellow warning, alongside `yarn.install_failed`/`setuptools.pin_failed`) and `Message("start.uid_align_failed", ...)` on start; the bench still builds/starts owned by the original uid - no worse than before this fix existed.
