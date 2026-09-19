@@ -492,10 +492,12 @@ def rm(
             invalid_names.append(name)
 
     for bad in invalid_names:
+        # Never render an empty/blank name as a bare empty quote (issue #237).
+        shown = repr(bad) if bad.strip() else "(empty)"
         stderr_console.print(
-            f"[bold red]Error:[/bold red] Refusing to remove invalid project name {bad!r}: "
+            f"[bold red]Error:[/bold red] Refusing to remove invalid project name {shown}: "
             "a project name must be a single directory under the projects root "
-            "(no '.', '..', path separators, or absolute paths)."
+            "(no '.', '..', path separators, or absolute paths, or a blank name)."
         )
 
     if not valid_names:
