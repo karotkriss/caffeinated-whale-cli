@@ -14,7 +14,7 @@ from ..utils.console import console, stderr_console
 from ..utils.docker_utils import handle_docker_errors
 from .start import _start_project
 from .stop import stop_project_best_effort
-from .utils import resolve_bench_path, split_trailing_options
+from .utils import render_captured_output_tail, resolve_bench_path, split_trailing_options
 
 app = typer.Typer(help="Restart a Frappe project's containers.")
 
@@ -253,6 +253,7 @@ def _handle_restart_error(e: CwcliError, name: str) -> NoReturn:
         stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
         if e.hint:
             stderr_console.print(f"[dim]{e.hint}[/dim]")
+        render_captured_output_tail(e)
     raise typer.Exit(code=1)
 
 

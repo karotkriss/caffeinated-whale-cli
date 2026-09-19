@@ -954,7 +954,10 @@ def ensure_supervisor_installed(container, bench_path: str) -> bool:
             ErrorKind.PRECONDITION,
             "supervisor.install_failed",
             "Could not install 'supervisor' into the bench environment "
-            f"({bench_path}/env). A network connection is required on first supervise.",
+            f"({bench_path}/env). This can happen with no network on first "
+            "supervise, or if the bench env is not writable, the container is "
+            "unhealthy or crash-looping, or the disk is full - see the captured "
+            "output.",
             detail={"output": _decode(output)[-2000:]},
         )
     return True

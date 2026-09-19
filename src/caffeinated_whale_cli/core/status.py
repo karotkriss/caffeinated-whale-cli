@@ -262,7 +262,7 @@ def status(
     # contract).
     if not containers:
         raise CwcliError(
-            ErrorKind.NOT_FOUND, "project.not_found", f"No such project '{project_name}'."
+            ErrorKind.NOT_FOUND, "project.not_found", f"Project '{project_name}' not found."
         )
 
     frappe_container = next(

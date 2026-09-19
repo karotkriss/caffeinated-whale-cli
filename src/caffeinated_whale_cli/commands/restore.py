@@ -693,13 +693,10 @@ def _resolve_plan_or_exit(
 
 def _handle_plan_error(project_name: str, e: CwcliError) -> NoReturn:
     """Render a plan-phase failure with today's messages, then Exit(1)."""
-    if e.code == "site.no_default":
-        stderr_console.print(
-            "[bold red]Error:[/bold red] No site specified and no default site found in config."
-        )
-        stderr_console.print(
-            f"[dim]Tip: Run 'cwcli inspect {project_name}' first, or specify --site explicitly.[/dim]"
-        )
+    if e.code in ("site.no_default", "site.ambiguous"):
+        stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
+        if e.hint:
+            stderr_console.print(f"[dim]{e.hint}[/dim]")
         raise typer.Exit(code=1)
     if e.code == "backup.no_match":
         stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")

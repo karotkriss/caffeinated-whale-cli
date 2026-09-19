@@ -588,6 +588,14 @@ def init(
     # before any project dir / container work.
     frappe_branch = _resolve_frappe_branch(frappe_branch, version)
 
+    # Validate an explicitly-provided project name BEFORE the admin-password check,
+    # so `cwcli init "Bad Name"` reports the invalid name in one pass rather than
+    # complaining about --admin-password first. The name is validated again (and
+    # prompted for when omitted) in _prompt_for_inputs below; a None name is left
+    # to that path.
+    if project_name is not None:
+        _validate_or_exit(core_init.validate_project_slug, project_name)
+
     # Resolve the admin password before any container work so a missing one
     # fails fast. A supplied value is used verbatim (bench is the only backstop);
     # when omitted, an interactive run gets a generated one (printed once at the
@@ -722,11 +730,25 @@ def init(
     seconds = int(elapsed_time % 60)
     time_str = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
 
-    # Inform the user of success
+    # Inform the user of success. "initialized" would misdescribe the reuse path
+    # (--reuse-bench adds a site to a bench that already existed), so say what
+    # actually happened based on report.bench_created / report.site_created.
     console.print()
-    console.print(
-        f"[bold green]✓[/bold green] Successfully initialized bench '{report.bench_name}' in {time_str}"
-    )
+    if report.bench_created:
+        console.print(
+            f"[bold green]✓[/bold green] Successfully initialized bench "
+            f"'{report.bench_name}' in {time_str}"
+        )
+    elif report.site_created:
+        console.print(
+            f"[bold green]✓[/bold green] Reused existing bench '{report.bench_name}' and "
+            f"added site '{report.site_name}' in {time_str}"
+        )
+    else:
+        console.print(
+            f"[bold green]✓[/bold green] Reused existing bench '{report.bench_name}' "
+            f"in {time_str}"
+        )
     console.print(f"[dim]Bench path: {report.bench_path}[/dim]")
 
     _refresh_cache(project, verbose)

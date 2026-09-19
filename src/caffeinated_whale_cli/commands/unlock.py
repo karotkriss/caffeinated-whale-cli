@@ -137,11 +137,10 @@ def _handle_unlock_error(e: CwcliError, verbose: bool) -> NoReturn:
             stderr_console.print(output)
         raise typer.Exit(code=1)
 
-    if e.code in ("site.no_default", "default_site.error"):
+    if e.code in ("site.no_default", "site.ambiguous", "default_site.error"):
         stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
-        stderr_console.print(
-            "[dim]Tip: Specify --site explicitly, or run 'cwcli inspect' first.[/dim]"
-        )
+        if e.hint:
+            stderr_console.print(f"[dim]{e.hint}[/dim]")
         raise typer.Exit(code=1)
 
     stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")

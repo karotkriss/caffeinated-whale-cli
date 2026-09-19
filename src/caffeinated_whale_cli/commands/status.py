@@ -31,6 +31,7 @@ import typer
 from rich.live import Live
 from rich.table import Table
 
+from ..core import docker as core_docker
 from ..core import resolvers
 from ..core import status as core_status
 from ..core.envelope import Result
@@ -169,7 +170,19 @@ _OVERALL_STYLE = {
 def _title(report: StatusReport) -> str:
     """The styled ``{project}: {overall}`` instance heading (the folded aggregate)."""
     style = _OVERALL_STYLE.get(report.overall, "white")
-    suffix = "" if len(report.benches) == 1 else f" ({len(report.benches)} benches)"
+    if report.overall == core_status.OFFLINE:
+        # A stopped instance returns an empty bench list by design (nothing was
+        # probed), but "(0 benches)" reads as if the bench vanished. Report the
+        # CACHED bench count as "not running" instead, so a person sees the bench is
+        # still there, just stopped.
+        cached = resolvers.cached_benches(report.project)
+        if cached:
+            n = len(cached)
+            suffix = f" ({n} bench{'es' if n != 1 else ''}, not running)"
+        else:
+            suffix = ""
+    else:
+        suffix = "" if len(report.benches) == 1 else f" ({len(report.benches)} benches)"
     return f"[{style}]{report.project}: {report.overall}[/{style}]{suffix}"
 
 
@@ -207,18 +220,47 @@ def _up_mark(up: bool) -> str:
     return "[green]up[/green]" if up else "[red]down[/red]"
 
 
-def _web_line(bench: BenchStatus, verbose: bool) -> str | None:
-    """The web line, NAMING the port and the site that were probed (or why none was).
+def _host_web_target(container, bench: BenchStatus) -> str | None:
+    """The host-reachable ``site:port`` for a bench, or None if unresolvable.
+
+    Maps the bench's CONTAINER web port (``bench.web_port``) through the container's
+    live host bindings via :func:`resolvers.resolve_host_web_url` - the exact two-hop
+    resolution the init banner and ``cwcli axi url`` use - and returns just the
+    ``host:port`` (no scheme) to slot into the web line. None when there is no
+    container, no resolved port, or no published host binding.
+    """
+    if container is None or bench.web_port is None:
+        return None
+    url = resolvers.resolve_host_web_url(
+        container,
+        bench.bench_path,
+        site=bench.web_site,
+        assigned_ports=(bench.web_port, 0),
+    )
+    if url is None:
+        return None
+    return url.removeprefix("http://")
+
+
+def _web_line(bench: BenchStatus, verbose: bool, host_target: str | None) -> str | None:
+    """The web line, NAMING the HOST-reachable address and the site that were probed.
 
     An unattributed "web http: 404" is what let one bench's HTTP code stand in for
     another's; the port is part of the answer, not decoration. The site is part of
-    it too, because Frappe answers per Host - the code is that site's code.
+    it too, because Frappe answers per Host - the code is that site's code. The
+    address shown is the HOST-published one (``host_target``) a person can actually
+    open - not the container-internal port, which is unreachable from the host; when
+    that host binding cannot be resolved the container port is shown, labelled
+    ``(in-container)`` so nobody tries to open it.
     """
     if not bench.web_port_verified:
         return "[yellow]web port unknown - not probed; run `cwcli inspect`[/yellow]"
-    target = f":{bench.web_port}"
-    if bench.web_site:
-        target = f"{bench.web_site}{target}"
+    if host_target is not None:
+        target = host_target
+    else:
+        target = f":{bench.web_port} (in-container)"
+        if bench.web_site:
+            target = f"{bench.web_site}{target}"
     if bench.web_http_code is not None:
         return f"[dim]web {target} -> {bench.web_http_code}[/dim]"
     if verbose:
@@ -229,13 +271,22 @@ def _web_line(bench: BenchStatus, verbose: bool) -> str | None:
 def _render_detail(report: StatusReport, verbose: bool) -> None:
     """Render each bench's health + its own web probe to stderr (never stdout)."""
     stderr_console.print(_title(report))
+    # Resolve the frappe container ONCE (all benches share it) so the web line can
+    # show each bench's HOST-published address. Best-effort: if it cannot be fetched
+    # the web line falls back to labelling the container port "(in-container)".
+    container = None
+    if report.container_running:
+        try:
+            container = core_docker.get_frappe_container(report.project)
+        except Exception:  # noqa: BLE001 - host-URL resolution is best-effort decoration
+            container = None
     for bench in report.benches:
         stderr_console.print(_bench_heading(bench))
         # Everything below a bench heading is indented under it, so a multi-bench
         # report reads as blocks rather than one flat wall of lines.
         if bench.not_cwcli_supervised:
             stderr_console.print(f"  [yellow]{core_status.NOT_CWCLI_SUPERVISED_HINT}[/yellow]")
-        line = _web_line(bench, verbose)
+        line = _web_line(bench, verbose, _host_web_target(container, bench))
         if line is not None:
             stderr_console.print(f"  {line}")
 

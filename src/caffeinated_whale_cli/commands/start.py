@@ -19,7 +19,7 @@ from ..utils.port_utils import (
     get_ports_in_use_with_processes,
     get_project_ports,
 )
-from .utils import resolve_bench_path, split_trailing_options
+from .utils import render_captured_output_tail, resolve_bench_path, split_trailing_options
 
 app = typer.Typer(help="Start a Frappe project's containers.")
 
@@ -353,6 +353,7 @@ def _handle_start_project_error(e: CwcliError, project_name: str):
         stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
         raise typer.Exit(code=1) from None
     stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
+    render_captured_output_tail(e)
     return None
 
 
@@ -547,6 +548,7 @@ def _handle_start_error(e: CwcliError, name: str) -> NoReturn:
         stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
         if e.hint:
             stderr_console.print(f"[dim]{e.hint}[/dim]")
+        render_captured_output_tail(e)
     raise typer.Exit(code=1)
 
 
