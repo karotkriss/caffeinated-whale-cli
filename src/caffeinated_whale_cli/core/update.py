@@ -108,6 +108,10 @@ class UpdateReport:
     restarted_processes: list[str]  # the bench programs actually cycled
     unserved_sites: list[str]  # migrated sites that did NOT come back with HTTP 200
     resync_error: str | None  # the resync could not be completed or proved at all
+    # BUG-10: where each updated app physically lives vs where the bench imports it
+    # from. An app flagged `diverged` was pulled into a copy the running site does
+    # not load, so `ok` is False even though the git pull "succeeded".
+    app_imports: list[resolvers.AppImport]
     aborted: bool  # the fan-out stopped early (Ctrl-C / an unexpected error)
     ok: bool  # pre-computed aggregate; the frontends' exit code reads THIS
 
@@ -421,6 +425,7 @@ def _build_report(
     failed_cache_clears: list[str],
     failed_website_cache_clears: list[str],
     failed_maintenance_disable: list[str],
+    app_imports: list[resolvers.AppImport] | None = None,
     resync: supervision.ResyncOutcome | None = None,
     aborted: bool,
 ) -> UpdateReport:
@@ -437,6 +442,7 @@ def _build_report(
     resync = resync or supervision.ResyncOutcome(
         attempted=False, restarted=[], unserved_sites=[], error=None
     )
+    app_imports = app_imports or []
     ok = not (
         aborted
         or failed_apps
@@ -449,6 +455,7 @@ def _build_report(
         or failed_cache_clears
         or failed_website_cache_clears
         or failed_maintenance_disable
+        or any(imp.diverged for imp in app_imports)
         or not resync.ok
     )
     return UpdateReport(
@@ -472,6 +479,7 @@ def _build_report(
         restarted_processes=list(resync.restarted),
         unserved_sites=list(resync.unserved_sites),
         resync_error=resync.error,
+        app_imports=list(app_imports),
         aborted=aborted,
         ok=ok,
     )
@@ -768,6 +776,7 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
     failed_maintenance_enable: list[str] = []  # never in maintenance, so not migrated
     maintenance_sites: set[str] = set()  # sites we actually turned maintenance ON for
     sites_to_migrate: list[str] = []  # the fan-out set; empty until we get that far
+    app_imports: list[resolvers.AppImport] = []  # BUG-10 wrong-copy detection
     resync: supervision.ResyncOutcome | None = None
     aborted = False
 
@@ -840,6 +849,18 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
         # An app whose outcome is unknown is not known to have updated, so it is not
         # discovered against - the same treatment a failed pull gets.
         skipped = set(failed_apps) | set(unknown_apps)
+
+        # BUG-10: the pull landed on whatever `apps/<app>` physically resolves to;
+        # verify the bench actually imports THAT copy. A diverged app was updated in a
+        # copy the running site does not load, so it fails the run (via _build_report's
+        # `ok`) with a warning naming both paths, instead of a bare "successfully
+        # updated". One exec over the updated apps; a probe failure is soft.
+        updated_apps = [a for a in apps if a not in skipped]
+        if updated_apps:
+            imports = resolvers.resolve_app_imports(frappe_container, bench_path, updated_apps)
+            app_imports = [imports[a] for a in updated_apps if a in imports]
+            warnings.extend(resolvers.app_import_divergence_warnings(app_imports))
+
         if no_recache:
             emit(UpdateStepStart(phase="recache_skipped"))
         elif len(skipped) < len(apps):
@@ -1083,6 +1104,7 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
             failed_cache_clears=failed_cache_clears,
             failed_website_cache_clears=failed_website_cache_clears,
             failed_maintenance_disable=failed_maintenance_disable,
+            app_imports=app_imports,
             resync=resync,
             aborted=aborted and bool(sites_to_migrate),
         )

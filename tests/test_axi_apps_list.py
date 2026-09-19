@@ -373,3 +373,44 @@ def test_apps_checkout_is_a_verb_decided_on_its_own_evidence():
     """
     registered = {c.name for c in axi_mod.apps_app.registered_commands}
     assert "checkout" in registered
+
+
+# ------------------------------------------------------ BUG-10: wrong-copy detection
+
+
+def test_apps_list_surfaces_symlink_and_wrong_copy_flags(monkeypatch, container, capsys):
+    def _fake(_c, bench, apps):
+        out = {}
+        for a in apps:
+            if a == "payments":
+                out[a] = resolvers.AppImport(
+                    app=a,
+                    entry=f"{bench}/apps/{a}",
+                    is_symlink=False,
+                    resolved_path=f"{bench}/apps/{a}",
+                    imported_path="/workspace/.hdsrc/payments",
+                    diverged=True,
+                    checked=True,
+                )
+            else:
+                out[a] = resolvers.AppImport(
+                    app=a,
+                    entry=f"{bench}/apps/{a}",
+                    is_symlink=True,
+                    resolved_path="/workspace/.hdsrc/frappe",
+                    imported_path="/workspace/.hdsrc/frappe",
+                    diverged=False,
+                    checked=True,
+                )
+        return out
+
+    monkeypatch.setattr(resolvers, "resolve_app_imports", _fake)
+
+    with pytest.raises(typer.Exit) as exc:
+        axi_mod.axi_apps_list("proj", bench=None, sites=None, installed=False)
+
+    assert exc.value.exit_code == 0  # a read is still ok even when it flags
+    out = capsys.readouterr().out
+    assert "app_copies" in out
+    assert "/workspace/.hdsrc/payments,true,true" in out  # imported,diverged,checked
+    assert "/workspace/.hdsrc/frappe" in out  # the symlink target

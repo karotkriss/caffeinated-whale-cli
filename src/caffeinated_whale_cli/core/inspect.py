@@ -41,9 +41,10 @@ absorb to ``[]``/``None`` without aborting the fan-out.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import requests
 from docker.errors import DockerException
@@ -98,6 +99,11 @@ class BenchInfo:
     default_site: str | None
     available_apps: list[str]
     sites: list[SiteInfo]
+    # BUG-10 flags, live-observed on a FULL inspect only (a cheap cache/partial read
+    # cannot know the filesystem/import state): each available app whose apps/<app>
+    # is a symlink, or whose imported copy differs from apps/<app>. Empty on a
+    # cache-served read - the same verified-or-not honesty as installed_apps_verified.
+    app_copies: list[resolvers.AppImport] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -336,6 +342,31 @@ def _gather_bench_data(frappe_container, bench_dir: str, emit: OnEvent) -> dict:
 
     available_apps = _get_available_apps(frappe_container, bench_dir, emit)
 
+    # BUG-10: flag any app whose apps/<app> is a symlink, or whose imported copy
+    # differs from apps/<app>. Live-observed here (the full inspect); stored as plain
+    # dicts so the cache-shaped bench dict stays JSON-serializable (the human --json
+    # renderer dumps it directly) and the relational cache write simply ignores the
+    # key. One exec; a probe failure degrades to unchecked entries, never a crash.
+    app_copies = resolvers.resolve_app_imports(frappe_container, bench_dir, available_apps)
+    flagged = [c for c in app_copies.values() if c.diverged or c.is_symlink]
+    for copy in flagged:
+        if copy.diverged:
+            emit(
+                InspectWarning(
+                    text=(
+                        f"App '{copy.app}': the bench imports {copy.imported_path}, NOT "
+                        f"apps/{copy.app} ({copy.resolved_path}); an update or checkout of "
+                        f"apps/{copy.app} would not reach the running site."
+                    )
+                )
+            )
+        else:
+            emit(
+                InspectWarning(
+                    text=f"App '{copy.app}': apps/{copy.app} is a symlink to {copy.resolved_path}."
+                )
+            )
+
     # Fetch common site config
     common_site_config = _get_common_site_config(frappe_container, bench_dir, emit)
 
@@ -356,6 +387,15 @@ def _gather_bench_data(frappe_container, bench_dir: str, emit: OnEvent) -> dict:
         sites_info.append(site_data)
 
     bench_data: dict = {"path": bench_dir, "sites": sites_info, "available_apps": available_apps}
+
+    # Only the flagged apps ride along (plain dicts): a clean bench keeps the cached
+    # shape unchanged, and the relational cache write ignores this key entirely.
+    if flagged:
+        bench_data["app_copies"] = [
+            dataclasses.asdict(app_copies[app])
+            for app in available_apps
+            if app_copies[app].diverged or app_copies[app].is_symlink
+        ]
 
     # Record the default site pointer from currentsite.txt (written by `bench use`).
     # A bench records its default site in TWO places: common_site_config.json's
@@ -772,6 +812,9 @@ def _to_bench_info(index: int, bench: dict, *, apps_verified: bool) -> BenchInfo
             )
             for site in bench.get("sites", [])
         ],
+        # Reconstructed from the live-gathered plain dicts (present only on a full
+        # inspect); absent on a cache/partial read, where it is honestly empty.
+        app_copies=[resolvers.AppImport(**copy) for copy in bench.get("app_copies", [])],
     )
 
 
