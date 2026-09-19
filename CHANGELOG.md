@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-09-18
+
+### Added
+
+- **Opt-in shared/multi-user cwcli install** - `cwcli setup shared` provisions a dedicated `cwcli` group, a system state tree under `/var/lib/cwcli` with setgid group-writable directories, and (with `--cred-bridge`) a machine-wide credential bridge behind a group-owned socket, so several people on one Linux/UNIX box can drive the same Frappe instances without per-user `Permission denied` errors or a leaked credential-bridge token.
+`cwcli setup migrate` consolidates existing per-user `~/.cwcli` homes into the shared tree without deleting sources or clobbering an existing shared project.
+The default per-user layout is unchanged unless an admin opts in; `CWCLI_HOME` still overrides shared mode for a single invocation.
+See the README's "Shared (multi-user) install" section.
+
 ## [3.0.1] - 2026-09-14
 
 ### Fixed
