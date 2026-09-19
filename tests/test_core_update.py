@@ -853,6 +853,14 @@ class _OrphanAPI(_FakeAPI):
         cmd, _ = self._pending
         if "migrate" in cmd:
             self.container.orphan_alive = True
+            # Model a v15+ bench migrate that self-manages maintenance: the migrate
+            # process, once running, has put its site INTO maintenance mode. Under
+            # --skip-maintenance cwcli enabled none, so this is the ONLY thing that set
+            # it - which is exactly why an interrupt that ends the orphan must restore
+            # the pre-state rather than leave the site stuck at 503.
+            site = _site_of(cmd)
+            if site:
+                self.container.maintenance[site] = True
 
             def _boom():
                 raise KeyboardInterrupt
@@ -867,9 +875,12 @@ class _OrphanMigrateContainer(FakeFrappeContainer):
     clears it, until cwcli kills it by its marker (see test_core_bench_ops for the same
     model on the standalone migrate verb)."""
 
-    def __init__(self, *, killable=True, **kw):
+    def __init__(self, *, killable=True, unreadable_sites=None, **kw):
         super().__init__(**kw)
         self.maintenance: dict[str, bool] = {}
+        # Sites whose site_config.json reads as unreadable, so maintenance_mode_on
+        # returns None (the "pre-state unknown" review-1 case).
+        self.unreadable_sites = set(unreadable_sites or ())
         self.orphan_alive = False
         self.killable = killable
         self.migrate_envs: list = []
@@ -893,6 +904,8 @@ class _OrphanMigrateContainer(FakeFrappeContainer):
         if s.startswith("cat sites/") and s.endswith("site_config.json"):
             self.calls.append(s)
             site = s.split("sites/")[1].split("/")[0]
+            if site in self.unreadable_sites:
+                return 1, ""  # unreadable -> supervision.maintenance_mode_on returns None
             return 0, json.dumps({"maintenance_mode": 1 if self.maintenance.get(site) else 0})
         if "/proc/[0-9]*" in s and "kill -" in s:  # _signal_marked
             self.calls.append(s)
@@ -958,9 +971,7 @@ def test_apps_update_interrupt_with_an_unkillable_orphan_still_clears_and_says_s
     events: list = []
 
     with pytest.raises(KeyboardInterrupt):
-        core_update.update(
-            "proj", ["payments"], bench_path=BENCH, on_event=events.append
-        )
+        core_update.update("proj", ["payments"], bench_path=BENCH, on_event=events.append)
 
     # Escalated SIGTERM -> SIGKILL and still attempted the clear.
     assert any("kill -TERM" in c for c in container.calls)
@@ -972,3 +983,83 @@ def test_apps_update_interrupt_with_an_unkillable_orphan_still_clears_and_says_s
     )
     assert "may still be running" in notice.message
     assert "set-maintenance-mode off" in notice.message
+
+
+# ------------------- review-1: --skip-maintenance abort restores the pre-migrate state
+#
+# Under --skip-maintenance cwcli enables no maintenance, but the interrupt cleanup still
+# ENDS the orphaned migrate that on v15+ would have cleared maintenance as it finished.
+# Rather than strand the site at 503 (a regression) or override an operator who manages
+# maintenance themselves, the abort restores each migrated site's PRE-migrate state.
+
+
+def _off_calls(container, site: str) -> list[str]:
+    return [c for c in container.calls if "set-maintenance-mode off" in c and site in c]
+
+
+def _interrupt_notes(events) -> list[str]:
+    return [
+        e.message
+        for e in events
+        if isinstance(e, UpdateStepEnd) and e.phase == "interrupt_cleanup" and e.message
+    ]
+
+
+def test_skip_maintenance_interrupt_clears_a_site_that_was_off_before(monkeypatch):
+    """was-OFF -> cleared. The site was not in maintenance before the migrate, so after
+    cwcli ends the orphan the site is taken back out of maintenance (last write)."""
+    container = _OrphanMigrateContainer(available_apps=["frappe", "payments"], killable=True)
+    _wire_orphan(monkeypatch, container)
+    # a.localhost starts OFF (maintenance dict empty), so pre-state is False.
+
+    with pytest.raises(KeyboardInterrupt):
+        core_update.update("proj", ["payments"], bench_path=BENCH, skip_maintenance=True)
+
+    # cwcli enabled no maintenance (skip), the orphan (v15+) set it ON, cwcli ended the
+    # orphan and then CLEARED it because it was off before.
+    assert _off_calls(container, "a.localhost"), "a was-off site must be cleared on abort"
+    assert container.maintenance.get("a.localhost") is False
+
+
+def test_skip_maintenance_interrupt_leaves_a_site_that_was_on_before(monkeypatch):
+    """was-ON -> left on with a one-line note. The operator had already put the site
+    into maintenance, so --skip-maintenance must not override that."""
+    container = _OrphanMigrateContainer(available_apps=["frappe", "payments"], killable=True)
+    _wire_orphan(monkeypatch, container)
+    container.maintenance["a.localhost"] = True  # operator-managed: ON before the migrate
+    events: list = []
+
+    with pytest.raises(KeyboardInterrupt):
+        core_update.update(
+            "proj", ["payments"], bench_path=BENCH, skip_maintenance=True, on_event=events.append
+        )
+
+    # Left in maintenance: no clear was issued for it, and it says so in one line.
+    assert not _off_calls(container, "a.localhost"), "an operator-managed site must be left on"
+    assert container.maintenance.get("a.localhost") is True
+    notes = _interrupt_notes(events)
+    assert any(
+        "a.localhost" in m and "already in maintenance" in m for m in notes
+    ), f"expected an 'already in maintenance' note; got {notes}"
+
+
+def test_skip_maintenance_interrupt_clears_with_a_note_when_pre_state_unknown(monkeypatch):
+    """unknown -> cleared, with a one-line note naming how to turn it back on. The
+    pre-state could not be read, so fall back to clearing (never leave it stuck)."""
+    container = _OrphanMigrateContainer(
+        available_apps=["frappe", "payments"], killable=True, unreadable_sites={"a.localhost"}
+    )
+    _wire_orphan(monkeypatch, container)
+    events: list = []
+
+    with pytest.raises(KeyboardInterrupt):
+        core_update.update(
+            "proj", ["payments"], bench_path=BENCH, skip_maintenance=True, on_event=events.append
+        )
+
+    # Fell back to clearing, and named the re-enable command in one line.
+    assert _off_calls(container, "a.localhost"), "unknown pre-state must fall back to clearing"
+    notes = _interrupt_notes(events)
+    assert any(
+        "a.localhost" in m and "set-maintenance-mode on" in m for m in notes
+    ), f"expected a note naming the re-enable command; got {notes}"

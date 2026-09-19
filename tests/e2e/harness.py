@@ -235,6 +235,34 @@ def exec_in_frappe(project: str, script: str, workdir: str | None = None) -> tup
     return (r.returncode, (r.stdout or "") + (r.stderr or ""))
 
 
+def migrate_process_running(project: str, site: str) -> bool:
+    """True while an in-container ``bench migrate`` for ``site`` is running.
+
+    This is the PORTABLE "the migrate process cwcli started is (still) alive" signal,
+    used instead of the migrate lock: Frappe v14/v15 do not hold
+    ``sites/<site>/locks/bench_migrate.lock`` observably (the ``filelock`` behavior the
+    lock probe relies on is v16-era), so the lock is not a reliable process-gone signal
+    there, while a genuine ``bench migrate`` process exists on every major.
+
+    Scans ``/proc/<pid>/cmdline`` (NUL-separated, converted to spaces) for a process
+    whose command both passes ``--site <site>`` AND runs ``migrate``. Requiring the
+    ``--site <site>`` flag excludes the ``flock`` lock-probe (which names
+    ``bench_migrate.lock`` but passes no ``--site``), cwcli's own ``set-maintenance-mode``
+    exec, and the token-scan kill exec. ``site`` is a controlled test constant (a
+    ``cwe2e-`` name with no shell/glob metacharacters), so it is interpolated directly.
+    """
+    script = (
+        "for d in /proc/[0-9]*; do "
+        '[ -r "$d/cmdline" ] || continue; '
+        "cmd=$(tr '\\0' ' ' < \"$d/cmdline\" 2>/dev/null); "
+        f'case " $cmd " in *" --site {site} "*) : ;; *) continue ;; esac; '
+        'case "$cmd" in *migrate*) echo running; break ;; esac; '
+        "done"
+    )
+    _code, out = exec_in_frappe(project, script)
+    return "running" in out
+
+
 @contextmanager
 def quiesce_v14_asset_watcher(project: str, bench: str = DEFAULT_BENCH_PATH) -> Iterator[bool]:
     """Pause Frappe v14's watcher while an E2E test runs ``bench get-app``.
