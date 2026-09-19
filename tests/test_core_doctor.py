@@ -24,11 +24,12 @@ from caffeinated_whale_cli.utils import config_utils
 
 class TestRegistry:
     def test_ships_exactly_the_ruled_check_ids(self):
-        """C1-C9, C11, C17-C20 - C10 and C12-C16 stay deferred (not built at all).
+        """C1-C9, C11, C17-C21 - C10 and C12-C16 stay deferred (not built at all).
 
         C19 is the persistent credential-bridge daemon health check; C20 is the
         opt-in shared/multi-user install integrity check (PASS when shared mode
-        is off, the default).
+        is off, the default); C21 is the dev/editable-install freshness check
+        (GH #238).
         """
         ids = {c.id for c in core_doctor._CHECKS}
         assert ids == {
@@ -46,6 +47,7 @@ class TestRegistry:
             "c18",
             "c19",
             "c20",
+            "c21",
         }
 
     def test_is_a_plain_list_not_a_plugin_system(self):
@@ -324,6 +326,147 @@ class TestVersionCheck:
         assert "abc1234" in detail
         assert "dirty" in detail
         assert version_verified is True
+
+
+class TestDevInstallFreshness:
+    """C21 (GH #238): a source/editable install behind its tracked branch."""
+
+    def _build(self, *, source="release", path=None):
+        return core_doctor.core_version.BuildInfo(source=source, path=path)
+
+    def test_pass_for_a_release_build(self, monkeypatch):
+        monkeypatch.setattr(
+            core_doctor.core_version, "build_info", lambda: self._build(source="release")
+        )
+        status, detail, fix = core_doctor._check_dev_install_freshness()
+        assert status is CheckStatus.PASS
+        assert fix is None
+
+    def test_pass_when_source_build_has_no_path(self, monkeypatch):
+        monkeypatch.setattr(
+            core_doctor.core_version,
+            "build_info",
+            lambda: self._build(source="source", path=None),
+        )
+        status, _detail, _fix = core_doctor._check_dev_install_freshness()
+        assert status is CheckStatus.PASS
+
+    def test_pass_when_git_is_unavailable(self, monkeypatch, tmp_path):
+        (tmp_path / ".git").mkdir()
+        monkeypatch.setattr(
+            core_doctor.core_version,
+            "build_info",
+            lambda: self._build(source="source", path=str(tmp_path)),
+        )
+        monkeypatch.setattr(core_doctor.shutil, "which", lambda _tool: None)
+        status, detail, _fix = core_doctor._check_dev_install_freshness()
+        assert status is CheckStatus.PASS
+        assert "git" in detail
+
+    def test_pass_when_no_git_checkout_at_the_recorded_path(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            core_doctor.core_version,
+            "build_info",
+            lambda: self._build(source="source", path=str(tmp_path)),
+        )
+        monkeypatch.setattr(core_doctor.shutil, "which", lambda _tool: "/usr/bin/git")
+        status, _detail, _fix = core_doctor._check_dev_install_freshness()
+        assert status is CheckStatus.PASS
+
+    def test_pass_when_git_status_fails(self, monkeypatch, tmp_path):
+        (tmp_path / ".git").mkdir()
+        monkeypatch.setattr(
+            core_doctor.core_version,
+            "build_info",
+            lambda: self._build(source="source", path=str(tmp_path)),
+        )
+        monkeypatch.setattr(core_doctor.shutil, "which", lambda _tool: "/usr/bin/git")
+        monkeypatch.setattr(
+            core_doctor.subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 1, stdout="", stderr="fatal"),
+        )
+        status, detail, _fix = core_doctor._check_dev_install_freshness()
+        assert status is CheckStatus.PASS
+        assert "could not read git status" in detail
+
+    def test_pass_when_git_status_hangs(self, monkeypatch, tmp_path):
+        # The network/hang guard: never let doctor block on a slow git call.
+        (tmp_path / ".git").mkdir()
+        monkeypatch.setattr(
+            core_doctor.core_version,
+            "build_info",
+            lambda: self._build(source="source", path=str(tmp_path)),
+        )
+        monkeypatch.setattr(core_doctor.shutil, "which", lambda _tool: "/usr/bin/git")
+
+        def _raise(*a, **k):
+            raise subprocess.TimeoutExpired(cmd=a[0], timeout=k.get("timeout"))
+
+        monkeypatch.setattr(core_doctor.subprocess, "run", _raise)
+        status, detail, _fix = core_doctor._check_dev_install_freshness()
+        assert status is CheckStatus.PASS
+        assert "could not read git status" in detail
+
+    def test_pass_when_up_to_date_or_untracked(self, monkeypatch, tmp_path):
+        (tmp_path / ".git").mkdir()
+        monkeypatch.setattr(
+            core_doctor.core_version,
+            "build_info",
+            lambda: self._build(source="source", path=str(tmp_path)),
+        )
+        monkeypatch.setattr(core_doctor.shutil, "which", lambda _tool: "/usr/bin/git")
+        monkeypatch.setattr(
+            core_doctor.subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(
+                a[0], 0, stdout="## develop...origin/develop\n", stderr=""
+            ),
+        )
+        status, detail, fix = core_doctor._check_dev_install_freshness()
+        assert status is CheckStatus.PASS
+        assert "up to date" in detail
+        assert fix is None
+
+    def test_warn_when_behind_upstream(self, monkeypatch, tmp_path):
+        (tmp_path / ".git").mkdir()
+        monkeypatch.setattr(
+            core_doctor.core_version,
+            "build_info",
+            lambda: self._build(source="source", path=str(tmp_path)),
+        )
+        monkeypatch.setattr(core_doctor.shutil, "which", lambda _tool: "/usr/bin/git")
+        monkeypatch.setattr(
+            core_doctor.subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(
+                a[0], 0, stdout="## develop...origin/develop [behind 3]\n", stderr=""
+            ),
+        )
+        status, detail, fix = core_doctor._check_dev_install_freshness()
+        assert status is CheckStatus.WARN
+        assert "3 commits behind" in detail
+        assert "git pull" in fix
+
+    def test_never_fails_doctors_exit_code(self, monkeypatch, tmp_path):
+        # WARN never flips DoctorReport.ok - the maintainer's ruled exit contract.
+        (tmp_path / ".git").mkdir()
+        monkeypatch.setattr(
+            core_doctor.core_version,
+            "build_info",
+            lambda: self._build(source="source", path=str(tmp_path)),
+        )
+        monkeypatch.setattr(core_doctor.shutil, "which", lambda _tool: "/usr/bin/git")
+        monkeypatch.setattr(
+            core_doctor.subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(
+                a[0], 0, stdout="## develop...origin/develop [behind 1]\n", stderr=""
+            ),
+        )
+        status, _detail, _fix = core_doctor._check_dev_install_freshness()
+        assert status is CheckStatus.WARN
+        assert status is not CheckStatus.FAIL
 
 
 class TestHomeLayout:
