@@ -456,15 +456,15 @@ class TestAutoStartServices:
         result = runner.invoke(axi_mod.app, ["init", "proj", "--admin-password", "a"])
 
         assert result.exit_code == 0
-        assert calls["start"] == [{"project": "proj", "bench_path": "/workspace/frappe-bench"}]
+        assert calls["start"] == [
+            {"project": "proj", "bench_path": "/workspace/frappe-bench", "uid_override": None}
+        ]
 
     def test_no_start_skips_the_start_call(self, monkeypatch):
         _no_admin_env(monkeypatch)
         calls = _patch_stages(monkeypatch)
 
-        result = runner.invoke(
-            axi_mod.app, ["init", "proj", "--admin-password", "a", "--no-start"]
-        )
+        result = runner.invoke(axi_mod.app, ["init", "proj", "--admin-password", "a", "--no-start"])
 
         assert result.exit_code == 0
         assert calls["start"] == []
@@ -602,3 +602,65 @@ class TestSiteName:
         # Neither core stage ran: no containers were brought up for a usage error.
         assert calls["instance"] == []
         assert calls["bench"] == []
+
+
+# ------------------------------------------------------------------ --uid override (#229)
+
+
+class TestUidOverride:
+    def test_uid_zero_refuses_before_stage_one(self, monkeypatch):
+        """--uid 0 reproduces the exact root-host collision, so it is a usage error
+        (exit 2) BEFORE any container or file work - no stage ran."""
+        _no_admin_env(monkeypatch)
+        calls = _patch_stages(monkeypatch)
+
+        result = runner.invoke(
+            axi_mod.app,
+            ["init", "proj", "--admin-password", "s3cret", "--uid", "0"],
+        )
+
+        assert result.exit_code == 2
+        assert result.stdout.startswith("error:")
+        assert calls["instance"] == []
+        assert calls["bench"] == []
+
+    def test_negative_uid_refuses_before_stage_one(self, monkeypatch):
+        _no_admin_env(monkeypatch)
+        calls = _patch_stages(monkeypatch)
+
+        result = runner.invoke(
+            axi_mod.app,
+            ["init", "proj", "--admin-password", "s3cret", "--uid", "-1"],
+        )
+
+        assert result.exit_code == 2
+        assert calls["instance"] == []
+
+    def test_non_numeric_uid_is_a_parse_time_usage_error(self, monkeypatch):
+        _no_admin_env(monkeypatch)
+        calls = _patch_stages(monkeypatch)
+
+        result = runner.invoke(
+            axi_mod.app,
+            ["init", "proj", "--admin-password", "s3cret", "--uid", "abc"],
+        )
+
+        assert result.exit_code == 2
+        assert calls["instance"] == []
+
+    def test_valid_uid_threads_into_both_stages_and_the_auto_start(self, monkeypatch):
+        """A valid --uid is passed to init_instance, init_bench, AND the end-of-init
+        auto-start (the same invocation), so the auto-start aligns to the SAME id the
+        bench was built under rather than re-aligning to the host uid."""
+        _no_admin_env(monkeypatch)
+        calls = _patch_stages(monkeypatch)
+
+        result = runner.invoke(
+            axi_mod.app,
+            ["init", "proj", "--admin-password", "s3cret", "--uid", "1005"],
+        )
+
+        assert result.exit_code == 0
+        assert calls["instance"][0]["uid"] == 1005
+        assert calls["bench"][0]["uid"] == 1005
+        assert calls["start"][0]["uid_override"] == 1005
