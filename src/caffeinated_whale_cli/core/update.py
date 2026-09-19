@@ -306,6 +306,67 @@ def _set_maintenance(container, bench_path: str, site: str, *, enable: bool) -> 
     return bench_ops.set_maintenance(container, bench_path, site, enable=enable)
 
 
+def _restore_pre_maintenance_on_abort(
+    frappe_container,
+    bench_path: str,
+    site: str,
+    pre_state: bool | None,
+    *,
+    project_name: str,
+    emit: OnEvent,
+    warnings: list[Message],
+) -> None:
+    """Restore ``site``'s pre-migrate maintenance state after an interrupted
+    ``--skip-maintenance`` run whose orphan cwcli ended.
+
+    Under ``--skip-maintenance`` cwcli never enabled maintenance, so the finally-block
+    disable does not run - but cwcli still ENDED the orphaned migrate (which on v15+
+    self-manages maintenance and would otherwise clear it as it finished). Left alone
+    that strands the site at 503. Rather than blindly clearing under a flag whose whole
+    point is operator-managed maintenance, restore the pre-migrate state per site:
+
+    - was OFF before the migrate: clear it LAST (settle/re-check), so it is not stuck;
+    - was ON before (operator-managed): LEAVE it on, and say so in one line;
+    - unknown (pre-state unreadable): clear it and name how to turn it back on.
+    """
+    if pre_state:
+        emit(
+            UpdateStepEnd(
+                phase="interrupt_cleanup",
+                item=site,
+                status="ok",
+                message=(
+                    f"Left '{site}' in maintenance mode: it was already in maintenance "
+                    "before the migrate, and --skip-maintenance leaves operator-managed "
+                    "maintenance state alone."
+                ),
+            )
+        )
+        return
+    ok = bench_ops.clear_maintenance(frappe_container, bench_path, site, recheck=True)
+    if pre_state is None:
+        emit(
+            UpdateStepEnd(
+                phase="interrupt_cleanup",
+                item=site,
+                status="ok" if ok else "failed",
+                message=(
+                    f"Cleared maintenance mode for '{site}' after the interrupt (its "
+                    "pre-migrate state could not be read). If it should stay in "
+                    f"maintenance, run: cwcli run {project_name} --site {site} "
+                    "set-maintenance-mode on"
+                ),
+            )
+        )
+    elif not ok:
+        warnings.append(
+            Message(
+                "maintenance.disable_error",
+                f"Could not take '{site}' back out of maintenance mode after the interrupt.",
+            )
+        )
+
+
 def _sites_with_app(project_name: str, bench_path: str, app: str, container) -> list[str]:
     """Sites with ``app`` installed: the cache when it knows, else a live query."""
     cached = db_utils.get_cached_project_data(project_name)
@@ -794,6 +855,11 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
     # Marker stamped on every migrate exec so an interrupt can end EXACTLY the process
     # cwcli started before clearing maintenance (see core.bench_ops interrupt cleanup).
     migrate_token = bench_ops.new_migrate_token()
+    # Each site's LIVE maintenance state BEFORE the migrate, so an interrupt under
+    # --skip-maintenance can RESTORE the operator's pre-state instead of blindly
+    # clearing (see _restore_pre_maintenance_on_abort). Empty until recorded below, so
+    # an abort before the migrate loop finds nothing to restore.
+    pre_maintenance: dict[str, bool | None] = {}
 
     try:
         # --- ONE pull pass and ONE discovery pass. The presentation fork that used
@@ -915,6 +981,16 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
                 f"Requested: {', '.join(sorted(sites_filter))}; "
                 f"affected: {', '.join(sorted(unfiltered))}",
             )
+
+        # Record each affected site's LIVE maintenance state BEFORE anything changes
+        # it. Under --skip-maintenance an interrupt restores THIS state per site rather
+        # than blindly clearing, because that flag means the operator manages
+        # maintenance themselves; on the managed path below this is unused (that path
+        # always clears). maintenance_mode_on returns True / False / None (unreadable).
+        pre_maintenance = {
+            site: supervision.maintenance_mode_on(frappe_container, bench_path, site)
+            for site in sorted(affected)
+        }
 
         # Enable maintenance mode per site, recording each success AS it happens so
         # a mid-loop failure still leaves an accurate record of what to undo.
@@ -1092,6 +1168,32 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
                         status="ok" if ok else "failed",
                     )
                 )
+        elif skip_maintenance and aborted and sites_to_migrate:
+            # Under --skip-maintenance cwcli enabled no maintenance, so the disable
+            # loop above does not run - but the except block ENDED the orphaned migrate
+            # that on v15+ would have cleared maintenance as it finished. Restore each
+            # migrated site's pre-migrate state (was-off -> cleared, was-on -> left on
+            # with a note, unknown -> cleared with a note), so an interrupted
+            # --skip-maintenance update never silently strands a site at 503 yet never
+            # overrides an operator who deliberately put a site into maintenance.
+            for site in sites_to_migrate:
+                try:
+                    _restore_pre_maintenance_on_abort(
+                        frappe_container,
+                        bench_path,
+                        site,
+                        pre_maintenance.get(site),
+                        project_name=project_name,
+                        emit=emit,
+                        warnings=warnings,
+                    )
+                except Exception as e:  # noqa: BLE001 - a stuck site must still be reported
+                    warnings.append(
+                        Message(
+                            "maintenance.disable_error",
+                            f"Failed to restore maintenance mode for '{site}': {e}",
+                        )
+                    )
 
         # THE RESYNC, and its position is the whole subtlety. `git pull` moved the
         # code under processes that were already running, so they hold the pre-pull

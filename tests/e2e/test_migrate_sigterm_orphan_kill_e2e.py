@@ -80,23 +80,6 @@ def _maintenance(inst, site: str) -> int | None:
         return None
 
 
-def _migrate_lock_held(inst, site: str) -> bool:
-    """True only while frappe's migrate lock for ``site`` is GENUINELY held by a
-    live process - the proxy for "the migrate process cwcli started is still alive".
-
-    ``bench migrate`` wraps its run in an ``fcntl`` advisory lock but leaves the
-    lock FILE on disk after releasing it, so ``test -f`` stays True forever;
-    ``flock -n`` acquires the SAME kernel primitive and succeeds (exit 0) the
-    instant the lock is released, whether or not the file remains. Mirrors
-    ``core.bench_ops._migrate_lock_held``.
-    """
-    lock = f"{inst.bench}/sites/{site}/locks/bench_migrate.lock"
-    code, _ = harness.exec_in_frappe(
-        inst.name, f"test -f {lock} || exit 0; flock -n -E 200 {lock} -c true"
-    )
-    return code == 200
-
-
 def _slow_patch_running(inst) -> bool:
     """True once the deliberately-slow migrate patch has started (its sentinel file).
 
@@ -326,10 +309,11 @@ def test_sigterm_mid_slow_migrate_kills_the_orphan_and_keeps_the_site_out_of_mai
             ), "site re-entered maintenance after cwcli exited (orphaned migrate not stopped)"
             time.sleep(1)
 
-        # The process cwcli started is gone: its migrate lock has been released (an
-        # orphan still running the hold loop would keep it held).
-        assert not _migrate_lock_held(
-            inst, SLOW_SITE
-        ), "the in-container migrate cwcli started is still holding its lock"
+        # The process cwcli started is GONE: no in-container migrate for this site
+        # remains (portable across majors, unlike the v16-only migrate lock). An orphan
+        # still running the maintenance-hold loop would show here.
+        assert not harness.migrate_process_running(
+            inst.name, SLOW_SITE
+        ), "the in-container migrate cwcli started is still running"
     finally:
         _cleanup(inst)
