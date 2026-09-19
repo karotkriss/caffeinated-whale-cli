@@ -891,6 +891,35 @@ def web_http_code(
     return code or None
 
 
+def maintenance_mode_on(container, bench_path: str, site: str) -> bool | None:
+    """Whether ``site`` is in maintenance mode, read LIVE from its site_config.json.
+
+    A site left stuck in maintenance mode answers HTTP 503 to every user with no
+    other signal - which is exactly the state a ``migrate``/``apps update`` killed
+    by SIGTERM/SIGHUP leaves behind. ``status`` must say so plainly, so it reads the
+    authoritative flag directly (``maintenance_mode`` truthy in
+    ``sites/<site>/site_config.json``) rather than inferring it from a 503, which can
+    have other causes.
+
+    Returns None (fail-honest) when the file is missing or unparseable: "could not
+    tell" must never read as "not in maintenance". Run via ``workdir`` rather than
+    interpolating ``bench_path``/``site`` into the command (the quoting guard the
+    rest of this module uses).
+    """
+    exit_code, output = container.exec_run(
+        f"cat sites/{shlex.quote(site)}/site_config.json", workdir=bench_path
+    )
+    if exit_code not in (0, None):
+        return None
+    try:
+        config = json.loads(_decode(output))
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(config, dict):
+        return None
+    return bool(config.get("maintenance_mode"))
+
+
 def web_is_serving(container, *, port: int, site: str | None = None) -> bool:
     """True iff the web server answers on ``port`` (any HTTP code, even 404/5xx).
 

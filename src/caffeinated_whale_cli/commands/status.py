@@ -238,6 +238,15 @@ def _render_detail(report: StatusReport, verbose: bool) -> None:
         line = _web_line(bench, verbose)
         if line is not None:
             stderr_console.print(f"  {line}")
+        if bench.maintenance_mode:
+            # A site stuck in maintenance answers 503 with no other signal; say so
+            # plainly and name the way out (this is the SIGTERM/SIGHUP-killed-migrate
+            # state). Rendered even without --verbose - it is a fault, not detail.
+            stderr_console.print(
+                f"  [bold red]MAINTENANCE MODE ON[/bold red] for site '{bench.web_site}' "
+                f"(answers 503). Take it out with: [bold]cwcli run {report.project} "
+                f"--site {bench.web_site} set-maintenance-mode off[/bold]"
+            )
 
         for p in bench.processes:
             mark = _up_mark(p.up)
