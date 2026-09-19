@@ -738,6 +738,7 @@ The same fail-closed refusal applies when Docker cannot verify whether named vol
 If Docker confirms that no named volumes remain, no backup is needed: `cwcli rm` cleans up the orphan's network and local directory under the default settings.
 The volume state is checked again before cleanup, and any change or verification failure aborts instead of risking unbacked data.
 Under `--no-volumes` no volume data is destroyed, so a stopped project is cleaned up without a backup as before.
+A half-provisioned instance that holds no site on any bench has nothing to back up, so - like a confirmed volume-free orphan - the removal proceeds instead of refusing and sending you back for a second `--no-backup` run; this relaxes only on a *live* proof that every bench is site-less, and any ambiguity keeps the fail-closed refusal.
 
 ```bash
 cwcli rm [OPTIONS] [PROJECT_NAME]...
@@ -768,7 +769,7 @@ If a project has no containers but still has a network, named volumes, or a loca
 Confirmed volume-free orphans are cleaned under the defaults.
 Orphans with named volumes, or an unknown volume state, remain protected by the backup gate.
 
-An invalid project name (empty, `.`, `..`, an absolute path, or one containing a path separator) is rejected before anything is removed, since such a name could otherwise escape the projects directory.
+An invalid project name (empty, blank/whitespace-only, `.`, `..`, an absolute path, or one containing a path separator) is rejected before anything is removed, since such a name could otherwise escape the projects directory or resolve to a phantom project; a blank name is reported as `(empty)` rather than an empty quote.
 `cwcli rm` exits non-zero whenever any removal step fails, including a blocked backup, a rejected name, or a container, volume, network, or directory that could not be removed.
 It does not print the success summary for a project that was not fully removed; the project stays in the cache (and `cwcli ls`) so the leftover state remains visible and can be retried.
 
@@ -2007,10 +2008,16 @@ cwcli config paths                          # list, one path per line
 cwcli config paths --json                   # the same list as JSON
 cwcli config paths add /home/user/benches   # absolute paths only
 cwcli config paths remove /home/user/benches
+cwcli config paths prune                    # dry-run: list dead paths
+cwcli config paths prune --yes              # actually drop them
 ```
 
 `add` refuses a non-absolute path with a usage error (exit 2) after `~` expansion, and normalizes before duplicate detection, so `/a/b` and `/a/b/` are one entry, not two.
 Adding an already-present path and removing an absent one are both no-op successes (exit 0, saying which no-op occurred).
+
+`prune` removes custom search paths that no live instance references (they accumulate a graveyard: a path added for an instance later removed lingers forever and is re-scanned on every `inspect`).
+It checks each path live against every instance's frappe container and, with `--yes`, drops the ones absent from all of them; without `--yes` it is a dry-run that only lists what it would drop (`--json` for machine output).
+It is fail-closed: a path present in any instance is never dropped, and if any instance cannot be checked (stopped or unreachable) nothing is pruned, so a path a stopped instance still needs is never lost.
 
 ##### `config cache` - Manage Cache
 
