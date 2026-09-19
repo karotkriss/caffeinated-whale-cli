@@ -18,6 +18,12 @@ from caffeinated_whale_cli.utils import config_utils, startup
 from caffeinated_whale_cli.utils import cred_daemon as daemon
 
 
+def _managed(cfg, *names):
+    """Make each name a cwcli-managed instance (a PROJECTS_DIR/{name} dir)."""
+    for name in names:
+        (config_utils.PROJECTS_DIR / name).mkdir(parents=True, exist_ok=True)
+
+
 def _assert_plain(data):
     def walk(value):
         if isinstance(value, dict):
@@ -87,9 +93,10 @@ def cfg(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon, "transport", lambda: "unix")
     monkeypatch.setattr(daemon, "registered_projects", lambda: [])
     monkeypatch.setattr(daemon, "recent_audit", lambda: [])
-    def _ensure_running(only=None):
+    def _ensure_running(only=None, on_plan=None):
         state.calls["ensure_running"] += 1
         state.ensure_only = only
+        state.ensure_on_plan = on_plan
         return sorted(only) if only else []
 
     monkeypatch.setattr(daemon, "ensure_running_instances", _ensure_running)
@@ -147,6 +154,7 @@ class TestEnable:
 
     def test_enable_reports_the_instances_it_wired(self, cfg, monkeypatch):
         # The mock returns the `only` set as the ensured list; drive it with a scope.
+        _managed(cfg, "alpha", "beta")
         monkeypatch.setattr(core_cred, "get_frappe_container", lambda name: object())
         result = core_cred.enable(projects=["alpha", "beta"])
         assert sorted(result.data.ensured_projects) == ["alpha", "beta"]
@@ -156,17 +164,42 @@ class TestScopedEnable:
     """`enable --project` scopes the sweep and validates each name up front."""
 
     def test_scopes_the_sweep_to_the_named_projects(self, cfg, monkeypatch):
+        _managed(cfg, "alpha")
         monkeypatch.setattr(core_cred, "get_frappe_container", lambda name: object())
         core_cred.enable(projects=["alpha"])
         assert cfg.ensure_only == {"alpha"}
 
     def test_validates_every_named_project_with_the_canonical_resolver(self, cfg, monkeypatch):
+        _managed(cfg, "alpha", "beta")
         seen: list[str] = []
         monkeypatch.setattr(
             core_cred, "get_frappe_container", lambda name: seen.append(name) or object()
         )
         core_cred.enable(projects=["alpha", "beta"])
         assert seen == ["alpha", "beta"]
+
+    def test_an_explicitly_named_unmanaged_project_is_refused(self, cfg, monkeypatch):
+        # The container resolves (any running frappe) but cwcli does not manage it:
+        # no PROJECTS_DIR/foreign dir exists, so the operator's named target is
+        # refused loudly rather than silently dropped by the sweep filter.
+        monkeypatch.setattr(core_cred, "get_frappe_container", lambda name: object())
+        with pytest.raises(CwcliError) as exc:
+            core_cred.enable(projects=["foreign"])
+        assert exc.value.kind is ErrorKind.NOT_FOUND
+        assert exc.value.code == "project.not_managed"
+        assert "foreign" in exc.value.message
+        # Fail-fast: nothing enabled, started, or swept.
+        assert cfg.enabled is False
+        assert cfg.calls["start"] == 0
+        assert cfg.calls["ensure_running"] == 0
+
+    def test_a_managed_named_project_still_succeeds(self, cfg, monkeypatch):
+        _managed(cfg, "mine")
+        monkeypatch.setattr(core_cred, "get_frappe_container", lambda name: object())
+        result = core_cred.enable(projects=["mine"])
+        assert cfg.enabled is True
+        assert cfg.ensure_only == {"mine"}
+        assert result.data.ensured_projects == ["mine"]
 
     def test_a_missing_project_fails_fast_with_no_side_effects(self, cfg, monkeypatch):
         def _resolve(name):

@@ -544,8 +544,15 @@ def enable_cred_bridge(
     By default every currently-running instance cwcli manages is wired; pass
     --project to scope the sweep to one or more named instances.
     """
+
+    def _announce_plan(names: list[str]) -> None:
+        console.print(
+            f"[cyan]About to wire {len(names)} running instances into the bridge: "
+            f"{', '.join(names)}.[/cyan]"
+        )
+
     try:
-        result = core_cred.enable(at_boot=startup, projects=project or None)
+        result = core_cred.enable(at_boot=startup, projects=project or None, on_plan=_announce_plan)
     except CwcliError as e:
         raise _exit_for(e) from None
     _render_cred_outcome(result)

@@ -45,6 +45,7 @@ import sys
 import threading
 import time
 import traceback
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -332,7 +333,7 @@ def ensure_bridge(container, bench_path: str, project_name: str) -> EnsureOutcom
 _DEFAULT_BENCH_PATH = "/workspace/frappe-bench"
 
 
-def _is_cwcli_managed(project: str) -> bool:
+def is_cwcli_managed(project: str) -> bool:
     """True only for an instance cwcli itself created.
 
     The distinguishing signal is the local project directory ``PROJECTS_DIR/{name}``
@@ -344,19 +345,13 @@ def _is_cwcli_managed(project: str) -> bool:
     return (config_utils.PROJECTS_DIR / project).is_dir()
 
 
-def ensure_running_instances(only: set[str] | None = None) -> list[str]:
-    """Best-effort: ``ensure_bridge`` each currently-running CWCLI-MANAGED instance.
+def _resolve_managed_running(only: set[str] | None) -> list[tuple[object, str]]:
+    """The running CWCLI-MANAGED frappe containers scoped by ``only``.
 
-    Called by ``enable`` so the bridge takes effect immediately rather than only
-    on the next ``open``/``start`` of each instance. Only instances cwcli manages
-    (see :func:`_is_cwcli_managed`) are ever wired - a Frappe container cwcli did
-    not create is left untouched. ``only`` narrows the sweep to the named projects
-    (the ``enable --project`` scope); ``None`` sweeps every managed instance.
-    Returns the sorted names actually wired; swallows all Docker errors (``[]`` on
-    any failure).
+    The ONE managed+running+scoped resolution both the sweep and its pre-wire
+    announcement read from, so neither can drift from the other. Returns
+    ``(container, project)`` pairs; swallows all Docker errors (``[]`` on failure).
     """
-    if not is_enabled():
-        return []
     try:
         import docker
 
@@ -366,15 +361,46 @@ def ensure_running_instances(only: set[str] | None = None) -> list[str]:
         )
     except Exception:
         return []
-    ensured: list[str] = []
+    targets: list[tuple[object, str]] = []
     for container in containers:
         project = container.labels.get("com.docker.compose.project")
         if not project:
             continue
         if only is not None and project not in only:
             continue
-        if not _is_cwcli_managed(project):
+        if not is_cwcli_managed(project):
             continue
+        targets.append((container, project))
+    return targets
+
+
+def ensure_running_instances(
+    only: set[str] | None = None,
+    on_plan: Callable[[list[str]], None] | None = None,
+) -> list[str]:
+    """Best-effort: ``ensure_bridge`` each currently-running CWCLI-MANAGED instance.
+
+    Called by ``enable`` so the bridge takes effect immediately rather than only
+    on the next ``open``/``start`` of each instance. Only instances cwcli manages
+    (see :func:`is_cwcli_managed`) are ever wired - a Frappe container cwcli did
+    not create is left untouched. ``only`` narrows the sweep to the named projects
+    (the ``enable --project`` scope); ``None`` sweeps every managed instance.
+
+    ``on_plan``, when given, is called with the sorted target names BEFORE any
+    wiring happens - but only for the UNSCOPED sweep touching more than one
+    instance, so an operator on a multi-instance machine is never surprised. A
+    single instance or an explicit ``--project`` needs no pre-announcement.
+
+    Returns the sorted names actually wired; swallows all Docker errors (``[]`` on
+    any failure).
+    """
+    if not is_enabled():
+        return []
+    targets = _resolve_managed_running(only)
+    if on_plan is not None and only is None and len(targets) > 1:
+        on_plan(sorted(project for _, project in targets))
+    ensured: list[str] = []
+    for container, project in targets:
         if ensure_bridge(container, _DEFAULT_BENCH_PATH, project) is not None:
             ensured.append(project)
     return sorted(ensured)

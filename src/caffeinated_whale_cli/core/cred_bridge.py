@@ -29,6 +29,7 @@ from __future__ import annotations
 import contextlib
 import shutil
 import stat
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from ..utils import config_utils, shared_home, startup
@@ -126,7 +127,9 @@ def _stop_daemon() -> None:
 
 
 def enable(
-    at_boot: bool | None = None, projects: list[str] | None = None
+    at_boot: bool | None = None,
+    projects: list[str] | None = None,
+    on_plan: Callable[[list[str]], None] | None = None,
 ) -> Result[CredBridgeOutcome]:
     """Bring the credential bridge to the enabled-and-running desired state.
 
@@ -142,17 +145,29 @@ def enable(
     ``projects`` scopes the sweep to the named instance(s) (the default ``None``
     keeps the wire-everything semantics, restricted to instances cwcli itself
     manages). Each named project is resolved up front with the same
-    :func:`~.docker.get_frappe_container` resolver every verb uses, so a typo
-    fails fast with the canonical ``project.not_found`` error and NO config write
-    or daemon start happens. The instances actually wired are returned in
-    ``ensured_projects`` so the frontend can name them - a multi-instance sweep is
-    never a silent surprise.
+    :func:`~.docker.get_frappe_container` resolver every verb uses AND must be a
+    cwcli-managed instance, so a typo fails fast with the canonical
+    ``project.not_found`` error and an explicitly-named container cwcli does not
+    manage is refused ``project.not_managed`` - either way NO config write or
+    daemon start happens. (The UNSCOPED default sweep still silently skips
+    unmanaged containers: they were never named by the operator.) The instances
+    actually wired are returned in ``ensured_projects``, and ``on_plan`` is called
+    with the target names before wiring an unscoped multi-instance sweep, so a
+    sweep is never a silent surprise.
     """
     only: set[str] | None = None
     if projects:
-        # Validate FIRST (fail fast, no side effects) with the canonical resolver.
+        # Validate FIRST (fail fast, no side effects): the container must resolve
+        # AND the instance must be one cwcli manages - naming a foreign container
+        # explicitly is refused rather than silently dropped by the sweep filter.
         for name in projects:
             get_frappe_container(name)  # raises NOT_FOUND / DOCKER
+            if not daemon.is_cwcli_managed(name):
+                raise CwcliError(
+                    ErrorKind.NOT_FOUND,
+                    "project.not_managed",
+                    f"Project '{name}' is not a cwcli-managed instance.",
+                )
         only = set(projects)
 
     warnings: list[Message] = []
@@ -178,7 +193,7 @@ def enable(
         _start_daemon()
         actions.append("daemon.started")
 
-    ensured = daemon.ensure_running_instances(only=only)
+    ensured = daemon.ensure_running_instances(only=only, on_plan=on_plan)
 
     if at_boot is not None:
         sync_boot_hook(at_boot, actions, warnings, unit=startup.CRED_BRIDGE)
