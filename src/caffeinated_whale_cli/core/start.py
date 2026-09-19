@@ -71,6 +71,7 @@ def start(
     auto_start: bool = False,
     restart: bool = False,
     autorestart: bool = True,
+    uid_override: int | None = None,
 ) -> Result[StartOutcome]:
     """Start a project's containers and its bench. See module docstring.
 
@@ -86,6 +87,13 @@ def start(
     (True -> ``autorestart=unexpected``, the ``--autorestart`` default; False ->
     ``--no-autorestart``, a crashed program stays down until an explicit restart).
     It only takes effect on a genuine (re)launch, not the idempotent no-op.
+
+    ``uid_override`` is threaded ONLY by ``cwcli init``'s own end-of-init auto-start
+    (the same invocation the ``--uid`` flag was passed to), so its uid alignment
+    matches the one init built the bench under. The ``cwcli start``/``axi start``
+    commands never pass it and never persist it - a start with no override falls
+    back to the host uid / the root-host default / the shared service uid exactly
+    as before.
     """
     warnings: list[Message] = []
 
@@ -152,7 +160,9 @@ def start(
     # In shared mode a remap also re-owns the resolved bench dir, so a migrated
     # instance's workspace stays writable by the remapped user (the path is
     # resolved and validated above, so it is safe to pass into align's shell).
-    _, remap_err = align_container_user_to_host(frappe_container, bench_paths=[resolved_path])
+    _, remap_err = align_container_user_to_host(
+        frappe_container, bench_paths=[resolved_path], uid_override=uid_override
+    )
     if remap_err:
         warnings.append(Message("start.uid_align_failed", remap_err))
 

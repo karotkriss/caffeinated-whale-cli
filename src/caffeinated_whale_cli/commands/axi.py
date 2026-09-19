@@ -2245,6 +2245,15 @@ def axi_init(
         "starting, for automation/CI. Distinct from container startup, which stage 1 "
         "always brings up regardless of this flag.",
     ),
+    uid: int = typer.Option(
+        None,
+        "--uid",
+        help="Override the uid/gid the container 'frappe' user is aligned to, instead of the "
+        "host's own uid/gid. Mainly for a root-uid host (e.g. a CI runner running as uid 0): "
+        "aligning to 0 would collide with the container's own root user and break bench's PATH, "
+        "so that case already falls back to a safe default automatically (reported in `warnings`); "
+        "pass --uid to choose a specific uid instead. Must be a positive, non-root integer.",
+    ),
 ) -> None:
     """Provision a new instance, bench, and site; emit the report as TOON (never prompts).
 
@@ -2292,11 +2301,13 @@ def axi_init(
         raise typer.Exit(exit_for(ErrorKind.USAGE))
     db_root = db_root_password or os.environ.get("CWCLI_DB_ROOT_PASSWORD") or "123"
 
-    # Fail-fast on a bad site name BEFORE stage 1 (the human init's ordering):
-    # the core re-validates in init_bench, but that runs only after compose has
-    # brought real containers up, which a usage error must never leave behind.
+    # Fail-fast on a bad site name or --uid BEFORE stage 1 (the human init's
+    # ordering): the core re-validates in init_bench, but that runs only after
+    # compose has brought real containers up, which a usage error must never leave
+    # behind.
     try:
         site = core_init.validate_new_site_name(site)
+        core_init.check_uid_override(uid)
     except CwcliError as error:
         emit_axi_error(error)
         raise typer.Exit(exit_for(error.kind)) from None
@@ -2327,7 +2338,7 @@ def axi_init(
     # pointing at status/logs, not the generic "start it first" usage error.
     try:
         instance_result = core_init.init_instance(
-            project, port=port, bench_parent=bench_parent, on_event=_init_narrate
+            project, port=port, bench_parent=bench_parent, uid=uid, on_event=_init_narrate
         )
     except CwcliError as error:
         emit_axi_error(error)
@@ -2358,6 +2369,7 @@ def axi_init(
             reuse_bench=reuse_bench,
             install_erpnext=install_erpnext,
             erpnext_branch=erpnext_branch,
+            uid=uid,
             on_event=_init_narrate,
         )
     except CwcliError as error:
@@ -2396,7 +2408,7 @@ def axi_init(
     if start_services:
         print("Starting dev services...", file=sys.stderr, flush=True)
         try:
-            start_result = core_start.start(project, bench_path=report.bench_path)
+            start_result = core_start.start(project, bench_path=report.bench_path, uid_override=uid)
         except Exception as e:
             print(
                 f"Warning: bench created, but its dev services could not be started: "

@@ -156,6 +156,7 @@ def _drive_init_to_bench_ref(monkeypatch, **overrides) -> str:
         verbose=True,
         install_erpnext=False,
         erpnext_branch="version-16",
+        uid=None,
     )
     params.update(overrides)
 
