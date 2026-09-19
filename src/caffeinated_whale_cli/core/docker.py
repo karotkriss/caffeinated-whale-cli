@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import codecs
 import os
+import shlex
 import subprocess
 from collections.abc import Sequence
 
@@ -383,7 +384,8 @@ def align_container_user_to_host(
     # a normal box has none. Existence-guarded so a dir that vanished between the
     # stat and here is a no-op.
     steps.extend(
-        f"[ ! -e {path} ] || chown -R {host_uid}:{host_gid} {path}" for path in reown_paths
+        f"[ ! -e {q} ] || chown -R {host_uid}:{host_gid} {q}"
+        for q in (shlex.quote(p) for p in reown_paths)
     )
     try:
         code, out = container.exec_run(["bash", "-c", " && ".join(steps)], user="root")
