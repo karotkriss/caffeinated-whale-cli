@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-09-19
+
+### Fixed
+
+- **Shared-mode setup now re-owns the bench workspace, not just the home directory, when it remaps the container user** - a `cwcli start`/`restart` against a migrated instance in shared mode used to leave the workspace owned by the pre-shared uid, so the remapped `frappe` user could no longer write `<bench>/logs/bench.log` and `bench start` crash-looped, bricking the instance.
+The re-own is keyed on a real ownership mismatch rather than on whether the uid changed this call, so the next `cwcli start`/`restart` recovers an already-affected instance in place with no extra step.
+
 ## [3.1.0] - 2026-09-18
 
 ### Added
