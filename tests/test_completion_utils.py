@@ -5,7 +5,6 @@ Tests cover completion functions for projects, apps, and sites with scenarios
 including caching, TTL expiration, error handling, and context-awareness.
 """
 
-import time
 from unittest.mock import Mock, patch
 
 import pytest
@@ -126,16 +125,24 @@ class TestCompleteProjectNames:
         assert mock_docker_client.containers.list.call_count == 1
 
     @patch("caffeinated_whale_cli.utils.completion_utils.docker.from_env")
-    def test_cache_expires_after_ttl(self, mock_from_env, mock_docker_client, mock_containers):
+    def test_cache_expires_after_ttl(
+        self, mock_from_env, mock_docker_client, mock_containers, monkeypatch
+    ):
         """Should re-query Docker after cache TTL expires."""
         mock_from_env.return_value = mock_docker_client
         mock_docker_client.containers.list.return_value = mock_containers
 
-        # First call
+        # Control the clock instead of really sleeping out the 2s TTL: advance the
+        # cache's own time source past the TTL. A unit test must never wait a real
+        # deadline (see tests/conftest.py's slow-test guard).
+        clock = [1000.0]
+        monkeypatch.setattr(completion_utils.time, "time", lambda: clock[0])
+
+        # First call populates the cache at t=1000.
         completion_utils.complete_project_names()
 
-        # Wait for cache to expire
-        time.sleep(2.1)
+        # Jump past the TTL so the cached entry is seen as expired.
+        clock[0] += completion_utils._CACHE_TTL + 0.1
 
         # Second call after TTL
         completion_utils.complete_project_names()
@@ -359,11 +366,14 @@ class TestCacheHelpers:
 
         assert result == ["value1", "value2"]
 
-    def test_get_cached_returns_none_after_ttl(self):
+    def test_get_cached_returns_none_after_ttl(self, monkeypatch):
         """Should return None after TTL expires."""
+        # Control the clock rather than really sleeping past the TTL.
+        clock = [1000.0]
+        monkeypatch.setattr(completion_utils.time, "time", lambda: clock[0])
         completion_utils._set_cached("test_key", ["value1", "value2"])
 
-        time.sleep(0.5)
+        clock[0] += 0.2  # advance past the 0.1s ttl
         result = completion_utils._get_cached("test_key", ttl=0.1)
 
         assert result is None

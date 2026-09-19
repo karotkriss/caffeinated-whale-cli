@@ -46,8 +46,113 @@ long silence there would read the same as a hang.
 from __future__ import annotations
 
 import io
+import os
+import shutil
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+try:
+    import resource
+except ImportError:  # Windows has no `resource` module.
+    resource = None  # type: ignore[assignment]
 
 import pytest
+
+# ------------------------------------------------------------- hermetic session home
+#
+# cwcli resolves its ENTIRE on-disk footprint (config, projects, run dir, and the
+# SQLite cache) from ``config_utils.cwcli_home()``, which reads ``CWCLI_HOME``
+# first. ``db_utils`` then CREATES and OPENS the cache DB at import time. So a bare
+# ``pytest`` used to open the developer's real ``~/.cwcli/cache/cwc-cache.db`` the
+# moment the first test imported the package - the unit tier was not hermetic.
+#
+# Point ``CWCLI_HOME`` at a throwaway dir for the whole session, BEFORE any test
+# module (and therefore the package) is imported. Tests that need their own home
+# still override ``CWCLI_HOME`` per-test via monkeypatch. The E2E tier sets its own
+# HOME + CWCLI_HOME (tests/e2e/conftest.py), so this default is harmless there.
+#
+# ``Path.home()`` here is the operator's REAL home (we override CWCLI_HOME, not
+# HOME); snapshot the real cache DB so the guard below can fail loudly if any test
+# still reaches it.
+_REAL_CACHE_DB = Path.home() / ".cwcli" / "cache" / "cwc-cache.db"
+_real_cache_db_before = _REAL_CACHE_DB.stat().st_mtime_ns if _REAL_CACHE_DB.exists() else None
+
+_created_session_home: str | None = None
+if not os.environ.get("CWCLI_HOME"):
+    # Prefer /var/tmp on Linux: it is not a small tmpfs like /tmp, and it keeps the
+    # session home out of the ``/tmp/cwcli`` namespace a hardcoded-path test guards
+    # against (test_auto_inspect.py::test_pid_dir_honors_cwcli_home).
+    _tmproot = "/var/tmp" if os.path.isdir("/var/tmp") else None
+    _created_session_home = tempfile.mkdtemp(prefix="cwcli-unit-home-", dir=_tmproot)
+    os.environ["CWCLI_HOME"] = _created_session_home
+
+# ----------------------------------------------------------- memory / slow-test guard
+#
+# The unit tier must stay small and fast. A test that spins a real deadline (a
+# no-op ``time.sleep`` against a real ``time.monotonic()`` timeout) while a
+# ``MagicMock`` records every call in ``mock_calls`` can climb to gigabytes over
+# minutes, then free it at teardown - exactly the 5 GB spike that motivated this
+# guard. It fails the unit tier when the pytest process peaks above a ceiling OR
+# any single test runs too long, and names the offenders, so that class of
+# regression can never land silently. Enforced only on the unit tier (see
+# ``pytest_collection_finish``); tune or disable via env.
+_RSS_CEILING_MB = float(os.environ.get("CWCLI_TEST_RSS_CEILING_MB", "1024"))
+_SLOW_FAIL_S = float(os.environ.get("CWCLI_TEST_SLOW_FAIL_S", "10"))
+_SLOW_WARN_S = float(os.environ.get("CWCLI_TEST_SLOW_WARN_S", "5"))
+_GUARD_ENABLED = os.environ.get("CWCLI_TEST_GUARD", "1") != "0"
+
+_enforce_guard = False  # set True for the unit tier in pytest_collection_finish
+_peak_rss_mb = 0.0
+_test_cost: dict[str, tuple[float, float]] = {}  # nodeid -> (wall seconds, rss delta MB)
+_guard_failures: list[str] = []
+_guard_evaluated = False
+
+
+def _rss_mb() -> float:
+    if resource is None:
+        return 0.0
+    maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    # ``ru_maxrss`` is KiB on Linux, bytes on macOS.
+    return maxrss / (1024 * 1024) if sys.platform == "darwin" else maxrss / 1024
+
+
+def _real_home_touch_failure() -> str | None:
+    after = _REAL_CACHE_DB.stat().st_mtime_ns if _REAL_CACHE_DB.exists() else None
+    if after == _real_cache_db_before:
+        return None
+    return (
+        f"HERMETICITY VIOLATION: the unit tier touched the real cache DB {_REAL_CACHE_DB} "
+        f"(mtime {_real_cache_db_before} -> {after}). A test resolved cwcli_home() to the "
+        f"real ~/.cwcli instead of the session CWCLI_HOME; give it its own "
+        f"CWCLI_HOME (monkeypatch.setenv) pointed at tmp_path."
+    )
+
+
+def _evaluate_guard() -> None:
+    """Populate ``_guard_failures`` once. Called by the summary and sessionfinish."""
+    global _guard_evaluated
+    if _guard_evaluated:
+        return
+    _guard_evaluated = True
+    if not (_GUARD_ENABLED and _enforce_guard):
+        return
+    if _peak_rss_mb > _RSS_CEILING_MB:
+        _guard_failures.append(
+            f"peak RSS {_peak_rss_mb:.0f}MB exceeded the {_RSS_CEILING_MB:.0f}MB unit-tier "
+            f"ceiling (override with CWCLI_TEST_RSS_CEILING_MB)"
+        )
+    for nodeid, (wall, _delta) in _test_cost.items():
+        if wall >= _SLOW_FAIL_S:
+            _guard_failures.append(
+                f"unit test ran {wall:.1f}s (> {_SLOW_FAIL_S:.0f}s; a unit test must control "
+                f"time, not wait a real deadline): {nodeid}"
+            )
+    touch = _real_home_touch_failure()
+    if touch:
+        _guard_failures.append(touch)
+
 
 # Set once in pytest_configure; everything below is a no-op unless it is True.
 _quiet = False
@@ -82,6 +187,28 @@ def pytest_collection_finish(session):
     # will actually run.
     for item in session.items:
         _last_nodeid[item.nodeid.split("::")[0]] = item.nodeid
+    # The memory/slow guard is a unit-tier contract: the E2E, packaging, and
+    # standalone tiers legitimately run long and are driven through subprocesses,
+    # so enforce only when NOTHING selected carries one of those markers.
+    global _enforce_guard
+    _off = ("e2e", "e2e_p2p", "e2e_pkg", "standalone")
+    _enforce_guard = not any(item.get_closest_marker(m) for item in session.items for m in _off)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item, nextitem):
+    """Sample the process peak RSS and wall time around each unit test."""
+    if not (_GUARD_ENABLED and _enforce_guard):
+        yield
+        return
+    before = _rss_mb()
+    start = time.monotonic()
+    yield
+    wall = time.monotonic() - start
+    after = _rss_mb()
+    global _peak_rss_mb
+    _peak_rss_mb = max(_peak_rss_mb, after)
+    _test_cost[item.nodeid] = (wall, max(0.0, after - before))
 
 
 def pytest_report_teststatus(report, config):
@@ -144,7 +271,39 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     ``cov_controller.finish()`` has written by the time summaries run.
     """
     controller = getattr(config.pluginmanager.get_plugin("_cov"), "cov_controller", None)
-    if controller is None:
-        return  # no --cov on this run
-    total = controller.cov.report(ignore_errors=True, file=io.StringIO())
-    terminalreporter.write_line(f"coverage: {total:.2f}%")
+    if controller is not None:  # only when --cov collected data
+        total = controller.cov.report(ignore_errors=True, file=io.StringIO())
+        terminalreporter.write_line(f"coverage: {total:.2f}%")
+
+    # Memory / slow-test guard (unit tier only).
+    _evaluate_guard()
+    if not (_GUARD_ENABLED and _enforce_guard):
+        return
+    slow = sorted(
+        (wall, nodeid) for nodeid, (wall, _d) in _test_cost.items() if wall >= _SLOW_WARN_S
+    )
+    if slow:
+        terminalreporter.write_line(f"slow unit tests (>= {_SLOW_WARN_S:.0f}s):", yellow=True)
+        for wall, nodeid in sorted(slow, reverse=True)[:10]:
+            terminalreporter.write_line(f"  {wall:6.1f}s  {nodeid}")
+    if _guard_failures:
+        terminalreporter.write_line("MEMORY/SLOW GUARD FAILED:", red=True)
+        for msg in _guard_failures:
+            terminalreporter.write_line(f"  - {msg}", red=True)
+        heavy = sorted(
+            (delta, wall, nodeid) for nodeid, (wall, delta) in _test_cost.items() if delta >= 50
+        )
+        if heavy:
+            terminalreporter.write_line("heaviest tests (peak RSS delta):", red=True)
+            for delta, wall, nodeid in sorted(heavy, reverse=True)[:10]:
+                terminalreporter.write_line(f"  +{delta:7.0f}MB  {wall:6.1f}s  {nodeid}")
+        terminalreporter.write_line(f"peak process RSS this run: {_peak_rss_mb:.0f}MB")
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Fail the unit tier when the memory/slow guard tripped; drop the temp home."""
+    _evaluate_guard()
+    if _guard_failures and session.exitstatus == 0:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+    if _created_session_home:
+        shutil.rmtree(_created_session_home, ignore_errors=True)
