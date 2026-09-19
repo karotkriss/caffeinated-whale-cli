@@ -159,6 +159,12 @@ class BenchStatus:
     web_port_verified: bool
     web_site: str | None
     web_http_code: str | None
+    #: Whether ``web_site`` is in maintenance mode (``True``/``False``), or None when
+    #: it was not checked (``--watch``, no site resolved) or could not be read. A site
+    #: stuck in maintenance answers 503 to every user with no other signal - the state
+    #: a ``migrate``/``apps update`` killed by SIGTERM/SIGHUP leaves behind - so it is
+    #: reported plainly here (and named in a warning) rather than left as a bare 503.
+    maintenance_mode: bool | None = None
     processes: list[ProcessHealth]
     # True when the bench is running under honcho / ``bench start`` rather than
     # cwcli's supervisord (pre-v3, or a plain ``bench start``): the processes are
@@ -320,6 +326,7 @@ def status(
             replace(
                 read(
                     frappe_container,
+                    project_name=project_name,
                     index=index,
                     bench_path=path,
                     label=label,
@@ -426,6 +433,7 @@ def _targets(
 def _bench_status(
     frappe_container,
     *,
+    project_name: str,
     index: int | None,
     bench_path: str,
     label: str | None,
@@ -444,6 +452,24 @@ def _bench_status(
     because cwcli could not read a JSON file.
     """
     probed = probe_web and web_port is not None
+    # Maintenance mode is read whenever a site is known and the caller wants a probe
+    # (skipped in the quiet --watch loop): a site stuck in maintenance answers 503
+    # with no other signal, so status names it and the way out. Gated on web_site,
+    # not web_port - a bench whose port is unreadable can still be stuck.
+    maintenance = (
+        supervision.maintenance_mode_on(frappe_container, bench_path, web_site)
+        if probe_web and web_site
+        else None
+    )
+    if maintenance:
+        warnings.append(
+            Message(
+                "status.maintenance_mode",
+                f"Site '{web_site}' is in MAINTENANCE MODE (it answers 503 to users). "
+                f"Take it out with: cwcli run {project_name} --site {web_site} "
+                "set-maintenance-mode off",
+            )
+        )
     marker = supervision.read_marker(frappe_container, bench_path)
     snapshot = supervision.discover_stack(frappe_container, bench_path)
     expected = supervision.expected_labels(frappe_container, bench_path)
@@ -514,6 +540,7 @@ def _bench_status(
         web_port_verified=web_port is not None,
         web_site=web_site if probed else None,
         web_http_code=web_code,
+        maintenance_mode=maintenance,
         processes=processes,
         not_cwcli_supervised=not_cwcli_supervised,
     )
@@ -522,6 +549,7 @@ def _bench_status(
 def _bench_status_fused(
     frappe_container,
     *,
+    project_name: str,
     index: int | None,
     bench_path: str,
     label: str | None,
@@ -557,6 +585,7 @@ def _bench_status_fused(
     if not fused.supervisor_up:
         return _bench_status(
             frappe_container,
+            project_name=project_name,
             index=index,
             bench_path=bench_path,
             label=label,
