@@ -194,6 +194,26 @@ def _bench_is_running(container, bench_path: str) -> bool:
     return supervision.discover_unsupervised_stack(container, bench_path).manager_up
 
 
+def _selector_for_path(project_name: str, bench_path: str) -> str:
+    """The real ``--bench`` selector (index, else label) for a resolved bench path.
+
+    So the running-bench refusal names the concrete ``cwcli stop <p> --bench 0``
+    even when the caller omitted ``--bench`` (a single-bench instance, or a --path
+    override) - the axi surface already substitutes the real index, and the human
+    hint should too rather than printing a literal ``<index|label>`` placeholder.
+    Falls back to that placeholder only when the path is not in the cache.
+    """
+    for cached in resolvers.cached_benches(project_name):
+        if cached.get("path") == bench_path:
+            index = cached.get("index")
+            if index is not None:
+                return str(index)
+            if cached.get("label"):
+                return str(cached["label"])
+            break
+    return "<index|label>"
+
+
 # --------------------------------------------------------------------- remove_bench
 
 
@@ -241,7 +261,7 @@ def remove_bench(
     # Refuse a live bench BEFORE consent: never confirm deleting something that is
     # actively serving, and name the exact stop command so the refusal is actionable.
     if _bench_is_running(container, path):
-        selector = bench if bench is not None else "<index|label>"
+        selector = bench if bench is not None else _selector_for_path(project_name, path)
         raise CwcliError(
             ErrorKind.CONFLICT,
             "bench.running",

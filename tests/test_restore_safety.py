@@ -523,12 +523,15 @@ class TestReceiveSitePreflight:
             )
 
         assert excinfo.value.exit_code == 1
-        # Same error text and tip as today - only the timing moved.
+        # Same error text, still refused before the download - only the timing moved.
         assert any(
             "No site specified and no default site found in config." in line
             for line in container.printed
         )
-        assert any("cwcli inspect proj" in line for line in container.printed)
+        # BUG-6: the misleading `cwcli inspect` tip is gone (inspect only refreshes
+        # the cache; it never creates a default site). The hint names --site instead.
+        assert not any("cwcli inspect" in line for line in container.printed)
+        assert any("--site" in line for line in container.printed)
         # The sendme subprocess is only ever invoked by the fakes below, which
         # record their cwd; None here means the download was never reached.
         assert container.sendme_cwd is None

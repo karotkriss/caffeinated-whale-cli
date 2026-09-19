@@ -307,6 +307,9 @@ class TestRm:
         _neutralize_docker(monkeypatch)
         monkeypatch.setattr(rm_mod.sys, "stdin", _Stdin(tty=tty))
         monkeypatch.setattr(rm_mod, "_frappe_container_running", lambda name: False)
+        # The not-found pre-scan (BUG-1) reads Docker; these tests assume the project
+        # exists, so short-circuit it.
+        monkeypatch.setattr(rm_mod, "_project_exists", lambda name: True)
         monkeypatch.setattr(core_rm, "is_valid_project_name", lambda name: True)
         removed: list[dict] = []
 

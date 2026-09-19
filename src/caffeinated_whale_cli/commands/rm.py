@@ -16,10 +16,11 @@ import questionary
 import typer
 
 from ..core import rm as core_rm
-from ..core.docker import get_project_containers
+from ..core.docker import get_project_containers, get_project_networks, get_project_volumes
 from ..core.errors import CwcliError
 from ..utils import cache
 from ..utils.completion_utils import complete_project_names
+from ..utils.config_utils import PROJECTS_DIR
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import handle_docker_errors
 from .utils import split_trailing_options
@@ -76,6 +77,32 @@ def _frappe_container_running(project_name: str) -> bool:
     for container in containers:
         if container.labels.get("com.docker.compose.service") == "frappe":
             return bool(container.status == "running")
+    return False
+
+
+def _project_exists(project_name: str) -> bool | None:
+    """Does this project have anything for ``rm`` to remove? (the destructive-banner gate).
+
+    A project exists for ``rm``'s purposes if it has any container, named volume,
+    project directory, or its own network - the SAME four signals ``core.remove``
+    uses to decide ``found``. This lets the frontend keep the alarming "Deleting all
+    volumes and data!" banner off a name that matches nothing, and report a typo as
+    a warning + non-zero exit rather than a red error paired with exit 0.
+
+    Returns None when Docker is unreachable (existence cannot be judged; the project
+    is left in the removal loop, where ``core.remove`` raises the real Docker error).
+    """
+    containers = get_project_containers(project_name)
+    if containers is None:
+        return None  # Docker unreachable - do not pre-judge; let core.remove raise.
+    if containers:
+        return True
+    if (PROJECTS_DIR / project_name).exists():
+        return True
+    if get_project_volumes(project_name):
+        return True
+    if get_project_networks(project_name):
+        return True
     return False
 
 
@@ -416,6 +443,31 @@ def rm(
     names_rejected = bool(invalid_names)
     project_names_to_process = valid_names
 
+    # Separate names that actually exist from typos/not-found names BEFORE any
+    # destructive UI. A not-found name is reported as a warning (matching how
+    # `cwcli axi rm` reports found=false) and forces a non-zero exit consistent with
+    # rm-site/rm-bench, but it never triggers the "Deleting all volumes and data!"
+    # banner, which must only appear for a project that exists.
+    existing_projects = []
+    any_not_found = False
+    for name in project_names_to_process:
+        if _project_exists(name) is False:
+            stderr_console.print(
+                f"[yellow]Warning:[/yellow] Project '{name}' not found; nothing to remove."
+            )
+            any_not_found = True
+        else:
+            # True (exists), or None (Docker unreachable - core.remove raises there).
+            existing_projects.append(name)
+
+    if not existing_projects:
+        # Nothing to remove: every requested name was a typo (or already gone).
+        # Exit non-zero (a not-found is a failed request, like rm-site/rm-bench),
+        # never the alarming banner + exit 0.
+        raise typer.Exit(code=1)
+
+    project_names_to_process = existing_projects
+
     # Re-cache projects if not skipping backups. The recache only refreshes site
     # info so a live `bench backup` is accurate, which is moot when nothing is
     # running. A stopped project is a normal rm case: skip the recache instead of
@@ -522,7 +574,7 @@ def rm(
 
     total_removed = 0
     total_found = 0
-    any_failure = names_rejected
+    any_failure = names_rejected or any_not_found
     for name in project_names_to_process:
         # For a STOPPED project on the data-destroying path, bring it up just long
         # enough to take a verified backup, THEN let core.remove delete it. A live
@@ -649,9 +701,13 @@ def rm(
                 if not volumes:
                     console.print(f"  [dim]Volumes preserved for '{name}'[/dim]")
         else:
-            # Genuinely not found: the core returned found=False (the old code
-            # printed this from inside _remove_project).
-            stderr_console.print(f"[bold red]Error:[/bold red] Project '{name}' not found.")
+            # Genuinely not found. The pre-scan already filtered these out, so this
+            # is a rare race (removed between the scan and now); report it as a
+            # warning, not a red error, and force a non-zero exit.
+            stderr_console.print(
+                f"[yellow]Warning:[/yellow] Project '{name}' not found; nothing to remove."
+            )
+            any_failure = True
 
     console.print()
     if any_failure:

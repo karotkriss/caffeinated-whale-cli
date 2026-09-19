@@ -294,6 +294,59 @@ def resolve_default_site(project_name: str, bench_path: str) -> str:
     return default_site
 
 
+def require_sole_site(project_name: str, bench_path: str) -> str:
+    """The single site of a single-site bench, else a typed error that lists sites.
+
+    Used by a MUTATING verb (backup/unlock/migrate/restore) that was called without
+    ``--site`` and whose bench has no configured default site - the shape a fresh
+    ``cwcli init`` leaves (one site, no ``bench use``, so no ``default_site`` /
+    ``currentsite.txt``). A single-site bench resolves unambiguously to its sole
+    site. A multi-site bench REFUSES (guessing one destructive target by sort order
+    is unsafe, unlike :func:`resolve_representative_site` which a READ verb can
+    afford), but the error LISTS the sites so the caller can pick one, and carries
+    no misleading ``cwcli inspect`` tip (inspect only refreshes the cache; it never
+    creates a default site).
+    """
+    try:
+        sites = sorted(db_utils.get_all_site_configs(project_name, bench_path))
+    except Exception:  # noqa: BLE001 - a cache read must never crash the caller
+        sites = []
+    if len(sites) == 1:
+        return sites[0]
+    if not sites:
+        raise CwcliError(
+            ErrorKind.NOT_FOUND,
+            "site.no_default",
+            "No site specified and no default site found in config.",
+            hint="Specify the site explicitly with --site <site>.",
+        )
+    raise CwcliError(
+        ErrorKind.NOT_FOUND,
+        "site.ambiguous",
+        f"No site specified and project '{project_name}' has multiple sites; "
+        "specify one with --site.",
+        hint="Available sites: " + ", ".join(sites),
+    )
+
+
+def resolve_sole_or_require_site(project_name: str, bench_path: str) -> str:
+    """The site a mutating verb acts on when ``--site`` was omitted.
+
+    The bench's configured default when one exists (:func:`resolve_default_site`);
+    otherwise the sole site of a single-site bench, else a typed refusal that lists
+    the sites (:func:`require_sole_site`). This gives backup/unlock/migrate the same
+    single-site fallback the read verbs get from :func:`resolve_representative_site`,
+    WITHOUT its unsafe first-of-many pick on a multi-site bench. A ``default_site``
+    lookup that itself errors (not merely "no default") still propagates.
+    """
+    try:
+        return resolve_default_site(project_name, bench_path)
+    except CwcliError as e:
+        if e.code != "site.no_default":
+            raise
+    return require_sole_site(project_name, bench_path)
+
+
 def resolve_representative_site(project_name: str, bench_path: str) -> str | None:
     """A site that stands for this bench when one is needed but none was named.
 

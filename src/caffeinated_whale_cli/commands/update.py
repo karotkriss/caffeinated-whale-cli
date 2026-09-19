@@ -106,6 +106,10 @@ _PHASE_INTROS = {
 # Phases whose intro only makes sense when the user asked to see the detail.
 _VERBOSE_ONLY_INTROS = {"maintenance_disable", "build"}
 
+# How much of each app's pull output to retain for the failure summary (git errors
+# are short; the last few lines carry the actionable reason).
+_PULL_TAIL_CHARS = 2000
+
 
 class _Renderer:
     """Renders ``core.update``'s typed events in this CLI's style.
@@ -121,6 +125,11 @@ class _Renderer:
         self._spinner: RichStatus | None = None
         self._intro_done: set[str] = set()
         self._migrate_total = 0
+        # Per-app tail of the pull output, captured even when non-verbose (which
+        # otherwise drops it) so the summary can show WHY a pull failed - git's own
+        # error - instead of a bare "Git pull failed" (BUG-8, matching how
+        # `apps checkout` forwards git's stderr by default).
+        self._pull_tails: dict[str, str] = {}
 
     def __call__(self, event) -> None:
         if isinstance(event, UpdateStepStart):
@@ -133,7 +142,7 @@ class _Renderer:
             # The run is unwinding, so this report will never be returned. Print it
             # here or lose a stuck site's remediation entirely.
             self._stop_spinner()
-            _report_summary(event.report)
+            _report_summary(event.report, self._pull_tails)
 
     # -- spinner ---------------------------------------------------------------
 
@@ -196,6 +205,12 @@ class _Renderer:
             self._start_spinner(label.format(**fields))
 
     def _on_output(self, event) -> None:
+        # Capture the tail of each app's pull output regardless of verbosity, so the
+        # summary can surface git's real error on a failed pull.
+        if event.phase == "pull" and event.item:
+            self._pull_tails[event.item] = (self._pull_tails.get(event.item, "") + event.text)[
+                -_PULL_TAIL_CHARS:
+            ]
         if not self.verbose:
             return
         # Raw stdout, not console.print: this is bench's own output, and rich would
@@ -254,7 +269,7 @@ class _Renderer:
                 console.print(line.format(item=event.item))
 
 
-def _report_summary(report: UpdateReport) -> None:
+def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = None) -> None:
     """Print the summary of every phase.
 
     Print-only, and the caller owns the exit (which reads ``report.ok``): this is
@@ -295,6 +310,14 @@ def _report_summary(report: UpdateReport) -> None:
         console.print(f"[bold red]✗ Failed to update {len(report.failed_apps)} app(s):[/bold red]")
         for app in report.failed_apps:
             console.print(f"  • {app}: Git pull failed")
+            # Fold in git's own error (network/auth/dubious-ownership/conflict) so
+            # the default (non-verbose) output is actionable - not just "Git pull
+            # failed". Rendered raw (markup=False) since git output is arbitrary
+            # text; trimmed to the last few lines to stay compact.
+            tail = (pull_tails or {}).get(app, "").strip()
+            if tail:
+                for text_line in tail.splitlines()[-4:]:
+                    console.print("      " + text_line, markup=False, highlight=False, style="dim")
 
     if report.failed_maintenance_enable:
         console.print(
@@ -471,7 +494,7 @@ def run_app_update(
     if json_output:
         typer.echo(json.dumps(dataclasses.asdict(report), indent=2))
     else:
-        _report_summary(report)
+        _report_summary(report, renderer._pull_tails if renderer is not None else None)
 
     # The exit code reads report.ok, NOT result.status: a partial failure is a
     # WARNING-shaped envelope, and every other verb maps WARNING to 0.

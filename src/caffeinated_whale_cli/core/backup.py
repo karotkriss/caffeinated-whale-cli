@@ -66,10 +66,12 @@ def backup(
 
     assert bench_path is not None  # OK always carries the resolved path
 
-    # 4. Resolve the default site when --site was not given.
+    # 4. Resolve the site when --site was not given: the configured default, else
+    # the sole site of a single-site bench (a fresh `cwcli init` sets no default),
+    # else a typed refusal listing the sites for a multi-site bench.
     if not site:
-        site = resolvers.resolve_default_site(project_name, bench_path)
-        warnings.append(Message("default_site.resolved", f"Using default site: {site}"))
+        site = resolvers.resolve_sole_or_require_site(project_name, bench_path)
+        warnings.append(Message("default_site.resolved", f"Using site '{site}'"))
 
     # 5-6. Validate the site name and bench path (empty / shell metacharacters).
     resolvers.validate_site_name(site)

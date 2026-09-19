@@ -3,9 +3,10 @@ from typing import NoReturn
 import typer
 
 from ..core import backup as core_backup
+from ..core import resolvers
 from ..core.envelope import Status
 from ..core.errors import CwcliError
-from ..utils import config_utils, db_utils
+from ..utils import config_utils
 from ..utils.completion_utils import complete_project_names, complete_site_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import handle_docker_errors
@@ -74,32 +75,19 @@ def backup(
     # falling back to the hardcoded default (the `cwcli restore` precedent).
     bench_path = resolve_bench_path_with_fallback(project_name, bench, bench_path, verbose=verbose)
 
-    # Get default site if not provided.
+    # Resolve the site if not provided: the configured default, else the sole site
+    # of a single-site bench (a fresh `cwcli init` sets no default), else a typed
+    # refusal that lists the sites for a multi-site bench. Resolved here (not left
+    # to core.backup) so the spinner label below can name the site.
     if not site:
         try:
-            default_site = db_utils.get_default_site(project_name, bench_path)
-        except typer.Exit:
-            raise
-        except Exception as e:
-            stderr_console.print(
-                f"[bold red]Error:[/bold red] Failed to retrieve default site: {e}"
-            )
-            stderr_console.print(
-                f"[dim]Tip: Specify --site explicitly or run 'cwcli inspect {project_name}' first.[/dim]"
-            )
+            site = resolvers.resolve_sole_or_require_site(project_name, bench_path)
+        except CwcliError as e:
+            stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
+            if e.hint:
+                stderr_console.print(f"[dim]{e.hint}[/dim]")
             raise typer.Exit(code=1) from e
-
-        if default_site:
-            site = default_site
-            console.print(f"[dim]Using default site: {site}[/dim]")
-        else:
-            stderr_console.print(
-                "[bold red]Error:[/bold red] No site specified and no default site found in config."
-            )
-            stderr_console.print(
-                f"[dim]Tip: Run 'cwcli inspect {project_name}' first, or specify --site explicitly.[/dim]"
-            )
-            raise typer.Exit(code=1)
+        console.print(f"[dim]Using site '{site}'[/dim]")
 
     # --- Core call inside the spinner. Everything is pre-resolved, so core.backup
     # runs straight through; the loop only re-invokes on the (rare) confirm_start

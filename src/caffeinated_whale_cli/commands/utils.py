@@ -24,6 +24,27 @@ from ..utils.console import console, stderr_console
 from ..utils.docker_utils import get_frappe_container
 
 
+def render_captured_output_tail(e: CwcliError, *, lines: int = 15) -> None:
+    """Print the tail of a :class:`CwcliError`'s captured command output to stderr.
+
+    Several hard failures capture the real command output in ``detail['output']``
+    (e.g. ``supervisor.install_failed`` on ``start``/``restart``) but the historical
+    handlers rendered only ``e.message``, so the actual cause - a permission error,
+    a crash-looping container, a full disk - was hidden behind a single asserted
+    "no network" guess. This surfaces the last few lines so the operator sees the
+    real reason. Rendered raw (``markup=False``) so captured output never trips
+    Rich markup parsing. A no-op when nothing was captured.
+    """
+    output = (e.detail or {}).get("output")
+    if not output:
+        return
+    tail = "\n".join(str(output).strip().splitlines()[-lines:]).strip()
+    if not tail:
+        return
+    stderr_console.print("[dim]Captured output (tail):[/dim]")
+    stderr_console.print(tail, markup=False, highlight=False)
+
+
 def ensure_containers_running(
     project_name: str,
     require_running: bool = False,

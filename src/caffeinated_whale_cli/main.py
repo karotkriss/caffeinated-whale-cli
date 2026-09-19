@@ -1,4 +1,5 @@
 import importlib.metadata
+import signal
 
 import click
 import typer
@@ -166,6 +167,12 @@ def cli():
     The main entry point function for the CLI application.
     This is what `pyproject.toml` calls.
     """
+    # Restore the default SIGPIPE disposition so a downstream consumer that closes
+    # the pipe early (`cwcli ls | head`) terminates cwcli quietly instead of Python
+    # turning the broken pipe into a BrokenPipeError that surfaces as exit 1. POSIX
+    # only; Windows has no SIGPIPE.
+    if hasattr(signal, "SIGPIPE"):
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
     app()
 
 
