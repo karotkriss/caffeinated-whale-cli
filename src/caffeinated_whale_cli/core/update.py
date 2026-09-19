@@ -787,6 +787,29 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
                 warnings.append(Message("app.not_found", not_found))
                 emit(UpdateStepEnd(phase="pull", item=app, status="failed", message=not_found))
                 continue
+            # --force clears a git "dubious ownership" refusal at its root: git run as
+            # the frappe user refuses a repo owned by another uid, so BOTH the pull and
+            # the `git status` the conflict path relies on fail and plain --force can do
+            # nothing. Re-own the app repo (resolving the symlink to the real source,
+            # e.g. .hdsrc) to the frappe user BEFORE the pull. Owner-mismatch gated, so
+            # an already-correct repo is a cheap stat; failure degrades to the pull's
+            # own error (the pull runs regardless).
+            if force:
+                reowned, reown_err = core_docker.reown_app_repo_to_frappe(
+                    frappe_container, app_path
+                )
+                if reowned:
+                    warnings.append(
+                        Message(
+                            "app.force_reown",
+                            f"--force: re-owned '{app}' repository to the container user "
+                            "to clear a git ownership refusal before pulling.",
+                        )
+                    )
+                elif reown_err:
+                    warnings.append(
+                        Message("app.force_reown_failed", f"--force: '{app}': {reown_err}")
+                    )
             status = _run_step(
                 frappe_container,
                 "git pull",

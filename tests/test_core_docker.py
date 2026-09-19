@@ -14,12 +14,17 @@ from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 
 
 class FakeContainer:
-    """Answers the ``id -u/-g frappe`` and ``stat`` probes, captures the remap exec.
+    """Answers the ``id -u/-g frappe``, app-source discovery, and ``stat`` probes,
+    captures the remap exec.
 
-    ``workspace_owner`` is what a ``stat -c '%u:%g' <bench>`` returns for every
-    bench path (defaults to the container frappe user's own uid/gid, the migrated
-    workspace's real owner); ``workspace_present=False`` makes stat report the path
-    absent (a fresh init whose bench dir does not exist yet)."""
+    ``workspace_owner`` is what a ``stat -c '%u:%g' <path>`` returns for a bench path
+    or app source with no explicit owner (defaults to the container frappe user's own
+    uid/gid, the migrated workspace's real owner); ``owners`` overrides it per path
+    (so a half-fixed instance can report the bench as already-correct while an app
+    repo is not); ``app_sources`` is what the ``apps/*`` symlink-resolution probe
+    returns (the real out-of-bench app source dirs a devcontainer bench points at);
+    ``workspace_present=False`` makes stat report the path absent (a fresh init whose
+    bench dir does not exist yet)."""
 
     def __init__(
         self,
@@ -30,6 +35,8 @@ class FakeContainer:
         remap_out=b"",
         workspace_owner=None,
         workspace_present=True,
+        app_sources=None,
+        owners=None,
     ):
         self.frappe_uid = frappe_uid
         self.frappe_gid = frappe_gid
@@ -37,6 +44,8 @@ class FakeContainer:
         self.remap_out = remap_out
         self.workspace_owner = workspace_owner or f"{frappe_uid}:{frappe_gid}"
         self.workspace_present = workspace_present
+        self.app_sources = list(app_sources or [])
+        self.owners = dict(owners or {})
         self.remap_scripts: list[str] = []
         self.remap_user: str | None = None
 
@@ -47,7 +56,11 @@ class FakeContainer:
         if cmd and cmd[0] == "stat":
             if not self.workspace_present:
                 return 1, b"stat: cannot statx: No such file or directory\n"
-            return 0, f"{self.workspace_owner}\n".encode()
+            owner = self.owners.get(cmd[3], self.workspace_owner)
+            return 0, f"{owner}\n".encode()
+        # the app-source discovery probe (`for d in <bench>/apps/*/ ... readlink -f`)
+        if cmd and cmd[0] == "bash" and "for d in" in cmd[2] and "readlink -f" in cmd[2]:
+            return 0, ("\n".join(self.app_sources) + "\n").encode()
         # the `bash -c "<remap>"` root exec
         self.remap_user = kwargs.get("user")
         self.remap_scripts.append(cmd[2])
@@ -403,3 +416,151 @@ def test_shared_mode_absent_bench_dir_is_a_noop(monkeypatch):
     )
     assert (remapped, err) == (False, None)
     assert c.remap_scripts == []
+
+
+# ----------------- shared-mode: app repos symlinked outside the bench (.hdsrc) ----
+
+
+def test_shared_mode_reowns_app_source_symlinked_out_of_bench(monkeypatch):
+    """A devcontainer bench points `apps/<app>` at a shared source tree outside the
+    bench (e.g. /workspace/.hdsrc/erpnext), which a `chown -R <bench>` never follows.
+    Even when the bench dir is ALREADY correctly owned (the v3.1.1 re-own fixed it),
+    an app source still owned by the pre-shared uid is exactly git's dubious-ownership
+    refusal on the next `apps update` - so align must re-own that app source too, and
+    the bench dir being fine must not hide it."""
+    monkeypatch.setattr(core_docker.os, "getuid", lambda: 1001)
+    monkeypatch.setattr(core_docker.os, "getgid", lambda: 1001)
+    monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: True)
+    monkeypatch.setattr(core_docker.shared_home, "service_uid", lambda: 9000)
+    monkeypatch.setattr(core_docker.shared_home, "gid", lambda: 9000)
+    # frappe already at the service uid (bench re-owned by v3.1.1), but the external
+    # app source is still owned by the pre-shared uid 500.
+    c = FakeContainer(
+        frappe_uid=9000,
+        frappe_gid=9000,
+        app_sources=["/workspace/.hdsrc/erpnext"],
+        owners={"/workspace/frappe-bench": "9000:9000", "/workspace/.hdsrc/erpnext": "500:500"},
+    )
+    remapped, err = core_docker.align_container_user_to_host(
+        c, bench_paths=["/workspace/frappe-bench"]
+    )
+    assert err is None
+    assert remapped is False  # no id change this call
+    script = c.remap_scripts[0]
+    assert (
+        "[ ! -e /workspace/.hdsrc/erpnext ] || chown -R 9000:9000 /workspace/.hdsrc/erpnext"
+        in script
+    )
+    # the already-correct bench dir must NOT be re-owned
+    assert "chown -R 9000:9000 /workspace/frappe-bench" not in script
+
+
+def test_shared_mode_native_app_dirs_add_no_extra_reown(monkeypatch):
+    """A cwcli-native bench holds its apps as real dirs under <bench>/apps, so the
+    discovery probe returns no out-of-bench sources and only the bench dir is
+    re-owned - the native path is unchanged."""
+    monkeypatch.setattr(core_docker.os, "getuid", lambda: 1001)
+    monkeypatch.setattr(core_docker.os, "getgid", lambda: 1001)
+    monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: True)
+    monkeypatch.setattr(core_docker.shared_home, "service_uid", lambda: 9000)
+    monkeypatch.setattr(core_docker.shared_home, "gid", lambda: 9000)
+    c = FakeContainer(frappe_uid=1000, frappe_gid=1000, app_sources=[])
+    remapped, err = core_docker.align_container_user_to_host(
+        c, bench_paths=["/workspace/frappe-bench"]
+    )
+    assert (remapped, err) == (True, None)
+    script = c.remap_scripts[0]
+    assert (
+        "[ ! -e /workspace/frappe-bench ] || chown -R 9000:9000 /workspace/frappe-bench" in script
+    )
+    assert ".hdsrc" not in script
+
+
+def test_shared_mode_matching_app_source_owner_skips_the_reown(monkeypatch):
+    """An external app source already owned by the target identity is not re-owned:
+    a healthy shared instance whose app repos already match pays no chown."""
+    monkeypatch.setattr(core_docker.os, "getuid", lambda: 1000)
+    monkeypatch.setattr(core_docker.os, "getgid", lambda: 1000)
+    monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: True)
+    monkeypatch.setattr(core_docker.shared_home, "service_uid", lambda: 1000)
+    monkeypatch.setattr(core_docker.shared_home, "gid", lambda: 1000)
+    c = FakeContainer(
+        frappe_uid=1000,
+        frappe_gid=1000,
+        app_sources=["/workspace/.hdsrc/erpnext"],
+        owners={"/workspace/frappe-bench": "1000:1000", "/workspace/.hdsrc/erpnext": "1000:1000"},
+    )
+    remapped, err = core_docker.align_container_user_to_host(
+        c, bench_paths=["/workspace/frappe-bench"]
+    )
+    assert (remapped, err) == (False, None)
+    assert c.remap_scripts == []
+
+
+# ------------------- reown_app_repo_to_frappe (apps update --force) ---------------
+
+
+class ReownFake:
+    """Answers `id`, the `readlink -f`+`stat` probe, and captures the chown exec.
+
+    ``real_path`` is what `readlink -f <app_path>` resolves to (the real out-of-bench
+    repo); ``owner`` is that repo's current `uid:gid`; ``probe_code`` non-zero makes
+    the resolve fail (unreadable)."""
+
+    def __init__(self, *, uid=9000, gid=9000, real_path="/workspace/.hdsrc/erpnext",
+                 owner="500:500", probe_code=0, chown_code=0, chown_out=b""):
+        self.uid = uid
+        self.gid = gid
+        self.real_path = real_path
+        self.owner = owner
+        self.probe_code = probe_code
+        self.chown_code = chown_code
+        self.chown_out = chown_out
+        self.chown_cmd: str | None = None
+        self.chown_user: str | None = None
+
+    def exec_run(self, cmd, **kwargs):
+        if cmd and cmd[0] == "id":
+            val = self.uid if "-u" in cmd else self.gid
+            return 0, f"{val}\n".encode()
+        if cmd and cmd[0] == "bash" and "readlink -f" in cmd[2] and "stat -c" in cmd[2]:
+            if self.probe_code != 0:
+                return self.probe_code, b""
+            return 0, f"{self.real_path}\n{self.owner}\n".encode()
+        if cmd and cmd[0] == "bash" and cmd[2].startswith("chown -R"):
+            self.chown_cmd = cmd[2]
+            self.chown_user = kwargs.get("user")
+            return self.chown_code, self.chown_out
+        raise AssertionError(f"unexpected exec: {cmd}")
+
+
+def test_reown_app_repo_chowns_a_mismatched_symlinked_repo():
+    c = ReownFake(uid=9000, gid=9000, real_path="/workspace/.hdsrc/erpnext", owner="500:500")
+    reowned, err = core_docker.reown_app_repo_to_frappe(c, "/workspace/frappe-bench/apps/erpnext")
+    assert (reowned, err) == (True, None)
+    # chowned the RESOLVED real path (not the symlink), recursively, as root
+    assert c.chown_cmd == "chown -R 9000:9000 /workspace/.hdsrc/erpnext"
+    assert c.chown_user == "root"
+
+
+def test_reown_app_repo_is_a_noop_when_already_owned():
+    c = ReownFake(uid=9000, gid=9000, owner="9000:9000")
+    reowned, err = core_docker.reown_app_repo_to_frappe(c, "/workspace/frappe-bench/apps/erpnext")
+    assert (reowned, err) == (False, None)
+    assert c.chown_cmd is None  # nothing re-owned when the repo already matches
+
+
+def test_reown_app_repo_degrades_when_unresolvable():
+    """An unresolvable repo is not a failure to raise on: --force falls through to the
+    pull's own error rather than the reown blowing up the run."""
+    c = ReownFake(probe_code=1)
+    reowned, err = core_docker.reown_app_repo_to_frappe(c, "/workspace/frappe-bench/apps/erpnext")
+    assert (reowned, err) == (False, None)
+    assert c.chown_cmd is None
+
+
+def test_reown_app_repo_reports_a_failed_chown():
+    c = ReownFake(owner="500:500", chown_code=1, chown_out=b"chown: cannot access\n")
+    reowned, err = core_docker.reown_app_repo_to_frappe(c, "/workspace/frappe-bench/apps/erpnext")
+    assert reowned is False
+    assert err is not None and "could not re-own" in err
