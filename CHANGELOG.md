@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.2] - 2026-09-19
+
+### Fixed
+
+- **`apps update --force` now clears git's "dubious ownership" refusal on an app repo owned by another uid, and shared-mode self-heal re-owns app repos that live outside the bench** - on a shared-mode or migrated instance the app source is often symlinked out of the bench to a shared tree (e.g. `/workspace/.hdsrc/<app>`) and stays owned by the pre-shared uid, so both `git pull` and the `git status` the conflict path relies on used to fail, making `--force` powerless.
+`core.docker.reown_app_repo_to_frappe` resolves the symlink and re-owns the real repo to the `frappe` user before pulling.
+Shared-mode `align_container_user_to_host` (the `cwcli start`/`restart` self-heal) now also re-owns those out-of-bench app source repos, closing the gap left by v3.1.1's re-own, which covered only the bench directory itself.
+
 ## [3.1.1] - 2026-09-19
 
 ### Fixed
