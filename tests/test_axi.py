@@ -573,6 +573,37 @@ class TestAxiParseErrorsAreToon:
         # `cwcli axi ls` chain named in the usage line.
         assert "axi ls" in result.stdout
 
+    def test_unknown_top_level_subcommand_lists_valid_subcommands(self):
+        """GH #231: an unknown `cwcli axi <bogus>` names every valid subcommand,
+        so an agent can self-correct without a separate --help round trip."""
+        result = runner.invoke(axi_mod.app, ["bogus-command"])
+        assert result.exit_code == 2
+        assert result.stdout.startswith("error:")
+        assert "valid subcommands: " in result.stdout
+        assert "ls" in result.stdout
+        assert "apps" in result.stdout
+
+    def test_unknown_nested_subcommand_lists_that_groups_subcommands(self):
+        """The same fix at a nested group (`cwcli axi apps <bogus>`) lists ONLY
+        that group's subcommands, not the top-level verb set."""
+        result = runner.invoke(axi_mod.app, ["apps", "bogus"])
+        assert result.exit_code == 2
+        assert "valid subcommands: " in result.stdout
+        line = next(ln for ln in result.stdout.splitlines() if "valid subcommands:" in ln)
+        assert "list" in line
+        assert "install" in line
+        assert "checkout" in line
+        assert "update" in line
+        # Not the top-level verb set leaking through.
+        assert "backup" not in line
+
+    def test_an_ordinary_usage_error_gets_no_subcommand_list(self):
+        """The addition is scoped to the unknown-subcommand message; an unrelated
+        usage error (a bad flag on a real leaf command) must not grow one."""
+        result = runner.invoke(axi_mod.app, ["ls", "--bogus"])
+        assert result.exit_code == 2
+        assert "valid subcommands:" not in result.stdout
+
     def test_human_cli_usage_error_is_untouched(self):
         """A non-axi parse error keeps Typer's default rendering (stderr, no TOON),
         so the emitter is strictly additive to the agent surface."""

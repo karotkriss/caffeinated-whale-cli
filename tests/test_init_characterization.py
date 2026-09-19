@@ -178,6 +178,11 @@ def run_init(
         lambda name: list(project_containers or []),
     )
     monkeypatch.setattr(config_utils, "PROJECTS_DIR", tmp_path)
+    # Isolate the bench-image-tag cache (core/init.py) under a throwaway home so
+    # this test never reads or writes a real ~/.cwcli/cache/bench_tag.json - a
+    # leftover real-home entry would otherwise make the Docker-Hub-unreachable
+    # fallback assertion below flaky depending on prior runs on the same machine.
+    monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "cwcli-home"))
     monkeypatch.setattr(config_utils, "get_show_tips", lambda: False)
     monkeypatch.setattr(config_utils, "add_custom_path", fake_add_custom_path)
     monkeypatch.setattr(db_utils, "clear_cache_for_project", lambda name: cleared.append(name))
@@ -204,6 +209,7 @@ def run_init(
         bench_name="frappe-bench",
         site_name="development.localhost",
         bench_parent="/workspace",
+        bench_image_tag=None,
         frappe_branch=None,
         version=None,
         frappe_url=None,
@@ -241,7 +247,7 @@ class TestExecOrderAndCommands:
         commands = [c["command"] for c in r.api.exec_calls]
         assert commands == [
             "cd /workspace && bench init --skip-redis-config-generation "
-            "--frappe-branch version-16 frappe-bench --verbose",
+            "--frappe-branch version-16 frappe-bench",
             "cd /workspace/frappe-bench && bench set-config -g db_host mariadb",
             "cd /workspace/frappe-bench && bench set-config -g redis_cache "
             "redis://redis-cache:6379",
@@ -283,7 +289,7 @@ class TestExecOrderAndCommands:
         assert bench_init == (
             "cd /workspace && bench init --skip-redis-config-generation "
             "--frappe-branch my-feature --frappe-path https://github.com/me/frappe "
-            "frappe-bench --verbose"
+            "frappe-bench"
         )
 
     def test_host_compose_calls_and_compose_rewrite(self, monkeypatch, tmp_path, capsys):

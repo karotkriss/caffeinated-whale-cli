@@ -604,6 +604,25 @@ def test_uninstall_yes_fans_out_and_refreshes(wired, monkeypatch, capsys):
 _runner = CliRunner()
 
 
+def test_ls_alias_behaves_like_list(wired, monkeypatch):
+    """`apps ls` is the natural guess for `apps list` (GH #231): a hidden alias
+    on the same command, not a second implementation."""
+    container = FakeFrappeContainer(available_apps=["frappe", "erpnext"])
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: container)
+
+    result = _runner.invoke(apps_mod.app, ["ls", "proj", "--json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["available_apps"] == ["frappe", "erpnext"]
+
+
+def test_ls_alias_is_hidden_from_help():
+    from typer.main import get_command
+
+    click_apps = get_command(apps_mod.app)
+    assert click_apps.commands["list"].hidden is not True
+    assert click_apps.commands["ls"].hidden is True
+
+
 def test_install_cli_parses_repeated_app_option_into_the_same_core_call(wired, monkeypatch):
     container = FakeFrappeContainer(
         available_apps=["frappe"], get_app_creates={"payments": "payments", "hrms": "hrms"}

@@ -5,7 +5,7 @@ Per-command incident detail (the former `## Sharp edges` appendix) and the full 
 Read this core first; drop into a skill only when you are about to work on that area.
 For anything the codebase already shows, this file points to the authoritative source or doc rather than restating it.
 
-`CLAUDE.md` is a symlink to this file; keep it that way.
+`CLAUDE.md` is a two-line `@AGENTS.md` import pointer (not a symlink); edit this file, not that one.
 
 ## Project Context
 

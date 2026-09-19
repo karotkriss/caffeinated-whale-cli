@@ -474,6 +474,15 @@ def init(
         "--bench-parent",
         help="Directory inside the container where the bench will be created.",
     ),
+    bench_image_tag: str | None = typer.Option(
+        None,
+        "--bench-image-tag",
+        help=(
+            "Pin the frappe/bench Docker image to this exact tag (e.g. v5.29.1), "
+            "skipping the Docker Hub latest-tag lookup entirely. Omit to use the "
+            "cached/latest tag."
+        ),
+    ),
     frappe_branch: str | None = typer.Option(
         None,
         "--frappe-branch",
@@ -646,6 +655,7 @@ def init(
                 project,
                 port=port,
                 bench_parent=bench_parent,
+                bench_image_tag=bench_image_tag,
                 stream_output=verbose,
                 on_event=renderer,
             )
@@ -658,6 +668,7 @@ def init(
                     project,
                     port=port,
                     bench_parent=bench_parent,
+                    bench_image_tag=bench_image_tag,
                     auto_start=True,
                     stream_output=verbose,
                     on_event=renderer,

@@ -42,6 +42,7 @@ exactly one place.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -587,6 +588,66 @@ def _check_glab() -> tuple:
     return _check_git_host_cli("glab", "install from https://gitlab.com/gitlab-org/cli")
 
 
+# --------------------------------------------------------------------------- source install
+
+
+def _check_dev_install_freshness() -> tuple:
+    """C21 - a dev/editable install's tracked branch is behind its upstream (GH #238).
+
+    ``--version`` build provenance and the update notice both help a caller spot
+    a stale binary, but neither covers this case: a source/editable checkout's
+    version number does not change as new commits land on its tracked branch, so
+    a caller could trust output from code that is silently behind. Meaningful
+    ONLY for a source install (``core.version.build_info().source == "source"``);
+    a release or standalone build has no tracked branch to fall behind, so those
+    short-circuit to a quiet PASS.
+
+    Reads git's LOCAL knowledge of the upstream (``git status -sb``) rather than
+    running ``git fetch`` first, so this never makes a network call and can never
+    hang on an unreachable remote - freshness is only as current as the last
+    fetch anyone ran, an acceptable INFO-level signal, not a guarantee. The
+    subprocess call is still timeout-bounded as a second, belt-and-suspenders
+    guard (a locked index, a hung credential helper). Fails OPEN at every step -
+    a missing git, a missing/deleted source tree, no tracked upstream, or any
+    git failure all degrade to a quiet PASS, never WARN/FAIL: this check exists
+    to flag a silently stale binary, not to gate the tool on git being perfectly
+    configured, and it must never fail doctor or block anything.
+    """
+    build = core_version.build_info()
+    if build.source != "source" or not build.path:
+        return _outcome(CheckStatus.PASS, "not a source/editable install")
+
+    path = build.path
+    if not shutil.which("git") or not (Path(path) / ".git").exists():
+        return _outcome(CheckStatus.PASS, "no git checkout found; freshness not checked")
+
+    try:
+        result = subprocess.run(
+            ["git", "-C", path, "status", "-sb"],
+            capture_output=True,
+            text=True,
+            timeout=_SUBPROCESS_TIMEOUT,
+        )
+    except Exception:
+        return _outcome(CheckStatus.PASS, "could not read git status; freshness not checked")
+
+    if result.returncode != 0:
+        return _outcome(CheckStatus.PASS, "could not read git status; freshness not checked")
+
+    first_line = result.stdout.splitlines()[0] if result.stdout else ""
+    match = re.search(r"behind (\d+)", first_line)
+    if not match:
+        return _outcome(CheckStatus.PASS, f"{path}: up to date with its tracked branch")
+
+    behind = int(match.group(1))
+    plural = "" if behind == 1 else "s"
+    return _outcome(
+        CheckStatus.WARN,
+        f"{path} is {behind} commit{plural} behind its tracked branch",
+        "run `git pull` in the source checkout to update",
+    )
+
+
 # --------------------------------------------------------------------------- instances
 
 
@@ -634,6 +695,12 @@ _CHECKS: list[Check] = [
     Check(id="c2", title="Docker daemon", group="Docker", run=_check_docker_daemon),
     Check(id="c3", title="Docker Compose", group="Docker", run=_check_compose_plugin),
     Check(id="c4", title="cwcli version", group="cwcli", run=_check_version),
+    Check(
+        id="c21",
+        title="source install freshness",
+        group="cwcli",
+        run=_check_dev_install_freshness,
+    ),
     Check(id="c7", title="cwcli home", group="cwcli", run=_check_home_layout),
     Check(id="c9", title="auto-inspect", group="cwcli", run=_check_auto_inspect),
     Check(id="c19", title="credential bridge", group="cwcli", run=_check_cred_bridge),

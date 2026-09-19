@@ -403,14 +403,59 @@ def _run_host_command(cmd: list[str], *, cwd: str, phase: str, emit: OnEvent) ->
         )
 
 
-def _get_latest_bench_tag(emit: OnEvent) -> str:
-    """Query Docker Hub for the latest semver tag of frappe/bench.
+_BENCH_TAG_CACHE_TTL_SECONDS = 3600  # 1 hour: short enough to catch a fresh
+# release soon, long enough that a run of inits in one session skips the
+# network after the first.
 
-    Returns the most recently updated tag matching ``v<major>.<minor>.<patch>``.
-    Fails OPEN to a known-good version when the API call fails (the network flat
+
+def _bench_tag_cache_file() -> Path:
+    return config_utils.cwcli_home() / "cache" / "bench_tag.json"
+
+
+def _read_cached_bench_tag() -> str | None:
+    """Fail-open cache read: a stale/unreadable/corrupt cache is a miss, never
+    an error - a broken cache must degrade to today's live-lookup behavior."""
+    try:
+        raw = json.loads(_bench_tag_cache_file().read_text())
+        if time.time() - float(raw["checked_at"]) < _BENCH_TAG_CACHE_TTL_SECONDS:
+            tag = raw.get("tag")
+            return tag if isinstance(tag, str) else None
+    except Exception:
+        pass
+    return None
+
+
+def _write_bench_tag_cache(tag: str) -> None:
+    """Best-effort cache write; a write failure must never break init."""
+    try:
+        path = _bench_tag_cache_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"tag": tag, "checked_at": time.time()}))
+    except Exception:
+        pass
+
+
+def _get_latest_bench_tag(emit: OnEvent, *, pinned_tag: str | None = None) -> str:
+    """Resolve the frappe/bench image tag to pin.
+
+    An explicit ``pinned_tag`` (an operator-supplied image pin) is used verbatim
+    and skips the Docker Hub lookup - and its cache - entirely, since the caller
+    already knows which tag it wants. Otherwise a short-TTL on-disk cache serves
+    repeated inits without re-querying Docker Hub every time; a stale or
+    unreadable cache falls straight back to a live lookup, which itself fails
+    OPEN to a known-good fallback tag when the API call fails (the network flat
     spot Decision 10 reports: the closed ErrorKind set has no network kind, and
     this path never needed one - it never raises).
     """
+    if pinned_tag:
+        emit(InitTrace(text=f"Using pinned bench image tag: {pinned_tag}"))
+        return pinned_tag
+
+    cached = _read_cached_bench_tag()
+    if cached:
+        emit(InitTrace(text=f"Using cached bench image tag: {cached}"))
+        return cached
+
     fallback = "v5.29.1"
     api_url = (
         "https://hub.docker.com/v2/repositories/frappe/bench/tags/"
@@ -427,6 +472,7 @@ def _get_latest_bench_tag(emit: OnEvent) -> str:
             tag: str = result.get("name", "")
             if semver_re.match(tag):
                 emit(InitTrace(text=f"Resolved latest bench image tag: {tag}"))
+                _write_bench_tag_cache(tag)
                 return tag
     except Exception:
         emit(InitTrace(text=f"Could not fetch latest bench tag, using fallback: {fallback}"))
@@ -561,6 +607,7 @@ def init_instance(
     *,
     port: int = 8000,
     bench_parent: str = "/workspace",
+    bench_image_tag: str | None = None,
     auto_start: bool = False,
     stream_output: bool = False,
     on_event: OnEvent | None = None,
@@ -568,9 +615,12 @@ def init_instance(
     """Create the project's host footprint and bring its containers up.
 
     Project dir + compose download (skipped when the file is already present),
-    port/image customization (Docker Hub fails open to the pinned fallback),
-    ``compose pull`` + ``up -d`` via captured subprocess. When this project's
-    own frappe container is already running, image pulls are skipped and only
+    port/image customization (``bench_image_tag`` pins the frappe/bench image
+    verbatim and skips the Docker Hub lookup entirely; otherwise a short-TTL
+    cache serves repeated inits, and Docker Hub fails open to the pinned
+    fallback), ``compose pull`` + ``up -d`` via captured subprocess. When this
+    project's own frappe container is already running, image pulls are skipped
+    and only
     missing sibling services are started with ``--no-deps``. Then the bounded
     silent readiness poll runs. On poll timeout: ``confirm_start`` choice when
     ``auto_start=False``; typed ``NOT_RUNNING`` when ``auto_start=True`` (the
@@ -674,7 +724,7 @@ def init_instance(
             message="Resolving latest bench image tag from Docker Hub",
         )
     )
-    bench_tag = _get_latest_bench_tag(emit)
+    bench_tag = _get_latest_bench_tag(emit, pinned_tag=bench_image_tag)
     emit(InitTrace(text=f"Pinning bench image: docker.io/frappe/bench:{bench_tag}"))
     content = content.replace(
         "docker.io/frappe/bench:latest", f"docker.io/frappe/bench:{bench_tag}"
@@ -1100,7 +1150,14 @@ def init_bench(
         # above is the branch/tag to check out within it. Omitted -> upstream repo.
         if frappe_url:
             bench_init_args += ["--frappe-path", shlex.quote(frappe_url)]
-        bench_init_args += [shlex.quote(bench_name), "--verbose"]
+        bench_init_args.append(shlex.quote(bench_name))
+        # bench's OWN --verbose streams ~23k lines cwcli otherwise just decodes and
+        # discards; gate it behind cwcli's --verbose (stream_output) so a plain
+        # `cwcli init` isn't paying to transfer/decode output nobody looks at.
+        # Failure diagnosability is unaffected: _run_exec always retains a tail
+        # (or the full buffer) and surfaces it in the raised error's detail.
+        if stream_output:
+            bench_init_args.append("--verbose")
         bench_init_cmd = _build_cd_command(
             bench_parent_path, nvm_prefix + env_prefix + " ".join(bench_init_args)
         )
