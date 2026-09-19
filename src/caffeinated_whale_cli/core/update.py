@@ -217,6 +217,7 @@ def _stream_step(
     item: str | None,
     emit: OnEvent,
     warnings: list[Message],
+    environment: dict[str, str] | None = None,
 ) -> tuple[int | None, str | None]:
     """Run one streamed exec, emitting its output. Returns ``(exit_code, lost_reason)``.
 
@@ -224,10 +225,13 @@ def _stream_step(
     was lost, or the daemon recorded no code), never that it failed. See
     :mod:`.exec_stream`. The reason comes back too, so the frontend can say WHAT was
     lost at the moment it happened rather than only in the final report.
+
+    ``environment`` rides through to the exec; the migrate phase stamps its interrupt
+    marker there (see :func:`core.bench_ops.migrate_env`).
     """
     exit_code = 1
     try:
-        for event in exec_stream(container, cmd, workdir=workdir):
+        for event in exec_stream(container, cmd, workdir=workdir, environment=environment):
             if isinstance(event, ExecChunk):
                 emit(UpdateOutput(phase=phase, item=item, stream=event.stream, text=event.text))
             else:
@@ -258,6 +262,7 @@ def _run_step(
     warnings: list[Message],
     failed: list[str],
     unknown: list[str],
+    environment: dict[str, str] | None = None,
 ) -> str:
     """Emit start, stream, classify honestly, emit end. Returns the status token.
 
@@ -266,7 +271,14 @@ def _run_step(
     """
     emit(UpdateStepStart(phase=phase, item=item, index=index, total=total))
     code, lost = _stream_step(
-        container, cmd, workdir=workdir, phase=phase, item=item, emit=emit, warnings=warnings
+        container,
+        cmd,
+        workdir=workdir,
+        phase=phase,
+        item=item,
+        emit=emit,
+        warnings=warnings,
+        environment=environment,
     )
     key = item if item is not None else phase
     if code is None:
@@ -779,6 +791,9 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
     app_imports: list[resolvers.AppImport] = []  # BUG-10 wrong-copy detection
     resync: supervision.ResyncOutcome | None = None
     aborted = False
+    # Marker stamped on every migrate exec so an interrupt can end EXACTLY the process
+    # cwcli started before clearing maintenance (see core.bench_ops interrupt cleanup).
+    migrate_token = bench_ops.new_migrate_token()
 
     try:
         # --- ONE pull pass and ONE discovery pass. The presentation fork that used
@@ -951,6 +966,7 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
                 warnings=warnings,
                 failed=failed_migrations,
                 unknown=unknown_migrations,
+                environment=bench_ops.migrate_env(migrate_token),
             )
             time.sleep(_POST_MIGRATE_SETTLE)
         emit(UpdateStepEnd(phase="migrate_batch"))
@@ -1013,10 +1029,29 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
             )
 
     except BaseException:
-        # Only records that the fan-out stopped early, then re-raises untouched.
-        # BaseException (not Exception) so a Ctrl-C is reported the same way: it
-        # leaves sites in maintenance exactly as any other interruption does.
+        # Records that the fan-out stopped early, then re-raises untouched.
+        # BaseException (not Exception) so a Ctrl-C is reported the same way.
         aborted = True
+        # An interrupt (Ctrl+C / SIGTERM / SIGHUP unwind) leaves the in-container
+        # migrate running orphaned. End it FIRST - and wait for it to exit - so the
+        # maintenance clear in the finally is the LAST write; on v15+ the orphan would
+        # otherwise re-assert maintenance behind us and strand the site at 503. Only a
+        # process carrying THIS invocation's marker is signalled, never a name pattern.
+        # Keyed on sites_to_migrate (a migrate was actually launched), so it also ends
+        # the orphan under --skip-maintenance, where bench migrate still self-manages
+        # maintenance on v15+ even though cwcli enabled none.
+        if sites_to_migrate and not bench_ops.end_migrate_on_interrupt(
+            frappe_container, migrate_token
+        ):
+            emit(
+                UpdateStepEnd(
+                    phase="interrupt_cleanup",
+                    status="unknown",
+                    message=bench_ops.interrupt_recheck_hint(
+                        project_name, ", ".join(sites_to_migrate)
+                    ),
+                )
+            )
         raise
     finally:
         # CRITICAL, and the reason this is a plain function: always disable
@@ -1033,7 +1068,13 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
                     )
                 )
                 try:
-                    ok = _set_maintenance(frappe_container, bench_path, site, enable=False)
+                    # LAST write, and on the abort path the settle/re-check (recheck=
+                    # aborted) catches any late re-assert by the just-ended orphan
+                    # migrate, so the dying migrate cannot win. On the normal path the
+                    # migrate has already exited, so it is a plain disable.
+                    ok = bench_ops.clear_maintenance(
+                        frappe_container, bench_path, site, recheck=aborted
+                    )
                 except Exception as e:  # noqa: BLE001 - a stuck site must still be reported
                     warnings.append(
                         Message(
