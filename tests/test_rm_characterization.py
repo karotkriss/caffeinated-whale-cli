@@ -344,15 +344,21 @@ class TestHonestExitCodes:
         out = capsys.readouterr().out
         assert "Successfully removed" not in out
 
-    def test_missing_project_is_exit_zero_no_op(self, cwcli_home, monkeypatch, capsys):
+    def test_missing_project_is_exit_one_with_a_warning(self, cwcli_home, monkeypatch, capsys):
+        # BUG-1: a not-found project is a warning + non-zero exit (consistent with
+        # rm-site/rm-bench, and with how `axi rm` reports found=false), NEVER the
+        # alarming "Deleting all volumes and data!" banner paired with exit 0.
         _patch_docker(monkeypatch)
         _wire(monkeypatch, [], [])
 
-        _run(project_name=["ghost"])  # no raise: exit-0 no-op
+        with pytest.raises(typer.Exit) as exc:
+            _run(project_name=["ghost"])
+        assert exc.value.exit_code == 1
 
         combined = capsys.readouterr()
         text = combined.out + combined.err
-        assert "not found" in text.lower() or "No projects were removed" in text
+        assert "not found" in text.lower()
+        assert "Deleting all volumes and data" not in text
 
 
 # --------------------------------------------------------------------------- #

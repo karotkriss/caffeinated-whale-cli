@@ -232,7 +232,10 @@ def _resolve_site(
     """
     resolvers.validate_bench_path(bench_path)
     if site is None:
-        site = resolvers.resolve_default_site(project_name, bench_path)
+        # The configured default, else the sole site of a single-site bench (a
+        # fresh `cwcli init` sets no default), else a typed refusal listing the
+        # sites for a multi-site bench.
+        site = resolvers.resolve_sole_or_require_site(project_name, bench_path)
         warnings.append(Message("site.default_used", f"No --site given; using '{site}'."))
     resolvers.validate_site_name(site)
     resolvers.require_bench_dir(container, bench_path)

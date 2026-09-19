@@ -423,12 +423,13 @@ def _resolve_site(
     if not site:
         site = _resolve_default_site(project_name, bench_path, frappe_container)
         if not site:
-            raise CwcliError(
-                ErrorKind.NOT_FOUND,
-                "site.no_default",
-                "No site specified and no default site found in config.",
-            )
-        warnings.append(Message("default_site.resolved", f"Using default site: {site}"))
+            # No configured default (a fresh `cwcli init` runs no `bench use`). Fall
+            # back to the sole site of a single-site bench; a multi-site bench still
+            # requires --site (picking one destructive restore target by sort order
+            # is unsafe), but the error lists the sites. require_sole_site raises
+            # site.no_default / site.ambiguous exactly as the shared verbs do.
+            site = resolvers.require_sole_site(project_name, bench_path)
+        warnings.append(Message("default_site.resolved", f"Using site '{site}'"))
     resolvers.validate_site_name(site)
     return site, warnings
 

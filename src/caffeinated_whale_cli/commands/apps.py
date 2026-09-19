@@ -271,10 +271,11 @@ def install_apps(
         ..., help="The Docker Compose project name.", autocompletion=complete_project_names
     ),
     apps: list[str] = typer.Option(
-        ...,
+        None,
         "--app",
         "-a",
-        help="App name or git URL to ensure on the bench and install. Repeatable.",
+        help="App name or git URL to ensure on the bench and install. Repeatable. "
+        "May also be given positionally.",
         autocompletion=complete_app_names,
     ),
     bench: str = typer.Option(
@@ -306,6 +307,14 @@ def install_apps(
         False, "--yes", "-y", help="Auto-start stopped containers without prompting."
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output."),
+    # Declared LAST (after the options) so a direct unit-tier call still binds the
+    # app list to `apps` as its second positional; on the CLI, project_name and this
+    # are the only Arguments, so this is the positional app list.
+    app_args: list[str] = typer.Argument(
+        None,
+        help="App name(s) or git URL(s) to install. May also be given with -a/--app.",
+        autocompletion=complete_app_names,
+    ),
 ):
     """Ensure app(s) are present on the bench, then install them on the target site(s).
 
@@ -314,14 +323,34 @@ def install_apps(
     Multi-site by default: with no --site the app is installed on every site.
     With --if-not-present an app already installed on a target site is skipped rather
     than re-installed, so "ensure this app is installed" is a single idempotent call.
+
+    The app(s) may be given positionally (matching `apps update`/`apps checkout` and
+    `axi apps install`) or with -a/--app; both forms combine.
     """
+
+    # Accept the app positionally AND via -a/--app so the human command matches its
+    # siblings (update/checkout) and the axi surface, which all take the app
+    # positionally. Both forms combine. Coerce each: a direct unit-tier call leaves
+    # the form it did not pass at its typer default object, so a non-list value means
+    # "not given" (the documented Typer-default trap).
+    def _as_app_list(value) -> list[str]:
+        return list(value) if isinstance(value, (list, tuple)) else []
+
+    all_apps = _as_app_list(apps) + _as_app_list(app_args)
+    if not all_apps:
+        stderr_console.print(
+            "[bold red]Error:[/bold red] No app specified. Pass an app name positionally "
+            "(cwcli apps install <project> <app> --site <site>) or with -a/--app."
+        )
+        raise typer.Exit(code=2)
+
     ensure_containers_running(project_name, require_running=True, verbose=verbose, auto_start=yes)
     resolved = _resolve_bench(project_name, bench, bench_path, verbose)
 
     try:
         result = core_apps.install_apps(
             project_name,
-            apps,
+            all_apps,
             bench_path=resolved,
             sites=sites,
             branch=branch,

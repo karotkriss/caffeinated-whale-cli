@@ -551,6 +551,14 @@ def emit_axi_error(error: CwcliError) -> None:
     typer.echo(toon.kv("error", error.message))
     if error.hint:
         typer.echo(toon.kv("help", error.hint))
+    # Surface any captured command output (e.g. supervisor.install_failed's pip
+    # output) as its own TOON block so the agent sees the real cause, not just the
+    # message. A no-op when the error carried none.
+    output = (error.detail or {}).get("output")
+    if output:
+        tail = str(output).strip().splitlines()[-15:]
+        if tail:
+            typer.echo(toon.block("output", tail))
 
 
 def _choice_error_message(choice: Choice) -> str:
