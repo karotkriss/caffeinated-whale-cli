@@ -152,7 +152,7 @@ class FakeContainer:
     def start(self):
         pass
 
-    def exec_run(self, cmd, detach=False, workdir=None, environment=None):
+    def exec_run(self, cmd, detach=False, workdir=None, environment=None, user=None):
         self.calls.append(cmd)
         if isinstance(cmd, list):
             return self._exec_list(cmd, detach)

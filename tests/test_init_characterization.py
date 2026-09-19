@@ -221,6 +221,7 @@ def run_init(
         verbose=False,
         install_erpnext=False,
         erpnext_branch="version-16",
+        uid=None,
     )
     params.update(overrides)
 
@@ -532,7 +533,8 @@ class TestAutoStartServices:
         run_init(monkeypatch, tmp_path, start_services=True)
 
         # core.start was reused with the exact created bench path (no re-resolve).
-        assert calls == [{"project": PROJECT, "bench_path": BENCH_PATH}]
+        # uid_override threads init's --uid into the end-of-init auto-start (None here).
+        assert calls == [{"project": PROJECT, "bench_path": BENCH_PATH, "uid_override": None}]
         out = capsys.readouterr().out
         assert "Dev services are running" in out
         assert "http://development.localhost:21001" in out

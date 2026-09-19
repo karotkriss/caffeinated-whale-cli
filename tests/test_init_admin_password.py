@@ -84,6 +84,7 @@ def _run_core_init_bench(monkeypatch, *, admin_password, db_root_password="123")
         db_root_password=db_root_password,
         admin_password=admin_password,
         erpnext_branch="version-16",
+        uid=None,
     )
     return container.client.api.exec_calls
 
@@ -137,6 +138,7 @@ def _run_init_command(monkeypatch, *, admin_password, interactive, site_created=
         verbose=False,
         install_erpnext=False,
         erpnext_branch="version-16",
+        uid=None,
     )
     return recorded
 
