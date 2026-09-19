@@ -64,6 +64,7 @@ def rendered(tmp_path):
     (repo / ".github" / "scripts" / "release-body.sh").chmod(0o755)
 
     _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "commit.gpgsign", "false")
     _git(repo, "config", "user.email", "t@example.com")
     _git(repo, "config", "user.name", "t")
     (repo / "CHANGELOG.md").write_text("# Changelog\n")
