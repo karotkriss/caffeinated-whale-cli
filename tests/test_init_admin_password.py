@@ -127,6 +127,7 @@ def _run_init_command(monkeypatch, *, admin_password, interactive, site_created=
         bench_name="frappe-bench",
         site_name="development.localhost",
         bench_parent="/workspace",
+        bench_image_tag=None,
         frappe_branch=None,
         version=None,
         db_root_password="123",
