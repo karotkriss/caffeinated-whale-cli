@@ -117,10 +117,14 @@ def test_status_probes_with_the_site_so_a_healthy_bench_is_not_404(running_insta
     assert 'web_http_code: "200"' in block, res.stdout
     assert '"404"' not in block, res.stdout
 
-    # The human surface attributes it the same way: the site AND the port.
+    # The human surface attributes it the same way: the site AND the port - but
+    # the HOST-published port a person can actually open, not the container-internal
+    # one axi reports. On this instance those differ (bench 0 serves 8000 inside,
+    # published on the allocated host base), so assert the host address explicitly.
+    host_port = _published_host_port(inst.name, port)
     human = harness.run_cwcli("status", inst.name, "-v")
     assert human.returncode == 0, human.stdout + human.stderr
-    assert f"web {inst.site}:{port} -> 200" in harness.strip_ansi(human.stderr), human.stderr
+    assert f"web {inst.site}:{host_port} -> 200" in harness.strip_ansi(human.stderr), human.stderr
 
 
 def test_the_status_probe_stays_a_pure_read(running_instance):
