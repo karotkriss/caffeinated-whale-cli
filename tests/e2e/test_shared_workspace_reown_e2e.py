@@ -58,6 +58,20 @@ echo SETUP_OK
 """
 
 
+def _armed_setup(frappe_uid: int, frappe_gid: int) -> str:
+    """A v3.1.0-armed instance: `frappe` ALREADY remapped to the target id (so
+    align sees no id change), but the workspace is still stranded at the old uid."""
+    return f"""
+set -e
+groupadd -o -g {frappe_gid} frappe
+useradd -o -u {frappe_uid} -g {frappe_gid} -m -d /home/frappe frappe
+mkdir -p {_BENCH}/logs
+chown -R {frappe_uid}:{frappe_gid} /home/frappe
+chown -R {_OLD_UID}:{_OLD_GID} {_BENCH}
+echo SETUP_OK
+"""
+
+
 def _exec(container, cmd, **kwargs) -> tuple[int, str]:
     code, out = container.exec_run(cmd, **kwargs)
     return code, out.decode("utf-8", "replace") if isinstance(out, (bytes, bytearray)) else str(out)
@@ -94,9 +108,7 @@ def test_shared_mode_remap_keeps_a_migrated_workspace_writable(tmp_path, monkeyp
         assert code == 0 and owner.strip() == str(_OLD_UID), owner
 
         # Run the REAL align in shared mode, passing the bench dir as a caller does.
-        remapped, err = core_docker.align_container_user_to_host(
-            container, bench_paths=[_BENCH]
-        )
+        remapped, err = core_docker.align_container_user_to_host(container, bench_paths=[_BENCH])
         assert err is None, f"align reported a failure: {err}"
         assert remapped is True, "expected a real uid/gid remap"
 
@@ -119,8 +131,65 @@ def test_shared_mode_remap_keeps_a_migrated_workspace_writable(tmp_path, monkeyp
             ["bash", "-c", f"echo bench-start-log > {_LOG} && cat {_LOG}"],
             user="frappe",
         )
-        assert code == 0 and "bench-start-log" in out, (
-            f"remapped frappe user could not write {_LOG} (exit {code}):\n{out}"
+        assert (
+            code == 0 and "bench-start-log" in out
+        ), f"remapped frappe user could not write {_LOG} (exit {code}):\n{out}"
+    finally:
+        container.remove(force=True)
+
+
+def test_shared_mode_recovers_a_v3_1_0_armed_instance_in_place(tmp_path, monkeypatch):
+    """The v3.1.0-armed population: `frappe` is ALREADY at the service uid (so align
+    sees no id change), yet the workspace is still owned by the pre-shared uid and
+    the instance stays bricked. Gating the re-own on the real owner mismatch - not
+    an id change - recovers it on the next `cwcli start`/`restart`."""
+    import docker
+
+    marker = tmp_path / "shared.toml"
+    marker.write_text("enabled = true\n")
+    monkeypatch.setenv("CWCLI_SHARED_MARKER", str(marker))
+    assert shared_home.shared_mode(), "expected shared mode on with the marker present"
+
+    host_uid = os.getuid()
+    host_gid = os.getgid()
+    assert host_uid != _OLD_UID, "host uid must differ from the pre-shared uid"
+
+    client = docker.from_env()
+    container = client.containers.run(
+        "python:3.12-slim",
+        ["sleep", "300"],
+        detach=True,
+        auto_remove=False,
+    )
+    try:
+        code, out = _exec(container, ["bash", "-c", _armed_setup(host_uid, host_gid)])
+        assert code == 0 and "SETUP_OK" in out, f"container setup failed:\n{out}"
+
+        # Precondition: `frappe` already at the target uid (no id change to come),
+        # but the workspace stranded at the pre-shared uid.
+        code, uid_now = _exec(container, ["id", "-u", "frappe"])
+        assert code == 0 and uid_now.strip() == str(host_uid), uid_now
+        code, owner = _exec(container, ["stat", "-c", "%u", f"{_BENCH}/logs"])
+        assert code == 0 and owner.strip() == str(_OLD_UID), owner
+
+        remapped, err = core_docker.align_container_user_to_host(container, bench_paths=[_BENCH])
+        assert err is None, f"align reported a failure: {err}"
+        assert remapped is False, "no id change was needed; the fix must key on the owner mismatch"
+
+        # The mismatch-gated re-own recovered the stranded workspace.
+        code, owner = _exec(container, ["stat", "-c", "%u", f"{_BENCH}/logs"])
+        assert code == 0 and owner.strip() == str(host_uid), (
+            f"logs/ still owned by {owner.strip()}, not {host_uid} - an armed instance "
+            "was not recovered (the ids-only gate would skip it)"
         )
+
+        code, out = _exec(
+            container,
+            ["bash", "-c", f"echo bench-start-log > {_LOG} && cat {_LOG}"],
+            user="frappe",
+        )
+        assert (
+            code == 0 and "bench-start-log" in out
+        ), f"frappe user could not write {_LOG} after recovery (exit {code}):\n{out}"
     finally:
         container.remove(force=True)
