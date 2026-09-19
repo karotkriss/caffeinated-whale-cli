@@ -357,6 +357,13 @@ def instance_setup(
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setattr(urllib.request, "urlretrieve", lambda url, dest: downloads.append(url))
     monkeypatch.setattr(config_utils, "PROJECTS_DIR", tmp_path)
+    # Stub the port-availability probe at its seam: it otherwise binds REAL host
+    # sockets on 18000-18005/19000-19005, so a test run on a box that genuinely
+    # has those ports bound (another running instance) would false-fail here
+    # with nothing to do with the behavior under test. Tests that specifically
+    # exercise "port in use" override this afterward with their own
+    # `monkeypatch.setattr(core_init, "check_ports_in_use", ...)` call.
+    monkeypatch.setattr(core_init, "check_ports_in_use", lambda ports: {p: False for p in ports})
     own = container or FakeContainer()
     if project_containers is None:
         project_containers = [own] if running else []

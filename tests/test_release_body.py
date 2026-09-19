@@ -67,6 +67,11 @@ def rendered(tmp_path):
     _git(repo, "config", "commit.gpgsign", "false")
     _git(repo, "config", "user.email", "t@example.com")
     _git(repo, "config", "user.name", "t")
+    # Local config wins over the developer's global/system git config, so a
+    # machine with `commit.gpgsign=true` and no available signing agent can't
+    # fail this throwaway repo's commit (the tests/e2e/test_apps_wrong_copy_e2e.py
+    # precedent).
+    _git(repo, "config", "commit.gpgsign", "false")
     (repo / "CHANGELOG.md").write_text("# Changelog\n")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "c")
