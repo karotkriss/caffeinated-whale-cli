@@ -113,6 +113,12 @@ def label(
         _print_bench_list(project_name, listing.data.benches)
         for warning in listing.warnings:
             stderr_console.print(f"[yellow]{warning.text}[/yellow]")
+        # A hand-made bench is not in the cache and so never appears here until a
+        # full refresh; nudge toward it rather than leave the gap to trial (#237).
+        stderr_console.print(
+            f"[dim]Bench not listed? Run 'cwcli inspect {project_name} --update' to "
+            "rediscover hand-made benches.[/dim]"
+        )
         return
 
     try:

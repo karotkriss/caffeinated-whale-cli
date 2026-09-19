@@ -193,3 +193,138 @@ class TestClearCache:
         result = core_config.clear_cache("ghost")
         assert result.status is Status.OK
         assert result.data.found is False
+
+
+# --------------------------------------------------------------------------- #
+# prune_search_paths (issue #237): drop search paths no live instance references
+# --------------------------------------------------------------------------- #
+
+from caffeinated_whale_cli.core.envelope import Result  # noqa: E402
+from caffeinated_whale_cli.core.list import InstanceDTO  # noqa: E402
+
+
+class _PruneFake:
+    """A frappe container that reports which of the probed paths exist as dirs."""
+
+    def __init__(self, *, running=True, existing=(), exec_fails=False):
+        self.status = "running" if running else "exited"
+        self.labels = {"com.docker.compose.service": "frappe"}
+        self._existing = set(existing)
+        self._exec_fails = exec_fails
+
+    def exec_run(self, cmd, workdir=None):
+        if self._exec_fails:
+            raise RuntimeError("exec broke")
+        # cmd is ["sh", "-c", <script>, "sh", *paths]; echo back the existing ones
+        # plus the completion sentinel _existing_dirs looks for.
+        paths = cmd[4:]
+        lines = [p for p in paths if p in self._existing]
+        lines.append("__CWCLI_PRUNE_END__")
+        return (0, ("\n".join(lines) + "\n").encode())
+
+
+def _wire_instances(monkeypatch, instances, containers):
+    """instances: [(name, running)]; containers: {name: _PruneFake or None}."""
+    dtos = [
+        InstanceDTO(project_name=n, status=("running" if r else "exited"), ports=[])
+        for n, r in instances
+    ]
+    monkeypatch.setattr(
+        core_config.core_list, "list_instances", lambda **k: Result(status=Status.OK, data=dtos)
+    )
+    monkeypatch.setattr(
+        core_config,
+        "get_project_containers",
+        lambda name: ([containers[name]] if containers.get(name) else containers.get(name, [])),
+    )
+
+
+class TestPruneSearchPaths:
+    def test_no_custom_paths_is_a_noop(self, cfg, monkeypatch):
+        _wire_instances(monkeypatch, [], {})
+        result = core_config.prune_search_paths(apply=True)
+        assert result.status is Status.OK
+        assert result.data.statuses == []
+        assert result.data.pruned == []
+
+    def test_dry_run_lists_dead_paths_without_writing(self, cfg, monkeypatch):
+        config_utils.add_custom_path("/live/root")
+        config_utils.add_custom_path("/dead/root")
+        _wire_instances(monkeypatch, [("a", True)], {"a": _PruneFake(existing={"/live/root"})})
+
+        result = core_config.prune_search_paths(apply=False)
+        plan = result.data
+        assert plan.applied is False
+        assert plan.pruned == []
+        prunable = {s.path for s in plan.statuses if s.prunable}
+        assert prunable == {"/dead/root"}
+        assert {s.path for s in plan.statuses if s.present} == {"/live/root"}
+        # Nothing written on a dry-run.
+        assert config_utils.load_config()["search_paths"]["custom_bench_paths"] == [
+            "/live/root",
+            "/dead/root",
+        ]
+
+    def test_apply_removes_only_dead_paths(self, cfg, monkeypatch):
+        config_utils.add_custom_path("/live/root")
+        config_utils.add_custom_path("/dead/root")
+        _wire_instances(monkeypatch, [("a", True)], {"a": _PruneFake(existing={"/live/root"})})
+
+        result = core_config.prune_search_paths(apply=True)
+        assert result.data.applied is True
+        assert result.data.pruned == ["/dead/root"]
+        assert config_utils.load_config()["search_paths"]["custom_bench_paths"] == ["/live/root"]
+
+    def test_path_present_in_any_instance_is_kept(self, cfg, monkeypatch):
+        config_utils.add_custom_path("/shared/root")
+        _wire_instances(
+            monkeypatch,
+            [("a", True), ("b", True)],
+            {"a": _PruneFake(existing=set()), "b": _PruneFake(existing={"/shared/root"})},
+        )
+        result = core_config.prune_search_paths(apply=True)
+        assert result.data.pruned == []
+        assert config_utils.load_config()["search_paths"]["custom_bench_paths"] == ["/shared/root"]
+
+    def test_stopped_instance_blocks_all_pruning(self, cfg, monkeypatch):
+        config_utils.add_custom_path("/dead/root")
+        _wire_instances(
+            monkeypatch,
+            [("a", True), ("b", False)],
+            {"a": _PruneFake(existing=set()), "b": None},
+        )
+        result = core_config.prune_search_paths(apply=True)
+        # A stopped instance cannot be checked, so nothing is pruned even though
+        # the path is absent from the running one.
+        assert result.data.pruned == []
+        assert result.data.unchecked_instances == ["b"]
+        assert all(not s.prunable for s in result.data.statuses)
+        assert config_utils.load_config()["search_paths"]["custom_bench_paths"] == ["/dead/root"]
+
+    def test_exec_failure_marks_instance_unchecked(self, cfg, monkeypatch):
+        config_utils.add_custom_path("/dead/root")
+        _wire_instances(monkeypatch, [("a", True)], {"a": _PruneFake(exec_fails=True)})
+        result = core_config.prune_search_paths(apply=True)
+        assert result.data.unchecked_instances == ["a"]
+        assert result.data.pruned == []
+
+    def test_zero_instances_prunes_the_whole_graveyard(self, cfg, monkeypatch):
+        config_utils.add_custom_path("/dead/one")
+        config_utils.add_custom_path("/dead/two")
+        _wire_instances(monkeypatch, [], {})
+        result = core_config.prune_search_paths(apply=True)
+        assert sorted(result.data.pruned) == ["/dead/one", "/dead/two"]
+        assert config_utils.load_config()["search_paths"]["custom_bench_paths"] == []
+
+    def test_daemon_unreachable_propagates(self, cfg, monkeypatch):
+        config_utils.add_custom_path("/dead/root")
+
+        def _raise(**k):
+            raise CwcliError(ErrorKind.DOCKER, "docker.unreachable", "no daemon")
+
+        monkeypatch.setattr(core_config.core_list, "list_instances", _raise)
+        with pytest.raises(CwcliError) as exc:
+            core_config.prune_search_paths(apply=True)
+        assert exc.value.kind is ErrorKind.DOCKER
+        # Config untouched on a failed verification.
+        assert config_utils.load_config()["search_paths"]["custom_bench_paths"] == ["/dead/root"]

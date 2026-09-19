@@ -273,6 +273,15 @@ class TestLabelCommand:
         assert "[0]" in out and "[1]" in out and "staging" in out
         assert "GONE" not in out
 
+    def test_list_mode_hints_at_update_for_a_missing_bench(self, temp_db, monkeypatch, capsys):
+        # Issue #237: a hand-made bench never shows here until a full refresh, so
+        # the listing always names it rather than leaving the gap to trial.
+        _seed_two_benches(labels=(None, "staging"))
+        self._list_mode(monkeypatch, MarkerFakeContainer())
+
+        err = capsys.readouterr().err
+        assert "inspect proj --update" in err
+
     def test_list_mode_marks_a_removed_bench_gone(self, temp_db, monkeypatch, capsys):
         _seed_two_benches(labels=(None, "staging"))
         self._list_mode(monkeypatch, MarkerFakeContainer(present_paths={BENCH_A}))
