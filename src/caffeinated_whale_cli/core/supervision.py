@@ -51,6 +51,7 @@ never returned across a boundary; every return is plain serializable data.
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import time
 from collections.abc import Callable
@@ -1230,6 +1231,34 @@ def _resync_failed(text: str, restarted: list[str]) -> ResyncOutcome:
     return ResyncOutcome(attempted=True, restarted=list(restarted), unserved_sites=[], error=text)
 
 
+# A bench's ``common_site_config.json`` MAY legitimately omit ``webserver_port`` -
+# a DNS-multitenant bench (many domain-named sites) removes it deliberately so
+# Frappe routes purely by Host header, not by a port cwcli would otherwise read as
+# a fixed default. `resolve_assigned_ports(fill_defaults=False)` reports that the
+# same way it reports a genuinely unreadable config: absent. Below, "the config has
+# no port" is answered with EVIDENCE instead - the live web process's own bound
+# port, from its argv - never a bare guess.
+_PORT_FLAG_RE = re.compile(r"--port[=\s]+(\d+)")
+_BIND_FLAG_RE = re.compile(r"(?:--bind|-b)[=\s]+\S*:(\d+)")
+
+
+def _port_from_process(container, pid: int) -> int | None:
+    """The bound port of ``pid``, read from its own argv - evidence, not a guess.
+
+    bench bakes the bench's real assigned port into the Procfile's ``web:`` line at
+    init (``bench serve --port <N>``), so once that line is running its cmdline IS
+    the truth; a gunicorn-fronted web instead carries ``--bind``/``-b <host>:<N>``.
+    Returns None when the process is gone or its argv names no port at all (a bare
+    ``bench serve`` with no ``--port``, which defers to Frappe's own default).
+    """
+    for row in _ps_rows(container):
+        if row.pid != pid:
+            continue
+        match = _PORT_FLAG_RE.search(row.args) or _BIND_FLAG_RE.search(row.args)
+        return int(match.group(1)) if match else None
+    return None
+
+
 def resync_after_code_change(
     container,
     bench_path: str,
@@ -1280,6 +1309,17 @@ def resync_after_code_change(
       bound-port-shaped claim, and serving stale code is exactly the class of defect a
       claim like that misses. Every site the caller names must answer a real
       site-routed request before the outcome is ``ok``.
+    - **An absent ``webserver_port`` is not a read failure.** A DNS-multitenant
+      bench (many domain-named sites) deliberately removes it from
+      ``common_site_config.json`` so Frappe routes purely by Host header; a bench
+      like that used to fail here with "the bench's assigned port could not be
+      read", even though the update itself had already succeeded. The probe port
+      now falls back to EVIDENCE - the live web process's own bound port (its argv
+      carries bench's real assignment, baked into the Procfile's ``web:`` line at
+      init), then Frappe's own unconfigured default - before the sites are probed
+      for real, so a wrong guess still surfaces as an honest "did not answer",
+      never a false complaint about a config key that was never supposed to exist.
+      See :func:`_port_from_process`.
     """
     announce = on_restart or (lambda _program: None)
     unique_sites = list(dict.fromkeys(sites))
@@ -1290,6 +1330,7 @@ def resync_after_code_change(
 
     restarted: list[str] = []
     supervised = False
+    web_pid: int | None = None
     try:
         supervised = discover_stack(container, bench_path, required=True).supervisor_up
         if supervised:
@@ -1304,6 +1345,7 @@ def resync_after_code_change(
             # is no site to verify against, and starting one is not this verb's job.
             if states[web][0] not in _LIVE_STATES:
                 return quiet
+            web_pid = states[web][1]
 
             for program in code_bearing_programs(list(states)):
                 if states[program][0] not in _LIVE_STATES:
@@ -1320,21 +1362,33 @@ def resync_after_code_change(
                         restarted,
                     )
                 restarted.append(program)
-        elif not discover_unsupervised_stack(container, bench_path, required=True).manager_up:
-            return quiet
+        else:
+            unsupervised = discover_unsupervised_stack(container, bench_path, required=True)
+            if not unsupervised.manager_up:
+                return quiet
+            web_process = next((p for p in unsupervised.processes if p.label == "web"), None)
+            web_pid = web_process.pid if web_process is not None else None
 
         ports = resolvers.resolve_assigned_ports(container, [bench_path], fill_defaults=False).get(
             bench_path
         )
-        if ports is None:
-            return _resync_failed(
-                "the bench's assigned port could not be read, so cwcli could not confirm "
-                "the affected sites serve",
-                restarted,
-            )
+        if ports is not None:
+            web_port = ports[0]
+        else:
+            # No config port - which is exactly what a DNS-multitenant bench (many
+            # domain-named sites) deliberately looks like once `webserver_port` is
+            # removed so Frappe routes purely by Host header, not "the config could
+            # not be read". Fall back to evidence rather than erroring: the live web
+            # process's own bound port, then Frappe's own unconfigured default as the
+            # last resort. Either way the sites are still probed for REAL below, so a
+            # wrong guess surfaces as an honest "did not answer", never a false
+            # complaint about a config key that was never supposed to be there.
+            web_port = (
+                _port_from_process(container, web_pid) if web_pid is not None else None
+            ) or resolvers.WEB_CONTAINER_BASE
 
         pending, codes = _wait_for_serving_sites(
-            container, port=ports[0], sites=unique_sites, timeout=timeout
+            container, port=web_port, sites=unique_sites, timeout=timeout
         )
         if pending:
             observed = ", ".join(f"{site}={codes[site] or 'unreachable'}" for site in pending)
