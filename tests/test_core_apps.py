@@ -853,7 +853,12 @@ def test_post_mutation_failures_are_reported_without_erasing_the_landed_change(
     assert any(f"{stage} failed" in warning.text for warning in result.warnings)
 
 
-def test_an_unreadable_port_is_reported_rather_than_guessed(monkeypatch, container):
+def test_an_absent_port_falls_back_to_evidence_instead_of_erroring(monkeypatch, container):
+    """A bench MAY legitimately omit `webserver_port` (a DNS-multitenant bench
+    serving many domain-named sites removes it deliberately) - that is not "the
+    config could not be read", so it must not fail the update. The fallback
+    (live process evidence, then Frappe's default) still lets the real site probe
+    below confirm serving, which `_wire_running_bench` reports as a success."""
     _cache(monkeypatch, [{"path": BENCH}])
     _wire_running_bench(monkeypatch)
     monkeypatch.setattr(
@@ -862,8 +867,25 @@ def test_an_unreadable_port_is_reported_rather_than_guessed(monkeypatch, contain
 
     result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
 
+    assert result.data.ok is True
+    assert not any("assigned port could not be read" in w.text for w in result.warnings)
+
+
+def test_an_absent_port_still_fails_honestly_when_the_sites_genuinely_do_not_serve(
+    monkeypatch, container
+):
+    _cache(monkeypatch, [{"path": BENCH}])
+    _wire_running_bench(monkeypatch)
+    monkeypatch.setattr(
+        core_apps.supervision.resolvers, "resolve_assigned_ports", lambda *a, **k: {}
+    )
+    _unserved(monkeypatch, ["a.localhost"])
+
+    result = core_apps.install_apps("proj", ["payments"], sites=["a.localhost"])
+
     assert result.data.ok is False
-    assert any("assigned port could not be read" in w.text for w in result.warnings)
+    assert any("did not answer" in w.text for w in result.warnings)
+    assert not any("assigned port could not be read" in w.text for w in result.warnings)
 
 
 # ------------------------------------------------------------------- uninstall_apps

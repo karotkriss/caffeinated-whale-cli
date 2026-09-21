@@ -182,8 +182,12 @@ class FakeContainer:
                 return (0, json.dumps(marker).encode())
             return (0, b"")
         if head == "curl":
-            port = int(cmd[-1].rsplit(":", 1)[1])
-            code = self._per_key(self.web_code, port)
+            # The URL may carry a path (``/api/method/ping``) after the port, so
+            # match the port digits themselves rather than splitting on the last
+            # colon (which would capture "8000/api/method/ping").
+            match = re.search(r":(\d+)(?:/|$)", cmd[-1])
+            port = int(match.group(1)) if match else None
+            code = self._per_key(self.web_code, port) if port is not None else None
             if not self.web_ok or code is None:
                 return (7, b"")
             return (0, code.encode())
@@ -1150,13 +1154,67 @@ class TestResyncAfterCodeChange:
         assert restarted == ["web", "schedule", "worker_default"]
         assert outcome.ok is True
 
-    def test_an_unreadable_port_is_reported_never_guessed(self, monkeypatch):
+    def test_an_absent_port_key_uses_the_live_web_processs_own_bound_port(self, monkeypatch):
+        """A DNS-multitenant bench deliberately omits `webserver_port` - not a read
+        failure. The live process's own argv is evidence, so it wins over a guess."""
         _wire_resync(monkeypatch, ports=None)
+        monkeypatch.setattr(supervision, "_port_from_process", lambda *_a, **_k: 9005)
+        probed_ports = []
+        monkeypatch.setattr(
+            supervision,
+            "_wait_for_serving_sites",
+            lambda *a, **k: probed_ports.append(k["port"]) or ([], {}),
+        )
+
+        outcome = supervision.resync_after_code_change(_ResyncFake(), BENCH, sites=["a.localhost"])
+
+        assert probed_ports == [9005]
+        assert outcome.ok is True
+        assert outcome.error is None
+
+    def test_an_absent_port_key_falls_back_to_frappes_default_with_no_process_evidence(
+        self, monkeypatch
+    ):
+        _wire_resync(monkeypatch, ports=None)
+        monkeypatch.setattr(supervision, "_port_from_process", lambda *_a, **_k: None)
+        probed_ports = []
+        monkeypatch.setattr(
+            supervision,
+            "_wait_for_serving_sites",
+            lambda *a, **k: probed_ports.append(k["port"]) or ([], {}),
+        )
+
+        outcome = supervision.resync_after_code_change(_ResyncFake(), BENCH, sites=["a.localhost"])
+
+        assert probed_ports == [supervision.resolvers.WEB_CONTAINER_BASE]
+        assert outcome.ok is True
+
+    def test_a_present_port_key_is_used_directly_without_reading_the_process(self, monkeypatch):
+        called: list[int] = []
+        monkeypatch.setattr(
+            supervision, "_port_from_process", lambda *_a, **_k: called.append(1) or 9999
+        )
+        _wire_resync(monkeypatch)  # default ports=(8000, 9000): the config is authoritative
+
+        outcome = supervision.resync_after_code_change(_ResyncFake(), BENCH, sites=["a.localhost"])
+
+        assert called == []
+        assert outcome.ok is True
+
+    def test_a_genuinely_undeterminable_port_still_fails_but_never_blames_the_config(
+        self, monkeypatch
+    ):
+        """No config port and no process evidence still gets a real probe (against
+        Frappe's default); if the sites genuinely do not answer, THAT is the
+        failure that fires - never a "port could not be read" complaint."""
+        _wire_resync(monkeypatch, ports=None, pending=["a.localhost"])
+        monkeypatch.setattr(supervision, "_port_from_process", lambda *_a, **_k: None)
 
         outcome = supervision.resync_after_code_change(_ResyncFake(), BENCH, sites=["a.localhost"])
 
         assert outcome.ok is False
-        assert "assigned port could not be read" in outcome.error
+        assert "HTTP 200" in outcome.error
+        assert "assigned port could not be read" not in outcome.error
 
     def test_each_restart_is_announced_as_it_happens(self, monkeypatch):
         _wire_resync(monkeypatch)
@@ -1182,6 +1240,57 @@ class TestResyncAfterCodeChange:
         )
 
         assert probed == [["a.localhost", "b.localhost"]]
+
+
+class TestResyncPortlessBenchRegression:
+    """Reproduces the reported false positive end to end: a bench whose
+    ``common_site_config.json`` OMITS ``webserver_port`` (a real, supported
+    configuration - a DNS-multitenant staging bench serving many domain-named
+    sites removes it so Frappe routes purely by Host header) must not read as a
+    resync failure. Drives the REAL discovery/port-resolution pipeline through
+    the full ``FakeContainer`` fixture - not ``_wire_resync``'s all-mocked fake -
+    so this is the closest a Docker-free unit test gets to the real ``apps
+    update`` path the bug was hit on.
+    """
+
+    def test_a_bench_with_no_webserver_port_key_still_confirms_the_site_serves(self):
+        # `_PS_SINGLE`'s own `web` line ("bench serve --port 8000") is real
+        # evidence from the exact process supervisorctl names as this bench's web.
+        c = FakeContainer(configs={BENCH: {}}, web_code="200")
+
+        outcome = supervision.resync_after_code_change(
+            c, BENCH, sites=["billing.example.com"], timeout=0.5
+        )
+
+        assert outcome.ok is True
+        assert outcome.error is None
+
+    def test_a_bench_with_no_port_anywhere_falls_back_to_the_frappe_default(self):
+        # No explicit `--port` on the web process either (a bare `bench serve`) -
+        # falls back to Frappe's own unconfigured default, which this bench
+        # (never customized away from it) actually serves on.
+        ps = _PS_SINGLE.replace(
+            "/env/bin/python /env/bin/bench serve --port 8000",
+            "/env/bin/python /env/bin/bench serve",
+        )
+        c = FakeContainer(ps=ps, configs={BENCH: {}}, web_code="200")
+
+        outcome = supervision.resync_after_code_change(
+            c, BENCH, sites=["billing.example.com"], timeout=0.5
+        )
+
+        assert outcome.ok is True
+
+    def test_a_bench_with_no_port_that_genuinely_does_not_serve_fails_honestly(self):
+        c = FakeContainer(configs={BENCH: {}}, web_code=None, web_ok=False)
+
+        outcome = supervision.resync_after_code_change(
+            c, BENCH, sites=["billing.example.com"], timeout=0.05
+        )
+
+        assert outcome.ok is False
+        assert "assigned port could not be read" not in outcome.error
+        assert "did not answer" in outcome.error
 
 
 class TestSiteVerificationBudget:
