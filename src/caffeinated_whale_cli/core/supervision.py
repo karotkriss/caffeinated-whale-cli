@@ -1240,6 +1240,37 @@ def _resync_failed(text: str, restarted: list[str]) -> ResyncOutcome:
 # port, from its argv - never a bare guess.
 _PORT_FLAG_RE = re.compile(r"--port[=\s]+(\d+)")
 _BIND_FLAG_RE = re.compile(r"(?:--bind|-b)[=\s]+\S*:(\d+)")
+_LISTENER_OWNERSHIP_SCRIPT = r"""
+import os
+import sys
+
+pid = int(sys.argv[1])
+port = int(sys.argv[2])
+bench = os.path.realpath(sys.argv[3])
+try:
+    cwd = os.path.realpath(f"/proc/{pid}/cwd")
+    if os.path.commonpath((cwd, bench)) != bench:
+        raise OSError
+    inodes = set()
+    for fd in os.listdir(f"/proc/{pid}/fd"):
+        try:
+            target = os.readlink(f"/proc/{pid}/fd/{fd}")
+        except OSError:
+            continue
+        if target.startswith("socket:[") and target.endswith("]"):
+            inodes.add(target[8:-1])
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        with open(table, encoding="ascii") as rows:
+            next(rows)
+            for row in rows:
+                fields = row.split()
+                local_port = int(fields[1].rsplit(":", 1)[1], 16)
+                if fields[3] == "0A" and local_port == port and fields[9] in inodes:
+                    raise SystemExit(0)
+except (OSError, ValueError):
+    raise SystemExit(2)
+raise SystemExit(1)
+""".strip()
 
 
 def _port_from_process(container, pid: int) -> int | None:
@@ -1259,14 +1290,28 @@ def _port_from_process(container, pid: int) -> int | None:
     return None
 
 
-def _resync_web_port(container, bench_path: str, web_pid: int | None) -> int:
+def _process_owns_listener(container, pid: int, port: int, bench_path: str) -> bool:
+    """Return whether this bench's process owns the listener on ``port``."""
+    exit_code, _output = container.exec_run(
+        ["python3", "-c", _LISTENER_OWNERSHIP_SCRIPT, str(pid), str(port), bench_path]
+    )
+    return exit_code == 0
+
+
+def _resync_web_port(container, bench_path: str, web_pid: int | None) -> int | None:
     ports = resolvers.resolve_assigned_ports(container, [bench_path], fill_defaults=False).get(
         bench_path
     )
     if ports is not None:
         return ports[0]
     process_port = _port_from_process(container, web_pid) if web_pid is not None else None
-    return process_port or resolvers.WEB_CONTAINER_BASE
+    if process_port is not None:
+        return process_port
+    if web_pid is not None and _process_owns_listener(
+        container, web_pid, resolvers.WEB_CONTAINER_BASE, bench_path
+    ):
+        return resolvers.WEB_CONTAINER_BASE
+    return None
 
 
 def resync_after_code_change(
@@ -1326,9 +1371,10 @@ def resync_after_code_change(
       read", even though the update itself had already succeeded. The probe port
       now falls back to EVIDENCE - the live web process's own bound port (its argv
       carries bench's real assignment, baked into the Procfile's ``web:`` line at
-      init), then Frappe's own unconfigured default - before the sites are probed
-      for real, so a wrong guess still surfaces as an honest "did not answer",
-      never a false complaint about a config key that was never supposed to exist.
+      init), then Frappe's own unconfigured default only when that listener is
+      proven to belong to this bench's web process - before the sites are probed
+      for real. Missing evidence fails honestly without probing a sibling bench or
+      blaming a config key that was never supposed to exist.
       See :func:`_port_from_process`.
     """
     announce = on_restart or (lambda _program: None)
@@ -1340,7 +1386,7 @@ def resync_after_code_change(
 
     restarted: list[str] = []
     supervised = False
-    web_port: int
+    web_port: int | None
     try:
         supervised = discover_stack(container, bench_path, required=True).supervisor_up
         if supervised:
@@ -1379,6 +1425,13 @@ def resync_after_code_change(
             web_process = next((p for p in unsupervised.processes if p.label == "web"), None)
             web_port = _resync_web_port(
                 container, bench_path, web_process.pid if web_process is not None else None
+            )
+
+        if web_port is None:
+            return _resync_failed(
+                "the bench's serving port could not be determined safely, so cwcli could not "
+                "confirm the affected sites serve",
+                restarted,
             )
 
         pending, codes = _wait_for_serving_sites(
