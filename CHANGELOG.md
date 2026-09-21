@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.1] - 2026-09-21
+
+### Fixed
+
+- **`apps update`/`install`/`checkout` no longer falsely report a bench as unconfirmed serving when `webserver_port` is absent from `common_site_config.json`** - a bench serving many domain-named sites by Host header alone can legitimately omit that key, and the post-mutation serving check used to treat the omission as an unreadable config and fail the whole operation even though the code change had already succeeded. It now falls back to the live web process's own bound port as evidence, then Frappe's default only once that listener is confirmed to belong to the bench, before probing sites for real.
+
 ## [3.2.0] - 2026-09-19
 
 ### Added
