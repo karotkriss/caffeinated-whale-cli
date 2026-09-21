@@ -94,12 +94,16 @@ class FakeContainer:
         markers=None,
         absent_paths=(),
         presence_probe_fails=False,
+        listeners=None,
+        listener_probe_fails=False,
     ):
         # The shared bench-existence probe (`resolvers.present_bench_paths`):
         # every path asked about exists unless named in ``absent_paths``, and
         # ``presence_probe_fails`` drives the honest "could not ask" branch.
         self.absent_paths = set(absent_paths)
         self.presence_probe_fails = presence_probe_fails
+        self.listeners = {8000: 101} if listeners is None else listeners
+        self.listener_probe_fails = listener_probe_fails
         # ``marker`` is the single-bench answer for every bench; ``markers`` is the
         # per-bench mapping a multi-bench test needs. Two parameters rather than one
         # overloaded value, because the marker IS a dict, so a dict cannot signal
@@ -182,12 +186,21 @@ class FakeContainer:
                 return (0, json.dumps(marker).encode())
             return (0, b"")
         if head == "curl":
-            port = int(cmd[-1].rsplit(":", 1)[1])
-            code = self._per_key(self.web_code, port)
+            # The URL may carry a path (``/api/method/ping``) after the port, so
+            # match the port digits themselves rather than splitting on the last
+            # colon (which would capture "8000/api/method/ping").
+            match = re.search(r":(\d+)(?:/|$)", cmd[-1])
+            port = int(match.group(1)) if match else None
+            code = self._per_key(self.web_code, port) if port is not None else None
             if not self.web_ok or code is None:
                 return (7, b"")
             return (0, code.encode())
         if head == "python3":
+            if cmd[2] == supervision._LISTENER_OWNERSHIP_SCRIPT:
+                if self.listener_probe_fails:
+                    return (2, b"")
+                pid, port = int(cmd[3]), int(cmd[4])
+                return (0, b"") if self.listeners.get(port) == pid else (1, b"")
             # ["python3","-c", prog, path, payload] -> a file write (marker/config/launcher).
             path, payload = cmd[3], cmd[4]
             self.writes[path] = payload
@@ -1123,15 +1136,30 @@ class TestResyncAfterCodeChange:
         assert outcome.ok is False
         assert "Could not verify the supervisord process state." in outcome.error
 
-    def test_the_process_read_is_required_so_an_unreadable_ps_cannot_read_as_idle(self):
-        """``required=True`` is what turns "I could not tell" into a reported failure.
+    def test_an_unreadable_unsupervised_process_read_cannot_read_as_idle(self):
+        class FailingSecondProcessRead(FakeContainer):
+            process_reads = 0
 
-        Without it ``_ps_rows`` returns an empty list, ``supervisor_up`` is False, the
-        unsupervised fallback is also empty, and the step reports a clean no-op on
-        exactly the bench that needed the restart.
-        """
-        source = inspect.getsource(supervision.resync_after_code_change)
-        assert source.count("required=True") == 2
+            def exec_run(self, cmd, detach=False, workdir=None, environment=None, user=None):
+                if isinstance(cmd, list) and cmd[0] == "ps":
+                    self.process_reads += 1
+                    if self.process_reads == 2:
+                        return (1, b"ps failed")
+                return super().exec_run(
+                    cmd, detach=detach, workdir=workdir, environment=environment, user=user
+                )
+
+        container = FailingSecondProcessRead(
+            ps="1 0 5 0.0 1000 /sbin/init\n", cwds={}, configs={BENCH: {}}
+        )
+
+        outcome = supervision.resync_after_code_change(
+            container, BENCH, sites=["a.localhost"]
+        )
+
+        assert outcome.ok is False
+        assert outcome.attempted is True
+        assert "Could not verify the supervisord process state." in outcome.error
 
     def test_a_failed_restart_stops_before_claiming_the_bench_serves(self, monkeypatch):
         _wire_resync(monkeypatch, restart_code=1)
@@ -1150,13 +1178,73 @@ class TestResyncAfterCodeChange:
         assert restarted == ["web", "schedule", "worker_default"]
         assert outcome.ok is True
 
-    def test_an_unreadable_port_is_reported_never_guessed(self, monkeypatch):
+    def test_an_absent_port_key_uses_the_live_web_processs_own_bound_port(self, monkeypatch):
+        """A DNS-multitenant bench deliberately omits `webserver_port` - not a read
+        failure. The live process's own argv is evidence, so it wins over a guess."""
         _wire_resync(monkeypatch, ports=None)
+        monkeypatch.setattr(supervision, "_port_from_process", lambda *_a, **_k: 9005)
+        probed_ports = []
+        monkeypatch.setattr(
+            supervision,
+            "_wait_for_serving_sites",
+            lambda *a, **k: probed_ports.append(k["port"]) or ([], {}),
+        )
+
+        outcome = supervision.resync_after_code_change(_ResyncFake(), BENCH, sites=["a.localhost"])
+
+        assert probed_ports == [9005]
+        assert outcome.ok is True
+        assert outcome.error is None
+
+    def test_an_absent_port_key_uses_an_owned_frappe_default_listener(
+        self, monkeypatch
+    ):
+        _wire_resync(monkeypatch, ports=None)
+        monkeypatch.setattr(supervision, "_port_from_process", lambda *_a, **_k: None)
+        monkeypatch.setattr(supervision, "_process_owns_listener", lambda *_a, **_k: True)
+        probed_ports = []
+        monkeypatch.setattr(
+            supervision,
+            "_wait_for_serving_sites",
+            lambda *a, **k: probed_ports.append(k["port"]) or ([], {}),
+        )
+
+        outcome = supervision.resync_after_code_change(_ResyncFake(), BENCH, sites=["a.localhost"])
+
+        assert probed_ports == [supervision.resolvers.WEB_CONTAINER_BASE]
+        assert outcome.ok is True
+
+    def test_a_present_port_key_is_used_directly_without_reading_the_process(self, monkeypatch):
+        called: list[int] = []
+        monkeypatch.setattr(
+            supervision, "_port_from_process", lambda *_a, **_k: called.append(1) or 9999
+        )
+        _wire_resync(monkeypatch)  # default ports=(8000, 9000): the config is authoritative
+
+        outcome = supervision.resync_after_code_change(_ResyncFake(), BENCH, sites=["a.localhost"])
+
+        assert called == []
+        assert outcome.ok is True
+
+    def test_a_genuinely_undeterminable_port_fails_without_probing(
+        self, monkeypatch
+    ):
+        _wire_resync(monkeypatch, ports=None)
+        monkeypatch.setattr(supervision, "_port_from_process", lambda *_a, **_k: None)
+        monkeypatch.setattr(supervision, "_process_owns_listener", lambda *_a, **_k: False)
+        probed = []
+        monkeypatch.setattr(
+            supervision,
+            "_wait_for_serving_sites",
+            lambda *a, **k: probed.append(k["port"]) or ([], {}),
+        )
 
         outcome = supervision.resync_after_code_change(_ResyncFake(), BENCH, sites=["a.localhost"])
 
         assert outcome.ok is False
-        assert "assigned port could not be read" in outcome.error
+        assert probed == []
+        assert "determined safely" in outcome.error
+        assert "assigned port could not be read" not in outcome.error
 
     def test_each_restart_is_announced_as_it_happens(self, monkeypatch):
         _wire_resync(monkeypatch)
@@ -1182,6 +1270,117 @@ class TestResyncAfterCodeChange:
         )
 
         assert probed == [["a.localhost", "b.localhost"]]
+
+
+class TestResyncPortlessBenchRegression:
+    """Reproduces the reported false positive end to end: a bench whose
+    ``common_site_config.json`` OMITS ``webserver_port`` (a real, supported
+    configuration - a DNS-multitenant staging bench serving many domain-named
+    sites removes it so Frappe routes purely by Host header) must not read as a
+    resync failure. Drives the REAL discovery/port-resolution pipeline through
+    the full ``FakeContainer`` fixture - not ``_wire_resync``'s all-mocked fake -
+    so this is the closest a Docker-free unit test gets to the real ``apps
+    update`` path the bug was hit on.
+    """
+
+    def test_a_bench_with_no_webserver_port_key_still_confirms_the_site_serves(self):
+        # `_PS_SINGLE`'s own `web` line ("bench serve --port 8000") is real
+        # evidence from the exact process supervisorctl names as this bench's web.
+        c = FakeContainer(configs={BENCH: {}}, web_code="200")
+
+        outcome = supervision.resync_after_code_change(
+            c, BENCH, sites=["billing.example.com"], timeout=0.5
+        )
+
+        assert outcome.ok is True
+        assert outcome.error is None
+
+    def test_the_live_port_is_captured_before_restart_replaces_the_web_pid(self):
+        class ReplacingWebProcess(FakeContainer):
+            def _exec_bash(self, script, detach):
+                result = super()._exec_bash(script, detach)
+                if "supervisor.supervisorctl" in script and " restart web" in script:
+                    self.ps = self.ps.replace("101 100 499", "201 100 0")
+                return result
+
+        ps = _PS_SINGLE.replace("--port 8000", "--port 9005")
+        container = ReplacingWebProcess(
+            ps=ps,
+            configs={BENCH: {}},
+            web_code={8000: None, 9005: "200"},
+        )
+
+        outcome = supervision.resync_after_code_change(
+            container, BENCH, sites=["billing.example.com"], timeout=0.5
+        )
+
+        assert outcome.ok is True
+        assert outcome.error is None
+
+    def test_a_bench_with_no_port_uses_its_owned_frappe_default_listener(self):
+        # No explicit `--port` on the web process either (a bare `bench serve`) -
+        # falls back to Frappe's own unconfigured default, which this bench
+        # (never customized away from it) actually serves on.
+        ps = _PS_SINGLE.replace(
+            "/env/bin/python /env/bin/bench serve --port 8000",
+            "/env/bin/python /env/bin/bench serve",
+        )
+        c = FakeContainer(ps=ps, configs={BENCH: {}}, web_code="200")
+
+        outcome = supervision.resync_after_code_change(
+            c, BENCH, sites=["billing.example.com"], timeout=0.5
+        )
+
+        assert outcome.ok is True
+
+    def test_a_sibling_benchs_default_listener_is_never_probed(self):
+        ps = _PS_SINGLE.replace(
+            "/env/bin/python /env/bin/bench serve --port 8000",
+            "/env/bin/python /env/bin/bench serve",
+        )
+        c = FakeContainer(
+            ps=ps,
+            configs={BENCH: {}},
+            listeners={8000: 201},
+            web_code={8000: "200"},
+        )
+
+        outcome = supervision.resync_after_code_change(
+            c, BENCH, sites=["billing.example.com"], timeout=0.5
+        )
+
+        assert outcome.ok is False
+        assert "determined safely" in outcome.error
+        assert "assigned port could not be read" not in outcome.error
+        assert not any(isinstance(call, list) and call[0] == "curl" for call in c.calls)
+
+    @pytest.mark.parametrize(
+        ("listeners", "listener_probe_fails"),
+        [({}, False), ({8000: 101}, True)],
+        ids=["nothing-listening", "ownership-unreadable"],
+    )
+    def test_an_unproven_default_listener_fails_honestly_without_a_probe(
+        self, listeners, listener_probe_fails
+    ):
+        ps = _PS_SINGLE.replace(
+            "/env/bin/python /env/bin/bench serve --port 8000",
+            "/env/bin/python /env/bin/bench serve",
+        )
+        c = FakeContainer(
+            ps=ps,
+            configs={BENCH: {}},
+            listeners=listeners,
+            listener_probe_fails=listener_probe_fails,
+        )
+
+        outcome = supervision.resync_after_code_change(
+            c, BENCH, sites=["billing.example.com"], timeout=0.5
+        )
+
+        assert outcome.ok is False
+        assert "determined safely" in outcome.error
+        assert "assigned port could not be read" not in outcome.error
+        assert not any(isinstance(call, list) and call[0] == "curl" for call in c.calls)
 
 
 class TestSiteVerificationBudget:
