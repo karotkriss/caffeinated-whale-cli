@@ -12,7 +12,7 @@ from peewee import (
     TextField,
 )
 
-from . import shared_home
+from . import config_utils, shared_home
 from .config_utils import cwcli_home
 
 # Resolve the cache location through the shared cwcli_home() helper so the
@@ -20,6 +20,12 @@ from .config_utils import cwcli_home
 # config_utils puts config/projects. See cwcli_home() in config_utils.
 CACHE_DIR = cwcli_home() / "cache"
 DB_PATH = CACHE_DIR / "cwc-cache.db"
+
+# The sentinel path an ephemeral in-memory SQLite database uses. When caching is
+# disabled (config_utils.cache_disabled()) the whole cache is redirected here, so
+# the on-disk DB is never opened, read, or written and a stale row can never leak
+# through - see initialize_database() and _live_populate().
+_MEMORY_DB = ":memory:"
 
 # SECURITY: config_json rows are whitelist-filtered by _redact_config_for_cache
 # before write, so the cache never stores DB credentials, encryption keys, or
@@ -30,20 +36,23 @@ DB_PATH = CACHE_DIR / "cwc-cache.db"
 # shared_home).
 
 # Create cache directory with restricted permissions (0700 = owner-only access)
-# This prevents other users on the system from reading cached credentials
-CACHE_DIR.mkdir(parents=True, mode=shared_home.dir_mode(0o700), exist_ok=True)
+# This prevents other users on the system from reading cached credentials. Skip
+# it entirely when caching is disabled, so a disabled install leaves no on-disk
+# footprint at all.
+if not config_utils.cache_disabled():
+    CACHE_DIR.mkdir(parents=True, mode=shared_home.dir_mode(0o700), exist_ok=True)
 
-# Ensure existing directory has correct permissions
-if CACHE_DIR.exists():
-    try:
-        CACHE_DIR.chmod(shared_home.dir_mode(0o700))
-        shared_home.apply_group(CACHE_DIR)
-    except (OSError, PermissionError):
-        # On Windows or restricted filesystems, chmod may fail
-        # Still proceed but permissions may not be as strict
-        pass
+    # Ensure existing directory has correct permissions
+    if CACHE_DIR.exists():
+        try:
+            CACHE_DIR.chmod(shared_home.dir_mode(0o700))
+            shared_home.apply_group(CACHE_DIR)
+        except (OSError, PermissionError):
+            # On Windows or restricted filesystems, chmod may fail
+            # Still proceed but permissions may not be as strict
+            pass
 
-db = SqliteDatabase(DB_PATH)
+db = SqliteDatabase(_MEMORY_DB if config_utils.cache_disabled() else DB_PATH)
 
 
 class BaseModel(Model):
@@ -371,7 +380,54 @@ def _scrub_cached_config_secrets():
         print(f"Warning: could not scrub cached config secrets: {e}", file=sys.stderr)
 
 
+# Projects live-populated into the ephemeral in-memory cache this process (see
+# _live_populate). A reentrancy flag stops the populating inspect - which writes
+# the same in-memory DB - from recursing back through a cache read.
+_live_populated: set[str] = set()
+_populating = False
+
+
+def _db_target() -> str:
+    """Where the cache DB should point right now: in-memory when disabled."""
+    return _MEMORY_DB if config_utils.cache_disabled() else str(DB_PATH)
+
+
+def _live_populate(project_name: str) -> None:
+    """In cache-disabled mode, populate the ephemeral in-memory DB with one live
+    inspect so downstream cache reads resolve fresh data instead of nothing.
+
+    The on-disk cache is never touched: the disabled DB points at ``:memory:``,
+    so the inspect's write lands in the ephemeral store this process discards on
+    exit. Memoized and reentrancy-guarded (the inspect writes the same DB), and
+    best-effort: a stopped/absent project simply yields no in-memory rows, which
+    every caller already handles as a cache miss.
+    """
+    global _populating
+    if not config_utils.cache_disabled() or _populating or project_name in _live_populated:
+        return
+    _populating = True
+    try:
+        from ..core import inspect as core_inspect
+
+        core_inspect.inspect(project_name, refresh="full", offer_choice=False)
+    except Exception:  # noqa: BLE001 - a failed live read just leaves the store empty
+        pass
+    finally:
+        _live_populated.add(project_name)  # never retry within one process
+        _populating = False
+
+
 def initialize_database():
+    target = _db_target()
+    if str(db.database) != target:
+        # The disabled state flipped (e.g. a test toggled CWCLI_NO_CACHE, or the
+        # first read after enable/disable). Re-point the shared database so every
+        # model follows it. Switching TO :memory: gives a fresh empty store;
+        # switching back opens the untouched on-disk cache.
+        if not db.is_closed():
+            db.close()
+        db.init(target)
+        _live_populated.clear()
     if db.is_closed():
         db.connect()
     # Create tables if missing
@@ -528,6 +584,7 @@ def _cache_project_data(project_name: str, bench_instances_data: list[dict]) -> 
 
 def get_cached_project_data(project_name):
     initialize_database()
+    _live_populate(project_name)
     try:
         project = Project.get(Project.name == project_name)
 
@@ -643,6 +700,7 @@ def get_common_site_config(project_name: str, bench_path: str | None = None) -> 
         Dictionary with common site config or None if not found
     """
     initialize_database()
+    _live_populate(project_name)
     try:
         project = Project.get(Project.name == project_name)
 
@@ -685,6 +743,7 @@ def get_site_config(
         Dictionary with site config or None if not found
     """
     initialize_database()
+    _live_populate(project_name)
     try:
         project = Project.get(Project.name == project_name)
 
@@ -729,6 +788,7 @@ def get_all_site_configs(project_name: str, bench_path: str | None = None) -> di
         Dictionary mapping site names to their configs
     """
     initialize_database()
+    _live_populate(project_name)
     result = {}
 
     try:
@@ -763,6 +823,7 @@ def get_current_site(project_name: str, bench_path: str | None = None) -> str | 
     non-empty ``current_site`` found (scoped to ``bench_path`` when given).
     """
     initialize_database()
+    _live_populate(project_name)
     try:
         project = Project.get(Project.name == project_name)
 
