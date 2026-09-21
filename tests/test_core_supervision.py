@@ -1127,15 +1127,30 @@ class TestResyncAfterCodeChange:
         assert outcome.ok is False
         assert "Could not verify the supervisord process state." in outcome.error
 
-    def test_the_process_read_is_required_so_an_unreadable_ps_cannot_read_as_idle(self):
-        """``required=True`` is what turns "I could not tell" into a reported failure.
+    def test_an_unreadable_unsupervised_process_read_cannot_read_as_idle(self):
+        class FailingSecondProcessRead(FakeContainer):
+            process_reads = 0
 
-        Without it ``_ps_rows`` returns an empty list, ``supervisor_up`` is False, the
-        unsupervised fallback is also empty, and the step reports a clean no-op on
-        exactly the bench that needed the restart.
-        """
-        source = inspect.getsource(supervision.resync_after_code_change)
-        assert source.count("required=True") == 2
+            def exec_run(self, cmd, detach=False, workdir=None, environment=None, user=None):
+                if isinstance(cmd, list) and cmd[0] == "ps":
+                    self.process_reads += 1
+                    if self.process_reads == 2:
+                        return (1, b"ps failed")
+                return super().exec_run(
+                    cmd, detach=detach, workdir=workdir, environment=environment, user=user
+                )
+
+        container = FailingSecondProcessRead(
+            ps="1 0 5 0.0 1000 /sbin/init\n", cwds={}, configs={BENCH: {}}
+        )
+
+        outcome = supervision.resync_after_code_change(
+            container, BENCH, sites=["a.localhost"]
+        )
+
+        assert outcome.ok is False
+        assert outcome.attempted is True
+        assert "Could not verify the supervisord process state." in outcome.error
 
     def test_a_failed_restart_stops_before_claiming_the_bench_serves(self, monkeypatch):
         _wire_resync(monkeypatch, restart_code=1)
@@ -1260,6 +1275,28 @@ class TestResyncPortlessBenchRegression:
 
         outcome = supervision.resync_after_code_change(
             c, BENCH, sites=["billing.example.com"], timeout=0.5
+        )
+
+        assert outcome.ok is True
+        assert outcome.error is None
+
+    def test_the_live_port_is_captured_before_restart_replaces_the_web_pid(self):
+        class ReplacingWebProcess(FakeContainer):
+            def _exec_bash(self, script, detach):
+                result = super()._exec_bash(script, detach)
+                if "supervisor.supervisorctl" in script and " restart web" in script:
+                    self.ps = self.ps.replace("101 100 499", "201 100 0")
+                return result
+
+        ps = _PS_SINGLE.replace("--port 8000", "--port 9005")
+        container = ReplacingWebProcess(
+            ps=ps,
+            configs={BENCH: {}},
+            web_code={8000: None, 9005: "200"},
+        )
+
+        outcome = supervision.resync_after_code_change(
+            container, BENCH, sites=["billing.example.com"], timeout=0.5
         )
 
         assert outcome.ok is True
