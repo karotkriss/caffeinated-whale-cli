@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A switch to disable caching entirely** - `cwcli config cache disable` (revert with `cwcli config cache enable`) sets `[cache] enabled = false`, and the `CWCLI_NO_CACHE` environment variable overrides that key per shell / in CI (`CWCLI_NO_CACHE=1` disables, `CWCLI_NO_CACHE=0` re-enables). With caching off every read command (`inspect`, `status`, `where`, `open`, the `apps` group, and every `axi` read verb) resolves live as if a fresh inspect ran and can never serve a stale row; nothing is written to or read from the cache DB and a pre-existing cache is left in place untouched, so re-enabling restores it. Tab completion degrades to a live/empty lookup, `auto-inspect` refuses to run (it has nothing to keep warm), bench labels still work through their marker files, and safety-critical commands (`rm`/`rm-site`'s backup step, `apps checkout`'s wrong-copy detection) still get correct live data. `cwcli config show` (and `--json`) reports the cache on/off state and any environment override.
+
 ## [3.2.1] - 2026-09-21
 
 ### Fixed

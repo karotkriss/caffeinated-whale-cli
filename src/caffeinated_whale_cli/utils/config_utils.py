@@ -99,6 +99,18 @@ startup_enabled = false
 # Applies immediately (no daemon restart needed); cwcli's own per-operation
 # bridge (apps install/update, init) is not restricted by this list.
 allowed_hosts = ["github.com", "gitlab.com"]
+
+[cache]
+# The on-disk SQLite cache under <cwcli home>/cache speeds up read commands
+# (inspect, status, where, tab completion, ...) by remembering each project's
+# benches, sites, and apps.
+#
+# Set enabled = false to turn caching off entirely: every read resolves live
+# (as if a fresh inspect ran), nothing is written to or read from the cache DB,
+# and a pre-existing cache is left in place untouched so turning caching back on
+# restores it. The CWCLI_NO_CACHE environment variable overrides this key per
+# shell / in CI (CWCLI_NO_CACHE=1 disables, CWCLI_NO_CACHE=0 re-enables).
+enabled = true
 """
 
 DEFAULT_ALLOWED_HOSTS = ("github.com", "gitlab.com")
@@ -150,6 +162,10 @@ def load_config() -> dict:
             else:
                 for key, value in _cred_bridge_defaults().items():
                     config_data["cred_bridge"].setdefault(key, value)
+            if "cache" not in config_data:
+                config_data["cache"] = {"enabled": True}
+            elif "enabled" not in config_data["cache"]:
+                config_data["cache"]["enabled"] = True
             return config_data
         except toml.TomlDecodeError:
             return {
@@ -157,6 +173,7 @@ def load_config() -> dict:
                 "auto_inspect": {"enabled": False, "interval": 3600, "startup_enabled": False},
                 "ui": {"show_tips": True},
                 "cred_bridge": _cred_bridge_defaults(),
+                "cache": {"enabled": True},
             }
 
 
@@ -283,6 +300,49 @@ def set_cred_bridge_startup(enabled: bool):
     if "cred_bridge" not in config:
         config["cred_bridge"] = _cred_bridge_defaults()
     config["cred_bridge"]["startup_enabled"] = enabled
+    save_config(config)
+
+
+def read_cache_config() -> dict:
+    """Read the [cache] config WITHOUT creating config state.
+
+    Used by :func:`cache_disabled`, which runs on the hot path of every cache
+    read; it must never write a default config file into the user's home as a
+    side effect (mirrors :func:`read_cred_bridge_config`).
+    """
+    default = {"enabled": True}
+    if not CONFIG_FILE.is_file():
+        return default
+    try:
+        with open(CONFIG_FILE) as f:
+            config = toml.load(f)
+    except (OSError, toml.TomlDecodeError):
+        return default
+    cache = config.get("cache", default)
+    return cache if isinstance(cache, dict) else default
+
+
+def cache_disabled() -> bool:
+    """Whether cwcli's on-disk SQLite cache is turned off.
+
+    The ``CWCLI_NO_CACHE`` environment variable overrides the ``[cache] enabled``
+    config key, so caching can be toggled per shell / in CI - and can even be
+    re-enabled (``CWCLI_NO_CACHE=0``) when the config file disables it. An unset
+    or empty env var falls through to the config key (default: enabled).
+    """
+    env = os.environ.get("CWCLI_NO_CACHE")
+    if env is not None and env.strip() != "":
+        return env.strip().lower() in ("1", "true", "yes", "on")
+    return not bool(read_cache_config().get("enabled", True))
+
+
+def set_cache_enabled(enabled: bool):
+    """Enable or disable the on-disk cache via the ``[cache] enabled`` config key."""
+    config = load_config()
+    if "cache" not in config:
+        config["cache"] = {"enabled": enabled}
+    else:
+        config["cache"]["enabled"] = enabled
     save_config(config)
 
 

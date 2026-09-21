@@ -581,6 +581,14 @@ def inspect_raw(
             f"Unknown refresh mode '{refresh}'. Use one of: {', '.join(_REFRESH_MODES)}.",
         )
 
+    # Caching off: always resolve live. Force the full tier so no cached row (T1)
+    # or partial refresh (T2) can be served, and the write below lands in the
+    # ephemeral in-memory store db_utils redirects to (the on-disk cache is never
+    # touched). This is also the recursion base for db_utils._live_populate: a
+    # forced-full run with no selector never reads the cache back.
+    if config_utils.cache_disabled():
+        refresh = "full"
+
     emit = on_event or _noop
     warnings: list[Message] = []
 
@@ -592,7 +600,10 @@ def inspect_raw(
     served_from = "cache"
 
     cached_data = None
-    if refresh != "full" or bench is not None:
+    # With caching disabled there is nothing to read and the read would only
+    # trigger a redundant nested live populate; the forced-full path below does a
+    # fresh discovery and narrows the selector from that.
+    if (refresh != "full" or bench is not None) and not config_utils.cache_disabled():
         cached_data = db_utils.get_cached_project_data(project_name)
 
     if refresh != "full":

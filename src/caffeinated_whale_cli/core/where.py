@@ -31,7 +31,7 @@ from dataclasses import dataclass, field, replace
 
 import peewee
 
-from ..utils import db_utils
+from ..utils import config_utils, db_utils
 from .envelope import Message, Result, Status
 from .errors import CwcliError, ErrorKind
 from .list import list_instances
@@ -177,6 +177,21 @@ def _live_project_names() -> set[str] | None:
     return {instance.project_name for instance in (result.data or [])}
 
 
+def _populate_live_if_disabled() -> None:
+    """With caching off, ``where`` has no cache to search, so inspect every live
+    instance into the ephemeral in-memory store first, then search that.
+
+    Reuses the same live-populate ``db_utils`` runs for a single project (one full
+    inspect per running instance); the on-disk cache is never touched. A daemon we
+    cannot reach leaves the store empty, which ``where`` reports as no matches.
+    """
+    if not config_utils.cache_disabled():
+        return
+    live = _live_project_names()
+    for project_name in live or set():
+        db_utils.get_cached_project_data(project_name)
+
+
 def where(
     search: str,
     *,
@@ -192,6 +207,8 @@ def where(
             "where.apps_sites_conflict",
             "Cannot use --apps and --sites together.",
         )
+
+    _populate_live_if_disabled()
 
     matches: list[WhereMatch] = []
 
