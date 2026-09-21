@@ -1987,7 +1987,7 @@ cwcli config [SUBCOMMAND]
 
 ##### `config show` - Show the Effective Configuration
 
-The one read for everything: the custom search paths, the auto-inspect settings together with live daemon state and boot-hook state, the credential-bridge state (enabled, daemon, transport, wired instances), the tips setting, and the config-file and cache-DB locations.
+The one read for everything: the cache on/off state (and whether `CWCLI_NO_CACHE` is overriding it), the custom search paths, the auto-inspect settings together with live daemon state and boot-hook state, the credential-bridge state (enabled, daemon, transport, wired instances), the tips setting, and the config-file and cache-DB locations.
 
 ```bash
 cwcli config show
@@ -2054,6 +2054,31 @@ cwcli config cache [SUBCOMMAND]
 
 - **`list [--json]`** - List all projects currently in the cache
   - Example: `cwcli config cache list --json`
+
+- **`disable`** / **`enable`** - Turn the on-disk cache off entirely, or back on (the default)
+  - Example: `cwcli config cache disable`
+  - Example: `cwcli config cache enable`
+  - See ["Disabling caching entirely"](#disabling-caching-entirely) below.
+
+###### Disabling caching entirely
+
+cwcli keeps an on-disk SQLite cache (under `~/.cwcli/cache`, or `$CWCLI_HOME/cache`) that read commands - `inspect`, `status`, `where`, `open`, the `apps` group, tab completion, and every `axi` read verb - work from, so they do not re-inspect a running instance every time.
+
+You can turn it off entirely, in two equivalent ways:
+
+- **Config key:** `cwcli config cache disable` sets `[cache] enabled = false` in the config file. `cwcli config cache enable` reverts it.
+- **Environment variable:** `CWCLI_NO_CACHE=1` disables caching for a single shell or CI job; `CWCLI_NO_CACHE=0` re-enables it. The environment variable **overrides** the config key, so you can force caching on or off for one invocation regardless of the persisted setting.
+
+With caching disabled:
+
+- Every read resolves **live**, as if a fresh `inspect` had just run - a stale cached row can never be served.
+- **Nothing** is written to or read from the cache DB, and a pre-existing cache file is left in place untouched, so re-enabling restores the previous behaviour.
+- Tab completion degrades gracefully to a live/empty lookup rather than serving stale names.
+- `auto-inspect` refuses to start (it exists only to keep the cache warm, which does nothing when caching is off).
+- Bench labels still work, because they are also stored in each bench's marker file.
+- Safety-critical commands (`rm`/`rm-site`'s backup step, `apps checkout`'s wrong-copy detection) get correct live data.
+
+Because every read resolves live, commands are slower than with the cache warm - this is a correctness/isolation mode, not the everyday default.
 
 ##### `config auto-inspect` - Automatic Project Inspection
 

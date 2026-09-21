@@ -11,7 +11,7 @@ import time
 import docker
 import typer
 
-from . import db_utils
+from . import config_utils, db_utils
 
 # Cache configuration
 _CACHE_TTL = 2.0  # Cache results for 2 seconds (enough for tab completion session)
@@ -138,6 +138,12 @@ def complete_app_names(
     if not project_name:
         return []
 
+    # Caching off: degrade to an empty completion rather than blocking the shell
+    # on a live inspect. Empty beats stale, and completion must never do container
+    # I/O.
+    if config_utils.cache_disabled():
+        return []
+
     # Check cache first
     cache_key = f"apps:{project_name}"
     cached = _get_cached(cache_key)
@@ -184,6 +190,12 @@ def complete_site_names(
         return []
     project_name = ctx.params.get("project_name")
     if not project_name:
+        return []
+
+    # Caching off: degrade to an empty completion rather than blocking the shell
+    # on a live inspect. Empty beats stale, and completion must never do container
+    # I/O.
+    if config_utils.cache_disabled():
         return []
 
     # Check cache first
