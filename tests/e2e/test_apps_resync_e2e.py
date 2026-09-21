@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
+from contextlib import contextmanager
 
 import pytest
 
@@ -219,3 +221,63 @@ def test_every_app_code_change_resynchronises_the_whole_bench(running_instance):
                 )
             _remove_app_source(inst, required=False)
         _ensure_serving(inst.name)
+
+
+def _read_common_config(inst) -> dict:
+    code, out = harness.exec_in_frappe(inst.name, f"cat {inst.bench}/sites/common_site_config.json")
+    assert code == 0, out
+    return json.loads(out)
+
+
+def _write_common_config(inst, config: dict) -> None:
+    payload = shlex.quote(json.dumps(config))
+    code, out = harness.exec_in_frappe(
+        inst.name, f"echo {payload} > {inst.bench}/sites/common_site_config.json"
+    )
+    assert code == 0, out
+
+
+@contextmanager
+def _without_webserver_port(inst):
+    """Temporarily remove ``webserver_port`` - a real, supported configuration a
+    DNS-multitenant bench uses deliberately (many domain-named sites, where writing
+    a port there breaks Host-based routing), restored unconditionally per the
+    shared-instance convention."""
+    original = _read_common_config(inst)
+    assert "webserver_port" in original, "fixture bench already has no webserver_port"
+    without_port = {k: v for k, v in original.items() if k != "webserver_port"}
+    _write_common_config(inst, without_port)
+    try:
+        yield
+    finally:
+        _write_common_config(inst, original)
+
+
+def test_apps_checkout_confirms_serving_when_webserver_port_is_absent(running_instance):
+    """Regression for the reported false positive: a bench whose
+    ``common_site_config.json`` OMITS ``webserver_port`` (a DNS-multitenant bench
+    serving many domain-named sites removes it deliberately so Frappe routes purely
+    by Host header) must not have its resync step fail with "the bench's assigned
+    port could not be read" - the update itself succeeds and the real web process
+    is still bound to a real port, which cwcli must determine from evidence rather
+    than declaring the config unreadable.
+    """
+    inst = running_instance
+    _ensure_serving(inst.name)
+    _wait_supervised_stack(inst.name)
+    code, out = harness.exec_in_frappe(
+        inst.name, f"git -C {inst.bench}/apps/frappe branch --show-current"
+    )
+    assert code == 0, out
+    branch = out.strip()
+
+    with _without_webserver_port(inst):
+        checkout = harness.run_cwcli("axi", "apps", "checkout", inst.name, "frappe", branch)
+
+    # `axi apps checkout`'s exit code reads the report's `ok`, which is False iff
+    # ANY step - including the shared resync - failed, so a 0 here already proves
+    # the resync did not hit the false "assigned port could not be read" failure.
+    assert checkout.returncode == 0, checkout.stdout + checkout.stderr
+    assert "restart-processes" in checkout.stdout
+    assert "assigned port could not be read" not in checkout.stdout
+    assert _site_ping_code(inst) == "200"
