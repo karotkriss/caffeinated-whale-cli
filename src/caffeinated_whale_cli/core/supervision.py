@@ -1259,6 +1259,16 @@ def _port_from_process(container, pid: int) -> int | None:
     return None
 
 
+def _resync_web_port(container, bench_path: str, web_pid: int | None) -> int:
+    ports = resolvers.resolve_assigned_ports(container, [bench_path], fill_defaults=False).get(
+        bench_path
+    )
+    if ports is not None:
+        return ports[0]
+    process_port = _port_from_process(container, web_pid) if web_pid is not None else None
+    return process_port or resolvers.WEB_CONTAINER_BASE
+
+
 def resync_after_code_change(
     container,
     bench_path: str,
@@ -1330,7 +1340,7 @@ def resync_after_code_change(
 
     restarted: list[str] = []
     supervised = False
-    web_pid: int | None = None
+    web_port: int
     try:
         supervised = discover_stack(container, bench_path, required=True).supervisor_up
         if supervised:
@@ -1345,7 +1355,7 @@ def resync_after_code_change(
             # is no site to verify against, and starting one is not this verb's job.
             if states[web][0] not in _LIVE_STATES:
                 return quiet
-            web_pid = states[web][1]
+            web_port = _resync_web_port(container, bench_path, states[web][1])
 
             for program in code_bearing_programs(list(states)):
                 if states[program][0] not in _LIVE_STATES:
@@ -1367,25 +1377,9 @@ def resync_after_code_change(
             if not unsupervised.manager_up:
                 return quiet
             web_process = next((p for p in unsupervised.processes if p.label == "web"), None)
-            web_pid = web_process.pid if web_process is not None else None
-
-        ports = resolvers.resolve_assigned_ports(container, [bench_path], fill_defaults=False).get(
-            bench_path
-        )
-        if ports is not None:
-            web_port = ports[0]
-        else:
-            # No config port - which is exactly what a DNS-multitenant bench (many
-            # domain-named sites) deliberately looks like once `webserver_port` is
-            # removed so Frappe routes purely by Host header, not "the config could
-            # not be read". Fall back to evidence rather than erroring: the live web
-            # process's own bound port, then Frappe's own unconfigured default as the
-            # last resort. Either way the sites are still probed for REAL below, so a
-            # wrong guess surfaces as an honest "did not answer", never a false
-            # complaint about a config key that was never supposed to be there.
-            web_port = (
-                _port_from_process(container, web_pid) if web_pid is not None else None
-            ) or resolvers.WEB_CONTAINER_BASE
+            web_port = _resync_web_port(
+                container, bench_path, web_process.pid if web_process is not None else None
+            )
 
         pending, codes = _wait_for_serving_sites(
             container, port=web_port, sites=unique_sites, timeout=timeout
