@@ -94,12 +94,16 @@ class FakeContainer:
         markers=None,
         absent_paths=(),
         presence_probe_fails=False,
+        listeners=None,
+        listener_probe_fails=False,
     ):
         # The shared bench-existence probe (`resolvers.present_bench_paths`):
         # every path asked about exists unless named in ``absent_paths``, and
         # ``presence_probe_fails`` drives the honest "could not ask" branch.
         self.absent_paths = set(absent_paths)
         self.presence_probe_fails = presence_probe_fails
+        self.listeners = {8000: 101} if listeners is None else listeners
+        self.listener_probe_fails = listener_probe_fails
         # ``marker`` is the single-bench answer for every bench; ``markers`` is the
         # per-bench mapping a multi-bench test needs. Two parameters rather than one
         # overloaded value, because the marker IS a dict, so a dict cannot signal
@@ -192,6 +196,11 @@ class FakeContainer:
                 return (7, b"")
             return (0, code.encode())
         if head == "python3":
+            if cmd[2] == supervision._LISTENER_OWNERSHIP_SCRIPT:
+                if self.listener_probe_fails:
+                    return (2, b"")
+                pid, port = int(cmd[3]), int(cmd[4])
+                return (0, b"") if self.listeners.get(port) == pid else (1, b"")
             # ["python3","-c", prog, path, payload] -> a file write (marker/config/launcher).
             path, payload = cmd[3], cmd[4]
             self.writes[path] = payload
@@ -1187,11 +1196,12 @@ class TestResyncAfterCodeChange:
         assert outcome.ok is True
         assert outcome.error is None
 
-    def test_an_absent_port_key_falls_back_to_frappes_default_with_no_process_evidence(
+    def test_an_absent_port_key_uses_an_owned_frappe_default_listener(
         self, monkeypatch
     ):
         _wire_resync(monkeypatch, ports=None)
         monkeypatch.setattr(supervision, "_port_from_process", lambda *_a, **_k: None)
+        monkeypatch.setattr(supervision, "_process_owns_listener", lambda *_a, **_k: True)
         probed_ports = []
         monkeypatch.setattr(
             supervision,
@@ -1216,19 +1226,24 @@ class TestResyncAfterCodeChange:
         assert called == []
         assert outcome.ok is True
 
-    def test_a_genuinely_undeterminable_port_still_fails_but_never_blames_the_config(
+    def test_a_genuinely_undeterminable_port_fails_without_probing(
         self, monkeypatch
     ):
-        """No config port and no process evidence still gets a real probe (against
-        Frappe's default); if the sites genuinely do not answer, THAT is the
-        failure that fires - never a "port could not be read" complaint."""
-        _wire_resync(monkeypatch, ports=None, pending=["a.localhost"])
+        _wire_resync(monkeypatch, ports=None)
         monkeypatch.setattr(supervision, "_port_from_process", lambda *_a, **_k: None)
+        monkeypatch.setattr(supervision, "_process_owns_listener", lambda *_a, **_k: False)
+        probed = []
+        monkeypatch.setattr(
+            supervision,
+            "_wait_for_serving_sites",
+            lambda *a, **k: probed.append(k["port"]) or ([], {}),
+        )
 
         outcome = supervision.resync_after_code_change(_ResyncFake(), BENCH, sites=["a.localhost"])
 
         assert outcome.ok is False
-        assert "HTTP 200" in outcome.error
+        assert probed == []
+        assert "determined safely" in outcome.error
         assert "assigned port could not be read" not in outcome.error
 
     def test_each_restart_is_announced_as_it_happens(self, monkeypatch):
@@ -1302,7 +1317,7 @@ class TestResyncPortlessBenchRegression:
         assert outcome.ok is True
         assert outcome.error is None
 
-    def test_a_bench_with_no_port_anywhere_falls_back_to_the_frappe_default(self):
+    def test_a_bench_with_no_port_uses_its_owned_frappe_default_listener(self):
         # No explicit `--port` on the web process either (a bare `bench serve`) -
         # falls back to Frappe's own unconfigured default, which this bench
         # (never customized away from it) actually serves on.
@@ -1318,16 +1333,54 @@ class TestResyncPortlessBenchRegression:
 
         assert outcome.ok is True
 
-    def test_a_bench_with_no_port_that_genuinely_does_not_serve_fails_honestly(self):
-        c = FakeContainer(configs={BENCH: {}}, web_code=None, web_ok=False)
+    def test_a_sibling_benchs_default_listener_is_never_probed(self):
+        ps = _PS_SINGLE.replace(
+            "/env/bin/python /env/bin/bench serve --port 8000",
+            "/env/bin/python /env/bin/bench serve",
+        )
+        c = FakeContainer(
+            ps=ps,
+            configs={BENCH: {}},
+            listeners={8000: 201},
+            web_code={8000: "200"},
+        )
 
         outcome = supervision.resync_after_code_change(
-            c, BENCH, sites=["billing.example.com"], timeout=0.05
+            c, BENCH, sites=["billing.example.com"], timeout=0.5
         )
 
         assert outcome.ok is False
+        assert "determined safely" in outcome.error
         assert "assigned port could not be read" not in outcome.error
-        assert "did not answer" in outcome.error
+        assert not any(isinstance(call, list) and call[0] == "curl" for call in c.calls)
+
+    @pytest.mark.parametrize(
+        ("listeners", "listener_probe_fails"),
+        [({}, False), ({8000: 101}, True)],
+        ids=["nothing-listening", "ownership-unreadable"],
+    )
+    def test_an_unproven_default_listener_fails_honestly_without_a_probe(
+        self, listeners, listener_probe_fails
+    ):
+        ps = _PS_SINGLE.replace(
+            "/env/bin/python /env/bin/bench serve --port 8000",
+            "/env/bin/python /env/bin/bench serve",
+        )
+        c = FakeContainer(
+            ps=ps,
+            configs={BENCH: {}},
+            listeners=listeners,
+            listener_probe_fails=listener_probe_fails,
+        )
+
+        outcome = supervision.resync_after_code_change(
+            c, BENCH, sites=["billing.example.com"], timeout=0.5
+        )
+
+        assert outcome.ok is False
+        assert "determined safely" in outcome.error
+        assert "assigned port could not be read" not in outcome.error
+        assert not any(isinstance(call, list) and call[0] == "curl" for call in c.calls)
 
 
 class TestSiteVerificationBudget:
