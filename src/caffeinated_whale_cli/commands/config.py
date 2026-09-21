@@ -101,6 +101,17 @@ def show(
     console.print("[bold]Locations[/bold]")
     console.print(f"  Config file: [green]{report.config_file}[/green]")
     console.print(f"  Cache DB:    [green]{report.cache_db}[/green]")
+
+    console.print("\n[bold]Cache[/bold]")
+    if report.cache_enabled:
+        console.print("  Enabled: [green]Yes[/green]")
+    else:
+        source = "CWCLI_NO_CACHE" if report.cache_env_override else "config"
+        console.print(f"  Enabled: [red]No[/red] [dim](disabled via {source})[/dim]")
+        console.print("  [dim]Reads resolve live; nothing is written to the cache DB.[/dim]")
+    if report.cache_env_override:
+        console.print("  [dim]CWCLI_NO_CACHE is set and overrides the config key.[/dim]")
+
     console.print("\n[bold]Search paths[/bold]")
     if report.search_paths:
         for path in report.search_paths:
@@ -348,6 +359,44 @@ def clear_cache(
     else:
         console.print(
             f"[yellow]No cache found for project '[bold cyan]{data.project}[/bold cyan]'.[/yellow]"
+        )
+
+
+@cache_app.command("enable")
+def cache_enable():
+    """
+    Turn the on-disk cache back on (the default).
+    """
+    _apply_cache_setting(True)
+
+
+@cache_app.command("disable")
+def cache_disable():
+    """
+    Turn the on-disk cache off entirely.
+
+    Every read command then resolves live (as if a fresh inspect ran) and nothing
+    is written to or read from the cache DB. The existing cache file is left in
+    place, so re-enabling restores it. Set CWCLI_NO_CACHE=1 for the same effect
+    per shell / in CI.
+    """
+    _apply_cache_setting(False)
+
+
+def _apply_cache_setting(enabled: bool):
+    state = core_config.set_cache(enabled).data
+    assert state is not None
+    if enabled:
+        console.print("[green]Caching enabled.[/green] Reads use the on-disk cache.")
+    else:
+        console.print(
+            "[yellow]Caching disabled.[/yellow] Reads resolve live; nothing is written "
+            "to the cache DB (the existing cache is left in place)."
+        )
+    if state.env_override and state.enabled != enabled:
+        console.print(
+            "[yellow]Note:[/yellow] CWCLI_NO_CACHE is set and overrides this setting; "
+            f"caching is currently {'enabled' if state.enabled else 'disabled'} for this shell."
         )
 
 

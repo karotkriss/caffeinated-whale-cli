@@ -5,7 +5,7 @@ This module provides utilities for managing the project inspection cache,
 including re-caching operations built on the core inspect slice.
 """
 
-from . import db_utils
+from . import config_utils, db_utils
 
 
 def recache_project(project_name: str, verbose: bool = False) -> bool:
@@ -31,6 +31,11 @@ def recache_project(project_name: str, verbose: bool = False) -> bool:
         True if recache succeeded, False otherwise (including when the project's
         containers are not running, since a stopped bench cannot be inspected).
     """
+    # Caching off: there is no on-disk cache to refresh, so a post-mutation
+    # recache would only run a full inspect into a store that is discarded.
+    if config_utils.cache_disabled():
+        return True
+
     try:
         # Clear the cache for this project
         db_utils.clear_cache_for_project(project_name)

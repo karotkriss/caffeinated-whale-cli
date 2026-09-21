@@ -160,6 +160,14 @@ def enable(interval: int | None = None, at_boot: bool | None = None) -> Result[A
     it when a changed interval must take effect), then syncs the boot hook when
     ``at_boot`` was requested (``None`` leaves the hook untouched).
     """
+    if config_utils.cache_disabled():
+        raise CwcliError(
+            ErrorKind.USAGE,
+            "auto_inspect.cache_disabled",
+            "Caching is disabled, so auto-inspect has nothing to keep warm.",
+            hint="Re-enable caching first: `cwcli config cache enable` (or unset CWCLI_NO_CACHE).",
+        )
+
     if interval is not None and interval < MIN_INTERVAL:
         raise CwcliError(
             ErrorKind.USAGE,

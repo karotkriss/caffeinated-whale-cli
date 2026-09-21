@@ -18,6 +18,7 @@ cannot be checked, nothing is pruned.
 
 from __future__ import annotations
 
+import os
 import posixpath
 from dataclasses import dataclass, field
 
@@ -38,10 +39,20 @@ class ConfigReport:
 
     config_file: str
     cache_db: str
+    cache_enabled: bool
+    cache_env_override: bool
     search_paths: list[str]
     auto_inspect: AutoInspectState
     cred_bridge: CredBridgeState
     show_tips: bool
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CacheState:
+    """Whether the on-disk cache is on, and whether an env var is forcing it."""
+
+    enabled: bool
+    env_override: bool  # True when CWCLI_NO_CACHE is set (config key is inert)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -79,6 +90,12 @@ def _normalize(path: str) -> str:
     return posixpath.normpath(posixpath.expanduser(path))
 
 
+def _cache_env_override() -> bool:
+    """True when CWCLI_NO_CACHE is set to a non-empty value (it wins over config)."""
+    env = os.environ.get("CWCLI_NO_CACHE")
+    return env is not None and env.strip() != ""
+
+
 def show_config() -> Result[ConfigReport]:
     """The effective config as one report: paths, auto-inspect, tips, locations."""
     state = core_auto_inspect.status().data
@@ -91,10 +108,28 @@ def show_config() -> Result[ConfigReport]:
         data=ConfigReport(
             config_file=str(config_utils.CONFIG_FILE),
             cache_db=str(db_utils.DB_PATH),
+            cache_enabled=not config_utils.cache_disabled(),
+            cache_env_override=_cache_env_override(),
             search_paths=list(config["search_paths"]["custom_bench_paths"]),
             auto_inspect=state,
             cred_bridge=bridge_state,
             show_tips=config_utils.get_show_tips(),
+        ),
+    )
+
+
+def set_cache(enabled: bool) -> Result[CacheState]:
+    """Turn the on-disk cache on or off via the ``[cache] enabled`` config key.
+
+    The cache DB is never deleted or altered here - it is left in place so
+    re-enabling restores the previous behaviour. When ``CWCLI_NO_CACHE`` is set it
+    overrides this key, so the returned :class:`CacheState` reports that override.
+    """
+    config_utils.set_cache_enabled(enabled)
+    return Result(
+        status=Status.OK,
+        data=CacheState(
+            enabled=not config_utils.cache_disabled(), env_override=_cache_env_override()
         ),
     )
 
