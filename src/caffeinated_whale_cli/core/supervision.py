@@ -1295,7 +1295,7 @@ def _process_owns_listener(container, pid: int, port: int, bench_path: str) -> b
     exit_code, _output = container.exec_run(
         ["python3", "-c", _LISTENER_OWNERSHIP_SCRIPT, str(pid), str(port), bench_path]
     )
-    return exit_code == 0
+    return bool(exit_code == 0)
 
 
 def _resync_web_port(container, bench_path: str, web_pid: int | None) -> int | None:
