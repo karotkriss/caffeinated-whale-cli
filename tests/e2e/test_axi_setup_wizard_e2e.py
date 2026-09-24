@@ -144,7 +144,12 @@ def _fetch_desk_boot_as_worker(project: str, site: str) -> str:
 
 def test_axi_init_complete_setup_finishes_the_wizard_on_a_real_bench(port_allocator):
     """The `--complete-setup` half: a FRESH site, real bench, real RPC."""
-    project = harness.project_name("setupA")
+    # Lowercase suffix: Docker Compose (and cwcli's own validate_project_slug)
+    # normalize a project name to lowercase, so the name cwcli echoes back and the
+    # label it creates are lowercase. Holding a lowercase name here keeps the test's
+    # own assertions and cleanup consistent with that. (The normalization itself is
+    # pinned at the seam level by tests/test_axi_init.py::TestProjectNameNormalization.)
+    project = harness.project_name("setupa")
     site = harness.DEFAULT_SITE
     bench = harness.DEFAULT_BENCH_PATH
 
@@ -198,7 +203,7 @@ def test_axi_setup_wizard_completes_an_existing_wizard_state_site(port_allocator
     """The standalone verb: a site left in the (bug-report) wizard state by a
     plain `cwcli axi init` with no `--complete-setup`, completed afterward - and
     proven idempotent on a second call."""
-    project = harness.project_name("setupB")
+    project = harness.project_name("setupb")  # lowercase: see the note in test A
     site = harness.DEFAULT_SITE
     bench = harness.DEFAULT_BENCH_PATH
 

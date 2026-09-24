@@ -2416,11 +2416,17 @@ def axi_init(
         raise typer.Exit(exit_for(ErrorKind.USAGE))
     db_root = db_root_password or os.environ.get("CWCLI_DB_ROOT_PASSWORD") or "123"
 
-    # Fail-fast on a bad site name or --uid BEFORE stage 1 (the human init's
-    # ordering): the core re-validates in init_bench, but that runs only after
-    # compose has brought real containers up, which a usage error must never leave
-    # behind.
+    # Fail-fast on a bad project/site name or --uid BEFORE stage 1 (the human
+    # init's ordering): the core re-validates in init_bench, but that runs only
+    # after compose has brought real containers up, which a usage error must never
+    # leave behind. Normalizing the project name here (Docker Compose lowercases it,
+    # and validate_project_slug does the same) is load-bearing, not cosmetic: the
+    # post-creation steps below (dev-services start, recache, setup wizard) look the
+    # container up by this name, so a mixed-case argument would resolve nothing and
+    # they would fail "project not found" - exactly what the human init avoids by
+    # threading the normalized name everywhere.
     try:
+        project = core_init.validate_project_slug(project)
         site = core_init.validate_new_site_name(site)
         core_init.check_uid_override(uid)
     except CwcliError as error:

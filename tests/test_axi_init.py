@@ -823,3 +823,31 @@ class TestCompleteSetup:
         assert result.exit_code == 1
         assert "project: proj" in result.stdout
         assert "lost the connection" in result.stdout
+
+
+class TestProjectNameNormalization:
+    """Regression: Docker Compose (and ``validate_project_slug``) lowercase the
+    project name, so the container is created under the lowercased label. The
+    post-creation seams - dev-services start, recache, and the setup wizard -
+    look the container up by name, so ``axi init`` must thread the NORMALIZED
+    name into them. Passing the raw mixed-case argument resolved nothing and
+    the wizard (and auto-start) failed "project not found" on a real bench."""
+
+    def test_mixed_case_name_is_normalized_before_the_post_creation_seams(self, monkeypatch):
+        _no_admin_env(monkeypatch)
+        stage_calls = _patch_stages(monkeypatch)
+        wizard_calls = _patch_setup_wizard(monkeypatch)
+
+        result = runner.invoke(
+            axi_mod.app,
+            ["init", "MixedCase", "--admin-password", "s3cret", "--complete-setup"],
+        )
+
+        assert result.exit_code == 0, result.stdout + result.stderr
+        # Every seam that resolves the container by name gets the lowercase form,
+        # matching the label Docker Compose actually created.
+        assert stage_calls["instance"][0]["project"] == "mixedcase"
+        assert stage_calls["bench"][0]["project"] == "mixedcase"
+        assert stage_calls["start"][0]["project"] == "mixedcase"
+        assert stage_calls["recache"][0]["project"] == "mixedcase"
+        assert wizard_calls[0]["project"] == "mixedcase"
