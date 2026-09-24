@@ -347,7 +347,10 @@ def _merge_projects(
             conflicts.append(proj.name)
             continue
         try:
-            shutil.copytree(proj, dest, ignore=_ignore_special_files)
+            # symlinks=True copies each link AS a link: a real bench links to
+            # paths that exist only inside the container (``env/bin/python*``,
+            # ``sites/assets/*``, ``node_modules``), and following them fails.
+            shutil.copytree(proj, dest, symlinks=True, ignore=_ignore_special_files)
         except Exception:
             shutil.rmtree(dest, ignore_errors=True)
             raise
@@ -374,11 +377,27 @@ def _ignore_special_files(directory: str, names: list[str]) -> set[str]:
 
 
 def _reown_tree(root: Path, gid: int | None) -> None:
-    """Re-own a copied subtree to root:cwcli with setgid dirs / group-writable files."""
+    """Re-own a copied subtree to root:cwcli with setgid dirs / group-writable files.
+
+    A symlink is re-owned itself and NEVER followed: a bench links to absolute
+    container paths, and chmod/chown as root through one would change whatever
+    the host happens to have at that path. An executable keeps its execute bit
+    (group included), or the bench's own scripts and binaries stop running.
+    """
     _secure(root, shared_home.SHARED_DIR_MODE, gid)
-    for path in root.rglob("*"):
-        mode = shared_home.SHARED_DIR_MODE if path.is_dir() else shared_home.SHARED_FILE_MODE
-        _secure(path, mode, gid)
+    for dirpath, dirnames, filenames in os.walk(root):  # never descends a symlinked dir
+        for name in dirnames + filenames:
+            path = Path(dirpath, name)
+            mode = path.lstat().st_mode
+            if stat.S_ISLNK(mode):
+                if gid is not None:
+                    with contextlib.suppress(OSError):
+                        os.lchown(path, 0, gid)
+            elif stat.S_ISDIR(mode):
+                _secure(path, shared_home.SHARED_DIR_MODE, gid)
+            else:
+                exec_bits = 0o110 if mode & 0o111 else 0
+                _secure(path, shared_home.SHARED_FILE_MODE | exec_bits, gid)
 
 
 def _copy_config_if_absent(
