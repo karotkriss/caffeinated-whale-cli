@@ -2091,6 +2091,68 @@ def axi_build(
     raise typer.Exit(0 if report.ok else 1)
 
 
+@app.command("setup-wizard")
+def axi_setup_wizard(
+    project: str = typer.Argument(..., help="The Docker Compose project name."),
+    site: str = typer.Argument(..., help="The site whose setup wizard to complete."),
+    country: str = typer.Option(
+        None, "--country", help="Setup wizard country (default: United States)."
+    ),
+    currency: str = typer.Option(None, "--currency", help="Setup wizard currency (default: USD)."),
+    timezone: str = typer.Option(None, "--timezone", help="Setup wizard timezone (default: UTC)."),
+    bench: str = typer.Option(None, "--bench", help="Which bench: numeric index or label."),
+) -> None:
+    """Headlessly complete an EXISTING site's Frappe setup wizard; emit the report as TOON.
+
+    The standalone twin of `axi init --complete-setup`, sharing its exact
+    implementation (`core.bench_ops.complete_setup_wizard`) - for a site that was
+    created before this existed, or by anything other than cwcli (a bare `bench
+    new-site`), and is stuck in the setup-wizard state: `desktop:home_page` stays
+    `setup-wizard` and a non-System-Manager desk renders with no navbar.
+
+    Runs the SAME whitelisted Frappe RPC a human finishing the wizard in a
+    browser triggers - `frappe.desk.page.setup_wizard.setup_wizard.setup_complete`
+    - via `bench execute ... --kwargs`, with the args dict the wizard UI would
+    have submitted (System Settings' country/currency/timezone/language).
+
+    IDEMPOTENT: Frappe's own `setup_complete` checks `frappe.is_setup_complete()`
+    first and no-ops (under an advisory lock) when the site is already set up, so
+    re-running this against an already-completed site is always safe. The report's
+    `already_complete` field says whether this call found it already done.
+
+    No user is created: `email`/`full_name`/`password` are deliberately left out
+    of the args dict, so the Administrator account cwcli's own `init` already
+    provisioned is left untouched.
+
+    NO --yes and no auto-start: a stopped project is a usage error naming
+    `cwcli start`.
+    """
+    try:
+        result = core_bench_ops.complete_setup_wizard(
+            project,
+            site=site,
+            bench=bench,
+            country=country,
+            currency=currency,
+            timezone=timezone,
+            auto_start=False,
+            on_event=_bench_op_narrate,
+        )
+    except CwcliError as error:
+        emit_axi_error(error)
+        raise typer.Exit(exit_for(error.kind)) from None
+
+    if result.status is CoreStatus.NEEDS_CHOICE:
+        assert result.choice is not None  # NEEDS_CHOICE always carries a Choice
+        emit_axi_choice_as_usage_error(result.choice)
+        raise typer.Exit(2)
+
+    assert result.data is not None  # OK/WARNING always carries a SetupWizardReport
+    report = result.data
+    emit_result(report, warnings=result.warnings)
+    raise typer.Exit(0 if report.ok else 1)
+
+
 # ---------------------------------------------------------------------------- config
 
 
@@ -2272,6 +2334,25 @@ def axi_init(
         "so that case already falls back to a safe default automatically (reported in `warnings`); "
         "pass --uid to choose a specific uid instead. Must be a positive, non-root integer.",
     ),
+    complete_setup: bool = typer.Option(
+        False,
+        "--complete-setup",
+        help="After the site is created, headlessly complete its Frappe setup wizard (same "
+        "effect as finishing it in a browser) so 'desktop:home_page' leaves 'setup-wizard' and "
+        "a non-System-Manager desk renders with its navbar. Without this flag a fresh site is "
+        "left exactly as before: in the unfinished setup-wizard state.",
+    ),
+    setup_country: str = typer.Option(
+        None,
+        "--country",
+        help="Setup wizard country (default: United States). Requires --complete-setup.",
+    ),
+    setup_currency: str = typer.Option(
+        None, "--currency", help="Setup wizard currency (default: USD). Requires --complete-setup."
+    ),
+    setup_timezone: str = typer.Option(
+        None, "--timezone", help="Setup wizard timezone (default: UTC). Requires --complete-setup."
+    ),
 ) -> None:
     """Provision a new instance, bench, and site; emit the report as TOON (never prompts).
 
@@ -2304,7 +2385,23 @@ def axi_init(
     --port (exit 1); containers that do not come up point at `cwcli status` /
     `cwcli logs` (exit 1). There is no --auto-start (compose `cwcli axi start`
     then re-run) and no --verbose (stdout is always TOON).
+
+    --complete-setup runs the site's Frappe setup wizard headlessly right after
+    creation (--country/--currency/--timezone tune it; omitted ones get sensible
+    defaults), and its outcome rides as a `setup_wizard` block inside this SAME
+    document - see `cwcli axi setup-wizard --help` for the standalone verb that
+    completes an EXISTING site's wizard, which shares this exact implementation.
     """
+    if (setup_country or setup_currency or setup_timezone) and not complete_setup:
+        emit_axi_error(
+            CwcliError(
+                ErrorKind.USAGE,
+                "init.setup_flags_without_complete_setup",
+                "--country/--currency/--timezone require --complete-setup.",
+            )
+        )
+        raise typer.Exit(exit_for(ErrorKind.USAGE))
+
     resolved_admin = admin_password or os.environ.get("CWCLI_ADMIN_PASSWORD")
     if not resolved_admin:
         emit_axi_error(
@@ -2439,8 +2536,51 @@ def axi_init(
                 if warning.code in ("start.web_not_ready", "start.no_host_port"):
                     print(f"Warning: {warning.text}", file=sys.stderr, flush=True)
 
-    emit_result(bench_result.data, warnings=bench_result.warnings)
-    raise typer.Exit(0 if bench_result.status in (CoreStatus.OK, CoreStatus.WARNING) else 1)
+    setup_wizard_payload: dict | None = None
+    setup_wizard_ok = True
+    if complete_setup:
+        print("Completing the setup wizard...", file=sys.stderr, flush=True)
+        try:
+            setup_result = core_bench_ops.complete_setup_wizard(
+                project,
+                site=report.site_name,
+                bench_path=report.bench_path,
+                country=setup_country,
+                currency=setup_currency,
+                timezone=setup_timezone,
+                auto_start=False,
+                on_event=_bench_op_narrate,
+            )
+        except CwcliError as error:
+            setup_wizard_ok = False
+            setup_wizard_payload = {"ok": False, "error": error.message}
+        else:
+            if setup_result.status is CoreStatus.NEEDS_CHOICE:
+                # The container stopped in the window between bench creation and
+                # here; the bench+site above are already real, so this degrades to
+                # a reported failure rather than aborting before the InitReport
+                # an agent needs is ever printed.
+                setup_wizard_ok = False
+                setup_wizard_payload = {
+                    "ok": False,
+                    "error": f"the frappe container for '{project}' is not running",
+                }
+            else:
+                assert setup_result.data is not None  # OK/WARNING always carries a report
+                setup_wizard_payload = asdict(setup_result.data)
+                setup_wizard_ok = setup_result.data.ok
+
+    # ONE document: the setup_wizard outcome, when requested, is a block inside
+    # the SAME encode() call rather than a second emitted document.
+    payload = asdict(bench_result.data)
+    if setup_wizard_payload is not None:
+        payload["setup_wizard"] = setup_wizard_payload
+    typer.echo(toon.encode(payload, warnings=bench_result.warnings))
+
+    # Never exit 0 for a failed explicit request: --complete-setup was asked for,
+    # so its own failure must be visible in the exit code, not just the payload.
+    overall_ok = bench_result.status in (CoreStatus.OK, CoreStatus.WARNING) and setup_wizard_ok
+    raise typer.Exit(0 if overall_ok else 1)
 
 
 # -------------------------------------------------------------------------------- rm
