@@ -761,10 +761,17 @@ def _read_setup_complete(container, bench_path: str, site: str) -> bool | None:
 
     None on an unreadable probe (a failed exec, or output that doesn't parse as
     a JSON boolean or integer) - fail-honest, never guessed as either True or
-    False. `frappe.is_setup_complete()` reads a System Settings Check field, so
-    the value comes back as 1/0, not a JSON `true`/`false`.
+    False. Reads the ``setup_complete`` System Settings Check field directly via
+    ``frappe.db.get_single_value`` (present on every supported Frappe major),
+    NOT ``frappe.is_setup_complete()`` which only exists on v15+; the value comes
+    back as 1/0, not a JSON `true`/`false`, and ``bench execute`` prints the
+    return only when truthy, so an incomplete site is an empty read.
     """
-    cmd = f"bench --site {shlex.quote(site)} execute frappe.is_setup_complete"
+    kwargs = json.dumps({"doctype": "System Settings", "fieldname": "setup_complete"})
+    cmd = (
+        f"bench --site {shlex.quote(site)} execute frappe.db.get_single_value "
+        f"--kwargs {shlex.quote(kwargs)}"
+    )
     exit_code, text = exec_capture(container, cmd, workdir=bench_path)
     if exit_code != 0:
         return None

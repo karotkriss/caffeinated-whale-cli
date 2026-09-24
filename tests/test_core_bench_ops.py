@@ -558,10 +558,11 @@ def test_a_normal_migrate_does_not_touch_the_interrupt_cleanup(container, monkey
 
 
 class SetupWizardContainer(FakeContainer):
-    """Models `frappe.is_setup_complete` and `setup_wizard.setup_complete` over
-    `bench execute`, mirroring the real function's own idempotency: the flag only
-    flips True once the RPC actually runs, and a `fail` container reports the RPC
-    itself failing (as bench does when the called function raises)."""
+    """Models the `setup_complete` System Settings probe and
+    `setup_wizard.setup_complete` RPC over `bench execute`, mirroring the real
+    function's own idempotency: the flag only flips True once the RPC actually
+    runs, and a `fail` container reports the RPC itself failing (as bench does
+    when the called function raises)."""
 
     def __init__(self, *, already_complete=False, fail=False, **kwargs):
         super().__init__(**kwargs)
@@ -570,9 +571,11 @@ class SetupWizardContainer(FakeContainer):
 
     def _run(self, cmd):
         cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
-        if "execute frappe.is_setup_complete" in cmd_str:
+        if "execute frappe.db.get_single_value" in cmd_str:
             self.calls.append(cmd_str)
-            return 0, json.dumps(int(self.is_setup_complete)) + "\n"
+            # bench execute prints the return only when truthy, so an incomplete
+            # site is an empty read (the real cross-version behavior).
+            return 0, (json.dumps(1) + "\n" if self.is_setup_complete else "")
         if "setup_wizard.setup_wizard.setup_complete" in cmd_str:
             self.calls.append(cmd_str)
             if self.fail:

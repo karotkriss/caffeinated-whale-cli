@@ -72,9 +72,18 @@ def _bench_execute(project: str, site: str, bench: str, method: str, kwargs: dic
 
 def _is_setup_complete(project: str, site: str, bench: str) -> bool:
     """`bench execute` prints its return value only when truthy, so an EMPTY
-    stdout is the honest encoding of `frappe.is_setup_complete()` -> False."""
-    code, out = _bench_execute(project, site, bench, "frappe.is_setup_complete")
-    assert code == 0, f"could not read frappe.is_setup_complete: {out}"
+    stdout is the honest encoding of an incomplete setup. Reads the
+    `setup_complete` System Settings field via `frappe.db.get_single_value`,
+    present on every supported Frappe major (`frappe.is_setup_complete()` only
+    exists on v15+)."""
+    code, out = _bench_execute(
+        project,
+        site,
+        bench,
+        "frappe.db.get_single_value",
+        {"doctype": "System Settings", "fieldname": "setup_complete"},
+    )
+    assert code == 0, f"could not read System Settings setup_complete: {out}"
     return out.strip() != ""
 
 
