@@ -572,7 +572,7 @@ class SetupWizardContainer(FakeContainer):
         cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
         if "execute frappe.is_setup_complete" in cmd_str:
             self.calls.append(cmd_str)
-            return 0, json.dumps(self.is_setup_complete) + "\n"
+            return 0, json.dumps(int(self.is_setup_complete)) + "\n"
         if "setup_wizard.setup_wizard.setup_complete" in cmd_str:
             self.calls.append(cmd_str)
             if self.fail:

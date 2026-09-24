@@ -760,7 +760,9 @@ def _read_setup_complete(container, bench_path: str, site: str) -> bool | None:
     """Read whether ``site``'s setup wizard is already complete.
 
     None on an unreadable probe (a failed exec, or output that doesn't parse as
-    a JSON boolean) - fail-honest, never guessed as either True or False.
+    a JSON boolean or integer) - fail-honest, never guessed as either True or
+    False. `frappe.is_setup_complete()` reads a System Settings Check field, so
+    the value comes back as 1/0, not a JSON `true`/`false`.
     """
     cmd = f"bench --site {shlex.quote(site)} execute frappe.is_setup_complete"
     exit_code, text = exec_capture(container, cmd, workdir=bench_path)
@@ -773,7 +775,7 @@ def _read_setup_complete(container, bench_path: str, site: str) -> bool | None:
         value = json.loads(lines[-1])
     except (json.JSONDecodeError, TypeError):
         return None
-    return value if isinstance(value, bool) else None
+    return bool(value) if isinstance(value, (bool, int)) else None
 
 
 def complete_setup_wizard(
