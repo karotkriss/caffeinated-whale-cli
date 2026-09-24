@@ -22,6 +22,7 @@ from __future__ import annotations
 from typer.testing import CliRunner
 
 from caffeinated_whale_cli.commands import axi as axi_mod
+from caffeinated_whale_cli.core.bench_ops import SetupWizardReport
 from caffeinated_whale_cli.core.envelope import Choice, Message, Result, Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from caffeinated_whale_cli.core.init import (
@@ -664,3 +665,189 @@ class TestUidOverride:
         assert calls["instance"][0]["uid"] == 1005
         assert calls["bench"][0]["uid"] == 1005
         assert calls["start"][0]["uid_override"] == 1005
+
+
+# ------------------------------------------------------------------ --complete-setup
+
+
+def _patch_setup_wizard(monkeypatch, *, result=None, raises=None):
+    """Patch `core.bench_ops.complete_setup_wizard`, the same seam
+    `axi setup-wizard` calls directly - proving both entry points share it."""
+    calls: list[dict] = []
+
+    def fake(project, **kw):
+        calls.append({"project": project, **kw})
+        if raises is not None:
+            raise raises
+        if result is not None:
+            return result
+        return Result(
+            status=Status.OK,
+            data=SetupWizardReport(
+                project=project,
+                bench_path=kw.get("bench_path") or REPORT.bench_path,
+                site=kw.get("site") or REPORT.site_name,
+                already_complete=False,
+                setup_complete=True,
+                country="United States",
+                currency="USD",
+                language="English",
+                timezone="UTC",
+                ok=True,
+            ),
+        )
+
+    monkeypatch.setattr(axi_mod.core_bench_ops, "complete_setup_wizard", fake)
+    return calls
+
+
+class TestCompleteSetup:
+    def test_without_the_flag_the_setup_wizard_is_never_called(self, monkeypatch):
+        _no_admin_env(monkeypatch)
+        _patch_stages(monkeypatch)
+        calls = _patch_setup_wizard(monkeypatch)
+
+        result = runner.invoke(axi_mod.app, ["init", "proj", "--admin-password", "s3cret"])
+
+        assert result.exit_code == 0
+        assert calls == []
+        assert "setup_wizard" not in result.stdout
+
+    def test_the_flag_completes_the_wizard_and_merges_into_the_same_document(self, monkeypatch):
+        _no_admin_env(monkeypatch)
+        _patch_stages(monkeypatch)
+        calls = _patch_setup_wizard(monkeypatch)
+
+        result = runner.invoke(
+            axi_mod.app,
+            ["init", "proj", "--admin-password", "s3cret", "--complete-setup"],
+        )
+
+        assert result.exit_code == 0
+        assert_is_one_toon_document(result.stdout)
+        assert "setup_wizard:" in result.stdout
+        assert "setup_complete: true" in result.stdout
+        # The InitReport's own fields are still there, in the SAME document.
+        assert "project: proj" in result.stdout
+        assert len(calls) == 1
+        assert calls[0]["site"] == REPORT.site_name
+        assert calls[0]["bench_path"] == REPORT.bench_path
+
+    def test_country_currency_timezone_thread_through_to_the_core_call(self, monkeypatch):
+        _no_admin_env(monkeypatch)
+        _patch_stages(monkeypatch)
+        calls = _patch_setup_wizard(monkeypatch)
+
+        result = runner.invoke(
+            axi_mod.app,
+            [
+                "init",
+                "proj",
+                "--admin-password",
+                "s3cret",
+                "--complete-setup",
+                "--country",
+                "Germany",
+                "--currency",
+                "EUR",
+                "--timezone",
+                "Europe/Berlin",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert calls[0]["country"] == "Germany"
+        assert calls[0]["currency"] == "EUR"
+        assert calls[0]["timezone"] == "Europe/Berlin"
+
+    def test_setup_flags_without_complete_setup_is_a_usage_error(self, monkeypatch):
+        _no_admin_env(monkeypatch)
+        _patch_stages(monkeypatch)
+        calls = _patch_setup_wizard(monkeypatch)
+
+        result = runner.invoke(
+            axi_mod.app,
+            ["init", "proj", "--admin-password", "s3cret", "--country", "Germany"],
+        )
+
+        assert result.exit_code == 2
+        assert calls == []
+
+    def test_a_failed_setup_wizard_exits_nonzero_but_still_emits_the_init_report(self, monkeypatch):
+        """Never exit 0 for a failed explicit request - but the bench/site above it
+        were already created, so that report must not be swallowed."""
+        _no_admin_env(monkeypatch)
+        _patch_stages(monkeypatch)
+        _patch_setup_wizard(
+            monkeypatch,
+            result=Result(
+                status=Status.WARNING,
+                data=SetupWizardReport(
+                    project="proj",
+                    bench_path=REPORT.bench_path,
+                    site=REPORT.site_name,
+                    already_complete=False,
+                    setup_complete=False,
+                    country="United States",
+                    currency="USD",
+                    language="English",
+                    timezone="UTC",
+                    ok=False,
+                ),
+            ),
+        )
+
+        result = runner.invoke(
+            axi_mod.app,
+            ["init", "proj", "--admin-password", "s3cret", "--complete-setup"],
+        )
+
+        assert result.exit_code == 1
+        assert "project: proj" in result.stdout
+        assert "setup_wizard:" in result.stdout
+        assert "ok: false" in result.stdout
+
+    def test_a_raised_setup_wizard_error_still_emits_the_init_report(self, monkeypatch):
+        _no_admin_env(monkeypatch)
+        _patch_stages(monkeypatch)
+        _patch_setup_wizard(
+            monkeypatch,
+            raises=CwcliError(ErrorKind.DOCKER, "exec.stream_lost", "lost the connection"),
+        )
+
+        result = runner.invoke(
+            axi_mod.app,
+            ["init", "proj", "--admin-password", "s3cret", "--complete-setup"],
+        )
+
+        assert result.exit_code == 1
+        assert "project: proj" in result.stdout
+        assert "lost the connection" in result.stdout
+
+
+class TestProjectNameNormalization:
+    """Regression: Docker Compose (and ``validate_project_slug``) lowercase the
+    project name, so the container is created under the lowercased label. The
+    post-creation seams - dev-services start, recache, and the setup wizard -
+    look the container up by name, so ``axi init`` must thread the NORMALIZED
+    name into them. Passing the raw mixed-case argument resolved nothing and
+    the wizard (and auto-start) failed "project not found" on a real bench."""
+
+    def test_mixed_case_name_is_normalized_before_the_post_creation_seams(self, monkeypatch):
+        _no_admin_env(monkeypatch)
+        stage_calls = _patch_stages(monkeypatch)
+        wizard_calls = _patch_setup_wizard(monkeypatch)
+
+        result = runner.invoke(
+            axi_mod.app,
+            ["init", "MixedCase", "--admin-password", "s3cret", "--complete-setup"],
+        )
+
+        assert result.exit_code == 0, result.stdout + result.stderr
+        # Every seam that resolves the container by name gets the lowercase form,
+        # matching the label Docker Compose actually created.
+        assert stage_calls["instance"][0]["project"] == "mixedcase"
+        assert stage_calls["bench"][0]["project"] == "mixedcase"
+        assert stage_calls["start"][0]["project"] == "mixedcase"
+        assert stage_calls["recache"][0]["project"] == "mixedcase"
+        assert wizard_calls[0]["project"] == "mixedcase"
