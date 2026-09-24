@@ -44,7 +44,7 @@ from ..utils import bench_sites
 from . import credbridge, resolvers, supervision
 from .envelope import Choice, Message, Result, Status
 from .errors import CwcliError, ErrorKind
-from .exec_stream import ExecChunk, exec_stream
+from .exec_stream import ExecChunk, exec_capture, exec_stream
 
 # ------------------------------------------------------------------------------ DTOs
 
@@ -263,7 +263,7 @@ def _installed_apps(frappe_container, bench_path: str, site: str) -> tuple[str, 
     the basis of the fail-closed callers' exit code.
     """
     cmd = f"bench --site {shlex.quote(site)} execute frappe.get_installed_apps"
-    exit_code, text = _capture(frappe_container, cmd, bench_path)
+    exit_code, text = exec_capture(frappe_container, cmd, workdir=bench_path)
     command = f"{cmd} -> exit {exit_code}"
     if exit_code != 0:
         return command, False, []
@@ -277,18 +277,6 @@ def _installed_apps(frappe_container, bench_path: str, site: str) -> tuple[str, 
     if not isinstance(apps, list) or not all(isinstance(app, str) for app in apps):
         return command, False, []
     return command, True, apps
-
-
-def _capture(frappe_container, cmd: str, workdir: str) -> tuple[int, str]:
-    """Drain-and-join one exec: nothing is narrated, the output comes back whole."""
-    text: list[str] = []
-    exit_code = 1
-    for event in exec_stream(frappe_container, cmd, workdir=workdir):
-        if isinstance(event, ExecChunk):
-            text.append(event.text)
-        else:
-            exit_code = event.exit_code
-    return exit_code, "".join(text)
 
 
 def _run_step(

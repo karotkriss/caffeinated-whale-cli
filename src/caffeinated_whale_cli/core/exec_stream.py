@@ -216,3 +216,27 @@ def exec_stream(
         _close_stream(stream)
 
     yield ExecDone(exit_code=_poll_exit_code(api, exec_id))
+
+
+def exec_capture(
+    container,
+    cmd,
+    *,
+    workdir: str | None = None,
+    environment: dict | None = None,
+) -> tuple[int, str]:
+    """Drain-and-join one exec into its full text: the buffered counterpart to
+    streaming consumption, for a caller that only wants an exit code and the
+    joined output (a JSON-return probe, not a rendered command).
+
+    Promoted out of ``core.apps``'s private ``_capture`` when ``core.bench_ops``
+    became its second caller.
+    """
+    text: list[str] = []
+    exit_code = 1
+    for event in exec_stream(container, cmd, workdir=workdir, environment=environment):
+        if isinstance(event, ExecChunk):
+            text.append(event.text)
+        else:
+            exit_code = event.exit_code
+    return exit_code, "".join(text)

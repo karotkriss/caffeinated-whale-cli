@@ -20,6 +20,9 @@ What must be right here, each pinning a decision rather than an implementation:
 
 from __future__ import annotations
 
+import json
+import shlex
+
 import pytest
 
 from caffeinated_whale_cli.core import bench_ops, resolvers
@@ -512,15 +515,11 @@ def test_cleanup_order_is_terminate_then_clear_maintenance_last(monkeypatch, _no
     _drive_interrupted_migrate(monkeypatch, container)
 
     first_kill = next(i for i, c in enumerate(container.calls) if "kill -" in c)
-    first_clear = next(
-        i for i, c in enumerate(container.calls) if "set-maintenance-mode off" in c
-    )
+    first_clear = next(i for i, c in enumerate(container.calls) if "set-maintenance-mode off" in c)
     assert first_kill < first_clear
 
 
-def test_an_orphan_cwcli_cannot_kill_still_clears_maintenance_and_says_so(
-    monkeypatch, _no_sleep
-):
+def test_an_orphan_cwcli_cannot_kill_still_clears_maintenance_and_says_so(monkeypatch, _no_sleep):
     """The 'cannot stop the process' path: cwcli must STILL clear maintenance, escalate
     SIGTERM -> SIGKILL, and say plainly the migrate may still be running, naming the
     command to re-check and clear the site."""
@@ -553,3 +552,141 @@ def test_a_normal_migrate_does_not_touch_the_interrupt_cleanup(container, monkey
     assert not any("/proc/" in c for c in container.calls)
     assert not any("kill -" in c for c in container.calls)
     assert no_sleep_calls == []  # no settle sleep on the clean path
+
+
+# ------------------------------------------------------------------- setup wizard
+
+
+class SetupWizardContainer(FakeContainer):
+    """Models the `setup_complete` System Settings probe and
+    `setup_wizard.setup_complete` RPC over `bench execute`, mirroring the real
+    function's own idempotency: the flag only flips True once the RPC actually
+    runs, and a `fail` container reports the RPC itself failing (as bench does
+    when the called function raises)."""
+
+    def __init__(self, *, already_complete=False, fail=False, **kwargs):
+        super().__init__(**kwargs)
+        self.is_setup_complete = already_complete
+        self.fail = fail
+
+    def _run(self, cmd):
+        cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
+        if "execute frappe.db.get_single_value" in cmd_str:
+            self.calls.append(cmd_str)
+            # bench execute prints the return only when truthy, so an incomplete
+            # site is an empty read (the real cross-version behavior).
+            return 0, (json.dumps(1) + "\n" if self.is_setup_complete else "")
+        if "setup_wizard.setup_wizard.setup_complete" in cmd_str:
+            self.calls.append(cmd_str)
+            if self.fail:
+                return 1, "Traceback (most recent call last):\nRuntimeError: boom\n"
+            self.is_setup_complete = True
+            return 0, json.dumps({"status": "ok"}) + "\n"
+        return super()._run(cmd)
+
+
+@pytest.fixture()
+def setup_container(monkeypatch):
+    c = SetupWizardContainer()
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda _p: c)
+    monkeypatch.setattr(resolvers, "cached_benches", lambda _p: [{"path": BENCH}])
+    monkeypatch.setattr(resolvers, "resolve_default_site", lambda *a, **k: SITE)
+    return c
+
+
+def test_completes_a_fresh_sites_setup_wizard(setup_container):
+    result = bench_ops.complete_setup_wizard("proj", site=SITE)
+
+    assert result.status is Status.OK
+    assert result.data.ok is True
+    assert result.data.already_complete is False
+    assert result.data.setup_complete is True
+    rpc_calls = [c for c in setup_container.calls if "setup_wizard.setup_complete" in c]
+    assert len(rpc_calls) == 1
+    assert f"--site {SITE}" in rpc_calls[0]
+
+
+def test_defaults_are_used_when_no_flags_are_given(setup_container):
+    result = bench_ops.complete_setup_wizard("proj", site=SITE)
+
+    assert result.data.country == bench_ops.DEFAULT_SETUP_COUNTRY
+    assert result.data.currency == bench_ops.DEFAULT_SETUP_CURRENCY
+    assert result.data.timezone == bench_ops.DEFAULT_SETUP_TIMEZONE
+    assert result.data.language == bench_ops.DEFAULT_SETUP_LANGUAGE
+    rpc_call = next(c for c in setup_container.calls if "setup_wizard.setup_complete" in c)
+    assert bench_ops.DEFAULT_SETUP_COUNTRY in rpc_call
+    assert bench_ops.DEFAULT_SETUP_CURRENCY in rpc_call
+
+
+def test_explicit_country_currency_timezone_override_the_defaults(setup_container):
+    result = bench_ops.complete_setup_wizard(
+        "proj", site=SITE, country="Germany", currency="EUR", timezone="Europe/Berlin"
+    )
+
+    assert result.data.country == "Germany"
+    assert result.data.currency == "EUR"
+    assert result.data.timezone == "Europe/Berlin"
+    rpc_call = next(c for c in setup_container.calls if "setup_wizard.setup_complete" in c)
+    assert "Germany" in rpc_call
+    assert "EUR" in rpc_call
+    assert "Europe/Berlin" in rpc_call
+
+
+def test_no_user_is_created_by_the_args_dict(setup_container):
+    """email/full_name/password are deliberately absent: Administrator is already
+    provisioned by `cwcli init`, and this verb must not invent a second user."""
+    bench_ops.complete_setup_wizard("proj", site=SITE)
+
+    rpc_call = next(c for c in setup_container.calls if "setup_wizard.setup_complete" in c)
+    kwargs_json = shlex.split(rpc_call)[shlex.split(rpc_call).index("--kwargs") + 1]
+    args = json.loads(kwargs_json)["args"]
+    assert "email" not in args
+    assert "full_name" not in args
+    assert "password" not in args
+
+
+def test_an_already_complete_site_is_reported_as_such_and_stays_ok(monkeypatch):
+    """Idempotency is Frappe's own (setup_complete no-ops under its lock when the
+    site is already set up); this proves the report reads that state honestly."""
+    c = SetupWizardContainer(already_complete=True)
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda _p: c)
+    monkeypatch.setattr(resolvers, "cached_benches", lambda _p: [{"path": BENCH}])
+    monkeypatch.setattr(resolvers, "resolve_default_site", lambda *a, **k: SITE)
+
+    result = bench_ops.complete_setup_wizard("proj", site=SITE)
+
+    assert result.status is Status.OK
+    assert result.data.ok is True
+    assert result.data.already_complete is True
+    assert result.data.setup_complete is True
+
+
+def test_a_failed_rpc_is_reported_not_raised(monkeypatch):
+    c = SetupWizardContainer(fail=True)
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda _p: c)
+    monkeypatch.setattr(resolvers, "cached_benches", lambda _p: [{"path": BENCH}])
+    monkeypatch.setattr(resolvers, "resolve_default_site", lambda *a, **k: SITE)
+
+    result = bench_ops.complete_setup_wizard("proj", site=SITE)
+
+    assert result.status is Status.WARNING
+    assert result.data.ok is False
+    assert result.data.setup_complete is False
+
+
+def test_no_site_falls_back_to_the_default_site(setup_container):
+    result = bench_ops.complete_setup_wizard("proj")
+
+    assert result.data.site == SITE
+    assert any(w.code == "site.default_used" for w in result.warnings)
+
+
+def test_setup_wizard_on_a_stopped_container_is_a_returned_choice_never_a_start(monkeypatch):
+    c = SetupWizardContainer(status="exited")
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda _p: c)
+
+    result = bench_ops.complete_setup_wizard("proj", site=SITE)
+
+    assert result.status is Status.NEEDS_CHOICE
+    assert result.choice.kind == "confirm_start"
+    assert c.calls == []

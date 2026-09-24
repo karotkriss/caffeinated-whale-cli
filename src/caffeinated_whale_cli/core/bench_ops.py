@@ -45,6 +45,7 @@ one of them stops disabling, and a site stuck in maintenance is a site that is d
 
 from __future__ import annotations
 
+import json
 import secrets
 import shlex
 import time
@@ -54,7 +55,7 @@ from dataclasses import dataclass, field
 from . import resolvers, supervision
 from .envelope import Message, Result, Status
 from .errors import CwcliError, ErrorKind
-from .exec_stream import ExecChunk, exec_stream
+from .exec_stream import ExecChunk, exec_capture, exec_stream
 
 _MIGRATE_LOCK_CONFLICT_EXIT_CODE = 200
 
@@ -720,6 +721,163 @@ def build_assets(
             app=app,
             results=[BenchOpResult(action="build", ok=code == 0)],
             ok=code == 0,
+        ),
+        warnings=warnings,
+    )
+
+
+# ------------------------------------------------------------------------ setup-wizard
+
+DEFAULT_SETUP_COUNTRY = "United States"
+DEFAULT_SETUP_CURRENCY = "USD"
+DEFAULT_SETUP_LANGUAGE = "English"
+DEFAULT_SETUP_TIMEZONE = "UTC"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SetupWizardReport:
+    """The outcome of completing (or confirming already-complete) one site's
+    Frappe setup wizard.
+
+    Deliberately NOT :class:`BenchOpReport`: this op is not maintenance-mode
+    gated, has no app, and its own success axis (``already_complete``) would sit
+    as an unused placeholder on every other bench op's report.
+    """
+
+    project: str
+    bench_path: str
+    site: str
+    already_complete: bool
+    setup_complete: bool
+    country: str
+    currency: str
+    language: str
+    timezone: str
+    ok: bool = True
+
+
+def _read_setup_complete(container, bench_path: str, site: str) -> bool | None:
+    """Read whether ``site``'s setup wizard is already complete.
+
+    None on an unreadable probe (a failed exec, or output that doesn't parse as
+    a JSON boolean or integer) - fail-honest, never guessed as either True or
+    False. Reads the ``setup_complete`` System Settings Check field directly via
+    ``frappe.db.get_single_value`` (present on every supported Frappe major),
+    NOT ``frappe.is_setup_complete()`` which only exists on v15+; the value comes
+    back as 1/0, not a JSON `true`/`false`, and ``bench execute`` prints the
+    return only when truthy, so an incomplete site is an empty read.
+    """
+    kwargs = json.dumps({"doctype": "System Settings", "fieldname": "setup_complete"})
+    cmd = (
+        f"bench --site {shlex.quote(site)} execute frappe.db.get_single_value "
+        f"--kwargs {shlex.quote(kwargs)}"
+    )
+    exit_code, text = exec_capture(container, cmd, workdir=bench_path)
+    if exit_code != 0:
+        return None
+    lines = [line for line in text.splitlines() if line.strip()]
+    if not lines:
+        return None
+    try:
+        value = json.loads(lines[-1])
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return bool(value) if isinstance(value, (bool, int)) else None
+
+
+def complete_setup_wizard(
+    project_name: str,
+    *,
+    site: str | None = None,
+    bench: str | None = None,
+    bench_path: str | None = None,
+    country: str | None = None,
+    currency: str | None = None,
+    timezone: str | None = None,
+    language: str | None = None,
+    auto_start: bool = False,
+    on_event: OnEvent | None = None,
+) -> Result[SetupWizardReport]:
+    """Complete one site's Frappe setup wizard headlessly.
+
+    A fresh site (from ``cwcli init`` or a bare ``bench new-site``) lands in the
+    setup-wizard state: ``frappe.is_setup_complete()`` is False and the
+    ``desktop:home_page`` default stays ``setup-wizard``, so a non-System-Manager
+    desk renders with no navbar. The fix is the same code path a human finishing
+    the wizard in a browser runs: Frappe's own whitelisted
+    ``frappe.desk.page.setup_wizard.setup_wizard.setup_complete``, called here via
+    ``bench execute ... --kwargs`` with the args dict the wizard UI would have
+    submitted. It sets System Settings' country/currency/timezone, flips
+    ``desktop:home_page`` to ``workspace``, and runs every installed app's
+    ``setup_wizard_complete`` hook.
+
+    Idempotent by ``setup_complete`` itself: it checks ``frappe.is_setup_complete``
+    first and returns ``{"status": "ok"}`` without doing anything when the site is
+    already set up (under an advisory lock, so a concurrent duplicate call is also
+    a no-op). This wrapper reads that same flag before AND after so the report
+    states plainly whether the call actually did anything.
+
+    No user is created here - ``email``/``full_name``/``password`` are left out of
+    the args dict, so ``setup_complete``'s own user-creation step is a no-op. The
+    Administrator account and its password are already provisioned by
+    ``cwcli init``'s ``bench new-site --admin-password``.
+    """
+    emit: OnEvent = on_event or _noop
+
+    resolved = resolvers.resolve_container_and_bench(
+        project_name, bench, bench_path, auto_start=auto_start
+    )
+    if isinstance(resolved, Result):
+        return resolved
+    container, path, warnings = resolved
+
+    target = _resolve_site(container, project_name, path, site, warnings)
+
+    resolved_country = country.strip() if country and country.strip() else DEFAULT_SETUP_COUNTRY
+    resolved_currency = (
+        currency.strip() if currency and currency.strip() else DEFAULT_SETUP_CURRENCY
+    )
+    resolved_timezone = (
+        timezone.strip() if timezone and timezone.strip() else DEFAULT_SETUP_TIMEZONE
+    )
+    resolved_language = (
+        language.strip() if language and language.strip() else DEFAULT_SETUP_LANGUAGE
+    )
+
+    already_complete = bool(_read_setup_complete(container, path, target))
+
+    args = {
+        "country": resolved_country,
+        "currency": resolved_currency,
+        "timezone": resolved_timezone,
+        "language": resolved_language,
+    }
+    command = (
+        f"bench --site {shlex.quote(target)} execute "
+        "frappe.desk.page.setup_wizard.setup_wizard.setup_complete "
+        f"--kwargs {shlex.quote(json.dumps({'args': args}))}"
+    )
+    code = _run_step(container, command, path, action="setup-wizard", emit=emit)
+
+    final_complete = _read_setup_complete(container, path, target)
+    # Fail-honest: `ok` claims completion only when it was actually CONFIRMED
+    # read back - an unreadable post-check (final_complete is None) is not
+    # treated as success just because the RPC itself exited 0.
+    ok = code == 0 and final_complete is True
+
+    return Result(
+        status=Status.OK if ok else Status.WARNING,
+        data=SetupWizardReport(
+            project=project_name,
+            bench_path=path,
+            site=target,
+            already_complete=already_complete,
+            setup_complete=bool(final_complete),
+            country=resolved_country,
+            currency=resolved_currency,
+            language=resolved_language,
+            timezone=resolved_timezone,
+            ok=ok,
         ),
         warnings=warnings,
     )
