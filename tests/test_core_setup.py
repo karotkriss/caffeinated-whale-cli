@@ -191,6 +191,55 @@ class TestConsolidate:
         assert (merged_logs / "web.log").read_text() == "running\n"
         assert not (merged_logs / ".cwcli-supervisor.sock").exists()
 
+    def test_merges_a_real_bench_with_container_only_symlinks(
+        self, fake_root, stub_identity, marker_at, tmp_path
+    ):
+        _, state = self._provision(tmp_path)
+        src = tmp_path / "homeA"
+        bench = src / "projects" / "frappe13" / "data" / "frappe-bench"
+        public = bench / "apps" / "frappe" / "frappe" / "public"
+        public.mkdir(parents=True)
+        (bench / "sites" / "assets").mkdir(parents=True)
+        (bench / "env" / "bin").mkdir(parents=True)
+        # A real bench links to paths that exist only inside the container, so on
+        # the host they dangle - the captain's `shutil.Error` on the gov host.
+        container_only = tmp_path / "container-only"
+        os.symlink(container_only / "python3", bench / "env" / "bin" / "python3")
+        os.symlink(container_only / "node_modules", bench / "apps" / "frappe" / "node_modules")
+        # A symlink to a directory inside the bench.
+        os.symlink("../../apps/frappe/frappe/public", bench / "sites" / "assets" / "frappe")
+        # A link whose target happens to exist on the host, outside the tree.
+        host_python = tmp_path / "host-python"
+        host_python.write_text("#!/bin/sh\n")
+        host_python.chmod(0o755)
+        os.symlink(host_python, bench / "env" / "bin" / "python")
+        script = bench / "env" / "bin" / "bench"
+        script.write_text("#!/bin/sh\n")
+        script.chmod(0o755)
+        (public / "app.js").write_text("js\n")
+
+        result = core_setup.consolidate(sources=[src])
+
+        assert result.status is Status.OK
+        assert result.data.merged_projects == ["frappe13"]
+        merged = state / "projects" / "frappe13" / "data" / "frappe-bench"
+        # Every link comes across AS a link, pointing where it pointed.
+        for rel in (
+            "env/bin/python3",
+            "env/bin/python",
+            "apps/frappe/node_modules",
+            "sites/assets/frappe",
+        ):
+            assert (merged / rel).is_symlink(), rel
+            assert os.readlink(merged / rel) == os.readlink(bench / rel)
+        assert (merged / "sites" / "assets" / "frappe" / "app.js").read_text() == "js\n"
+        # The re-own never follows a link out of the tree onto a host file.
+        assert stat.S_IMODE(host_python.stat().st_mode) == 0o755
+        # Executables stay executable; plain files get the shared file mode.
+        assert stat.S_IMODE((merged / "env" / "bin" / "bench").stat().st_mode) == 0o770
+        assert stat.S_IMODE((merged / "apps/frappe/frappe/public/app.js").stat().st_mode) == 0o660
+        assert (src / "projects" / "frappe13").is_dir()
+
     def test_needs_sources(self, fake_root, stub_identity, marker_at, tmp_path):
         self._provision(tmp_path)
         with pytest.raises(CwcliError) as exc:
