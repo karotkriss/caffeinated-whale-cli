@@ -75,6 +75,7 @@ Exit codes: **0** success (a completed operation, including one with warnings, a
   migrate        Run 'bench migrate' against ONE site under maintenance mode; emit the report as TOON.
   run-tests      Run 'bench run-tests' for ONE app against ONE named site; emit the report as TOON.
   build          Run 'bench build' to compile the bench's assets; emit the report as TOON.
+  setup-wizard   Headlessly complete an EXISTING site's Frappe setup wizard; emit the report as TOON.
   config         Report the effective cwcli configuration; emit it as one TOON document; READ-ONLY.
   doctor         Run the system-wide, read-only environment preflight; emit it as one TOON document.
   init           Provision a new instance, bench, and site; emit the report as TOON (never prompts).

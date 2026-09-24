@@ -32,6 +32,7 @@ from caffeinated_whale_cli.core import docker as core_docker
 from caffeinated_whale_cli.core import resolvers
 
 from .test_core_apps import FakeContainer
+from .test_core_bench_ops import SetupWizardContainer
 
 BENCH = "/workspace/frappe-bench"
 SITE = "a.localhost"
@@ -395,3 +396,83 @@ def test_run_tests_can_narrow_to_one_module(container):
         "bench --site a.localhost run-tests --app payments --module payments.tests.test_thing"
         in container.calls
     )
+
+
+# ---------------------------------------------------------------- axi setup-wizard
+
+
+@pytest.fixture()
+def setup_container(monkeypatch):
+    c = SetupWizardContainer()
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda _p: c)
+    monkeypatch.setattr(resolvers, "cached_benches", lambda _p: [{"path": BENCH}])
+    monkeypatch.setattr(resolvers, "resolve_default_site", lambda *a, **k: SITE)
+    return c
+
+
+def _setup_wizard(**kwargs):
+    params = {"country": None, "currency": None, "timezone": None, "bench": None}
+    params.update(kwargs)
+    return axi_mod.axi_setup_wizard("proj", SITE, **params)
+
+
+def test_a_successful_completion_is_one_toon_document_and_exits_zero(setup_container, capsys):
+    with pytest.raises(typer.Exit) as exc:
+        _setup_wizard()
+
+    assert exc.value.exit_code == 0
+    out = capsys.readouterr().out
+    assert "project: proj" in out
+    assert f"site: {SITE}" in out
+    assert "already_complete: false" in out
+    assert "setup_complete: true" in out
+    assert "ok: true" in out
+
+
+def test_an_already_complete_site_reports_that_and_still_exits_zero(monkeypatch, capsys):
+    c = SetupWizardContainer(already_complete=True)
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda _p: c)
+    monkeypatch.setattr(resolvers, "cached_benches", lambda _p: [{"path": BENCH}])
+    monkeypatch.setattr(resolvers, "resolve_default_site", lambda *a, **k: SITE)
+
+    with pytest.raises(typer.Exit) as exc:
+        _setup_wizard()
+
+    assert exc.value.exit_code == 0
+    out = capsys.readouterr().out
+    assert "already_complete: true" in out
+    assert "setup_complete: true" in out
+
+
+def test_custom_country_currency_timezone_flow_into_the_rpc(setup_container, capsys):
+    with pytest.raises(typer.Exit):
+        _setup_wizard(country="Germany", currency="EUR", timezone="Europe/Berlin")
+
+    out = capsys.readouterr().out
+    assert "country: Germany" in out
+    assert "currency: EUR" in out
+    assert "timezone: Europe/Berlin" in out
+
+
+def test_a_failed_completion_exits_one_on_a_warning_shaped_envelope(monkeypatch, capsys):
+    c = SetupWizardContainer(fail=True)
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda _p: c)
+    monkeypatch.setattr(resolvers, "cached_benches", lambda _p: [{"path": BENCH}])
+    monkeypatch.setattr(resolvers, "resolve_default_site", lambda *a, **k: SITE)
+
+    with pytest.raises(typer.Exit) as exc:
+        _setup_wizard()
+
+    assert exc.value.exit_code == 1
+    assert "ok: false" in capsys.readouterr().out
+
+
+def test_a_stopped_container_is_a_usage_error_naming_start(monkeypatch, capsys):
+    c = SetupWizardContainer(status="exited")
+    monkeypatch.setattr(core_docker, "get_frappe_container", lambda _p: c)
+
+    with pytest.raises(typer.Exit) as exc:
+        _setup_wizard()
+
+    assert exc.value.exit_code == 2
+    assert "cwcli start" in capsys.readouterr().out
