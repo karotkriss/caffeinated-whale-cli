@@ -15,6 +15,10 @@ leg pins the honest exit code against a real daemon.
 
 from __future__ import annotations
 
+import os
+import signal
+import subprocess
+
 import pytest
 
 from . import harness
@@ -33,7 +37,7 @@ _LINES = 3000
 _LINE = "Building… ✓ app {} ─────│└ ⚠"
 
 
-def _install_bench_shim(inst, *, exit_code: int) -> None:
+def _install_bench_shim(inst, *, exit_code: int, sleep_s: int = 0) -> None:
     """Shadow `bench` with a python3 program emitting ~120KB of unicode.
 
     python3 specifically: `bench` IS a Python CLI, and CPython block-buffers when
@@ -43,7 +47,8 @@ def _install_bench_shim(inst, *, exit_code: int) -> None:
     """
     script = (
         "#!/usr/bin/env python3\n"
-        "import sys\n"
+        "import sys, time\n"
+        f"time.sleep({sleep_s})\n"
         f"for i in range({_LINES}):\n"
         f'    print("{_LINE}".format(i))\n'
         f"sys.exit({exit_code})\n"
@@ -66,8 +71,8 @@ def _remove_bench_shim(inst) -> None:
 def bench_shim(running_instance):
     """Install the unicode-emitting bench shim, and always put the real one back."""
 
-    def _install(exit_code=0):
-        _install_bench_shim(running_instance, exit_code=exit_code)
+    def _install(exit_code=0, sleep_s=0):
+        _install_bench_shim(running_instance, exit_code=exit_code, sleep_s=sleep_s)
         return running_instance
 
     try:
@@ -120,6 +125,67 @@ def test_run_reports_a_real_nonzero_exit_code(bench_shim):
         result.returncode == 42
     ), f"expected the bench command's real exit code 42, got {result.returncode}"
     assert result.stdout == _expected_output()
+
+
+def test_run_interactive_waits_for_the_command_and_reports_its_exit_code(bench_shim):
+    """Non-TTY `-i` returns only once the command is done: its real exit code, all
+    of its output.
+
+    `docker exec` starts its process as a process-group leader, so the `setsid`
+    wrapper forked and its parent exited 0 at once. cwcli reported success while
+    the command ran on orphaned, blocked on an output pipe nobody drained. A
+    `run -i new-site` "finished" in seconds, and an `rm-site` of that site then
+    hung on the tables its still-running installer held.
+    """
+    inst = bench_shim(exit_code=42)
+
+    result = harness.run_cwcli("run", inst.name, "-i", "migrate", "--yes")
+
+    assert result.returncode == 42, f"expected exit code 42, got {result.returncode}"
+    assert result.stdout == _expected_output(), f"got {len(result.stdout)} bytes of output"
+
+
+def _shim_running(inst) -> bool:
+    """The shim is alive in the container (a zombie left to the non-reaping init is not)."""
+    code, _ = harness.exec_in_frappe(
+        inst.name,
+        "ps -eo stat=,args= | awk '$1 !~ /^Z/' | grep -q '[.]local/bin/bench migrate'",
+    )
+    return code == 0
+
+
+def test_run_interactive_ctrl_c_ends_the_command_in_the_container(bench_shim):
+    """Ctrl-C on a non-TTY `-i` run ends the bench command itself, not just cwcli.
+
+    Docker has no kill-exec API, so cwcli kills the command's process group. That
+    cleanup never worked on the real image - dash's `kill` rejects `--`, and a
+    zombie its non-reaping init keeps still answers `kill -0` - which went unseen
+    while `-i` returned before the command ended.
+    """
+    inst = bench_shim(sleep_s=300)
+    proc = subprocess.Popen(
+        [harness.CWCLI, "run", inst.name, "-i", "migrate", "--yes"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=os.environ.copy(),
+        # A background job may inherit an ignored SIGINT; cwcli must see a real one.
+        preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL),
+    )
+    try:
+        harness.wait_until(
+            lambda: _shim_running(inst), timeout=120, interval=1, desc="the shim running"
+        )
+        proc.send_signal(signal.SIGINT)
+        _out, err = proc.communicate(timeout=60)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+    assert proc.returncode == 130, err
+    assert not _shim_running(inst), "the interrupted bench command is still running"
 
 
 def test_run_executes_a_real_bench_command(running_instance):

@@ -184,6 +184,8 @@ Each entry is the contract; the linked source file is authoritative and the name
   Substitute the live project/site/flag values at the point the hint is printed so it is copy-paste accurate against `commands/run.py`'s pass-through signature.
   A suggested bench command that prompts must carry `-i` (`cwcli run <project> -i new-app <app>`); README.md's `run` section owns the user-facing behavior.
   This is only for SUGGESTIONS; cwcli's own internal `bench`/`docker exec` construction it executes stays as is.
+- **In-container shell.** On the Frappe container, `sh` is dash (its `kill` rejects `--`), PID 1 is `sleep infinity` (killed orphans stay zombies that `kill -0` reports alive), and a `docker exec` process is already a process-group leader (`setsid` forks, so only `setsid -w` waits and keeps the exit code).
+  Each trap once broke `cwcli run -i`; `commands/run.py` shows the working forms.
 - **Commits.** Author commits as `karotkriss <mckay.christopher73@outlook.com>` only.
   Never add an agent name as a co-author.
   Never hand-edit `CHANGELOG.md` outside a deliberate version bump, and never edit auto-generated files.

@@ -88,6 +88,25 @@ def test_port_allocator_spacing():
     assert p1 > p0 + 1005
 
 
+def test_per_test_cap_fails_a_blocked_test_and_disarms(monkeypatch):
+    """The per-test cap interrupts a blocked call, then leaves no alarm behind."""
+    import signal
+    import time
+
+    from . import conftest
+
+    monkeypatch.setattr(conftest, "TEST_TIMEOUT_S", 1)
+    before = signal.getsignal(signal.SIGALRM)
+    wrapper = conftest.pytest_runtest_call(None)
+    next(wrapper)  # arms the cap, as pytest does before the test body
+    with pytest.raises(pytest.fail.Exception, match="exceeded its 1s cap"):
+        time.sleep(10)
+    with pytest.raises(StopIteration):
+        next(wrapper)
+    assert signal.alarm(0) == 0
+    assert signal.getsignal(signal.SIGALRM) is before
+
+
 def test_supervised_program_parsing_is_not_silently_permissive():
     """The stack-settle read must not degrade to "everything is fine".
 
