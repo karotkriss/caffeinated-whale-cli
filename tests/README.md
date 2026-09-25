@@ -78,6 +78,7 @@ Isolation and safety are non-negotiable and layered:
 - A **root-owned-path reclaim** (`reclaim_root_owned`) runs before a session's temp `HOME` is deleted: a scoped root-uid container chowns any root-owned path (e.g. a compose-created `working_dir`) back to the host uid/gid first, so a path the Docker daemon created as root can never survive teardown into the shared temp home.
 
 `CWE2E_FRAPPE_MAJOR` selects the Frappe version leg (default 16); version-agnostic E2E tests run only on the v16 leg, version-sensitive ones on every leg.
+A per-test wall-clock cap (`tests/e2e/conftest.py`, default 900s, `CWE2E_TEST_TIMEOUT_S` overrides it, `0` disables) fails a single hung test with a traceback at the blocked call instead of letting it eat the whole CI job's budget; it bounds the test body only, not fixture setup.
 The real-Docker E2E is Linux-only; Windows/macOS-specific code stays in the unit tier.
 
 ## Test Files
