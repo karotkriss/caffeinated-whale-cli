@@ -130,7 +130,12 @@ def _exec_interactive(plan: RunPlan, *, verbose: bool) -> int:
             'pidfile="$1"; shift; echo $$ > "$pidfile"; '
             '"$@"; status=$?; rm -f "$pidfile"; exit "$status"'
         )
-        argv.extend(["setsid", "sh", "-c", script, "cwcli-run", cleanup_pidfile, *command])
+        # `-w` is load-bearing: `docker exec` starts its process as a process-group
+        # leader, so `setsid` must fork, and without `-w` its parent exits 0 at once.
+        # docker then returns success while the command keeps running orphaned, its
+        # exit code and output lost - a `run -i new-site` that "finished" in seconds
+        # left a half-installed site whose installer still held its tables.
+        argv.extend(["setsid", "-w", "sh", "-c", script, "cwcli-run", cleanup_pidfile, *command])
 
     if verbose:
         stderr_console.print(f"[dim]$ {' '.join(argv)}[/dim]")
@@ -156,22 +161,29 @@ def _exec_interactive(plan: RunPlan, *, verbose: bool) -> int:
 
 def _kill_interactive_process_group(container_id: str, pidfile: str) -> bool:
     quoted = shlex.quote(pidfile)
+    # Two traps on the real image. Its `sh` is dash, whose `kill` rejects `--` as an
+    # illegal number, so `kill -0 -- -PGID` always failed and the cleanup "verified"
+    # a group it had never signalled. And its PID 1 (`sleep infinity`) never reaps,
+    # so a killed member lingers as a zombie that `kill -0` still reports as alive:
+    # `alive` counts only the group's non-zombie members.
     script = (
+        "alive() { ps -eo pgid=,stat= | "
+        "awk -v g=\"$1\" '$1 == g && $2 !~ /^Z/ { f = 1 } END { exit !f }'; }; "
         f'i=0; while [ ! -s {quoted} ] && [ "$i" -lt 20 ]; '
         "do i=$((i + 1)); sleep 0.05; done; "
         f"pid=$(cat {quoted} 2>/dev/null) || exit 2; "
         'case "$pid" in ""|*[!0-9]*) exit 2;; esac; '
-        'if kill -0 -- "-$pid" 2>/dev/null; then '
-        'kill -TERM -- "-$pid" 2>/dev/null; '
-        'i=0; while kill -0 -- "-$pid" 2>/dev/null && [ "$i" -lt 20 ]; '
+        'if alive "$pid"; then '
+        'kill -TERM "-$pid" 2>/dev/null; '
+        'i=0; while alive "$pid" && [ "$i" -lt 20 ]; '
         "do i=$((i + 1)); sleep 0.05; done; "
-        'if kill -0 -- "-$pid" 2>/dev/null; then '
-        'kill -KILL -- "-$pid" 2>/dev/null || exit 3; '
-        'i=0; while kill -0 -- "-$pid" 2>/dev/null && [ "$i" -lt 20 ]; '
+        'if alive "$pid"; then '
+        'kill -KILL "-$pid" 2>/dev/null || exit 3; '
+        'i=0; while alive "$pid" && [ "$i" -lt 20 ]; '
         "do i=$((i + 1)); sleep 0.05; done; "
         "fi; fi; "
         f"rm -f {quoted}; "
-        'if kill -0 -- "-$pid" 2>/dev/null; then exit 4; fi'
+        'if alive "$pid"; then exit 4; fi'
     )
     try:
         result = subprocess.run(
