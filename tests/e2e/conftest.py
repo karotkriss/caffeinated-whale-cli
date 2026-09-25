@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 from dataclasses import dataclass
 
 import pytest
@@ -18,6 +19,43 @@ from . import harness
 # A fixed, non-secret throwaway admin password for the non-interactive session
 # instance (the interactive test covers the GENERATED-password path separately).
 SESSION_ADMIN_PW = "CwE2ETestAdmin-123"
+
+# Per-test wall-clock cap, so one hung test fails ALONE instead of eating the
+# whole CI job: a hung `rm-site` once sat out `run_cwcli`'s 1800s default and the
+# 60-minute v16 job was cancelled with no verdict for anything after it. Sized
+# from measured green CI runs, where the slowest test (a standalone one, setup
+# included) takes ~260s, so 900s is ~3.5x headroom. It bounds
+# the test body only: the session `cwcli init` runs in fixture setup under its
+# own INIT_TIMEOUT. CWE2E_TEST_TIMEOUT_S overrides it; 0 disables it.
+TEST_TIMEOUT_S = int(os.environ.get("CWE2E_TEST_TIMEOUT_S", "900"))
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_call(item):
+    """Fail the running test once it exceeds ``TEST_TIMEOUT_S``.
+
+    SIGALRM raises ``pytest.fail`` in the main thread wherever the test is
+    blocked, so the traceback names the stuck call, and ``subprocess.run`` kills
+    its child on the way out. ``Failed`` is not an ``Exception``, so a test's own
+    broad ``except Exception`` cannot swallow it.
+    """
+    if TEST_TIMEOUT_S <= 0:
+        yield
+        return
+
+    def _expire(signum, frame):
+        pytest.fail(
+            f"E2E test exceeded its {TEST_TIMEOUT_S}s cap (CWE2E_TEST_TIMEOUT_S); "
+            "its traceback shows where it was blocked"
+        )
+
+    previous = signal.signal(signal.SIGALRM, _expire)
+    signal.alarm(TEST_TIMEOUT_S)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 @dataclass

@@ -65,18 +65,17 @@ def _drop_temporary_site(inst, site: str) -> None:
 
     Bounded (a real drop is seconds) and non-fatal on timeout: this is teardown
     of a throwaway site no later test depends on, and ``bench drop-site``'s
-    ``DROP DATABASE`` can block for a very long time on a metadata lock held by
-    the shared bench's still-running scheduler/workers - a flaky hang that must
-    never fail a test whose own assertions already passed.
+    ``DROP DATABASE`` waits (up to MariaDB's one-day ``lock_wait_timeout``) on any
+    session still holding the site's tables - it once hung on the orphaned
+    installer a non-TTY ``run -i new-site`` left behind - so a hang here must never
+    fail a test whose own assertions already passed.
     """
     if not _site_exists(inst, site):
         return
     try:
         result = harness.run_cwcli("rm-site", inst.name, site, "--yes", timeout=300)
     except subprocess.TimeoutExpired:
-        warnings.warn(
-            f"teardown of {site} timed out; leaving it for session sweep", stacklevel=2
-        )
+        warnings.warn(f"teardown of {site} timed out; leaving it for session sweep", stacklevel=2)
         return
     assert result.returncode == 0, result.stdout + result.stderr
     assert not _site_exists(inst, site), f"temporary site {site} survived cleanup"
