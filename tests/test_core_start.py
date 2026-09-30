@@ -49,13 +49,14 @@ def wire(monkeypatch):
 
 
 class TestLaunch:
-    def test_start_thaws_pid1_before_checking_liveness(self, wire):
+    def test_start_thaws_pid1_before_liveness_without_a_host_signal(self, wire):
         events = []
 
         class FrozenContainer(FakeContainer):
-            def kill(self, signal):
-                events.append(signal)
-                super().kill(signal)
+            def exec_run(self, cmd, **kwargs):
+                if cmd == ["kill", "-CONT", "1"]:
+                    events.append((cmd, kwargs.get("user")))
+                return super().exec_run(cmd, **kwargs)
 
             def reload(self):
                 events.append("reload")
@@ -65,14 +66,17 @@ class TestLaunch:
 
         core_start.start("proj")
 
-        assert events[:2] == ["SIGCONT", "reload"]
+        assert events[:2] == [(["kill", "-CONT", "1"], "root"), "reload"]
+        assert frappe.signals == []
 
     def test_start_tolerates_a_failed_pid1_thaw(self, wire):
         from docker.errors import APIError
 
         class ThawFails(FakeContainer):
-            def kill(self, signal):
-                raise APIError("container changed state")
+            def exec_run(self, cmd, **kwargs):
+                if cmd == ["kill", "-CONT", "1"]:
+                    raise APIError("container changed state")
+                return super().exec_run(cmd, **kwargs)
 
         frappe = ThawFails(ps="1 0 5 0.0 1000 /sbin/init\n", cwds={})
         wire(frappe)

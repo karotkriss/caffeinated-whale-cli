@@ -131,7 +131,7 @@ def start(
         )
 
     try:
-        frappe_container.kill(signal="SIGCONT")
+        frappe_container.exec_run(["kill", "-CONT", "1"], user="root")
     except DockerException:
         pass
 

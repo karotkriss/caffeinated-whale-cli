@@ -575,10 +575,10 @@ def align_container_user_to_host(
     # (`kill -CONT 1` after the chain, success or failure): PID 1 cannot exit while
     # the chain runs, and an interrupted cwcli cannot thaw it early once Docker
     # has started the exec. An interrupt after SIGSTOP but before the exec starts
-    # can leave PID 1 frozen; the next core.start sends SIGCONT before checking
-    # liveness. The host thaws here only when the exec raises a Docker error. This
-    # does not make an individual chown atomic or protect against the container or
-    # host dying mid-chain.
+    # can leave PID 1 frozen; the next core.start runs `kill -CONT 1` inside the
+    # container before checking liveness. A Docker error also gets that same
+    # in-container fallback thaw. This does not make an individual chown atomic or
+    # protect against the container or host dying mid-chain.
     steps = []
     if chown_home or cur_uid != host_uid:
         steps.append(f"chown {host_uid}:{host_gid} /home/frappe")
@@ -614,7 +614,7 @@ def align_container_user_to_host(
             code, out = container.exec_run(["bash", "-c", script], user="root")
         except DockerException:
             if ids_changed:
-                container.kill(signal="SIGCONT")
+                container.exec_run(["kill", "-CONT", "1"], user="root")
             raise
     except DockerException as e:
         return (False, f"could not align the container 'frappe' user to the host: {e}")
