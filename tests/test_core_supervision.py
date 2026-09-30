@@ -13,11 +13,11 @@ from __future__ import annotations
 
 import inspect
 import json
-import os
 import re
 
 import pytest
 
+from caffeinated_whale_cli.core import docker as core_docker
 from caffeinated_whale_cli.core import supervision
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 
@@ -169,9 +169,11 @@ class FakeContainer:
     def _exec_list(self, cmd, detach):
         head = cmd[0]
         if head == "id":
-            # `id -u/-g frappe` probe: report the host's own ids so core.start's
-            # host-uid alignment is a clean no-op in these fakes.
-            return (0, (str(os.getuid()) if "-u" in cmd else str(os.getgid())).encode())
+            # `id -u/-g frappe` probe: report the resolved alignment target (not the
+            # raw host ids, which differ on a root host) so core.start's host-uid
+            # alignment is a clean no-op in these fakes.
+            uid, gid, _ = core_docker.resolve_frappe_alignment_ids()
+            return (0, str(uid if "-u" in cmd else gid).encode())
         if head == "ps":
             return (0, self.ps.encode())
         if head == "cat":
