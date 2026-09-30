@@ -197,7 +197,9 @@ def _wire(monkeypatch, containers, volumes, *, cached=None):
     monkeypatch.setattr(db_utils, "clear_cache_for_project", lambda name: None)
     monkeypatch.setattr(db_utils, "get_cached_project_data", lambda name: cached)
     # Recache is a frontend concern; no-op it so the command does not touch Docker.
-    monkeypatch.setattr(rm.cache, "recache_project", lambda name, verbose=False: True)
+    monkeypatch.setattr(
+        rm.cache, "recache_project", lambda name, verbose=False, warnings=None: True
+    )
     # stdin is a real TTY (so no piped-input path) unless a test overrides it.
     monkeypatch.setattr(rm.sys.stdin, "isatty", lambda: True)
 

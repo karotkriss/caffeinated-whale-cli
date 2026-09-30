@@ -61,7 +61,9 @@ def recache_project(
             found = core_inspect.refresh_bench(project_name, bench_path).warnings
         else:
             # A full core inspect owns the cache write (an atomic rewrite).
-            found = core_inspect.inspect(project_name, refresh="full", offer_choice=False).warnings
+            found = core_inspect.inspect_raw(
+                project_name, refresh="full", offer_choice=False
+            ).warnings
         if warnings is not None:
             warnings.extend(found)
         return True

@@ -1054,6 +1054,26 @@ def _no_sleep(monkeypatch):
     monkeypatch.setattr(core_update.time, "sleep", lambda *_a, **_k: None)
 
 
+@pytest.mark.parametrize("json_output", [False, True])
+def test_update_prints_the_bench_its_recache_could_not_read(monkeypatch, capsys, json_output):
+    from caffeinated_whale_cli.core.envelope import Message
+
+    container = FakeFrappeContainer(available_apps=["frappe", "payments"])
+    _wire_update(monkeypatch, container)
+    _count_discovery(monkeypatch, ["a.localhost"])
+    unread = "Could not read bench /workspace/frappe-bench (its read process exited with code 137)."
+
+    def fake_recache(project_name, verbose=False, bench_path=None, warnings=None):
+        warnings.append(Message("inspect.bench_unread", unread))
+        return True
+
+    monkeypatch.setattr(core_update.cache, "recache_project", fake_recache)
+
+    update_mod.run_app_update("proj", ["payments"], verbose=False, json_output=json_output)
+
+    assert unread in " ".join(capsys.readouterr().err.split())
+
+
 @pytest.mark.parametrize("verbose", [True, False])
 def test_update_pulls_and_discovers_once(monkeypatch, verbose):
     # Both paths must git pull once per app and discover once per app - no double
