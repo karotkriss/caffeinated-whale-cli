@@ -154,6 +154,15 @@ def read_label_marker(container, bench_path: str) -> str | None:
         text = raw.decode("utf-8", errors="replace")
     else:
         text = str(raw)
+    return label_from_marker_text(text)
+
+
+def label_from_marker_text(text: str) -> str | None:
+    """The label in a marker file's decoded content, or None when malformed.
+
+    Shared with ``core.bench_read``'s batched read, which reads the marker in its
+    own process, so both paths accept exactly the same markers.
+    """
     text = text.strip()
     if not text:
         return None

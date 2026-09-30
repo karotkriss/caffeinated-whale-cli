@@ -289,8 +289,8 @@ def test_install_refuses_when_the_sites_app_list_cannot_be_read(container, monke
     """Fail closed: an unreadable site must never degrade to "nothing is installed"."""
     monkeypatch.setattr(
         core_apps,
-        "_installed_apps",
-        lambda *a, **k: ("bench execute frappe.get_installed_apps -> exit 1", False, []),
+        "_read_installed_apps",
+        lambda _c, _path, sites, **_k: {site: (False, []) for site in sites},
     )
     ran = _record_steps(monkeypatch)
 

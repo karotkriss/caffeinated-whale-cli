@@ -328,11 +328,12 @@ def _resolve_frappe_branch(frappe_branch: str | None, version: str | None) -> st
     return core_init.DEFAULT_FRAPPE_BRANCH
 
 
-def _refresh_cache(project: str, verbose: bool) -> None:
-    """Populate the bench cache right after a fresh bench is created.
+def _refresh_cache(project: str, verbose: bool, bench_path: str) -> None:
+    """Cache the bench right after it is created (or reused).
 
-    ``init_bench`` only CLEARS the project's cache (a stale entry would be
-    worse than none); nothing else repopulates it. Every bench-resolving verb
+    Only this bench is re-read and spliced into the project's cache; a failed
+    recache clears the project's cache instead (a stale entry would be worse
+    than none). Every bench-resolving verb
     (``status``, ``run``, ``apps``, ...) falls back to a hardcoded default
     bench path when the cache is empty, which only happens to match a bench
     built under the DEFAULT ``--bench-parent`` - a custom parent's very first
@@ -340,7 +341,7 @@ def _refresh_cache(project: str, verbose: bool) -> None:
     ``apps.py``'s post-mutation ``_refresh_cache``: degrades to a warning,
     never fails init (the bench itself already succeeded).
     """
-    if not cache.recache_project(project, verbose=verbose):
+    if not cache.recache_project(project, verbose=verbose, bench_path=bench_path):
         stderr_console.print(
             "[yellow]Warning:[/yellow] bench created, but caching its bench path failed; "
             "run 'cwcli inspect --update' to refresh."
@@ -794,7 +795,7 @@ def init(
         )
     console.print(f"[dim]Bench path: {report.bench_path}[/dim]")
 
-    _refresh_cache(project, verbose)
+    _refresh_cache(project, verbose, report.bench_path)
 
     # Auto-start the bench dev services (default) so init leaves a running dev
     # environment. Containers are already up (stage 1 brought them up), so no

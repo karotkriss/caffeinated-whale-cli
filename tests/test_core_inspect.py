@@ -695,8 +695,10 @@ class TestBenchSelector:
         )
         monkeypatch.setattr(
             core_inspect,
-            "_gather_bench_data",
-            lambda _container, path, _emit: next(b for b in gathered if b["path"] == path),
+            "_gather_benches",
+            lambda _container, paths, _emit: [
+                next(b for b in gathered if b["path"] == path) for path in paths
+            ],
         )
 
         result = core_inspect.inspect_raw("proj", refresh="full", bench="1")
@@ -734,7 +736,12 @@ class TestAppCopiesFlags:
                 for a in apps
             }
 
-        monkeypatch.setattr(core_inspect.resolvers, "resolve_app_imports", _fake)
+        # Both read paths interpret the probe through app_imports_from_probe.
+        monkeypatch.setattr(
+            core_inspect.resolvers,
+            "app_imports_from_probe",
+            lambda bench, apps, _out: _fake(None, bench, apps),
+        )
 
     def test_full_inspect_flags_a_wrong_copy(self, wired, monkeypatch):
         store, _writes, install = wired

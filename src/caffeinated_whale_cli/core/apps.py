@@ -40,8 +40,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
+from docker.errors import DockerException
+
 from ..utils import bench_sites
-from . import credbridge, resolvers, supervision
+from . import bench_read, credbridge, resolvers, supervision
 from .envelope import Choice, Message, Result, Status
 from .errors import CwcliError, ErrorKind
 from .exec_stream import ExecChunk, exec_capture, exec_stream
@@ -279,6 +281,47 @@ def _installed_apps(frappe_container, bench_path: str, site: str) -> tuple[str, 
     return command, True, apps
 
 
+def _read_installed_apps(
+    frappe_container, bench_path: str, sites: list[str], *, emit: OnEvent
+) -> dict[str, tuple[bool, list[str]]]:
+    """:func:`_installed_apps` for every site in ``sites``, keyed in ``sites`` order.
+
+    One exec and one Frappe process for the whole bench (``core.bench_read``), which
+    asks ``frappe.get_installed_apps()`` exactly as ``bench execute`` does. ``ok``
+    keeps :func:`_installed_apps`' meaning: False for a failed read AND for an empty
+    answer, since ``bench execute`` prints nothing for ``[]``. A bench the batched
+    read left no record for falls back to one ``bench execute`` per site.
+    """
+    if not sites:
+        return {}
+    try:
+        batch = bench_read.read_benches(frappe_container, [bench_path], sites=sites, installed=True)
+    except DockerException as e:
+        # The same typed error exec_stream raised for the per-site reads.
+        raise CwcliError(
+            ErrorKind.DOCKER,
+            "exec.start_failed",
+            f"Could not start the command in the container: {e}",
+        ) from e
+    read = batch.benches.get(bench_path)
+    if read is None or read.sites is None:
+        found: dict[str, tuple[bool, list[str]]] = {}
+        for site in sites:
+            command, ok, apps = _installed_apps(frappe_container, bench_path, site)
+            emit(AppsCommand(command=command))
+            found[site] = (ok, apps)
+        return found
+    emit(
+        AppsCommand(
+            command=(
+                f"read installed apps of {', '.join(sites)} in {bench_path} "
+                f"-> exit {batch.exit_code}"
+            )
+        )
+    )
+    return {site.name: (bool(site.installed), list(site.installed or [])) for site in read.sites}
+
+
 def _run_step(
     frappe_container,
     cmd: str,
@@ -418,16 +461,17 @@ def _sites_with_app_installed(
         )
         return None
 
+    ordered = sorted(sites)
+    detail = ""
+    try:
+        by_site = _read_installed_apps(frappe_container, bench_path, ordered, emit=_noop)
+    except Exception as error:  # noqa: BLE001
+        by_site = {}
+        detail = error.message if isinstance(error, CwcliError) else str(error)
+
     found: list[str] = []
-    for site in sorted(sites):
-        try:
-            _command, ok, installed = _installed_apps(frappe_container, bench_path, site)
-        except Exception as error:  # noqa: BLE001
-            ok = False
-            installed = []
-            detail = error.message if isinstance(error, CwcliError) else str(error)
-        else:
-            detail = ""
+    for site in ordered:
+        ok, installed = by_site.get(site, (False, []))
         if not ok:
             suffix = f" ({detail})" if detail else ""
             warnings.append(
@@ -499,9 +543,10 @@ def list_apps(
 
     installed_by_site: dict[str, list[str] | None] = {}
     if installed or sites:
-        for site in _target_sites(frappe_container, path, sites):
-            command, ok, site_apps = _installed_apps(frappe_container, path, site)
-            emit(AppsCommand(command=command))
+        targets = _target_sites(frappe_container, path, sites)
+        for site, (ok, site_apps) in _read_installed_apps(
+            frappe_container, path, targets, emit=emit
+        ).items():
             installed_by_site[site] = site_apps if ok else None
 
     any_fail = any(v is None for v in installed_by_site.values())
@@ -542,9 +587,10 @@ def _refuse_if_installed(
     does not match and the install proceeds to bench's own behaviour - it can miss a
     match, it cannot invent one, so it never refuses an install that was safe.
     """
-    for site in _target_sites(frappe_container, path, sites):
-        command, ok, site_apps = _installed_apps(frappe_container, path, site)
-        emit(AppsCommand(command=command))
+    targets = _target_sites(frappe_container, path, sites)
+    for site, (ok, site_apps) in _read_installed_apps(
+        frappe_container, path, targets, emit=emit
+    ).items():
         if not ok:
             raise CwcliError(
                 ErrorKind.PRECONDITION,
@@ -591,9 +637,9 @@ def _read_installed_by_site(
     and gets silently (re)installed.
     """
     installed: dict[str, set[str]] = {}
-    for site in sites:
-        command, ok, site_apps = _installed_apps(frappe_container, path, site)
-        emit(AppsCommand(command=command))
+    for site, (ok, site_apps) in _read_installed_apps(
+        frappe_container, path, sites, emit=emit
+    ).items():
         if not ok:
             raise CwcliError(
                 ErrorKind.PRECONDITION,

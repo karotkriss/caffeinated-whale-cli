@@ -1700,7 +1700,9 @@ def axi_apps_checkout(
     # epilogue gated on a condition already in the returned report. A failed recache
     # is a stderr warning, NOT a non-zero exit: the checkout itself landed, and
     # failing here would make an agent retry a mutation that already succeeded.
-    if any(r.ok for r in report.results) and not cache.recache_project(project):
+    if any(r.ok for r in report.results) and not cache.recache_project(
+        project, bench_path=report.bench_path
+    ):
         print(
             f"Warning: checkout completed, but re-caching '{project}' failed; "
             "run 'cwcli inspect --update' to refresh.",
@@ -1834,7 +1836,9 @@ def axi_apps_install(
     # the cache whenever any step landed, matching the human verb. A failed recache
     # is a stderr warning, NOT a non-zero exit: the install itself landed, and
     # failing here would make an agent retry a mutation that already succeeded.
-    if any(r.ok for r in report.results) and not cache.recache_project(project):
+    if any(r.ok for r in report.results) and not cache.recache_project(
+        project, bench_path=report.bench_path
+    ):
         print(
             f"Warning: install completed, but re-caching '{project}' failed; "
             "run 'cwcli inspect --update' to refresh.",
@@ -2518,7 +2522,7 @@ def axi_init(
     assert bench_result.data is not None  # OK/WARNING always carries an InitReport
     report = bench_result.data
 
-    if not cache.recache_project(project):
+    if not cache.recache_project(project, bench_path=report.bench_path):
         print(
             "Warning: bench created, but caching its bench path failed; "
             "run 'cwcli inspect --update' to refresh.",
@@ -2857,7 +2861,7 @@ def axi_rm_site(
     # A failed recache is a stderr warning, NOT a non-zero exit: the drop
     # already happened, and failing here would make an agent retry a mutation
     # that already succeeded.
-    if not cache.recache_project(project):
+    if not cache.recache_project(project, bench_path=outcome.bench_path):
         print(
             f"Warning: site dropped, but re-caching '{project}' failed; "
             "run 'cwcli inspect --update' to refresh.",
@@ -2973,7 +2977,7 @@ def axi_rm_bench(
     # A failed recache is a stderr warning, NOT a non-zero exit: the removal
     # already happened, and failing here would make an agent retry a bench that
     # is already gone.
-    if not cache.recache_project(project):
+    if not cache.recache_project(project, bench_path=outcome.bench_path):
         print(
             f"Warning: bench removed, but re-caching '{project}' failed; "
             "run 'cwcli inspect --update' to refresh.",

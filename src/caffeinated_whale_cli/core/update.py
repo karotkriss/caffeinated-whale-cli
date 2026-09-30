@@ -59,7 +59,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from ..utils import bench_sites, cache, db_utils
-from . import bench_ops, credbridge, resolvers, supervision
+from . import bench_ops, bench_read, credbridge, resolvers, supervision
 from . import docker as core_docker
 from .envelope import Message, Result, Status
 from .errors import CwcliError, ErrorKind
@@ -384,6 +384,18 @@ def _sites_with_app(project_name: str, bench_path: str, app: str, container) -> 
     if not container:
         return []
 
+    # One exec and one Frappe process for the whole bench, instead of one
+    # `bench --site X list-apps` boot per site.
+    read = bench_read.read_benches(container, [bench_path], list_apps=True).benches.get(bench_path)
+    if read is not None:
+        return [
+            site.name
+            for site in read.sites or []
+            if site.list_apps is not None
+            and app in [line.strip().split()[0] for line in site.list_apps if line.strip()]
+        ]
+
+    # No record (the bench's process died, or no usable Python): the per-exec reads.
     exit_code, output = container.exec_run(
         f"ls -1 {shlex.quote(bench_path)}/sites", workdir=bench_path
     )
@@ -558,10 +570,10 @@ def _build_report(
     )
 
 
-def _recache(project_name: str, warnings: list[Message], emit: OnEvent) -> None:
-    """Refresh the cache so the site discovery that follows is accurate."""
+def _recache(project_name: str, bench_path: str, warnings: list[Message], emit: OnEvent) -> None:
+    """Refresh the updated bench's cache so the site discovery that follows is accurate."""
     emit(UpdateStepStart(phase="recache"))
-    ok = cache.recache_project(project_name)
+    ok = cache.recache_project(project_name, bench_path=bench_path)
     emit(UpdateStepEnd(phase="recache", status="ok" if ok else "failed"))
     if not ok:
         warnings.append(
@@ -630,7 +642,7 @@ def _frappe_reset(
     # warrants a refresh. Defensible and untested either way; preserved deliberately
     # rather than "fixed" inside a migration.
     if not no_recache:
-        _recache(project_name, warnings, emit)
+        _recache(project_name, bench_path, warnings, emit)
 
     # Same resync every other code-changing path takes. This one resets and pulls
     # EVERY app in the bench, so its affected set is every site on it - and bench's
@@ -945,7 +957,7 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
         if no_recache:
             emit(UpdateStepStart(phase="recache_skipped"))
         elif len(skipped) < len(apps):
-            _recache(project_name, warnings, emit)
+            _recache(project_name, bench_path, warnings, emit)
 
         for app in apps:
             if app in skipped:

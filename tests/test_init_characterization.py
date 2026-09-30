@@ -313,8 +313,9 @@ class TestExecOrderAndCommands:
         assert "docker.io/frappe/bench:v5.29.1" in content
         assert ":latest" not in content
 
-        # The project's stale cache is cleared exactly once.
-        assert r.cleared == [PROJECT]
+        # init no longer clears the project's cache: the frontend's post-init
+        # recache splices the new bench in (and clears the cache if that fails).
+        assert r.cleared == []
 
         out = capsys.readouterr().out
         assert "Successfully initialized bench 'frappe-bench'" in out

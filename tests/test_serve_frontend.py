@@ -1088,7 +1088,7 @@ class TestTierAActions:
             return Result(status=Status.OK, data=report)
 
         monkeypatch.setattr(serve_cmd.core_apps, "checkout_app", _checkout)
-        monkeypatch.setattr(serve_cmd.cache, "recache_project", lambda project: True)
+        monkeypatch.setattr(serve_cmd.cache, "recache_project", lambda project, **_k: True)
 
         status, body = _post(
             daemon.base + "/api/action",
@@ -1161,7 +1161,9 @@ class TestTierAActions:
 
         monkeypatch.setattr(serve_cmd.core_apps, "checkout_app", _checkout)
         monkeypatch.setattr(
-            serve_cmd.cache, "recache_project", lambda project: recached.append(project) or True
+            serve_cmd.cache,
+            "recache_project",
+            lambda project, bench_path=None: recached.append((project, bench_path)) or True,
         )
 
         status, body = _post(
@@ -1187,14 +1189,20 @@ class TestTierAActions:
             )
             return Result(status=Status.OK, data=report)
 
+        recached = []
         monkeypatch.setattr(serve_cmd.core_apps, "checkout_app", _checkout)
-        monkeypatch.setattr(serve_cmd.cache, "recache_project", lambda project: False)
+        monkeypatch.setattr(
+            serve_cmd.cache,
+            "recache_project",
+            lambda project, bench_path=None: bool(recached.append((project, bench_path))),
+        )
 
         status, body = _post(
             daemon.base + "/api/action",
             {"action": "checkout_app", "project": "p", "app": "erpnext", "ref": "main"},
         )
 
+        assert recached == [("p", "/workspace/frappe-bench")]  # only the checked-out bench
         assert status == 200
         assert body["ok"] is True, "the checkout landed; a failed recache must not fail it"
         assert any(w["code"] == "cache.recache_failed" for w in body["warnings"])

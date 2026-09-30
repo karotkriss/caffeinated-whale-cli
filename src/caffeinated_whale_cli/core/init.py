@@ -42,7 +42,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..utils import config_utils, db_utils
+from ..utils import config_utils
 from ..utils.port_utils import check_ports_in_use, format_port_list
 from . import credbridge, resolvers
 from . import docker as core_docker
@@ -1010,7 +1010,8 @@ def init_bench(
     ``CONFLICT`` / None-and-exists the NEW ``confirm_reuse_bench`` choice),
     search-path registration, version gating, ``bench init``, the bench
     configs, ``bench new-site`` (secrets via ``exec_stream(environment=)``),
-    the optional ERPNext pair, and the cache clear.
+    and the optional ERPNext pair. Caching the new bench is the caller's
+    post-init recache (``cache.recache_project(..., bench_path=...)``).
 
     ``uid`` overrides the id the container ``frappe`` user is aligned to
     (:func:`core.docker.align_container_user_to_host`'s ``uid_override``) instead
@@ -1390,9 +1391,6 @@ def init_bench(
         )
         emit(InitStepEnd(phase="erpnext_install"))
         erpnext_installed = True
-
-    # Clear any stale cached data for this project; inspect repopulates it.
-    db_utils.clear_cache_for_project(project_name)
 
     return Result(
         status=Status.WARNING if warnings else Status.OK,
