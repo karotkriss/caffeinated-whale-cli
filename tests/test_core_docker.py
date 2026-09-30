@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -48,8 +49,15 @@ class FakeContainer:
         self.owners = dict(owners or {})
         self.remap_scripts: list[str] = []
         self.remap_user: str | None = None
+        self.events: list[str] = []
+
+    def kill(self, signal):
+        self.events.append(signal)
 
     def exec_run(self, cmd, **kwargs):
+        if cmd == ["kill", "-CONT", "1"]:
+            self.events.append("in-container SIGCONT")
+            return 0, b""
         if cmd and cmd[0] == "id":
             val = self.frappe_uid if "-u" in cmd else self.frappe_gid
             return 0, (b"" if val is None else f"{val}\n".encode())
@@ -62,6 +70,7 @@ class FakeContainer:
         if cmd and cmd[0] == "bash" and "for d in" in cmd[2] and "readlink -f" in cmd[2]:
             return 0, ("\n".join(self.app_sources) + "\n").encode()
         # the `bash -c "<remap>"` root exec
+        self.events.append("remap")
         self.remap_user = kwargs.get("user")
         self.remap_scripts.append(cmd[2])
         return self.remap_code, self.remap_out
@@ -105,6 +114,91 @@ def test_remaps_uid_and_gid_as_root_with_home_chown(host_1001):
     assert not script.rstrip().endswith("chown -R 1001:1001 /home/frappe")
 
 
+def test_an_identity_change_runs_with_pid1_frozen(host_1001):
+    """A PID 1 running as `frappe` must not be able to die mid-remap: its exit would
+    kill the exec and strand the bench and `frappe` on different uids."""
+    c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
+    core_docker.align_container_user_to_host(c)
+    assert c.events == ["SIGSTOP", "remap"]
+
+
+@pytest.mark.parametrize("fail_at", [None, "chown", "sed"])
+def test_the_remap_script_thaws_pid1_itself_after_the_chain(host_1001, tmp_path, fail_at):
+    """The thaw rides in the in-container script, after the whole chain whatever its
+    outcome, so an interrupted cwcli cannot thaw PID 1 while the chain still runs.
+    Executed under a real bash with the container tools stubbed on PATH."""
+    c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
+    core_docker.align_container_user_to_host(c)
+    log = tmp_path / "log"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for tool in ("chown", "groupmod", "sed"):
+        stub = bin_dir / tool
+        stub.write_text(
+            f'#!/bin/sh\necho {tool} >> "{log}"\n[ "$FAIL_AT" = {tool} ] && exit 3\nexit 0\n'
+        )
+        stub.chmod(0o755)
+    bash_env = tmp_path / "env.sh"
+    bash_env.write_text(f'kill() {{ echo "kill $*" >> "{log}"; }}\n')
+
+    proc = subprocess.run(
+        ["bash", "-c", c.remap_scripts[0]],
+        env={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "BASH_ENV": str(bash_env),
+            "FAIL_AT": fail_at or "",
+        },
+    )
+
+    ran = log.read_text().splitlines()
+    assert ran[-1] == "kill -CONT 1", ran
+    assert ran.count("kill -CONT 1") == 1
+    if fail_at is None:
+        assert ran == ["chown", "groupmod", "sed", "kill -CONT 1"]
+        assert proc.returncode == 0
+    else:
+        assert ran[-2] == fail_at and proc.returncode == 3
+
+
+def test_a_pre_exec_interrupt_leaves_pid1_for_the_next_start_to_thaw(host_1001):
+    """An interrupt before Docker starts the exec has no in-container thaw; the next
+    core.start owns recovery through an in-container SIGCONT before its liveness check."""
+
+    class Interrupted(FakeContainer):
+        def exec_run(self, cmd, **kwargs):
+            if cmd and cmd[0] == "bash":
+                raise KeyboardInterrupt
+            return super().exec_run(cmd, **kwargs)
+
+    c = Interrupted(frappe_uid=1000, frappe_gid=1000)
+    with pytest.raises(KeyboardInterrupt):
+        core_docker.align_container_user_to_host(c)
+    assert c.events == ["SIGSTOP"]
+
+
+def test_pid1_is_thawed_even_when_the_remap_exec_fails(host_1001):
+    from docker.errors import APIError
+
+    class DiesMidExec(FakeContainer):
+        def exec_run(self, cmd, **kwargs):
+            if cmd and cmd[0] == "bash":
+                raise APIError("connection lost")
+            return super().exec_run(cmd, **kwargs)
+
+    c = DiesMidExec(frappe_uid=1000, frappe_gid=1000)
+    remapped, err = core_docker.align_container_user_to_host(c)
+    assert remapped is False and err is not None
+    assert c.events == ["SIGSTOP", "in-container SIGCONT"]
+
+
+def test_a_home_repair_without_an_identity_change_does_not_freeze(monkeypatch):
+    monkeypatch.setattr(core_docker.os, "getuid", lambda: 1000)
+    monkeypatch.setattr(core_docker.os, "getgid", lambda: 1000)
+    c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
+    core_docker.align_container_user_to_host(c, chown_home=True)
+    assert c.events == ["remap"]
+
+
 def test_uid_change_never_uses_usermod(host_1001):
     """`usermod -u` unconditionally chowns the target's entire $HOME as a
     documented side effect (measured ~90s / a full 1.28 GB overlayfs copy-up on
@@ -128,7 +222,7 @@ def test_sed_uid_edit_matches_real_usermod_output():
             m.setattr(core_docker.os, "getgid", lambda: 1000)  # gid unchanged this run
             core_docker.align_container_user_to_host(c)
         script = c.remap_scripts[0]
-        sed_cmd = next(s for s in script.split(" && ") if s.startswith("sed"))
+        sed_cmd = re.search(r"sed -i '[^']*' /etc/passwd", script).group(0)
 
         passwd = Path(tmp) / "passwd"
         passwd.write_text(
@@ -330,6 +424,30 @@ def test_shared_mode_aligns_to_service_uid_not_host(monkeypatch):
     )
 
 
+def test_every_reown_runs_before_the_identity_edit(monkeypatch):
+    """The passwd edit kills a container whose PID 1 is a bench stack running as
+    `frappe` (a devcontainer compose), and Docker kills this exec with it. With the
+    re-owns queued AFTER the edit they never ran, so the next boot ran PID 1 as the
+    remapped `frappe` against a bench still owned by the old uid and the instance was
+    bricked (staging, 2026-09-29). Every chown must precede groupmod and the sed, the
+    identity edit must be last, and `&&` must chain them so a failed re-own never
+    reaches the edit."""
+    monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: True)
+    monkeypatch.setattr(core_docker.shared_home, "service_uid", lambda: 996)
+    monkeypatch.setattr(core_docker.shared_home, "gid", lambda: 996)
+    c = FakeContainer(frappe_uid=1000, frappe_gid=1000, workspace_owner="1000:1000")
+    assert core_docker.align_container_user_to_host(
+        c, bench_paths=["/workspace/development/frappe-bench"]
+    ) == (True, None)
+    chain = re.search(r"\( (.*) \) \|\| rc=\$\?", c.remap_scripts[0]).group(1)
+    steps = chain.split(" && ")
+    edits = [i for i, step in enumerate(steps) if step.startswith(("groupmod", "sed -i"))]
+    chowns = [i for i, step in enumerate(steps) if "chown" in step]
+    assert edits == [len(steps) - 2, len(steps) - 1], steps
+    assert chowns and max(chowns) < min(edits), steps
+    assert "chown -R 996:996 /workspace/development/frappe-bench" in steps[max(chowns)]
+
+
 def test_shared_mode_falls_back_to_host_when_service_account_absent(monkeypatch):
     """A half-provisioned shared box (no service account yet) degrades to the
     per-user host target rather than crashing."""
@@ -507,8 +625,17 @@ class ReownFake:
     repo); ``owner`` is that repo's current `uid:gid`; ``probe_code`` non-zero makes
     the resolve fail (unreadable)."""
 
-    def __init__(self, *, uid=9000, gid=9000, real_path="/workspace/.hdsrc/erpnext",
-                 owner="500:500", probe_code=0, chown_code=0, chown_out=b""):
+    def __init__(
+        self,
+        *,
+        uid=9000,
+        gid=9000,
+        real_path="/workspace/.hdsrc/erpnext",
+        owner="500:500",
+        probe_code=0,
+        chown_code=0,
+        chown_out=b"",
+    ):
         self.uid = uid
         self.gid = gid
         self.real_path = real_path

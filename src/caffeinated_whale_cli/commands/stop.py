@@ -103,6 +103,12 @@ def stop(
         # Print outside the spinner context.
         if outcome.already_stopped:
             console.print(f"Instance '{name}' is already stopped.")
+        elif outcome.db_clean_shutdown is False:
+            # The containers are down, but the database was killed mid-shutdown: that
+            # is not the clean stop the user asked for, so it never reads as success.
+            for warning in result.warnings:
+                console.print(f"[bold red]Error: {warning.text}[/bold red]")
+            had_failure = True
         else:
             console.print(f"Instance '{name}' stopped.")
 
@@ -187,6 +193,8 @@ def stop_project_best_effort(project_name: str, verbose: bool = False) -> int | 
 
     outcome = result.data
     assert outcome is not None
+    for warning in result.warnings:
+        stderr_console.print(f"[yellow]Warning: {warning.text}[/yellow]")
     if verbose:
         stderr_console.print(
             f"[dim]VERBOSE: Stopped {outcome.stopped} container(s) for '{project_name}'[/dim]"

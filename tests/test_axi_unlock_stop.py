@@ -146,6 +146,26 @@ class TestAxiStop:
         assert "stopped: 2" in result.stdout
         assert "proj-frappe-1" in result.stdout
 
+    def test_a_database_killed_mid_shutdown_is_a_failed_stop(self, monkeypatch):
+        outcome = StopOutcome(
+            project="proj",
+            stopped=2,
+            already_stopped=False,
+            containers=["proj-frappe-1", "proj-mariadb-1"],
+            db_clean_shutdown=False,
+        )
+        warning = Message("stop.db_unclean", "it exited with code 137 (killed)")
+        monkeypatch.setattr(
+            axi_mod.core_stop,
+            "stop",
+            lambda p: Result(status=Status.WARNING, data=outcome, warnings=[warning]),
+        )
+        result = runner.invoke(axi_mod.app, ["stop", "proj"])
+
+        assert result.exit_code == 1
+        assert "db_clean_shutdown: false" in result.stdout
+        assert "exited with code 137" in result.stdout
+
     def test_already_stopped_is_a_definitive_success_so_stop_is_idempotent(self, monkeypatch):
         monkeypatch.setattr(
             axi_mod.core_stop,

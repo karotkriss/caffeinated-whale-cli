@@ -1982,7 +1982,7 @@ dialog input {
       ? (pendingAction === action ? "working" : "another action is running")
       : null;
     const processDisabledReason = disabledReason("restart_process") || (!process ? "select process" : null);
-    const message = lastAction ? banner(lastAction.ok ? "success" : "danger", null, lastAction.text, lastAction.hint) : "";
+    const message = lastAction ? banner(lastAction.tone || (lastAction.ok ? "success" : "danger"), null, lastAction.text, lastAction.hint) : "";
     el("rail-body").innerHTML = `<div>
       <div class="target"><div class="target-name">${esc(targetName)}</div><div class="target-meta">${esc(targetMeta)}</div></div>
       <div class="action-group">
@@ -2072,10 +2072,14 @@ dialog input {
         }
         const choice = body.choice && body.choice.options ? " Options: " + body.choice.options.map(o => o.label || o.value).join(", ") : "";
         const failure = new Error((error.message || "action failed") + choice);
-        failure.hint = error.hint;
+        const warning = (body.warnings || []).map(w => w.text || w.code || "").filter(Boolean).join(" ");
+        failure.hint = [error.hint, warning].filter((value, index, values) => value && value !== failure.message && values.indexOf(value) === index).join(" ");
         throw failure;
       }
-      lastAction = {ok: true, text: `${action.replaceAll("_", " ")} accepted for ${inst.project}`};
+      const warning = (body.warnings || []).map(w => w.text || w.code || "").filter(Boolean).join(" ");
+      lastAction = warning
+        ? {ok: true, tone: "warn", text: `${action.replaceAll("_", " ")} completed with warnings for ${inst.project}`, hint: warning}
+        : {ok: true, text: `${action.replaceAll("_", " ")} accepted for ${inst.project}`};
       addEvent("fast", `ACTION ${action.replaceAll("_", " ")} ${inst.project}`);
       if (action === "set_label" || action === "checkout_app") {
         // The bench label / app registry just changed; the cached detail no
@@ -2090,6 +2094,7 @@ dialog input {
       pendingAction = null;
       renderRail();
       el("action-status").textContent = lastAction ? lastAction.text : "";
+      if (lastAction && lastAction.hint) el("action-status").textContent += `. ${lastAction.hint}`;
     }
   }
 

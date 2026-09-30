@@ -561,11 +561,25 @@ def align_container_user_to_host(
     # byte-identical passwd/group state and `id frappe` output usermod would
     # have (verified), without walking $HOME at all - that walk is replaced by
     # the narrowed, explicit chown below.
+    #
+    # ORDER IS LOAD-BEARING: every chown runs BEFORE the identity edit, and the
+    # identity edit runs last; `&&` means a failed re-own never reaches the edit.
+    # On an instance whose PID 1 is a bench stack running as `frappe` (a
+    # devcontainer-style compose, not cwcli's `sleep infinity`), both halves can
+    # kill PID 1 - the chown takes its own bench away from it, the passwd edit
+    # takes its passwd row - and a PID 1 exit makes Docker kill this exec with the
+    # container, stranding a half-applied remap (bench and `frappe` on different
+    # uids) whose next boot dies on `logs/bench.log` before any start can retry.
+    # So when the identity changes, PID 1 is frozen (SIGSTOP from the host, which
+    # no process can refuse) before the exec, and the script itself thaws it
+    # (`kill -CONT 1` after the chain, success or failure): PID 1 cannot exit while
+    # the chain runs, and an interrupted cwcli cannot thaw it early once Docker
+    # has started the exec. An interrupt after SIGSTOP but before the exec starts
+    # can leave PID 1 frozen; the next core.start runs `kill -CONT 1` inside the
+    # container before checking liveness. A Docker error also gets that same
+    # in-container fallback thaw. This does not make an individual chown atomic or
+    # protect against the container or host dying mid-chain.
     steps = []
-    if cur_gid != host_gid:
-        steps.append(f"groupmod -o -g {host_gid} frappe")
-    if cur_uid != host_uid:
-        steps.append(rf"sed -i 's/^frappe:\([^:]*\):[^:]*:/frappe:\1:{host_uid}:/' /etc/passwd")
     if chown_home or cur_uid != host_uid:
         steps.append(f"chown {host_uid}:{host_gid} /home/frappe")
         steps.extend(
@@ -586,8 +600,22 @@ def align_container_user_to_host(
         f"[ ! -e {q} ] || chown -R {host_uid}:{host_gid} {q}"
         for q in (shlex.quote(p) for p in reown_paths)
     )
+    if cur_gid != host_gid:
+        steps.append(f"groupmod -o -g {host_gid} frappe")
+    if cur_uid != host_uid:
+        steps.append(rf"sed -i 's/^frappe:\([^:]*\):[^:]*:/frappe:\1:{host_uid}:/' /etc/passwd")
+    script = " && ".join(steps)
+    if ids_changed:
+        script = f"rc=0; ( {script} ) || rc=$?; kill -CONT 1; exit $rc"
     try:
-        code, out = container.exec_run(["bash", "-c", " && ".join(steps)], user="root")
+        if ids_changed:
+            container.kill(signal="SIGSTOP")
+        try:
+            code, out = container.exec_run(["bash", "-c", script], user="root")
+        except DockerException:
+            if ids_changed:
+                container.exec_run(["kill", "-CONT", "1"], user="root")
+            raise
     except DockerException as e:
         return (False, f"could not align the container 'frappe' user to the host: {e}")
     if code != 0:

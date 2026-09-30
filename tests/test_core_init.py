@@ -9,7 +9,6 @@ silence, and plain-data DTOs.
 
 import dataclasses
 import json
-import os
 import subprocess
 import time
 import urllib.request
@@ -17,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from caffeinated_whale_cli.core import docker as core_docker
 from caffeinated_whale_cli.core import exec_stream as exec_stream_mod
 from caffeinated_whale_cli.core import init as core_init
 from caffeinated_whale_cli.core.envelope import Status
@@ -129,9 +129,11 @@ class FakeContainer:
 
     def exec_run(self, cmd, **kwargs):
         if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "id":
-            # `id -u/-g frappe` probe for the host-uid alignment: report the host's
-            # own ids so the align step is a clean no-op in these fakes.
-            return 0, (str(os.getuid()) if "-u" in cmd else str(os.getgid())).encode()
+            # `id -u/-g frappe` probe for the host-uid alignment: report the resolved
+            # alignment target (not the raw host ids, which differ on a root host) so
+            # the align step is a clean no-op in these fakes.
+            uid, gid, _ = core_docker.resolve_frappe_alignment_ids()
+            return 0, str(uid if "-u" in cmd else gid).encode()
         script = cmd[2] if isinstance(cmd, (list, tuple)) and len(cmd) == 3 else ""
         self.exec_run_calls.append(script)
         for needle, response in self.exec_run_responses.items():

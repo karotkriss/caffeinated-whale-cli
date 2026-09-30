@@ -107,6 +107,11 @@ are now the whole point. Each note below guards a real bug.
   CLI-frontend host-side pre-step (D6); `core.start` assumes ports are clear. The human frontend skips the
   port check when the frappe container is already up, which lets an idempotent re-run reach the no-op
   instead of self-conflicting on its own ports.
+- **A frappe container that is not running after its start is `NOT_RUNNING` `frappe.exited`.** A
+  devcontainer-style compose whose PID 1 is `bench start` can exit on boot, or die mid-start when a uid remap
+  takes PID 1 down; the next exec then raised Docker's raw `409 ... is not running` traceback. `_require_running`
+  checks right after the container start AND on any `APIError`/`CwcliError` from the bench steps, naming the
+  exit code and `docker logs <name>`; a step failure on a still-running container is re-raised unchanged.
 - **Re-aligns the container's `frappe` user to the host uid/gid on every launch** (`align_container_user_to_host`, with no `chown_home`, so a matching identity stays a no-op and a uid change runs the cheap account database edits plus the narrowed mutable-home repair).
   This call runs AFTER bench resolution and passes the resolved bench dir as `bench_paths=[resolved_path]`, so in shared mode the remap also re-owns a migrated instance's bind-mounted workspace when its owner mismatches the service identity (see the SHARED-MODE companion note in `references/init.md`); a normal box reads no mismatch and gets no chown.
   A container recreation resets `frappe` back to the image's default uid 1000, so re-aligning here keeps the bind-mounted workspace host-owned across restarts on hosts with uid/gid information.
@@ -216,6 +221,13 @@ are now the whole point. Each note below guards a real bug.
   measured. No resolvable site keeps the host-less probe and reports `web_site=None`.
 
 ## `core.stop.py` - project stop and bench stop are distinct operations
+
+- **The database stops LAST, with `DB_STOP_TIMEOUT` (60s) grace, and its shutdown is VERIFIED.** A bare
+  `container.stop()` used the daemon default - 1s for every container Docker Desktop creates, 10s on Engine - so
+  MariaDB was SIGKILLed mid-InnoDB-shutdown while `stop` reported success. Clean = exit code 0; anything else
+  (137 = killed after the grace ran out) is unclean. The log is deliberately NOT read: a MariaDB whose error log
+  goes to a file (`log_error`) exits 0 without printing `Shutdown complete`, so a log check false-alarms. An unclean stop is `StopOutcome.db_clean_shutdown=False` plus a
+  `stop.db_unclean` warning, and both `stop` frontends exit 1 on it (they read the outcome, not the status).
 
 - **`stop_bench(project, bench=..., bench_path=...)` stops one bench's supervisord, not a container.** A
   multi-bench instance has one frappe container shared by sibling benches, so `cwcli stop --bench` reuses
