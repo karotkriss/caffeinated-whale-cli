@@ -334,7 +334,8 @@ class TestABenchWithNoRecordNeverTakesDownTheOthers:
         monkeypatch.setattr(apps_mod.core_apps, "install_apps", fake_install)
         _kill_bench_read(container, monkeypatch, BENCH_B)
 
-        apps_mod.install_apps(
+        # __wrapped__ skips @handle_docker_errors' live Docker preflight (absent in CI).
+        apps_mod.install_apps.__wrapped__(
             "proj",
             ["hrms"],
             bench="staging",
