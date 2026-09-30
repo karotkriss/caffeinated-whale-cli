@@ -166,7 +166,7 @@ def rm_site(
     outcome = result.data
     assert outcome is not None  # OK/WARNING always carries a DropSiteOutcome
 
-    if not cache.recache_project(project_name, verbose=verbose):
+    if not cache.recache_project(project_name, verbose=verbose, bench_path=outcome.bench_path):
         stderr_console.print(
             f"[yellow]Warning:[/yellow] site dropped, but re-caching '{project_name}' failed; "
             "run 'cwcli inspect --update' to refresh."

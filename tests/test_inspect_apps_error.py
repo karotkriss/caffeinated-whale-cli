@@ -1,4 +1,4 @@
-"""``core.inspect._get_installed_apps`` must never cache a failure sentinel.
+"""A failed ``bench list-apps`` must never cache a failure sentinel.
 
 Root cause
 ----------
@@ -16,11 +16,17 @@ Changed BY DESIGN in the ``migrate-inspect-core`` migration: the helper now live
 on the core and surfaces the failure as a typed ``InspectWarning`` EVENT (the core
 never prints); the frontend renders that event as the same stderr warning as
 before, which the rendering test below pins.
+
+Since the batched full read, a failed read is ``None`` in the bench facts
+(``core.bench_read.SiteRead.list_apps``) whichever path read it, and the ONE
+dict builder both paths share (``_bench_dict``) turns it into ``[]`` plus the
+warning. These tests drive the per-exec read through that builder.
 """
 
 from __future__ import annotations
 
 from caffeinated_whale_cli.commands import inspect as inspect_cmd_mod
+from caffeinated_whale_cli.core import bench_read
 from caffeinated_whale_cli.core import inspect as core_inspect
 
 BENCH = "/home/frappe/frappe-bench"
@@ -38,8 +44,18 @@ class _Container:
 
 def _get_installed_apps(container, site):
     events: list = []
-    apps = core_inspect._get_installed_apps(container, BENCH, site, events.append)
-    return apps, events
+    listed = core_inspect._list_apps_per_exec(container, BENCH, site, events.append)
+    read = bench_read.BenchRead(
+        path=BENCH,
+        available_apps=[],
+        app_imports={},
+        common_site_config=None,
+        sites=[bench_read.SiteRead(name=site, site_config=None, list_apps=listed, installed=None)],
+        current_site=None,
+        label=None,
+    )
+    bench = core_inspect._bench_dict(read, events.append)
+    return bench["sites"][0]["installed_apps"], events
 
 
 def test_error_path_returns_empty_not_sentinel():

@@ -30,6 +30,7 @@ from caffeinated_whale_cli.core.update import (
     UpdateStepStart,
 )
 
+from .batched_probes import emulate_batched
 from .test_apps import _FakeAPI, FakeFrappeContainer, _wire_stopped_bench
 
 BENCH = "/workspace/frappe-bench"
@@ -86,6 +87,20 @@ class TestEnvelope:
         assert report.affected_sites == ["a.localhost"]
         assert report.migrated_sites == ["a.localhost"]
         assert report.aborted is False
+
+    def test_the_post_pull_recache_reads_only_the_updated_bench(self, monkeypatch, wired):
+        recaches = []
+        monkeypatch.setattr(
+            core_update.cache,
+            "recache_project",
+            lambda name, verbose=False, bench_path=None: bool(
+                recaches.append((name, bench_path)) or True
+            ),
+        )
+
+        _update()
+
+        assert recaches == [("proj", BENCH)]
 
     def test_a_partial_failure_is_a_warning_envelope_carrying_ok_false(self, wired):
         # The closed Status set has no ERROR member by design: hard failures raise,
@@ -484,12 +499,15 @@ class TestFrappeFork:
         monkeypatch.setattr(
             core_update.cache,
             "recache_project",
-            lambda name, verbose=False: (recaches.append(name), True)[1],
+            lambda name, verbose=False, bench_path=None: (
+                recaches.append((name, bench_path)),
+                True,
+            )[1],
         )
 
         report = _update(apps=["frappe"]).data
 
-        assert recaches == ["proj"]
+        assert recaches == [("proj", BENCH)]  # scoped to the reset bench
         assert report.ok is False
 
     def test_ignored_options_are_announced_not_silently_dropped(self, wired):
@@ -567,15 +585,23 @@ class TestEvents:
 class _SiteQueryContainer:
     """Serves the live-fallback execs of ``_sites_with_app``: the ``ls -1 .../sites``
     directory listing and per-site ``bench ... list-apps`` (REALISTIC versioned lines,
-    ``frappe 16.26.3``, exactly as ``bench list-apps`` prints them)."""
+    ``frappe 16.26.3``, exactly as ``bench list-apps`` prints them).
 
-    def __init__(self, *, sites, installed, fail_on=None):
+    ``batched=True`` answers ``core.bench_read``'s one-exec read from those same
+    per-path answers; ``batched=False`` fails it, as when the bench's process left
+    no record, so the per-exec reads answer instead."""
+
+    def __init__(self, *, sites, installed, fail_on=None, batched=True):
         self.sites = sites  # names under <bench>/sites
         self.installed = installed  # site -> [versioned "app x.y.z" lines]
         self.fail_on = fail_on or []  # substrings that make an exec fail
+        self.batched = batched
         self.calls = []
 
     def exec_run(self, cmd, workdir=None, **kwargs):
+        if isinstance(cmd, list):
+            batched = emulate_batched(self, cmd) if self.batched else None
+            return batched or (1, b"")
         self.calls.append(cmd)
         for sub in self.fail_on:
             if sub in cmd:
@@ -595,15 +621,17 @@ def _seed_cache(monkeypatch, cached):
     )
 
 
+@pytest.mark.parametrize("batched", [True, False], ids=["batched", "per_exec"])
 class TestSitesWithAppLiveFallback:
-    """The live-query fallback of ``_sites_with_app`` (update.py:295-321).
+    """The live-query fallback of ``_sites_with_app``.
 
     Production ALWAYS lands here: the cache stores RAW ``bench list-apps`` lines
     (``frappe 16.26.3``) and the cache branch does exact membership against a bare
     app name, so it never matches on a real bench and falls through here. These
-    exercise that path directly with realistic versioned cached data."""
+    exercise that path directly with realistic versioned cached data, through the
+    one-exec batched read and through its per-exec fallback alike."""
 
-    def test_versioned_cache_misses_and_the_live_query_answers(self, monkeypatch):
+    def test_versioned_cache_misses_and_the_live_query_answers(self, monkeypatch, batched):
         # Cache holds the REAL shape: "payments 16.1.0", not "payments". The bare
         # `app in installed_apps` membership fails, forcing the live query.
         _seed_cache(
@@ -624,6 +652,7 @@ class TestSitesWithAppLiveFallback:
             },
         )
         container = _SiteQueryContainer(
+            batched=batched,
             sites=["a.localhost", "b.localhost", "apps.txt", "assets"],
             installed={
                 "a.localhost": ["frappe 16.26.3", "payments 16.1.0"],
@@ -638,15 +667,15 @@ class TestSitesWithAppLiveFallback:
         assert any(c.startswith("ls -1") and c.endswith("/sites") for c in container.calls)
         assert any("--site a.localhost list-apps" in c for c in container.calls)
 
-    def test_empty_cache_also_uses_the_live_query(self, monkeypatch):
+    def test_empty_cache_also_uses_the_live_query(self, monkeypatch, batched):
         _seed_cache(monkeypatch, None)
         container = _SiteQueryContainer(
-            sites=["a.localhost"], installed={"a.localhost": ["frappe 16.26.3"]}
+            batched=batched, sites=["a.localhost"], installed={"a.localhost": ["frappe 16.26.3"]}
         )
 
         assert core_update._sites_with_app("proj", BENCH, "frappe", container) == ["a.localhost"]
 
-    def test_live_fallback_without_a_container_returns_empty(self, monkeypatch):
+    def test_live_fallback_without_a_container_returns_empty(self, monkeypatch, batched):
         # Versioned cache misses AND no container to query -> honestly empty.
         _seed_cache(
             monkeypatch,
@@ -658,18 +687,19 @@ class TestSitesWithAppLiveFallback:
         )
         assert core_update._sites_with_app("proj", BENCH, "frappe", None) == []
 
-    def test_live_fallback_skips_a_site_whose_list_apps_fails(self, monkeypatch):
+    def test_live_fallback_skips_a_site_whose_list_apps_fails(self, monkeypatch, batched):
         _seed_cache(monkeypatch, None)
         container = _SiteQueryContainer(
+            batched=batched,
             sites=["a.localhost", "b.localhost"],
             installed={"a.localhost": ["frappe 16.26.3"], "b.localhost": ["frappe 16.26.3"]},
             fail_on=["--site b.localhost list-apps"],
         )
         assert core_update._sites_with_app("proj", BENCH, "frappe", container) == ["a.localhost"]
 
-    def test_live_fallback_returns_empty_when_site_listing_fails(self, monkeypatch):
+    def test_live_fallback_returns_empty_when_site_listing_fails(self, monkeypatch, batched):
         _seed_cache(monkeypatch, None)
-        container = _SiteQueryContainer(sites=[], installed={}, fail_on=["/sites"])
+        container = _SiteQueryContainer(sites=[], installed={}, fail_on=["/sites"], batched=batched)
         assert core_update._sites_with_app("proj", BENCH, "frappe", container) == []
 
 

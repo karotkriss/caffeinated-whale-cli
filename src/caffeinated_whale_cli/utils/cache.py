@@ -8,9 +8,11 @@ including re-caching operations built on the core inspect slice.
 from . import config_utils, db_utils
 
 
-def recache_project(project_name: str, verbose: bool = False) -> bool:
+def recache_project(
+    project_name: str, verbose: bool = False, *, bench_path: str | None = None
+) -> bool:
     """
-    Re-cache a project by clearing its cache and running a full core inspect.
+    Re-cache a project after a mutation: the whole project, or just one bench.
 
     This ensures the cache is fresh and trustworthy for operations that depend
     on accurate project state (e.g., checking for missing apps before restore).
@@ -22,10 +24,18 @@ def recache_project(project_name: str, verbose: bool = False) -> bool:
     surfaces as a typed ``NOT_RUNNING`` error, degraded here to a clean ``False``
     return rather than deadlocking on a hidden "start the containers?" question.
 
+    ``bench_path`` names the one bench a verb just changed. The recache then
+    re-reads only that bench and splices it into the cached project
+    (``core.inspect.refresh_bench``), falling back to the full inspect when the
+    bench set changed elsewhere. A failed recache of either kind leaves the
+    project's cache cleared, so the next read re-inspects rather than serving a
+    cache the mutation made stale.
+
     Args:
         project_name: Name of the project to recache
         verbose: Unused; kept for signature compatibility with existing callers
             (the core populate emits no diagnostics on this path)
+        bench_path: The bench the mutation touched, when it touched one
 
     Returns:
         True if recache succeeded, False otherwise (including when the project's
@@ -36,16 +46,21 @@ def recache_project(project_name: str, verbose: bool = False) -> bool:
     if config_utils.cache_disabled():
         return True
 
+    from ..core import inspect as core_inspect
+
     try:
-        # Clear the cache for this project
-        db_utils.clear_cache_for_project(project_name)
-
-        # Re-populate it with a full core inspect (owns the cache write).
-        from ..core import inspect as core_inspect
-
-        core_inspect.inspect(project_name, refresh="full", offer_choice=False)
+        if bench_path is not None:
+            core_inspect.refresh_bench(project_name, bench_path)
+        else:
+            db_utils.clear_cache_for_project(project_name)
+            # Re-populate it with a full core inspect (owns the cache write).
+            core_inspect.inspect(project_name, refresh="full", offer_choice=False)
         return True
     except Exception:
         # CwcliError(NOT_RUNNING) for a stopped project, and anything else the
         # populate raises, all degrade to the documented False.
+        try:
+            db_utils.clear_cache_for_project(project_name)
+        except Exception:  # noqa: BLE001 - already reporting the failure
+            pass
         return False

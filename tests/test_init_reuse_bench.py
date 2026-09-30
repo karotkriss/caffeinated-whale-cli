@@ -82,7 +82,14 @@ def harness(monkeypatch):
     monkeypatch.setattr(init_mod.config_utils, "get_show_tips", lambda: False)
     monkeypatch.setattr(init_mod, "questionary", state.questionary)
     monkeypatch.setattr(init_mod.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(init_mod.cache, "recache_project", lambda *a, **k: True)
+    state.recaches = []
+    monkeypatch.setattr(
+        init_mod.cache,
+        "recache_project",
+        lambda project, verbose=False, bench_path=None: bool(
+            state.recaches.append((project, bench_path)) or True
+        ),
+    )
 
     def run(**overrides):
         params = dict(
@@ -116,6 +123,8 @@ class TestReusePromptLoop:
     def test_fresh_bench_runs_without_prompting(self, harness):
         harness.run()
         assert harness.calls == [("frappe-bench", None)]
+        # Only the new bench is recached, not the whole project.
+        assert harness.recaches == [("proj", "/workspace/frappe-bench")]
         harness.questionary.confirm.assert_not_called()
         harness.questionary.text.assert_not_called()
 

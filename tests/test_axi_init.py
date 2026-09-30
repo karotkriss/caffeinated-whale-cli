@@ -489,10 +489,10 @@ class TestAutoStartServices:
 
 
 class TestRecache:
-    """A fresh bench must be recached (``init_bench`` unconditionally clears
-    the project's cache) so a custom ``--bench-parent`` resolves correctly on
-    the very next bench-resolving verb; a recache failure degrades to a
-    stderr warning and never fails the verb."""
+    """A fresh bench must be recached (only that bench, spliced into the
+    project's cache) so a custom ``--bench-parent`` resolves correctly on the
+    very next bench-resolving verb; a recache failure degrades to a stderr
+    warning and never fails the verb."""
 
     def test_success_recaches_the_project(self, monkeypatch):
         _no_admin_env(monkeypatch)
@@ -501,7 +501,7 @@ class TestRecache:
         result = runner.invoke(axi_mod.app, ["init", "proj", "--admin-password", "a"])
 
         assert result.exit_code == 0
-        assert calls["recache"] == [{"project": "proj"}]
+        assert calls["recache"] == [{"project": "proj", "bench_path": "/workspace/frappe-bench"}]
 
     def test_recache_failure_degrades_to_stderr_warning_not_a_failed_verb(self, monkeypatch):
         _no_admin_env(monkeypatch)

@@ -26,6 +26,7 @@ from caffeinated_whale_cli.core import docker as core_docker
 from caffeinated_whale_cli.core import resolvers
 from caffeinated_whale_cli.core.envelope import Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
+from tests.batched_probes import emulate_batched
 
 BENCH = "/workspace/frappe-bench"
 
@@ -126,6 +127,9 @@ class FakeContainer:
         return 0, ""
 
     def exec_run(self, cmd, workdir=None, **kwargs):
+        batched = emulate_batched(self, cmd)
+        if batched is not None:
+            return batched
         code, out = self._run(cmd)
         return code, out.encode() if isinstance(out, str) else out
 
@@ -213,6 +217,60 @@ def test_list_reads_the_authoritative_installed_app_names(monkeypatch, container
     assert any("execute frappe.get_installed_apps" in call for call in container.calls)
     assert result.status is Status.OK
     assert result.data.ok is True
+
+
+def test_list_reads_every_site_in_one_exec(monkeypatch, container):
+    container.installed = {
+        "a.localhost": ["frappe 15.0.0 version-15"],
+        "b.localhost": ["frappe 15.0.0 version-15", "payments 1.0.0 version-15"],
+    }
+    _cache(monkeypatch, [{"path": BENCH}])
+    batched = []
+    real = core_apps.bench_read.read_benches
+    monkeypatch.setattr(
+        core_apps.bench_read,
+        "read_benches",
+        lambda *a, **k: batched.append(k.get("sites")) or real(*a, **k),
+    )
+
+    result = core_apps.list_apps("proj", sites=["a.localhost", "b.localhost"])
+
+    assert batched == [["a.localhost", "b.localhost"]]
+    assert result.data.installed == {
+        "a.localhost": ["frappe"],
+        "b.localhost": ["frappe", "payments"],
+    }
+
+
+def test_list_falls_back_to_one_read_per_site_when_the_batch_has_no_record(
+    monkeypatch, container
+):
+    _cache(monkeypatch, [{"path": BENCH}])
+    monkeypatch.setattr(
+        core_apps.bench_read,
+        "read_benches",
+        lambda *a, **k: core_apps.bench_read.BatchRead(exit_code=1, output="", benches={}),
+    )
+
+    result = core_apps.list_apps("proj", installed=True)
+
+    assert result.data.installed == {"a.localhost": ["frappe"]}
+    assert "bench --site a.localhost execute frappe.get_installed_apps" in container.calls
+
+
+def test_a_docker_failure_of_the_batched_read_is_the_typed_exec_error(monkeypatch, container):
+    from docker.errors import APIError
+
+    _cache(monkeypatch, [{"path": BENCH}])
+
+    def _raise(*_a, **_k):
+        raise APIError("the daemon went away")
+
+    monkeypatch.setattr(core_apps.bench_read, "read_benches", _raise)
+
+    with pytest.raises(CwcliError) as exc:
+        core_apps.list_apps("proj", installed=True)
+    assert (exc.value.kind, exc.value.code) == (ErrorKind.DOCKER, "exec.start_failed")
 
 
 def test_list_reports_a_failed_site_read_as_none_not_empty(monkeypatch, container):
@@ -1108,7 +1166,7 @@ def test_checkout_preserves_its_report_when_a_site_read_raises(monkeypatch, cont
     _wire_running_bench(monkeypatch)
     monkeypatch.setattr(
         core_apps,
-        "_installed_apps",
+        "_read_installed_apps",
         lambda *a, **k: (_ for _ in ()).throw(
             CwcliError(ErrorKind.DOCKER, "exec.lost", "the exec stream was lost")
         ),

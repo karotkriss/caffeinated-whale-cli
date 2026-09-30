@@ -877,7 +877,8 @@ class TestInitBenchTriState:
         assert report.erpnext_installed is False
         assert report.bench_path == BENCH_PATH
         assert patched.added == [BENCH_PATH]
-        assert patched.cleared == [PROJECT]
+        # Caching the new bench is the caller's scoped recache, not a clear here.
+        assert patched.cleared == []
 
     def test_existing_bench_with_reuse_true_skips_bench_init(self, monkeypatch, patched):
         container = FakeContainer(dirs_exist={BENCH_PATH})

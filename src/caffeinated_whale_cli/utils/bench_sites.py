@@ -28,6 +28,8 @@ default.
 
 from __future__ import annotations
 
+import shlex
+
 # POSIX-sh function (the container ``sh`` is dash) that classifies EVERY entry of
 # ``"$1/sites"`` in one pass, printing ``VERDICT<TAB>name`` per entry. Three
 # positive verdicts: SITE (a dir with site_config.json), NOTASITE (not a dir, or a
@@ -96,7 +98,10 @@ def read_current_site(container, bench_path: str, verbose: bool = False) -> str 
     Reads FAIL SAFE: a missing/unreadable/empty file yields ``None`` (never an
     error), and the content is stripped of surrounding whitespace/newlines.
     """
-    exit_code, output = container.exec_run(f"cat {bench_path}/sites/currentsite.txt")
+    # Quoted: docker-py shlex-splits a string command, so an unquoted path with a
+    # space would name two files.
+    path = shlex.quote(f"{bench_path}/sites/currentsite.txt")
+    exit_code, output = container.exec_run(f"cat {path}")
     if exit_code != 0:
         return None
     try:

@@ -1,7 +1,8 @@
 """Answer cwcli's batched container probes from a per-path test fake.
 
 Not collected by pytest (no ``test_`` prefix). ``list_sites``, bench discovery and
-the T2 partial refresh each run ONE ``sh -c <script> sh <paths...>`` exec. The
+the T2 partial refresh each run ONE ``sh -c <script> sh <paths...>`` exec, and
+``core.bench_read``'s full read runs one Python process per bench in one exec. The
 unit fakes model a bench as answers to per-path commands (``ls -1 <dir>``, the
 per-entry site probe, the ``test -d`` bench check, ``find <root>``), so
 :func:`emulate_batched` evaluates each batched script's semantics by issuing those
@@ -20,10 +21,12 @@ shell behavior is pinned separately, under a real ``sh``, by
 
 from __future__ import annotations
 
+import json
 import shlex
 
+from caffeinated_whale_cli.core import bench_read, resolvers
 from caffeinated_whale_cli.core import inspect as core_inspect
-from caffeinated_whale_cli.utils import bench_sites
+from caffeinated_whale_cli.utils import bench_labels, bench_sites
 
 _SITE_PROBE = shlex.quote(
     'if [ ! -d "$1" ]; then echo NOTASITE; '
@@ -34,7 +37,18 @@ _SITE_PROBE = shlex.quote(
 
 
 def _raw(output) -> bytes:
-    return output[0] if isinstance(output, tuple) else output
+    raw = output[0] if isinstance(output, tuple) else output
+    return raw.encode() if isinstance(raw, str) else raw
+
+
+def _text(container, cmd, *, workdir=None, strict=False) -> str | None:
+    code, out = container.exec_run(cmd, workdir=workdir) if workdir else container.exec_run(cmd)
+    if code != 0:
+        return None
+    try:
+        return _raw(out).decode("utf-8", errors="strict" if strict else "replace")
+    except UnicodeDecodeError:
+        return None
 
 
 def _is_bench(container, path: str) -> bool:
@@ -96,10 +110,70 @@ def _partial_refresh(container, benches: list[str]):
     return (0, b"".join(line + b"\n" for line in out))
 
 
+def _installed(container, bench: str, site: str) -> list[str] | None:
+    cmd = f"bench --site {shlex.quote(site)} execute frappe.get_installed_apps"
+    out = _text(container, cmd, workdir=bench)
+    lines = [line for line in (out or "").splitlines() if line.strip()]
+    try:
+        apps = json.loads(lines[-1]) if lines else None
+    except json.JSONDecodeError:
+        return None
+    return apps if isinstance(apps, list) else None
+
+
+def _full_read(container, args: list[str]):
+    """``core.bench_read``'s record per bench, from the fake's per-path answers."""
+    _script, opts_json, *benches = args
+    opts = json.loads(opts_json)
+    lines = []
+    for bench in benches:
+        record: dict = {"path": bench, "venv": True, "sites": {}}
+        if opts["files"]:
+            record["apps"] = _text(container, f"ls -1 {shlex.quote(bench + '/apps')}")
+            names = bench_read.output_lines(record["apps"] or "")
+            if names:
+                probe = [f"{bench}/env/bin/python", "-c", resolvers._APP_IMPORT_PROBE, bench]
+                record["imports"] = _text(container, [*probe, *dict.fromkeys(names)])
+            sites_dir = f"{bench}/sites"
+            record["common"] = _text(
+                container, f"cat {shlex.quote(sites_dir + '/common_site_config.json')}"
+            )
+            record["current"] = _text(
+                container, f"cat {shlex.quote(sites_dir + '/currentsite.txt')}", strict=True
+            )
+            marker = f"{bench.rstrip('/')}/{bench_labels.MARKER_REL_PATH}"
+            record["marker"] = _text(container, ["cat", marker])
+        sites = opts["sites"]
+        if sites is None:
+            verdicts = _site_verdict_lines(container, bench)
+            record["listing"] = (
+                None if verdicts is None else b"".join(v + b"\n" for v in verdicts).decode()
+            )
+            sites = [
+                site
+                for line in (record["listing"] or "").split("\n")
+                if (site := bench_sites.site_from_verdict(line))
+            ]
+        for site in sites:
+            found: dict = {}
+            if opts["files"]:
+                config = f"{bench}/sites/{site}/site_config.json"
+                found["config"] = _text(container, f"cat {shlex.quote(config)}")
+            if opts["list_apps"]:
+                cmd = f"bench --site {shlex.quote(site)} list-apps"
+                found["list_apps"] = _text(container, cmd, workdir=bench)
+            if opts["installed"]:
+                found["installed"] = _installed(container, bench, site)
+            record["sites"][site] = found
+        lines.append(bench_read.SENTINEL + json.dumps(record))
+    return (0, ("\n" + "\n".join(lines) + "\n").encode())
+
+
 _SCRIPTS = {
     bench_sites._LIST_SITES_SCRIPT: lambda c, args: _list_sites(c, args[0]),
     core_inspect._DISCOVER_SCRIPT: _discover,
     core_inspect._PARTIAL_REFRESH_SCRIPT: _partial_refresh,
+    bench_read._READ_SH: _full_read,
 }
 
 
