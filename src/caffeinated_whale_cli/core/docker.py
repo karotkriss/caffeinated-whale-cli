@@ -561,11 +561,19 @@ def align_container_user_to_host(
     # byte-identical passwd/group state and `id frappe` output usermod would
     # have (verified), without walking $HOME at all - that walk is replaced by
     # the narrowed, explicit chown below.
+    #
+    # ORDER IS LOAD-BEARING: every chown runs BEFORE the identity edit, and the
+    # identity edit runs last. On an instance whose PID 1 is a bench stack running
+    # as `frappe` (a devcontainer-style compose, not cwcli's `sleep infinity`), the
+    # passwd edit strips the live processes' uid of its passwd row, they crash, PID
+    # 1 exits, and Docker kills this exec with the container. Any step still queued
+    # behind the edit never runs - so with the re-owns last, the next boot ran PID 1
+    # as the remapped `frappe` against a bench still owned by the old uid and died
+    # on `logs/bench.log`, bricking the instance for good. With the re-owns first,
+    # an exec cut short by the edit leaves either the old identity (the next start
+    # retries the whole remap) or the complete new state; `&&` means a failed
+    # re-own never reaches the edit at all.
     steps = []
-    if cur_gid != host_gid:
-        steps.append(f"groupmod -o -g {host_gid} frappe")
-    if cur_uid != host_uid:
-        steps.append(rf"sed -i 's/^frappe:\([^:]*\):[^:]*:/frappe:\1:{host_uid}:/' /etc/passwd")
     if chown_home or cur_uid != host_uid:
         steps.append(f"chown {host_uid}:{host_gid} /home/frappe")
         steps.extend(
@@ -586,6 +594,10 @@ def align_container_user_to_host(
         f"[ ! -e {q} ] || chown -R {host_uid}:{host_gid} {q}"
         for q in (shlex.quote(p) for p in reown_paths)
     )
+    if cur_gid != host_gid:
+        steps.append(f"groupmod -o -g {host_gid} frappe")
+    if cur_uid != host_uid:
+        steps.append(rf"sed -i 's/^frappe:\([^:]*\):[^:]*:/frappe:\1:{host_uid}:/' /etc/passwd")
     try:
         code, out = container.exec_run(["bash", "-c", " && ".join(steps)], user="root")
     except DockerException as e:

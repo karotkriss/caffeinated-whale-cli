@@ -154,7 +154,7 @@ class FakeContainer:
         pass
 
     def start(self):
-        pass
+        self.status = "running"
 
     def exec_run(self, cmd, detach=False, workdir=None, environment=None, user=None):
         self.calls.append(cmd)

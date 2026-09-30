@@ -52,6 +52,7 @@ from .docker import get_project_containers, get_project_networks, get_project_vo
 from .envelope import Result, Status
 from .errors import DOCKER_UNREACHABLE_HINT, CwcliError, ErrorKind
 from .resolvers import DEFAULT_BENCH_PATH
+from .stop import DB_STOP_TIMEOUT, is_database
 
 # Marker in a Frappe backup filename that identifies the database dump - the one
 # artifact a "backup" cannot be trusted without (Frappe names it
@@ -1146,7 +1147,12 @@ def remove(
             if container_status == "running":
                 emit(RmStep(label=f"Stopping '{container_name}'...", style="yellow"))
                 emit(RmTrace(text=f"Stopping container '{container_name}'"))
-                container.stop()
+                # The database keeps its real grace period here too: with
+                # --no-volumes its data outlives this removal.
+                if is_database(container):
+                    container.stop(timeout=DB_STOP_TIMEOUT)
+                else:
+                    container.stop()
 
             emit(RmStep(label=f"Removing '{container_name}'...", style="red"))
             emit(RmTrace(text=f"Removing container '{container_name}'"))

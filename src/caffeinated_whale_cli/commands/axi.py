@@ -877,7 +877,8 @@ def axi_stop(
 
     assert result.data is not None  # OK always carries a StopOutcome
     emit_result(result.data, warnings=result.warnings)
-    raise typer.Exit(0)
+    # A database killed mid-shutdown is a failed stop, not a successful one.
+    raise typer.Exit(1 if result.data.db_clean_shutdown is False else 0)
 
 
 def _axi_stop_bench(project: str, bench: str) -> None:

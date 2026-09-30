@@ -84,6 +84,65 @@ class TestStop:
         db.stop.assert_called_once()
 
 
+def _database(
+    exit_code=0, log=b"[Note] InnoDB: Starting shutdown...\n[Note] mariadbd: Shutdown complete\n"
+):
+    db = _container("proj-mariadb-1")
+    db.labels = {"com.docker.compose.service": "mariadb"}
+    db.attrs = {"State": {"ExitCode": exit_code}}
+    if isinstance(log, Exception):
+        db.logs.side_effect = log
+    else:
+        db.logs.return_value = log
+    return db
+
+
+class TestDatabaseShutdown:
+    """The DB was SIGKILLed mid-shutdown (Docker's default grace: 1s on Docker Desktop,
+    10s elsewhere) while `cwcli stop` reported success."""
+
+    def test_the_database_stops_last_with_a_real_grace_period(self, wire):
+        order: list[str] = []
+        db, frappe = _database(), _container("proj-frappe-1")
+        db.stop.side_effect = lambda **kw: order.append("db")
+        frappe.stop.side_effect = lambda **kw: order.append("frappe")
+        wire([db, frappe])  # listed first, stopped last
+
+        result = core_stop.stop("proj")
+
+        assert order == ["frappe", "db"]
+        db.stop.assert_called_once_with(timeout=core_stop.DB_STOP_TIMEOUT)
+        assert core_stop.DB_STOP_TIMEOUT >= 30
+        assert result.status is Status.OK and not result.warnings
+        assert result.data.db_clean_shutdown is True
+        assert result.data.containers == ["proj-frappe-1", "proj-mariadb-1"]
+
+    def test_a_killed_database_is_never_a_clean_stop(self, wire):
+        wire([_container("proj-frappe-1"), _database(exit_code=137, log=b"Starting shutdown\n")])
+
+        result = core_stop.stop("proj")
+
+        assert result.data.db_clean_shutdown is False
+        assert result.status is Status.WARNING
+        (warning,) = result.warnings
+        assert warning.code == "stop.db_unclean"
+        assert "Shutdown complete" in warning.text and "137" in warning.text
+
+    def test_exit_zero_without_the_completion_line_is_not_clean(self, wire):
+        wire([_database(exit_code=0, log=b"[Note] InnoDB: Starting shutdown...\n")])
+        assert core_stop.stop("proj").data.db_clean_shutdown is False
+
+    def test_an_unreadable_log_falls_back_to_the_exit_code(self, wire):
+        from docker.errors import DockerException
+
+        wire([_database(exit_code=0, log=DockerException("no log driver"))])
+        assert core_stop.stop("proj").data.db_clean_shutdown is True
+
+    def test_no_database_means_no_verdict(self, wire):
+        wire([_container("proj-frappe-1")])
+        assert core_stop.stop("proj").data.db_clean_shutdown is None
+
+
 class TestTypedErrors:
     def test_missing_project_raises_not_found_instead_of_returning_none(self, wire):
         wire([])

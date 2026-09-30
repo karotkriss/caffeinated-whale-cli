@@ -34,6 +34,7 @@ from caffeinated_whale_cli.commands import utils as utils_mod
 from caffeinated_whale_cli.commands.utils import split_trailing_options
 from caffeinated_whale_cli.core import rm as core_rm
 from caffeinated_whale_cli.core import stop as core_stop
+from caffeinated_whale_cli.core.envelope import Result, Status
 from caffeinated_whale_cli.utils import docker_utils
 
 
@@ -71,7 +72,12 @@ class TestStop:
             core_stop,
             "stop",
             lambda name: stopped.append(name)
-            or type("R", (), {"data": type("O", (), {"stopped": 1, "already_stopped": False})()})(),
+            or Result(
+                status=Status.OK,
+                data=core_stop.StopOutcome(
+                    project=name, stopped=1, already_stopped=False, containers=[name]
+                ),
+            ),
         )
         return stopped
 

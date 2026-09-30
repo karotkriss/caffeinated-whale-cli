@@ -330,6 +330,29 @@ def test_shared_mode_aligns_to_service_uid_not_host(monkeypatch):
     )
 
 
+def test_every_reown_runs_before_the_identity_edit(monkeypatch):
+    """The passwd edit kills a container whose PID 1 is a bench stack running as
+    `frappe` (a devcontainer compose), and Docker kills this exec with it. With the
+    re-owns queued AFTER the edit they never ran, so the next boot ran PID 1 as the
+    remapped `frappe` against a bench still owned by the old uid and the instance was
+    bricked (staging, 2026-09-29). Every chown must precede groupmod and the sed, the
+    identity edit must be last, and `&&` must chain them so a failed re-own never
+    reaches the edit."""
+    monkeypatch.setattr(core_docker.shared_home, "shared_mode", lambda: True)
+    monkeypatch.setattr(core_docker.shared_home, "service_uid", lambda: 996)
+    monkeypatch.setattr(core_docker.shared_home, "gid", lambda: 996)
+    c = FakeContainer(frappe_uid=1000, frappe_gid=1000, workspace_owner="1000:1000")
+    assert core_docker.align_container_user_to_host(
+        c, bench_paths=["/workspace/development/frappe-bench"]
+    ) == (True, None)
+    steps = c.remap_scripts[0].split(" && ")
+    edits = [i for i, step in enumerate(steps) if step.startswith(("groupmod", "sed -i"))]
+    chowns = [i for i, step in enumerate(steps) if "chown" in step]
+    assert edits == [len(steps) - 2, len(steps) - 1], steps
+    assert chowns and max(chowns) < min(edits), steps
+    assert "chown -R 996:996 /workspace/development/frappe-bench" in steps[max(chowns)]
+
+
 def test_shared_mode_falls_back_to_host_when_service_account_absent(monkeypatch):
     """A half-provisioned shared box (no service account yet) degrades to the
     per-user host target rather than crashing."""
@@ -507,8 +530,17 @@ class ReownFake:
     repo); ``owner`` is that repo's current `uid:gid`; ``probe_code`` non-zero makes
     the resolve fail (unreadable)."""
 
-    def __init__(self, *, uid=9000, gid=9000, real_path="/workspace/.hdsrc/erpnext",
-                 owner="500:500", probe_code=0, chown_code=0, chown_out=b""):
+    def __init__(
+        self,
+        *,
+        uid=9000,
+        gid=9000,
+        real_path="/workspace/.hdsrc/erpnext",
+        owner="500:500",
+        probe_code=0,
+        chown_code=0,
+        chown_out=b"",
+    ):
         self.uid = uid
         self.gid = gid
         self.real_path = real_path

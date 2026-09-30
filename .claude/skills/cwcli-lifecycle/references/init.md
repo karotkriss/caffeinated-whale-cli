@@ -48,6 +48,9 @@ The re-own set is each bench dir PLUS the real source dir of any app symlinked O
 An instance already bricked by v3.1.0 has `frappe` remapped to the service uid ALREADY (ids match, no change this call), so an ids-only gate would never recover it; the mismatch gate recovers it in place on the next `cwcli start`/`restart`.
 Each chown is existence-guarded (an absent fresh-init bench dir is a no-op) and `shlex`-quoted; `/workspace` is a bind mount, so `chown -R` there is cheap (no copy-up).
 A normal box (align targets `os.getuid()`, which already owns the workspace) reads no mismatch and emits no chown.
+ORDER (staging brick, 2026-09-29): every chown in align's single `&&` chain runs BEFORE `groupmod` and the passwd `sed`, which come last.
+On a devcontainer-style instance whose PID 1 is `bench start` running as `frappe`, the passwd edit kills PID 1, and Docker kills the exec with the container; re-owns queued after the edit never ran, so the next boot died on `logs/bench.log` for good.
+Pinned by `tests/test_core_docker.py::test_every_reown_runs_before_the_identity_edit` and the real-Docker `tests/e2e/test_start_stop_container_lifecycle_e2e.py`.
 All three callers pass their resolved path(s): `init_bench` (`[bench_full_path]`, computed before the align call), `core.start` (`[resolved_path]`, so align now runs AFTER bench resolution rather than before), and `core.scale`'s `_repair_toolchains` (its `bench_paths`).
 Guarded by `tests/test_core_docker.py` (the armed-recovery reown assertion plus the matching-owner/absent-dir/normal-box negatives plus the symlinked-app-source cases) and real-Docker E2E `tests/e2e/test_shared_workspace_reown_e2e.py`.
 
