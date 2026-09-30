@@ -55,6 +55,9 @@ class FakeContainer:
         self.events.append(signal)
 
     def exec_run(self, cmd, **kwargs):
+        if cmd == ["kill", "-CONT", "1"]:
+            self.events.append("in-container SIGCONT")
+            return 0, b""
         if cmd and cmd[0] == "id":
             val = self.frappe_uid if "-u" in cmd else self.frappe_gid
             return 0, (b"" if val is None else f"{val}\n".encode())
@@ -159,7 +162,7 @@ def test_the_remap_script_thaws_pid1_itself_after_the_chain(host_1001, tmp_path,
 
 def test_a_pre_exec_interrupt_leaves_pid1_for_the_next_start_to_thaw(host_1001):
     """An interrupt before Docker starts the exec has no in-container thaw; the next
-    core.start owns recovery by sending SIGCONT before its liveness check."""
+    core.start owns recovery through an in-container SIGCONT before its liveness check."""
 
     class Interrupted(FakeContainer):
         def exec_run(self, cmd, **kwargs):
@@ -185,7 +188,7 @@ def test_pid1_is_thawed_even_when_the_remap_exec_fails(host_1001):
     c = DiesMidExec(frappe_uid=1000, frappe_gid=1000)
     remapped, err = core_docker.align_container_user_to_host(c)
     assert remapped is False and err is not None
-    assert c.events == ["SIGSTOP", "SIGCONT"]
+    assert c.events == ["SIGSTOP", "in-container SIGCONT"]
 
 
 def test_a_home_repair_without_an_identity_change_does_not_freeze(monkeypatch):
