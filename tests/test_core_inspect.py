@@ -394,7 +394,7 @@ class TestHardenings:
         assert excinfo.value.kind is ErrorKind.DOCKER
         assert writes == []  # crash-without-corruption, now typed
 
-    def test_a_bench_whose_read_left_no_record_names_it_and_writes_nothing(self, wired):
+    def test_a_bench_whose_read_left_no_record_is_named_and_cached_empty(self, wired):
         _store, writes, install = wired
 
         class DyingReadContainer(FakeFrappeContainer):
@@ -406,11 +406,16 @@ class TestHardenings:
 
         install(DyingReadContainer(apps=["frappe"], sites={"a.localhost": ["frappe"]}))
 
-        with pytest.raises(CwcliError) as excinfo:
-            core_inspect.inspect_raw("proj", refresh="full")
-        assert (excinfo.value.kind, excinfo.value.code) == (ErrorKind.DOCKER, "inspect.read_failed")
-        assert f"{BENCH} (its read process exited with code 139)" in excinfo.value.message
-        assert writes == []
+        result = core_inspect.inspect_raw("proj", refresh="full")
+
+        assert result.data.served_from == "full"
+        assert [(w.code, w.text) for w in result.warnings] == [
+            (
+                "inspect.bench_unread",
+                f"Could not read bench {BENCH} (its read process exited with code 139).",
+            )
+        ]
+        assert writes == [[{"path": BENCH, "sites": [], "available_apps": []}]]
 
 
 class _DiscoveryContainer:
@@ -714,7 +719,7 @@ class TestBenchSelector:
         monkeypatch.setattr(
             core_inspect,
             "_gather_benches",
-            lambda _container, paths, _emit: [
+            lambda _container, paths, _emit, _warnings: [
                 next(b for b in gathered if b["path"] == path) for path in paths
             ],
         )

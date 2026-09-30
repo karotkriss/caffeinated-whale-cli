@@ -23,7 +23,6 @@ import pytest
 from caffeinated_whale_cli.core import apps as core_apps
 from caffeinated_whale_cli.core import bench_read
 from caffeinated_whale_cli.core import inspect as core_inspect
-from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from caffeinated_whale_cli.utils import config_utils
 
 FAKE_FRAPPE = """\
@@ -271,7 +270,7 @@ def test_a_hostile_search_root_caches_real_apps_and_a_cache_hit_sees_no_drift(
     )
 
     assert bench in core_inspect.discover_benches(host)
-    gathered = core_inspect._gather_benches(host, [bench], lambda _e: None)
+    gathered = core_inspect._gather_benches(host, [bench], lambda _e: None, [])
     assert gathered[0]["available_apps"] == ["erpnext", "frappe"]
     assert len(gathered[0]["sites"]) == 3
 
@@ -320,7 +319,7 @@ def test_a_failed_frappe_import_names_the_bench_and_step_for_every_site(tmp_path
     ]
 
 
-def test_a_bench_whose_process_dies_is_named_with_its_cause_and_never_cached(tmp_path, host):
+def test_a_bench_whose_process_dies_is_named_and_the_healthy_bench_is_still_read(tmp_path, host):
     bench = make_bench(tmp_path / "b")
     healthy = make_bench(tmp_path / "healthy")
     python = tmp_path / "b" / "frappe-bench" / "env" / "bin" / "python"
@@ -331,10 +330,16 @@ def test_a_bench_whose_process_dies_is_named_with_its_cause_and_never_cached(tmp
     assert set(batch.benches) == {healthy}
     assert batch.errors == {bench: "its read process exited with code 3"}
     host.calls.clear()
-    with pytest.raises(CwcliError) as exc:
-        core_inspect._gather_benches(host, [bench, healthy], lambda _e: None)
-    assert (exc.value.kind, exc.value.code) == (ErrorKind.DOCKER, "inspect.read_failed")
-    assert f"{bench} (its read process exited with code 3)" in exc.value.message
+    warnings: list = []
+    gathered = core_inspect._gather_benches(host, [bench, healthy], lambda _e: None, warnings)
+
+    assert gathered[0] == {"path": bench, "sites": [], "available_apps": []}
+    assert gathered[1]["available_apps"] == ["erpnext", "frappe"]
+    assert [w.text for w in warnings] == [
+        f"Could not read bench {bench} (its read process exited with code 3).",
+        f"Failed to list apps for site 'b.localhost' "
+        f"({healthy}: frappe.connect failed (RuntimeError)).",
+    ]
     assert len(host.calls) == 1  # no second, per-exec path
 
 
