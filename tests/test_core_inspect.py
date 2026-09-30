@@ -21,6 +21,7 @@ from caffeinated_whale_cli.core import docker as core_docker
 from caffeinated_whale_cli.core import inspect as core_inspect
 from caffeinated_whale_cli.core.envelope import Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
+from tests.batched_probes import emulate_batched
 
 BENCH = "/workspace/development/frappe-bench"
 
@@ -51,6 +52,9 @@ class FakeFrappeContainer:
         self.status = "running"
 
     def exec_run(self, cmd, workdir=None):
+        batched = emulate_batched(self, cmd)
+        if batched is not None:
+            return batched
         self.calls.append(cmd)
         b = self.bench_path
 
@@ -392,7 +396,7 @@ class TestHardenings:
 
 
 class _DiscoveryContainer:
-    """Answers only the ``find`` + ``_is_bench_directory`` probes discovery issues.
+    """Answers only the per-root ``find`` + bench-shape probes discovery is emulated from.
 
     ``bench_dirs`` lists each real bench dir; every ``find``
     returns the ones nested under the queried root, so overlapping roots surface
@@ -407,6 +411,9 @@ class _DiscoveryContainer:
         pass
 
     def exec_run(self, cmd, workdir=None):
+        batched = emulate_batched(self, cmd)
+        if batched is not None:
+            return batched
         if cmd.startswith("find "):
             root = cmd.split()[1].rstrip("/")
             self.finds.append(root)
@@ -414,7 +421,7 @@ class _DiscoveryContainer:
             # registers the bench dir as its own custom search root).
             hits = [f"{b}/apps" for b in self.bench_dirs if b == root or b.startswith(root + "/")]
             return (0, "\n".join(hits).encode())
-        if "test -d" in cmd:  # _is_bench_directory
+        if "test -d" in cmd:  # bench-shape check, via tests/batched_probes
             return (0, b"")
         return (1, b"")
 

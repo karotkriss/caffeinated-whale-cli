@@ -40,6 +40,7 @@ from caffeinated_whale_cli.commands import open as open_mod
 from caffeinated_whale_cli.core import docker as core_docker
 from caffeinated_whale_cli.core import inspect as core_inspect
 from caffeinated_whale_cli.utils import db_utils
+from tests.batched_probes import emulate_batched
 
 BENCH = "/home/frappe/frappe-bench"
 
@@ -74,6 +75,9 @@ class FakeFrappeContainer:
         pass
 
     def exec_run(self, cmd, workdir=None):
+        batched = emulate_batched(self, cmd)
+        if batched is not None:
+            return batched
         # Normalize list-form argv (e.g. the app-import probe) to a string so the
         # string-matching branches and the recorded-call predicates below stay valid.
         cmd = cmd if isinstance(cmd, str) else " ".join(cmd)
@@ -88,7 +92,7 @@ class FakeFrappeContainer:
             entry = shlex.split(cmd)[-1].rsplit("/", 1)[-1]
             return (0, b"SITE\n") if entry in self.sites else (0, b"NOTASITE\n")
 
-        if "test -d" in cmd:  # _is_bench_directory
+        if "test -d" in cmd:  # bench-shape check, via tests/batched_probes
             return (0, b"")
         if cmd.startswith("find "):  # _find_bench_instances (full inspect only)
             root = cmd.split()[1].rstrip("/")
@@ -453,6 +457,9 @@ class TwoBenchContainer:
         self.status = "running"
 
     def exec_run(self, cmd, workdir=None):
+        batched = emulate_batched(self, cmd)
+        if batched is not None:
+            return batched
         self.calls.append(cmd)
         p = self.present_path
         if "test -d" in cmd:  # only the present bench passes the directory check

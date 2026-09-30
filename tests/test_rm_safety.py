@@ -33,6 +33,7 @@ from caffeinated_whale_cli.core import rm as core_rm
 from caffeinated_whale_cli.core.envelope import Result, Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from caffeinated_whale_cli.utils import bench_sites, db_utils, docker_utils
+from tests.batched_probes import emulate_batched
 
 BENCH = "/workspace/frappe-bench"
 
@@ -179,6 +180,9 @@ class FakeFrappeContainer:
         return 0 if ok else 1
 
     def exec_run(self, cmd, workdir=None):
+        batched = emulate_batched(self, cmd)
+        if batched is not None:
+            return batched
         self.calls.append(cmd)
         b = self.bench_path
 
@@ -998,6 +1002,9 @@ class TestMultiBench:
 
         class DiscoveringContainer(FakeFrappeContainerMB):
             def exec_run(self, cmd, workdir=None):
+                batched = emulate_batched(self, cmd)
+                if batched is not None:
+                    return batched
                 if cmd == f"find {discovered_root} -maxdepth 2 -type d -name 'apps'":
                     self.calls.append(cmd)
                     return (0, f"{bench_a}/apps\n{bench_b}/apps".encode())
@@ -1065,6 +1072,9 @@ class TestConfigArchiveWarning:
             docker exec failure during config archiving."""
 
             def exec_run(self, cmd, workdir=None):
+                batched = emulate_batched(self, cmd)
+                if batched is not None:
+                    return batched
                 if cmd.startswith("cat "):
                     raise RuntimeError("simulated docker exec failure")
                 return super().exec_run(cmd, workdir=workdir)

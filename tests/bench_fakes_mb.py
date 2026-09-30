@@ -2,6 +2,7 @@
 
 import shlex
 
+from tests.batched_probes import emulate_batched
 from tests.test_rm_safety import _tar_bytes
 
 
@@ -68,6 +69,9 @@ class FakeFrappeContainerMB:
         }
 
     def exec_run(self, cmd, workdir=None):
+        batched = emulate_batched(self, cmd)
+        if batched is not None:
+            return batched
         self.calls.append(cmd)
         for bp in self.per_bench:
             b = bp

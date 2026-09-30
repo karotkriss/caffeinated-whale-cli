@@ -87,17 +87,23 @@ BENCH_PRESENT = "present"
 BENCH_ABSENT = "absent"
 BENCH_UNVERIFIED = "unverified"
 
-# The same three tests `core.inspect._is_bench_directory` applies, run over every
-# candidate path in ONE exec instead of one exec per bench - so the cost of
+# The bench-shape test (a ``sites`` dir, an ``apps`` dir, and
+# ``sites/common_site_config.json``) as a POSIX-sh function over ``"$1"``. It is the
+# ONE definition every batched probe shares - this presence check and
+# ``core.inspect``'s one-exec discovery and partial refresh - so "is this a bench"
+# cannot mean different things to different verbs.
+IS_BENCH_SH = (
+    'is_bench() { [ -d "$1/sites" ] && [ -d "$1/apps" ] '
+    '&& [ -f "$1/sites/common_site_config.json" ]; }'
+)
+
+# Every candidate path in ONE exec instead of one exec per bench - so the cost of
 # verifying is flat in bench count, the property that made `core.where`'s
 # per-invocation Docker listing affordable. `if/then/fi` rather than `&& echo`
 # keeps the loop's exit status 0, so a non-zero code means the exec ITSELF failed
 # and is never confused with "nothing matched".
 _PRESENT_BENCHES_SCRIPT = (
-    'for p in "$@"; do '
-    'if [ -d "$p/sites" ] && [ -d "$p/apps" ] && [ -f "$p/sites/common_site_config.json" ]; '
-    'then echo "$p"; fi; '
-    "done"
+    IS_BENCH_SH + '; for p in "$@"; do if is_bench "$p"; then echo "$p"; fi; done'
 )
 
 
