@@ -348,8 +348,12 @@ def _unread_site_text(bench_dir: str, site: bench_read.SiteRead) -> str:
     return f"Failed to list apps for site '{site.name}' ({bench_dir}: {site.error})."
 
 
-def _bench_dict(read: bench_read.BenchRead, emit: OnEvent) -> dict:
+def _bench_dict(read: bench_read.BenchRead, emit: OnEvent, previous: dict | None = None) -> dict:
     """The cache-shaped bench dict for one bench's facts.
+
+    ``previous`` is this bench's cached row, if any: a site whose apps could not
+    be read keeps its cached ``installed_apps`` from it (``inspect`` reports them
+    unverified) rather than being overwritten with ``[]``.
 
     Key order is a characterized contract (the human ``--json`` bytes): ``path,
     sites, available_apps``, then optional ``app_copies, current_site, label,
@@ -385,17 +389,20 @@ def _bench_dict(read: bench_read.BenchRead, emit: OnEvent) -> dict:
                 )
             )
 
+    remembered = {s["name"]: s.get("installed_apps", []) for s in (previous or {}).get("sites", [])}
     sites_info = []
     for site in read.sites or []:
         emit(InspectTrace(text=f"  - Found Site: {site.name}"))
-        if site.list_apps is None:
-            # Surface the failure as an event, never into the returned/cached data. A
-            # site with genuinely no apps and a site whose list-apps failed both cache
-            # as [] (the honest "nothing to record / unknown" state) - never a
-            # poisoned sentinel string that would be persisted and re-emitted forever
-            # by the partial-refresh path and rendered as a fake app in the tree.
+        installed = site.list_apps
+        if installed is None:
+            # Surface the failure as an event, never into the returned/cached data:
+            # keep the site's cached apps (reported unverified), or [] when none were
+            # cached - never a poisoned sentinel string that would be persisted and
+            # re-emitted forever by the partial-refresh path and rendered as a fake
+            # app in the tree.
             emit(InspectWarning(text=_unread_site_text(bench_dir, site)))
-        site_data: dict = {"name": site.name, "installed_apps": list(site.list_apps or [])}
+            installed = remembered.get(site.name, [])
+        site_data: dict = {"name": site.name, "installed_apps": list(installed)}
         if site.site_config is not None:
             site_data["site_config"] = site.site_config
         sites_info.append(site_data)
@@ -449,8 +456,8 @@ def _gather_benches(
     out when it has none, so a failed read never overwrites what the cache knew
     (``inspect`` reports that row's apps as unverified, and it carries no
     ``app_copies``, since nothing was observed);
-    a bench whose sites failed is returned with those sites' apps as ``[]`` (never
-    a sentinel). Each failure is an unconditional ``InspectWarning`` plus a
+    a site whose apps failed keeps its cached apps (reported unverified), or
+    ``[]`` when it had none (never a sentinel). Each failure is an unconditional ``InspectWarning`` plus a
     ``warnings`` entry naming the bench and the cause. A raw Docker error
     propagates, so the caller's crash-without-corruption contract (no cache write)
     holds.
@@ -470,11 +477,16 @@ def _gather_benches(
             gathered.extend(b for b in previous if b["path"] == bench_path)
             continue
         warnings.extend(
-            Message("inspect.site_unread", _unread_site_text(bench_path, site))
+            Message(
+                "inspect.site_unread",
+                _unread_site_text(bench_path, site),
+                detail={"bench": bench_path, "site": site.name},
+            )
             for site in read.sites or []
             if site.list_apps is None
         )
-        gathered.append(_bench_dict(read, emit))
+        cached = next((b for b in previous if b["path"] == bench_path), None)
+        gathered.append(_bench_dict(read, emit, cached))
     return gathered
 
 
@@ -864,7 +876,9 @@ def inspect_raw(
     )
 
 
-def _to_bench_info(index: int, bench: dict, *, apps_verified: bool) -> BenchInfo:
+def _to_bench_info(
+    index: int, bench: dict, *, apps_verified: bool, unread_sites: set[str]
+) -> BenchInfo:
     common = bench.get("common_site_config") or {}
     # The "(default)" resolution order: common_site_config.default_site first,
     # the currentsite.txt pointer as the fallback (falsy-checked, matching the
@@ -881,7 +895,7 @@ def _to_bench_info(index: int, bench: dict, *, apps_verified: bool) -> BenchInfo
             SiteInfo(
                 name=site["name"],
                 installed_apps=list(site.get("installed_apps", [])),
-                installed_apps_verified=apps_verified,
+                installed_apps_verified=apps_verified and site["name"] not in unread_sites,
                 has_site_config="site_config" in site,
             )
             for site in bench.get("sites", [])
@@ -925,15 +939,23 @@ def inspect(
     # Only a T3 full inspect re-observes each site's installed apps (and their
     # git refs) live; the T1 cache and T2 partial tiers carry the cached list
     # forward, so their per-site installed_apps are REMEMBERED, not verified. So
-    # is a bench a full inspect could not read, whose cached row it kept.
+    # is a bench or site a full inspect could not read, whose cached row it kept.
     unread = {
         (w.detail or {}).get("bench") for w in raw.warnings if w.code == "inspect.bench_unread"
+    }
+    unread_sites = {
+        ((w.detail or {}).get("bench"), (w.detail or {}).get("site"))
+        for w in raw.warnings
+        if w.code == "inspect.site_unread"
     }
     benches = [
         _to_bench_info(
             b.get("index", position),
             b,
             apps_verified=raw.data.served_from == "full" and b["path"] not in unread,
+            unread_sites={
+                site for bench, site in unread_sites if bench == b["path"] and isinstance(site, str)
+            },
         )
         for position, b in enumerate(raw.data.benches)
     ]
