@@ -31,6 +31,7 @@ Marked `standalone`: it never touches the shared session instance.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import time
 
@@ -168,6 +169,19 @@ def _shared_start(project: str, marker) -> subprocess.CompletedProcess:
             os.environ["CWCLI_SHARED_MARKER"] = env_before
 
 
+def _shared_start_in_background(project: str, marker) -> subprocess.Popen:
+    env = os.environ.copy()
+    env["CWCLI_SHARED_MARKER"] = str(marker)
+    return subprocess.Popen(
+        [harness.CWCLI, "start", project],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+
+
 def test_shared_mode_remap_interrupted_by_container_exit_stays_restartable(tmp_path):
     marker = tmp_path / "shared.toml"
     marker.write_text("enabled = true\n")
@@ -272,6 +286,79 @@ def test_shared_mode_remap_cannot_be_cut_short_mid_chown(tmp_path):
             f"{logs[-2000:]}"
         )
         assert "exited (exit code" not in second, second
+        code, strays = frappe.exec_run(["find", _BENCH, "!", "-user", str(host_uid)])
+        assert code == 0 and strays.decode().strip() == "", strays.decode()[:2000]
+    finally:
+        harness.sweep_cwe2e(only=project)
+
+
+def test_shared_mode_remap_survives_client_interrupt_mid_chown(tmp_path):
+    marker = tmp_path / "shared.toml"
+    marker.write_text("enabled = true\n")
+    host_uid = os.getuid()
+    assert host_uid != _OLD_UID
+
+    project = harness.project_name("remapsignal")
+    frappe = _create(project, "frappe", _SLIM, ["bash", "-c", _MID_CHOWN_PID1])
+    try:
+        frappe.start()
+        _wait_logs(frappe, "BENCH_UP", timeout=300)
+        chown_marker = "/tmp/cwcli-bench-chown-running"
+        chown_wrapper = f"""#!/bin/sh
+for last do :; done
+if [ "$1" = "-R" ] && [ "$last" = "{_BENCH}" ]; then
+  touch {chown_marker}
+  sleep 30
+fi
+exec /usr/bin/chown "$@"
+"""
+        code, out = frappe.exec_run(
+            [
+                "python3",
+                "-c",
+                "import os, pathlib; "
+                f"p = pathlib.Path('/usr/local/bin/chown'); p.write_text({chown_wrapper!r}); "
+                "os.chmod(p, 0o755)",
+            ],
+            user="root",
+        )
+        assert code == 0, out
+        frappe.stop(timeout=1)
+
+        child = _shared_start_in_background(project, marker)
+
+        def chown_is_in_progress() -> bool:
+            frappe.reload()
+            if frappe.status != "running":
+                return False
+            code, _ = frappe.exec_run(["test", "-f", chown_marker])
+            return code == 0
+
+        harness.wait_until(
+            chown_is_in_progress,
+            timeout=300,
+            interval=0.01,
+            desc="shared bench chown in progress",
+        )
+        child.send_signal(signal.SIGTERM)
+        stdout, stderr = child.communicate(timeout=60)
+        interrupted = harness.strip_ansi(stdout + stderr)
+        assert child.returncode != 0, interrupted
+
+        def remap_finished() -> bool:
+            frappe.reload()
+            return frappe.status != "running"
+
+        harness.wait_until(remap_finished, timeout=300, interval=0.1, desc="remap completion")
+
+        restarted = _output(_shared_start(project, marker))
+        time.sleep(3)
+        frappe.reload()
+        logs = frappe.logs().decode("utf-8", "replace")
+        assert frappe.status == "running", (
+            f"the instance is bricked after the client interrupted the remap:\n{restarted}\n"
+            f"{logs[-2000:]}"
+        )
         code, strays = frappe.exec_run(["find", _BENCH, "!", "-user", str(host_uid)])
         assert code == 0 and strays.decode().strip() == "", strays.decode()[:2000]
     finally:

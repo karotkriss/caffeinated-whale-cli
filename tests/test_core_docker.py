@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -115,7 +116,61 @@ def test_an_identity_change_runs_with_pid1_frozen(host_1001):
     kill the exec and strand the bench and `frappe` on different uids."""
     c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
     core_docker.align_container_user_to_host(c)
-    assert c.events == ["SIGSTOP", "remap", "SIGCONT"]
+    assert c.events == ["SIGSTOP", "remap"]
+
+
+@pytest.mark.parametrize("fail_at", [None, "chown", "sed"])
+def test_the_remap_script_thaws_pid1_itself_after_the_chain(host_1001, tmp_path, fail_at):
+    """The thaw rides in the in-container script, after the whole chain whatever its
+    outcome, so an interrupted cwcli cannot thaw PID 1 while the chain still runs.
+    Executed under a real bash with the container tools stubbed on PATH."""
+    c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
+    core_docker.align_container_user_to_host(c)
+    log = tmp_path / "log"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for tool in ("chown", "groupmod", "sed"):
+        stub = bin_dir / tool
+        stub.write_text(
+            f'#!/bin/sh\necho {tool} >> "{log}"\n[ "$FAIL_AT" = {tool} ] && exit 3\nexit 0\n'
+        )
+        stub.chmod(0o755)
+    bash_env = tmp_path / "env.sh"
+    bash_env.write_text(f'kill() {{ echo "kill $*" >> "{log}"; }}\n')
+
+    proc = subprocess.run(
+        ["bash", "-c", c.remap_scripts[0]],
+        env={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "BASH_ENV": str(bash_env),
+            "FAIL_AT": fail_at or "",
+        },
+    )
+
+    ran = log.read_text().splitlines()
+    assert ran[-1] == "kill -CONT 1", ran
+    assert ran.count("kill -CONT 1") == 1
+    if fail_at is None:
+        assert ran == ["chown", "groupmod", "sed", "kill -CONT 1"]
+        assert proc.returncode == 0
+    else:
+        assert ran[-2] == fail_at and proc.returncode == 3
+
+
+def test_an_interrupted_client_never_thaws_pid1_from_the_host(host_1001):
+    """Docker cannot kill an exec, so after a Ctrl-C/SIGTERM the chain keeps running
+    in the container; a host thaw then would resume PID 1 mid-chown."""
+
+    class Interrupted(FakeContainer):
+        def exec_run(self, cmd, **kwargs):
+            if cmd and cmd[0] == "bash":
+                raise KeyboardInterrupt
+            return super().exec_run(cmd, **kwargs)
+
+    c = Interrupted(frappe_uid=1000, frappe_gid=1000)
+    with pytest.raises(KeyboardInterrupt):
+        core_docker.align_container_user_to_host(c)
+    assert c.events == ["SIGSTOP"]
 
 
 def test_pid1_is_thawed_even_when_the_remap_exec_fails(host_1001):
@@ -164,7 +219,7 @@ def test_sed_uid_edit_matches_real_usermod_output():
             m.setattr(core_docker.os, "getgid", lambda: 1000)  # gid unchanged this run
             core_docker.align_container_user_to_host(c)
         script = c.remap_scripts[0]
-        sed_cmd = next(s for s in script.split(" && ") if s.startswith("sed"))
+        sed_cmd = re.search(r"sed -i '[^']*' /etc/passwd", script).group(0)
 
         passwd = Path(tmp) / "passwd"
         passwd.write_text(
@@ -381,7 +436,8 @@ def test_every_reown_runs_before_the_identity_edit(monkeypatch):
     assert core_docker.align_container_user_to_host(
         c, bench_paths=["/workspace/development/frappe-bench"]
     ) == (True, None)
-    steps = c.remap_scripts[0].split(" && ")
+    chain = re.search(r"\( (.*) \) \|\| rc=\$\?", c.remap_scripts[0]).group(1)
+    steps = chain.split(" && ")
     edits = [i for i, step in enumerate(steps) if step.startswith(("groupmod", "sed -i"))]
     chowns = [i for i, step in enumerate(steps) if "chown" in step]
     assert edits == [len(steps) - 2, len(steps) - 1], steps

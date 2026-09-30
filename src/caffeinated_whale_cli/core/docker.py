@@ -571,9 +571,14 @@ def align_container_user_to_host(
     # container, stranding a half-applied remap (bench and `frappe` on different
     # uids) whose next boot dies on `logs/bench.log` before any start can retry.
     # So when the identity changes, PID 1 is frozen (SIGSTOP from the host, which
-    # no process can refuse) for the whole exec and thawed after: it cannot exit
-    # mid-remap, the remap always lands whole, and a PID 1 that then dies on its
-    # stale identity boots as the remapped `frappe` on the next start.
+    # no process can refuse) before the exec, and the script itself thaws it
+    # (`kill -CONT 1` after the chain, success or failure): PID 1 cannot exit while
+    # the chain runs, and an interrupted cwcli (Ctrl-C, SIGTERM) cannot thaw it
+    # early, because Docker has no kill-exec API and the in-container chain runs
+    # on to its own thaw. The host thaws only when the exec itself raises a Docker
+    # error. This guarantees that a client interruption cannot resume PID 1 while
+    # the remap is still running. It does not make an individual chown atomic or
+    # protect against the container or host dying mid-chain.
     steps = []
     if chown_home or cur_uid != host_uid:
         steps.append(f"chown {host_uid}:{host_gid} /home/frappe")
@@ -599,14 +604,18 @@ def align_container_user_to_host(
         steps.append(f"groupmod -o -g {host_gid} frappe")
     if cur_uid != host_uid:
         steps.append(rf"sed -i 's/^frappe:\([^:]*\):[^:]*:/frappe:\1:{host_uid}:/' /etc/passwd")
+    script = " && ".join(steps)
+    if ids_changed:
+        script = f"rc=0; ( {script} ) || rc=$?; kill -CONT 1; exit $rc"
     try:
         if ids_changed:
             container.kill(signal="SIGSTOP")
         try:
-            code, out = container.exec_run(["bash", "-c", " && ".join(steps)], user="root")
-        finally:
+            code, out = container.exec_run(["bash", "-c", script], user="root")
+        except DockerException:
             if ids_changed:
                 container.kill(signal="SIGCONT")
+            raise
     except DockerException as e:
         return (False, f"could not align the container 'frappe' user to the host: {e}")
     if code != 0:
