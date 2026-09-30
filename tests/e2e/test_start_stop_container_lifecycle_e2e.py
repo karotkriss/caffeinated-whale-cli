@@ -9,9 +9,9 @@
    re-owning the bench. On an instance whose PID 1 runs as ``frappe`` the edit
    kills PID 1, the container exits, the exec dies with it, and the bench is never
    re-owned - so every later start dies on the same PermissionError (the staging
-   brick of 2026-09-29). The re-own must come first, and PID 1 must be frozen for
-   the whole remap so it cannot die mid-chown either, so the remap always lands
-   whole and the container restarts.
+   brick of 2026-09-29). The re-own must come first, and PID 1 must remain frozen
+   until the live in-container remap chain thaws it, even when the cwcli client is
+   interrupted.
 3. ``cwcli stop`` stopped MariaDB with the daemon's default grace (1s on Docker
    Desktop, 10s elsewhere), so a DB still flushing InnoDB was SIGKILLed while cwcli
    reported success. The DB must get a real grace period, and a DB that exited
