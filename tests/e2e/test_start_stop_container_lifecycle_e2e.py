@@ -9,12 +9,13 @@
    re-owning the bench. On an instance whose PID 1 runs as ``frappe`` the edit
    kills PID 1, the container exits, the exec dies with it, and the bench is never
    re-owned - so every later start dies on the same PermissionError (the staging
-   brick of 2026-09-29). The re-own must come first, so the interrupted remap
-   still leaves a container that restarts.
+   brick of 2026-09-29). The re-own must come first, and PID 1 must be frozen for
+   the whole remap so it cannot die mid-chown either, so the remap always lands
+   whole and the container restarts.
 3. ``cwcli stop`` stopped MariaDB with the daemon's default grace (1s on Docker
    Desktop, 10s elsewhere), so a DB still flushing InnoDB was SIGKILLed while cwcli
-   reported success. The DB must get a real grace period, and a DB that did not
-   reach ``Shutdown complete`` must never read as a successful stop.
+   reported success. The DB must get a real grace period, and a DB that exited
+   non-zero (137: killed) must never read as a successful stop.
 
 Each is reproduced with REAL containers (no Frappe bench needed): lightweight
 ``python:3.12-slim`` stand-ins carry the compose labels cwcli discovers projects
@@ -155,6 +156,18 @@ def _wait_logs(container, needle: str, timeout: float = 120) -> None:
     harness.wait_until(seen, timeout=timeout, interval=0.5, desc=f"'{needle}' in logs")
 
 
+def _shared_start(project: str, marker) -> subprocess.CompletedProcess:
+    env_before = os.environ.get("CWCLI_SHARED_MARKER")
+    os.environ["CWCLI_SHARED_MARKER"] = str(marker)
+    try:
+        return harness.run_cwcli("start", project, timeout=300)
+    finally:
+        if env_before is None:
+            os.environ.pop("CWCLI_SHARED_MARKER", None)
+        else:
+            os.environ["CWCLI_SHARED_MARKER"] = env_before
+
+
 def test_shared_mode_remap_interrupted_by_container_exit_stays_restartable(tmp_path):
     marker = tmp_path / "shared.toml"
     marker.write_text("enabled = true\n")
@@ -170,15 +183,7 @@ def test_shared_mode_remap_interrupted_by_container_exit_stays_restartable(tmp_p
 
         # The user-facing path: a shared-mode `cwcli start` remaps `frappe` out from
         # under the live PID 1, which kills the container mid-align.
-        env_before = os.environ.get("CWCLI_SHARED_MARKER")
-        os.environ["CWCLI_SHARED_MARKER"] = str(marker)
-        try:
-            proc = harness.run_cwcli("start", project, timeout=300)
-        finally:
-            if env_before is None:
-                os.environ.pop("CWCLI_SHARED_MARKER", None)
-            else:
-                os.environ["CWCLI_SHARED_MARKER"] = env_before
+        proc = _shared_start(project, marker)
         out = _output(proc)
         frappe.reload()
         assert frappe.status != "running", "the remap was expected to kill PID 1"
@@ -198,6 +203,77 @@ def test_shared_mode_remap_interrupted_by_container_exit_stays_restartable(tmp_p
         # ...and the start that died with it said so cleanly.
         assert proc.returncode != 0, out
         assert "Traceback" not in out and "exited" in out, f"start was not clean:\n{out}"
+    finally:
+        harness.sweep_cwe2e(only=project)
+
+
+# PID 1 here re-opens a probe file in each of 50 padded bench dirs every 10ms and
+# exits on the first PermissionError, like a bench whose processes keep opening
+# log files. `chown -R <bench>` re-owns those dirs one after another, so PID 1 dies
+# as soon as the first probe changes hands - mid-chown, with the other dirs, the
+# groupmod, and the passwd edit still queued - unless the remap freezes it.
+_PROBE_DIRS = 50
+_MID_CHOWN_PID1 = f"""
+set -e
+if ! id frappe >/dev/null 2>&1; then
+  groupadd -g {_OLD_UID} frappe
+  useradd -u {_OLD_UID} -g {_OLD_UID} -m -d /home/frappe frappe
+  mkdir -p {_BENCH}/logs
+  python3 -c "
+import os
+for d in range({_PROBE_DIRS}):
+    os.makedirs(f'{_BENCH}/d{{d}}')
+    for i in range(400):
+        open(f'{_BENCH}/d{{d}}/{{i}}', 'w').close()
+"
+  chown -R {_OLD_UID}:{_OLD_UID} /home/frappe {_BENCH}
+fi
+exec setpriv --reuid="$(id -u frappe)" --regid="$(id -g frappe)" --clear-groups \\
+  python3 -c "
+import sys, time
+print('BENCH_UP', flush=True)
+while True:
+    for d in range({_PROBE_DIRS}):
+        try:
+            open(f'{_BENCH}/d{{d}}/0', 'a').close()
+        except PermissionError as e:
+            print('PermissionError:', e, file=sys.stderr, flush=True)
+            sys.exit(1)
+    time.sleep(0.01)
+"
+"""
+
+
+def test_shared_mode_remap_cannot_be_cut_short_mid_chown(tmp_path):
+    marker = tmp_path / "shared.toml"
+    marker.write_text("enabled = true\n")
+    host_uid = os.getuid()
+    assert host_uid != _OLD_UID
+
+    project = harness.project_name("remapchown")
+    frappe = _create(project, "frappe", _SLIM, ["bash", "-c", _MID_CHOWN_PID1])
+    try:
+        frappe.start()
+        _wait_logs(frappe, "BENCH_UP", timeout=300)
+        frappe.stop(timeout=1)
+
+        first = _output(_shared_start(project, marker))
+        assert "Traceback" not in first, first
+        assert "boot it remapped" in " ".join(first.split()), first
+
+        # The remap landed whole, so the next start boots PID 1 as the remapped
+        # `frappe` against a bench it owns - instead of dying on boot for good.
+        second = _output(_shared_start(project, marker))
+        time.sleep(3)
+        frappe.reload()
+        logs = frappe.logs().decode("utf-8", "replace")
+        assert frappe.status == "running", (
+            f"the instance is bricked after a remap cut short mid-chown:\n{second}\n"
+            f"{logs[-2000:]}"
+        )
+        assert "exited (exit code" not in second, second
+        code, strays = frappe.exec_run(["find", _BENCH, "!", "-user", str(host_uid)])
+        assert code == 0 and strays.decode().strip() == "", strays.decode()[:2000]
     finally:
         harness.sweep_cwe2e(only=project)
 
@@ -294,6 +370,6 @@ def test_stop_never_reports_success_for_a_killed_database(surface):
         db.reload()
         assert db.attrs["State"]["ExitCode"] != 0  # precondition: it really was killed
         assert child.returncode != 0, f"stop reported success for a killed database:\n{out}"
-        assert "Shutdown complete" in out, out  # names what it looked for
+        assert "exited with code 137" in " ".join(out.split()), out  # names the real cause
     finally:
         harness.sweep_cwe2e(only=project)

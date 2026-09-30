@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from docker.errors import APIError, DockerException, NotFound
+from docker.errors import APIError, NotFound
 
 from . import resolvers, supervision
 from .docker import get_project_containers
@@ -41,8 +41,6 @@ from .errors import DOCKER_UNREACHABLE_HINT, CwcliError, ErrorKind
 # a DB that is done sooner returns sooner.
 DB_SERVICE = "mariadb"
 DB_STOP_TIMEOUT = 60
-# The line MariaDB (and MySQL) logs LAST on a completed shutdown.
-DB_SHUTDOWN_COMPLETE = "Shutdown complete"
 
 
 def is_database(container) -> bool:
@@ -50,24 +48,15 @@ def is_database(container) -> bool:
     return bool(container.labels.get("com.docker.compose.service") == DB_SERVICE)
 
 
-def stop_database(container) -> bool:
-    """Stop the database with :data:`DB_STOP_TIMEOUT` grace; True iff it shut down cleanly.
+def stop_database(container) -> int | None:
+    """Stop the database with :data:`DB_STOP_TIMEOUT` grace and return its exit code.
 
-    Clean means BOTH a zero exit code (a SIGKILL after the grace ran out is 137) and a
-    last log line reading :data:`DB_SHUTDOWN_COMPLETE`. The log is read by position,
-    not by a ``since`` timestamp, because the Docker Desktop VM's clock can drift
-    from the host's. When the log cannot be read, the exit code alone decides.
+    Zero is a clean shutdown; a SIGKILL after the grace ran out is 137.
     """
     container.stop(timeout=DB_STOP_TIMEOUT)
     container.reload()
-    if (container.attrs.get("State") or {}).get("ExitCode") != 0:
-        return False
-    try:
-        tail = container.logs(tail=5).decode("utf-8", "replace")
-    except DockerException:
-        return True
-    lines = [line for line in tail.splitlines() if line.strip()]
-    return bool(lines) and DB_SHUTDOWN_COMPLETE in lines[-1]
+    code = (container.attrs.get("State") or {}).get("ExitCode")
+    return code if isinstance(code, int) else None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -78,8 +67,8 @@ class StopOutcome:
     stopped: int  # containers THIS call stopped
     already_stopped: bool  # found, but nothing was running
     containers: list[str]  # names of the containers stopped, never Container objects
-    # None when this call stopped no database; False when the database was killed
-    # (or crashed) before logging a completed shutdown - a stop that is NOT clean.
+    # None when this call stopped no database; False when the database exited
+    # non-zero (137: killed before it finished shutting down) - a stop that is NOT clean.
     db_clean_shutdown: bool | None = None
 
 
@@ -128,14 +117,15 @@ def stop(project_name: str) -> Result[StopOutcome]:
     warnings: list[Message] = []
     for container in running:
         if is_database(container):
-            db_clean = stop_database(container)
+            exit_code = stop_database(container)
+            db_clean = exit_code == 0
             if not db_clean:
+                killed = " (killed before it finished shutting down)" if exit_code == 137 else ""
                 warnings.append(
                     Message(
                         "stop.db_unclean",
                         f"The database container '{container.name}' did not shut down "
-                        f"cleanly: its log never reached '{DB_SHUTDOWN_COMPLETE}' "
-                        f"(exit code {(container.attrs.get('State') or {}).get('ExitCode')}). "
+                        f"cleanly: it exited with code {exit_code}{killed}. "
                         "MariaDB will run crash recovery on its next start.",
                     )
                 )

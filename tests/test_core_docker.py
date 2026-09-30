@@ -48,6 +48,10 @@ class FakeContainer:
         self.owners = dict(owners or {})
         self.remap_scripts: list[str] = []
         self.remap_user: str | None = None
+        self.events: list[str] = []
+
+    def kill(self, signal):
+        self.events.append(signal)
 
     def exec_run(self, cmd, **kwargs):
         if cmd and cmd[0] == "id":
@@ -62,6 +66,7 @@ class FakeContainer:
         if cmd and cmd[0] == "bash" and "for d in" in cmd[2] and "readlink -f" in cmd[2]:
             return 0, ("\n".join(self.app_sources) + "\n").encode()
         # the `bash -c "<remap>"` root exec
+        self.events.append("remap")
         self.remap_user = kwargs.get("user")
         self.remap_scripts.append(cmd[2])
         return self.remap_code, self.remap_out
@@ -103,6 +108,37 @@ def test_remaps_uid_and_gid_as_root_with_home_chown(host_1001):
     # core/docker.py's _CHOWN_HOME_* constants for the narrowed replacement).
     assert "chown -R 1001:1001 /home/frappe " not in script
     assert not script.rstrip().endswith("chown -R 1001:1001 /home/frappe")
+
+
+def test_an_identity_change_runs_with_pid1_frozen(host_1001):
+    """A PID 1 running as `frappe` must not be able to die mid-remap: its exit would
+    kill the exec and strand the bench and `frappe` on different uids."""
+    c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
+    core_docker.align_container_user_to_host(c)
+    assert c.events == ["SIGSTOP", "remap", "SIGCONT"]
+
+
+def test_pid1_is_thawed_even_when_the_remap_exec_fails(host_1001):
+    from docker.errors import APIError
+
+    class DiesMidExec(FakeContainer):
+        def exec_run(self, cmd, **kwargs):
+            if cmd and cmd[0] == "bash":
+                raise APIError("connection lost")
+            return super().exec_run(cmd, **kwargs)
+
+    c = DiesMidExec(frappe_uid=1000, frappe_gid=1000)
+    remapped, err = core_docker.align_container_user_to_host(c)
+    assert remapped is False and err is not None
+    assert c.events == ["SIGSTOP", "SIGCONT"]
+
+
+def test_a_home_repair_without_an_identity_change_does_not_freeze(monkeypatch):
+    monkeypatch.setattr(core_docker.os, "getuid", lambda: 1000)
+    monkeypatch.setattr(core_docker.os, "getgid", lambda: 1000)
+    c = FakeContainer(frappe_uid=1000, frappe_gid=1000)
+    core_docker.align_container_user_to_host(c, chown_home=True)
+    assert c.events == ["remap"]
 
 
 def test_uid_change_never_uses_usermod(host_1001):

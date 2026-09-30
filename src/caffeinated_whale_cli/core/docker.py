@@ -563,16 +563,17 @@ def align_container_user_to_host(
     # the narrowed, explicit chown below.
     #
     # ORDER IS LOAD-BEARING: every chown runs BEFORE the identity edit, and the
-    # identity edit runs last. On an instance whose PID 1 is a bench stack running
-    # as `frappe` (a devcontainer-style compose, not cwcli's `sleep infinity`), the
-    # passwd edit strips the live processes' uid of its passwd row, they crash, PID
-    # 1 exits, and Docker kills this exec with the container. Any step still queued
-    # behind the edit never runs - so with the re-owns last, the next boot ran PID 1
-    # as the remapped `frappe` against a bench still owned by the old uid and died
-    # on `logs/bench.log`, bricking the instance for good. With the re-owns first,
-    # an exec cut short by the edit leaves either the old identity (the next start
-    # retries the whole remap) or the complete new state; `&&` means a failed
-    # re-own never reaches the edit at all.
+    # identity edit runs last; `&&` means a failed re-own never reaches the edit.
+    # On an instance whose PID 1 is a bench stack running as `frappe` (a
+    # devcontainer-style compose, not cwcli's `sleep infinity`), both halves can
+    # kill PID 1 - the chown takes its own bench away from it, the passwd edit
+    # takes its passwd row - and a PID 1 exit makes Docker kill this exec with the
+    # container, stranding a half-applied remap (bench and `frappe` on different
+    # uids) whose next boot dies on `logs/bench.log` before any start can retry.
+    # So when the identity changes, PID 1 is frozen (SIGSTOP from the host, which
+    # no process can refuse) for the whole exec and thawed after: it cannot exit
+    # mid-remap, the remap always lands whole, and a PID 1 that then dies on its
+    # stale identity boots as the remapped `frappe` on the next start.
     steps = []
     if chown_home or cur_uid != host_uid:
         steps.append(f"chown {host_uid}:{host_gid} /home/frappe")
@@ -599,7 +600,13 @@ def align_container_user_to_host(
     if cur_uid != host_uid:
         steps.append(rf"sed -i 's/^frappe:\([^:]*\):[^:]*:/frappe:\1:{host_uid}:/' /etc/passwd")
     try:
-        code, out = container.exec_run(["bash", "-c", " && ".join(steps)], user="root")
+        if ids_changed:
+            container.kill(signal="SIGSTOP")
+        try:
+            code, out = container.exec_run(["bash", "-c", " && ".join(steps)], user="root")
+        finally:
+            if ids_changed:
+                container.kill(signal="SIGCONT")
     except DockerException as e:
         return (False, f"could not align the container 'frappe' user to the host: {e}")
     if code != 0:

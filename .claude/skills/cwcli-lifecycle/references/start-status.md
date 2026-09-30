@@ -224,9 +224,9 @@ are now the whole point. Each note below guards a real bug.
 
 - **The database stops LAST, with `DB_STOP_TIMEOUT` (60s) grace, and its shutdown is VERIFIED.** A bare
   `container.stop()` used the daemon default - 1s for every container Docker Desktop creates, 10s on Engine - so
-  MariaDB was SIGKILLed mid-InnoDB-shutdown while `stop` reported success. Clean = exit code 0 AND a last log
-  line containing `Shutdown complete`, read by POSITION (`tail`), never by a `since` timestamp, because the Docker
-  Desktop VM clock can drift from the host's. An unclean stop is `StopOutcome.db_clean_shutdown=False` plus a
+  MariaDB was SIGKILLed mid-InnoDB-shutdown while `stop` reported success. Clean = exit code 0; anything else
+  (137 = killed after the grace ran out) is unclean. The log is deliberately NOT read: a MariaDB whose error log
+  goes to a file (`log_error`) exits 0 without printing `Shutdown complete`, so a log check false-alarms. An unclean stop is `StopOutcome.db_clean_shutdown=False` plus a
   `stop.db_unclean` warning, and both `stop` frontends exit 1 on it (they read the outcome, not the status).
 
 - **`stop_bench(project, bench=..., bench_path=...)` stops one bench's supervisord, not a container.** A
