@@ -516,11 +516,26 @@ def run_app_update(
         typer.echo(json.dumps(dataclasses.asdict(report), indent=2))
     else:
         _report_summary(report, renderer._pull_tails if renderer is not None else None)
+    for warning in result.warnings:
+        if warning.code in _UNREAD_WARNING_CODES:
+            stderr_console.print(f"[yellow]Warning:[/yellow] {warning.text}")
 
     # The exit code reads report.ok, NOT result.status: a partial failure is a
     # WARNING-shaped envelope, and every other verb maps WARNING to 0.
     if not report.ok:
         raise typer.Exit(code=1)
+
+
+# The benches and sites the post-pull recache and the site discovery could not
+# read; no event narrates them, so the summary is followed by each one.
+_UNREAD_WARNING_CODES = frozenset(
+    {
+        "inspect.bench_unread",
+        "inspect.site_unread",
+        "discover.bench_unreadable",
+        "discover.site_unreadable",
+    }
+)
 
 
 def _resolve_bench_path(project_name, bench, bench_path, verbose, *, json_output=False) -> str:

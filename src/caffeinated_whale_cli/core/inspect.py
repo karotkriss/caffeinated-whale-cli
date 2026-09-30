@@ -446,7 +446,9 @@ def _gather_benches(
 
     One bench's failure never stops the others being served and cached. A bench
     that left no record keeps its ``previous`` (cached) row unchanged, or is left
-    out when it has none, so a failed read never overwrites what the cache knew;
+    out when it has none, so a failed read never overwrites what the cache knew
+    (``inspect`` reports that row's apps as unverified, and it carries no
+    ``app_copies``, since nothing was observed);
     a bench whose sites failed is returned with those sites' apps as ``[]`` (never
     a sentinel). Each failure is an unconditional ``InspectWarning`` plus a
     ``warnings`` entry naming the bench and the cause. A raw Docker error
@@ -464,7 +466,7 @@ def _gather_benches(
         if read is None:
             text = f"Could not read bench {bench_path} ({batch.errors[bench_path]})."
             emit(InspectWarning(text=text))
-            warnings.append(Message("inspect.bench_unread", text))
+            warnings.append(Message("inspect.bench_unread", text, detail={"bench": bench_path}))
             gathered.extend(b for b in previous if b["path"] == bench_path)
             continue
         warnings.extend(
@@ -922,10 +924,17 @@ def inspect(
     assert raw.data is not None  # OK/WARNING always carries a RawInspect
     # Only a T3 full inspect re-observes each site's installed apps (and their
     # git refs) live; the T1 cache and T2 partial tiers carry the cached list
-    # forward, so their per-site installed_apps are REMEMBERED, not verified.
-    apps_verified = raw.data.served_from == "full"
+    # forward, so their per-site installed_apps are REMEMBERED, not verified. So
+    # is a bench a full inspect could not read, whose cached row it kept.
+    unread = {
+        (w.detail or {}).get("bench") for w in raw.warnings if w.code == "inspect.bench_unread"
+    }
     benches = [
-        _to_bench_info(b.get("index", position), b, apps_verified=apps_verified)
+        _to_bench_info(
+            b.get("index", position),
+            b,
+            apps_verified=raw.data.served_from == "full" and b["path"] not in unread,
+        )
         for position, b in enumerate(raw.data.benches)
     ]
 
@@ -934,7 +943,7 @@ def inspect(
     # the same fail-honest nudge core.where gives on its unverified path. Scoped to
     # the case where there is actually a remembered app list to be stale about, so
     # a container-less or app-less read stays quiet.
-    if not apps_verified and any(s.installed_apps for b in benches for s in b.sites):
+    if any(s.installed_apps and not s.installed_apps_verified for b in benches for s in b.sites):
         warnings.append(
             Message(
                 "inspect.apps_unverified",

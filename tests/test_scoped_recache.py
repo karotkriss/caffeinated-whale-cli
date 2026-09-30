@@ -237,7 +237,12 @@ class TestABenchWithNoRecordNeverTakesDownTheOthers:
         result = core_inspect.inspect("proj", refresh="full", offer_choice=False)
 
         assert result.data.served_from == "full"
-        assert [w.text for w in result.warnings] == [_unread(BENCH_B)]
+        assert [w.text for w in result.warnings][0] == _unread(BENCH_B)
+        assert "inspect.apps_unverified" in [w.code for w in result.warnings]
+        verified = {
+            b.path: {s.installed_apps_verified for s in b.sites} for b in result.data.benches
+        }
+        assert verified == {BENCH_A: {True}, BENCH_B: {False}}
         cached = _cached()
         assert cached[BENCH_A]["available_apps"] == ["erpnext", "frappe", "hrms"]
         assert cached[BENCH_B] == before[BENCH_B]
@@ -259,7 +264,11 @@ class TestABenchWithNoRecordNeverTakesDownTheOthers:
         result = core_inspect.inspect("proj", offer_choice=False)
 
         assert result.data.served_from == "full"
-        assert [w.text for w in result.warnings] == [_unread(BENCH_B)]
+        assert [w.code for w in result.warnings] == [
+            "inspect.bench_unread",
+            "inspect.apps_unverified",
+        ]
+        assert result.warnings[0].text == _unread(BENCH_B)
         assert _cached()[BENCH_A]["available_apps"] == ["erpnext", "frappe", "hrms"]
         assert _cached()[BENCH_B] == before[BENCH_B]
 
