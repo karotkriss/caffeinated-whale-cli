@@ -134,6 +134,7 @@ class FakeContainer:
         self.writes: dict[str, str] = {}
         self.launches: list[str] = []
         self.killed: list[str] = []
+        self.signals: list[str] = []
         self.restarts: list[str] = []
         self.pip_installed = False
         self.calls: list = []
@@ -155,6 +156,9 @@ class FakeContainer:
 
     def start(self):
         self.status = "running"
+
+    def kill(self, signal):
+        self.signals.append(signal)
 
     def exec_run(self, cmd, detach=False, workdir=None, environment=None, user=None):
         self.calls.append(cmd)
@@ -1153,9 +1157,7 @@ class TestResyncAfterCodeChange:
             ps="1 0 5 0.0 1000 /sbin/init\n", cwds={}, configs={BENCH: {}}
         )
 
-        outcome = supervision.resync_after_code_change(
-            container, BENCH, sites=["a.localhost"]
-        )
+        outcome = supervision.resync_after_code_change(container, BENCH, sites=["a.localhost"])
 
         assert outcome.ok is False
         assert outcome.attempted is True
@@ -1196,9 +1198,7 @@ class TestResyncAfterCodeChange:
         assert outcome.ok is True
         assert outcome.error is None
 
-    def test_an_absent_port_key_uses_an_owned_frappe_default_listener(
-        self, monkeypatch
-    ):
+    def test_an_absent_port_key_uses_an_owned_frappe_default_listener(self, monkeypatch):
         _wire_resync(monkeypatch, ports=None)
         monkeypatch.setattr(supervision, "_port_from_process", lambda *_a, **_k: None)
         monkeypatch.setattr(supervision, "_process_owns_listener", lambda *_a, **_k: True)
@@ -1226,9 +1226,7 @@ class TestResyncAfterCodeChange:
         assert called == []
         assert outcome.ok is True
 
-    def test_a_genuinely_undeterminable_port_fails_without_probing(
-        self, monkeypatch
-    ):
+    def test_a_genuinely_undeterminable_port_fails_without_probing(self, monkeypatch):
         _wire_resync(monkeypatch, ports=None)
         monkeypatch.setattr(supervision, "_port_from_process", lambda *_a, **_k: None)
         monkeypatch.setattr(supervision, "_process_owns_listener", lambda *_a, **_k: False)

@@ -605,7 +605,7 @@ class _Handler(BaseHTTPRequestHandler):
             if action == "stop_instance":
                 stop_result = core_stop.stop(project)
                 self._refresh_lifecycle(project, stop_result.warnings)
-                return _result_response(action, project, stop_result)
+                return _stop_response(action, project, stop_result)
             if action == "restart_instance":
                 return self._restart_instance(project, bench)
             if action == "refresh_status":
@@ -1065,6 +1065,33 @@ def _result_response(action: str, project: str, result: Result) -> tuple[int, di
             "status": result.status.value,
             "outcome": _plain(result.data),
             "warnings": [_plain(w) for w in result.warnings],
+        },
+    )
+
+
+def _stop_response(action: str, project: str, result: Result) -> tuple[int, dict]:
+    outcome = result.data
+    if outcome is None or outcome.db_clean_shutdown is not False:
+        return _result_response(action, project, result)
+    warnings = [_plain(w) for w in result.warnings]
+    warning = next(
+        (w for w in warnings if w.get("code") == "stop.db_unclean"),
+        {"text": "The database did not shut down cleanly."},
+    )
+    return (
+        500,
+        {
+            "ok": False,
+            "action": action,
+            "project": project,
+            "status": result.status.value,
+            "outcome": _plain(outcome),
+            "warnings": warnings,
+            "error": {
+                "kind": "unclean_shutdown",
+                "code": "stop.db_unclean",
+                "message": warning["text"],
+            },
         },
     )
 

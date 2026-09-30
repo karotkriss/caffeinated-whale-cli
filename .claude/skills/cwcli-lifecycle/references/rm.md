@@ -94,6 +94,11 @@ Regression coverage: `tests/test_rm_stopped.py::TestStoppedRemoveProjectFailsClo
 
 `_stop_after_transient_start` now calls `core.stop` (`openspec/changes/migrate-unlock-stop-core`), replacing `commands/stop.py:_stop_project` and its `None` sentinel.
 
+The removal loop also gives MariaDB the shared shutdown grace period through `core.stop.stop_database`, then reloads the container and checks its exit code before removal.
+A non-zero or unavailable exit code emits `rm.db_unclean` instead of presenting the shutdown as clean.
+When `--no-volumes` retains the database volume, that warning explicitly says MariaDB will need crash recovery on its next boot.
+The warning remains non-fatal because removal itself can complete, but it is preserved in the core result and on every frontend.
+
 - **The return-to-stopped path is best-effort BY DESIGN, and stays that way.** It runs only after the removal has already aborted, so the data is intact before it is reached. It wraps `core.stop` in `except Exception` and degrades any failure - including the new typed `CwcliError(NOT_FOUND)` when the project vanished under us - to a warning. It must NEVER raise: the abort has already kept every byte, and a crash here would only obscure the honest non-zero exit.
 - **The fail-closed gate is UPSTREAM of it and is unchanged.** `start_ok is False` -> `rm()` never calls `_remove_project`, records the failure, and exits non-zero. The stop's outcome does not and must not feed that decision.
 - **This is pinned, not merely reasoned about.** `tests/test_rm_stopped_backup.py::TestRmOrchestration::test_not_found_during_return_to_stopped_still_fails_closed` proves that a typed `NOT_FOUND` during the return-to-stopped still deletes NOTHING and still exits 1 (verified by mutation: breaking the gate fails the test). `rm` is where a wrong assumption costs real data, so any future change to this path re-proves the property rather than arguing it.
