@@ -31,6 +31,7 @@ import typer
 
 from caffeinated_whale_cli.commands import rm
 from caffeinated_whale_cli.utils import db_utils, docker_utils
+from tests.batched_probes import emulate_batched
 
 BENCH = "/workspace/frappe-bench"
 
@@ -108,6 +109,9 @@ class FakeFrappeContainer:
         return 0 if ok else 1
 
     def exec_run(self, cmd, workdir=None):
+        batched = emulate_batched(self, cmd)
+        if batched is not None:
+            return batched
         self.calls.append(cmd)
         b = self.bench_path
         if cmd == f"ls -1 {b}/sites":
@@ -377,6 +381,9 @@ class TestMultiBench:
         orig_exec = container.exec_run
 
         def exec_run(cmd, workdir=None):
+            batched = emulate_batched(container, cmd)
+            if batched is not None:
+                return batched
             if cmd == f"ls -1 {bench2}/sites":
                 return (0, "\n".join(["apps.txt", "b.localhost"]).encode())
             if cmd.startswith("sh -c '") and "echo SITE" in cmd and bench2 in cmd:
@@ -426,6 +433,9 @@ class TestMultiBench:
         orig_exec = container.exec_run
 
         def exec_run(cmd, workdir=None):
+            batched = emulate_batched(container, cmd)
+            if batched is not None:
+                return batched
             if cmd == f"ls -1 {bench2}/sites":
                 return (0, "\n".join(["apps.txt", "b.localhost"]).encode())
             if cmd.startswith("sh -c '") and "echo SITE" in cmd and bench2 in cmd:

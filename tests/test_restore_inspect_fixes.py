@@ -28,6 +28,7 @@ from caffeinated_whale_cli.commands import restore as restore_mod
 from caffeinated_whale_cli.core import restore as core_restore
 from caffeinated_whale_cli.core.envelope import Result, Status
 from caffeinated_whale_cli.utils import bench_sites, db_utils
+from tests.batched_probes import emulate_batched
 
 BENCH_PATH = "/workspace/frappe-bench"
 SITE = "development.localhost"
@@ -90,6 +91,9 @@ class RecordingContainer:
         self.exec_calls: list[dict] = []
 
     def exec_run(self, cmd, workdir=None, environment=None):
+        batched = emulate_batched(self, cmd)
+        if batched is not None:
+            return batched
         self.exec_calls.append({"cmd": cmd, "workdir": workdir, "environment": environment})
         cmd_str = " ".join(cmd) if isinstance(cmd, (list, tuple)) else str(cmd)
 
@@ -368,6 +372,9 @@ class TestSiteDetectionExcludesStrayFiles:
     def test_ambiguous_entry_is_failsafe_included(self):
         class Ambiguous:
             def exec_run(self, cmd, workdir=None, environment=None):
+                batched = emulate_batched(self, cmd)
+                if batched is not None:
+                    return batched
                 s = " ".join(cmd) if isinstance(cmd, (list, tuple)) else cmd
                 if s == f"ls -1 {BENCH_PATH}/sites":
                     return (0, b"weird\n")
