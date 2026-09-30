@@ -9,7 +9,11 @@ from . import config_utils, db_utils
 
 
 def recache_project(
-    project_name: str, verbose: bool = False, *, bench_path: str | None = None
+    project_name: str,
+    verbose: bool = False,
+    *,
+    bench_path: str | None = None,
+    warnings: list | None = None,
 ) -> bool:
     """
     Re-cache a project after a mutation: the whole project, or just one bench.
@@ -29,13 +33,17 @@ def recache_project(
     (``core.inspect.refresh_bench``), falling back to the full inspect when the
     bench set changed elsewhere. A failed recache of either kind leaves the
     project's cache cleared, so the next read re-inspects rather than serving a
-    cache the mutation made stale.
+    cache the mutation made stale. A bench whose read fails inside a recache that
+    otherwise succeeds keeps its cached row, and the recache's warnings (each
+    naming the bench and the cause) are appended to ``warnings`` for the caller to
+    show.
 
     Args:
         project_name: Name of the project to recache
         verbose: Unused; kept for signature compatibility with existing callers
             (the core populate emits no diagnostics on this path)
         bench_path: The bench the mutation touched, when it touched one
+        warnings: Receives the recache's ``core.envelope.Message`` warnings
 
     Returns:
         True if recache succeeded, False otherwise (including when the project's
@@ -50,11 +58,12 @@ def recache_project(
 
     try:
         if bench_path is not None:
-            core_inspect.refresh_bench(project_name, bench_path)
+            found = core_inspect.refresh_bench(project_name, bench_path).warnings
         else:
-            db_utils.clear_cache_for_project(project_name)
-            # Re-populate it with a full core inspect (owns the cache write).
-            core_inspect.inspect(project_name, refresh="full", offer_choice=False)
+            # A full core inspect owns the cache write (an atomic rewrite).
+            found = core_inspect.inspect(project_name, refresh="full", offer_choice=False).warnings
+        if warnings is not None:
+            warnings.extend(found)
         return True
     except Exception:
         # CwcliError(NOT_RUNNING) for a stopped project, and anything else the

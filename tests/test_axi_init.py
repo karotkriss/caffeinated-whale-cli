@@ -93,7 +93,7 @@ def _patch_stages(
             return start_result
         return Result(status=Status.OK, data=None)
 
-    def fake_recache(project, **kw):
+    def fake_recache(project, *, warnings=None, **kw):
         calls["recache"].append({"project": project, **kw})
         return recache_result
 

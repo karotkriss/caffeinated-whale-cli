@@ -179,7 +179,7 @@ def wired(monkeypatch):
     monkeypatch.setattr(core_apps.bench_sites, "list_sites", lambda *a, **k: list(state.sites))
     _wire_stopped_bench(monkeypatch)
 
-    def fake_recache(project_name, verbose=False, bench_path=None):
+    def fake_recache(project_name, verbose=False, bench_path=None, warnings=None):
         state.recache_calls.append(project_name)
         state.recache_benches.append(bench_path)
         return True
@@ -1041,7 +1041,7 @@ def _record_recache(monkeypatch):
     """Patch the post-pull recache to a recorder; return the list of project names."""
     calls = []
 
-    def fake_recache(project_name, verbose=False, bench_path=None):
+    def fake_recache(project_name, verbose=False, bench_path=None, warnings=None):
         calls.append(project_name)
         return True
 

@@ -566,7 +566,7 @@ def _build_report(
 def _recache(project_name: str, bench_path: str, warnings: list[Message], emit: OnEvent) -> None:
     """Refresh the updated bench's cache so the site discovery that follows is accurate."""
     emit(UpdateStepStart(phase="recache"))
-    ok = cache.recache_project(project_name, bench_path=bench_path)
+    ok = cache.recache_project(project_name, bench_path=bench_path, warnings=warnings)
     emit(UpdateStepEnd(phase="recache", status="ok" if ok else "failed"))
     if not ok:
         warnings.append(

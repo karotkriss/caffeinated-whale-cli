@@ -225,9 +225,13 @@ class TestRecacheProject:
 
 class TestABenchWithNoRecordNeverTakesDownTheOthers:
     """One bench whose read process dies is named with its cause; every other bench
-    is still served and cached, on every path that runs the full read."""
+    is still served and cached, and the dead bench's cached row is never
+    overwritten (nor invented when it had none), on every full-read path."""
 
     def test_inspect_update(self, container, monkeypatch):
+        core_inspect.inspect("proj", refresh="full", offer_choice=False)
+        before = _cached()
+        container.benches[BENCH_A]["apps"].append("hrms")
         _kill_bench_read(container, monkeypatch, BENCH_B)
 
         result = core_inspect.inspect("proj", refresh="full", offer_choice=False)
@@ -235,11 +239,20 @@ class TestABenchWithNoRecordNeverTakesDownTheOthers:
         assert result.data.served_from == "full"
         assert [w.text for w in result.warnings] == [_unread(BENCH_B)]
         cached = _cached()
-        assert cached[BENCH_A]["available_apps"] == ["erpnext", "frappe"]
-        assert cached[BENCH_B]["sites"] == [] and cached[BENCH_B]["available_apps"] == []
+        assert cached[BENCH_A]["available_apps"] == ["erpnext", "frappe", "hrms"]
+        assert cached[BENCH_B] == before[BENCH_B]
+
+    def test_an_uncached_bench_is_not_cached(self, container, monkeypatch):
+        _kill_bench_read(container, monkeypatch, BENCH_B)
+
+        result = core_inspect.inspect("proj", refresh="full", offer_choice=False)
+
+        assert [w.text for w in result.warnings] == [_unread(BENCH_B)]
+        assert list(_cached()) == [BENCH_A]
 
     def test_a_drift_escalation(self, container, monkeypatch):
         core_inspect.inspect("proj", refresh="full", offer_choice=False)
+        before = _cached()
         container.benches[BENCH_A]["apps"].append("hrms")
         _kill_bench_read(container, monkeypatch, BENCH_B)
 
@@ -248,6 +261,7 @@ class TestABenchWithNoRecordNeverTakesDownTheOthers:
         assert result.data.served_from == "full"
         assert [w.text for w in result.warnings] == [_unread(BENCH_B)]
         assert _cached()[BENCH_A]["available_apps"] == ["erpnext", "frappe", "hrms"]
+        assert _cached()[BENCH_B] == before[BENCH_B]
 
     def test_with_caching_disabled(self, container, monkeypatch):
         monkeypatch.setenv("CWCLI_NO_CACHE", "1")
@@ -256,15 +270,19 @@ class TestABenchWithNoRecordNeverTakesDownTheOthers:
         cached = _cached()
 
         assert cached[BENCH_A]["available_apps"] == ["erpnext", "frappe"]
-        assert cached[BENCH_B]["sites"] == []
+        assert BENCH_B not in cached
 
     def test_a_recache_that_falls_back_to_the_full_read(self, container, monkeypatch):
+        core_inspect.inspect("proj", refresh="full", offer_choice=False)
+        before = _cached()
         _kill_bench_read(container, monkeypatch, BENCH_B)
+        warnings: list = []
 
-        assert cache.recache_project("proj", bench_path=BENCH_A) is True
+        assert cache.recache_project("proj", warnings=warnings) is True
+        assert [w.text for w in warnings] == [_unread(BENCH_B)]
         cached = _cached()
         assert cached[BENCH_A]["available_apps"] == ["erpnext", "frappe"]
-        assert cached[BENCH_B]["sites"] == []
+        assert cached[BENCH_B] == before[BENCH_B]
 
     def test_refresh_bench_of_the_failing_bench(self, container, monkeypatch):
         _full_inspect_then_record(container, monkeypatch)
@@ -272,11 +290,57 @@ class TestABenchWithNoRecordNeverTakesDownTheOthers:
         _kill_bench_read(container, monkeypatch, BENCH_A)
 
         result = core_inspect.refresh_bench("proj", BENCH_A)
-        assert cache.recache_project("proj", bench_path=BENCH_A) is True
 
         assert result.data == "bench"
         assert [w.text for w in result.warnings] == [_unread(BENCH_A)]
-        cached = _cached()
-        assert cached[BENCH_B] == before[BENCH_B]
-        assert cached[BENCH_A]["index"] == before[BENCH_A]["index"]
-        assert cached[BENCH_A]["sites"] == []
+        assert _cached() == before
+
+    def test_apps_install_by_label_keeps_the_label_and_prints_the_warning(
+        self, container, monkeypatch, capsys
+    ):
+        """``apps install --bench staging``; the touched bench's read then dies in the
+        post-mutation recache. Its cached row (and so its label) survives, and the
+        verb prints the warning naming the bench and the cause."""
+        from caffeinated_whale_cli.commands import apps as apps_mod
+        from caffeinated_whale_cli.core import apps as core_apps
+        from caffeinated_whale_cli.core import resolvers
+        from caffeinated_whale_cli.core.envelope import Result, Status
+
+        core_inspect.inspect("proj", refresh="full", offer_choice=False)
+        before = _cached()
+        assert before[BENCH_B]["label"] == "staging"
+        installed_on = []
+
+        def fake_install(project, apps, *, bench_path, **_k):
+            installed_on.append(bench_path)
+            report = core_apps.AppsReport(
+                project=project,
+                bench_path=bench_path,
+                results=[core_apps.AppResult(app="hrms", site=None, action="get-app", ok=True)],
+                ok=True,
+            )
+            return Result(status=Status.OK, data=report)
+
+        monkeypatch.setattr(apps_mod, "ensure_containers_running", lambda *a, **k: True)
+        monkeypatch.setattr(apps_mod.core_apps, "install_apps", fake_install)
+        _kill_bench_read(container, monkeypatch, BENCH_B)
+
+        apps_mod.install_apps(
+            "proj",
+            ["hrms"],
+            bench="staging",
+            bench_path=None,
+            sites=None,
+            branch=None,
+            fetch_only=True,
+            if_not_present=False,
+            json_output=False,
+            yes=False,
+            verbose=False,
+        )
+
+        assert installed_on == [BENCH_B]
+        assert _cached()[BENCH_B] == before[BENCH_B]
+        assert resolvers.resolve_bench("proj", "staging", None).data == BENCH_B
+        err = " ".join(capsys.readouterr().err.split())
+        assert f"Warning: {_unread(BENCH_B)}" in err

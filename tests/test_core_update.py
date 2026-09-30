@@ -93,7 +93,7 @@ class TestEnvelope:
         monkeypatch.setattr(
             core_update.cache,
             "recache_project",
-            lambda name, verbose=False, bench_path=None: bool(
+            lambda name, verbose=False, bench_path=None, warnings=None: bool(
                 recaches.append((name, bench_path)) or True
             ),
         )
@@ -499,7 +499,7 @@ class TestFrappeFork:
         monkeypatch.setattr(
             core_update.cache,
             "recache_project",
-            lambda name, verbose=False, bench_path=None: (
+            lambda name, verbose=False, bench_path=None, warnings=None: (
                 recaches.append((name, bench_path)),
                 True,
             )[1],

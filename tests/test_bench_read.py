@@ -270,7 +270,7 @@ def test_a_hostile_search_root_caches_real_apps_and_a_cache_hit_sees_no_drift(
     )
 
     assert bench in core_inspect.discover_benches(host)
-    gathered = core_inspect._gather_benches(host, [bench], lambda _e: None, [])
+    gathered = core_inspect._gather_benches(host, [bench], lambda _e: None, [], [])
     assert gathered[0]["available_apps"] == ["erpnext", "frappe"]
     assert len(gathered[0]["sites"]) == 3
 
@@ -331,9 +331,12 @@ def test_a_bench_whose_process_dies_is_named_and_the_healthy_bench_is_still_read
     assert batch.errors == {bench: "its read process exited with code 3"}
     host.calls.clear()
     warnings: list = []
-    gathered = core_inspect._gather_benches(host, [bench, healthy], lambda _e: None, warnings)
+    kept = {"path": bench, "label": "remembered", "sites": [], "available_apps": ["frappe"]}
+    gathered = core_inspect._gather_benches(
+        host, [bench, healthy], lambda _e: None, warnings, [kept]
+    )
 
-    assert gathered[0] == {"path": bench, "sites": [], "available_apps": []}
+    assert gathered[0] is kept  # the unread bench's cached row, unchanged
     assert gathered[1]["available_apps"] == ["erpnext", "frappe"]
     assert [w.text for w in warnings] == [
         f"Could not read bench {bench} (its read process exited with code 3).",
