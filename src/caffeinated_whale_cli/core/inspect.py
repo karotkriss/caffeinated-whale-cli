@@ -186,6 +186,18 @@ def _noop(_event: InspectEvent) -> None:
 # ----------------------------------------------------------------------- moved helpers
 
 
+def _raw(output) -> bytes:
+    raw: bytes = output[0] if isinstance(output, tuple) else output
+    return raw
+
+
+def _decode(output) -> str:
+    # errors="replace": disclosed hardening #1 - a non-UTF-8 byte in one probe's
+    # output must degrade that value, never crash the whole inspect (the core
+    # idiom, cf. core/backup.py:_decode).
+    return _raw(output).decode("utf-8", errors="replace").strip()
+
+
 def _run_command(
     container,
     cmd: str,
@@ -194,22 +206,106 @@ def _run_command(
 ) -> tuple[int, str]:
     emit(InspectCommand(command=cmd))
     exit_code, output = container.exec_run(cmd, workdir=workdir)
-    stdout_bytes = output[0] if isinstance(output, tuple) else output
-    # errors="replace": disclosed hardening #1 - a non-UTF-8 byte in one probe's
-    # output must degrade that value, never crash the whole inspect (the core
-    # idiom, cf. core/backup.py:_decode).
-    decoded_output = stdout_bytes.decode("utf-8", errors="replace").strip()
+    decoded_output = _decode(output)
     emit(InspectCommandDone(exit_code=exit_code, output=decoded_output))
     return exit_code, decoded_output
 
 
-def _is_bench_directory(container, path: str, emit: OnEvent) -> bool:
-    check_command = (
-        f'sh -c "test -d {path}/sites && test -d {path}/apps '
-        f'&& test -f {path}/sites/common_site_config.json"'
+# Bench discovery for every search root in one exec: each ``apps`` dir at most two
+# levels under a root names a candidate bench (its parent), kept only when it has
+# the bench shape. find's own exit status is deliberately ignored (a pipeline
+# reports the loop's), and the trailing ``exit 0`` makes a non-zero exec code mean
+# the exec itself failed.
+_DISCOVER_SCRIPT = (
+    resolvers.IS_BENCH_SH + "; "
+    'find "$@" -maxdepth 2 -type d -name apps 2>/dev/null | while IFS= read -r d; do '
+    'b="${d%/apps}"; if is_bench "$b"; then printf "%s\\n" "$b"; fi; done; exit 0'
+)
+
+# The T2 partial refresh's facts for every cached bench in one exec. Per bench, in
+# argv order: ``B<TAB>path`` (a bench) or ``G<TAB>path`` (gone), then for a bench
+# one ``A<TAB>app`` per ``ls -1 apps`` line and one ``S<TAB>VERDICT<TAB>name`` per
+# ``sites/`` entry. A failed ``ls`` yields no lines for it, which is exactly the
+# ``[]`` the per-exec reads recorded on failure.
+_PARTIAL_REFRESH_SCRIPT = (
+    resolvers.IS_BENCH_SH + "; " + bench_sites.SITE_VERDICTS_SH + "; "
+    'for b in "$@"; do '
+    'if ! is_bench "$b"; then printf "G\\t%s\\n" "$b"; continue; fi; '
+    'printf "B\\t%s\\n" "$b"; '
+    'if apps=$(ls -1 "$b/apps" 2>/dev/null); then printf "%s\\n" "$apps" | '
+    'while IFS= read -r a; do if [ -n "$a" ]; then printf "A\\t%s\\n" "$a"; fi; done; fi; '
+    'site_verdicts "$b" | while IFS= read -r l; do printf "S\\t%s\\n" "$l"; done; '
+    "done; exit 0"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _BenchFacts:
+    """One bench's T2 facts, parsed from :data:`_PARTIAL_REFRESH_SCRIPT` output."""
+
+    present: bool
+    available_apps: list[str]
+    sites: list[str]
+
+
+def _read_bench_facts(container, bench_paths: list[str], emit: OnEvent) -> dict[str, _BenchFacts]:
+    """Run the one-exec T2 read and parse it per bench.
+
+    Raises ``CwcliError(DOCKER)`` when the exec fails or any bench is missing its
+    record, never a partial answer: T2's callers degrade to the cache on an error,
+    whereas a missing record read as "gone" would escalate a healthy cache.
+    """
+    emit(InspectCommand(command=f"read {' '.join(bench_paths)} (partial refresh)"))
+    exit_code, output = container.exec_run(
+        ["sh", "-c", _PARTIAL_REFRESH_SCRIPT, "sh", *bench_paths]
     )
-    exit_code, _ = _run_command(container, check_command, emit)
-    return exit_code == 0
+    emit(InspectCommandDone(exit_code=exit_code, output=_decode(output)))
+    if exit_code != 0:
+        raise CwcliError(
+            ErrorKind.DOCKER,
+            "inspect.partial_failed",
+            "The partial refresh probe failed.",
+            detail={"output": _decode(output)},
+        )
+
+    facts: dict[str, _BenchFacts] = {}
+    current: _BenchFacts | None = None
+    # Parsed as bytes, line by line: an app name decodes with replacement (the
+    # per-exec ``ls apps`` read did), while an undecodable site entry makes that
+    # bench's site list [] (list_sites' None, which T2 always read as []).
+    sites_unreadable: set[str] = set()
+    path = ""
+    for raw_line in _raw(output).split(b"\n"):
+        tag, sep, rest = raw_line.partition(b"\t")
+        if not sep:
+            continue
+        if tag in (b"B", b"G"):
+            path = rest.decode("utf-8", errors="replace")
+            current = _BenchFacts(present=tag == b"B", available_apps=[], sites=[])
+            facts[path] = current
+        elif current is None:
+            continue
+        elif tag == b"A":
+            current.available_apps.append(rest.decode("utf-8", errors="replace"))
+        elif tag == b"S":
+            try:
+                site = bench_sites.site_from_verdict(rest.decode("utf-8"))
+            except UnicodeDecodeError:
+                sites_unreadable.add(path)
+                continue
+            if site:
+                current.sites.append(site)
+    for unreadable in sites_unreadable:
+        facts[unreadable].sites.clear()
+
+    missing = [p for p in bench_paths if p not in facts]
+    if missing:
+        raise CwcliError(
+            ErrorKind.DOCKER,
+            "inspect.partial_failed",
+            f"The partial refresh probe returned no record for {', '.join(missing)}.",
+        )
+    return facts
 
 
 def _get_sites(container, bench_dir: str, emit: OnEvent) -> list[str]:
@@ -251,7 +347,6 @@ def discover_benches(container, *, on_event: OnEvent | None = None) -> list[str]
     ``--bench`` selector resolves against; do not touch it.
     """
     emit = on_event or _noop
-    benches_found = []
 
     # Each root's scan is `find <root> -maxdepth 2 -type d -name 'apps'`, so a root
     # only reaches an apps dir at most two levels below it. That governs which roots
@@ -273,25 +368,26 @@ def discover_benches(container, *, on_event: OnEvent | None = None) -> list[str]
     config = config_utils.load_config()
     custom_search_roots = config.get("search_paths", {}).get("custom_bench_paths", [])
 
-    all_search_roots = list(set(default_search_roots + custom_search_roots))
+    all_search_roots = sorted(set(default_search_roots + custom_search_roots))
+    emit(InspectTrace(text=f"Searching for benches in {', '.join(all_search_roots)}..."))
 
-    for root in all_search_roots:
-        emit(InspectTrace(text=f"Searching for benches in '{root}'..."))
-        # Find directories named 'apps' which are a reliable indicator of a bench's parent.
-        find_cmd = f"find {root} -maxdepth 2 -type d -name 'apps'"
-        exit_code, output = _run_command(container, find_cmd, emit)
-        if exit_code == 0:
-            for path in output.strip().split("\n"):
-                if path:
-                    # The bench dir is the parent of the 'apps' dir
-                    bench_dir = path.removesuffix("/apps")
-                    if _is_bench_directory(container, bench_dir, emit):
-                        benches_found.append(bench_dir)
+    # ONE exec for every root. Each root's find output is read whatever find's exit
+    # status: a single unreadable subdirectory makes find exit non-zero, which used
+    # to discard every bench under that root. Every candidate is still shape-checked
+    # in the same shell, and roots ride as argv positionals, never interpolated.
+    emit(InspectCommand(command=f"find {' '.join(all_search_roots)} (bench discovery)"))
+    exit_code, output = container.exec_run(["sh", "-c", _DISCOVER_SCRIPT, "sh", *all_search_roots])
+    stdout = _decode(output)
+    emit(InspectCommandDone(exit_code=exit_code, output=stdout))
+    if exit_code != 0:
+        # The script itself always exits 0, so this is the exec failing (no shell,
+        # an OCI error): its output is an error message, never bench paths.
+        return []
 
     # Sort for deterministic first-discovery identity assignment.
     # Numeric identities are persisted separately, so an existing bench keeps its
     # number even when a newly discovered path sorts before it.
-    return sorted(set(benches_found))
+    return sorted({path for path in stdout.split("\n") if path})
 
 
 def _get_common_site_config(frappe_container, bench_dir: str, emit: OnEvent) -> dict | None:
@@ -433,7 +529,9 @@ def partial_refresh(
 
     This is a pure drift detector: for each bench path already in the cache it
     cheaply re-reads only the inexpensive, filesystem-level facts via
-    ``test``/``ls`` (the bench check, the available-apps list, and the site list).
+    ``test``/``ls`` (the bench check, the available-apps list, and the site list),
+    for every bench in ONE exec (:data:`_PARTIAL_REFRESH_SCRIPT`), so its cost is
+    flat in bench and site count.
     It deliberately does NOT:
 
     - re-discover bench instances (no ``find`` over the search roots); a brand-new
@@ -463,18 +561,23 @@ def partial_refresh(
     emit = on_event or _noop
     refreshed: list[dict] = []
     drift = False
+    if not cached_bench_instances:
+        return refreshed, drift
+
+    facts = _read_bench_facts(frappe_container, [b["path"] for b in cached_bench_instances], emit)
 
     for cached_bench in cached_bench_instances:
         bench_dir = cached_bench["path"]
+        bench_facts = facts[bench_dir]
 
         # Known bench vanished -> stale cache, force a full re-inspect.
-        if not _is_bench_directory(frappe_container, bench_dir, emit):
+        if not bench_facts.present:
             emit(InspectTrace(text=f"Cached bench '{bench_dir}' no longer present; marking drift."))
             drift = True
             continue
 
-        fresh_available = _get_available_apps(frappe_container, bench_dir, emit)
-        fresh_sites = _get_sites(frappe_container, bench_dir, emit)
+        fresh_available = bench_facts.available_apps
+        fresh_sites = bench_facts.sites
 
         cached_site_names = {s["name"] for s in cached_bench.get("sites", [])}
         if (
