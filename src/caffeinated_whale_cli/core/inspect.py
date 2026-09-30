@@ -389,9 +389,7 @@ def _bench_dict(read: bench_read.BenchRead, emit: OnEvent, previous: dict | None
                 )
             )
 
-    remembered = {
-        s["name"]: s.get("installed_apps", []) for s in (previous or {}).get("sites", [])
-    }
+    remembered = {s["name"]: s.get("installed_apps", []) for s in (previous or {}).get("sites", [])}
     sites_info = []
     for site in read.sites or []:
         emit(InspectTrace(text=f"  - Found Site: {site.name}"))
@@ -955,7 +953,9 @@ def inspect(
             b.get("index", position),
             b,
             apps_verified=raw.data.served_from == "full" and b["path"] not in unread,
-            unread_sites={site for bench, site in unread_sites if bench == b["path"]},
+            unread_sites={
+                site for bench, site in unread_sites if bench == b["path"] and isinstance(site, str)
+            },
         )
         for position, b in enumerate(raw.data.benches)
     ]
