@@ -417,6 +417,32 @@ class TestHardenings:
         ]
         assert writes == [[]]
 
+    def test_an_unreadable_site_keeps_its_cached_apps_and_reports_them_unverified(self, wired):
+        store, writes, install = wired
+        _seed(store)
+        store["proj"]["bench_instances"][0]["sites"].append(
+            {"name": "ok.local", "installed_apps": ["frappe 15.0.0 version-15"]}
+        )
+
+        class BrokenSiteContainer(FakeFrappeContainer):
+            def exec_run(self, cmd, workdir=None):
+                if isinstance(cmd, str) and cmd.startswith("bench --site dev.local list-apps"):
+                    return (1, b"")
+                return super().exec_run(cmd, workdir=workdir)
+
+        install(BrokenSiteContainer(apps=["frappe"], sites={"dev.local": [], "ok.local": ["frappe"]}))
+
+        result = core_inspect.inspect("proj", refresh="full")
+
+        sites = {s.name: s for s in result.data.benches[0].sites}
+        assert sites["dev.local"].installed_apps == ["frappe 15.0.0 version-15"]
+        assert sites["dev.local"].installed_apps_verified is False
+        assert sites["ok.local"].installed_apps == ["frappe"]
+        assert sites["ok.local"].installed_apps_verified is True
+        cached = {s["name"]: s["installed_apps"] for s in writes[-1][0]["sites"]}
+        assert cached["dev.local"] == ["frappe 15.0.0 version-15"]
+        assert "inspect.site_unread" in [w.code for w in result.warnings]
+
 
 class _DiscoveryContainer:
     """Answers only the per-root ``find`` + bench-shape probes discovery is emulated from.
