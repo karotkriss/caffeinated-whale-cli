@@ -34,17 +34,18 @@ Three things here are deliberate and load-bearing:
 
 from __future__ import annotations
 
-import json
 import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
+from docker.errors import DockerException
+
 from ..utils import bench_sites
-from . import credbridge, resolvers, supervision
+from . import bench_read, credbridge, resolvers, supervision
 from .envelope import Choice, Message, Result, Status
 from .errors import CwcliError, ErrorKind
-from .exec_stream import ExecChunk, exec_capture, exec_stream
+from .exec_stream import ExecChunk, exec_stream
 
 # ------------------------------------------------------------------------------ DTOs
 
@@ -249,34 +250,54 @@ def _remove_app_dir(frappe_container, bench_path: str, dirname: str, *, emit: On
     frappe_container.exec_run(cmd, workdir=bench_path)
 
 
-def _installed_apps(frappe_container, bench_path: str, site: str) -> tuple[str, bool, list[str]]:
-    """Authoritative apps installed on ``site``.
+def _read_installed_apps(
+    frappe_container, bench_path: str, sites: list[str], *, emit: OnEvent
+) -> dict[str, tuple[list[str] | None, str | None]]:
+    """Authoritative apps installed on each of ``sites``, keyed in ``sites`` order.
+
+    Each value is ``(apps, None)``, or ``(None, cause)`` when the read failed; the
+    cause names the bench and the failed step. An empty answer is a failure too:
+    every real site has at least ``frappe``.
 
     ``bench list-apps`` prefers the ``Installed Applications`` singleton on Frappe
     v14. That singleton can remain stale after an app is uninstalled, removed from
     the bench, then installed again: the install updates the authoritative
     ``installed_apps`` global, but not the singleton. The agent install guard must
-    read the global directly or it can miss an installed app and re-run its hooks.
-
-    ``bench execute`` emits the return value as JSON on every supported Frappe
-    version. ``ok`` distinguishes a failed or malformed read from no apps, which is
-    the basis of the fail-closed callers' exit code.
+    read the global directly or it can miss an installed app and re-run its hooks,
+    so this asks ``frappe.get_installed_apps()``, as ``bench execute`` does, in one
+    exec and one Frappe process for the whole bench (``core.bench_read``).
     """
-    cmd = f"bench --site {shlex.quote(site)} execute frappe.get_installed_apps"
-    exit_code, text = exec_capture(frappe_container, cmd, workdir=bench_path)
-    command = f"{cmd} -> exit {exit_code}"
-    if exit_code != 0:
-        return command, False, []
-    lines = [line for line in text.splitlines() if line.strip()]
-    if not lines:
-        return command, False, []
+    if not sites:
+        return {}
     try:
-        apps = json.loads(lines[-1])
-    except (json.JSONDecodeError, TypeError):
-        return command, False, []
-    if not isinstance(apps, list) or not all(isinstance(app, str) for app in apps):
-        return command, False, []
-    return command, True, apps
+        batch = bench_read.read_benches(frappe_container, [bench_path], sites=sites, installed=True)
+    except DockerException as e:
+        raise CwcliError(
+            ErrorKind.DOCKER,
+            "exec.start_failed",
+            f"Could not start the command in the container: {e}",
+        ) from e
+    emit(
+        AppsCommand(
+            command=(
+                f"read installed apps of {', '.join(sites)} in {bench_path} "
+                f"-> exit {batch.exit_code}"
+            )
+        )
+    )
+    read = batch.benches.get(bench_path)
+    if read is None:
+        cause = f"{bench_path}: {batch.errors[bench_path]}"
+        return {site: (None, cause) for site in sites}
+    found: dict[str, tuple[list[str] | None, str | None]] = {}
+    for site in read.sites or []:
+        if site.installed:
+            found[site.name] = (list(site.installed), None)
+        elif site.installed is not None:
+            found[site.name] = (None, f"{bench_path}: Frappe reported no installed apps")
+        else:
+            found[site.name] = (None, f"{bench_path}: {site.error}")
+    return found
 
 
 def _run_step(
@@ -387,7 +408,7 @@ def _sites_with_app_installed(
 
     ``checkout`` names no site, which is exactly why it was left out of the first
     fix; but the sites its change reaches are not unknowable, they are simply the
-    inverse question ``_installed_apps`` already answers per site. Built from THIS
+    inverse question ``_read_installed_apps`` already answers per site. Built from THIS
     module's own primitive rather than by widening ``core.update._sites_with_app``,
     which reads a different data shape and drops an unreadable site deliberately
     because it feeds a filter.
@@ -418,18 +439,19 @@ def _sites_with_app_installed(
         )
         return None
 
+    ordered = sorted(sites)
+    detail = ""
+    try:
+        by_site = _read_installed_apps(frappe_container, bench_path, ordered, emit=_noop)
+    except Exception as error:  # noqa: BLE001
+        by_site = {}
+        detail = error.message if isinstance(error, CwcliError) else str(error)
+
     found: list[str] = []
-    for site in sorted(sites):
-        try:
-            _command, ok, installed = _installed_apps(frappe_container, bench_path, site)
-        except Exception as error:  # noqa: BLE001
-            ok = False
-            installed = []
-            detail = error.message if isinstance(error, CwcliError) else str(error)
-        else:
-            detail = ""
-        if not ok:
-            suffix = f" ({detail})" if detail else ""
+    for site in ordered:
+        installed, cause = by_site.get(site, (None, detail))
+        if installed is None:
+            suffix = f" ({cause})" if cause else ""
             warnings.append(
                 Message(
                     "app.site_scope_unknown",
@@ -499,10 +521,18 @@ def list_apps(
 
     installed_by_site: dict[str, list[str] | None] = {}
     if installed or sites:
-        for site in _target_sites(frappe_container, path, sites):
-            command, ok, site_apps = _installed_apps(frappe_container, path, site)
-            emit(AppsCommand(command=command))
-            installed_by_site[site] = site_apps if ok else None
+        targets = _target_sites(frappe_container, path, sites)
+        for site, (site_apps, cause) in _read_installed_apps(
+            frappe_container, path, targets, emit=emit
+        ).items():
+            installed_by_site[site] = site_apps
+            if site_apps is None:
+                warnings.append(
+                    Message(
+                        "app.installed_unknown",
+                        f"Could not read the installed apps on site '{site}' ({cause}).",
+                    )
+                )
 
     any_fail = any(v is None for v in installed_by_site.values())
 
@@ -542,16 +572,17 @@ def _refuse_if_installed(
     does not match and the install proceeds to bench's own behaviour - it can miss a
     match, it cannot invent one, so it never refuses an install that was safe.
     """
-    for site in _target_sites(frappe_container, path, sites):
-        command, ok, site_apps = _installed_apps(frappe_container, path, site)
-        emit(AppsCommand(command=command))
-        if not ok:
+    targets = _target_sites(frappe_container, path, sites)
+    for site, (site_apps, cause) in _read_installed_apps(
+        frappe_container, path, targets, emit=emit
+    ).items():
+        if site_apps is None:
             raise CwcliError(
                 ErrorKind.PRECONDITION,
                 "app.install_state_unknown",
-                f"Could not read the installed apps on site '{site}' (it may not exist "
-                "on this bench), so it cannot be confirmed that this install would not "
-                "touch existing app data.",
+                f"Could not read the installed apps on site '{site}' ({cause}; it may "
+                "not exist on this bench), so it cannot be confirmed that this install "
+                "would not touch existing app data.",
                 hint=(
                     f"Check the site exists and is readable: 'cwcli axi apps list "
                     f"<project> --site {site}'."
@@ -591,16 +622,16 @@ def _read_installed_by_site(
     and gets silently (re)installed.
     """
     installed: dict[str, set[str]] = {}
-    for site in sites:
-        command, ok, site_apps = _installed_apps(frappe_container, path, site)
-        emit(AppsCommand(command=command))
-        if not ok:
+    for site, (site_apps, cause) in _read_installed_apps(
+        frappe_container, path, sites, emit=emit
+    ).items():
+        if site_apps is None:
             raise CwcliError(
                 ErrorKind.PRECONDITION,
                 "app.install_state_unknown",
-                f"Could not read the installed apps on site '{site}' (it may not exist "
-                "on this bench), so it cannot be confirmed whether the app is already "
-                "installed there.",
+                f"Could not read the installed apps on site '{site}' ({cause}; it may "
+                "not exist on this bench), so it cannot be confirmed whether the app is "
+                "already installed there.",
                 hint=(
                     f"Check the site exists and is readable: 'cwcli axi apps list "
                     f"<project> --site {site}'."
@@ -682,7 +713,7 @@ def install_apps(
             # exists), `bench get-app` fails on the existing directory, which used to
             # fail the whole install of an app a pre-warmed base already carries. Skip
             # the fetch and install what is present. This is bench-presence, DISTINCT
-            # from the per-site installed-apps guard (`_installed_apps` /
+            # from the per-site installed-apps guard (`_read_installed_apps` /
             # `_refuse_if_installed`): that gates a double SITE-install, this gates the
             # bench FETCH. The install-app phase below is unchanged either way.
             if app_name in before:

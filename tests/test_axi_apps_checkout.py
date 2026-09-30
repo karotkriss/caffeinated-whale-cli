@@ -255,15 +255,17 @@ def test_reset_is_the_agent_surface_way_through_a_dirty_tree(container, capsys):
 def test_a_successful_checkout_refreshes_the_cache(monkeypatch, container):
     """A checkout changes the app's git state, so a stale cache would make the
     agent's own confirming read (`axi apps list`) lie."""
-    calls: list[str] = []
+    calls: list[tuple] = []
     monkeypatch.setattr(
-        axi_mod.cache, "recache_project", lambda p, *a, **k: calls.append(p) or True
+        axi_mod.cache,
+        "recache_project",
+        lambda p, *a, **k: calls.append((p, k.get("bench_path"))) or True,
     )
 
     with pytest.raises(typer.Exit):
         _checkout()
 
-    assert calls == ["proj"]
+    assert calls == [("proj", "/workspace/frappe-bench")]  # only the checked-out bench
 
 
 def test_a_failed_recache_warns_but_does_not_fail_the_checkout(monkeypatch, container, capsys):

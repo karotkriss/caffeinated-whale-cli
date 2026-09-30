@@ -558,10 +558,15 @@ def rm(
                 if actual_verbose:
                     stderr_console.print(f"[dim]VERBOSE: Re-caching '{project}'...[/dim]")
 
-                if not cache.recache_project(project, verbose=actual_verbose):
+                recache_warnings: list = []
+                if not cache.recache_project(
+                    project, verbose=actual_verbose, warnings=recache_warnings
+                ):
                     stderr_console.print(
                         f"[yellow]Warning:[/yellow] Could not recache '{project}'. Backup may be incomplete."
                     )
+                for warning in recache_warnings:
+                    stderr_console.print(f"[yellow]Warning:[/yellow] {warning.text}")
 
     # Confirmation prompt (unless --yes flag is used)
     if not yes:

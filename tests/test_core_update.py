@@ -30,6 +30,7 @@ from caffeinated_whale_cli.core.update import (
     UpdateStepStart,
 )
 
+from .batched_probes import emulate_batched
 from .test_apps import _FakeAPI, FakeFrappeContainer, _wire_stopped_bench
 
 BENCH = "/workspace/frappe-bench"
@@ -86,6 +87,20 @@ class TestEnvelope:
         assert report.affected_sites == ["a.localhost"]
         assert report.migrated_sites == ["a.localhost"]
         assert report.aborted is False
+
+    def test_the_post_pull_recache_reads_only_the_updated_bench(self, monkeypatch, wired):
+        recaches = []
+        monkeypatch.setattr(
+            core_update.cache,
+            "recache_project",
+            lambda name, verbose=False, bench_path=None, warnings=None: bool(
+                recaches.append((name, bench_path)) or True
+            ),
+        )
+
+        _update()
+
+        assert recaches == [("proj", BENCH)]
 
     def test_a_partial_failure_is_a_warning_envelope_carrying_ok_false(self, wired):
         # The closed Status set has no ERROR member by design: hard failures raise,
@@ -484,12 +499,15 @@ class TestFrappeFork:
         monkeypatch.setattr(
             core_update.cache,
             "recache_project",
-            lambda name, verbose=False: (recaches.append(name), True)[1],
+            lambda name, verbose=False, bench_path=None, warnings=None: (
+                recaches.append((name, bench_path)),
+                True,
+            )[1],
         )
 
         report = _update(apps=["frappe"]).data
 
-        assert recaches == ["proj"]
+        assert recaches == [("proj", BENCH)]  # scoped to the reset bench
         assert report.ok is False
 
     def test_ignored_options_are_announced_not_silently_dropped(self, wired):
@@ -567,7 +585,8 @@ class TestEvents:
 class _SiteQueryContainer:
     """Serves the live-fallback execs of ``_sites_with_app``: the ``ls -1 .../sites``
     directory listing and per-site ``bench ... list-apps`` (REALISTIC versioned lines,
-    ``frappe 16.26.3``, exactly as ``bench list-apps`` prints them)."""
+    ``frappe 16.26.3``, exactly as ``bench list-apps`` prints them), from which
+    ``emulate_batched`` answers ``core.bench_read``'s one-exec read."""
 
     def __init__(self, *, sites, installed, fail_on=None):
         self.sites = sites  # names under <bench>/sites
@@ -576,6 +595,8 @@ class _SiteQueryContainer:
         self.calls = []
 
     def exec_run(self, cmd, workdir=None, **kwargs):
+        if isinstance(cmd, list):
+            return emulate_batched(self, cmd) or (1, b"")
         self.calls.append(cmd)
         for sub in self.fail_on:
             if sub in cmd:
@@ -596,7 +617,7 @@ def _seed_cache(monkeypatch, cached):
 
 
 class TestSitesWithAppLiveFallback:
-    """The live-query fallback of ``_sites_with_app`` (update.py:295-321).
+    """The live-query fallback of ``_sites_with_app``.
 
     Production ALWAYS lands here: the cache stores RAW ``bench list-apps`` lines
     (``frappe 16.26.3``) and the cache branch does exact membership against a bare
@@ -631,7 +652,7 @@ class TestSitesWithAppLiveFallback:
             },
         )
 
-        found = core_update._sites_with_app("proj", BENCH, "payments", container)
+        found = core_update._sites_with_app("proj", BENCH, "payments", container, [])
 
         # The live query - not the cache - produced this, proving the fallback ran.
         assert found == ["a.localhost"]
@@ -644,7 +665,9 @@ class TestSitesWithAppLiveFallback:
             sites=["a.localhost"], installed={"a.localhost": ["frappe 16.26.3"]}
         )
 
-        assert core_update._sites_with_app("proj", BENCH, "frappe", container) == ["a.localhost"]
+        assert core_update._sites_with_app("proj", BENCH, "frappe", container, []) == [
+            "a.localhost"
+        ]
 
     def test_live_fallback_without_a_container_returns_empty(self, monkeypatch):
         # Versioned cache misses AND no container to query -> honestly empty.
@@ -656,7 +679,7 @@ class TestSitesWithAppLiveFallback:
                 ]
             },
         )
-        assert core_update._sites_with_app("proj", BENCH, "frappe", None) == []
+        assert core_update._sites_with_app("proj", BENCH, "frappe", None, []) == []
 
     def test_live_fallback_skips_a_site_whose_list_apps_fails(self, monkeypatch):
         _seed_cache(monkeypatch, None)
@@ -665,12 +688,37 @@ class TestSitesWithAppLiveFallback:
             installed={"a.localhost": ["frappe 16.26.3"], "b.localhost": ["frappe 16.26.3"]},
             fail_on=["--site b.localhost list-apps"],
         )
-        assert core_update._sites_with_app("proj", BENCH, "frappe", container) == ["a.localhost"]
+        warnings: list = []
+        found = core_update._sites_with_app("proj", BENCH, "frappe", container, warnings)
+
+        assert found == ["a.localhost"]
+        [warning] = warnings
+        assert warning.code == "discover.site_unreadable"
+        assert "'b.localhost'" in warning.text
+        assert f"{BENCH}: list-apps failed (RuntimeError)" in warning.text
 
     def test_live_fallback_returns_empty_when_site_listing_fails(self, monkeypatch):
         _seed_cache(monkeypatch, None)
         container = _SiteQueryContainer(sites=[], installed={}, fail_on=["/sites"])
-        assert core_update._sites_with_app("proj", BENCH, "frappe", container) == []
+        warnings: list = []
+        assert core_update._sites_with_app("proj", BENCH, "frappe", container, warnings) == []
+        assert [w.code for w in warnings] == ["discover.bench_unreadable"]
+        assert BENCH in warnings[0].text
+
+    def test_a_bench_with_no_record_is_reported_with_its_cause(self, monkeypatch):
+        _seed_cache(monkeypatch, None)
+        container = _SiteQueryContainer(sites=[], installed={})
+        container.exec_run = lambda cmd, workdir=None, **k: (
+            0,
+            f"\n{core_update.bench_read.FAILED}139\t{BENCH}\n".encode(),
+        )
+        warnings: list = []
+
+        assert core_update._sites_with_app("proj", BENCH, "frappe", container, warnings) == []
+        [warning] = warnings
+        assert warning.code == "discover.bench_unreadable"
+        assert BENCH in warning.text
+        assert "its read process exited with code 139" in warning.text
 
 
 # ---------------------------------------------------------- the --force conflict reset

@@ -739,7 +739,9 @@ class _Handler(BaseHTTPRequestHandler):
         # The post-mutation recache epilogue, matching the human and axi verbs: a
         # failed recache is a warning, never a failure - the checkout already landed,
         # and failing here would invite retrying a mutation that succeeded.
-        if any(r.ok for r in report.results) and not cache.recache_project(project):
+        if any(r.ok for r in report.results) and not cache.recache_project(
+            project, bench_path=report.bench_path, warnings=warnings
+        ):
             warnings.append(
                 Message(
                     "cache.recache_failed",
