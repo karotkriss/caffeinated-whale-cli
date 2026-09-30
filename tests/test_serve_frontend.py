@@ -298,7 +298,7 @@ class TestSnapshot:
             "@media (max-width: 760px)", 1
         )[0]
         assert (
-            ".summary-grid {\n" "    grid-template-columns: repeat(2, minmax(0, 1fr));\n" "  }"
+            ".summary-grid {\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n  }"
         ) in mid_width_rules
 
 
@@ -699,6 +699,87 @@ class TestActions:
         assert body["ok"] is True
         assert body["outcome"]["stopped"] == 3
         assert called["project"] == "p"
+
+    def test_stop_instance_reports_an_unclean_database_as_failure(self, daemon, monkeypatch):
+        warning = Message(
+            "stop.db_unclean",
+            "The database exited with code 137. MariaDB will run crash recovery.",
+        )
+        monkeypatch.setattr(
+            serve_cmd.core_stop,
+            "stop",
+            lambda project: Result(
+                status=Status.WARNING,
+                data=StopOutcome(
+                    project=project,
+                    stopped=3,
+                    already_stopped=False,
+                    containers=["p-frappe-1", "p-redis-1", "p-mariadb-1"],
+                    db_clean_shutdown=False,
+                ),
+                warnings=[warning],
+            ),
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(daemon.base + "/api/action", {"action": "stop_instance", "project": "p"})
+
+        assert exc.value.code == 500
+        body = json.loads(exc.value.read())
+        assert body["ok"] is False
+        assert body["error"]["code"] == "stop.db_unclean"
+        assert body["warnings"][0]["code"] == "stop.db_unclean"
+        assert body["warnings"][0]["text"] == warning.text
+
+    def test_restart_instance_completes_with_the_stop_warning(self, daemon, monkeypatch):
+        warning = Message("stop.db_unclean", "The database exited with code 137.")
+        monkeypatch.setattr(serve_cmd.start_cmd, "_frappe_running", lambda project: True)
+        monkeypatch.setattr(
+            serve_cmd.core_resolvers,
+            "resolve_bench",
+            lambda project, bench, path: Result(status=Status.OK, data="/workspace/frappe-bench"),
+        )
+        monkeypatch.setattr(
+            serve_cmd.core_stop,
+            "stop",
+            lambda project: Result(
+                status=Status.WARNING,
+                data=StopOutcome(
+                    project=project,
+                    stopped=3,
+                    already_stopped=False,
+                    containers=["p-frappe-1", "p-redis-1", "p-mariadb-1"],
+                    db_clean_shutdown=False,
+                ),
+                warnings=[warning],
+            ),
+        )
+        monkeypatch.setattr(
+            serve_cmd.core_start,
+            "start",
+            lambda project, **kwargs: Result(
+                status=Status.OK,
+                data=StartOutcome(
+                    project=project,
+                    container="p-frappe-1",
+                    bench_path=kwargs["bench_path"],
+                    supervisor="supervisord",
+                    log_path="/workspace/frappe-bench/logs",
+                    already_running=False,
+                    processes=[ProcessLaunch(label="web", pid=11)],
+                    web_ready=True,
+                ),
+            ),
+        )
+
+        status, body = _post(
+            daemon.base + "/api/action", {"action": "restart_instance", "project": "p"}
+        )
+
+        assert status == 200
+        assert body["ok"] is True
+        assert body["warnings"][0]["code"] == "stop.db_unclean"
+        assert body["warnings"][0]["text"] == warning.text
 
     def test_restart_process_dispatches_to_the_core_and_refreshes_fast_tier(
         self, daemon, monkeypatch

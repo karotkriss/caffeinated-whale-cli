@@ -34,6 +34,30 @@ from .docker import get_project_containers
 from .envelope import Message, Result, Status
 from .errors import DOCKER_UNREACHABLE_HINT, CwcliError, ErrorKind
 
+# The database gets a REAL grace period. `container.stop()` with no timeout uses the
+# daemon's default - 10s on Docker Engine, and 1s for every container Docker
+# Desktop creates - so a MariaDB still flushing InnoDB was SIGKILLed mid-shutdown
+# while cwcli reported a clean stop. 60s covers a large buffer pool on a slow disk;
+# a DB that is done sooner returns sooner.
+DB_SERVICE = "mariadb"
+DB_STOP_TIMEOUT = 60
+
+
+def is_database(container) -> bool:
+    """True for the project's database container (the compose ``mariadb`` service)."""
+    return bool(container.labels.get("com.docker.compose.service") == DB_SERVICE)
+
+
+def stop_database(container) -> int | None:
+    """Stop the database with :data:`DB_STOP_TIMEOUT` grace and return its exit code.
+
+    Zero is a clean shutdown; a SIGKILL after the grace ran out is 137.
+    """
+    container.stop(timeout=DB_STOP_TIMEOUT)
+    container.reload()
+    code = (container.attrs.get("State") or {}).get("ExitCode")
+    return code if isinstance(code, int) else None
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class StopOutcome:
@@ -43,6 +67,9 @@ class StopOutcome:
     stopped: int  # containers THIS call stopped
     already_stopped: bool  # found, but nothing was running
     containers: list[str]  # names of the containers stopped, never Container objects
+    # None when this call stopped no database; False when the database exited
+    # non-zero (137: killed before it finished shutting down) - a stop that is NOT clean.
+    db_clean_shutdown: bool | None = None
 
 
 def stop(project_name: str) -> Result[StopOutcome]:
@@ -82,19 +109,40 @@ def stop(project_name: str) -> Result[StopOutcome]:
             data=StopOutcome(project=project_name, stopped=0, already_stopped=True, containers=[]),
         )
 
+    # The database stops LAST, once nothing is left connected to it, and is the one
+    # container given a real grace period (see DB_STOP_TIMEOUT).
+    running.sort(key=is_database)
     stopped_names = []
+    db_clean: bool | None = None
+    warnings: list[Message] = []
     for container in running:
-        container.stop()
+        if is_database(container):
+            exit_code = stop_database(container)
+            db_clean = exit_code == 0
+            if not db_clean:
+                killed = " (killed before it finished shutting down)" if exit_code == 137 else ""
+                warnings.append(
+                    Message(
+                        "stop.db_unclean",
+                        f"The database container '{container.name}' did not shut down "
+                        f"cleanly: it exited with code {exit_code}{killed}. "
+                        "MariaDB will run crash recovery on its next start.",
+                    )
+                )
+        else:
+            container.stop()
         stopped_names.append(container.name)
 
     return Result(
-        status=Status.OK,
+        status=Status.WARNING if warnings else Status.OK,
         data=StopOutcome(
             project=project_name,
             stopped=len(stopped_names),
             already_stopped=False,
             containers=stopped_names,
+            db_clean_shutdown=db_clean,
         ),
+        warnings=warnings,
     )
 
 

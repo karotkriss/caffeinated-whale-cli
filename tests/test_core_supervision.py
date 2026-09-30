@@ -13,11 +13,11 @@ from __future__ import annotations
 
 import inspect
 import json
-import os
 import re
 
 import pytest
 
+from caffeinated_whale_cli.core import docker as core_docker
 from caffeinated_whale_cli.core import supervision
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 
@@ -134,6 +134,7 @@ class FakeContainer:
         self.writes: dict[str, str] = {}
         self.launches: list[str] = []
         self.killed: list[str] = []
+        self.signals: list[str] = []
         self.restarts: list[str] = []
         self.pip_installed = False
         self.calls: list = []
@@ -154,7 +155,10 @@ class FakeContainer:
         pass
 
     def start(self):
-        pass
+        self.status = "running"
+
+    def kill(self, signal):
+        self.signals.append(signal)
 
     def exec_run(self, cmd, detach=False, workdir=None, environment=None, user=None):
         self.calls.append(cmd)
@@ -165,9 +169,11 @@ class FakeContainer:
     def _exec_list(self, cmd, detach):
         head = cmd[0]
         if head == "id":
-            # `id -u/-g frappe` probe: report the host's own ids so core.start's
-            # host-uid alignment is a clean no-op in these fakes.
-            return (0, (str(os.getuid()) if "-u" in cmd else str(os.getgid())).encode())
+            # `id -u/-g frappe` probe: report the resolved alignment target (not the
+            # raw host ids, which differ on a root host) so core.start's host-uid
+            # alignment is a clean no-op in these fakes.
+            uid, gid, _ = core_docker.resolve_frappe_alignment_ids()
+            return (0, str(uid if "-u" in cmd else gid).encode())
         if head == "ps":
             return (0, self.ps.encode())
         if head == "cat":
@@ -1153,9 +1159,7 @@ class TestResyncAfterCodeChange:
             ps="1 0 5 0.0 1000 /sbin/init\n", cwds={}, configs={BENCH: {}}
         )
 
-        outcome = supervision.resync_after_code_change(
-            container, BENCH, sites=["a.localhost"]
-        )
+        outcome = supervision.resync_after_code_change(container, BENCH, sites=["a.localhost"])
 
         assert outcome.ok is False
         assert outcome.attempted is True
@@ -1196,9 +1200,7 @@ class TestResyncAfterCodeChange:
         assert outcome.ok is True
         assert outcome.error is None
 
-    def test_an_absent_port_key_uses_an_owned_frappe_default_listener(
-        self, monkeypatch
-    ):
+    def test_an_absent_port_key_uses_an_owned_frappe_default_listener(self, monkeypatch):
         _wire_resync(monkeypatch, ports=None)
         monkeypatch.setattr(supervision, "_port_from_process", lambda *_a, **_k: None)
         monkeypatch.setattr(supervision, "_process_owns_listener", lambda *_a, **_k: True)
@@ -1226,9 +1228,7 @@ class TestResyncAfterCodeChange:
         assert called == []
         assert outcome.ok is True
 
-    def test_a_genuinely_undeterminable_port_fails_without_probing(
-        self, monkeypatch
-    ):
+    def test_a_genuinely_undeterminable_port_fails_without_probing(self, monkeypatch):
         _wire_resync(monkeypatch, ports=None)
         monkeypatch.setattr(supervision, "_port_from_process", lambda *_a, **_k: None)
         monkeypatch.setattr(supervision, "_process_owns_listener", lambda *_a, **_k: False)

@@ -586,6 +586,11 @@ supervisor rather than stopping any container. Sibling benches keep serving, the
 containers stay up, and `cwcli start --bench` brings it back. Stopping a bench
 that is already stopped is a success, not an error.
 
+A whole-instance stop takes the database down last and gives it up to 60 seconds
+to finish its shutdown. If the database exits non-zero (137 means it was killed
+before it finished shutting down), `stop` says so and exits non-zero instead of
+reporting a clean stop.
+
 **Example:**
 
 ```bash
