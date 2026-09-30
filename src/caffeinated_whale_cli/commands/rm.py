@@ -318,12 +318,15 @@ def _stop_after_transient_start(project_name: str) -> None:
         with stderr_console.status(
             f"[bold yellow]Stopping '{project_name}'...[/bold yellow]", spinner="dots"
         ):
-            core_stop.stop(project_name)
+            result = core_stop.stop(project_name)
     except Exception as e:
         stderr_console.print(
             f"[yellow]Warning:[/yellow] Could not stop '{project_name}' after aborting; it may "
             f"still be running: {e}"
         )
+        return
+    for warning in result.warnings:
+        stderr_console.print(f"[yellow]Warning:[/yellow] {warning.text}")
 
 
 def _recover_trailing_flags(
