@@ -25,6 +25,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from docker.errors import APIError, NotFound
+
 from . import resolvers, supervision
 from .docker import align_container_user_to_host, get_project_containers
 from .envelope import Message, Result, Status
@@ -128,6 +130,61 @@ def start(
             f"No 'frappe' service found for project '{project_name}'.",
         )
 
+    # A container that exits right after it starts (a devcontainer-style compose
+    # whose PID 1 is `bench start` crashing on boot) - or dies part-way through
+    # this start (a uid remap that takes its PID 1 down) - is reported as what it
+    # is, never as Docker's raw `409 ... is not running` traceback out of the next
+    # exec, nor as a later step's misleading failure.
+    _require_running(frappe_container, project_name)
+    try:
+        return _start_bench(
+            project_name,
+            frappe_container,
+            warnings,
+            bench=bench,
+            bench_path=bench_path,
+            restart=restart,
+            autorestart=autorestart,
+            uid_override=uid_override,
+        )
+    except (APIError, CwcliError):
+        _require_running(frappe_container, project_name)
+        raise
+
+
+def _require_running(frappe_container, project_name: str) -> None:
+    """Raise ``NOT_RUNNING`` ``frappe.exited`` unless the frappe container is running."""
+    try:
+        frappe_container.reload()
+        running = frappe_container.status == "running"
+    except NotFound:  # removed out from under this start
+        running = False
+    if running:
+        return
+    name = frappe_container.name
+    state = (getattr(frappe_container, "attrs", None) or {}).get("State") or {}
+    exit_code = state.get("ExitCode", "unknown")
+    raise CwcliError(
+        ErrorKind.NOT_RUNNING,
+        "frappe.exited",
+        f"The frappe container '{name}' exited (exit code {exit_code}); "
+        f"see 'docker logs {name}'.",
+        hint=f"Fix the cause it logged, then run 'cwcli start {project_name}' again.",
+    )
+
+
+def _start_bench(
+    project_name: str,
+    frappe_container,
+    warnings: list[Message],
+    *,
+    bench: str | None,
+    bench_path: str | None,
+    restart: bool,
+    autorestart: bool,
+    uid_override: int | None,
+) -> Result[StartOutcome]:
+    """Steps 3-6 of :func:`start`, against a frappe container that is running."""
     # 3. Resolve which bench to run (--bench/--path, else single, else default).
     resolved = resolvers.resolve_bench(project_name, bench, bench_path)
     if resolved is None:

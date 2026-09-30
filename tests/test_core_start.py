@@ -237,7 +237,7 @@ class TestNoHostPortWarning:
         frappe = StoppedPortedContainer()
         wire(frappe)
         result = core_start.start("proj")
-        assert frappe.reloads == 1
+        assert frappe.reloads >= 1
         assert not any(w.code == "start.no_host_port" for w in result.warnings)
 
     def test_idempotent_noop_also_warns_when_portless(self, wire):
@@ -317,3 +317,57 @@ class TestHardErrors:
         with pytest.raises(CwcliError) as exc:
             core_start.start("proj")
         assert exc.value.code == "frappe.not_found"
+
+
+class TestFrappeContainerExited:
+    """A frappe container that exits right after starting (a devcontainer PID 1
+    crashing on boot), or dies part-way through the start, used to escape as
+    Docker's raw `409 ... is not running` traceback out of the next exec."""
+
+    def test_a_container_that_exits_on_start_is_a_clean_error(self, wire):
+        class ExitsOnStart(FakeContainer):
+            def start(self):
+                self.status = "exited"
+                self.attrs = {"State": {"ExitCode": 1}}
+
+        frappe = ExitsOnStart(ps="1 0 5 0.0 1000 /sbin/init\n", cwds={})
+        frappe.status = "exited"
+        wire(frappe)
+
+        with pytest.raises(CwcliError) as exc:
+            core_start.start("proj")
+        assert exc.value.kind is ErrorKind.NOT_RUNNING
+        assert exc.value.code == "frappe.exited"
+        assert f"docker logs {frappe.name}" in exc.value.message
+        assert "exit code 1" in exc.value.message
+        assert not frappe.launches
+
+    def test_a_container_that_dies_mid_start_is_a_clean_error(self, wire):
+        from docker.errors import APIError
+
+        class DiesOnFirstPs(FakeContainer):
+            def exec_run(self, cmd, **kwargs):
+                if isinstance(cmd, list) and cmd[:1] == ["ps"]:
+                    self.status = "exited"
+                    raise APIError("409 Client Error: Conflict (container is not running)")
+                return super().exec_run(cmd, **kwargs)
+
+        wire(DiesOnFirstPs(ps="1 0 5 0.0 1000 /sbin/init\n", cwds={}))
+
+        with pytest.raises(CwcliError) as exc:
+            core_start.start("proj")
+        assert exc.value.code == "frappe.exited"
+
+    def test_a_step_failure_on_a_running_container_is_not_relabelled(self, wire):
+        # install_succeeds=False: supervisor cannot be installed, the container is fine.
+        frappe = FakeContainer(
+            ps="1 0 5 0.0 1000 /sbin/init\n",
+            cwds={},
+            supervisor_present=False,
+            install_succeeds=False,
+        )
+        wire(frappe)
+
+        with pytest.raises(CwcliError) as exc:
+            core_start.start("proj")
+        assert exc.value.code != "frappe.exited"
