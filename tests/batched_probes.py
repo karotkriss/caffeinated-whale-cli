@@ -162,8 +162,12 @@ def _full_read(container, args: list[str]):
             if opts["list_apps"]:
                 cmd = f"bench --site {shlex.quote(site)} list-apps"
                 found["list_apps"] = _text(container, cmd, workdir=bench)
+                if found["list_apps"] is None:
+                    found["error"] = "list-apps failed (RuntimeError)"
             if opts["installed"]:
                 found["installed"] = _installed(container, bench, site)
+                if found["installed"] is None:
+                    found["error"] = "frappe.get_installed_apps failed (RuntimeError)"
             record["sites"][site] = found
         lines.append(bench_read.SENTINEL + json.dumps(record))
     return (0, ("\n" + "\n".join(lines) + "\n").encode())

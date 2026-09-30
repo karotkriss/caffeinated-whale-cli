@@ -394,6 +394,24 @@ class TestHardenings:
         assert excinfo.value.kind is ErrorKind.DOCKER
         assert writes == []  # crash-without-corruption, now typed
 
+    def test_a_bench_whose_read_left_no_record_names_it_and_writes_nothing(self, wired):
+        _store, writes, install = wired
+
+        class DyingReadContainer(FakeFrappeContainer):
+            def exec_run(self, cmd, workdir=None):
+                if isinstance(cmd, list) and cmd[2] == core_inspect.bench_read._READ_SH:
+                    failed = core_inspect.bench_read.FAILED
+                    return (0, f"\n{failed}139\t{self.bench_path}\n".encode())
+                return super().exec_run(cmd, workdir=workdir)
+
+        install(DyingReadContainer(apps=["frappe"], sites={"a.localhost": ["frappe"]}))
+
+        with pytest.raises(CwcliError) as excinfo:
+            core_inspect.inspect_raw("proj", refresh="full")
+        assert (excinfo.value.kind, excinfo.value.code) == (ErrorKind.DOCKER, "inspect.read_failed")
+        assert f"{BENCH} (its read process exited with code 139)" in excinfo.value.message
+        assert writes == []
+
 
 class _DiscoveryContainer:
     """Answers only the per-root ``find`` + bench-shape probes discovery is emulated from.

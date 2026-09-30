@@ -42,7 +42,6 @@ absorb to ``[]``/``None`` without aborting the fan-out.
 from __future__ import annotations
 
 import dataclasses
-import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -198,19 +197,6 @@ def _decode(output) -> str:
     return _raw(output).decode("utf-8", errors="replace").strip()
 
 
-def _run_command(
-    container,
-    cmd: str,
-    emit: OnEvent,
-    workdir: str | None = None,
-) -> tuple[int, str]:
-    emit(InspectCommand(command=cmd))
-    exit_code, output = container.exec_run(cmd, workdir=workdir)
-    decoded_output = _decode(output)
-    emit(InspectCommandDone(exit_code=exit_code, output=decoded_output))
-    return exit_code, decoded_output
-
-
 # Bench discovery for every search root in one exec: each ``apps`` dir at most two
 # levels under a root names a candidate bench (its parent), kept only when it has
 # the bench shape. find's own exit status is deliberately ignored (a pipeline
@@ -308,32 +294,6 @@ def _read_bench_facts(container, bench_paths: list[str], emit: OnEvent) -> dict[
     return facts
 
 
-def _get_sites(container, bench_dir: str, emit: OnEvent) -> list[str] | None:
-    # A real Frappe site is a DIRECTORY containing site_config.json. Detect sites
-    # by that shape via the canonical shared helper, never by denylisting known
-    # non-site names - a denylist can never be complete, so a stray entry like
-    # currentsite.txt (a plain file written by `bench use`) was being reported as
-    # a site and then failed `bench list-apps`. See utils/bench_sites.py.
-    emit(InspectCommand(command=f"ls -1 {bench_dir}/sites (site detection)"))
-    return bench_sites.list_sites(container, bench_dir)
-
-
-def _list_apps_per_exec(container, bench_dir: str, site: str, emit: OnEvent) -> list[str] | None:
-    """``bench --site <site> list-apps`` lines, or None when the command failed."""
-    cmd = f"bench --site {shlex.quote(site)} list-apps"
-    exit_code, output = _run_command(container, cmd, emit, workdir=bench_dir)
-    if exit_code != 0:
-        return None
-    return bench_read.output_lines(output)
-
-
-def _get_available_apps(container, bench_dir: str, emit: OnEvent) -> list[str]:
-    exit_code, output = _run_command(container, f"ls -1 {shlex.quote(bench_dir + '/apps')}", emit)
-    if exit_code != 0:
-        return []
-    return bench_read.output_lines(output)
-
-
 def discover_benches(container, *, on_event: OnEvent | None = None) -> list[str]:
     """Find all bench directories using the default and custom TOML config paths.
 
@@ -384,48 +344,8 @@ def discover_benches(container, *, on_event: OnEvent | None = None) -> list[str]
     return sorted({path for path in stdout.split("\n") if path})
 
 
-def _read_config(frappe_container, path: str, emit: OnEvent) -> dict | None:
-    """``cat`` one JSON config file; unreadable, empty or malformed is None."""
-    exit_code, output = _run_command(frappe_container, f"cat {shlex.quote(path)}", emit)
-    return bench_read.parse_config(output) if exit_code == 0 else None
-
-
-def _read_bench_per_exec(frappe_container, bench_dir: str, emit: OnEvent) -> bench_read.BenchRead:
-    """One bench's facts, one exec per fact and one ``bench list-apps`` per site.
-
-    The fallback for a bench the batched read left no record for (its process
-    died, or no usable Python), so coverage never regresses below this path.
-    """
-    available_apps = _get_available_apps(frappe_container, bench_dir, emit)
-    app_copies = resolvers.resolve_app_imports(frappe_container, bench_dir, available_apps)
-    common_site_config = _read_config(
-        frappe_container, f"{bench_dir}/sites/common_site_config.json", emit
-    )
-    sites = _get_sites(frappe_container, bench_dir, emit)
-    site_reads = [
-        bench_read.SiteRead(
-            name=site,
-            site_config=_read_config(
-                frappe_container, f"{bench_dir}/sites/{site}/site_config.json", emit
-            ),
-            list_apps=_list_apps_per_exec(frappe_container, bench_dir, site, emit),
-            installed=None,
-        )
-        for site in sites or []
-    ]
-    return bench_read.BenchRead(
-        path=bench_dir,
-        available_apps=available_apps,
-        app_imports=app_copies,
-        common_site_config=common_site_config,
-        sites=site_reads,
-        current_site=bench_sites.read_current_site(frappe_container, bench_dir),
-        label=bench_labels.read_label_marker(frappe_container, bench_dir),
-    )
-
-
 def _bench_dict(read: bench_read.BenchRead, emit: OnEvent) -> dict:
-    """The cache-shaped bench dict for one bench's facts, whichever path read them.
+    """The cache-shaped bench dict for one bench's facts.
 
     Key order is a characterized contract (the human ``--json`` bytes): ``path,
     sites, available_apps``, then optional ``app_copies, current_site, label,
@@ -470,7 +390,11 @@ def _bench_dict(read: bench_read.BenchRead, emit: OnEvent) -> dict:
             # as [] (the honest "nothing to record / unknown" state) - never a
             # poisoned sentinel string that would be persisted and re-emitted forever
             # by the partial-refresh path and rendered as a fake app in the tree.
-            emit(InspectWarning(text=f"Failed to list apps for site '{site.name}'."))
+            emit(
+                InspectWarning(
+                    text=f"Failed to list apps for site '{site.name}' ({bench_dir}: {site.error})."
+                )
+            )
         site_data: dict = {"name": site.name, "installed_apps": list(site.list_apps or [])}
         if site.site_config is not None:
             site_data["site_config"] = site.site_config
@@ -514,23 +438,24 @@ def _bench_dict(read: bench_read.BenchRead, emit: OnEvent) -> dict:
 def _gather_benches(frappe_container, bench_paths: list[str], emit: OnEvent) -> list[dict]:
     """Every bench's cache-shaped dict, read in one exec (``core.bench_read``).
 
-    A bench the batched read left no record for falls back to the per-exec reads,
-    alone. A raw Docker error propagates, so the caller's crash-without-corruption
-    contract (no cache write) holds.
+    A raw Docker error propagates, and a bench the read left no record for raises
+    ``CwcliError(DOCKER)`` naming the bench and the cause, never a partial answer,
+    so the caller's crash-without-corruption contract (no cache write) holds.
     """
     if not bench_paths:
         return []
     emit(InspectCommand(command=f"read {' '.join(bench_paths)} (full inspect)"))
     batch = bench_read.read_benches(frappe_container, bench_paths, list_apps=True, files=True)
     emit(InspectCommandDone(exit_code=batch.exit_code, output=batch.output))
-    gathered = []
-    for bench_path in bench_paths:
-        read = batch.benches.get(bench_path)
-        if read is None:
-            emit(InspectTrace(text=f"No batched record for {bench_path}; reading it per exec."))
-            read = _read_bench_per_exec(frappe_container, bench_path, emit)
-        gathered.append(_bench_dict(read, emit))
-    return gathered
+    if batch.errors:
+        raise CwcliError(
+            ErrorKind.DOCKER,
+            "inspect.read_failed",
+            "The full inspect read returned no record for "
+            + "; ".join(f"{path} ({cause})" for path, cause in batch.errors.items())
+            + ".",
+        )
+    return [_bench_dict(batch.benches[bench_path], emit) for bench_path in bench_paths]
 
 
 def partial_refresh(
