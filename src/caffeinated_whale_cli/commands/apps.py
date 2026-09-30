@@ -135,18 +135,23 @@ def _make_renderer(*, json_output, verbose):
     return on_event
 
 
-def _refresh_cache(project_name, verbose):
+def _refresh_cache(project_name, verbose, bench_path):
     """Refresh the cache through the existing writer so where/open/inspect stop lying.
 
-    Uses ``cache.recache_project`` (a full inspect that persists via
+    Uses ``cache.recache_project`` scoped to the mutated bench (it persists via
     ``cache_project_data`` -> ``_redact_config_for_cache``), never a direct write.
     Degrades to a warning; the mutation itself already succeeded.
     """
-    if not cache.recache_project(project_name, verbose=verbose):
+    warnings: list = []
+    if not cache.recache_project(
+        project_name, verbose=verbose, bench_path=bench_path, warnings=warnings
+    ):
         stderr_console.print(
             "[yellow]Warning:[/yellow] app mutation succeeded but refreshing the cache failed; "
             "run 'cwcli inspect --update' to refresh."
         )
+    for warning in warnings:
+        stderr_console.print(f"[yellow]Warning:[/yellow] {warning.text}")
 
 
 def _report_and_exit(report, json_output, *, success_msg):
@@ -416,7 +421,7 @@ def install_apps(
     # Refresh the cache if any step succeeded: a fetch changes available apps, an
     # install changes a site's installed apps - both make the cache stale.
     if any(r.ok for r in report.results):
-        _refresh_cache(project_name, verbose)
+        _refresh_cache(project_name, verbose, report.bench_path)
 
     # The banner must match what actually happened: only claim "installed" when an
     # install-app step ran (not for --fetch-only, a bench with no sites, or an
@@ -516,7 +521,7 @@ def uninstall_apps(
     report = result.data
     assert report is not None  # OK/WARNING always carries a report
     if any(r.ok for r in report.results):
-        _refresh_cache(project_name, verbose)
+        _refresh_cache(project_name, verbose, report.bench_path)
 
     _report_and_exit(report, json_output, success_msg="App(s) uninstalled.")
 
@@ -585,7 +590,7 @@ def checkout_app(
     # A checkout changes the app's git state (and possibly its reported version), so
     # refresh the cache whenever any git step ran, matching install/update.
     if any(r.ok for r in report.results):
-        _refresh_cache(project_name, verbose)
+        _refresh_cache(project_name, verbose, report.bench_path)
 
     _report_and_exit(report, json_output, success_msg=f"Checked out {ref} into {app}.")
 

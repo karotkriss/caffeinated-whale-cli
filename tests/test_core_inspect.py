@@ -394,6 +394,29 @@ class TestHardenings:
         assert excinfo.value.kind is ErrorKind.DOCKER
         assert writes == []  # crash-without-corruption, now typed
 
+    def test_an_uncached_bench_whose_read_left_no_record_is_named_and_not_cached(self, wired):
+        _store, writes, install = wired
+
+        class DyingReadContainer(FakeFrappeContainer):
+            def exec_run(self, cmd, workdir=None):
+                if isinstance(cmd, list) and cmd[2] == core_inspect.bench_read._READ_SH:
+                    failed = core_inspect.bench_read.FAILED
+                    return (0, f"\n{failed}139\t{self.bench_path}\n".encode())
+                return super().exec_run(cmd, workdir=workdir)
+
+        install(DyingReadContainer(apps=["frappe"], sites={"a.localhost": ["frappe"]}))
+
+        result = core_inspect.inspect_raw("proj", refresh="full")
+
+        assert result.data.served_from == "full"
+        assert [(w.code, w.text) for w in result.warnings] == [
+            (
+                "inspect.bench_unread",
+                f"Could not read bench {BENCH} (its read process exited with code 139).",
+            )
+        ]
+        assert writes == [[]]
+
 
 class _DiscoveryContainer:
     """Answers only the per-root ``find`` + bench-shape probes discovery is emulated from.
@@ -695,8 +718,10 @@ class TestBenchSelector:
         )
         monkeypatch.setattr(
             core_inspect,
-            "_gather_bench_data",
-            lambda _container, path, _emit: next(b for b in gathered if b["path"] == path),
+            "_gather_benches",
+            lambda _container, paths, _emit, _warnings, _previous: [
+                next(b for b in gathered if b["path"] == path) for path in paths
+            ],
         )
 
         result = core_inspect.inspect_raw("proj", refresh="full", bench="1")
@@ -734,7 +759,12 @@ class TestAppCopiesFlags:
                 for a in apps
             }
 
-        monkeypatch.setattr(core_inspect.resolvers, "resolve_app_imports", _fake)
+        # Both read paths interpret the probe through app_imports_from_probe.
+        monkeypatch.setattr(
+            core_inspect.resolvers,
+            "app_imports_from_probe",
+            lambda bench, apps, _out: _fake(None, bench, apps),
+        )
 
     def test_full_inspect_flags_a_wrong_copy(self, wired, monkeypatch):
         store, _writes, install = wired

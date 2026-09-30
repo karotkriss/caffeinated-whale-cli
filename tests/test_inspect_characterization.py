@@ -617,7 +617,12 @@ class TestAppCopyFlagsInTheTree:
                     )
             return out
 
-        monkeypatch.setattr(inspect_mod.core_inspect.resolvers, "resolve_app_imports", _fake)
+        # Both read paths interpret the probe through app_imports_from_probe.
+        monkeypatch.setattr(
+            inspect_mod.core_inspect.resolvers,
+            "app_imports_from_probe",
+            lambda bench, apps, _out: _fake(None, bench, apps),
+        )
 
     def test_tree_flags_a_wrong_copy_and_a_symlink(self, wired, monkeypatch, capsys):
         store, _writes, install = wired

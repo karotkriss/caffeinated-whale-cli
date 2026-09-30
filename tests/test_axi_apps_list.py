@@ -289,8 +289,10 @@ def test_install_refuses_when_the_sites_app_list_cannot_be_read(container, monke
     """Fail closed: an unreadable site must never degrade to "nothing is installed"."""
     monkeypatch.setattr(
         core_apps,
-        "_installed_apps",
-        lambda *a, **k: ("bench execute frappe.get_installed_apps -> exit 1", False, []),
+        "_read_installed_apps",
+        lambda _c, path, sites, **_k: {
+            site: (None, f"{path}: frappe.connect failed (OperationalError)") for site in sites
+        },
     )
     ran = _record_steps(monkeypatch)
 
@@ -301,7 +303,9 @@ def test_install_refuses_when_the_sites_app_list_cannot_be_read(container, monke
 
     assert exit_info.value.exit_code == 1
     assert not any("get-app" in c for c in ran)
-    assert "cannot be confirmed" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "cannot be confirmed" in out
+    assert "frappe.connect failed (OperationalError)" in out
 
 
 def test_install_if_not_present_skips_an_already_installed_app_and_exits_zero(

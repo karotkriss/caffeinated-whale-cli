@@ -154,13 +154,16 @@ def rm_bench(
     # Removing a bench changes the instance's bench set, so refresh the cache.
     # A failed recache is a warning, not a non-zero exit: the removal already
     # happened, and failing here would make a retry act on a bench that is gone.
-    if not cache.recache_project(project_name, verbose=verbose):
+    recache_warnings: list = []
+    if not cache.recache_project(
+        project_name, verbose=verbose, bench_path=outcome.bench_path, warnings=recache_warnings
+    ):
         stderr_console.print(
             f"[yellow]Warning:[/yellow] bench removed, but re-caching '{project_name}' failed; "
             "run 'cwcli inspect --update' to refresh."
         )
 
-    for warning in result.warnings:
+    for warning in [*result.warnings, *recache_warnings]:
         stderr_console.print(f"[yellow]Warning:[/yellow] {warning.text}")
 
     if outcome.dir_removed:

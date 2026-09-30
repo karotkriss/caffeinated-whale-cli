@@ -42,7 +42,6 @@ absorb to ``[]``/``None`` without aborting the fan-out.
 from __future__ import annotations
 
 import dataclasses
-import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -50,8 +49,8 @@ import requests
 from docker.errors import DockerException
 
 from ..utils import bench_labels, bench_sites, config_utils, db_utils
+from . import bench_read, resolvers
 from . import docker as core_docker
-from . import resolvers
 from .envelope import Message, Result, Status
 from .errors import CwcliError, ErrorKind
 
@@ -198,19 +197,6 @@ def _decode(output) -> str:
     return _raw(output).decode("utf-8", errors="replace").strip()
 
 
-def _run_command(
-    container,
-    cmd: str,
-    emit: OnEvent,
-    workdir: str | None = None,
-) -> tuple[int, str]:
-    emit(InspectCommand(command=cmd))
-    exit_code, output = container.exec_run(cmd, workdir=workdir)
-    decoded_output = _decode(output)
-    emit(InspectCommandDone(exit_code=exit_code, output=decoded_output))
-    return exit_code, decoded_output
-
-
 # Bench discovery for every search root in one exec: each ``apps`` dir at most two
 # levels under a root names a candidate bench (its parent), kept only when it has
 # the bench shape. find's own exit status is deliberately ignored (a pipeline
@@ -308,38 +294,6 @@ def _read_bench_facts(container, bench_paths: list[str], emit: OnEvent) -> dict[
     return facts
 
 
-def _get_sites(container, bench_dir: str, emit: OnEvent) -> list[str]:
-    # A real Frappe site is a DIRECTORY containing site_config.json. Detect sites
-    # by that shape via the canonical shared helper, never by denylisting known
-    # non-site names - a denylist can never be complete, so a stray entry like
-    # currentsite.txt (a plain file written by `bench use`) was being reported as
-    # a site and then failed `bench list-apps`. See utils/bench_sites.py.
-    emit(InspectCommand(command=f"ls -1 {bench_dir}/sites (site detection)"))
-    sites = bench_sites.list_sites(container, bench_dir)
-    return sites if sites is not None else []
-
-
-def _get_installed_apps(container, bench_dir: str, site: str, emit: OnEvent) -> list[str]:
-    cmd = f"bench --site {site} list-apps"
-    exit_code, output = _run_command(container, cmd, emit, workdir=bench_dir)
-    if exit_code != 0:
-        # Surface the failure as an event, never into the returned/cached data. A
-        # site with genuinely no apps and a site whose list-apps failed both cache
-        # as [] (the honest "nothing to record / unknown" state) - never a poisoned
-        # sentinel string that would be persisted and re-emitted forever by the
-        # partial-refresh path and rendered as a fake app in the tree.
-        emit(InspectWarning(text=f"Failed to list apps for site '{site}'."))
-        return []
-    return [app for app in output.split("\n") if app]
-
-
-def _get_available_apps(container, bench_dir: str, emit: OnEvent) -> list[str]:
-    exit_code, output = _run_command(container, f"ls -1 {bench_dir}/apps", emit)
-    if exit_code != 0:
-        return []
-    return [app for app in output.split("\n") if app]
-
-
 def discover_benches(container, *, on_event: OnEvent | None = None) -> list[str]:
     """Find all bench directories using the default and custom TOML config paths.
 
@@ -390,60 +344,28 @@ def discover_benches(container, *, on_event: OnEvent | None = None) -> list[str]
     return sorted({path for path in stdout.split("\n") if path})
 
 
-def _get_common_site_config(frappe_container, bench_dir: str, emit: OnEvent) -> dict | None:
-    """Fetches common_site_config.json from the bench directory."""
-    config_path = f"{bench_dir}/sites/common_site_config.json"
-    cmd = f"cat {config_path}"
-
-    exit_code, output = _run_command(frappe_container, cmd, emit)
-
-    if exit_code == 0 and output:
-        try:
-            config: dict = json.loads(output)
-            emit(InspectTrace(text=f"Found common_site_config with {len(config)} keys"))
-            return config
-        except json.JSONDecodeError:
-            emit(InspectTrace(text="Failed to parse common_site_config.json"))
-            return None
-    else:
-        emit(InspectTrace(text="common_site_config.json not found or not readable"))
-        return None
+def _unread_site_text(bench_dir: str, site: bench_read.SiteRead) -> str:
+    return f"Failed to list apps for site '{site.name}' ({bench_dir}: {site.error})."
 
 
-def _get_site_config(
-    frappe_container, bench_dir: str, site_name: str, emit: OnEvent
-) -> dict | None:
-    """Fetches site_config.json for a specific site."""
-    config_path = f"{bench_dir}/sites/{site_name}/site_config.json"
-    cmd = f"cat {config_path}"
+def _bench_dict(read: bench_read.BenchRead, emit: OnEvent) -> dict:
+    """The cache-shaped bench dict for one bench's facts.
 
-    exit_code, output = _run_command(frappe_container, cmd, emit)
-
-    if exit_code == 0 and output:
-        try:
-            config: dict = json.loads(output)
-            emit(InspectTrace(text=f"Found site_config for {site_name} with {len(config)} keys"))
-            return config
-        except json.JSONDecodeError:
-            emit(InspectTrace(text=f"Failed to parse site_config.json for {site_name}"))
-            return None
-    else:
-        emit(InspectTrace(text=f"site_config.json not found for {site_name}"))
-        return None
-
-
-def _gather_bench_data(frappe_container, bench_dir: str, emit: OnEvent) -> dict:
-    """Gathers sites, apps, and configs for a single bench instance."""
+    Key order is a characterized contract (the human ``--json`` bytes): ``path,
+    sites, available_apps``, then optional ``app_copies, current_site, label,
+    common_site_config``; each site is ``name, installed_apps``, then optional
+    ``site_config``.
+    """
+    bench_dir = read.path
     emit(InspectTrace(text=f"Inspecting Bench Instance: {bench_dir}"))
-
-    available_apps = _get_available_apps(frappe_container, bench_dir, emit)
+    available_apps = read.available_apps
 
     # BUG-10: flag any app whose apps/<app> is a symlink, or whose imported copy
     # differs from apps/<app>. Live-observed here (the full inspect); stored as plain
     # dicts so the cache-shaped bench dict stays JSON-serializable (the human --json
     # renderer dumps it directly) and the relational cache write simply ignores the
-    # key. One exec; a probe failure degrades to unchecked entries, never a crash.
-    app_copies = resolvers.resolve_app_imports(frappe_container, bench_dir, available_apps)
+    # key. A probe failure degrades to unchecked entries, never a crash.
+    app_copies = read.app_imports
     flagged = [c for c in app_copies.values() if c.diverged or c.is_symlink]
     for copy in flagged:
         if copy.diverged:
@@ -463,23 +385,19 @@ def _gather_bench_data(frappe_container, bench_dir: str, emit: OnEvent) -> dict:
                 )
             )
 
-    # Fetch common site config
-    common_site_config = _get_common_site_config(frappe_container, bench_dir, emit)
-
-    sites = _get_sites(frappe_container, bench_dir, emit)
     sites_info = []
-    for site in sites:
-        emit(InspectTrace(text=f"  - Found Site: {site}"))
-
-        installed_apps = _get_installed_apps(frappe_container, bench_dir, site, emit)
-
-        # Fetch site-specific config
-        site_config = _get_site_config(frappe_container, bench_dir, site, emit)
-
-        site_data: dict = {"name": site, "installed_apps": installed_apps}
-        if site_config is not None:
-            site_data["site_config"] = site_config
-
+    for site in read.sites or []:
+        emit(InspectTrace(text=f"  - Found Site: {site.name}"))
+        if site.list_apps is None:
+            # Surface the failure as an event, never into the returned/cached data. A
+            # site with genuinely no apps and a site whose list-apps failed both cache
+            # as [] (the honest "nothing to record / unknown" state) - never a
+            # poisoned sentinel string that would be persisted and re-emitted forever
+            # by the partial-refresh path and rendered as a fake app in the tree.
+            emit(InspectWarning(text=_unread_site_text(bench_dir, site)))
+        site_data: dict = {"name": site.name, "installed_apps": list(site.list_apps or [])}
+        if site.site_config is not None:
+            site_data["site_config"] = site.site_config
         sites_info.append(site_data)
 
     bench_data: dict = {"path": bench_dir, "sites": sites_info, "available_apps": available_apps}
@@ -499,24 +417,65 @@ def _gather_bench_data(frappe_container, bench_dir: str, emit: OnEvent) -> dict:
     # cache-served default-site resolution (restore/backup/unlock and the inspect
     # "(default)" marker) work even when common_site_config has no default_site
     # key - the exact shape a plain `bench use`d dev bench has.
-    current_site = bench_sites.read_current_site(frappe_container, bench_dir)
-    if current_site:
-        bench_data["current_site"] = current_site
-        emit(InspectTrace(text=f"Default site from currentsite.txt: {current_site}"))
+    if read.current_site:
+        bench_data["current_site"] = read.current_site
+        emit(InspectTrace(text=f"Default site from currentsite.txt: {read.current_site}"))
 
     # Recover the user label from the per-bench marker file. This is what lets a
     # full inspect rebuild labels after the SQLite cache is lost: the marker lives
     # inside the bench, so it survives a cache wipe. The marker is the source of
     # truth for labels; the rest of the bench config is re-derived live as above.
-    marker_label = bench_labels.read_label_marker(frappe_container, bench_dir)
-    if marker_label:
-        bench_data["label"] = marker_label
-        emit(InspectTrace(text=f"Recovered label '{marker_label}' from marker"))
+    if read.label:
+        bench_data["label"] = read.label
+        emit(InspectTrace(text=f"Recovered label '{read.label}' from marker"))
 
-    if common_site_config is not None:
-        bench_data["common_site_config"] = common_site_config
+    if read.common_site_config is not None:
+        bench_data["common_site_config"] = read.common_site_config
 
     return bench_data
+
+
+def _gather_benches(
+    frappe_container,
+    bench_paths: list[str],
+    emit: OnEvent,
+    warnings: list[Message],
+    previous: list[dict],
+) -> list[dict]:
+    """Every bench's cache-shaped dict, read in one exec (``core.bench_read``).
+
+    One bench's failure never stops the others being served and cached. A bench
+    that left no record keeps its ``previous`` (cached) row unchanged, or is left
+    out when it has none, so a failed read never overwrites what the cache knew
+    (``inspect`` reports that row's apps as unverified, and it carries no
+    ``app_copies``, since nothing was observed);
+    a bench whose sites failed is returned with those sites' apps as ``[]`` (never
+    a sentinel). Each failure is an unconditional ``InspectWarning`` plus a
+    ``warnings`` entry naming the bench and the cause. A raw Docker error
+    propagates, so the caller's crash-without-corruption contract (no cache write)
+    holds.
+    """
+    if not bench_paths:
+        return []
+    emit(InspectCommand(command=f"read {' '.join(bench_paths)} (full inspect)"))
+    batch = bench_read.read_benches(frappe_container, bench_paths, list_apps=True, files=True)
+    emit(InspectCommandDone(exit_code=batch.exit_code, output=batch.output))
+    gathered: list[dict] = []
+    for bench_path in bench_paths:
+        read = batch.benches.get(bench_path)
+        if read is None:
+            text = f"Could not read bench {bench_path} ({batch.errors[bench_path]})."
+            emit(InspectWarning(text=text))
+            warnings.append(Message("inspect.bench_unread", text, detail={"bench": bench_path}))
+            gathered.extend(b for b in previous if b["path"] == bench_path)
+            continue
+        warnings.extend(
+            Message("inspect.site_unread", _unread_site_text(bench_path, site))
+            for site in read.sites or []
+            if site.list_apps is None
+        )
+        gathered.append(_bench_dict(read, emit))
+    return gathered
 
 
 def partial_refresh(
@@ -816,11 +775,12 @@ def inspect_raw(
         # fan-out becomes a typed DOCKER error. The cache is untouched on this
         # path (the write below is only reached on success), so the pre-migration
         # crash-without-corruption contract holds - now typed.
+        if cached_data is None and not config_utils.cache_disabled():
+            cached_data = db_utils.get_cached_project_data(project_name)
+        previous = cached_data["bench_instances"] if cached_data else []
         try:
             bench_paths = discover_benches(frappe_container, on_event=on_event)
-            gathered = [
-                _gather_bench_data(frappe_container, bench_path, emit) for bench_path in bench_paths
-            ]
+            gathered = _gather_benches(frappe_container, bench_paths, emit, warnings, previous)
         except CwcliError:
             raise
         except (DockerException, requests.RequestException) as e:
@@ -964,10 +924,17 @@ def inspect(
     assert raw.data is not None  # OK/WARNING always carries a RawInspect
     # Only a T3 full inspect re-observes each site's installed apps (and their
     # git refs) live; the T1 cache and T2 partial tiers carry the cached list
-    # forward, so their per-site installed_apps are REMEMBERED, not verified.
-    apps_verified = raw.data.served_from == "full"
+    # forward, so their per-site installed_apps are REMEMBERED, not verified. So
+    # is a bench a full inspect could not read, whose cached row it kept.
+    unread = {
+        (w.detail or {}).get("bench") for w in raw.warnings if w.code == "inspect.bench_unread"
+    }
     benches = [
-        _to_bench_info(b.get("index", position), b, apps_verified=apps_verified)
+        _to_bench_info(
+            b.get("index", position),
+            b,
+            apps_verified=raw.data.served_from == "full" and b["path"] not in unread,
+        )
         for position, b in enumerate(raw.data.benches)
     ]
 
@@ -976,7 +943,7 @@ def inspect(
     # the same fail-honest nudge core.where gives on its unverified path. Scoped to
     # the case where there is actually a remembered app list to be stale about, so
     # a container-less or app-less read stays quiet.
-    if not apps_verified and any(s.installed_apps for b in benches for s in b.sites):
+    if any(s.installed_apps and not s.installed_apps_verified for b in benches for s in b.sites):
         warnings.append(
             Message(
                 "inspect.apps_unverified",
@@ -997,6 +964,76 @@ def inspect(
         ),
         warnings=warnings,
     )
+
+
+def refresh_bench(
+    project_name: str, bench_path: str, *, on_event: OnEvent | None = None
+) -> Result[str]:
+    """Re-cache ONE bench after a verb changed it, instead of the whole project.
+
+    The post-mutation recache used to re-inspect every bench because one changed.
+    This reads only ``bench_path`` and splices it into the cached project: replaced
+    when it is still a bench, dropped when it is gone (a removed bench), appended
+    when it is new (a created bench). Every other bench keeps its cached data, and
+    the write goes through the same ``cache_project_data`` chokepoint, so redaction
+    and durable ``BenchIdentity`` numbering are unchanged (a new path takes the next
+    number, a removed one keeps its tombstone).
+
+    One discovery exec keeps the cached bench SET what a full inspect would find.
+    When no project is cached, when no bench is found at all, when a bench OTHER
+    than ``bench_path`` appeared or vanished, or when ``bench_path`` is neither
+    discovered nor cached (a spelling discovery does not produce, such as a
+    trailing slash), this runs the full inspect instead.
+    ``data`` names which ran: ``"bench"`` or ``"full"``. A bench whose read fails
+    keeps its cached row unchanged and is named in ``warnings``.
+
+    Never prompts and never starts anything: a stopped project raises
+    ``CwcliError(NOT_RUNNING)``. The cache is untouched on any failure.
+    """
+    emit = on_event or _noop
+    cached_data = db_utils.get_cached_project_data(project_name)
+
+    def full(reason: str) -> Result[str]:
+        emit(InspectTrace(text=f"{reason}; running a full inspect."))
+        result = inspect_raw(project_name, refresh="full", offer_choice=False, on_event=on_event)
+        return Result(status=Status.OK, data="full", warnings=result.warnings)
+
+    if not cached_data:
+        return full(f"No cached data for project '{project_name}'")
+
+    frappe_container = core_docker.get_frappe_container(project_name)
+    resolvers.resolve_container_state(
+        project_name, frappe_container, auto_start=False, offer_choice=False
+    )
+    cached_benches = cached_data["bench_instances"]
+    warnings: list[Message] = []
+    try:
+        discovered = discover_benches(frappe_container, on_event=on_event)
+        cached_paths = {b["path"] for b in cached_benches}
+        if bench_path not in set(discovered) | cached_paths:
+            return full(f"Bench path {bench_path!r} is not a discovered bench path")
+        if not discovered or set(discovered) - {bench_path} != cached_paths - {bench_path}:
+            return full("The bench set changed beyond the touched bench")
+        fresh = (
+            _gather_benches(frappe_container, [bench_path], emit, warnings, cached_benches)
+            if bench_path in discovered
+            else []
+        )
+    except CwcliError:
+        raise
+    except (DockerException, requests.RequestException) as e:
+        raise CwcliError(
+            ErrorKind.DOCKER,
+            "inspect.fanout_failed",
+            f"Docker error while inspecting project '{project_name}'.",
+            detail={"output": str(e)},
+        ) from e
+
+    # List order is irrelevant: reads serve benches in identity order.
+    benches = [b for b in cached_benches if b["path"] != bench_path] + fresh
+    emit(InspectTrace(text=f"Re-cached bench {bench_path} only."))
+    db_utils.cache_project_data(project_name, benches)
+    return Result(status=Status.OK, data="bench", warnings=warnings)
 
 
 def resolve_bench_with_fallback(

@@ -690,6 +690,31 @@ def resolve_app_imports(container, bench_path: str, apps) -> dict[str, AppImport
     ``diverged`` - "could not tell" is never "wrong copy".
     """
     names = list(dict.fromkeys(a for a in apps if a))
+    if not names:
+        return {}
+
+    bench = bench_path.rstrip("/")
+    venv_python = f"{bench}/env/bin/python"
+    try:
+        exit_code, output = container.exec_run(
+            [venv_python, "-c", _APP_IMPORT_PROBE, bench, *names]
+        )
+    except Exception:  # noqa: BLE001 - any transport failure is "could not check"
+        return app_imports_from_probe(bench_path, names, None)
+    if exit_code != 0:
+        return app_imports_from_probe(bench_path, names, None)
+    return app_imports_from_probe(bench_path, names, _decode(output))
+
+
+def app_imports_from_probe(bench_path: str, apps, output: str | None) -> dict[str, AppImport]:
+    """Interpret :data:`_APP_IMPORT_PROBE` output for ``apps``.
+
+    ``output=None`` means the probe could not run, so every app is ``checked=False``.
+    Shared by :func:`resolve_app_imports` and ``core.bench_read``'s batched read,
+    which runs the same probe inside its per-bench process, so the comparison rules
+    cannot drift between them.
+    """
+    names = list(dict.fromkeys(a for a in apps if a))
     bench = bench_path.rstrip("/")
     unchecked = {
         name: AppImport(
@@ -703,20 +728,10 @@ def resolve_app_imports(container, bench_path: str, apps) -> dict[str, AppImport
         )
         for name in names
     }
-    if not names:
-        return {}
-
-    venv_python = f"{bench}/env/bin/python"
-    try:
-        exit_code, output = container.exec_run(
-            [venv_python, "-c", _APP_IMPORT_PROBE, bench, *names]
-        )
-    except Exception:  # noqa: BLE001 - any transport failure is "could not check"
-        return unchecked
-    if exit_code != 0:
+    if output is None:
         return unchecked
     try:
-        records = json.loads(_decode(output))
+        records = json.loads(output)
     except (json.JSONDecodeError, ValueError, TypeError):
         return unchecked
     if not isinstance(records, list):

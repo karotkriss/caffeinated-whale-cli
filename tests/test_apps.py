@@ -32,6 +32,7 @@ from caffeinated_whale_cli.core import apps as core_apps
 from caffeinated_whale_cli.core import docker as core_docker
 from caffeinated_whale_cli.core import exec_stream as exec_stream_mod
 from caffeinated_whale_cli.core import update as core_update
+from tests.batched_probes import emulate_batched
 
 # ------------------------------------------------------------------- fake container
 
@@ -131,6 +132,9 @@ class FakeFrappeContainer:
     def exec_run(self, cmd, workdir=None, **kwargs):
         # Accepts environment=/demux= etc.; the non-verbose _stream_command path
         # passes demux=False.
+        batched = emulate_batched(self, cmd)
+        if batched is not None:
+            return batched
         code, out = self._run(cmd, workdir)
         return code, out.encode() if isinstance(out, str) else out
 
@@ -164,7 +168,10 @@ def wired(monkeypatch):
     """Patch the apps module's collaborators; return a small control object."""
 
     state = types.SimpleNamespace(
-        recache_calls=[], bench="/workspace/frappe-bench", sites=["a.localhost", "b.localhost"]
+        recache_calls=[],
+        recache_benches=[],
+        bench="/workspace/frappe-bench",
+        sites=["a.localhost", "b.localhost"],
     )
 
     monkeypatch.setattr(apps_mod, "ensure_containers_running", lambda *a, **k: True)
@@ -172,8 +179,9 @@ def wired(monkeypatch):
     monkeypatch.setattr(core_apps.bench_sites, "list_sites", lambda *a, **k: list(state.sites))
     _wire_stopped_bench(monkeypatch)
 
-    def fake_recache(project_name, verbose=False):
+    def fake_recache(project_name, verbose=False, bench_path=None, warnings=None):
         state.recache_calls.append(project_name)
+        state.recache_benches.append(bench_path)
         return True
 
     monkeypatch.setattr(apps_mod.cache, "recache_project", fake_recache)
@@ -353,6 +361,7 @@ def test_install_all_sites_success_refreshes_cache(wired, monkeypatch, capsys):
     installs = [c for c in container.calls if "install-app" in c]
     assert len(installs) == 2
     assert wired.recache_calls == ["proj"]
+    assert wired.recache_benches == ["/workspace/frappe-bench"]  # only the mutated bench
 
 
 def test_install_one_site_fails_exits_nonzero_no_success(wired, monkeypatch, capsys):
@@ -589,6 +598,7 @@ def test_uninstall_yes_fans_out_and_refreshes(wired, monkeypatch, capsys):
     assert len(uninstalls) == 2  # both sites
     assert all("--yes" in c for c in uninstalls)  # bench's own confirm suppressed
     assert wired.recache_calls == ["proj"]
+    assert wired.recache_benches == ["/workspace/frappe-bench"]  # only the mutated bench
 
 
 # ------------------------------------------------------ install/uninstall --app CLI
@@ -756,6 +766,7 @@ def test_checkout_fetches_and_checks_out_the_ref_and_refreshes(wired, monkeypatc
     assert "git checkout -B feature/x FETCH_HEAD" in container.calls
     assert not any("reset --hard" in c for c in container.calls)
     assert wired.recache_calls == ["proj"]  # git state changed -> cache refreshed
+    assert wired.recache_benches == ["/workspace/frappe-bench"]  # only the mutated bench
 
 
 def test_checkout_reset_adds_hard_reset(wired, monkeypatch, capsys):
@@ -1030,7 +1041,7 @@ def _record_recache(monkeypatch):
     """Patch the post-pull recache to a recorder; return the list of project names."""
     calls = []
 
-    def fake_recache(project_name, verbose=False):
+    def fake_recache(project_name, verbose=False, bench_path=None, warnings=None):
         calls.append(project_name)
         return True
 
@@ -1041,6 +1052,26 @@ def _record_recache(monkeypatch):
 def _no_sleep(monkeypatch):
     """Drop the post-migration lock-settle sleep: real behaviour, pure test latency."""
     monkeypatch.setattr(core_update.time, "sleep", lambda *_a, **_k: None)
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_update_prints_the_bench_its_recache_could_not_read(monkeypatch, capsys, json_output):
+    from caffeinated_whale_cli.core.envelope import Message
+
+    container = FakeFrappeContainer(available_apps=["frappe", "payments"])
+    _wire_update(monkeypatch, container)
+    _count_discovery(monkeypatch, ["a.localhost"])
+    unread = "Could not read bench /workspace/frappe-bench (its read process exited with code 137)."
+
+    def fake_recache(project_name, verbose=False, bench_path=None, warnings=None):
+        warnings.append(Message("inspect.bench_unread", unread))
+        return True
+
+    monkeypatch.setattr(core_update.cache, "recache_project", fake_recache)
+
+    update_mod.run_app_update("proj", ["payments"], verbose=False, json_output=json_output)
+
+    assert unread in " ".join(capsys.readouterr().err.split())
 
 
 @pytest.mark.parametrize("verbose", [True, False])
@@ -1472,8 +1503,14 @@ def _boom_frappe_container():
 
 
 def test_capture_path_reports_cwclierror_cleanly(wired, monkeypatch, capsys):
-    """The drain-and-join path (list's per-site read) surfaces a lost stream."""
+    """List's installed-apps read surfaces a lost Docker connection as an error."""
+    from docker.errors import APIError
+
+    def _lost(*_a, **_k):
+        raise APIError("the daemon went away")
+
     monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: _boom_frappe_container())
+    monkeypatch.setattr(core_apps.bench_read, "read_benches", _lost)
 
     with pytest.raises(typer.Exit) as exc:
         apps_mod.list_apps(
