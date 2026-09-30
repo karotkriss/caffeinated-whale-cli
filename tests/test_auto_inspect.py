@@ -250,15 +250,20 @@ def test_forked_daemon_releases_the_parents_stdout_pipe(tmp_path):
     every piped invocation hung forever waiting for EOF. Mock-free: a real
     subprocess with a captured pipe, a real fork, a real daemon (killed in
     cleanup). Fails as a 30s TimeoutExpired against the unfixed code."""
-    import signal
-
     script = (
         "from caffeinated_whale_cli.utils import auto_inspect, config_utils\n"
         "config_utils.set_auto_inspect_enabled(True)\n"
         "auto_inspect.start_daemon()\n"
         "print('PARENT_DONE')\n"
     )
-    env = {**os.environ, "CWCLI_HOME": str(tmp_path)}
+    # The daemon's first cycle inspects every running instance on the Docker
+    # daemon it can reach, so point it at a socket that does not exist: a unit
+    # test must never exec into (or load) the operator's real instances.
+    env = {
+        **os.environ,
+        "CWCLI_HOME": str(tmp_path),
+        "DOCKER_HOST": f"unix://{tmp_path}/no-docker.sock",
+    }
     try:
         result = subprocess.run(
             [sys.executable, "-c", script],
@@ -268,12 +273,17 @@ def test_forked_daemon_releases_the_parents_stdout_pipe(tmp_path):
             env=env,
         )
     finally:
+        # The child writes its pid file after the parent has returned, and the file
+        # carries a second (creation-time) line, so wait briefly and parse only the
+        # pid - otherwise the daemon outlives the test run.
         pid_file = tmp_path / "run" / "auto-inspect.pid"
-        if pid_file.exists():
-            try:
-                os.kill(int(pid_file.read_text().strip()), signal.SIGKILL)
-            except (OSError, ValueError):
-                pass
+        deadline = time.monotonic() + 5
+        while not pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        try:
+            os.kill(int(pid_file.read_text().split()[0]), signal.SIGKILL)
+        except (OSError, ValueError, IndexError):
+            pass
     assert result.returncode == 0, result.stderr
     assert "PARENT_DONE" in result.stdout
 

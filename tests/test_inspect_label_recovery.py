@@ -16,6 +16,7 @@ import pytest
 from caffeinated_whale_cli.commands import inspect as inspect_mod
 from caffeinated_whale_cli.core import docker as core_docker
 from caffeinated_whale_cli.utils import db_utils
+from tests.batched_probes import emulate_batched
 
 BENCH_A = "/workspace/frappe-bench"
 BENCH_B = "/workspace/frappe-bench-2"
@@ -51,6 +52,9 @@ class TwoBenchContainer:
         pass
 
     def exec_run(self, cmd, workdir=None, environment=None):
+        batched = emulate_batched(self, cmd)
+        if batched is not None:
+            return batched
         self.calls.append(cmd)
 
         # Marker reads are list-form: ["cat", "<bench>/.cwcli/.bench-label"].
@@ -64,7 +68,7 @@ class TwoBenchContainer:
             return (1, b"")
 
         # String-form probes from the full inspect.
-        if "test -d" in cmd:  # _is_bench_directory
+        if "test -d" in cmd:  # bench-shape check, via tests/batched_probes
             return (0, b"")
         if cmd.startswith("find "):  # discovery: return both bench apps dirs
             return (0, f"{BENCH_A}/apps\n{BENCH_B}/apps".encode())

@@ -21,6 +21,7 @@ from caffeinated_whale_cli.core import docker as core_docker
 from caffeinated_whale_cli.core import inspect as core_inspect
 from caffeinated_whale_cli.core.envelope import Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
+from tests.batched_probes import emulate_batched
 
 BENCH = "/workspace/development/frappe-bench"
 
@@ -41,6 +42,9 @@ class FakeFrappeContainer:
         self.status = "running"
 
     def exec_run(self, cmd, workdir=None):
+        batched = emulate_batched(self, cmd)
+        if batched is not None:
+            return batched
         b = self.bench_path
         if isinstance(cmd, (list, tuple)):  # marker reads are list-form
             return (1, b"")

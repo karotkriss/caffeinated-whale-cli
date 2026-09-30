@@ -37,6 +37,7 @@ import typer
 from caffeinated_whale_cli.commands import inspect as inspect_mod
 from caffeinated_whale_cli.core import docker as core_docker
 from caffeinated_whale_cli.utils import config_utils, db_utils
+from tests.batched_probes import emulate_batched
 
 ROOT = "/workspace/development"
 BENCH_A = f"{ROOT}/bench-a"
@@ -90,6 +91,9 @@ class MultiBenchContainer:
         self.status = "running"
 
     def exec_run(self, cmd, workdir=None, environment=None):
+        batched = emulate_batched(self, cmd)
+        if batched is not None:
+            return batched
         self.calls.append(cmd)
 
         # Marker reads are list-form: ["cat", "<bench>/.cwcli/.bench-label"].
@@ -106,7 +110,7 @@ class MultiBenchContainer:
             sites = self.benches.get(bench, {}).get("sites", {})
             return (0, b"SITE\n") if entry in sites else (0, b"NOTASITE\n")
 
-        if "test -d" in cmd:  # _is_bench_directory
+        if "test -d" in cmd:  # bench-shape check, via tests/batched_probes
             return (0, b"")
 
         if cmd.startswith("find "):
