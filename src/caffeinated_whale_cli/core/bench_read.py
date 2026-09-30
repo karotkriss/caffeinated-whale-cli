@@ -17,14 +17,16 @@ The per-site answers are exactly what the bench commands print:
 - ``installed`` is ``frappe.get_installed_apps()``, the value
   ``bench --site X execute frappe.get_installed_apps`` prints.
 
-The process only READS. It carries RAW facts, decoded the way the per-exec reads
-decode them; every interpretation (config JSON, the marker, site verdicts, the
-import comparison, line splitting) stays on the host in the same shared parsers
-the per-exec reads use, so the two paths cannot drift.
+The process only READS. It carries RAW facts; every interpretation (config JSON,
+the marker, site verdicts, the import comparison, line splitting) stays on the
+host in the shared parsers.
 
-A bench whose process leaves no record (it crashed, or no usable Python) is simply
-absent from the result. Each caller falls back to its per-exec reads for that bench
-only, so coverage never regresses below the pre-batching behavior.
+A question the process could not answer carries its cause instead: ``error`` on
+the bench (no bench virtualenv, ``import frappe`` failed) or on the site
+(``frappe.init``/``connect`` or the read failed). A cause is the failed step and
+the exception's TYPE only, never its message, which can quote a site's config
+(a database name or host). A bench whose process left no record at all is absent
+from ``benches`` and its cause is in ``errors``.
 """
 
 from __future__ import annotations
@@ -93,6 +95,10 @@ def probe(apps):
     return buf.getvalue()
 
 
+def failed(step, error):
+    return step + " failed (" + type(error).__name__ + ")"
+
+
 def list_apps(frappe):
     apps = frappe.get_single("Installed Applications").installed_applications
     if apps:
@@ -116,6 +122,10 @@ if opts["files"]:
     rec["current"] = read(bench + "/sites/currentsite.txt", strict=True)
     rec["marker"] = read(root + "/" + MARKER_REL)
 
+asked = opts["list_apps"] or opts["installed"]
+if asked and not venv:
+    rec["error"] = "no bench virtualenv python at " + root + "/env/bin/python"
+
 sites = opts["sites"]
 if sites is None:
     rec["listing"] = run(["sh", "-c", LIST_SITES_SH, "sh", bench], strict=True)
@@ -130,37 +140,32 @@ for site in sites:
     if opts["files"]:
         rec["sites"][site]["config"] = read(bench + "/sites/" + site + "/site_config.json")
 
-if venv and sites and (opts["list_apps"] or opts["installed"]):
+if venv and sites and asked:
     try:
         os.chdir(bench + "/sites")
         import frappe
     except KeyboardInterrupt:
         raise
-    except BaseException:
+    except BaseException as error:
         frappe = None
+        rec["error"] = failed("import frappe", error)
     for site in sites if frappe is not None else []:
         found = rec["sites"][site]
+        step = "frappe.init"
         try:
             frappe.init(site=site)
+            step = "frappe.connect"
             frappe.connect()
             if opts["list_apps"]:
-                try:
-                    found["list_apps"] = list_apps(frappe)
-                except KeyboardInterrupt:
-                    raise
-                except BaseException:
-                    pass
+                step = "list-apps"
+                found["list_apps"] = list_apps(frappe)
             if opts["installed"]:
-                try:
-                    found["installed"] = list(frappe.get_installed_apps())
-                except KeyboardInterrupt:
-                    raise
-                except BaseException:
-                    pass
+                step = "frappe.get_installed_apps"
+                found["installed"] = list(frappe.get_installed_apps())
         except KeyboardInterrupt:
             raise
-        except BaseException:
-            pass
+        except BaseException as error:
+            found["error"] = failed(step, error)
         finally:
             try:
                 frappe.destroy()
@@ -189,6 +194,10 @@ _READ_PY = (
     + _READ_PY_BODY
 )
 
+# Prefixes the line the shell prints for a bench whose process exited non-zero:
+# ``<FAILED><exit code><TAB><bench path>``.
+FAILED = "@@CWCLI-BENCH-READ-FAILED@@"
+
 # Runs :data:`_READ_PY` once per bench, sequentially, so one Frappe import is alive
 # at a time. Bench paths ride as argv, never interpolated. The trailing ``exit 0``
 # makes a non-zero exec code mean the exec itself failed.
@@ -196,24 +205,30 @@ _READ_SH = (
     'script=$1; opts=$2; shift 2; for b in "$@"; do '
     'py="${b%/}/env/bin/python"; venv=1; '
     'if [ ! -x "$py" ]; then py=/usr/bin/python3; venv=0; fi; '
-    '"$py" -c "$script" "$opts" "$b" "$venv" 2>/dev/null; '
+    '"$py" -c "$script" "$opts" "$b" "$venv" 2>/dev/null || '
+    f'printf "\\n{FAILED}%s\\t%s\\n" "$?" "$b"; '
     "done; exit 0"
 )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SiteRead:
-    """One site's facts. ``None`` means that read failed (or was not asked for)."""
+    """One site's facts. ``None`` means that read failed (or was not asked for).
+
+    ``error`` is why an asked Frappe question has no answer: the site's own failed
+    step, else its bench's.
+    """
 
     name: str
     site_config: dict | None
     list_apps: list[str] | None
     installed: list[str] | None
+    error: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class BenchRead:
-    """One bench's facts, interpreted by the same parsers the per-exec reads use.
+    """One bench's facts, interpreted by the shared parsers.
 
     ``sites`` is None when the ``sites/`` directory could not be listed.
     """
@@ -229,15 +244,17 @@ class BenchRead:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class BatchRead:
-    """The exec's outcome. ``benches`` holds only the benches that left a record."""
+    """The exec's outcome. ``benches`` holds the benches that left a record;
+    ``errors`` names why each other requested bench has none."""
 
     exit_code: int
     output: str
     benches: dict[str, BenchRead]
+    errors: dict[str, str]
 
 
 def output_lines(text: str) -> list[str]:
-    """``ls -1`` / ``bench list-apps`` output as the per-exec reads split it."""
+    """``ls -1`` / ``bench list-apps`` output split into its non-empty lines."""
     return [line for line in text.strip().split("\n") if line]
 
 
@@ -270,7 +287,8 @@ def read_benches(
     ``list_apps`` and ``installed`` ask Frappe the two per-site questions.
 
     Raises what ``exec_run`` raises (a lost Docker connection); a failed exec or an
-    unparseable record only leaves benches out of ``benches``.
+    unparseable record leaves the bench out of ``benches``, with its cause in
+    ``errors``.
     """
     opts = json.dumps(
         {"sites": sites, "list_apps": list_apps, "installed": installed, "files": files}
@@ -281,8 +299,12 @@ def read_benches(
     raw: bytes = output[0] if isinstance(output, tuple) else output
     text = raw.decode("utf-8", errors="replace")
     benches: dict[str, BenchRead] = {}
+    exited: dict[str, str] = {}
     if exit_code == 0:
         for line in text.split("\n"):
+            if line.startswith(FAILED):
+                code, _tab, path = line[len(FAILED) :].partition("\t")
+                exited[path] = f"its read process exited with code {code}"
             if not line.startswith(SENTINEL):
                 continue
             try:
@@ -292,7 +314,16 @@ def read_benches(
                 continue
             if bench.path in bench_paths:
                 benches[bench.path] = bench
-    return BatchRead(exit_code=exit_code, output=text.strip(), benches=benches)
+    errors = {
+        path: (
+            f"the read exec exited with code {exit_code}"
+            if exit_code != 0
+            else exited.get(path, "its read process left no readable record")
+        )
+        for path in bench_paths
+        if path not in benches
+    }
+    return BatchRead(exit_code=exit_code, output=text.strip(), benches=benches, errors=errors)
 
 
 def _str_or_none(value) -> str | None:
@@ -319,6 +350,7 @@ def _bench_read(record: dict, explicit_sites: list[str] | None) -> BenchRead:
         else {}
     )
 
+    bench_error = _str_or_none(record.get("error"))
     current = _str_or_none(record.get("current"))
     marker = _str_or_none(record.get("marker"))
 
@@ -346,6 +378,7 @@ def _bench_read(record: dict, explicit_sites: list[str] | None) -> BenchRead:
                     site_config=parse_config(_str_or_none(facts.get("config"))),
                     list_apps=output_lines(list_apps_text) if list_apps_text is not None else None,
                     installed=_str_list_or_none(facts.get("installed")),
+                    error=_str_or_none(facts.get("error")) or bench_error,
                 )
             )
 

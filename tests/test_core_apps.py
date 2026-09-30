@@ -242,20 +242,67 @@ def test_list_reads_every_site_in_one_exec(monkeypatch, container):
     }
 
 
-def test_list_falls_back_to_one_read_per_site_when_the_batch_has_no_record(
+def test_a_bench_with_no_record_reports_each_site_unread_with_the_bench_and_cause(
     monkeypatch, container
 ):
     _cache(monkeypatch, [{"path": BENCH}])
     monkeypatch.setattr(
         core_apps.bench_read,
         "read_benches",
-        lambda *a, **k: core_apps.bench_read.BatchRead(exit_code=1, output="", benches={}),
+        lambda *a, **k: core_apps.bench_read.BatchRead(
+            exit_code=0,
+            output="",
+            benches={},
+            errors={BENCH: "its read process exited with code 139"},
+        ),
     )
 
     result = core_apps.list_apps("proj", installed=True)
 
-    assert result.data.installed == {"a.localhost": ["frappe"]}
-    assert "bench --site a.localhost execute frappe.get_installed_apps" in container.calls
+    assert result.data.installed == {"a.localhost": None}
+    assert result.data.ok is False
+    assert not any("execute" in c for c in container.calls)
+    [warning] = [w for w in result.warnings if w.code == "app.installed_unknown"]
+    assert "a.localhost" in warning.text
+    assert f"{BENCH}: its read process exited with code 139" in warning.text
+
+
+def test_the_install_guard_names_the_failed_step_when_frappe_cannot_connect(monkeypatch, container):
+    _cache(monkeypatch, [{"path": BENCH}])
+    site = core_apps.bench_read.SiteRead(
+        name="a.localhost",
+        site_config=None,
+        list_apps=None,
+        installed=None,
+        error="frappe.connect failed (OperationalError)",
+    )
+    read = core_apps.bench_read.BenchRead(
+        path=BENCH,
+        available_apps=[],
+        app_imports={},
+        common_site_config=None,
+        sites=[site],
+        current_site=None,
+        label=None,
+    )
+    monkeypatch.setattr(
+        core_apps.bench_read,
+        "read_benches",
+        lambda *a, **k: core_apps.bench_read.BatchRead(
+            exit_code=0, output="", benches={BENCH: read}, errors={}
+        ),
+    )
+
+    with pytest.raises(CwcliError) as exc:
+        core_apps.install_apps("proj", ["hrms"], sites=["a.localhost"], require_absent=True)
+
+    assert (exc.value.kind, exc.value.code) == (
+        ErrorKind.PRECONDITION,
+        "app.install_state_unknown",
+    )
+    assert "'a.localhost'" in exc.value.message
+    assert f"{BENCH}: frappe.connect failed (OperationalError)" in exc.value.message
+    assert not any("get-app" in c for c in container.calls)
 
 
 def test_a_docker_failure_of_the_batched_read_is_the_typed_exec_error(monkeypatch, container):
@@ -1406,7 +1453,9 @@ def test_checkout_guards_a_dash_prefixed_ref_from_being_parsed_as_an_option(monk
 # ------------------------------------------------------ BUG-10: wrong-copy detection
 
 
-def _patch_app_import(monkeypatch, *, diverged=False, is_symlink=False, resolved=None, imported=None):
+def _patch_app_import(
+    monkeypatch, *, diverged=False, is_symlink=False, resolved=None, imported=None
+):
     """Force resolve_app_imports to return one crafted AppImport per requested app."""
 
     def _fake(_container, bench_path, apps):

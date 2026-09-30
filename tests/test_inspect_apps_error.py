@@ -18,9 +18,9 @@ never prints); the frontend renders that event as the same stderr warning as
 before, which the rendering test below pins.
 
 Since the batched full read, a failed read is ``None`` in the bench facts
-(``core.bench_read.SiteRead.list_apps``) whichever path read it, and the ONE
-dict builder both paths share (``_bench_dict``) turns it into ``[]`` plus the
-warning. These tests drive the per-exec read through that builder.
+(``core.bench_read.SiteRead.list_apps``) with its cause in ``SiteRead.error``, and
+the dict builder ``_bench_dict`` turns it into ``[]`` plus the warning naming the
+bench and the cause. These tests drive that builder.
 """
 
 from __future__ import annotations
@@ -32,25 +32,18 @@ from caffeinated_whale_cli.core import inspect as core_inspect
 BENCH = "/home/frappe/frappe-bench"
 
 
-class _Container:
-    """Minimal frappe container returning a fixed (exit_code, output) for list-apps."""
-
-    def __init__(self, exit_code: int, output: bytes):
-        self._result = (exit_code, output)
-
-    def exec_run(self, cmd, workdir=None):
-        return self._result
-
-
-def _get_installed_apps(container, site):
+def _get_installed_apps(site, list_apps, error=None):
     events: list = []
-    listed = core_inspect._list_apps_per_exec(container, BENCH, site, events.append)
     read = bench_read.BenchRead(
         path=BENCH,
         available_apps=[],
         app_imports={},
         common_site_config=None,
-        sites=[bench_read.SiteRead(name=site, site_config=None, list_apps=listed, installed=None)],
+        sites=[
+            bench_read.SiteRead(
+                name=site, site_config=None, list_apps=list_apps, installed=None, error=error
+            )
+        ],
         current_site=None,
         label=None,
     )
@@ -59,13 +52,18 @@ def _get_installed_apps(container, site):
 
 
 def test_error_path_returns_empty_not_sentinel():
-    apps, events = _get_installed_apps(_Container(1, b"Traceback: boom"), "site.local")
+    apps, events = _get_installed_apps(
+        "site.local", None, error="frappe.connect failed (OperationalError)"
+    )
     # The honest unknown state - never a poisoned sentinel string.
     assert apps == []
     # The failure is surfaced as a warning event, not folded into the returned data.
     warnings = [e for e in events if isinstance(e, core_inspect.InspectWarning)]
     assert len(warnings) == 1
-    assert "site.local" in warnings[0].text
+    assert warnings[0].text == (
+        f"Failed to list apps for site 'site.local' "
+        f"({BENCH}: frappe.connect failed (OperationalError))."
+    )
     assert not any("Error fetching apps" in a for a in apps)
 
 
@@ -82,13 +80,14 @@ def test_warning_event_renders_as_todays_stderr_warning(capsys):
 
 
 def test_success_path_parses_app_lines():
-    apps, _events = _get_installed_apps(_Container(0, b"frappe\nerpnext\n"), "site.local")
+    apps, events = _get_installed_apps("site.local", ["frappe", "erpnext"])
     assert apps == ["frappe", "erpnext"]
+    assert not any(isinstance(e, core_inspect.InspectWarning) for e in events)
 
 
 def test_genuinely_no_apps_and_failure_both_cache_as_empty():
     # A site with no apps (exit 0, empty output) and a site whose list-apps failed
     # (exit != 0) must be indistinguishable in the cached data: both [].
-    no_apps, _ = _get_installed_apps(_Container(0, b""), "empty.local")
-    failed, _ = _get_installed_apps(_Container(1, b"boom"), "broken.local")
+    no_apps, _ = _get_installed_apps("empty.local", [])
+    failed, _ = _get_installed_apps("broken.local", None, error="list-apps failed (KeyError)")
     assert no_apps == failed == []

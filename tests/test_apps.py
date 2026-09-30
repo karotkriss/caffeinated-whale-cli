@@ -1483,14 +1483,14 @@ def _boom_frappe_container():
 
 
 def test_capture_path_reports_cwclierror_cleanly(wired, monkeypatch, capsys):
-    """The drain-and-join path (list's per-site fallback read, taken when the
-    batched read leaves no record) surfaces a lost stream."""
+    """List's installed-apps read surfaces a lost Docker connection as an error."""
+    from docker.errors import APIError
+
+    def _lost(*_a, **_k):
+        raise APIError("the daemon went away")
+
     monkeypatch.setattr(core_docker, "get_frappe_container", lambda name: _boom_frappe_container())
-    monkeypatch.setattr(
-        core_apps.bench_read,
-        "read_benches",
-        lambda *a, **k: core_apps.bench_read.BatchRead(exit_code=1, output="", benches={}),
-    )
+    monkeypatch.setattr(core_apps.bench_read, "read_benches", _lost)
 
     with pytest.raises(typer.Exit) as exc:
         apps_mod.list_apps(

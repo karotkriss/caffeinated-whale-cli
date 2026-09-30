@@ -585,23 +585,18 @@ class TestEvents:
 class _SiteQueryContainer:
     """Serves the live-fallback execs of ``_sites_with_app``: the ``ls -1 .../sites``
     directory listing and per-site ``bench ... list-apps`` (REALISTIC versioned lines,
-    ``frappe 16.26.3``, exactly as ``bench list-apps`` prints them).
+    ``frappe 16.26.3``, exactly as ``bench list-apps`` prints them), from which
+    ``emulate_batched`` answers ``core.bench_read``'s one-exec read."""
 
-    ``batched=True`` answers ``core.bench_read``'s one-exec read from those same
-    per-path answers; ``batched=False`` fails it, as when the bench's process left
-    no record, so the per-exec reads answer instead."""
-
-    def __init__(self, *, sites, installed, fail_on=None, batched=True):
+    def __init__(self, *, sites, installed, fail_on=None):
         self.sites = sites  # names under <bench>/sites
         self.installed = installed  # site -> [versioned "app x.y.z" lines]
         self.fail_on = fail_on or []  # substrings that make an exec fail
-        self.batched = batched
         self.calls = []
 
     def exec_run(self, cmd, workdir=None, **kwargs):
         if isinstance(cmd, list):
-            batched = emulate_batched(self, cmd) if self.batched else None
-            return batched or (1, b"")
+            return emulate_batched(self, cmd) or (1, b"")
         self.calls.append(cmd)
         for sub in self.fail_on:
             if sub in cmd:
@@ -621,17 +616,15 @@ def _seed_cache(monkeypatch, cached):
     )
 
 
-@pytest.mark.parametrize("batched", [True, False], ids=["batched", "per_exec"])
 class TestSitesWithAppLiveFallback:
     """The live-query fallback of ``_sites_with_app``.
 
     Production ALWAYS lands here: the cache stores RAW ``bench list-apps`` lines
     (``frappe 16.26.3``) and the cache branch does exact membership against a bare
     app name, so it never matches on a real bench and falls through here. These
-    exercise that path directly with realistic versioned cached data, through the
-    one-exec batched read and through its per-exec fallback alike."""
+    exercise that path directly with realistic versioned cached data."""
 
-    def test_versioned_cache_misses_and_the_live_query_answers(self, monkeypatch, batched):
+    def test_versioned_cache_misses_and_the_live_query_answers(self, monkeypatch):
         # Cache holds the REAL shape: "payments 16.1.0", not "payments". The bare
         # `app in installed_apps` membership fails, forcing the live query.
         _seed_cache(
@@ -652,7 +645,6 @@ class TestSitesWithAppLiveFallback:
             },
         )
         container = _SiteQueryContainer(
-            batched=batched,
             sites=["a.localhost", "b.localhost", "apps.txt", "assets"],
             installed={
                 "a.localhost": ["frappe 16.26.3", "payments 16.1.0"],
@@ -660,22 +652,24 @@ class TestSitesWithAppLiveFallback:
             },
         )
 
-        found = core_update._sites_with_app("proj", BENCH, "payments", container)
+        found = core_update._sites_with_app("proj", BENCH, "payments", container, [])
 
         # The live query - not the cache - produced this, proving the fallback ran.
         assert found == ["a.localhost"]
         assert any(c.startswith("ls -1") and c.endswith("/sites") for c in container.calls)
         assert any("--site a.localhost list-apps" in c for c in container.calls)
 
-    def test_empty_cache_also_uses_the_live_query(self, monkeypatch, batched):
+    def test_empty_cache_also_uses_the_live_query(self, monkeypatch):
         _seed_cache(monkeypatch, None)
         container = _SiteQueryContainer(
-            batched=batched, sites=["a.localhost"], installed={"a.localhost": ["frappe 16.26.3"]}
+            sites=["a.localhost"], installed={"a.localhost": ["frappe 16.26.3"]}
         )
 
-        assert core_update._sites_with_app("proj", BENCH, "frappe", container) == ["a.localhost"]
+        assert core_update._sites_with_app("proj", BENCH, "frappe", container, []) == [
+            "a.localhost"
+        ]
 
-    def test_live_fallback_without_a_container_returns_empty(self, monkeypatch, batched):
+    def test_live_fallback_without_a_container_returns_empty(self, monkeypatch):
         # Versioned cache misses AND no container to query -> honestly empty.
         _seed_cache(
             monkeypatch,
@@ -685,22 +679,46 @@ class TestSitesWithAppLiveFallback:
                 ]
             },
         )
-        assert core_update._sites_with_app("proj", BENCH, "frappe", None) == []
+        assert core_update._sites_with_app("proj", BENCH, "frappe", None, []) == []
 
-    def test_live_fallback_skips_a_site_whose_list_apps_fails(self, monkeypatch, batched):
+    def test_live_fallback_skips_a_site_whose_list_apps_fails(self, monkeypatch):
         _seed_cache(monkeypatch, None)
         container = _SiteQueryContainer(
-            batched=batched,
             sites=["a.localhost", "b.localhost"],
             installed={"a.localhost": ["frappe 16.26.3"], "b.localhost": ["frappe 16.26.3"]},
             fail_on=["--site b.localhost list-apps"],
         )
-        assert core_update._sites_with_app("proj", BENCH, "frappe", container) == ["a.localhost"]
+        warnings: list = []
+        found = core_update._sites_with_app("proj", BENCH, "frappe", container, warnings)
 
-    def test_live_fallback_returns_empty_when_site_listing_fails(self, monkeypatch, batched):
+        assert found == ["a.localhost"]
+        [warning] = warnings
+        assert warning.code == "discover.site_unreadable"
+        assert "'b.localhost'" in warning.text
+        assert f"{BENCH}: list-apps failed (RuntimeError)" in warning.text
+
+    def test_live_fallback_returns_empty_when_site_listing_fails(self, monkeypatch):
         _seed_cache(monkeypatch, None)
-        container = _SiteQueryContainer(sites=[], installed={}, fail_on=["/sites"], batched=batched)
-        assert core_update._sites_with_app("proj", BENCH, "frappe", container) == []
+        container = _SiteQueryContainer(sites=[], installed={}, fail_on=["/sites"])
+        warnings: list = []
+        assert core_update._sites_with_app("proj", BENCH, "frappe", container, warnings) == []
+        assert [w.code for w in warnings] == ["discover.bench_unreadable"]
+        assert BENCH in warnings[0].text
+
+    def test_a_bench_with_no_record_is_reported_with_its_cause(self, monkeypatch):
+        _seed_cache(monkeypatch, None)
+        container = _SiteQueryContainer(sites=[], installed={})
+        container.exec_run = lambda cmd, workdir=None, **k: (
+            0,
+            f"\n{core_update.bench_read.FAILED}139\t{BENCH}\n".encode(),
+        )
+        warnings: list = []
+
+        assert core_update._sites_with_app("proj", BENCH, "frappe", container, warnings) == []
+        [warning] = warnings
+        assert warning.code == "discover.bench_unreadable"
+        assert BENCH in warning.text
+        assert "its read process exited with code 139" in warning.text
 
 
 # ---------------------------------------------------------- the --force conflict reset
