@@ -1700,8 +1700,9 @@ def axi_apps_checkout(
     # epilogue gated on a condition already in the returned report. A failed recache
     # is a stderr warning, NOT a non-zero exit: the checkout itself landed, and
     # failing here would make an agent retry a mutation that already succeeded.
+    warnings = list(result.warnings)
     if any(r.ok for r in report.results) and not cache.recache_project(
-        project, bench_path=report.bench_path
+        project, bench_path=report.bench_path, warnings=warnings
     ):
         print(
             f"Warning: checkout completed, but re-caching '{project}' failed; "
@@ -1710,7 +1711,7 @@ def axi_apps_checkout(
             flush=True,
         )
 
-    emit_result(report, warnings=result.warnings)
+    emit_result(report, warnings=warnings)
     # The exit code reads report.ok, NOT result.status: a failed step is a
     # WARNING-shaped envelope, and WARNING maps to exit 0 everywhere else, so a
     # status-driven code would report success for a checkout git refused.
@@ -1836,8 +1837,9 @@ def axi_apps_install(
     # the cache whenever any step landed, matching the human verb. A failed recache
     # is a stderr warning, NOT a non-zero exit: the install itself landed, and
     # failing here would make an agent retry a mutation that already succeeded.
+    warnings = list(result.warnings)
     if any(r.ok for r in report.results) and not cache.recache_project(
-        project, bench_path=report.bench_path
+        project, bench_path=report.bench_path, warnings=warnings
     ):
         print(
             f"Warning: install completed, but re-caching '{project}' failed; "
@@ -1846,7 +1848,7 @@ def axi_apps_install(
             flush=True,
         )
 
-    emit_result(report, warnings=result.warnings)
+    emit_result(report, warnings=warnings)
     # The exit code reads report.ok, NOT result.status: a failed step is a
     # WARNING-shaped envelope, and WARNING maps to exit 0 everywhere else, so a
     # status-driven code would report success for an install that failed.
@@ -2522,7 +2524,8 @@ def axi_init(
     assert bench_result.data is not None  # OK/WARNING always carries an InitReport
     report = bench_result.data
 
-    if not cache.recache_project(project, bench_path=report.bench_path):
+    recache_warnings: list = []
+    if not cache.recache_project(project, bench_path=report.bench_path, warnings=recache_warnings):
         print(
             "Warning: bench created, but caching its bench path failed; "
             "run 'cwcli inspect --update' to refresh.",
@@ -2585,7 +2588,7 @@ def axi_init(
     payload = asdict(bench_result.data)
     if setup_wizard_payload is not None:
         payload["setup_wizard"] = setup_wizard_payload
-    typer.echo(toon.encode(payload, warnings=bench_result.warnings))
+    typer.echo(toon.encode(payload, warnings=[*bench_result.warnings, *recache_warnings]))
 
     # Never exit 0 for a failed explicit request: --complete-setup was asked for,
     # so its own failure must be visible in the exit code, not just the payload.
@@ -2861,7 +2864,8 @@ def axi_rm_site(
     # A failed recache is a stderr warning, NOT a non-zero exit: the drop
     # already happened, and failing here would make an agent retry a mutation
     # that already succeeded.
-    if not cache.recache_project(project, bench_path=outcome.bench_path):
+    warnings = list(result.warnings)
+    if not cache.recache_project(project, bench_path=outcome.bench_path, warnings=warnings):
         print(
             f"Warning: site dropped, but re-caching '{project}' failed; "
             "run 'cwcli inspect --update' to refresh.",
@@ -2869,7 +2873,7 @@ def axi_rm_site(
             flush=True,
         )
 
-    emit_result(outcome, warnings=result.warnings)
+    emit_result(outcome, warnings=warnings)
     # ok, NOT result.status: a drop with an unsafe archive is a WARNING-shaped
     # envelope, which maps to exit 0 everywhere else and would hide leftover
     # in-container credentials behind a green exit code.
@@ -2977,7 +2981,8 @@ def axi_rm_bench(
     # A failed recache is a stderr warning, NOT a non-zero exit: the removal
     # already happened, and failing here would make an agent retry a bench that
     # is already gone.
-    if not cache.recache_project(project, bench_path=outcome.bench_path):
+    warnings = list(result.warnings)
+    if not cache.recache_project(project, bench_path=outcome.bench_path, warnings=warnings):
         print(
             f"Warning: bench removed, but re-caching '{project}' failed; "
             "run 'cwcli inspect --update' to refresh.",
@@ -2985,7 +2990,7 @@ def axi_rm_bench(
             flush=True,
         )
 
-    emit_result(outcome, warnings=result.warnings)
+    emit_result(outcome, warnings=warnings)
     # ok, NOT result.status: a partial removal (a site's backup trapped in the
     # container) is a WARNING-shaped envelope, which maps to exit 0 everywhere
     # else and would report a green exit for an incomplete removal.

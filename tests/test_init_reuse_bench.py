@@ -86,7 +86,7 @@ def harness(monkeypatch):
     monkeypatch.setattr(
         init_mod.cache,
         "recache_project",
-        lambda project, verbose=False, bench_path=None: bool(
+        lambda project, verbose=False, bench_path=None, warnings=None: bool(
             state.recaches.append((project, bench_path)) or True
         ),
     )

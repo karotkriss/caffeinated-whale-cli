@@ -142,11 +142,16 @@ def _refresh_cache(project_name, verbose, bench_path):
     ``cache_project_data`` -> ``_redact_config_for_cache``), never a direct write.
     Degrades to a warning; the mutation itself already succeeded.
     """
-    if not cache.recache_project(project_name, verbose=verbose, bench_path=bench_path):
+    warnings: list = []
+    if not cache.recache_project(
+        project_name, verbose=verbose, bench_path=bench_path, warnings=warnings
+    ):
         stderr_console.print(
             "[yellow]Warning:[/yellow] app mutation succeeded but refreshing the cache failed; "
             "run 'cwcli inspect --update' to refresh."
         )
+    for warning in warnings:
+        stderr_console.print(f"[yellow]Warning:[/yellow] {warning.text}")
 
 
 def _report_and_exit(report, json_output, *, success_msg):

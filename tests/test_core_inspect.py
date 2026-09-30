@@ -394,7 +394,7 @@ class TestHardenings:
         assert excinfo.value.kind is ErrorKind.DOCKER
         assert writes == []  # crash-without-corruption, now typed
 
-    def test_a_bench_whose_read_left_no_record_is_named_and_cached_empty(self, wired):
+    def test_an_uncached_bench_whose_read_left_no_record_is_named_and_not_cached(self, wired):
         _store, writes, install = wired
 
         class DyingReadContainer(FakeFrappeContainer):
@@ -415,7 +415,7 @@ class TestHardenings:
                 f"Could not read bench {BENCH} (its read process exited with code 139).",
             )
         ]
-        assert writes == [[{"path": BENCH, "sites": [], "available_apps": []}]]
+        assert writes == [[]]
 
 
 class _DiscoveryContainer:
@@ -719,7 +719,7 @@ class TestBenchSelector:
         monkeypatch.setattr(
             core_inspect,
             "_gather_benches",
-            lambda _container, paths, _emit, _warnings: [
+            lambda _container, paths, _emit, _warnings, _previous: [
                 next(b for b in gathered if b["path"] == path) for path in paths
             ],
         )

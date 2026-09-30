@@ -38,7 +38,7 @@ class _Docker:
 def recaches(monkeypatch):
     calls: list[tuple] = []
 
-    def fake_recache(project, verbose=False, *, bench_path=None):
+    def fake_recache(project, verbose=False, *, bench_path=None, warnings=None):
         calls.append((project, bench_path))
         return True
 

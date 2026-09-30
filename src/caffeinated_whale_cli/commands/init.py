@@ -341,11 +341,16 @@ def _refresh_cache(project: str, verbose: bool, bench_path: str) -> None:
     ``apps.py``'s post-mutation ``_refresh_cache``: degrades to a warning,
     never fails init (the bench itself already succeeded).
     """
-    if not cache.recache_project(project, verbose=verbose, bench_path=bench_path):
+    warnings: list = []
+    if not cache.recache_project(
+        project, verbose=verbose, bench_path=bench_path, warnings=warnings
+    ):
         stderr_console.print(
             "[yellow]Warning:[/yellow] bench created, but caching its bench path failed; "
             "run 'cwcli inspect --update' to refresh."
         )
+    for warning in warnings:
+        stderr_console.print(f"[yellow]Warning:[/yellow] {warning.text}")
 
 
 def _bench_web_url(project: str, bench_path: str, site: str) -> str | None:

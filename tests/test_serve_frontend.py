@@ -1163,7 +1163,8 @@ class TestTierAActions:
         monkeypatch.setattr(
             serve_cmd.cache,
             "recache_project",
-            lambda project, bench_path=None: recached.append((project, bench_path)) or True,
+            lambda project, bench_path=None, warnings=None: recached.append((project, bench_path))
+            or True,
         )
 
         status, body = _post(
@@ -1194,7 +1195,9 @@ class TestTierAActions:
         monkeypatch.setattr(
             serve_cmd.cache,
             "recache_project",
-            lambda project, bench_path=None: bool(recached.append((project, bench_path))),
+            lambda project, bench_path=None, warnings=None: bool(
+                recached.append((project, bench_path))
+            ),
         )
 
         status, body = _post(

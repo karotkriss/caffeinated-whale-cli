@@ -740,7 +740,7 @@ class _Handler(BaseHTTPRequestHandler):
         # failed recache is a warning, never a failure - the checkout already landed,
         # and failing here would invite retrying a mutation that succeeded.
         if any(r.ok for r in report.results) and not cache.recache_project(
-            project, bench_path=report.bench_path
+            project, bench_path=report.bench_path, warnings=warnings
         ):
             warnings.append(
                 Message(
