@@ -49,10 +49,10 @@ from pathlib import Path
 from ..utils import bench_sites, db_utils, shared_home
 from ..utils.config_utils import PROJECTS_DIR, cwcli_home
 from .docker import get_project_containers, get_project_networks, get_project_volumes
-from .envelope import Result, Status
+from .envelope import Message, Result, Status
 from .errors import DOCKER_UNREACHABLE_HINT, CwcliError, ErrorKind
 from .resolvers import DEFAULT_BENCH_PATH
-from .stop import DB_STOP_TIMEOUT, is_database
+from .stop import is_database, stop_database
 
 # Marker in a Frappe backup filename that identifies the database dump - the one
 # artifact a "backup" cannot be trusted without (Frappe names it
@@ -853,9 +853,10 @@ def remove(
     network_removed = False
     backup_ok = True
     failures: list[str] = []
+    warnings: list[Message] = []
 
     def _result() -> Result[RemovalOutcome]:
-        status = Status.OK if (found and not failures) else Status.WARNING
+        status = Status.OK if (found and not failures and not warnings) else Status.WARNING
         return Result(
             status=status,
             data=RemovalOutcome(
@@ -869,6 +870,7 @@ def remove(
                 backup_ok=backup_ok,
                 failures=failures,
             ),
+            warnings=warnings,
         )
 
     # Defense-in-depth: never operate on a name that escapes the projects root.
@@ -1150,7 +1152,26 @@ def remove(
                 # The database keeps its real grace period here too: with
                 # --no-volumes its data outlives this removal.
                 if is_database(container):
-                    container.stop(timeout=DB_STOP_TIMEOUT)
+                    exit_code = stop_database(container)
+                    if exit_code != 0:
+                        shutdown_detail = (
+                            "its clean exit could not be verified"
+                            if exit_code is None
+                            else f"it exited with code {exit_code}"
+                        )
+                        retained = (
+                            " Its retained volume will need MariaDB crash recovery on the next boot."
+                            if not remove_volumes
+                            else ""
+                        )
+                        warning = Message(
+                            "rm.db_unclean",
+                            f"The database container '{container_name}' did not shut down "
+                            f"cleanly during removal: {shutdown_detail}."
+                            f"{retained}",
+                        )
+                        warnings.append(warning)
+                        emit(RmWarning(text=warning.text))
                 else:
                     container.stop()
 

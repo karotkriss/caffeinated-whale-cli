@@ -18,6 +18,7 @@ import pytest
 from caffeinated_whale_cli.core import rm as core_rm
 from caffeinated_whale_cli.core.envelope import Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
+from caffeinated_whale_cli.core.stop import DB_STOP_TIMEOUT
 
 BENCH = "/workspace/frappe-bench"
 
@@ -124,6 +125,26 @@ class TestStatusMapping:
         assert result.data.failures  # non-empty -> the frontend exits 1
         # The LATE gate spared the data because a container removal failed.
         volumes[0].remove.assert_not_called()
+
+    def test_retained_volume_warns_after_an_unclean_database_stop(self, cwcli_home, monkeypatch):
+        _make_project_dir(cwcli_home / "projects", "proj")
+        database = _make_container(name="proj-mariadb-1")
+        database.labels = {"com.docker.compose.service": "mariadb"}
+        database.attrs = {"State": {"ExitCode": 137}}
+        _wire(monkeypatch, [database], [])
+        events = []
+
+        result = core_rm.remove(
+            "proj", remove_volumes=False, no_backup=True, on_event=events.append
+        )
+
+        database.stop.assert_called_once_with(timeout=DB_STOP_TIMEOUT)
+        database.reload.assert_called_once_with()
+        assert result.status is Status.WARNING
+        assert result.data.failures == []
+        assert [warning.code for warning in result.warnings] == ["rm.db_unclean"]
+        assert "retained volume" in result.warnings[0].text
+        assert any(isinstance(event, core_rm.RmWarning) for event in events)
 
 
 class TestPlainDataDTO:

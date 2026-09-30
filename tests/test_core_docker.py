@@ -157,9 +157,9 @@ def test_the_remap_script_thaws_pid1_itself_after_the_chain(host_1001, tmp_path,
         assert ran[-2] == fail_at and proc.returncode == 3
 
 
-def test_an_interrupted_client_never_thaws_pid1_from_the_host(host_1001):
-    """Docker cannot kill an exec, so after a Ctrl-C/SIGTERM the chain keeps running
-    in the container; a host thaw then would resume PID 1 mid-chown."""
+def test_a_pre_exec_interrupt_leaves_pid1_for_the_next_start_to_thaw(host_1001):
+    """An interrupt before Docker starts the exec has no in-container thaw; the next
+    core.start owns recovery by sending SIGCONT before its liveness check."""
 
     class Interrupted(FakeContainer):
         def exec_run(self, cmd, **kwargs):

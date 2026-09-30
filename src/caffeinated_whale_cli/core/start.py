@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from docker.errors import APIError, NotFound
+from docker.errors import APIError, DockerException, NotFound
 
 from . import resolvers, supervision
 from .docker import align_container_user_to_host, get_project_containers
@@ -130,6 +130,11 @@ def start(
             f"No 'frappe' service found for project '{project_name}'.",
         )
 
+    try:
+        frappe_container.kill(signal="SIGCONT")
+    except DockerException:
+        pass
+
     # A container that exits right after it starts (a devcontainer-style compose
     # whose PID 1 is `bench start` crashing on boot) - or dies part-way through
     # this start (a uid remap that takes its PID 1 down) - is reported as what it
@@ -173,8 +178,7 @@ def _require_running(frappe_container, project_name: str, *, after_remap: bool =
     raise CwcliError(
         ErrorKind.NOT_RUNNING,
         "frappe.exited",
-        f"The frappe container '{name}' exited (exit code {exit_code}); "
-        f"see 'docker logs {name}'.",
+        f"The frappe container '{name}' exited (exit code {exit_code}); see 'docker logs {name}'.",
         hint=(
             f"This start remapped the container 'frappe' user, which ends a PID 1 running "
             f"as 'frappe'; run 'cwcli start {project_name}' again to boot it remapped."

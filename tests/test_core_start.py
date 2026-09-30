@@ -49,6 +49,38 @@ def wire(monkeypatch):
 
 
 class TestLaunch:
+    def test_start_thaws_pid1_before_checking_liveness(self, wire):
+        events = []
+
+        class FrozenContainer(FakeContainer):
+            def kill(self, signal):
+                events.append(signal)
+                super().kill(signal)
+
+            def reload(self):
+                events.append("reload")
+
+        frappe = FrozenContainer(ps="1 0 5 0.0 1000 /sbin/init\n", cwds={})
+        wire(frappe)
+
+        core_start.start("proj")
+
+        assert events[:2] == ["SIGCONT", "reload"]
+
+    def test_start_tolerates_a_failed_pid1_thaw(self, wire):
+        from docker.errors import APIError
+
+        class ThawFails(FakeContainer):
+            def kill(self, signal):
+                raise APIError("container changed state")
+
+        frappe = ThawFails(ps="1 0 5 0.0 1000 /sbin/init\n", cwds={})
+        wire(frappe)
+
+        result = core_start.start("proj")
+
+        assert result.status is Status.OK
+
     def test_launch_returns_process_set_and_writes_marker(self, wire):
         # No supervisord yet -> a real launch. Start from a stack with no supervisord.
         frappe = FakeContainer(ps="1 0 5 0.0 1000 /sbin/init\n", cwds={})

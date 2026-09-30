@@ -573,12 +573,12 @@ def align_container_user_to_host(
     # So when the identity changes, PID 1 is frozen (SIGSTOP from the host, which
     # no process can refuse) before the exec, and the script itself thaws it
     # (`kill -CONT 1` after the chain, success or failure): PID 1 cannot exit while
-    # the chain runs, and an interrupted cwcli (Ctrl-C, SIGTERM) cannot thaw it
-    # early, because Docker has no kill-exec API and the in-container chain runs
-    # on to its own thaw. The host thaws only when the exec itself raises a Docker
-    # error. This guarantees that a client interruption cannot resume PID 1 while
-    # the remap is still running. It does not make an individual chown atomic or
-    # protect against the container or host dying mid-chain.
+    # the chain runs, and an interrupted cwcli cannot thaw it early once Docker
+    # has started the exec. An interrupt after SIGSTOP but before the exec starts
+    # can leave PID 1 frozen; the next core.start sends SIGCONT before checking
+    # liveness. The host thaws here only when the exec raises a Docker error. This
+    # does not make an individual chown atomic or protect against the container or
+    # host dying mid-chain.
     steps = []
     if chown_home or cur_uid != host_uid:
         steps.append(f"chown {host_uid}:{host_gid} /home/frappe")
