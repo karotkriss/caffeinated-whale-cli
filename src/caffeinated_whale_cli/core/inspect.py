@@ -344,6 +344,10 @@ def discover_benches(container, *, on_event: OnEvent | None = None) -> list[str]
     return sorted({path for path in stdout.split("\n") if path})
 
 
+def _unread_site_text(bench_dir: str, site: bench_read.SiteRead) -> str:
+    return f"Failed to list apps for site '{site.name}' ({bench_dir}: {site.error})."
+
+
 def _bench_dict(read: bench_read.BenchRead, emit: OnEvent) -> dict:
     """The cache-shaped bench dict for one bench's facts.
 
@@ -390,11 +394,7 @@ def _bench_dict(read: bench_read.BenchRead, emit: OnEvent) -> dict:
             # as [] (the honest "nothing to record / unknown" state) - never a
             # poisoned sentinel string that would be persisted and re-emitted forever
             # by the partial-refresh path and rendered as a fake app in the tree.
-            emit(
-                InspectWarning(
-                    text=f"Failed to list apps for site '{site.name}' ({bench_dir}: {site.error})."
-                )
-            )
+            emit(InspectWarning(text=_unread_site_text(bench_dir, site)))
         site_data: dict = {"name": site.name, "installed_apps": list(site.list_apps or [])}
         if site.site_config is not None:
             site_data["site_config"] = site.site_config
@@ -435,27 +435,40 @@ def _bench_dict(read: bench_read.BenchRead, emit: OnEvent) -> dict:
     return bench_data
 
 
-def _gather_benches(frappe_container, bench_paths: list[str], emit: OnEvent) -> list[dict]:
+def _gather_benches(
+    frappe_container, bench_paths: list[str], emit: OnEvent, warnings: list[Message]
+) -> list[dict]:
     """Every bench's cache-shaped dict, read in one exec (``core.bench_read``).
 
-    A raw Docker error propagates, and a bench the read left no record for raises
-    ``CwcliError(DOCKER)`` naming the bench and the cause, never a partial answer,
-    so the caller's crash-without-corruption contract (no cache write) holds.
+    A bench the read could not answer for is still returned, so every other bench
+    is served and cached: one that left no record as ``path`` with no sites and no
+    apps (the failed-site ``[]`` precedent, never a sentinel), and one whose sites
+    failed with those sites' apps as ``[]``. Each failure is an unconditional
+    ``InspectWarning`` plus a ``warnings`` entry naming the bench and the cause.
+    A raw Docker error propagates, so the caller's crash-without-corruption
+    contract (no cache write) holds.
     """
     if not bench_paths:
         return []
     emit(InspectCommand(command=f"read {' '.join(bench_paths)} (full inspect)"))
     batch = bench_read.read_benches(frappe_container, bench_paths, list_apps=True, files=True)
     emit(InspectCommandDone(exit_code=batch.exit_code, output=batch.output))
-    if batch.errors:
-        raise CwcliError(
-            ErrorKind.DOCKER,
-            "inspect.read_failed",
-            "The full inspect read returned no record for "
-            + "; ".join(f"{path} ({cause})" for path, cause in batch.errors.items())
-            + ".",
+    gathered = []
+    for bench_path in bench_paths:
+        read = batch.benches.get(bench_path)
+        if read is None:
+            text = f"Could not read bench {bench_path} ({batch.errors[bench_path]})."
+            emit(InspectWarning(text=text))
+            warnings.append(Message("inspect.bench_unread", text))
+            gathered.append({"path": bench_path, "sites": [], "available_apps": []})
+            continue
+        warnings.extend(
+            Message("inspect.site_unread", _unread_site_text(bench_path, site))
+            for site in read.sites or []
+            if site.list_apps is None
         )
-    return [_bench_dict(batch.benches[bench_path], emit) for bench_path in bench_paths]
+        gathered.append(_bench_dict(read, emit))
+    return gathered
 
 
 def partial_refresh(
@@ -757,7 +770,7 @@ def inspect_raw(
         # crash-without-corruption contract holds - now typed.
         try:
             bench_paths = discover_benches(frappe_container, on_event=on_event)
-            gathered = _gather_benches(frappe_container, bench_paths, emit)
+            gathered = _gather_benches(frappe_container, bench_paths, emit, warnings)
         except CwcliError:
             raise
         except (DockerException, requests.RequestException) as e:
@@ -975,6 +988,7 @@ def refresh_bench(
         project_name, frappe_container, auto_start=False, offer_choice=False
     )
     cached_benches = cached_data["bench_instances"]
+    warnings: list[Message] = []
     try:
         discovered = discover_benches(frappe_container, on_event=on_event)
         cached_paths = {b["path"] for b in cached_benches}
@@ -983,7 +997,7 @@ def refresh_bench(
         if not discovered or set(discovered) - {bench_path} != cached_paths - {bench_path}:
             return full("The bench set changed beyond the touched bench")
         fresh = (
-            _gather_benches(frappe_container, [bench_path], emit)[0]
+            _gather_benches(frappe_container, [bench_path], emit, warnings)[0]
             if bench_path in discovered
             else None
         )
@@ -1003,7 +1017,7 @@ def refresh_bench(
         benches.append(fresh)
     emit(InspectTrace(text=f"Re-cached bench {bench_path} only."))
     db_utils.cache_project_data(project_name, benches)
-    return Result(status=Status.OK, data="bench")
+    return Result(status=Status.OK, data="bench", warnings=warnings)
 
 
 def resolve_bench_with_fallback(

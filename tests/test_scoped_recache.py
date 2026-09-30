@@ -66,6 +66,25 @@ def _record_batched_reads(fake, monkeypatch):
     monkeypatch.setattr(fake, "exec_run", exec_run)
 
 
+def _kill_bench_read(fake, monkeypatch, dead: str) -> None:
+    """Make ``dead``'s read process exit without a record, as a crash or OOM kill
+    would, while every other bench in the same batched read is answered."""
+    real = fake.exec_run
+
+    def exec_run(cmd, workdir=None, environment=None):
+        if isinstance(cmd, list) and cmd[2:3] == [bench_read._READ_SH] and dead in cmd[6:]:
+            alive = [path for path in cmd[6:] if path != dead]
+            _code, out = real(cmd[:6] + alive, workdir=workdir) if alive else (0, b"")
+            return (0, out + f"\n{bench_read.FAILED}137\t{dead}\n".encode())
+        return real(cmd, workdir=workdir, environment=environment)
+
+    monkeypatch.setattr(fake, "exec_run", exec_run)
+
+
+def _unread(bench: str) -> str:
+    return f"Could not read bench {bench} (its read process exited with code 137)."
+
+
 def _full_inspect_then_record(fake, monkeypatch):
     core_inspect.inspect("proj", refresh="full", offer_choice=False)
     _record_batched_reads(fake, monkeypatch)
@@ -202,3 +221,62 @@ class TestRecacheProject:
 
         assert cache.recache_project("proj", bench_path=BENCH_A) is False
         assert db_utils.get_cached_project_data("proj") is None
+
+
+class TestABenchWithNoRecordNeverTakesDownTheOthers:
+    """One bench whose read process dies is named with its cause; every other bench
+    is still served and cached, on every path that runs the full read."""
+
+    def test_inspect_update(self, container, monkeypatch):
+        _kill_bench_read(container, monkeypatch, BENCH_B)
+
+        result = core_inspect.inspect("proj", refresh="full", offer_choice=False)
+
+        assert result.data.served_from == "full"
+        assert [w.text for w in result.warnings] == [_unread(BENCH_B)]
+        cached = _cached()
+        assert cached[BENCH_A]["available_apps"] == ["erpnext", "frappe"]
+        assert cached[BENCH_B]["sites"] == [] and cached[BENCH_B]["available_apps"] == []
+
+    def test_a_drift_escalation(self, container, monkeypatch):
+        core_inspect.inspect("proj", refresh="full", offer_choice=False)
+        container.benches[BENCH_A]["apps"].append("hrms")
+        _kill_bench_read(container, monkeypatch, BENCH_B)
+
+        result = core_inspect.inspect("proj", offer_choice=False)
+
+        assert result.data.served_from == "full"
+        assert [w.text for w in result.warnings] == [_unread(BENCH_B)]
+        assert _cached()[BENCH_A]["available_apps"] == ["erpnext", "frappe", "hrms"]
+
+    def test_with_caching_disabled(self, container, monkeypatch):
+        monkeypatch.setenv("CWCLI_NO_CACHE", "1")
+        _kill_bench_read(container, monkeypatch, BENCH_B)
+
+        cached = _cached()
+
+        assert cached[BENCH_A]["available_apps"] == ["erpnext", "frappe"]
+        assert cached[BENCH_B]["sites"] == []
+
+    def test_a_recache_that_falls_back_to_the_full_read(self, container, monkeypatch):
+        _kill_bench_read(container, monkeypatch, BENCH_B)
+
+        assert cache.recache_project("proj", bench_path=BENCH_A) is True
+        cached = _cached()
+        assert cached[BENCH_A]["available_apps"] == ["erpnext", "frappe"]
+        assert cached[BENCH_B]["sites"] == []
+
+    def test_refresh_bench_of_the_failing_bench(self, container, monkeypatch):
+        _full_inspect_then_record(container, monkeypatch)
+        before = _cached()
+        _kill_bench_read(container, monkeypatch, BENCH_A)
+
+        result = core_inspect.refresh_bench("proj", BENCH_A)
+        assert cache.recache_project("proj", bench_path=BENCH_A) is True
+
+        assert result.data == "bench"
+        assert [w.text for w in result.warnings] == [_unread(BENCH_A)]
+        cached = _cached()
+        assert cached[BENCH_B] == before[BENCH_B]
+        assert cached[BENCH_A]["index"] == before[BENCH_A]["index"]
+        assert cached[BENCH_A]["sites"] == []
