@@ -926,7 +926,7 @@ def axi_start(
     auto-resolves conflicting Frappe projects); a multi-bench project with no
     ``--bench`` is a usage error naming ``--bench``.
     """
-    _axi_resolve_port_conflicts(project, yes)
+    stop_warnings = _axi_resolve_port_conflicts(project, yes)
 
     try:
         result = core_start.start(project, bench=bench, autorestart=autorestart)
@@ -940,22 +940,23 @@ def axi_start(
         raise typer.Exit(2)
 
     assert result.data is not None  # OK/WARNING always carries a StartOutcome
-    emit_result(result.data, warnings=result.warnings)
+    emit_result(result.data, warnings=[*stop_warnings, *result.warnings])
     raise typer.Exit(0 if result.status in (CoreStatus.OK, CoreStatus.WARNING) else 1)
 
 
-def _axi_resolve_port_conflicts(project: str, yes: bool) -> None:
+def _axi_resolve_port_conflicts(project: str, yes: bool) -> list[Message]:
     """Never-prompt host-side port pre-step for ``axi start`` (D6).
 
     Only meaningful when the container is not already up (a running instance owns
     its ports). A non-Frappe holder cannot be auto-resolved -> ``CONFLICT``; a
     Frappe holder is a ``CONFLICT`` naming ``--yes`` unless ``--yes`` was passed,
-    in which case the conflicting Frappe projects are stopped (stdout stays TOON).
+    in which case the conflicting Frappe projects are stopped (stdout stays TOON)
+    and their stop warnings are returned for the start document.
     """
     from .start import _frappe_running, detect_port_conflicts
 
     if _frappe_running(project):
-        return
+        return []
     conflicting, non_frappe = detect_port_conflicts(project)
     if non_frappe:
         emit_axi_error(
@@ -986,9 +987,10 @@ def _axi_resolve_port_conflicts(project: str, yes: bool) -> None:
         # contract. A project that vanished or stopped in that window is fine here
         # (its ports are free either way) - the recheck below is what decides.
 
+        stop_warnings: list[Message] = []
         for proj in conflicting:
             try:
-                core_stop.stop(proj)
+                stop_warnings.extend(core_stop.stop(proj).warnings)
             except CwcliError as e:
                 if e.kind is not ErrorKind.NOT_FOUND:
                     raise
@@ -1009,6 +1011,8 @@ def _axi_resolve_port_conflicts(project: str, yes: bool) -> None:
                 )
             )
             raise typer.Exit(exit_for(ErrorKind.CONFLICT))
+        return stop_warnings
+    return []
 
 
 # ---------------------------------------------------------------------------- status

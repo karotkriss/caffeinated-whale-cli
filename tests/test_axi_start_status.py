@@ -194,6 +194,30 @@ class TestAxiStart:
         assert stopped == ["other-proj"]
         assert "already_running: false" in result.stdout
 
+    def test_conflicting_stop_warning_rides_the_start_document(self, monkeypatch):
+        monkeypatch.setattr(start_mod, "_frappe_running", lambda name: False)
+        calls = {"n": 0}
+
+        def _detect(name):
+            calls["n"] += 1
+            return (["other-proj"], []) if calls["n"] == 1 else ([], [])
+
+        monkeypatch.setattr(start_mod, "detect_port_conflicts", _detect)
+        unclean = Result(
+            status=Status.WARNING,
+            data=_stop_result().data,
+            warnings=[Message("stop.db_unclean", "db did not shut down cleanly")],
+        )
+        monkeypatch.setattr(axi_mod.core_stop, "stop", lambda proj: unclean)
+        monkeypatch.setattr(
+            axi_mod.core_start,
+            "start",
+            lambda *a, **k: Result(status=Status.OK, data=_start_outcome()),
+        )
+        result = runner.invoke(axi_mod.app, ["start", "proj", "--yes"])
+        assert result.exit_code == 0
+        assert "db did not shut down cleanly" in result.stdout
+
     def test_residual_conflict_after_stop_is_reported_exit_1(self, monkeypatch):
         # The recheck still finds a conflict after stopping (teardown race or a
         # non-Frappe process grabbed the port) - must not fall through to core.start.

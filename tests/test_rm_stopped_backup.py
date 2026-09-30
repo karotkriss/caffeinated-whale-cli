@@ -23,7 +23,7 @@ from caffeinated_whale_cli.commands import rm
 from caffeinated_whale_cli.commands import start as start_mod
 from caffeinated_whale_cli.core import rm as core_rm
 from caffeinated_whale_cli.core import stop as core_stop
-from caffeinated_whale_cli.core.envelope import Result, Status
+from caffeinated_whale_cli.core.envelope import Message, Result, Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from caffeinated_whale_cli.utils import docker_utils
 
@@ -239,6 +239,16 @@ class TestStopAfterTransientStart:
         monkeypatch.setattr(core_stop, "stop", called)
         rm._stop_after_transient_start("p")
         called.assert_called_once()
+
+    def test_stop_warning_reaches_stderr(self, monkeypatch, capsys):
+        unclean = Result(
+            status=Status.WARNING,
+            data=None,
+            warnings=[Message("stop.db_unclean", "db did not shut down cleanly")],
+        )
+        monkeypatch.setattr(core_stop, "stop", lambda name: unclean)
+        rm._stop_after_transient_start("p")
+        assert "db did not shut down cleanly" in capsys.readouterr().err
 
     def test_stop_failure_is_a_warning_not_a_crash(self, monkeypatch, capsys):
         def _boom(*a, **k):
