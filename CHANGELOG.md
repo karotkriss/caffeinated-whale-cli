@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-09-30
+
+### Added
+
+- **Headless Frappe setup-wizard completion for agents** - `cwcli axi setup-wizard <project> <site>` (with `--country`, `--currency`, `--timezone`, `--bench`) runs Frappe's own setup-complete call so a freshly created site leaves the setup-wizard state and a non-System-Manager desk renders its navbar; `cwcli axi init --complete-setup` does the same as part of provisioning and reports the result inside the same init document, with a wizard failure reflected in the exit code. It is idempotent and creates no user.
+
+### Changed
+
+- **Much faster `inspect` and app lookups on large instances** - measured on a 32-bench, 47-site instance, with byte-identical `inspect --json` and `axi inspect` output:
+  - A full `inspect` dropped from about 101 s to about 13 s: every bench is now read in one container exec, with one Frappe process per bench instead of one `bench --site` call per site.
+  - A cached `inspect` (the read-only drift check) dropped from about 22 s to under 1 s, and bench discovery from about 9 s to about 0.1 s.
+  - Finding the sites that have an app installed (`apps update` site discovery, `apps checkout`'s resync set, `apps list --installed`, the `apps install` guards) dropped from about 3.5 s to about 0.5 s per bench.
+  - The cache refresh after `apps install`/`uninstall`/`checkout`, `update`, `rm-site`, `rm-bench`, and `init` now re-reads only the bench that changed, dropping from about 52 s to about 1 s; if that refresh fails, the project's cache is cleared so the next read re-inspects instead of serving stale data.
+
+### Fixed
+
+- **`cwcli start` on a container that exits** - a frappe container that exits right after starting, or dies partway through the start, is now reported as a clean "not running" error naming its exit code and `docker logs <name>`, instead of Docker's raw `409 ... is not running` traceback.
+- **Shared-mode uid remap can no longer brick an instance** - every workspace re-own now runs before the `frappe` user's identity edit, a failed re-own stops before that edit, and the container's main process is held for the length of the remap so it cannot exit and leave the remap half-applied.
+- **`cwcli stop` gives the database time to shut down and reports an unclean shutdown honestly** - a whole-instance stop takes MariaDB down last with a 60-second grace period instead of Docker's default (as little as 1 second on Docker Desktop), and a database that is killed before it finishes shutting down is reported as a failure with a non-zero exit instead of a clean stop. `rm` gives the database the same grace period and warns on an unclean shutdown.
+- **One unreadable bench or site no longer breaks the whole read** - its cached rows are kept but reported as unverified, with a warning naming the bench or site and the step that failed.
+- **Bench discovery no longer drops a whole search path over one unreadable subdirectory** - previously every bench under that path silently disappeared from `inspect`.
+- **`cwcli setup migrate` completes on an instance holding a real bench** - a bench's container-only symlinks are now copied as links instead of followed, fixing the `shutil.Error` that aborted the migration.
+- **`cwcli run -i` without a terminal now waits for its command to finish** - previously it could return success while the command kept running in the background.
+
 ## [3.3.0] - 2026-09-21
 
 ### Added
