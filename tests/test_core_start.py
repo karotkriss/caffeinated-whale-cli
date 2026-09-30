@@ -358,6 +358,28 @@ class TestFrappeContainerExited:
             core_start.start("proj")
         assert exc.value.code == "frappe.exited"
 
+    @pytest.mark.parametrize("remapped", [True, False])
+    def test_the_hint_says_start_again_only_after_a_remap(self, wire, monkeypatch, remapped):
+        from docker.errors import APIError
+
+        class DiesOnFirstPs(FakeContainer):
+            def exec_run(self, cmd, **kwargs):
+                if isinstance(cmd, list) and cmd[:1] == ["ps"]:
+                    self.status = "exited"
+                    raise APIError("409 Client Error: Conflict (container is not running)")
+                return super().exec_run(cmd, **kwargs)
+
+        monkeypatch.setattr(
+            core_start, "align_container_user_to_host", lambda *a, **k: (remapped, None)
+        )
+        wire(DiesOnFirstPs(ps="1 0 5 0.0 1000 /sbin/init\n", cwds={}))
+
+        with pytest.raises(CwcliError) as exc:
+            core_start.start("proj")
+        assert exc.value.code == "frappe.exited"
+        assert ("run 'cwcli start proj' again to boot it remapped" in exc.value.hint) is remapped
+        assert ("Fix the cause it logged" in exc.value.hint) is not remapped
+
     def test_a_step_failure_on_a_running_container_is_not_relabelled(self, wire):
         # install_succeeds=False: supervisor cannot be installed, the container is fine.
         frappe = FakeContainer(

@@ -50,7 +50,9 @@ Each chown is existence-guarded (an absent fresh-init bench dir is a no-op) and 
 A normal box (align targets `os.getuid()`, which already owns the workspace) reads no mismatch and emits no chown.
 ORDER (staging brick, 2026-09-29): every chown in align's single `&&` chain runs BEFORE `groupmod` and the passwd `sed`, which come last.
 On a devcontainer-style instance whose PID 1 is `bench start` running as `frappe`, the passwd edit kills PID 1, and Docker kills the exec with the container; re-owns queued after the edit never ran, so the next boot died on `logs/bench.log` for good.
-Pinned by `tests/test_core_docker.py::test_every_reown_runs_before_the_identity_edit` and the real-Docker `tests/e2e/test_start_stop_container_lifecycle_e2e.py`.
+Ordering alone is not enough: the `chown -R <bench>` also takes the bench away from a PID 1 still running as the old uid, and a PID 1 that dies mid-chown strands the bench and `frappe` on different uids the same way.
+So when the ids change, align freezes PID 1 from the host (`container.kill(signal="SIGSTOP")`, which no process can refuse) for the whole exec and thaws it in a `finally`; the remap always lands whole, and a PID 1 that then dies on its stale identity boots remapped on the next start, whose `frappe.exited` hint says exactly that.
+Pinned by `tests/test_core_docker.py::test_every_reown_runs_before_the_identity_edit`, `test_an_identity_change_runs_with_pid1_frozen`, and the real-Docker `tests/e2e/test_start_stop_container_lifecycle_e2e.py` (`test_shared_mode_remap_cannot_be_cut_short_mid_chown` reproduces the mid-chown brick without the freeze).
 All three callers pass their resolved path(s): `init_bench` (`[bench_full_path]`, computed before the align call), `core.start` (`[resolved_path]`, so align now runs AFTER bench resolution rather than before), and `core.scale`'s `_repair_toolchains` (its `bench_paths`).
 Guarded by `tests/test_core_docker.py` (the armed-recovery reown assertion plus the matching-owner/absent-dir/normal-box negatives plus the symlinked-app-source cases) and real-Docker E2E `tests/e2e/test_shared_workspace_reown_e2e.py`.
 

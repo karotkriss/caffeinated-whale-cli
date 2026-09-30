@@ -154,7 +154,7 @@ class TestAxiStop:
             containers=["proj-frappe-1", "proj-mariadb-1"],
             db_clean_shutdown=False,
         )
-        warning = Message("stop.db_unclean", "its log never reached 'Shutdown complete'")
+        warning = Message("stop.db_unclean", "it exited with code 137 (killed)")
         monkeypatch.setattr(
             axi_mod.core_stop,
             "stop",
@@ -164,7 +164,7 @@ class TestAxiStop:
 
         assert result.exit_code == 1
         assert "db_clean_shutdown: false" in result.stdout
-        assert "Shutdown complete" in result.stdout
+        assert "exited with code 137" in result.stdout
 
     def test_already_stopped_is_a_definitive_success_so_stop_is_idempotent(self, monkeypatch):
         monkeypatch.setattr(

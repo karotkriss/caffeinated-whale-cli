@@ -136,11 +136,13 @@ def start(
     # is, never as Docker's raw `409 ... is not running` traceback out of the next
     # exec, nor as a later step's misleading failure.
     _require_running(frappe_container, project_name)
+    remapped: list[bool] = []
     try:
         return _start_bench(
             project_name,
             frappe_container,
             warnings,
+            remapped,
             bench=bench,
             bench_path=bench_path,
             restart=restart,
@@ -148,12 +150,16 @@ def start(
             uid_override=uid_override,
         )
     except (APIError, CwcliError):
-        _require_running(frappe_container, project_name)
+        _require_running(frappe_container, project_name, after_remap=any(remapped))
         raise
 
 
-def _require_running(frappe_container, project_name: str) -> None:
-    """Raise ``NOT_RUNNING`` ``frappe.exited`` unless the frappe container is running."""
+def _require_running(frappe_container, project_name: str, *, after_remap: bool = False) -> None:
+    """Raise ``NOT_RUNNING`` ``frappe.exited`` unless the frappe container is running.
+
+    ``after_remap``: this start remapped the ``frappe`` uid, which kills a PID 1 that
+    runs as ``frappe``; the remap is complete, so starting again boots it remapped.
+    """
     try:
         frappe_container.reload()
         running = frappe_container.status == "running"
@@ -169,7 +175,12 @@ def _require_running(frappe_container, project_name: str) -> None:
         "frappe.exited",
         f"The frappe container '{name}' exited (exit code {exit_code}); "
         f"see 'docker logs {name}'.",
-        hint=f"Fix the cause it logged, then run 'cwcli start {project_name}' again.",
+        hint=(
+            f"This start remapped the container 'frappe' user, which ends a PID 1 running "
+            f"as 'frappe'; run 'cwcli start {project_name}' again to boot it remapped."
+            if after_remap
+            else f"Fix the cause it logged, then run 'cwcli start {project_name}' again."
+        ),
     )
 
 
@@ -177,6 +188,7 @@ def _start_bench(
     project_name: str,
     frappe_container,
     warnings: list[Message],
+    remapped: list[bool],
     *,
     bench: str | None,
     bench_path: str | None,
@@ -217,9 +229,10 @@ def _start_bench(
     # In shared mode a remap also re-owns the resolved bench dir, so a migrated
     # instance's workspace stays writable by the remapped user (the path is
     # resolved and validated above, so it is safe to pass into align's shell).
-    _, remap_err = align_container_user_to_host(
+    did_remap, remap_err = align_container_user_to_host(
         frappe_container, bench_paths=[resolved_path], uid_override=uid_override
     )
+    remapped.append(did_remap)
     if remap_err:
         warnings.append(Message("start.uid_align_failed", remap_err))
 
