@@ -62,11 +62,11 @@ The authoritative repros and the real-instance E2E evidence are in `docs/e2e/res
 #### Site detection is shared (`utils/bench_sites.py`)
 
 `bench_sites.list_sites(container, bench_path)` is the single canonical "what are the real sites" implementation, used by BOTH `core/rm.py:_list_sites` (which delegates; moved off `commands/rm.py` by `migrate-rm-core`) and `core/inspect.py:_get_sites` (moved off `commands/inspect.py` by `migrate-inspect-core`).
-A real Frappe site is a DIRECTORY containing `site_config.json`; detection probes for that per entry rather than denylisting known non-site names.
+A real Frappe site is a DIRECTORY containing `site_config.json`; detection classifies every entry by that shape (in ONE exec for the whole `sites/` dir, via the shared `SITE_VERDICTS_SH`) rather than denylisting known non-site names.
 It is fail-safe: an entry is excluded only on a positive NOTASITE (a non-directory, or a readable dir with no `site_config.json`); anything ambiguous (probe error, unreadable dir) is treated as a site.
 This replaced `inspect._get_sites`' old denylist, which did NOT list `currentsite.txt` (a plain file written by `bench use`), so inspect reported it as a site and then errored `bench --site currentsite.txt list-apps -> "Site currentsite.txt does not exist!"`.
 `bench_sites.read_current_site(container, bench_path)` reads `sites/currentsite.txt` (the default-site pointer), failing safe to `None`.
-The probe string in `list_sites` is byte-identical to the one rm's tests already assert, so rm's fakes stay green; `tests/test_inspect_partial_refresh.py`'s fake gained the same SITE/NOTASITE probe handling.
+The unit fakes still model per-entry probes; `tests/batched_probes.py:emulate_batched` answers the batched script from them, and `tests/test_batched_probes.py` pins the script's real shell behavior.
 
 #### Default site resolves from EITHER source (`currentsite.txt` OR `common_site_config.json`)
 
