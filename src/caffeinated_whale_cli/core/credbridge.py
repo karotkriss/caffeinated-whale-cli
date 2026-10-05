@@ -71,6 +71,7 @@ from collections.abc import Callable, Collection, Iterator
 from pathlib import Path
 
 from ..utils import shared_home
+from .errors import CwcliError, ErrorKind
 
 _SOCK_NAME_FMT = ".git-cred-{}.sock"
 _HELPER_NAME_FMT = ".git-credential-bridge-{}.py"
@@ -418,7 +419,10 @@ def _teardown(
     for path in (sock_host, helper_host):
         if path is None:
             continue
-        with contextlib.suppress(FileNotFoundError):
+        # Any OSError, not only FileNotFoundError: teardown runs while an original
+        # exception is propagating, and a second failure here (EACCES on a
+        # workspace the caller cannot write) would replace the real cause.
+        with contextlib.suppress(OSError):
             path.unlink()
 
 
@@ -444,6 +448,35 @@ def _resolve_workspace_mount(container, bench_path: str) -> tuple[Path, str] | N
     return best
 
 
+def _require_writable_workspace(host_dir: Path) -> None:
+    """Fail clearly when the caller cannot create the bridge files in the workspace.
+
+    The bridge must place its shim and socket in the instance's workspace bind
+    mount. An instance created by another user before ``cwcli setup shared`` keeps
+    that workspace in the creator's private home, so a second shared-mode user
+    cannot write (or even reach) it. Without this check the first write raises a
+    bare ``PermissionError`` with no remedy.
+    """
+    if os.access(host_dir, os.W_OK | os.X_OK):
+        return
+    hint = (
+        f"the owner of {host_dir} (or root) can grant the cwcli group access: "
+        f"chgrp -R {shared_home.group_name()} {host_dir} && chmod -R g+rwX {host_dir} "
+        f"&& chmod g+s {host_dir}, plus g+x on each parent directory"
+        if shared_home.shared_mode()
+        else f"run cwcli as the user that owns {host_dir}"
+    )
+    raise CwcliError(
+        ErrorKind.PRECONDITION,
+        "workspace_not_writable",
+        f"cannot set up the git credential bridge: the instance workspace {host_dir} "
+        "is not writable by the current user (it is owned by another user, for "
+        "example an instance created before shared mode was enabled)",
+        hint=hint,
+        detail={"workspace": str(host_dir)},
+    )
+
+
 @contextlib.contextmanager
 def credential_bridge(container, bench_path: str) -> Iterator[None]:
     """Stand up the git credential bridge for the duration of a fetch/update op.
@@ -459,6 +492,7 @@ def credential_bridge(container, bench_path: str) -> Iterator[None]:
         yield
         return
     host_dir, container_dir = resolved
+    _require_writable_workspace(host_dir)
 
     uid = uuid.uuid4().hex[:12]
     helper_name = _HELPER_NAME_FMT.format(uid)
