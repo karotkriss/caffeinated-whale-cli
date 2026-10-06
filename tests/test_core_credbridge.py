@@ -600,3 +600,58 @@ def test_per_invocation_tcp_shim_guides_raw_git_on_a_dead_port(tmp_path):
     assert out.stdout == b""
     assert b"Traceback" not in out.stderr
     assert "cwcli run" in out.stderr.decode()
+
+
+# ------------------------------------------------------- unwritable workspace
+
+
+def test_bridge_refuses_clearly_when_workspace_is_not_writable(tmp_path, monkeypatch):
+    """A workspace the caller cannot write (an instance created by another user
+    before shared mode) fails up front with an actionable CwcliError, touching
+    nothing, instead of a bare PermissionError from the first bridge write.
+    """
+    from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
+
+    monkeypatch.setattr(
+        credbridge.os, "access", lambda path, mode: os.fspath(path) != os.fspath(tmp_path)
+    )
+    container = FakeContainer(tmp_path)
+
+    with pytest.raises(CwcliError) as excinfo:
+        with credbridge.credential_bridge(container, "/workspace/frappe-bench"):
+            pytest.fail("setup should have refused before yield")
+
+    err = excinfo.value
+    assert err.kind is ErrorKind.PRECONDITION
+    assert err.code == "workspace_not_writable"
+    assert str(tmp_path) in err.message
+    assert err.hint
+    assert container.exec_calls == []
+    assert not list(tmp_path.iterdir())
+
+
+def test_teardown_does_not_mask_the_original_error(tmp_path, monkeypatch):
+    """When teardown itself hits EACCES removing a bridge file, the ORIGINAL setup
+    failure must still be the one raised."""
+    monkeypatch.setattr(credbridge.subprocess, "run", lambda *a, **k: None)
+
+    class FailingContainer(FakeContainer):
+        def exec_run(self, cmd, **kwargs):
+            self.exec_calls.append(cmd)
+            if cmd[:4] == ["git", "config", "--global", "--add"]:
+                raise RuntimeError("docker exec blew up")
+            return 0, b""
+
+    real_unlink = credbridge.Path.unlink
+
+    def denied_unlink(self, *args, **kwargs):
+        if self.parent == tmp_path and self.name.startswith(".git-c") and self.exists():
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(credbridge.Path, "unlink", denied_unlink)
+    container = FailingContainer(tmp_path)
+
+    with pytest.raises(RuntimeError, match="docker exec blew up"):
+        with credbridge.credential_bridge(container, "/workspace/frappe-bench"):
+            pytest.fail("setup should have raised before yield")
