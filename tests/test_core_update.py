@@ -522,18 +522,26 @@ class TestFrappeFork:
         assert "cwcli status proj" in unknown.text
         assert not any(w.code == "frappe_reset.left_in_maintenance" for w in result.warnings)
 
-    def test_a_lost_reset_stream_reads_no_flags(self, monkeypatch, wired):
+    def test_a_lost_reset_stream_reports_the_state_unknown_and_reads_no_flags(
+        self, monkeypatch, wired
+    ):
         # A reset whose outcome is unknown may still be running, and a running
-        # `bench update` has the flags set legitimately: reporting them as "left
-        # behind" would be a confident wrong answer.
+        # `bench update` has the flags set legitimately: reading them would be a
+        # confident wrong answer either way, so the state is unknown, never clear.
         monkeypatch.setattr(exec_stream_mod, "_EXIT_CODE_POLL_TIMEOUT", 0.01)
         _lose_stream_on(wired, "bench update --reset")
 
         result = _update(apps=["frappe"])
 
         assert result.data.unknown_apps == ["frappe"]
-        assert result.data.bench_left_in_maintenance is False
+        assert result.data.bench_left_in_maintenance is None
         assert "cat sites/common_site_config.json" not in wired.calls
+        unknown = next(w for w in result.warnings if w.code == "frappe_reset.maintenance_unknown")
+        assert "If the bench is still in maintenance" in unknown.text
+        assert (
+            "cwcli run proj set-config --global --parse maintenance_mode 0 && "
+            "cwcli run proj set-config --global --parse pause_scheduler 0"
+        ) in unknown.text
 
     def test_the_remedy_names_the_failed_bench_on_a_multi_bench_instance(self, monkeypatch, wired):
         # Derived from the resolved path, so a caller that passed only bench_path
