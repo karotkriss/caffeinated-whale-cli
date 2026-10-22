@@ -707,6 +707,22 @@ class TestS2HostAllowlist:
         assert not serve_cmd.host_allowed(host, remote_bind=False)
         assert serve_cmd.host_allowed(host, remote_bind=True)
 
+    def test_a_loopback_bind_refusal_points_at_loopback(self, guarded):
+        status, body, _ = _request(guarded + "/api/v1/meta", headers=self._REBIND)
+        assert status == 403
+        assert "http://127.0.0.1:<port>/" in json.loads(body)["error"]["hint"]
+
+    def test_a_remote_bind_refusal_points_at_the_machine_ip_not_loopback(self, stopped):
+        port, shutdown = _serve_on("0.0.0.0", _TOKEN)  # noqa: S104 - the remote-bind shape
+        try:
+            status, body, _ = _request(f"http://127.0.0.1:{port}/api/v1/meta", headers=self._REBIND)
+        finally:
+            shutdown()
+        assert status == 403
+        hint = json.loads(body)["error"]["hint"]
+        assert "IP address" in hint
+        assert "127.0.0.1" not in hint and "localhost" not in hint
+
     def test_the_bind_address_decides_remote_bind(self, stopped):
         fleet = core_fleet.Fleet()
         httpd = serve_cmd.make_server(
