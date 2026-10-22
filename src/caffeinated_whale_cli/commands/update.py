@@ -533,6 +533,8 @@ def run_app_update(
     """
     from .utils import ensure_containers_running
 
+    path_selector = bench_path
+
     if not apps:
         stderr_console.print("[bold red]Error:[/bold red] At least one app must be specified.")
         raise typer.Exit(code=1)
@@ -563,6 +565,7 @@ def run_app_update(
             list(apps),
             bench=bench,
             bench_path=None if bench else bench_path,
+            path_selector=path_selector,
             sites=list(sites) if sites else None,
             clear_cache=clear_cache,
             clear_website_cache=clear_website_cache,

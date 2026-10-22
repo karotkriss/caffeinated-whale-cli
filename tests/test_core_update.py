@@ -640,8 +640,8 @@ def preflight_finds(monkeypatch):
     calls = []
 
     def arm(*findings):
-        def fake(container, bench_path, *, project, bench=None):
-            calls.append((bench_path, project, bench))
+        def fake(container, bench_path, *, project, bench=None, path=None):
+            calls.append((bench_path, project, bench, path))
             return update_preflight.PreflightOutcome(
                 findings=list(findings), apps=2, sites=1, elapsed=0.1, bench_path=bench_path
             )
@@ -715,7 +715,14 @@ class TestFrappePreflight:
         _update(apps=["frappe"], bench="1", bench_path=None)
 
         # The bridge was open while the preflight probed, against the resolved bench.
-        assert calls == [True, (BENCH, "proj", "1")]
+        assert calls == [True, (BENCH, "proj", "1", None)]
+
+    def test_it_carries_an_explicit_path_for_remedies(self, wired, preflight_finds):
+        calls = preflight_finds()
+
+        _update(apps=["frappe"], path_selector="/workspace/chosen bench")
+
+        assert calls == [(BENCH, "proj", None, "/workspace/chosen bench")]
 
     def test_no_preflight_skips_it_and_reports_nothing(self, wired, preflight_finds):
         calls = preflight_finds(_finding(update_preflight.BLOCKER, "git.detached_head"))

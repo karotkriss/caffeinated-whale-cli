@@ -429,6 +429,34 @@ def test_frappe_without_any_remote_is_the_no_upstream_blocker(bench):
     )
 
 
+def test_frappe_without_any_remote_still_reports_every_local_problem(bench):
+    frappe = bench.path / "apps" / "frappe"
+    bench.git("remote", "remove", "upstream", cwd=frappe)
+    bench.git("branch", "-m", "master", cwd=frappe)
+    (frappe / "frappe" / "committed.py").write_text("committed = True\n")
+    bench.git("add", "-A", cwd=frappe)
+    bench.git("commit", "-qm", "local commit", cwd=frappe)
+    (frappe / "frappe" / "hooks.py").write_text("dirty = True\n")
+
+    found = codes(bench.findings())
+
+    assert ("frappe.no_upstream", "frappe") in found
+    assert ("git.master_branch", "frappe") in found
+    assert ("git.uncommitted", "frappe") in found
+    assert ("git.unpushed", "frappe") in found
+
+
+def test_frappe_without_any_remote_still_reports_a_detached_head(bench):
+    frappe = bench.path / "apps" / "frappe"
+    bench.git("remote", "remove", "upstream", cwd=frappe)
+    bench.git("checkout", "-q", "--detach", cwd=frappe)
+
+    found = codes(bench.findings())
+
+    assert ("frappe.no_upstream", "frappe") in found
+    assert ("git.detached_head", "frappe") in found
+
+
 def test_following_the_no_upstream_remedy_with_its_fetch_leaves_nothing_to_report(bench):
     frappe = bench.path / "apps" / "frappe"
     bench.git("remote", "remove", "upstream", cwd=frappe)
@@ -645,6 +673,25 @@ def test_a_held_migrate_lock_blocks_and_names_unlock(wired):
 
     assert finding.severity == up.BLOCKER
     assert finding.remedy.endswith("cwcli unlock proj --site a.localhost --bench 1")
+
+
+def test_an_explicit_path_is_preserved_in_every_scoped_remedy(wired):
+    path = "/workspace/bench with spaces"
+    findings = up.classify(
+        [
+            {"code": "bench.maintenance_mode_on"},
+            {"code": "git.dubious_ownership", "app": "other", "path": "/apps/other"},
+            {"code": "git.detached_head", "app": "other"},
+            {"code": "git.remote_unreachable", "app": "other", "remote": "origin", "error": "x"},
+            {"code": "site.migrate_locked", "site": "a.localhost"},
+        ],
+        project="proj",
+        path=path,
+    )
+
+    scoped = [finding.remedy for finding in findings if finding.remedy]
+    assert len(scoped) == 5
+    assert all("--path '/workspace/bench with spaces'" in remedy for remedy in scoped)
 
 
 def test_an_unreadable_lock_is_unverified(wired):
