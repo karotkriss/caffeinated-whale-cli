@@ -510,6 +510,62 @@ class TestFrappeFork:
         assert recaches == [("proj", BENCH)]  # scoped to the reset bench
         assert report.ok is False
 
+    def test_a_failed_reset_whose_bench_config_is_unreadable_says_it_could_not_tell(self, wired):
+        # The base fake answers `cat` with nothing, which does not parse: unknown is
+        # None plus a warning naming the check, never "the bench is fine".
+        wired.fail_on = ["bench update --reset"]
+
+        result = _update(apps=["frappe"])
+
+        assert result.data.bench_left_in_maintenance is None
+        unknown = next(w for w in result.warnings if w.code == "frappe_reset.maintenance_unknown")
+        assert "cwcli status proj" in unknown.text
+        assert not any(w.code == "frappe_reset.left_in_maintenance" for w in result.warnings)
+
+    def test_a_lost_reset_stream_reads_no_flags(self, monkeypatch, wired):
+        # A reset whose outcome is unknown may still be running, and a running
+        # `bench update` has the flags set legitimately: reporting them as "left
+        # behind" would be a confident wrong answer.
+        monkeypatch.setattr(exec_stream_mod, "_EXIT_CODE_POLL_TIMEOUT", 0.01)
+        _lose_stream_on(wired, "bench update --reset")
+
+        result = _update(apps=["frappe"])
+
+        assert result.data.unknown_apps == ["frappe"]
+        assert result.data.bench_left_in_maintenance is False
+        assert "cat sites/common_site_config.json" not in wired.calls
+
+    def test_the_remedy_names_the_bench_the_caller_selected(self, monkeypatch, wired):
+        monkeypatch.setattr(
+            core_update.supervision,
+            "bench_wide_flags",
+            lambda *a, **k: ["maintenance_mode", "pause_scheduler"],
+        )
+        wired.fail_on = ["bench update --reset"]
+        warnings: list = []
+
+        result = core_update._frappe_reset(
+            wired,
+            project_name="proj",
+            bench_path=BENCH,
+            apps=["frappe"],
+            no_recache=True,
+            ignored=[],
+            emit=lambda _e: None,
+            warnings=warnings,
+            bench="staging",
+        )
+
+        assert result.data.bench_left_in_maintenance is True
+        left = next(w for w in result.warnings if w.code == "frappe_reset.left_in_maintenance")
+        assert left.detail == {
+            "bench_path": BENCH,
+            "flags": ["maintenance_mode", "pause_scheduler"],
+        }
+        assert "cwcli run proj --bench staging set-config --global --parse maintenance_mode 0" in (
+            left.text
+        )
+
     def test_ignored_options_are_announced_not_silently_dropped(self, wired):
         result = _update(apps=["frappe"], clear_cache=True, sites=["a.localhost"])
 

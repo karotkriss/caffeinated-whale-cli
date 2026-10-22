@@ -309,6 +309,10 @@ def status(
     # a never-started bench look identical to the marker and to supervisord.
     present = resolvers.present_bench_paths(frappe_container, [path for _, path, _ in targets])
 
+    # A remedy names the bench only when `cwcli run` could not otherwise tell which one
+    # to act on: several benches, or the caller already had to pick one.
+    name_bench = len(targets) > 1 or bench is not None or bench_path is not None
+
     benches: list[BenchStatus] = []
     for index, path, label in targets:
         ports = assigned.get(path)
@@ -334,6 +338,9 @@ def status(
                     web_site=resolvers.resolve_representative_site(project_name, path),
                     probe_web=probe_web,
                     warnings=warnings,
+                    bench_selector=(
+                        str(label or index) if name_bench and index is not None else None
+                    ),
                 ),
                 bench_present=_present_state(present, path),
             )
@@ -441,6 +448,7 @@ def _bench_status(
     web_site: str | None,
     probe_web: bool,
     warnings: list[Message],
+    bench_selector: str | None = None,
 ) -> BenchStatus:
     """One bench's live health, probed on ITS OWN port (or not probed at all).
 
@@ -461,13 +469,51 @@ def _bench_status(
         if probe_web and web_site
         else None
     )
-    if maintenance:
+    # The bench-wide flags `bench update` sets for its whole run and leaves set when
+    # it fails. Read separately from the site's merged view because they hold down
+    # EVERY site that does not override them, and because the way out is a different
+    # command: `set-maintenance-mode off` writes one site's own override and leaves
+    # the rest of the bench down.
+    bench_flags = (
+        (supervision.bench_wide_flags(frappe_container, bench_path) or []) if probe_web else []
+    )
+    bench_flag = f" --bench {bench_selector}" if bench_selector else ""
+    if "maintenance_mode" in bench_flags:
         warnings.append(
             Message(
                 "status.maintenance_mode",
-                f"Site '{web_site}' is in MAINTENANCE MODE (it answers 503 to users). "
-                f"Take it out with: cwcli run {project_name} --site {web_site} "
+                "MAINTENANCE MODE ON bench-wide: maintenance_mode is set in "
+                f"{bench_path}/sites/common_site_config.json, so every site on that bench "
+                "that does not override it answers 503 (bench update sets it while it runs "
+                "and leaves it set when it fails). Clear it with: "
+                + supervision.clear_bench_wide_flags_hint(
+                    project_name, ["maintenance_mode"], bench_selector
+                ),
+                detail={"bench_path": bench_path, "scope": "bench"},
+            )
+        )
+    elif maintenance:
+        warnings.append(
+            Message(
+                "status.maintenance_mode",
+                f"MAINTENANCE MODE ON for site '{web_site}' (it answers 503 to users). "
+                f"Take it out with: cwcli run {project_name}{bench_flag} --site {web_site} "
                 "set-maintenance-mode off",
+                detail={"bench_path": bench_path, "scope": "site"},
+            )
+        )
+    if "pause_scheduler" in bench_flags:
+        warnings.append(
+            Message(
+                "status.scheduler_paused",
+                "SCHEDULER PAUSED bench-wide: pause_scheduler is set in "
+                f"{bench_path}/sites/common_site_config.json, so no site on that bench that "
+                "does not override it runs scheduled jobs (bench update sets it while it runs "
+                "and leaves it set when it fails). Clear it with: "
+                + supervision.clear_bench_wide_flags_hint(
+                    project_name, ["pause_scheduler"], bench_selector
+                ),
+                detail={"bench_path": bench_path},
             )
         )
     marker = supervision.read_marker(frappe_container, bench_path)
@@ -557,6 +603,7 @@ def _bench_status_fused(
     web_site: str | None,
     probe_web: bool,
     warnings: list[Message],
+    bench_selector: str | None = None,
 ) -> BenchStatus:
     """:func:`_bench_status`'s one-exec twin for a repeating caller (``fused=True``).
 
@@ -593,6 +640,7 @@ def _bench_status_fused(
             web_site=web_site,
             probe_web=probe_web,
             warnings=warnings,
+            bench_selector=bench_selector,
         )
 
     return BenchStatus(
