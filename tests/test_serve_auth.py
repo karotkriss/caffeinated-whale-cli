@@ -797,6 +797,26 @@ class TestOneTimeLoginCode:
         assert f"http://[::1]:8765/#login={bound[0][5]}" in out
         assert "http://::1:" not in out
 
+    @pytest.mark.parametrize(
+        ("host", "link_host"),
+        [
+            ("0.0.0.0", "10.9.9.9"),
+            ("", "10.9.9.9"),
+            ("192.168.1.10", "192.168.1.10"),
+            ("localhost", "localhost"),
+        ],
+    )
+    def test_the_login_link_names_the_bound_address(self, monkeypatch, capsys, host, link_host):
+        """Only a wildcard bind is reached via the outbound address; any other bind
+        is reached at the address it listens on."""
+        monkeypatch.setenv(serve_cmd.TOKEN_ENV, _TOKEN)
+        monkeypatch.setattr(core_fleet, "list_instances", lambda: Result(status=Status.OK, data=[]))
+        monkeypatch.setattr(serve_cmd, "_outbound_address", lambda: "10.9.9.9")
+        bound = _stub_server(monkeypatch)
+        serve_cmd.serve(port=0, host=host, interval=2.5)
+        out = capsys.readouterr().out
+        assert f"http://{link_host}:8765/#login={bound[0][5]}" in out
+
     def test_without_a_configured_token_the_random_one_is_not_printed(self, monkeypatch, capsys):
         monkeypatch.delenv(serve_cmd.TOKEN_ENV, raising=False)
         monkeypatch.setattr(core_fleet, "list_instances", lambda: Result(status=Status.OK, data=[]))
