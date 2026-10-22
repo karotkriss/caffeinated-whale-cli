@@ -505,6 +505,21 @@ def test_an_excluded_or_non_git_frappe_or_erpnext_still_gets_the_branch_rules(be
     assert {f.severity for f in findings if f.app == "parked"} == {up.NOTICE}
 
 
+def test_a_frappe_or_erpnext_that_is_not_a_git_checkout_is_a_blocker(bench):
+    frappe = bench.path / "apps" / "frappe"
+    shutil.rmtree(frappe / ".git")
+    erpnext = bench.app("erpnext")
+    shutil.rmtree(erpnext / ".git")
+
+    findings = bench.findings()
+
+    for app in ("frappe", "erpnext"):
+        assert by_code([f for f in findings if f.app == app], "git.not_a_checkout").severity == (
+            up.BLOCKER
+        )
+        assert ("app.not_git", app) not in codes(findings)
+
+
 def test_leftover_bench_wide_flags_are_notices(bench):
     bench.write_conf(maintenance_mode=1, pause_scheduler=1)
 
