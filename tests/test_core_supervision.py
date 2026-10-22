@@ -1550,9 +1550,9 @@ class TestBenchWideFlags:
 
 
 class TestClearBenchWideFlagsHint:
-    def test_uses_parse_so_zero_is_not_the_truthy_string_and_the_long_flag_forms(self):
+    def test_uses_parse_so_zero_is_stored_as_an_int_and_the_long_flag_forms(self):
         hint = supervision.clear_bench_wide_flags_hint("proj", ["maintenance_mode"])
-        # Without --parse frappe stores the string "0", which is truthy; `-p` is
+        # --parse stores an int 0 rather than a string; `-p` is
         # `cwcli run`'s own --path, so only the long forms reach bench.
         assert hint == "cwcli run proj set-config --global --parse maintenance_mode 0"
 
