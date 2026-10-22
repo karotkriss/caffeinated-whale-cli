@@ -1108,13 +1108,12 @@ class TestServeUnreachable:
             sub = {c.name for c in group.typer_instance.registered_commands}
             assert "serve" not in sub
 
-    def test_desktop_shell_launches_the_daemon_via_the_internal_module_entry(self):
-        """The desktop app (the sanctioned Console consumer) starts the daemon by
-        running the serve MODULE as a script -
+    def test_the_daemon_launches_via_the_internal_module_entry(self):
+        """A developer starts the daemon by running the serve MODULE as a script -
         ``<python> -m caffeinated_whale_cli.commands.serve`` - never ``cwcli serve``,
         which does not exist. This keeps the withheld surface withheld: the module
         entry adds no ``[project.scripts]`` binary and no Typer command, so nothing a
-        ``cwcli --help`` or ``cwcli axi`` listing can discover changes, yet the shell
+        ``cwcli --help`` or ``cwcli axi`` listing can discover changes, yet the daemon
         has a real launch path. Run with ``--help`` so it parses argv and exits 0
         without binding a socket or touching Docker."""
         result = subprocess.run(
@@ -1138,7 +1137,7 @@ class TestPythonModuleEntryPoint:
     SmartScreen blocks the unsigned ``cwcli.exe``/``caffeinated-whale-cli.exe``
     launcher shim: it runs the SAME ``caffeinated_whale_cli.main:cli`` entry
     point through the signed Python interpreter instead. Mirrors
-    ``test_desktop_shell_launches_the_daemon_via_the_internal_module_entry``
+    ``test_the_daemon_launches_via_the_internal_module_entry``
     above - ``--help`` so it parses argv and exits 0 without touching Docker."""
 
     def test_module_entry_runs_the_same_cli(self):

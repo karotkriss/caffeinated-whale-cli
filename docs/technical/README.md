@@ -19,9 +19,6 @@ Caffeinated Whale CLI manages Frappe/ERPNext Docker instances during local devel
 
 ```
 caffeinated-whale-cli/
-├── desktop/                    # Tauri 2 shell for the existing Console GUI
-│   ├── dist/                   # Bundled local splash and error surface
-│   └── src-tauri/              # Rust shell; see desktop/README.md
 ├── src/caffeinated_whale_cli/
 │   ├── main.py                 # CLI entry point
 │   ├── update_notice.py        # Passive stderr-only "update available" notice, over core.version
@@ -85,7 +82,6 @@ caffeinated-whale-cli/
 ### Technology Stack
 
 - **Python 3.10+** - Runtime
-- **Rust and Tauri 2** - Cross-platform desktop shell
 - **Typer** - CLI framework
 - **Rich** - Terminal formatting
 - **Questionary** - Interactive prompts

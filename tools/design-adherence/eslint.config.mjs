@@ -17,13 +17,13 @@
 // script runs eslint with `--max-warnings 0` to make any adherence warning block
 // (see package.json `lint`). We gate on his rules without editing his severities.
 //
-// Scope: JS/JSX under desktop/. DS-T3 rebuilt the Console onto the design system
-// with no build step (the components map onto same-DOM/token markup by hand), so
-// it stays the single `commands/console.html`; this pass stays ready for a future
-// Console JSX build. The Console's
+// Scope: JS/JSX under tools/design-adherence/. DS-T3 rebuilt the Console onto
+// the design system with no build step (the components map onto same-DOM/token
+// markup by hand), so it stays the single `commands/console.html`; this pass
+// stays ready for a future Console JSX build. The Console's
 // inline CSS in `commands/console.html` is a `<style>` block, i.e. raw CSS text,
 // NOT JS `Literal`/JSX nodes, so ESLint's AST selectors cannot reach it; that gap
-// is covered by `tools/check-console-css.mjs`. Tooling and built/vendor trees are
+// is covered by `check-console-css.mjs`. Tooling and built/vendor trees are
 // ignored so the pass only sees design-consuming app code.
 
 import { readFileSync } from "node:fs";
@@ -31,7 +31,7 @@ import { fileURLToPath } from "node:url";
 import react from "eslint-plugin-react";
 
 const policy = JSON.parse(
-  readFileSync(new URL("../design/_adherence.oxlintrc.json", import.meta.url), "utf8"),
+  readFileSync(new URL("../../design/_adherence.oxlintrc.json", import.meta.url), "utf8"),
 );
 
 const overrides = (policy.overrides ?? []).map((o) => ({
@@ -43,10 +43,8 @@ export default [
   {
     ignores: [
       "**/node_modules/**",
-      "src-tauri/**",
-      "dist/**",
-      "tools/**",
-      "eslint.config.mjs",
+      "fixtures/**",
+      "*.mjs",
     ],
   },
   {
@@ -64,5 +62,5 @@ export default [
 
 // Keep the referenced path importable for the test harness.
 export const POLICY_PATH = fileURLToPath(
-  new URL("../design/_adherence.oxlintrc.json", import.meta.url),
+  new URL("../../design/_adherence.oxlintrc.json", import.meta.url),
 );
