@@ -70,9 +70,11 @@ WSL-IP route survives ``localhostForwarding`` being turned off, and it is what a
 genuinely remote browser needs.
 
 **Host allowlist (the DNS-rebinding guard).** Every request, the static page
-included, must carry a ``Host`` that names this machine: ``localhost`` or a
-loopback IP literal, plus any IP literal on a non-loopback bind (which already
-needs a token). Anything else is ``403 host.forbidden`` before any other guard
+included, must carry a ``Host`` that names this machine. The only NAME admitted
+is ``localhost``; the admitted IP LITERALS are any loopback address (all of
+``127.0.0.0/8`` and ``[::1]``), plus any IP on a non-loopback bind (which already
+needs a token). Literals are admitted that widely on purpose: rebinding needs an
+attacker-controlled hostname, and an IP literal cannot be rebound. Anything else is ``403 host.forbidden`` before any other guard
 runs. A rebinding page reaches the loopback listener under the ATTACKER's
 hostname, so its ``Origin`` and ``Host`` match and the browser even labels it
 ``Sec-Fetch-Site: same-origin``: a same-origin check alone passed it straight to
@@ -263,6 +265,7 @@ def host_allowed(host_header: str | None, *, remote_bind: bool) -> bool:
             return False
     else:
         name = host.partition(":")[0]
+    # Names: only localhost. Literals: any loopback, plus any IP on a remote bind.
     if name == "localhost":
         return True
     try:
@@ -427,7 +430,11 @@ class _Handler(BaseHTTPRequestHandler):
                     "code": "host.forbidden",
                     "message": "This cwcli serve daemon only answers requests addressed "
                     "to localhost or its IP address.",
-                    "hint": "Open it at http://127.0.0.1:<port>/ or http://localhost:<port>/.",
+                    "hint": (
+                        "Open it at http://<this machine's IP address>:<port>/."
+                        if self.remote_bind
+                        else "Open it at http://127.0.0.1:<port>/ or http://localhost:<port>/."
+                    ),
                 },
             },
             status=403,
