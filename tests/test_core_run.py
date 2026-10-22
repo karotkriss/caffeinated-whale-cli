@@ -685,13 +685,18 @@ def test_run_double_dash_shields_a_bench_dash_i(parsed):
     assert calls["args"] == ["some-cmd", "-i"]
 
 
-@pytest.mark.parametrize("bench", [None, "staging"])
-def test_the_bench_wide_flag_remedy_reaches_bench_exactly_as_printed(parsed, bench):
+@pytest.mark.parametrize(
+    ("bench_flag", "bench", "path"),
+    [("", None, None), (" --bench staging", "staging", None), (" --path '/w/a b'", None, "/w/a b")],
+)
+def test_the_bench_wide_flag_remedy_reaches_bench_exactly_as_printed(
+    parsed, bench_flag, bench, path
+):
     """`status`/`apps update` print this remedy for a bench a failed `bench update`
     left down. It must survive `cwcli run`'s parser intact: `--global`/`--parse`
     pass through to frappe's set-config, and `-p` would have been cwcli's `--path`."""
     hint = supervision.clear_bench_wide_flags_hint(
-        "proj", ["maintenance_mode", "pause_scheduler"], bench
+        "proj", ["maintenance_mode", "pause_scheduler"], bench_flag
     )
 
     for command, flag in zip(
@@ -703,6 +708,7 @@ def test_the_bench_wide_flag_remedy_reaches_bench_exactly_as_printed(parsed, ben
 
         assert calls["args"] == ["set-config", "--global", "--parse", flag, "0"]
         assert calls["bench"] == bench
+        assert calls["path"] == path
 
 
 # ------------------------------------------------------------------ credential bridge

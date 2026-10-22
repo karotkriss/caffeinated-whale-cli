@@ -1534,20 +1534,19 @@ class TestMaintenanceModeMergesTheBenchWideFlag:
 class TestBenchWideFlags:
     def test_reports_each_flag_bench_update_left_set(self):
         c = _BenchConfigsFake(site=None, common={"maintenance_mode": 1, "pause_scheduler": 1})
-        assert supervision.bench_wide_flags(c, BENCH) == ["maintenance_mode", "pause_scheduler"]
+        assert supervision.bench_wide_flags(supervision.common_site_config(c, BENCH)) == [
+            "maintenance_mode",
+            "pause_scheduler",
+        ]
 
     def test_a_clear_bench_is_an_empty_list(self):
         c = _BenchConfigsFake(site=None, common={"maintenance_mode": 0, "webserver_port": 8000})
-        assert supervision.bench_wide_flags(c, BENCH) == []
+        assert supervision.bench_wide_flags(supervision.common_site_config(c, BENCH)) == []
 
     def test_an_unreadable_config_is_none_not_clear(self):
-        assert (
-            supervision.bench_wide_flags(_BenchConfigsFake(site=None, common=None), BENCH) is None
-        )
-        assert (
-            supervision.bench_wide_flags(_BenchConfigsFake(site=None, common="{oops"), BENCH)
-            is None
-        )
+        for common in (None, "{oops"):
+            c = _BenchConfigsFake(site=None, common=common)
+            assert supervision.bench_wide_flags(supervision.common_site_config(c, BENCH)) is None
 
 
 class TestClearBenchWideFlagsHint:
@@ -1559,7 +1558,7 @@ class TestClearBenchWideFlagsHint:
 
     def test_one_command_per_flag_and_the_bench_selector_when_given(self):
         hint = supervision.clear_bench_wide_flags_hint(
-            "proj", ["maintenance_mode", "pause_scheduler"], bench="main"
+            "proj", ["maintenance_mode", "pause_scheduler"], " --bench main"
         )
         assert hint == (
             "cwcli run proj --bench main set-config --global --parse maintenance_mode 0 && "

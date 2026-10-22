@@ -575,6 +575,65 @@ class TestFrappeFork:
             left.text
         )
 
+    def test_an_uncached_path_gets_a_path_remedy_never_the_sole_cached_bench(
+        self, monkeypatch, wired
+    ):
+        # `cwcli run proj` with no selector would resolve the ONE cached bench and
+        # clear the flags on a bench that is not the one left down.
+        monkeypatch.setattr(
+            core_update.supervision, "bench_wide_flags", lambda *a, **k: ["maintenance_mode"]
+        )
+        monkeypatch.setattr(
+            core_update.resolvers,
+            "cached_benches",
+            lambda _p: [{"path": "/workspace/frappe-bench", "index": 0, "label": None}],
+        )
+        wired.fail_on = ["bench update --reset"]
+
+        result = core_update._frappe_reset(
+            wired,
+            project_name="proj",
+            bench_path="/workspace/other-bench",
+            apps=["frappe"],
+            no_recache=True,
+            ignored=[],
+            emit=lambda _e: None,
+            warnings=[],
+        )
+
+        left = next(w for w in result.warnings if w.code == "frappe_reset.left_in_maintenance")
+        assert (
+            "cwcli run proj --path /workspace/other-bench set-config --global --parse "
+            "maintenance_mode 0"
+        ) in left.text
+
+    def test_an_unreadable_config_on_an_uncached_path_points_at_no_other_bench(
+        self, monkeypatch, wired
+    ):
+        # `cwcli status` has no --path, so no status command can name this bench.
+        monkeypatch.setattr(core_update.supervision, "bench_wide_flags", lambda *a, **k: None)
+        monkeypatch.setattr(
+            core_update.resolvers,
+            "cached_benches",
+            lambda _p: [{"path": "/workspace/frappe-bench", "index": 0, "label": None}],
+        )
+        wired.fail_on = ["bench update --reset"]
+
+        result = core_update._frappe_reset(
+            wired,
+            project_name="proj",
+            bench_path="/workspace/other-bench",
+            apps=["frappe"],
+            no_recache=True,
+            ignored=[],
+            emit=lambda _e: None,
+            warnings=[],
+        )
+
+        unknown = next(w for w in result.warnings if w.code == "frappe_reset.maintenance_unknown")
+        assert "/workspace/other-bench/sites/common_site_config.json" in unknown.text
+        assert "cwcli status" not in unknown.text
+
     def test_ignored_options_are_announced_not_silently_dropped(self, wired):
         result = _update(apps=["frappe"], clear_cache=True, sites=["a.localhost"])
 

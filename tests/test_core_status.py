@@ -951,6 +951,34 @@ class TestBenchWideFlags:
         assert {w.detail["bench_path"] for w in flagged} == {"/w/b1"}
         assert all("cwcli run proj --bench staging set-config" in w.text for w in flagged)
 
+    def test_an_uncached_bench_path_gets_a_path_remedy(self, wire):
+        c = _BenchConfigContainer(
+            marker=_MARKER,
+            configs={"/w/other": _FAILED_UPDATE_FLAGS},
+            site_configs={("/w/other", "dev.localhost"): {}},
+        )
+        wire(c, benches=[{"path": BENCH}])
+
+        result = core_status.status("proj", bench_path="/w/other")
+
+        maintenance = next(w for w in result.warnings if w.code == "status.maintenance_mode")
+        assert (
+            "cwcli run proj --path /w/other set-config --global --parse maintenance_mode 0"
+            in maintenance.text
+        )
+
+    def test_the_common_config_is_read_once_per_bench(self, wire):
+        c = _BenchConfigContainer(
+            marker=_MARKER,
+            configs={BENCH: _FAILED_UPDATE_FLAGS},
+            site_configs={(BENCH, "dev.localhost"): {}},
+        )
+        wire(c, benches=[{"path": BENCH}])
+
+        core_status.status("proj")
+
+        assert c.calls.count("cat sites/common_site_config.json") == 1
+
 
 def wire_bench_left_down_by_bench_update(monkeypatch):
     """Wire the REAL ``core.status`` to one bench a failed ``bench update`` left down.
