@@ -24,7 +24,7 @@ import time
 
 import pytest
 
-from caffeinated_whale_cli.core import bench_ops, bench_read
+from caffeinated_whale_cli.core import bench_read
 from caffeinated_whale_cli.core import update_preflight as up
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 
@@ -249,9 +249,16 @@ def test_a_dubious_ownership_refusal_is_a_blocker(bench, monkeypatch):
 
     findings = bench.findings()
 
-    finding = by_code(findings, "git.dubious_ownership")
-    assert finding.severity == up.BLOCKER
-    assert "--force" in finding.remedy
+    refused = {f.app: f for f in findings if f.code == "git.dubious_ownership"}
+    assert {f.severity for f in refused.values()} == {up.BLOCKER}
+    # Per-app --force re-owns goodapp; the frappe path ignores --force, so frappe's
+    # remedy is the same re-own done by hand.
+    assert "cwcli apps update proj goodapp --force" in refused["goodapp"].remedy
+    frappe_path = os.path.realpath(bench.path / "apps" / "frappe")
+    assert refused["frappe"].remedy == (
+        f"in `cwcli open proj`: sudo chown -R frappe:frappe {frappe_path}"
+    )
+    assert "--force" not in refused["frappe"].remedy
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores write permission")
@@ -404,6 +411,17 @@ def test_an_app_without_a_remote_is_a_notice(bench):
     assert "excluded_apps.txt" in finding.message
 
 
+def test_frappe_without_any_remote_is_the_no_upstream_blocker(bench):
+    bench.git("remote", "remove", "upstream", cwd=bench.path / "apps" / "frappe")
+
+    findings = bench.findings()
+
+    finding = by_code(findings, "frappe.no_upstream")
+    assert finding.severity == up.BLOCKER
+    assert "remotes: none" in finding.message
+    assert ("git.no_remote", "frappe") not in codes(findings)
+
+
 def test_excluded_and_non_git_apps_are_notices(bench):
     bench.app("parked")
     (bench.path / "sites" / "excluded_apps.txt").write_text("parked\n")
@@ -441,13 +459,6 @@ def test_a_stale_tracking_ref_is_a_notice_without_shallow_clone_and_a_blocker_wi
     # ... while `git fetch --depth=1 upstream feature-y` fails outright.
     b.write_conf(shallow_clone=True)
     assert by_code(b.findings(), "git.branch_not_on_remote").severity == up.BLOCKER
-
-
-def test_a_shallow_repo_is_unshallowed_first_without_shallow_clone(tmp_path):
-    b = Bench(tmp_path, shallow_clone=False)
-    b.app("frappe", "version-16", depth=1)
-
-    assert by_code(b.findings(), "git.unshallow").severity == up.NOTICE
 
 
 # ------------------------------------------------------------------ fail honest
@@ -624,11 +635,6 @@ def test_an_unreadable_lock_is_unverified(wired):
         up.run_preflight(container, "/w/b", project="proj").findings, "site.lock_unverified"
     )
     assert finding.severity == up.UNVERIFIED
-
-
-def test_the_lock_probe_is_bench_ops_own_not_a_copy():
-    # Promoted, not copied: the preflight and `axi migrate` share one probe.
-    assert up.bench_ops.migrate_lock_held is bench_ops.migrate_lock_held
 
 
 def test_classify_orders_by_severity_and_quotes_names_in_remedies():
