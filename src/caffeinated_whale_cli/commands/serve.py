@@ -163,12 +163,8 @@ CONSOLE_PAGE = (
 
 # Content-Security-Policy served WITH the Console page.
 #
-# The desktop shell (the Tauri app) loads this page from the daemon's own
-# loopback origin - a REMOTE origin from the app's point of view - so Tauri's
-# own ``app.security.csp`` cannot govern it: Tauri injects CSP only into assets
-# it serves itself, never into a remote server's response (cwcli-tauri Phase 0
-# report, section 8.2). The policy that protects the page in the remote-origin
-# shape is therefore the one the DAEMON sends here, not one in tauri.conf.json.
+# The daemon serves this page itself, so the policy that protects it is the
+# one the DAEMON sends here with the response.
 #
 # ``connect-src 'self'`` is the load-bearing clause: it confines every ``fetch``
 # and ``EventSource`` to this origin, so a page rendering instance names, ports
@@ -176,9 +172,8 @@ CONSOLE_PAGE = (
 # ``default-src 'none'`` denies everything not named below; framing, base-URI
 # hijack and form posts are all shut. ``'unsafe-inline'`` is required because
 # ``console.html`` is a single self-contained file with one inline ``<script>``
-# and one inline ``<style>`` and zero external dependencies (that zero-dep shape
-# is exactly what makes the desktop port free); it has no HTML sink that renders
-# user-controlled markup, so the inline-script surface is small.
+# and one inline ``<style>`` and zero external dependencies; it has no HTML sink
+# that renders user-controlled markup, so the inline-script surface is small.
 # ponytail: 'unsafe-inline' is the known ceiling; the upgrade path is a per-load
 # nonce on the two inline blocks if the page ever grows a dynamic-HTML sink.
 _CONSOLE_CSP = (
@@ -340,7 +335,7 @@ class _Handler(BaseHTTPRequestHandler):
         """Whether this request carries the configured credential.
 
         Two accepted forms, one secret. ``Authorization: Bearer`` is what a
-        programmatic client (curl, the future Tauri shell) sends. The session
+        programmatic client (curl, a script) sends. The session
         cookie is what a BROWSER falls back to, and it exists for one concrete
         reason: ``EventSource`` cannot set request headers, so a header-only
         scheme would leave ``/api/events`` unreachable from the Console page.
@@ -1302,20 +1297,19 @@ def serve(
 
 
 if __name__ == "__main__":
-    # The INTERNAL entry point for the desktop shell.
+    # The INTERNAL developer entry point.
     #
     # ``serve`` is deliberately NOT registered on ``cwcli`` or ``cwcli axi``
     # (it is absent from ``main.py``) because the Console was not ready to ship
-    # as a released surface. The desktop app is its sanctioned consumer, and it
-    # launches the daemon by running THIS MODULE as a script:
+    # as a released surface. A developer launches the daemon by running THIS
+    # MODULE as a script:
     #
     #     <python> -m caffeinated_whale_cli.commands.serve --host 127.0.0.1 --port <p>
     #
     # where ``<python>`` is the interpreter that runs the user's installed
-    # ``cwcli`` (the shell reads it from the console script's shebang). Running
-    # the module is an internal path: it adds no ``[project.scripts]`` entry, no
-    # Typer command, and nothing that a ``cwcli --help`` or ``cwcli axi`` listing
-    # can discover, so the public surfaces stay exactly as withheld. ``typer.run``
-    # gives this one function real ``--host/--port/--interval`` parsing without a
-    # registered app.
+    # ``cwcli``. Running the module is an internal path: it adds no
+    # ``[project.scripts]`` entry, no Typer command, and nothing that a
+    # ``cwcli --help`` or ``cwcli axi`` listing can discover, so the public
+    # surfaces stay exactly as withheld. ``typer.run`` gives this one function
+    # real ``--host/--port/--interval`` parsing without a registered app.
     typer.run(serve)

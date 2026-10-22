@@ -1,8 +1,6 @@
 # Caffeinated Whale CLI
 
 A command-line interface (CLI) for managing Frappe/ERPNext Docker instances during local development.
-The repository also contains the Phase 1 Tauri desktop shell, which runs the existing Console GUI over the same Python core.
-See [`desktop/README.md`](./desktop/README.md) for its current source-build status, supported platforms, and build instructions.
 
 ## Features
 
@@ -26,7 +24,6 @@ See [`desktop/README.md`](./desktop/README.md) for its current source-build stat
 - **Auto-Inspection** - Background process to keep project cache fresh automatically
 - **System Integration** - Auto-start on system boot with platform-specific configurations
 - **Contextual Tips** - Helpful tips displayed during long-running operations to help you discover features
-- **Desktop Console** - A source-build Tauri 2 shell for the existing Console GUI on Linux and Windows; installer bundles are deferred to a later phase
 
 ## Installation
 
