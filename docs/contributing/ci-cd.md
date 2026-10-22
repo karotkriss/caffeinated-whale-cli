@@ -11,13 +11,12 @@ We use six GitHub Actions workflows:
 | **Lint** | All branches, all PRs | Code quality checks (Black, Ruff) |
 | **Test** | All branches, all PRs | Run the fast `unit` pytest tier (required gate) + mypy (zero-error gate), a narrow Windows-native leg (`tests/test_auto_inspect.py` + `tests/test_core_credbridge.py`) on `windows-latest`, and a runtime-deps-only clean-install smoke test |
 | **E2E** | PRs into `develop`/`master`, `e2e`-labeled PRs, manual dispatch | Run the real-Docker `e2e` tier on a v14/v15/v16 Frappe matrix, plus a runtime-deps-only full-lifecycle leg (`e2e_pkg`) that drives a `uv tool install .` binary via `CWCLI_BIN` |
-| **Desktop shell** | All branches, all PRs | Compile, format, lint, and test the Tauri shell on Linux/WebKitGTK and Windows/WebView2 when desktop files change; plus an always-run design-system adherence lint (ESLint over the maintainer's policy) |
+| **Design system** | All branches, all PRs | Always-run design-system adherence lint (ESLint over the maintainer's policy, plus a raw-hex check of the Console's inline CSS) |
 | **Build** | Push to `master`, manual dispatch | Build package, verify version consistency |
 | **Release** | Tags `v*.*.*` | Publish to PyPI, create GitHub release |
 
 Lint, Build, and Release, along with Test's `Pytest`/`Mypy` jobs, run inside the `ghcr.io/astral-sh/uv:python3.12-bookworm` Docker image.
 E2E runs directly on the `ubuntu-latest` host runner (no `container:`) so `docker`/`docker compose` can reach the runner's own daemon; it installs `uv` via `astral-sh/setup-uv` instead.
-The Desktop shell matrix runs directly on `ubuntu-latest` and `windows-latest` so each platform compiles against its native WebView stack.
 Test's other two jobs also run on host runners rather than the container: `Pytest (Windows, native)` runs on `windows-latest` (no Linux container available there), and `Clean install smoke` runs on `ubuntu-latest` so `uv tool install` resolves a real runtime-only environment instead of the container's `--all-extras` sync.
 Both install `uv` via `astral-sh/setup-uv`.
 
@@ -111,33 +110,19 @@ CWCLI_BIN=/path/to/runtime-only/cwcli uv run pytest tests/e2e -m e2e_pkg -o addo
 
 ---
 
-### Desktop shell (`.github/workflows/desktop.yml`)
+### Design system (`.github/workflows/design.yml`)
 
 Runs on every push and PR.
-A fail-open scope job compares the merge base with the head and runs the full matrix whenever `desktop/` or the workflow itself changes, or whenever the diff cannot be established safely.
-Other changes short-circuit both matrix contexts to green without installing the desktop toolchain.
+Its one `Design-system adherence` job runs on **every** change, because the Console it checks lives at `src/caffeinated_whale_cli/commands/console.html`, outside `tools/design-adherence/`.
+It is Node-only tooling that enforces the maintainer's `design/_adherence.oxlintrc.json` policy through ESLint (`npm test`, `npm run lint`, `npm run check:css` under `tools/design-adherence/`).
+The runner, its honest reachability limits, and the supplementary Console check are owned by [`tools/design-adherence/README.md`](../../tools/design-adherence/README.md).
 
-The matrix covers Linux/WebKitGTK and Windows/WebView2.
-Each active leg runs `cargo fmt --all --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo build --locked`, and `cargo test --locked`.
-This is a compile, lint, and unit-test proof only.
-It does not build an installer bundle; `desktop/src-tauri/tauri.conf.json` keeps `bundle.active` set to `false`.
-
-A separate `Design-system adherence` job runs on **every** change (not gated by the scope job, because the Console it also checks lives outside `desktop/`).
-It is Node-only tooling that enforces the maintainer's `design/_adherence.oxlintrc.json` policy through ESLint (`npm test`, `npm run lint`, `npm run check:css` under `desktop/`); it never touches the Rust build.
-The runner, its honest reachability limits, and the supplementary Console check are owned by [`desktop/README.md`](../../desktop/README.md#adherence-lint).
-
-Run the formatting and lint checks locally:
+Run the checks locally:
 
 ```bash
-cd desktop/src-tauri
-cargo fmt --all --check
-cargo clippy --all-targets --locked -- -D warnings
-
-cd ..            # desktop/
+cd tools/design-adherence
 npm ci && npm run lint && npm test && npm run check:css
 ```
-
-The desktop architecture, prerequisites, run recipe, platform boundary, and deferred bundle work are owned by [`desktop/README.md`](../../desktop/README.md).
 
 ---
 

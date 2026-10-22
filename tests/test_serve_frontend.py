@@ -197,11 +197,10 @@ class TestSnapshot:
         with urllib.request.urlopen(daemon.base + "/", timeout=_TIMEOUT) as resp:  # noqa: S310
             body = resp.read().decode()
         assert resp.status == 200
-        # The daemon sends the page's OWN content CSP, because in the desktop
-        # shell's remote-origin shape Tauri cannot inject one into a remote
-        # server's response (Phase 0 report section 8.2). connect-src 'self' is
-        # the load-bearing clause: it confines fetch/EventSource to this origin
-        # so instance data cannot be exfiltrated to a remote host.
+        # The daemon sends the page's OWN content CSP, because it serves the
+        # page itself. connect-src 'self' is the load-bearing clause: it confines
+        # fetch/EventSource to this origin so instance data cannot be exfiltrated
+        # to a remote host.
         csp = resp.headers["Content-Security-Policy"]
         assert csp == serve_cmd._CONSOLE_CSP
         assert "default-src 'none'" in csp

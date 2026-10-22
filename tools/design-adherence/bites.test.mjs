@@ -10,14 +10,14 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const here = (p) => fileURLToPath(new URL(p, import.meta.url));
-const eslintBin = here("../node_modules/.bin/eslint");
+const eslintBin = here("node_modules/.bin/eslint");
 
 function runEslint(fixture) {
   try {
     const stdout = execFileSync(
       eslintBin,
       ["--no-ignore", "--max-warnings", "0", "--format", "json", here(fixture)],
-      { cwd: here(".."), encoding: "utf8" },
+      { cwd: here("."), encoding: "utf8" },
     );
     return { code: 0, report: JSON.parse(stdout) };
   } catch (err) {
