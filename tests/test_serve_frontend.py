@@ -7,8 +7,11 @@ the shipped ones - the parts a mocked handler would never catch.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import http.client
 import json
+import re
 import socket
 import threading
 import time
@@ -37,6 +40,7 @@ from caffeinated_whale_cli.core.url import UrlProbe
 from caffeinated_whale_cli.core.where import WhereMatch, WhereResult
 
 _TIMEOUT = 5.0
+_TOKEN = "frontend-test-token"
 
 
 def _render_template_pattern(source, name):
@@ -74,7 +78,12 @@ def daemon(monkeypatch):
     fleet.set_publish(hub.publish)
     fleet.bootstrap()
 
-    httpd = serve_cmd.make_server("127.0.0.1", 0, fleet, hub)
+    httpd = serve_cmd.make_server("127.0.0.1", 0, fleet, hub, _TOKEN, "frontend-login-code")
+    # Authentication is always on, so every urllib request in this file carries
+    # the bearer token. The gate itself is exercised in test_serve_auth.py.
+    opener = urllib.request.build_opener()
+    opener.addheaders = [("Authorization", f"Bearer {_TOKEN}")]
+    urllib.request.install_opener(opener)
     # A tight poll interval only so each test's shutdown is prompt (the default
     # 0.5s is the shipped one and costs a full second per test here).
     thread = threading.Thread(
@@ -89,6 +98,7 @@ def daemon(monkeypatch):
             {"base": base, "fleet": fleet, "hub": hub, "rows": rows, "httpd": httpd},
         )
     finally:
+        urllib.request.install_opener(None)
         httpd.shutdown()
         httpd.server_close()
 
@@ -144,6 +154,7 @@ class _RawSseSocket:
         request = (
             f"GET {path} HTTP/1.1\r\n"
             f"Host: {host}:{port_s}\r\n"
+            f"Authorization: Bearer {_TOKEN}\r\n"
             "Accept: text/event-stream\r\n"
             "Connection: close\r\n"
             "\r\n"
@@ -197,8 +208,7 @@ class TestSnapshot:
         with urllib.request.urlopen(daemon.base + "/", timeout=_TIMEOUT) as resp:  # noqa: S310
             body = resp.read().decode()
         assert resp.status == 200
-        # The daemon sends the page's OWN content CSP, because it serves the
-        # page itself. connect-src 'self' is the load-bearing clause: it confines
+        # The daemon sends the page's OWN content CSP. connect-src 'self' confines
         # fetch/EventSource to this origin so instance data cannot be exfiltrated
         # to a remote host.
         csp = resp.headers["Content-Security-Policy"]
@@ -207,6 +217,7 @@ class TestSnapshot:
         assert "connect-src 'self'" in csp
         assert "frame-ancestors 'none'" in csp
         assert resp.headers["X-Frame-Options"] == "DENY"
+        assert resp.headers["X-Content-Type-Options"] == "nosniff"
         assert 'data-app="cw-console"' in body
         assert "EventSource" in body
         assert "start_instance" in body
@@ -223,6 +234,24 @@ class TestSnapshot:
         assert "throwaway test page" not in body
         assert "rm-site" not in body
         assert "Delete instance" not in body
+
+    def test_the_csp_is_strict_and_allows_exactly_the_pages_own_inline_blocks(self, daemon):
+        """No 'unsafe-inline': the one inline <script> and the one inline <style>
+        are each allowed by the sha256 of the bytes actually served, so any other
+        inline script, handler or style - an injection - is refused by the browser.
+        """
+        with urllib.request.urlopen(daemon.base + "/", timeout=_TIMEOUT) as resp:  # noqa: S310
+            body = resp.read().decode()
+            csp = resp.headers["Content-Security-Policy"]
+        assert "unsafe-inline" not in csp and "unsafe-eval" not in csp
+        directives = dict(d.strip().split(" ", 1) for d in csp.split(";"))
+        for tag, directive in (("script", "script-src"), ("style", "style-src")):
+            assert body.count(f"<{tag}") == 1, f"a second inline <{tag}> would be blocked"
+            block = body.split(f"<{tag}>", 1)[1].split(f"</{tag}>", 1)[0]
+            digest = base64.b64encode(hashlib.sha256(block.encode()).digest()).decode()
+            assert directives[directive] == f"'sha256-{digest}'"
+        # Inline handlers and style attributes would need 'unsafe-inline'.
+        assert not re.search(r"<[a-z]+\b[^<>]*\s(on[a-z]+|style)\s*=", body)
 
     def test_required_action_inputs_reject_whitespace_only_natively(self, daemon):
         """P2-1: a whitespace-only value used to pass ``required``, get dropped
@@ -1769,7 +1798,7 @@ class TestDoctorEndpoint:
         hub = serve_cmd._Hub(fleet.set_focus)
         fleet.set_publish(hub.publish)
         fleet.bootstrap()
-        httpd = serve_cmd.make_server("127.0.0.1", 0, fleet, hub, token)
+        httpd = serve_cmd.make_server("127.0.0.1", 0, fleet, hub, token, "doctor-login-code")
         thread = threading.Thread(
             target=httpd.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
         )

@@ -51,6 +51,9 @@ pytestmark = [
 ]
 
 _HTTP_TIMEOUT = 10
+# Authentication is always on; a configured token is how a non-browser client gets in.
+_TOKEN = "cwe2e-serve-token"
+_AUTH = {"Authorization": f"Bearer {_TOKEN}"}
 
 
 def _free_port() -> int:
@@ -65,7 +68,9 @@ class _Client:
     def __init__(self, url: str):
         self.frames: list[tuple[str, dict]] = []
         self.keepalives = 0
-        self._resp = urllib.request.urlopen(url, timeout=_HTTP_TIMEOUT)  # noqa: S310
+        self._resp = urllib.request.urlopen(  # noqa: S310
+            urllib.request.Request(url, headers=_AUTH), timeout=_HTTP_TIMEOUT
+        )
         self._thread = threading.Thread(target=self._read, daemon=True)
         self._thread.start()
 
@@ -104,12 +109,13 @@ def daemon(running_instance):
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-        env=os.environ.copy(),
+        env={**os.environ, "CWCLI_SERVE_TOKEN": _TOKEN},
     )
     base = f"http://127.0.0.1:{port}"
 
     def _up():
-        with urllib.request.urlopen(base + "/api/snapshot", timeout=2) as r:  # noqa: S310
+        req = urllib.request.Request(base + "/api/snapshot", headers=_AUTH)
+        with urllib.request.urlopen(req, timeout=2) as r:  # noqa: S310
             return json.loads(r.read())
 
     try:
@@ -124,7 +130,8 @@ def daemon(running_instance):
 
 
 def _get(url: str):
-    with urllib.request.urlopen(url, timeout=_HTTP_TIMEOUT) as resp:  # noqa: S310
+    req = urllib.request.Request(url, headers=_AUTH)
+    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:  # noqa: S310
         return json.loads(resp.read())
 
 
@@ -132,7 +139,7 @@ def _post(url: str, payload: dict):
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **_AUTH},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=180) as resp:  # noqa: S310
