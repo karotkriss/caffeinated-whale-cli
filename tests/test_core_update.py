@@ -535,11 +535,21 @@ class TestFrappeFork:
         assert result.data.bench_left_in_maintenance is False
         assert "cat sites/common_site_config.json" not in wired.calls
 
-    def test_the_remedy_names_the_bench_the_caller_selected(self, monkeypatch, wired):
+    def test_the_remedy_names_the_failed_bench_on_a_multi_bench_instance(self, monkeypatch, wired):
+        # Derived from the resolved path, so a caller that passed only bench_path
+        # (the human frontend) still gets a remedy that clears THIS bench.
         monkeypatch.setattr(
             core_update.supervision,
             "bench_wide_flags",
             lambda *a, **k: ["maintenance_mode", "pause_scheduler"],
+        )
+        monkeypatch.setattr(
+            core_update.resolvers,
+            "cached_benches",
+            lambda _p: [
+                {"path": "/workspace/other", "index": 0, "label": None},
+                {"path": BENCH, "index": 1, "label": "staging"},
+            ],
         )
         wired.fail_on = ["bench update --reset"]
         warnings: list = []
@@ -553,7 +563,6 @@ class TestFrappeFork:
             ignored=[],
             emit=lambda _e: None,
             warnings=warnings,
-            bench="staging",
         )
 
         assert result.data.bench_left_in_maintenance is True
