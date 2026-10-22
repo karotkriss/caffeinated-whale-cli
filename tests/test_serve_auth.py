@@ -11,12 +11,19 @@ visible consequence separated so a regression in any one of them is named.
 No Docker: ``core.list_instances`` and the action's core call are stubbed, but
 the socket, the bind address, the handler and the auth guard are the shipped
 ones - the parts a mocked handler would never catch.
+
+``TestS1NoCorsAnywhere`` and ``TestS2HostAllowlist`` are the permanent forms of
+two later reproductions against a live loopback daemon: every website could read
+the fleet through ``Access-Control-Allow-Origin: *``, and a DNS-rebinding request
+(``Host`` and ``Origin`` both the attacker's name) reached action dispatch.
 """
 
 from __future__ import annotations
 
 import http.client
 import json
+import re
+import secrets
 import socket
 import threading
 import urllib.error
@@ -25,14 +32,18 @@ import urllib.request
 import pytest
 import typer
 
+from caffeinated_whale_cli import __version__
 from caffeinated_whale_cli.commands import serve as serve_cmd
 from caffeinated_whale_cli.core import fleet as core_fleet
+from caffeinated_whale_cli.core import inspect as core_inspect
 from caffeinated_whale_cli.core.envelope import Result, Status
+from caffeinated_whale_cli.core.inspect import BenchInfo, InspectReport, SiteInfo
 from caffeinated_whale_cli.core.list import InstanceDTO
 from caffeinated_whale_cli.core.stop import StopOutcome
 
 _TIMEOUT = 5.0
 _TOKEN = "s3cr3t-token-value"
+_LOGIN = "one-time-login-code"
 _ACTION = json.dumps({"action": "stop_instance", "project": "p"}).encode()
 
 
@@ -66,13 +77,13 @@ def stopped(monkeypatch):
     return calls
 
 
-def _serve_on(host: str, token: str | None):
+def _serve_on(host: str, token: str):
     """A live shipped daemon on ``host`` and an ephemeral port. Returns (port, shutdown)."""
     fleet = core_fleet.Fleet()
     hub = serve_cmd._Hub(fleet.set_focus)
     fleet.set_publish(hub.publish)
     fleet.bootstrap()
-    httpd = serve_cmd.make_server(host, 0, fleet, hub, token)
+    httpd = serve_cmd.make_server(host, 0, fleet, hub, token, _LOGIN)
     threading.Thread(
         target=httpd.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
     ).start()
@@ -86,8 +97,10 @@ def _serve_on(host: str, token: str | None):
 
 @pytest.fixture
 def daemon(stopped):
-    """The shipped daemon on its shipped DEFAULT_HOST, authentication OFF."""
-    port, shutdown = _serve_on(serve_cmd.DEFAULT_HOST, None)
+    """The shipped daemon on its shipped DEFAULT_HOST with a per-launch token, as
+    ``serve`` runs it when no ``CWCLI_SERVE_TOKEN`` is set: the token is random and
+    unknown to the caller, so the login code is the only way in."""
+    port, shutdown = _serve_on(serve_cmd.DEFAULT_HOST, secrets.token_urlsafe(32))
     try:
         yield f"http://127.0.0.1:{port}"
     finally:
@@ -120,15 +133,20 @@ def _post_action(base, headers=None):
     return _request(base + "/api/action", data=_ACTION, headers=merged, method="POST")
 
 
-def _stub_server(monkeypatch) -> list:
+def _stub_server(monkeypatch, resolves_to: str | None = None) -> list:
     """Replace ``make_server`` with one that binds nothing and returns immediately.
 
     ``serve()`` runs to completion through its banner and teardown, so the parts
-    after the bind stay covered; the returned list records the call's argv.
+    after the bind stay covered; the returned list records the call's argv. Like
+    a real socket, it reports the address it was asked to bind, or
+    ``resolves_to`` for a hostname bind.
     """
     calls: list = []
 
     class _Stub:
+        def __init__(self, host):
+            self.server_address = (resolves_to or host or "0.0.0.0", 8765)  # noqa: S104
+
         def serve_forever(self):
             raise KeyboardInterrupt
 
@@ -140,7 +158,7 @@ def _stub_server(monkeypatch) -> list:
 
     def _make(*args, **kwargs):
         calls.append(args)
-        return _Stub()
+        return _Stub(args[0])
 
     monkeypatch.setattr(serve_cmd, "make_server", _make)
     return calls
@@ -247,23 +265,27 @@ class TestRemoteBindRefusesWithoutAuth:
         serve_cmd.serve(port=0, host="0.0.0.0", interval=2.5)
         assert bound and bound[0][4] == _TOKEN, "an authenticated remote bind must be allowed"
 
-    def test_loopback_needs_no_token(self, monkeypatch, stopped):
+    def test_loopback_needs_no_configured_token_but_still_gets_one(self, monkeypatch, stopped):
         monkeypatch.delenv(serve_cmd.TOKEN_ENV, raising=False)
         bound = _stub_server(monkeypatch)
         serve_cmd.serve(port=0, host=serve_cmd.DEFAULT_HOST, interval=2.5)
-        assert bound, "the ordinary loopback workflow must not require a token"
-        assert bound[0][4] is None
+        assert bound, "the ordinary loopback workflow must not require CWCLI_SERVE_TOKEN"
+        token, login_code = bound[0][4], bound[0][5]
+        assert isinstance(token, str) and len(token) >= 32, "auth is never off"
+        assert isinstance(login_code, str) and len(login_code) >= 32
+        assert token != login_code
 
 
-class TestAuthDisabledByDefault:
-    """The ordinary loopback browser workflow, unchanged."""
+class TestAuthIsAlwaysOn:
+    """Loopback used to mean no authentication at all; now every read and action needs it."""
 
-    def test_reads_and_actions_work_with_no_credentials(self, daemon, stopped):
-        assert _request(daemon + "/api/snapshot")[0] == 200
+    def test_the_loopback_default_refuses_credential_less_reads_and_actions(self, daemon, stopped):
+        for path in ("/api/snapshot", "/api/events", "/api/instance/p/detail", "/api/doctor"):
+            assert _request(daemon + path)[0] == 401, path
         status, body, _ = _post_action(daemon)
-        assert status == 200
-        assert json.loads(body)["ok"] is True
-        assert stopped == ["p"]
+        assert status == 401
+        assert json.loads(body)["error"]["code"] == "auth.required"
+        assert stopped == [], "an unauthenticated action must not reach the core"
 
 
 class TestAuthEnabled:
@@ -316,16 +338,6 @@ class TestAuthEnabled:
         assert body == b""
         assert headers.get("Access-Control-Allow-Origin") is None
         assert stopped == []
-
-    def test_the_bearer_comparison_is_timing_safe(self):
-        """Pinned at the comparison itself: ``==`` here leaks the token bytewise."""
-        import inspect
-
-        assert "hmac.compare_digest" in inspect.getsource(serve_cmd._secret_matches)
-        # Both credential forms route through the timing-safe helper; the only
-        # plain comparison left is the ``Bearer`` scheme name, which is public.
-        checked = inspect.getsource(serve_cmd._Handler._authenticated)
-        assert checked.count("_secret_matches") == 2
 
 
 class TestBrowserSession:
@@ -380,7 +392,8 @@ class TestBrowserSession:
         assert "Set-Cookie" not in headers
 
     def test_a_forged_session_cookie_is_refused(self, guarded, stopped):
-        forged = f"{serve_cmd.SESSION_COOKIE}=not-the-session-id"
+        port = guarded.rsplit(":", 1)[1]
+        forged = f"{serve_cmd.SESSION_COOKIE}_{port}=not-the-session-id"
         assert _post_action(guarded, {"Cookie": forged})[0] == 401
         assert stopped == []
 
@@ -509,3 +522,346 @@ class TestTheSecretNeverLeaks:
         printed = capsys.readouterr()
         assert "auth" in printed.out
         assert _TOKEN not in printed.out + printed.err
+
+
+def _detail_report():
+    """A detail read carrying exactly what S1 leaked: a bench path, a site, an app branch."""
+    return InspectReport(
+        project="p",
+        served_from="cache",
+        degraded=False,
+        benches=[
+            BenchInfo(
+                index=0,
+                path="/workspace/frappe-bench",
+                label=None,
+                current_site=None,
+                default_site=None,
+                available_apps=["frappe"],
+                sites=[
+                    SiteInfo(
+                        name="a.localhost",
+                        installed_apps=["frappe 16.28.0 fm/in-flight-branch"],
+                        installed_apps_verified=False,
+                        has_site_config=True,
+                    )
+                ],
+            )
+        ],
+    )
+
+
+def _headers_of(base, method, path, headers):
+    """Status and headers only, for any method; an SSE body is never read to the end."""
+    host, port = base.removeprefix("http://").split(":")
+    conn = http.client.HTTPConnection(host, int(port), timeout=_TIMEOUT)
+    try:
+        conn.request(method, path, headers={"Connection": "close", **headers})
+        resp = conn.getresponse()
+        return resp.status, dict(resp.getheaders())
+    finally:
+        conn.close()
+
+
+class TestS1NoCorsAnywhere:
+    """S1: snapshot, events and detail answered EVERY origin with ACAO ``*``.
+
+    So any website open in the browser while the daemon ran could read every
+    bench path, site name and app branch. A browser only hands a cross-origin
+    page the response when an ``Access-Control-Allow-Origin`` header permits it,
+    so the fix is that no response carries any ``Access-Control-*`` header.
+    """
+
+    _FOREIGN = {"Origin": "https://evil.example"}
+
+    def test_the_three_leaking_reads_no_longer_grant_a_foreign_origin(self, guarded, monkeypatch):
+        monkeypatch.setattr(
+            core_inspect, "inspect", lambda p, **kw: Result(status=Status.OK, data=_detail_report())
+        )
+        auth = {"Authorization": f"Bearer {_TOKEN}", **self._FOREIGN}
+        for path in ("/api/snapshot", "/api/events", "/api/instance/p/detail"):
+            status, headers = _headers_of(guarded, "GET", path, auth)
+            assert status == 200, path
+            leaked = [h for h in headers if h.lower().startswith("access-control-")]
+            assert leaked == [], f"{path} still grants cross-origin reads: {leaked}"
+
+    @pytest.mark.parametrize(
+        ("method", "path"),
+        [
+            ("GET", "/"),
+            ("GET", "/api/v1/meta"),
+            ("GET", "/api/snapshot"),
+            ("GET", "/api/instance/p/detail"),
+            ("GET", "/nope"),
+            ("OPTIONS", "/api/snapshot"),
+            ("OPTIONS", "/api/action"),
+            ("POST", "/api/session"),
+            ("POST", "/api/action"),
+        ],
+    )
+    def test_no_response_of_any_kind_carries_a_cors_header(self, daemon, method, path):
+        status, headers = _headers_of(
+            daemon, method, path, {**self._FOREIGN, "Access-Control-Request-Method": "GET"}
+        )
+        assert status < 500
+        assert not [h for h in headers if h.lower().startswith("access-control-")]
+
+
+class TestS2HostAllowlist:
+    """S2: the action guard compared ``Origin`` with ``Host``, which a rebinding page passes.
+
+    The page lives at ``rebind.evil.example``, whose DNS later answers
+    127.0.0.1, so both headers carry the attacker's name and the browser even
+    labels the request ``same-origin``. Only ``Host`` still tells them apart.
+    """
+
+    _REBIND = {
+        "Host": "rebind.evil.example:18765",
+        "Origin": "http://rebind.evil.example:18765",
+        "Sec-Fetch-Site": "same-origin",
+    }
+
+    def test_the_rebinding_shaped_action_is_refused_before_dispatch(self, guarded, stopped):
+        """Even carrying a VALID token: the Host guard runs before every other one."""
+        status, body, _ = _post_action(
+            guarded, {**self._REBIND, "Authorization": f"Bearer {_TOKEN}"}
+        )
+        assert status == 403
+        assert json.loads(body)["error"]["code"] == "host.forbidden"
+        assert stopped == [], "a rebinding request must not reach the core"
+
+    @pytest.mark.parametrize("path", ["/", "/api/v1/meta", "/api/snapshot", "/api/events"])
+    def test_every_read_including_the_static_page_is_refused_too(self, guarded, path):
+        status, _ = _headers_of(
+            guarded, "GET", path, {**self._REBIND, "Authorization": f"Bearer {_TOKEN}"}
+        )
+        assert status == 403, path
+
+    def test_the_session_exchange_is_refused_and_the_code_survives(self, daemon):
+        status, body, headers = _request(
+            daemon + "/api/session",
+            data=json.dumps({"code": _LOGIN}).encode(),
+            headers={"Content-Type": "application/json", **self._REBIND},
+            method="POST",
+        )
+        assert status == 403 and "Set-Cookie" not in headers
+        assert _redeem(daemon)[0] == 204, "a refused request must not burn the login code"
+
+    @pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "[::1]"])
+    def test_the_loopback_names_are_admitted(self, guarded, stopped, host):
+        port = guarded.rsplit(":", 1)[1]
+        status, _, _ = _post_action(
+            guarded, {"Host": f"{host}:{port}", "Authorization": f"Bearer {_TOKEN}"}
+        )
+        assert status == 200
+        assert stopped == ["p"]
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "localhost",
+            "localhost:8765",
+            "LOCALHOST:8765",
+            "127.0.0.1",
+            "127.0.0.1:8765",
+            "127.1.2.3:8765",
+            "[::1]",
+            "[::1]:8765",
+        ],
+    )
+    def test_host_allowed_admits_loopback(self, host):
+        assert serve_cmd.host_allowed(host, remote_bind=False)
+        assert serve_cmd.host_allowed(host, remote_bind=True)
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            None,
+            "",
+            "rebind.evil.example:8765",
+            "localhost.evil.example",
+            "127.0.0.1.evil.example",
+            "evil.localhost",
+            "localhost.",
+            "127.0.0.1@evil.example",
+            "user@127.0.0.1",
+            "[::1",
+            "[::1]evil",
+            "::1",
+        ],
+    )
+    def test_host_allowed_refuses_every_name_and_malformed_header(self, host):
+        assert not serve_cmd.host_allowed(host, remote_bind=False)
+        assert not serve_cmd.host_allowed(host, remote_bind=True)
+
+    @pytest.mark.parametrize("host", ["192.168.1.10:8765", "172.24.87.141", "[fe80::1]:8765"])
+    def test_an_ip_literal_is_admitted_only_on_a_remote_bind(self, host):
+        """How a browser on another machine addresses a token-gated ``0.0.0.0`` bind;
+        an IP literal cannot be rebound, so it carries no rebinding risk."""
+        assert not serve_cmd.host_allowed(host, remote_bind=False)
+        assert serve_cmd.host_allowed(host, remote_bind=True)
+
+    def test_a_loopback_bind_refusal_points_at_loopback(self, guarded):
+        status, body, _ = _request(guarded + "/api/v1/meta", headers=self._REBIND)
+        assert status == 403
+        assert "http://127.0.0.1:<port>/" in json.loads(body)["error"]["hint"]
+
+    def test_a_remote_bind_refusal_points_at_the_machine_ip_not_loopback(self, stopped):
+        port, shutdown = _serve_on("0.0.0.0", _TOKEN)  # noqa: S104 - the remote-bind shape
+        try:
+            status, body, _ = _request(f"http://127.0.0.1:{port}/api/v1/meta", headers=self._REBIND)
+        finally:
+            shutdown()
+        assert status == 403
+        hint = json.loads(body)["error"]["hint"]
+        assert "IP address" in hint
+        assert "127.0.0.1" not in hint and "localhost" not in hint
+
+    def test_the_bind_address_decides_remote_bind(self, stopped):
+        fleet = core_fleet.Fleet()
+        httpd = serve_cmd.make_server(
+            "127.0.0.1", 0, fleet, serve_cmd._Hub(fleet.set_focus), _TOKEN, _LOGIN
+        )
+        try:
+            assert httpd.RequestHandlerClass.remote_bind is False
+        finally:
+            httpd.server_close()
+
+
+def _redeem(base, code=_LOGIN):
+    return _request(
+        base + "/api/session",
+        data=json.dumps({"code": code}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+
+class TestOneTimeLoginCode:
+    """A browser signs in by redeeming the code the banner printed, exactly once."""
+
+    def test_the_code_buys_a_session_cookie_that_authenticates(self, daemon, stopped):
+        status, _, headers = _redeem(daemon)
+        assert status == 204
+        cookie = headers["Set-Cookie"]
+        assert "HttpOnly" in cookie and "SameSite=Strict" in cookie
+        assert _LOGIN not in cookie, "the cookie carries a session id, never the code"
+        jar = cookie.split(";", 1)[0]
+        assert _request(daemon + "/api/snapshot", headers={"Cookie": jar})[0] == 200
+        assert _post_action(daemon, {"Cookie": jar})[0] == 200
+        assert stopped == ["p"]
+
+    def test_a_second_daemon_on_this_machine_does_not_sign_the_first_out(self, daemon, stopped):
+        """Browsers do not scope cookies by port, so one jar holds both daemons'
+        cookies for 127.0.0.1 and sends all of them to each."""
+        port, shutdown = _serve_on("127.0.0.1", secrets.token_urlsafe(32))
+        try:
+            jar: dict[str, str] = {}
+            for base in (daemon, f"http://127.0.0.1:{port}"):
+                name, _, value = _redeem(base)[2]["Set-Cookie"].split(";", 1)[0].partition("=")
+                jar[name] = value
+            sent = "; ".join(f"{k}={v}" for k, v in jar.items())
+            assert _request(daemon + "/api/snapshot", headers={"Cookie": sent})[0] == 200
+            assert (
+                _request(f"http://127.0.0.1:{port}/api/snapshot", headers={"Cookie": sent})[0]
+                == 200
+            )
+        finally:
+            shutdown()
+
+    def test_the_code_works_once(self, daemon):
+        assert _redeem(daemon)[0] == 204
+        status, body, headers = _redeem(daemon)
+        assert status == 401
+        assert "Set-Cookie" not in headers
+        assert json.loads(body)["error"]["code"] == "auth.required"
+
+    @pytest.mark.parametrize(
+        "body",
+        [b"{}", b'{"code": "wrong"}', b'{"code": 1}', b'{"code": null}', b"not json", b"[]"],
+    )
+    def test_anything_but_the_code_is_refused_and_does_not_burn_it(self, daemon, body):
+        status, _, headers = _request(
+            daemon + "/api/session",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        assert status == 401 and "Set-Cookie" not in headers
+        assert _redeem(daemon)[0] == 204
+
+    def test_a_cross_site_redemption_is_refused_and_does_not_burn_it(self, daemon):
+        status, _, headers = _request(
+            daemon + "/api/session",
+            data=json.dumps({"code": _LOGIN}).encode(),
+            headers={"Content-Type": "application/json", "Sec-Fetch-Site": "cross-site"},
+            method="POST",
+        )
+        assert status == 403 and "Set-Cookie" not in headers
+        assert _redeem(daemon)[0] == 204
+
+    def test_the_banner_prints_the_login_link_and_never_a_token(self, monkeypatch, capsys):
+        monkeypatch.setenv(serve_cmd.TOKEN_ENV, _TOKEN)
+        monkeypatch.setattr(core_fleet, "list_instances", lambda: Result(status=Status.OK, data=[]))
+        bound = _stub_server(monkeypatch)
+        serve_cmd.serve(port=0, host="127.0.0.1", interval=2.5)
+        out = capsys.readouterr().out
+        assert f"http://127.0.0.1:8765/#login={bound[0][5]}" in out
+        assert _TOKEN not in out
+
+    def test_an_ipv6_loopback_banner_brackets_the_host(self, monkeypatch, capsys):
+        monkeypatch.setenv(serve_cmd.TOKEN_ENV, _TOKEN)
+        monkeypatch.setattr(core_fleet, "list_instances", lambda: Result(status=Status.OK, data=[]))
+        bound = _stub_server(monkeypatch)
+        serve_cmd.serve(port=0, host="::1", interval=2.5)
+        out = capsys.readouterr().out
+        assert "http://[::1]:8765" in out
+        assert f"http://[::1]:8765/#login={bound[0][5]}" in out
+        assert "http://::1:" not in out
+
+    @pytest.mark.parametrize(
+        ("host", "resolves_to", "link_host"),
+        [
+            ("0.0.0.0", None, "10.9.9.9"),
+            ("", None, "10.9.9.9"),
+            ("192.168.1.10", None, "192.168.1.10"),
+            ("localhost", "127.0.0.1", "127.0.0.1"),
+            ("mybox.local", "192.168.1.20", "192.168.1.20"),
+        ],
+    )
+    def test_the_login_link_names_the_bound_address(
+        self, monkeypatch, capsys, host, resolves_to, link_host
+    ):
+        """Only a wildcard bind is reached via the outbound address; any other bind
+        is reached at the address the socket listens on, which the Host allowlist
+        admits even when the bind was given as a hostname."""
+        monkeypatch.setenv(serve_cmd.TOKEN_ENV, _TOKEN)
+        monkeypatch.setattr(core_fleet, "list_instances", lambda: Result(status=Status.OK, data=[]))
+        monkeypatch.setattr(serve_cmd, "_outbound_address", lambda: "10.9.9.9")
+        bound = _stub_server(monkeypatch, resolves_to)
+        serve_cmd.serve(port=0, host=host, interval=2.5)
+        out = capsys.readouterr().out
+        assert f"http://{link_host}:8765/#login={bound[0][5]}" in out
+        remote_bind = not serve_cmd.is_loopback(host)
+        assert serve_cmd.host_allowed(f"{link_host}:8765", remote_bind=remote_bind)
+
+    def test_without_a_configured_token_the_random_one_is_not_printed(self, monkeypatch, capsys):
+        monkeypatch.delenv(serve_cmd.TOKEN_ENV, raising=False)
+        monkeypatch.setattr(core_fleet, "list_instances", lambda: Result(status=Status.OK, data=[]))
+        bound = _stub_server(monkeypatch)
+        serve_cmd.serve(port=0, host="127.0.0.1", interval=2.5)
+        out = capsys.readouterr().out
+        assert "per-launch token" in out
+        assert re.search(r"#login=" + re.escape(bound[0][5]), out)
+        assert bound[0][4] not in out
+
+
+class TestMeta:
+    def test_meta_answers_unauthenticated_with_an_integer_protocol(self, daemon):
+        """Open like the static page: it carries no fleet data, and a page checks it
+        before it has signed in."""
+        status, body, _ = _request(daemon + "/api/v1/meta")
+        assert status == 200
+        meta = json.loads(body)
+        assert meta == {"version": __version__, "protocol": serve_cmd.PROTOCOL_VERSION}
+        assert type(meta["protocol"]) is int
