@@ -1295,6 +1295,12 @@ def make_server(
     return httpd
 
 
+def _url_host(host: str) -> str:
+    """``host`` as it must appear in a URL: an IPv6 literal is bracketed."""
+    bare = host.strip("[]")
+    return f"[{bare}]" if ":" in bare else bare
+
+
 def _outbound_address() -> str | None:
     """This host's own address on the interface that reaches the outside, or None.
 
@@ -1397,13 +1403,13 @@ def serve(
         raise typer.Exit(code=1) from e
 
     port = httpd.server_address[1]
-    console.print(f"[bold]cwcli serve[/bold] on [cyan]http://{host}:{port}[/cyan]")
+    console.print(f"[bold]cwcli serve[/bold] on [cyan]http://{_url_host(host)}:{port}[/cyan]")
     console.print(f"  instances: {len(fleet.snapshot())}   probe interval: {interval}s")
     # Neither token is EVER printed - only which one is in force. The login code
     # is printed because it is single-use: once a browser redeems it, it is dead.
     in_force = f"${TOKEN_ENV}" if env_token else "per-launch token"
     console.print(f"  auth: [green]required[/green] ({in_force})")
-    sign_in = host if is_loopback(host) else (_outbound_address() or host)
+    sign_in = _url_host(host if is_loopback(host) else (_outbound_address() or host))
     login = f"/#login={login_code}"
     console.print(
         f"  sign in (works once): [cyan]http://{sign_in}:{port}{login}[/cyan]", soft_wrap=True

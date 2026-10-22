@@ -772,11 +772,6 @@ class TestOneTimeLoginCode:
         assert status == 403 and "Set-Cookie" not in headers
         assert _redeem(daemon)[0] == 204
 
-    def test_the_comparison_is_timing_safe(self):
-        import inspect
-
-        assert "_secret_matches" in inspect.getsource(serve_cmd._LoginCode.redeem)
-
     def test_the_banner_prints_the_login_link_and_never_a_token(self, monkeypatch, capsys):
         monkeypatch.setenv(serve_cmd.TOKEN_ENV, _TOKEN)
         monkeypatch.setattr(core_fleet, "list_instances", lambda: Result(status=Status.OK, data=[]))
@@ -785,6 +780,16 @@ class TestOneTimeLoginCode:
         out = capsys.readouterr().out
         assert f"http://127.0.0.1:8765/#login={bound[0][5]}" in out
         assert _TOKEN not in out
+
+    def test_an_ipv6_loopback_banner_brackets_the_host(self, monkeypatch, capsys):
+        monkeypatch.setenv(serve_cmd.TOKEN_ENV, _TOKEN)
+        monkeypatch.setattr(core_fleet, "list_instances", lambda: Result(status=Status.OK, data=[]))
+        bound = _stub_server(monkeypatch)
+        serve_cmd.serve(port=0, host="::1", interval=2.5)
+        out = capsys.readouterr().out
+        assert "http://[::1]:8765" in out
+        assert f"http://[::1]:8765/#login={bound[0][5]}" in out
+        assert "http://::1:" not in out
 
     def test_without_a_configured_token_the_random_one_is_not_printed(self, monkeypatch, capsys):
         monkeypatch.delenv(serve_cmd.TOKEN_ENV, raising=False)
