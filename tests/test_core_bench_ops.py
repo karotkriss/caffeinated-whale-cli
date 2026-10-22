@@ -196,7 +196,7 @@ def test_a_held_migrate_lock_refuses_the_migrate_entirely_and_names_unlock(monke
     BEFORE maintenance mode is even touched, and the refusal names the exact
     remedy rather than surfacing a generic failure later.
 
-    Verified against a real bench (see `_migrate_lock_held`'s docstring): `flock
+    Verified against a real bench (see `migrate_lock_held`'s docstring): `flock
     -n` probes the SAME kernel primitive frappe's own `filelock()` acquires, so
     this can never be a false positive on a harmless leftover file.
     """
@@ -470,7 +470,7 @@ def _drive_interrupted_migrate(monkeypatch, container):
         lambda *a, **k: (container, BENCH, []),
     )
     monkeypatch.setattr(bench_ops, "_resolve_site", lambda *a, **k: SITE)
-    monkeypatch.setattr(bench_ops, "_migrate_lock_held", lambda *a, **k: False)
+    monkeypatch.setattr(bench_ops, "migrate_lock_held", lambda *a, **k: False)
     events: list = []
     with pytest.raises(KeyboardInterrupt):
         bench_ops.migrate_site("proj", site=SITE, on_event=events.append)

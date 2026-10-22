@@ -967,6 +967,116 @@ def test_update_frappe_announces_ignored_per_app_flags(monkeypatch, capsys):
     assert any("bench update --reset" in c for c in container.calls)
 
 
+def _arm_preflight(monkeypatch, *pairs):
+    """Make the frappe preflight report (severity, code, app) findings; return its calls."""
+    from caffeinated_whale_cli.core import update_preflight
+
+    calls = []
+
+    def fake(container, bench_path, *, project, bench=None):
+        calls.append(project)
+        findings = [
+            update_preflight.PreflightFinding(
+                severity=severity,
+                code=code,
+                app=app,
+                site=None,
+                message=f"{code} message",
+                remedy=f"cwcli apps checkout proj {app} <published-branch>",
+            )
+            for severity, code, app in pairs
+        ]
+        return update_preflight.PreflightOutcome(
+            findings=findings, apps=3, sites=6, elapsed=0.4, bench_path=bench_path
+        )
+
+    monkeypatch.setattr(core_update.update_preflight, "run_preflight", fake)
+    return calls
+
+
+def test_update_frappe_preflight_blocker_refuses_and_names_the_fix(monkeypatch, capsys):
+    container = FakeFrappeContainer(available_apps=["frappe"])
+    _wire_update(monkeypatch, container)
+    _arm_preflight(
+        monkeypatch,
+        ("blocker", "git.branch_not_on_remote", "localbranch"),
+        ("notice", "git.no_remote", "noremote"),
+    )
+
+    with pytest.raises(typer.Exit) as exc:
+        update_mod.run_app_update("proj", ["frappe"], verbose=False)
+
+    assert exc.value.exit_code == 1
+    out = " ".join(capsys.readouterr().out.split())
+    assert "Preflight: 3 app(s), 6 site(s) on /workspace/frappe-bench (0.4s)" in out
+    assert "Blocking - bench update --reset would fail:" in out
+    assert "localbranch git.branch_not_on_remote message" in out
+    assert "fix: cwcli apps checkout proj localbranch <published-branch>" in out
+    assert "Notices:" in out
+    assert "Refusing to start: 1 blocking problem(s). Nothing was changed." in out
+    assert "Re-run with --no-preflight" in out
+    assert "Update completed with errors" not in out
+    assert not any("bench update --reset" in c for c in container.calls)
+
+
+def test_update_frappe_preflight_warnings_print_before_the_reset_runs(monkeypatch, capsys):
+    # A data-loss warning printed after bench has reset the app warns about nothing.
+    container = FakeFrappeContainer(available_apps=["frappe"])
+    _wire_update(monkeypatch, container)
+    _arm_preflight(monkeypatch, ("data_loss", "git.uncommitted", "dirty"))
+
+    update_mod.run_app_update("proj", ["frappe"], verbose=False)
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert "Data loss - bench update --reset discards this local work:" in out
+    assert out.index("git.uncommitted message") < out.index("Frappe framework updated")
+
+
+def test_update_frappe_clean_preflight_says_so(monkeypatch, capsys):
+    container = FakeFrappeContainer(available_apps=["frappe"])
+    _wire_update(monkeypatch, container)
+    _arm_preflight(monkeypatch)
+
+    update_mod.run_app_update("proj", ["frappe"], verbose=False)
+
+    assert "Preflight passed: 3 app(s), 6 site(s)" in " ".join(capsys.readouterr().out.split())
+
+
+@pytest.mark.parametrize("surface", ["apps_update", "deprecated_update"])
+def test_no_preflight_reaches_the_core_from_both_human_spellings(monkeypatch, surface):
+    container = FakeFrappeContainer(available_apps=["frappe"])
+    _wire_update(monkeypatch, container)
+    calls = _arm_preflight(monkeypatch, ("blocker", "git.detached_head", "frappe"))
+    # Bypass the @handle_docker_errors docker preflight (it reads from docker_utils).
+    from caffeinated_whale_cli.utils import docker_utils
+
+    monkeypatch.setattr(docker_utils.shutil, "which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(
+        docker_utils.docker, "from_env", lambda: types.SimpleNamespace(ping=lambda: True)
+    )
+    common = dict(
+        bench=None,
+        bench_path=None,
+        sites=None,
+        verbose=False,
+        clear_cache=False,
+        clear_website_cache=False,
+        build=False,
+        skip_maintenance=False,
+        no_recache=True,
+        no_preflight=True,
+        yes=False,
+    )
+
+    if surface == "apps_update":
+        apps_mod.update_apps("proj", ["frappe"], force=False, json_output=False, **common)
+    else:
+        update_mod.update("proj", apps=["frappe"], **common)
+
+    assert calls == []
+    assert any("bench update --reset" in c for c in container.calls)
+
+
 def _wire_update_site_filter(
     monkeypatch, container, *, installed_apps, bench_path="/workspace/frappe-bench"
 ):

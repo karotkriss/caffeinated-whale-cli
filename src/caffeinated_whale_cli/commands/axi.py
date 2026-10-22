@@ -1518,6 +1518,14 @@ def axi_apps_update(
             "failing. Only on conflict; a clean update is untouched."
         ),
     ),
+    no_preflight: bool = typer.Option(
+        False,
+        "--no-preflight",
+        help=(
+            "Updating frappe only: skip the checks before 'bench update --reset' (for a "
+            "false positive). bench then fails wherever it fails."
+        ),
+    ),
 ) -> None:
     """Update app(s) and migrate affected sites; emit the report as TOON.
 
@@ -1542,6 +1550,12 @@ def axi_apps_update(
     hard-reset to its remote tracking branch (discarding local changes) so the update
     completes, reported in `force_reset_apps`. It fires ONLY on a conflict - a clean
     update is untouched - and never on a non-conflict failure (network/auth).
+
+    Updating `frappe` runs a preflight before `bench update --reset`: every finding
+    rides `preflight` (a `severity,code,app,site,message,remedy` table; branch on
+    `code`), and a blocker sets `preflight_blocked: true` and exits 1 with NOTHING
+    run. `--no-preflight` skips the checks for a false positive; it is not a safety
+    gate, so it is offered here too.
     """
     try:
         result = core_update.update(
@@ -1555,6 +1569,7 @@ def axi_apps_update(
             skip_maintenance=skip_maintenance,
             no_recache=no_recache,
             force=force,
+            preflight=not no_preflight,
         )
     except CwcliError as error:
         emit_axi_error(error)

@@ -59,11 +59,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from ..utils import bench_sites, cache, db_utils
-from . import bench_ops, bench_read, credbridge, resolvers, supervision
+from . import bench_ops, bench_read, credbridge, resolvers, supervision, update_preflight
 from . import docker as core_docker
 from .envelope import Message, Result, Status
 from .errors import CwcliError, ErrorKind
 from .exec_stream import ExecChunk, exec_stream
+from .update_preflight import PreflightFinding
 
 # Let a migration finish releasing its locks before the next step touches the site.
 _POST_MIGRATE_SETTLE = 0.5
@@ -85,7 +86,9 @@ class UpdateReport:
     project: str
     bench_path: str
     apps: list[str]
-    frappe_reset: bool  # the bench-wide path ran; the per-site fields are empty
+    # The frappe bench-wide path was taken; the per-site fields are empty. The reset
+    # itself ran only when `preflight_blocked` is false.
+    frappe_reset: bool
     affected_sites: list[str]
     migrated_sites: list[str]  # the load-bearing gate: only what entered maintenance
     failed_apps: list[str]
@@ -115,6 +118,11 @@ class UpdateReport:
     # when it cannot be told (the reset failed and that file could not be read, or
     # the reset's outcome is unknown and it may still be running); False otherwise.
     bench_left_in_maintenance: bool | None
+    # The frappe path's checks before `bench update --reset` (core.update_preflight).
+    # Empty when they did not run (another app, or --no-preflight). A blocked
+    # preflight ran NOTHING: no backup, no maintenance flag, no reset.
+    preflight: list[PreflightFinding]
+    preflight_blocked: bool
     aborted: bool  # the fan-out stopped early (Ctrl-C / an unexpected error)
     ok: bool  # pre-computed aggregate; the frontends' exit code reads THIS
 
@@ -170,7 +178,21 @@ class UpdateAborted:
     report: UpdateReport
 
 
-UpdateEvent = UpdateStepStart | UpdateOutput | UpdateStepEnd | UpdateAborted
+@dataclass(frozen=True, slots=True, kw_only=True)
+class UpdatePreflight:
+    """The preflight finished: every finding, BEFORE the reset starts.
+
+    The end of the ``preflight`` phase its ``UpdateStepStart`` opened. It carries the
+    findings rather than a message because a frontend must show them at this moment:
+    a data-loss warning printed after the reset has run warns about nothing.
+    """
+
+    findings: list[PreflightFinding]
+    summary: str
+    blocked: bool
+
+
+UpdateEvent = UpdateStepStart | UpdateOutput | UpdateStepEnd | UpdatePreflight | UpdateAborted
 
 OnEvent = Callable[[UpdateEvent], None]
 
@@ -512,6 +534,8 @@ def _build_report(
     app_imports: list[resolvers.AppImport] | None = None,
     resync: supervision.ResyncOutcome | None = None,
     bench_left_in_maintenance: bool | None = False,
+    preflight: list[PreflightFinding] | None = None,
+    preflight_blocked: bool = False,
     aborted: bool,
 ) -> UpdateReport:
     """Assemble the report and pre-compute ``ok``.
@@ -530,6 +554,7 @@ def _build_report(
     app_imports = app_imports or []
     ok = not (
         aborted
+        or preflight_blocked
         or failed_apps
         or unknown_apps
         or failed_maintenance_enable
@@ -566,6 +591,8 @@ def _build_report(
         resync_error=resync.error,
         app_imports=list(app_imports),
         bench_left_in_maintenance=bench_left_in_maintenance,
+        preflight=list(preflight or []),
+        preflight_blocked=preflight_blocked,
         aborted=aborted,
         ok=ok,
     )
@@ -600,6 +627,7 @@ def _frappe_reset(
     apps: list[str],
     no_recache: bool,
     ignored: list[str],
+    preflight: list[PreflightFinding] | None = None,
     emit: OnEvent,
     warnings: list[Message],
 ) -> Result[UpdateReport]:
@@ -781,9 +809,60 @@ def _frappe_reset(
         failed_maintenance_disable=[],
         resync=resync,
         bench_left_in_maintenance=left_in_maintenance,
+        preflight=preflight,
         aborted=False,
     )
     return Result(status=Status.OK if report.ok else Status.WARNING, data=report, warnings=warnings)
+
+
+def _frappe_preflight(
+    frappe_container,
+    *,
+    project_name: str,
+    bench: str | None,
+    bench_path: str,
+    apps: list[str],
+    emit: OnEvent,
+    warnings: list[Message],
+) -> tuple[list[PreflightFinding], Result[UpdateReport] | None]:
+    """Run the preflight; return its findings and, when it found a blocker, the
+    refusal to return instead of running ``bench update --reset``.
+
+    The refusal is a report, not a raise: it carries EVERY finding (blockers, data
+    loss, notices together), which is the point of checking first - bench itself
+    stops at the first problem it meets, after backing up every site.
+    """
+    emit(UpdateStepStart(phase="preflight"))
+    outcome = update_preflight.run_preflight(
+        frappe_container, bench_path, project=project_name, bench=bench
+    )
+    emit(
+        UpdatePreflight(findings=outcome.findings, summary=outcome.summary, blocked=outcome.blocked)
+    )
+    if not outcome.blocked:
+        return outcome.findings, None
+    report = _build_report(
+        project_name=project_name,
+        bench_path=bench_path,
+        apps=apps,
+        frappe_reset=True,
+        affected=set(),
+        migrated=[],
+        failed_apps=[],
+        unknown_apps=[],
+        failed_maintenance_enable=[],
+        failed_migrations=[],
+        unknown_migrations=[],
+        failed_builds=[],
+        unknown_builds=[],
+        failed_cache_clears=[],
+        failed_website_cache_clears=[],
+        failed_maintenance_disable=[],
+        preflight=outcome.findings,
+        preflight_blocked=True,
+        aborted=False,
+    )
+    return outcome.findings, Result(status=Status.WARNING, data=report, warnings=warnings)
 
 
 # ------------------------------------------------------------------------------ verb
@@ -802,10 +881,16 @@ def update(
     skip_maintenance: bool = False,
     no_recache: bool = False,
     force: bool = False,
+    preflight: bool = True,
     auto_start: bool = False,
     on_event: OnEvent | None = None,
 ) -> Result[UpdateReport]:
     """Update ``apps`` and migrate every affected site. See the module docstring.
+
+    ``preflight`` (the frappe path only) checks, before ``bench update --reset``
+    starts, everything that would make it fail late - see
+    :mod:`.update_preflight`. A blocker returns a report with
+    ``preflight_blocked=True`` and nothing run.
 
     Returns ``NEEDS_CHOICE`` for the multi-bench and stopped-container forks, raises
     :class:`CwcliError` for hard failures, and otherwise returns the report - which
@@ -871,6 +956,21 @@ def update(
                 )
                 if active
             ]
+            # Inside the credential bridge on purpose: a private remote is probed
+            # with exactly the credentials bench's own fetch will get.
+            findings: list[PreflightFinding] = []
+            if preflight:
+                findings, refusal = _frappe_preflight(
+                    frappe_container,
+                    project_name=project_name,
+                    bench=bench,
+                    bench_path=bench_path,
+                    apps=apps,
+                    emit=emit,
+                    warnings=warnings,
+                )
+                if refusal is not None:
+                    return refusal
             return _frappe_reset(
                 frappe_container,
                 project_name=project_name,
@@ -878,6 +978,7 @@ def update(
                 apps=apps,
                 no_recache=no_recache,
                 ignored=ignored,
+                preflight=findings,
                 emit=emit,
                 warnings=warnings,
             )
