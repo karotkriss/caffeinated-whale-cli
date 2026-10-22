@@ -455,12 +455,18 @@ class _Handler(BaseHTTPRequestHandler):
             return True
         return _secret_matches(self._session_cookie(), self.session_id)
 
+    @property
+    def _cookie_name(self) -> str:
+        """Named per port: browsers do not scope cookies by port, so two daemons on
+        one machine sharing a name would sign each other's tabs out."""
+        return f"{SESSION_COOKIE}_{self.connection.getsockname()[1]}"
+
     def _session_cookie(self) -> str:
         raw = self.headers.get("Cookie")
         if not raw:
             return ""
         try:
-            return SimpleCookie(raw)[SESSION_COOKIE].value
+            return SimpleCookie(raw)[self._cookie_name].value
         except (CookieError, KeyError):
             return ""
 
@@ -515,7 +521,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(204)
         self.send_header(
             "Set-Cookie",
-            f"{SESSION_COOKIE}={self.session_id}; Path=/; HttpOnly; SameSite=Strict",
+            f"{self._cookie_name}={self.session_id}; Path=/; HttpOnly; SameSite=Strict",
         )
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -1417,14 +1423,14 @@ def serve(
         stop.set()
         raise typer.Exit(code=1) from e
 
-    port = httpd.server_address[1]
-    console.print(f"[bold]cwcli serve[/bold] on [cyan]http://{_url_host(host)}:{port}[/cyan]")
+    bound, port = str(httpd.server_address[0]), httpd.server_address[1]
+    console.print(f"[bold]cwcli serve[/bold] on [cyan]http://{_url_host(bound)}:{port}[/cyan]")
     console.print(f"  instances: {len(fleet.snapshot())}   probe interval: {interval}s")
     # Neither token is EVER printed - only which one is in force. The login code
     # is printed because it is single-use: once a browser redeems it, it is dead.
     in_force = f"${TOKEN_ENV}" if env_token else "per-launch token"
     console.print(f"  auth: [green]required[/green] ({in_force})")
-    sign_in = _url_host((_outbound_address() or host) if _binds_everywhere(host) else host)
+    sign_in = _url_host((_outbound_address() or bound) if _binds_everywhere(bound) else bound)
     login = f"/#login={login_code}"
     console.print(
         f"  sign in (works once): [cyan]http://{sign_in}:{port}{login}[/cyan]", soft_wrap=True

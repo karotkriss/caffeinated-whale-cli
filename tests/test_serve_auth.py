@@ -133,16 +133,19 @@ def _post_action(base, headers=None):
     return _request(base + "/api/action", data=_ACTION, headers=merged, method="POST")
 
 
-def _stub_server(monkeypatch) -> list:
+def _stub_server(monkeypatch, resolves_to: str | None = None) -> list:
     """Replace ``make_server`` with one that binds nothing and returns immediately.
 
     ``serve()`` runs to completion through its banner and teardown, so the parts
-    after the bind stay covered; the returned list records the call's argv.
+    after the bind stay covered; the returned list records the call's argv. Like
+    a real socket, it reports the address it was asked to bind, or
+    ``resolves_to`` for a hostname bind.
     """
     calls: list = []
 
     class _Stub:
-        server_address = ("127.0.0.1", 8765)
+        def __init__(self, host):
+            self.server_address = (resolves_to or host or "0.0.0.0", 8765)  # noqa: S104
 
         def serve_forever(self):
             raise KeyboardInterrupt
@@ -155,7 +158,7 @@ def _stub_server(monkeypatch) -> list:
 
     def _make(*args, **kwargs):
         calls.append(args)
-        return _Stub()
+        return _Stub(args[0])
 
     monkeypatch.setattr(serve_cmd, "make_server", _make)
     return calls
@@ -389,7 +392,8 @@ class TestBrowserSession:
         assert "Set-Cookie" not in headers
 
     def test_a_forged_session_cookie_is_refused(self, guarded, stopped):
-        forged = f"{serve_cmd.SESSION_COOKIE}=not-the-session-id"
+        port = guarded.rsplit(":", 1)[1]
+        forged = f"{serve_cmd.SESSION_COOKIE}_{port}=not-the-session-id"
         assert _post_action(guarded, {"Cookie": forged})[0] == 401
         assert stopped == []
 
@@ -747,6 +751,24 @@ class TestOneTimeLoginCode:
         assert _post_action(daemon, {"Cookie": jar})[0] == 200
         assert stopped == ["p"]
 
+    def test_a_second_daemon_on_this_machine_does_not_sign_the_first_out(self, daemon, stopped):
+        """Browsers do not scope cookies by port, so one jar holds both daemons'
+        cookies for 127.0.0.1 and sends all of them to each."""
+        port, shutdown = _serve_on("127.0.0.1", secrets.token_urlsafe(32))
+        try:
+            jar: dict[str, str] = {}
+            for base in (daemon, f"http://127.0.0.1:{port}"):
+                name, _, value = _redeem(base)[2]["Set-Cookie"].split(";", 1)[0].partition("=")
+                jar[name] = value
+            sent = "; ".join(f"{k}={v}" for k, v in jar.items())
+            assert _request(daemon + "/api/snapshot", headers={"Cookie": sent})[0] == 200
+            assert (
+                _request(f"http://127.0.0.1:{port}/api/snapshot", headers={"Cookie": sent})[0]
+                == 200
+            )
+        finally:
+            shutdown()
+
     def test_the_code_works_once(self, daemon):
         assert _redeem(daemon)[0] == 204
         status, body, headers = _redeem(daemon)
@@ -798,24 +820,30 @@ class TestOneTimeLoginCode:
         assert "http://::1:" not in out
 
     @pytest.mark.parametrize(
-        ("host", "link_host"),
+        ("host", "resolves_to", "link_host"),
         [
-            ("0.0.0.0", "10.9.9.9"),
-            ("", "10.9.9.9"),
-            ("192.168.1.10", "192.168.1.10"),
-            ("localhost", "localhost"),
+            ("0.0.0.0", None, "10.9.9.9"),
+            ("", None, "10.9.9.9"),
+            ("192.168.1.10", None, "192.168.1.10"),
+            ("localhost", "127.0.0.1", "127.0.0.1"),
+            ("mybox.local", "192.168.1.20", "192.168.1.20"),
         ],
     )
-    def test_the_login_link_names_the_bound_address(self, monkeypatch, capsys, host, link_host):
+    def test_the_login_link_names_the_bound_address(
+        self, monkeypatch, capsys, host, resolves_to, link_host
+    ):
         """Only a wildcard bind is reached via the outbound address; any other bind
-        is reached at the address it listens on."""
+        is reached at the address the socket listens on, which the Host allowlist
+        admits even when the bind was given as a hostname."""
         monkeypatch.setenv(serve_cmd.TOKEN_ENV, _TOKEN)
         monkeypatch.setattr(core_fleet, "list_instances", lambda: Result(status=Status.OK, data=[]))
         monkeypatch.setattr(serve_cmd, "_outbound_address", lambda: "10.9.9.9")
-        bound = _stub_server(monkeypatch)
+        bound = _stub_server(monkeypatch, resolves_to)
         serve_cmd.serve(port=0, host=host, interval=2.5)
         out = capsys.readouterr().out
         assert f"http://{link_host}:8765/#login={bound[0][5]}" in out
+        remote_bind = not serve_cmd.is_loopback(host)
+        assert serve_cmd.host_allowed(f"{link_host}:8765", remote_bind=remote_bind)
 
     def test_without_a_configured_token_the_random_one_is_not_printed(self, monkeypatch, capsys):
         monkeypatch.delenv(serve_cmd.TOKEN_ENV, raising=False)
