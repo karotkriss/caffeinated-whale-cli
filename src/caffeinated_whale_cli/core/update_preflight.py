@@ -157,13 +157,14 @@ def check_app(app, excluded, shallow):
     no_upstream = app == "frappe" and "upstream" not in remotes
     if no_upstream:
         add("frappe.no_upstream", remotes=remotes)
+    remote = None
     if re.findall(r"upstream[\s]+", remote_v):
         remote = "upstream"
     elif not remote_v:
         # bench/app.py:1028-1035: skipped AND appended to sites/excluded_apps.txt.
         if not no_upstream:
             add("git.no_remote")
-        return found, probes, d
+            return found, probes, d
     else:
         remote = remote_v.splitlines()[0].split()[0]
 
@@ -220,7 +221,7 @@ def check_app(app, excluded, shallow):
     # bench/app.py:1039-1047: with shallow_clone bench fetches ONLY <remote> <branch>
     # (`git fetch --depth=1 --no-tags`); without it, `git fetch --all` contacts EVERY
     # remote, so one dead remote nobody uses stops the update.
-    if remote in remotes:
+    if remote and remote in remotes:
         probes.append((remote, branch))
     if not shallow:
         probes.extend((r, None) for r in remotes if r != remote)
@@ -407,10 +408,10 @@ class PreflightOutcome:
 
 
 # code -> (severity, message, remedy). Messages and remedies are str.format templates
-# over the finding's facts plus `project`, `bench_flag` and shell-quoted `q_*` names.
+# over the finding's facts plus `project`, `selector_flag` and shell-quoted `q_*` names.
 # Remedies follow the "Suggested commands" convention: a cwcli verb where one exists,
 # else a `cwcli open` shell step, with the live names substituted.
-_OPEN = "in `cwcli open {q_project}{bench_flag}`: "
+_OPEN = "in `cwcli open {q_project}{selector_flag}`: "
 _RULES: dict[str, tuple[str, str, str | None]] = {
     "bench.config_unreadable": (
         BLOCKER,
@@ -426,13 +427,13 @@ _RULES: dict[str, tuple[str, str, str | None]] = {
         NOTICE,
         "maintenance_mode is already 1 bench-wide (a previous update may have failed); "
         "bench clears it only when this update succeeds",
-        "cwcli run {q_project}{bench_flag} set-config --global --parse maintenance_mode 0",
+        "cwcli run {q_project}{selector_flag} set-config --global --parse maintenance_mode 0",
     ),
     "bench.scheduler_paused": (
         NOTICE,
         "pause_scheduler is already 1 bench-wide (a previous update may have failed); "
         "bench clears it only when this update succeeds",
-        "cwcli run {q_project}{bench_flag} set-config --global --parse pause_scheduler 0",
+        "cwcli run {q_project}{selector_flag} set-config --global --parse pause_scheduler 0",
     ),
     "bench.not_writable": (
         BLOCKER,
@@ -470,7 +471,7 @@ _RULES: dict[str, tuple[str, str, str | None]] = {
     "git.dubious_ownership": (
         BLOCKER,
         "git refuses the repository at {path}: another user owns it (dubious ownership)",
-        "cwcli apps update {q_project} {q_app}{bench_flag} --force re-owns it to the "
+        "cwcli apps update {q_project} {q_app}{selector_flag} --force re-owns it to the "
         "container user (and pulls that app)",
     ),
     "git.unreadable": (UNVERIFIED, "git could not read the repository ({error})", None),
@@ -496,12 +497,12 @@ _RULES: dict[str, tuple[str, str, str | None]] = {
     "git.detached_head": (
         BLOCKER,
         "HEAD is detached; bench needs a branch to reset to",
-        "cwcli apps checkout {q_project} {q_app} <branch>{bench_flag}",
+        "cwcli apps checkout {q_project} {q_app} <branch>{selector_flag}",
     ),
     "git.master_branch": (
         BLOCKER,
         "on branch 'master', which bench refuses for {app}",
-        "cwcli apps checkout {q_project} {q_app} <version-branch>{bench_flag}",
+        "cwcli apps checkout {q_project} {q_app} <version-branch>{selector_flag}",
     ),
     "app.not_writable": (BLOCKER, "{path} is not writable by the container user", None),
     "git.uncommitted": (
@@ -533,13 +534,13 @@ _RULES: dict[str, tuple[str, str, str | None]] = {
     "git.branch_not_on_remote": (
         BLOCKER,
         "branch '{branch}' does not exist on remote '{remote}'",
-        "cwcli apps checkout {q_project} {q_app} <published-branch>{bench_flag}",
+        "cwcli apps checkout {q_project} {q_app} <published-branch>{selector_flag}",
     ),
     "git.branch_deleted_upstream": (
         NOTICE,
         "branch '{branch}' no longer exists on '{remote}'; bench would reset to the "
         "stale local {remote}/{branch}",
-        "cwcli apps checkout {q_project} {q_app} <published-branch>{bench_flag}",
+        "cwcli apps checkout {q_project} {q_app} <published-branch>{selector_flag}",
     ),
     "site.unreadable": (
         BLOCKER,
@@ -553,7 +554,7 @@ _RULES: dict[str, tuple[str, str, str | None]] = {
         BLOCKER,
         "site '{site}' holds an active migrate lock; bench's migrate would fail on it",
         "wait for the running migrate, or clear a stranded lock: "
-        "cwcli unlock {q_project} --site {q_site}{bench_flag}",
+        "cwcli unlock {q_project} --site {q_site}{selector_flag}",
     ),
     "site.lock_unverified": (
         UNVERIFIED,
@@ -572,10 +573,16 @@ _ORDER = {BLOCKER: 0, DATA_LOSS: 1, UNVERIFIED: 2, NOTICE: 3}
 
 
 def classify(
-    facts: list[dict], *, project: str, bench: str | None = None
+    facts: list[dict], *, project: str, bench: str | None = None, path: str | None = None
 ) -> list[PreflightFinding]:
     """Turn raw facts into typed findings, blockers first, then by app/site."""
-    bench_flag = f" --bench {shlex.quote(bench)}" if bench else ""
+    selector_flag = (
+        f" --path {shlex.quote(path)}"
+        if path
+        else f" --bench {shlex.quote(bench)}"
+        if bench
+        else ""
+    )
     findings = []
     for fact in facts:
         code = str(fact.get("code"))
@@ -585,7 +592,7 @@ def classify(
         }
         fields.update(
             project=project,
-            bench_flag=bench_flag,
+            selector_flag=selector_flag,
             q_project=shlex.quote(project),
             q_app=shlex.quote(str(fact.get("app") or "")),
             q_site=shlex.quote(str(fact.get("site") or "")),
@@ -687,7 +694,12 @@ def _lock_facts(container, bench_path: str, sites: list[str]) -> list[dict]:
 
 
 def run_preflight(
-    container, bench_path: str, *, project: str, bench: str | None = None
+    container,
+    bench_path: str,
+    *,
+    project: str,
+    bench: str | None = None,
+    path: str | None = None,
 ) -> PreflightOutcome:
     """Run every tier against ``bench_path`` and return the classified outcome.
 
@@ -711,7 +723,7 @@ def run_preflight(
     facts += _site_facts(container, bench_path, sites)
     facts += _lock_facts(container, bench_path, sites)
     return PreflightOutcome(
-        findings=classify(facts, project=project, bench=bench),
+        findings=classify(facts, project=project, bench=bench, path=path),
         apps=len(apps),
         sites=len(sites),
         elapsed=time.monotonic() - started,

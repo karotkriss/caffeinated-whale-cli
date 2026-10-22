@@ -973,7 +973,7 @@ def _arm_preflight(monkeypatch, *pairs):
 
     calls = []
 
-    def fake(container, bench_path, *, project, bench=None):
+    def fake(container, bench_path, *, project, bench=None, path=None):
         calls.append(project)
         findings = [
             update_preflight.PreflightFinding(
@@ -992,6 +992,35 @@ def _arm_preflight(monkeypatch, *pairs):
 
     monkeypatch.setattr(core_update.update_preflight, "run_preflight", fake)
     return calls
+
+
+def test_update_frappe_preflight_remedy_keeps_the_explicit_path(monkeypatch, capsys):
+    from caffeinated_whale_cli.core import update_preflight
+
+    container = FakeFrappeContainer(available_apps=["frappe"])
+    _wire_update(monkeypatch, container)
+
+    def fake(container, bench_path, *, project, bench=None, path=None):
+        findings = update_preflight.classify(
+            [{"code": "git.detached_head", "app": "frappe"}],
+            project=project,
+            bench=bench,
+            path=path,
+        )
+        return update_preflight.PreflightOutcome(
+            findings=findings, apps=1, sites=0, elapsed=0.1, bench_path=bench_path
+        )
+
+    monkeypatch.setattr(core_update.update_preflight, "run_preflight", fake)
+
+    with pytest.raises(typer.Exit) as exc:
+        update_mod.run_app_update(
+            "proj", ["frappe"], bench_path="/workspace/chosen bench", verbose=False
+        )
+
+    assert exc.value.exit_code == 1
+    out = " ".join(capsys.readouterr().out.split())
+    assert "cwcli apps checkout proj frappe <branch> --path '/workspace/chosen bench'" in out
 
 
 def test_update_frappe_preflight_blocker_refuses_and_names_the_fix(monkeypatch, capsys):
@@ -1095,7 +1124,7 @@ def test_bench_selector_reaches_the_preflight_remedies_from_both_human_spellings
     )
     seen = []
 
-    def fake(container, bench_path, *, project, bench=None):
+    def fake(container, bench_path, *, project, bench=None, path=None):
         seen.append((bench_path, bench))
         return core_update.update_preflight.PreflightOutcome(
             findings=[], apps=1, sites=0, elapsed=0.1, bench_path=bench_path

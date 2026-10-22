@@ -820,6 +820,7 @@ def _frappe_preflight(
     *,
     project_name: str,
     bench: str | None,
+    path: str | None,
     bench_path: str,
     apps: list[str],
     emit: OnEvent,
@@ -834,7 +835,7 @@ def _frappe_preflight(
     """
     emit(UpdateStepStart(phase="preflight"))
     outcome = update_preflight.run_preflight(
-        frappe_container, bench_path, project=project_name, bench=bench
+        frappe_container, bench_path, project=project_name, bench=bench, path=path
     )
     emit(
         UpdatePreflight(findings=outcome.findings, summary=outcome.summary, blocked=outcome.blocked)
@@ -874,6 +875,7 @@ def update(
     *,
     bench: str | None = None,
     bench_path: str | None = None,
+    path_selector: str | None = None,
     sites: list[str] | None = None,
     clear_cache: bool = False,
     clear_website_cache: bool = False,
@@ -964,6 +966,7 @@ def update(
                     frappe_container,
                     project_name=project_name,
                     bench=bench,
+                    path=path_selector,
                     bench_path=bench_path,
                     apps=apps,
                     emit=emit,

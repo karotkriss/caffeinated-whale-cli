@@ -463,7 +463,7 @@ def preflight_finds(monkeypatch):
     calls = []
 
     def arm(*pairs):
-        def fake(container, bench_path, *, project, bench=None):
+        def fake(container, bench_path, *, project, bench=None, path=None):
             calls.append(project)
             findings = [
                 update_preflight.PreflightFinding(
