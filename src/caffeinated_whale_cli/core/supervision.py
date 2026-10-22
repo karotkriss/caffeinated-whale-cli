@@ -938,9 +938,8 @@ def clear_bench_wide_flags_hint(project: str, flags: list[str], bench_flag: str 
     """The copy-paste command that clears bench-wide ``flags``.
 
     ``bench_flag`` is the :func:`resolvers.bench_cli_flag` fragment naming the bench.
-    ``--parse`` is load-bearing: without it frappe stores the STRING "0", which is
-    truthy, so the bench would stay down. The long flag forms are deliberate:
-    ``-p`` is ``cwcli run``'s own ``--path``.
+    ``--parse`` makes the stored type explicit (an int 0, not a string). The long
+    flag forms are deliberate: ``-p`` is ``cwcli run``'s own ``--path``.
     """
     return " && ".join(
         f"cwcli run {project}{bench_flag} set-config --global --parse {flag} 0" for flag in flags
