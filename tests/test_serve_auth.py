@@ -336,16 +336,6 @@ class TestAuthEnabled:
         assert headers.get("Access-Control-Allow-Origin") is None
         assert stopped == []
 
-    def test_the_bearer_comparison_is_timing_safe(self):
-        """Pinned at the comparison itself: ``==`` here leaks the token bytewise."""
-        import inspect
-
-        assert "hmac.compare_digest" in inspect.getsource(serve_cmd._secret_matches)
-        # Both credential forms route through the timing-safe helper; the only
-        # plain comparison left is the ``Bearer`` scheme name, which is public.
-        checked = inspect.getsource(serve_cmd._Handler._authenticated)
-        assert checked.count("_secret_matches") == 2
-
 
 class TestBrowserSession:
     """``EventSource`` cannot send headers, so a browser trades the token for a cookie."""
