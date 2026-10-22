@@ -74,8 +74,8 @@ included, must carry a ``Host`` that names this machine. The only NAME admitted
 is ``localhost``; the admitted IP LITERALS are any loopback address (all of
 ``127.0.0.0/8`` and ``[::1]``), plus any IP on a non-loopback bind (which already
 needs a token). Literals are admitted that widely on purpose: rebinding needs an
-attacker-controlled hostname, and an IP literal cannot be rebound. Anything else is ``403 host.forbidden`` before any other guard
-runs. A rebinding page reaches the loopback listener under the ATTACKER's
+attacker-controlled hostname. Anything else is ``403 host.forbidden`` before any
+other guard runs. A rebinding page reaches the loopback listener under the ATTACKER's
 hostname, so its ``Origin`` and ``Host`` match and the browser even labels it
 ``Sec-Fetch-Site: same-origin``: a same-origin check alone passed it straight to
 action dispatch. ``Host`` is the one header that still tells the two apart, and
