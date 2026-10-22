@@ -112,7 +112,8 @@ class UpdateReport:
     # A failed `bench update --reset` leaves maintenance_mode/pause_scheduler set in
     # sites/common_site_config.json: EVERY site that does not override them answers
     # 503 with its scheduler paused. True when that is what the failure left; None
-    # when the reset failed and that file could not be read; False otherwise.
+    # when it cannot be told (the reset failed and that file could not be read, or
+    # the reset's outcome is unknown and it may still be running); False otherwise.
     bench_left_in_maintenance: bool | None
     aborted: bool  # the fan-out stopped early (Ctrl-C / an unexpected error)
     ok: bool  # pre-computed aggregate; the frontends' exit code reads THIS
@@ -652,10 +653,28 @@ def _frappe_reset(
         status = "ok"
     emit(UpdateStepEnd(phase="frappe_reset", item="frappe", status=status, message=lost))
 
-    # Only a definite failure: an unknown outcome may still be running, and a run in
-    # flight has the flags set legitimately.
+    # The flags are read only after a definite failure: an unknown outcome may still
+    # be running, and a run in flight has them set legitimately.
     left_in_maintenance: bool | None = False
-    if status == "failed":
+    if status == "unknown":
+        left_in_maintenance = None
+        remedy = supervision.clear_bench_wide_flags_hint(
+            project_name,
+            list(supervision.BENCH_WIDE_FLAGS),
+            resolvers.bench_cli_flag(project_name, bench_path) or "",
+        )
+        warnings.append(
+            Message(
+                "frappe_reset.maintenance_unknown",
+                "The outcome of bench update --reset is unknown, so whether it left "
+                f"{bench_path} in maintenance mode is unknown too: it may still be running, "
+                "and a running bench update keeps maintenance_mode and pause_scheduler set "
+                "bench-wide. If the bench is still in maintenance once it has stopped, "
+                f"clear them with: {remedy}",
+                detail={"bench_path": bench_path},
+            )
+        )
+    elif status == "failed":
         flags = supervision.bench_wide_flags(
             supervision.common_site_config(frappe_container, bench_path)
         )
