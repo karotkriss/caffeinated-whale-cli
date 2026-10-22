@@ -227,6 +227,9 @@ def test_frappe_without_an_upstream_remote_is_a_blocker(bench):
     finding = by_code(bench.findings(), "frappe.no_upstream")
     assert finding.severity == up.BLOCKER
     assert finding.app == "frappe"
+    assert finding.remedy == (
+        "in `cwcli open proj`: git -C apps/frappe remote rename origin upstream"
+    )
 
 
 def test_frappe_on_master_is_a_blocker(tmp_path):
@@ -420,7 +423,10 @@ def test_frappe_without_any_remote_is_the_no_upstream_blocker(bench):
     assert finding.severity == up.BLOCKER
     assert "remotes: none" in finding.message
     assert ("git.no_remote", "frappe") not in codes(findings)
-    assert finding.remedy.endswith("&& git -C apps/frappe fetch upstream")
+    assert finding.remedy == (
+        "in `cwcli open proj`: git -C apps/frappe remote add upstream "
+        "https://github.com/frappe/frappe && git -C apps/frappe fetch upstream"
+    )
 
 
 def test_following_the_no_upstream_remedy_with_its_fetch_leaves_nothing_to_report(bench):

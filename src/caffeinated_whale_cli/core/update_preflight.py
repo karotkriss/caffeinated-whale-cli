@@ -594,6 +594,9 @@ def classify(
         )
         if code == "git.dubious_ownership" and fact.get("app") == "frappe":
             remedy = _OPEN + "sudo chown -R frappe:frappe {q_path}"
+        if code == "frappe.no_upstream" and fact.get("remotes"):
+            remedy = _OPEN + "git -C apps/frappe remote rename {q_tracked} upstream"
+            fields["q_tracked"] = shlex.quote(str(fact["remotes"][0]))
         if code == "git.uncommitted" or code == "git.unpushed":
             if fact.get("shallow_clone"):
                 # bench/app.py:1043-1044: reflog expire + gc --prune=all after the reset.
