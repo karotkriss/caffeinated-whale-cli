@@ -46,7 +46,7 @@ def _patch_attr(monkeypatch, attr, value):
     patched = False
     for modname in _RM_MODULES:
         try:
-            mod = importlib.import_module(modname)
+            mod = importlib.import_module(modname)  # noqa: TID251 - walks a fixed module list
         except ModuleNotFoundError:
             continue
         if hasattr(mod, attr):
