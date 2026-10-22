@@ -24,7 +24,7 @@ Endpoints:
   freshness labels through unchanged
 * ``GET /api/instance/<project>/logs`` - bounded ``core.read_logs`` tail
   (same-origin only, like the action endpoint - log lines are more sensitive
-  than fleet health, so this read is NOT CORS-open)
+  than fleet health, so this read also gets the same-origin check)
 * ``GET /api/instance/<project>/url``  - ``core.url.probe_url`` host URL plus a
   fresh reachability probe (same-origin only and serialized with project
   actions because it execs ``curl`` in the container)
@@ -634,8 +634,8 @@ class _Handler(BaseHTTPRequestHandler):
         """Send the 403 and return True when the request fails the same-origin check.
 
         Shared by the action endpoint and sensitive read endpoints. Those reads
-        expose local environment or instance details, so unlike the fleet-health
-        reads they are deliberately NOT CORS-open and get the action guard instead.
+        expose local environment or instance details, so on top of the no-CORS rule
+        every read has, they also get the action guard's same-origin check.
         """
         if self._action_same_origin():
             return False
