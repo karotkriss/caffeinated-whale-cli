@@ -420,6 +420,19 @@ def test_frappe_without_any_remote_is_the_no_upstream_blocker(bench):
     assert finding.severity == up.BLOCKER
     assert "remotes: none" in finding.message
     assert ("git.no_remote", "frappe") not in codes(findings)
+    assert finding.remedy.endswith("&& git -C apps/frappe fetch upstream")
+
+
+def test_following_the_no_upstream_remedy_with_its_fetch_leaves_nothing_to_report(bench):
+    frappe = bench.path / "apps" / "frappe"
+    bench.git("remote", "remove", "upstream", cwd=frappe)
+    bench.git("remote", "add", "upstream", str(bench.remotes / "frappe.git"), cwd=frappe)
+    # Without the fetch no upstream ref exists yet, so all local history reads unpushed.
+    assert ("git.unpushed", "frappe") in codes(bench.findings())
+
+    bench.git("fetch", "-q", "upstream", cwd=frappe)
+
+    assert bench.findings() == []
 
 
 def test_excluded_and_non_git_apps_are_notices(bench):

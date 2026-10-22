@@ -484,7 +484,8 @@ _RULES: dict[str, tuple[str, str, str | None]] = {
         BLOCKER,
         "frappe has no remote named 'upstream' (remotes: {remotes}); bench's version "
         "check reads upstream/<branch>",
-        _OPEN + "git -C apps/frappe remote add upstream https://github.com/frappe/frappe",
+        _OPEN + "git -C apps/frappe remote add upstream https://github.com/frappe/frappe "
+        "&& git -C apps/frappe fetch upstream",
     ),
     "git.remote_misdetected": (
         BLOCKER,
