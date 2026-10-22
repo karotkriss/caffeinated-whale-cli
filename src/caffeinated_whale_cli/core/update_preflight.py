@@ -76,7 +76,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 opts = json.loads(sys.argv[1])
 bench = sys.argv[2].rstrip("/")
-ENV = dict(os.environ, GIT_TERMINAL_PROMPT="0", LC_ALL="C")
+ENV = dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0", LC_ALL="C")
 START = time.time()
 
 
@@ -152,19 +152,22 @@ def check_app(app, excluded, shallow):
         add("git.unreadable", error=last_line(err) or "git remote did not answer")
         return found, probes, d
     remotes = names.split()
+    # bench/utils/app.py:141-166: the version check reads upstream/<branch> of frappe,
+    # before any app is skipped for having no remote.
+    no_upstream = app == "frappe" and "upstream" not in remotes
+    if no_upstream:
+        add("frappe.no_upstream", remotes=remotes)
     if re.findall(r"upstream[\s]+", remote_v):
         remote = "upstream"
     elif not remote_v:
         # bench/app.py:1028-1035: skipped AND appended to sites/excluded_apps.txt.
-        add("git.no_remote")
+        if not no_upstream:
+            add("git.no_remote")
         return found, probes, d
     else:
         remote = remote_v.splitlines()[0].split()[0]
 
-    # bench/utils/app.py:141-166: the version check reads upstream/<branch> of frappe.
-    if app == "frappe" and "upstream" not in remotes:
-        add("frappe.no_upstream", remotes=remotes)
-    elif remote not in remotes:
+    if not no_upstream and remote not in remotes:
         add("git.remote_misdetected", remote=remote, remotes=remotes)
 
     # bench/utils/app.py:176-180 (get_current_branch): `git symbolic-ref`, which
@@ -182,15 +185,13 @@ def check_app(app, excluded, shallow):
             add("app.not_writable", path=os.path.realpath(path))
             break
 
-    # bench/app.py:1029-1034: without shallow_clone a shallow repo is unshallowed first.
-    if not shallow and os.path.exists(os.path.join(d, ".git", "shallow")):
-        add("git.unshallow", remote=remote)
-
     # What `git reset --hard <remote>/<branch>` discards: tracked changes and commits
     # not on the remote branch. Untracked files survive a reset, so they do not count.
-    rc, status, err = git(d, ["status", "--porcelain"], opts["local_timeout"])
+    rc, status, err = git(
+        d, ["status", "--porcelain", "--untracked-files=no"], opts["local_timeout"]
+    )
     if rc == 0:
-        tracked = [l for l in status.splitlines() if l and not l.startswith("??")]
+        tracked = [l for l in status.splitlines() if l]
         if tracked:
             add("git.uncommitted", count=len(tracked), shallow_clone=shallow)
     else:
@@ -518,12 +519,6 @@ _RULES: dict[str, tuple[str, str, str | None]] = {
         "could not tell whether the reset would discard local work ({error})",
         None,
     ),
-    "git.unshallow": (
-        NOTICE,
-        "shallow clone: bench first fetches its full history from '{remote}', which "
-        "takes time and network",
-        None,
-    ),
     "git.remote_unreachable": (
         BLOCKER,
         "remote '{remote}' is unreachable ({error})",
@@ -584,7 +579,9 @@ def classify(
     for fact in facts:
         code = str(fact.get("code"))
         severity, message, remedy = _RULES.get(code, (UNVERIFIED, code, None))
-        fields = {k: ", ".join(v) if isinstance(v, list) else v for k, v in fact.items()}
+        fields = {
+            k: (", ".join(v) or "none") if isinstance(v, list) else v for k, v in fact.items()
+        }
         fields.update(
             project=project,
             bench_flag=bench_flag,
@@ -592,7 +589,10 @@ def classify(
             q_app=shlex.quote(str(fact.get("app") or "")),
             q_site=shlex.quote(str(fact.get("site") or "")),
             q_remote=shlex.quote(str(fact.get("remote") or "")),
+            q_path=shlex.quote(str(fact.get("path") or "")),
         )
+        if code == "git.dubious_ownership" and fact.get("app") == "frappe":
+            remedy = _OPEN + "sudo chown -R frappe:frappe {q_path}"
         if code == "git.uncommitted" or code == "git.unpushed":
             if fact.get("shallow_clone"):
                 # bench/app.py:1043-1044: reflog expire + gc --prune=all after the reset.

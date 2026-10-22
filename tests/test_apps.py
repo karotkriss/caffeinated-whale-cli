@@ -1077,6 +1077,57 @@ def test_no_preflight_reaches_the_core_from_both_human_spellings(monkeypatch, su
     assert any("bench update --reset" in c for c in container.calls)
 
 
+@pytest.mark.parametrize("surface", ["apps_update", "deprecated_update"])
+def test_bench_selector_reaches_the_preflight_remedies_from_both_human_spellings(
+    monkeypatch, surface
+):
+    from caffeinated_whale_cli.core.envelope import Result, Status
+    from caffeinated_whale_cli.utils import docker_utils
+
+    container = FakeFrappeContainer(available_apps=["frappe"])
+    _wire_update(monkeypatch, container)
+    monkeypatch.setattr(
+        core_update.resolvers,
+        "resolve_bench",
+        lambda project, selector, path: Result(
+            status=Status.OK, data="/workspace/frappe-bench" if selector == "1" else "/wrong"
+        ),
+    )
+    seen = []
+
+    def fake(container, bench_path, *, project, bench=None):
+        seen.append((bench_path, bench))
+        return core_update.update_preflight.PreflightOutcome(
+            findings=[], apps=1, sites=0, elapsed=0.1, bench_path=bench_path
+        )
+
+    monkeypatch.setattr(core_update.update_preflight, "run_preflight", fake)
+    monkeypatch.setattr(docker_utils.shutil, "which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(
+        docker_utils.docker, "from_env", lambda: types.SimpleNamespace(ping=lambda: True)
+    )
+    common = dict(
+        bench="1",
+        bench_path=None,
+        sites=None,
+        verbose=False,
+        clear_cache=False,
+        clear_website_cache=False,
+        build=False,
+        skip_maintenance=False,
+        no_recache=True,
+        no_preflight=False,
+        yes=False,
+    )
+
+    if surface == "apps_update":
+        apps_mod.update_apps("proj", ["frappe"], force=False, json_output=False, **common)
+    else:
+        update_mod.update("proj", apps=["frappe"], **common)
+
+    assert seen == [("/workspace/frappe-bench", "1")]
+
+
 def _wire_update_site_filter(
     monkeypatch, container, *, installed_apps, bench_path="/workspace/frappe-bench"
 ):

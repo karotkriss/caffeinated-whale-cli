@@ -561,7 +561,8 @@ def run_app_update(
         result = core_update.update(
             project_name,
             list(apps),
-            bench_path=bench_path,
+            bench=bench,
+            bench_path=None if bench else bench_path,
             sites=list(sites) if sites else None,
             clear_cache=clear_cache,
             clear_website_cache=clear_website_cache,
