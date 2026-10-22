@@ -816,6 +816,9 @@ td.code, .code {
   letter-spacing: var(--tracking-wide);
 }
 .where-form {
+  /* A grid item's default min-width is its min-content, which the input's
+     intrinsic width inflates past the rail, clipping the Search button. */
+  min-width: 0;
   display: flex;
   gap: var(--space-3);
 }
@@ -839,6 +842,8 @@ td.code, .code {
   cursor: pointer;
   white-space: nowrap;
 }
+/* Same height as the search field beside it. */
+.where-form button { height: var(--control-height); padding-block: 0; }
 .where-form button:hover, .log-toolbar button:hover {
   border-color: var(--border-accent);
   background: var(--bg-hover);
@@ -2481,14 +2486,29 @@ dialog input {
 
   // --------------------------------------------------------------- auth gate
 
-  // Authentication is OFF on the ordinary loopback run, so this probe answers
-  // 200 and the page connects with nothing shown. It only asks when the daemon
-  // was started with CWCLI_SERVE_TOKEN, which is the deliberate remote-bind
-  // case. One POST exchanges the token for the daemon's HttpOnly session
-  // cookie; after that every fetch AND the EventSource carry it automatically,
-  // which is why EventSource - which cannot send an Authorization header -
-  // needs no special handling here.
+  // Authentication is always on. The daemon prints a one-time login link,
+  // http://127.0.0.1:<port>/#login=<code>; the fragment never leaves the
+  // browser (no request line, no Referer), so the page reads it, strips it from
+  // history, and posts it once in exchange for the daemon's HttpOnly session
+  // cookie. After that every fetch AND the EventSource carry the cookie
+  // automatically, which is why EventSource - which cannot send an
+  // Authorization header - needs no special handling here. A spent or stale
+  // link falls through to the probe, so a tab that already holds a cookie
+  // still connects.
   async function startSession() {
+    const code = new URLSearchParams(location.hash.slice(1)).get("login");
+    if (code !== null) {
+      history.replaceState(null, "", location.pathname + location.search);
+      try {
+        await fetch("/api/session", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({code})
+        });
+      } catch (error) {
+        // Unreachable daemon: the probe below reports it the same way.
+      }
+    }
     let probe;
     try {
       probe = await fetch("/api/snapshot");
@@ -2500,13 +2520,15 @@ dialog input {
       connectEvents();
       return;
     }
-    askForToken("This cwcli serve daemon requires its access token.");
+    askForToken(code === null
+      ? "Sign in with the one-time login link cwcli serve printed when it started."
+      : "That login link has already been used, or belongs to an earlier daemon launch.");
   }
 
   function askForToken(message) {
     setConnection("locked");
-    openModal(`<h3 id="modal-title">Access token required</h3>
-      <p class="modal-help">${esc(message)} It is the value of <code>CWCLI_SERVE_TOKEN</code> in the shell that started <code>cwcli serve</code>. The token is sent once, in exchange for a session cookie for this daemon launch.</p>
+    openModal(`<h3 id="modal-title">Sign in required</h3>
+      <p class="modal-help">${esc(message)} Each link works once; restart the daemon for a new one. If it was started with <code>CWCLI_SERVE_TOKEN</code>, you can enter that token here instead. Either is sent once, in exchange for a session cookie for this daemon launch.</p>
       <label>Access token
         <input name="token" type="password" autocomplete="off" required>
       </label>
@@ -2543,6 +2565,11 @@ dialog input {
   // rather than a blank shell while the first snapshot (or a dead daemon's
   // retry loop) is pending.
   render();
+  // A fresh login link pasted into this tab changes only the fragment, which
+  // the browser does not reload for; reloading runs the sign-in above cleanly.
+  window.addEventListener("hashchange", () => {
+    if (new URLSearchParams(location.hash.slice(1)).has("login")) location.reload();
+  });
   startSession();
 })();
 </script>
