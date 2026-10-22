@@ -128,13 +128,20 @@ def check_app(app, excluded, shallow):
         found.append(facts)
 
     d = os.path.join(bench, "apps", app)
+    core = app in ("frappe", "erpnext")
+    pulled = False
     # bench/app.py:1022-1024: an excluded app is skipped, nothing is reset.
     if app in excluded:
         add("app.excluded")
-        return found, probes, d
     # bench/app.py:1026: only a dir holding .git is pulled; anything else is skipped.
-    if not os.path.exists(os.path.join(d, ".git")):
+    elif not os.path.exists(os.path.join(d, ".git")):
         add("app.not_git")
+    else:
+        pulled = True
+    # bench/utils/bench.py:667-694 (validate_branch) and :141-166 (is_version_upgrade)
+    # read frappe and erpnext from Bench('.').apps, which filters neither of the above,
+    # so their branch and upstream rules still apply to a skipped one.
+    if not pulled and not core:
         return found, probes, d
     rc, out, err = git(d, ["rev-parse", "--git-dir"], opts["local_timeout"])
     if rc != 0:
@@ -157,6 +164,20 @@ def check_app(app, excluded, shallow):
     no_upstream = app == "frappe" and "upstream" not in remotes
     if no_upstream:
         add("frappe.no_upstream", remotes=remotes)
+
+    # bench/utils/app.py:176-180 (get_current_branch): `git symbolic-ref`, which
+    # fails on a detached HEAD.
+    rc, branch, _ = git(d, ["symbolic-ref", "-q", "--short", "HEAD"], opts["local_timeout"])
+    if rc != 0 or not branch:
+        branch = None
+    # bench/utils/bench.py:667-694 (validate_branch).
+    if core and branch is None:
+        add("git.detached_head")
+    if core and branch == "master":
+        add("git.master_branch")
+    if not pulled:
+        return found, probes, d
+
     remote = None
     if re.findall(r"upstream[\s]+", remote_v):
         remote = "upstream"
@@ -171,15 +192,9 @@ def check_app(app, excluded, shallow):
     if not no_upstream and remote not in remotes:
         add("git.remote_misdetected", remote=remote, remotes=remotes)
 
-    # bench/utils/app.py:176-180 (get_current_branch): `git symbolic-ref`, which
-    # fails on a detached HEAD.
-    rc, branch, _ = git(d, ["symbolic-ref", "-q", "--short", "HEAD"], opts["local_timeout"])
-    if rc != 0 or not branch:
+    # bench/app.py (pull_apps): get_current_branch for every app it goes on to reset.
+    if not core and branch is None:
         add("git.detached_head")
-        branch = None
-    # bench/utils/bench.py:667-694 (validate_branch).
-    if app in ("frappe", "erpnext") and branch == "master":
-        add("git.master_branch")
 
     for path in (d, os.path.join(d, ".git")):
         if os.path.isdir(path) and not os.access(path, os.W_OK):
@@ -579,9 +594,7 @@ def classify(
     selector_flag = (
         f" --path {shlex.quote(path)}"
         if path
-        else f" --bench {shlex.quote(bench)}"
-        if bench
-        else ""
+        else f" --bench {shlex.quote(bench)}" if bench else ""
     )
     findings = []
     for fact in facts:

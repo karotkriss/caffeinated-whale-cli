@@ -482,6 +482,29 @@ def test_excluded_and_non_git_apps_are_notices(bench):
     assert ("app.not_git", "plain") in found
 
 
+def test_an_excluded_or_non_git_frappe_or_erpnext_still_gets_the_branch_rules(bench):
+    # bench's validate_branch and version check read frappe and erpnext whether or
+    # not pull_apps would skip them, so they still fail on these before any backup.
+    frappe = bench.path / "apps" / "frappe"
+    bench.git("remote", "remove", "upstream", cwd=frappe)
+    bench.git("checkout", "-q", "--detach", cwd=frappe)
+    erpnext = bench.app("erpnext", "master")
+    bench.git("remote", "remove", "upstream", cwd=erpnext)
+    parked = bench.app("parked")
+    bench.git("checkout", "-q", "--detach", cwd=parked)
+    (bench.path / "sites" / "excluded_apps.txt").write_text("frappe\nerpnext\nparked\n")
+
+    findings = bench.findings()
+    found = codes(findings)
+
+    assert ("frappe.no_upstream", "frappe") in found
+    assert ("git.detached_head", "frappe") in found
+    assert ("git.master_branch", "erpnext") in found
+    assert ("git.no_remote", "erpnext") not in found
+    assert ("git.detached_head", "parked") not in found
+    assert {f.severity for f in findings if f.app == "parked"} == {up.NOTICE}
+
+
 def test_leftover_bench_wide_flags_are_notices(bench):
     bench.write_conf(maintenance_mode=1, pause_scheduler=1)
 
