@@ -591,6 +591,22 @@ _BENCH_FLAG_EFFECTS = {
 }
 
 
+def _bench_selector(project_name: str, bench_path: str) -> str | None:
+    """The ``--bench`` value naming ``bench_path`` on a multi-bench instance.
+
+    None on a single-bench instance, where a suggested command needs no selector,
+    and when the path is not in the cache, where any selector would be a guess.
+    """
+    benches = resolvers.cached_benches(project_name)
+    if len(benches) < 2:
+        return None
+    for cached in benches:
+        if cached.get("path") == bench_path:
+            label, index = cached.get("label"), cached.get("index")
+            return str(label) if label else (None if index is None else str(index))
+    return None
+
+
 def _frappe_reset(
     frappe_container,
     *,
@@ -601,7 +617,6 @@ def _frappe_reset(
     ignored: list[str],
     emit: OnEvent,
     warnings: list[Message],
-    bench: str | None = None,
 ) -> Result[UpdateReport]:
     """The bench-wide ``bench update --reset`` path (the ``frappe`` app special-case).
 
@@ -659,6 +674,7 @@ def _frappe_reset(
     if status == "failed":
         flags = supervision.bench_wide_flags(frappe_container, bench_path)
         left_in_maintenance = None if flags is None else bool(flags)
+        bench = _bench_selector(project_name, bench_path)
         if flags:
             them = "them" if len(flags) > 1 else "it"
             effects = " and ".join(_BENCH_FLAG_EFFECTS[flag] for flag in flags)
@@ -679,7 +695,8 @@ def _frappe_reset(
                     "frappe_reset.maintenance_unknown",
                     f"bench update --reset failed, and {bench_path}/sites/"
                     "common_site_config.json could not be read to check whether it left "
-                    f"the bench in maintenance mode. Check with: cwcli status {project_name}",
+                    "the bench in maintenance mode. Check with: cwcli status "
+                    f"{project_name}{f' --bench {bench}' if bench else ''}",
                     detail={"bench_path": bench_path},
                 )
             )
@@ -858,7 +875,6 @@ def update(
                 ignored=ignored,
                 emit=emit,
                 warnings=warnings,
-                bench=bench,
             )
 
         return _update_apps(

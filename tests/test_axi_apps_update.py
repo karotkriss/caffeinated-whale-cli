@@ -423,3 +423,28 @@ class TestFailedResetLeavesTheBenchInMaintenance:
         # The reset is not a git pull, so the summary does not call it one.
         assert "frappe: bench update --reset failed" in captured.out
         assert "Git pull failed" not in captured.out
+
+    def test_the_human_remedy_names_the_bench_on_a_multi_bench_instance(
+        self, bench_like, monkeypatch, capsys
+    ):
+        # The human frontend resolves the bench itself and hands the core only the
+        # path; the remedy must still carry the --bench that clears THAT bench.
+        monkeypatch.setattr(
+            core_update.resolvers,
+            "cached_benches",
+            lambda _p: [
+                {"path": "/workspace/other-bench", "index": 0, "label": None},
+                {"path": BENCH, "index": 1, "label": None},
+            ],
+        )
+        bench_like.fail_on = ["bench update --reset"]
+
+        with pytest.raises(typer.Exit) as exc:
+            update_mod.run_app_update("proj", ["frappe"], bench_path=BENCH, yes=True)
+
+        assert exc.value.exit_code == 1
+        err = " ".join(capsys.readouterr().err.split())
+        assert (
+            "cwcli run proj --bench 1 set-config --global --parse maintenance_mode 0 && "
+            "cwcli run proj --bench 1 set-config --global --parse pause_scheduler 0"
+        ) in err
