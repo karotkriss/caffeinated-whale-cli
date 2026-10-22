@@ -1,0 +1,2 @@
+# Adherence-lint tooling deps (installed via `npm ci` in CI)
+/node_modules/

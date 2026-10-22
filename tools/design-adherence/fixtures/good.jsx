@@ -1,5 +1,5 @@
 // Clean design-consuming code: tokens via var(), index import, valid props.
-// tools/bites.test.mjs asserts the policy reports ZERO problems here, so a
+// bites.test.mjs asserts the policy reports ZERO problems here, so a
 // false-positive regression fails the gate too.
 import { Button } from "index.js";
 
