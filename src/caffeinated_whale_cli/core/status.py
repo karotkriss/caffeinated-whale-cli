@@ -309,10 +309,6 @@ def status(
     # a never-started bench look identical to the marker and to supervisord.
     present = resolvers.present_bench_paths(frappe_container, [path for _, path, _ in targets])
 
-    # A remedy names the bench only when `cwcli run` could not otherwise tell which one
-    # to act on: several benches, or the caller already had to pick one.
-    name_bench = len(targets) > 1 or bench is not None or bench_path is not None
-
     benches: list[BenchStatus] = []
     for index, path, label in targets:
         ports = assigned.get(path)
@@ -338,9 +334,7 @@ def status(
                     web_site=resolvers.resolve_representative_site(project_name, path),
                     probe_web=probe_web,
                     warnings=warnings,
-                    bench_selector=(
-                        str(label or index) if name_bench and index is not None else None
-                    ),
+                    bench_flag=resolvers.bench_cli_flag(project_name, path) or "",
                 ),
                 bench_present=_present_state(present, path),
             )
@@ -448,7 +442,7 @@ def _bench_status(
     web_site: str | None,
     probe_web: bool,
     warnings: list[Message],
-    bench_selector: str | None = None,
+    bench_flag: str = "",
 ) -> BenchStatus:
     """One bench's live health, probed on ITS OWN port (or not probed at all).
 
@@ -464,8 +458,9 @@ def _bench_status(
     # (skipped in the quiet --watch loop): a site stuck in maintenance answers 503
     # with no other signal, so status names it and the way out. Gated on web_site,
     # not web_port - a bench whose port is unreadable can still be stuck.
+    common = supervision.common_site_config(frappe_container, bench_path) if probe_web else None
     maintenance = (
-        supervision.maintenance_mode_on(frappe_container, bench_path, web_site)
+        supervision.maintenance_mode_on(frappe_container, bench_path, web_site, common=common or {})
         if probe_web and web_site
         else None
     )
@@ -474,10 +469,7 @@ def _bench_status(
     # EVERY site that does not override them, and because the way out is a different
     # command: `set-maintenance-mode off` writes one site's own override and leaves
     # the rest of the bench down.
-    bench_flags = (
-        (supervision.bench_wide_flags(frappe_container, bench_path) or []) if probe_web else []
-    )
-    bench_flag = f" --bench {bench_selector}" if bench_selector else ""
+    bench_flags = (supervision.bench_wide_flags(common) or []) if probe_web else []
     if "maintenance_mode" in bench_flags:
         warnings.append(
             Message(
@@ -487,7 +479,7 @@ def _bench_status(
                 "that does not override it answers 503 (bench update sets it while it runs "
                 "and leaves it set when it fails). Clear it with: "
                 + supervision.clear_bench_wide_flags_hint(
-                    project_name, ["maintenance_mode"], bench_selector
+                    project_name, ["maintenance_mode"], bench_flag
                 ),
                 detail={"bench_path": bench_path, "scope": "bench"},
             )
@@ -511,7 +503,7 @@ def _bench_status(
                 "does not override it runs scheduled jobs (bench update sets it while it runs "
                 "and leaves it set when it fails). Clear it with: "
                 + supervision.clear_bench_wide_flags_hint(
-                    project_name, ["pause_scheduler"], bench_selector
+                    project_name, ["pause_scheduler"], bench_flag
                 ),
                 detail={"bench_path": bench_path},
             )
@@ -603,7 +595,7 @@ def _bench_status_fused(
     web_site: str | None,
     probe_web: bool,
     warnings: list[Message],
-    bench_selector: str | None = None,
+    bench_flag: str = "",
 ) -> BenchStatus:
     """:func:`_bench_status`'s one-exec twin for a repeating caller (``fused=True``).
 
@@ -640,7 +632,7 @@ def _bench_status_fused(
             web_site=web_site,
             probe_web=probe_web,
             warnings=warnings,
-            bench_selector=bench_selector,
+            bench_flag=bench_flag,
         )
 
     return BenchStatus(

@@ -917,32 +917,39 @@ def _read_bench_json(container, bench_path: str, relative_path: str) -> dict | N
 BENCH_WIDE_FLAGS = ("maintenance_mode", "pause_scheduler")
 
 
-def bench_wide_flags(container, bench_path: str) -> list[str] | None:
-    """Which :data:`BENCH_WIDE_FLAGS` are set in ``sites/common_site_config.json``.
+def common_site_config(container, bench_path: str) -> dict | None:
+    """The bench's ``sites/common_site_config.json``, or None when unreadable."""
+    return _read_bench_json(container, bench_path, "sites/common_site_config.json")
 
-    Returns None (fail-honest) when the file cannot be read, never an empty list:
+
+def bench_wide_flags(common: dict | None) -> list[str] | None:
+    """Which :data:`BENCH_WIDE_FLAGS` are set in ``common`` (a
+    :func:`common_site_config` read).
+
+    Returns None (fail-honest) when the file could not be read, never an empty list:
     "could not tell" must not read as "the bench is clear".
     """
-    config = _read_bench_json(container, bench_path, "sites/common_site_config.json")
-    if config is None:
+    if common is None:
         return None
-    return [flag for flag in BENCH_WIDE_FLAGS if config.get(flag)]
+    return [flag for flag in BENCH_WIDE_FLAGS if common.get(flag)]
 
 
-def clear_bench_wide_flags_hint(project: str, flags: list[str], bench: str | None = None) -> str:
+def clear_bench_wide_flags_hint(project: str, flags: list[str], bench_flag: str = "") -> str:
     """The copy-paste command that clears bench-wide ``flags``.
 
+    ``bench_flag`` is the :func:`resolvers.bench_cli_flag` fragment naming the bench.
     ``--parse`` is load-bearing: without it frappe stores the STRING "0", which is
     truthy, so the bench would stay down. The long flag forms are deliberate:
     ``-p`` is ``cwcli run``'s own ``--path``.
     """
-    bench_flag = f" --bench {bench}" if bench else ""
     return " && ".join(
         f"cwcli run {project}{bench_flag} set-config --global --parse {flag} 0" for flag in flags
     )
 
 
-def maintenance_mode_on(container, bench_path: str, site: str) -> bool | None:
+def maintenance_mode_on(
+    container, bench_path: str, site: str, *, common: dict | None = None
+) -> bool | None:
     """Whether ``site`` is in maintenance mode, read LIVE from its effective config.
 
     A site left stuck in maintenance mode answers HTTP 503 to every user with no
@@ -960,7 +967,8 @@ def maintenance_mode_on(container, bench_path: str, site: str) -> bool | None:
 
     Returns None (fail-honest) when the site's file is missing or unparseable:
     "could not tell" must never read as "not in maintenance". An unreadable common
-    config counts as empty, exactly as frappe treats it.
+    config counts as empty, exactly as frappe treats it. A caller that already read
+    the common config passes it as ``common`` rather than reading it twice.
     """
     site_config = _read_bench_json(
         container, bench_path, f"sites/{shlex.quote(site)}/site_config.json"
@@ -969,7 +977,8 @@ def maintenance_mode_on(container, bench_path: str, site: str) -> bool | None:
         return None
     if "maintenance_mode" in site_config:
         return bool(site_config["maintenance_mode"])
-    common = _read_bench_json(container, bench_path, "sites/common_site_config.json") or {}
+    if common is None:
+        common = common_site_config(container, bench_path) or {}
     return bool(common.get("maintenance_mode"))
 
 

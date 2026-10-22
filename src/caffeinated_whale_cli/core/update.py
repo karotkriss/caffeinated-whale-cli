@@ -591,22 +591,6 @@ _BENCH_FLAG_EFFECTS = {
 }
 
 
-def _bench_selector(project_name: str, bench_path: str) -> str | None:
-    """The ``--bench`` value naming ``bench_path`` on a multi-bench instance.
-
-    None on a single-bench instance, where a suggested command needs no selector,
-    and when the path is not in the cache, where any selector would be a guess.
-    """
-    benches = resolvers.cached_benches(project_name)
-    if len(benches) < 2:
-        return None
-    for cached in benches:
-        if cached.get("path") == bench_path:
-            label, index = cached.get("label"), cached.get("index")
-            return str(label) if label else (None if index is None else str(index))
-    return None
-
-
 def _frappe_reset(
     frappe_container,
     *,
@@ -672,13 +656,16 @@ def _frappe_reset(
     # flight has the flags set legitimately.
     left_in_maintenance: bool | None = False
     if status == "failed":
-        flags = supervision.bench_wide_flags(frappe_container, bench_path)
+        flags = supervision.bench_wide_flags(
+            supervision.common_site_config(frappe_container, bench_path)
+        )
         left_in_maintenance = None if flags is None else bool(flags)
-        bench = _bench_selector(project_name, bench_path)
         if flags:
             them = "them" if len(flags) > 1 else "it"
             effects = " and ".join(_BENCH_FLAG_EFFECTS[flag] for flag in flags)
-            remedy = supervision.clear_bench_wide_flags_hint(project_name, flags, bench)
+            remedy = supervision.clear_bench_wide_flags_hint(
+                project_name, flags, resolvers.bench_cli_flag(project_name, bench_path) or ""
+            )
             warnings.append(
                 Message(
                     "frappe_reset.left_in_maintenance",
@@ -690,13 +677,18 @@ def _frappe_reset(
                 )
             )
         elif flags is None:
+            status_flag = resolvers.bench_cli_flag(project_name, bench_path, allow_path=False)
+            check = (
+                f" Check with: cwcli status {project_name}{status_flag}"
+                if status_flag is not None
+                else ""
+            )
             warnings.append(
                 Message(
                     "frappe_reset.maintenance_unknown",
                     f"bench update --reset failed, and {bench_path}/sites/"
                     "common_site_config.json could not be read to check whether it left "
-                    "the bench in maintenance mode. Check with: cwcli status "
-                    f"{project_name}{f' --bench {bench}' if bench else ''}",
+                    f"the bench in maintenance mode.{check}",
                     detail={"bench_path": bench_path},
                 )
             )
