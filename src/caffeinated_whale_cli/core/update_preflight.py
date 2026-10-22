@@ -135,7 +135,8 @@ def check_app(app, excluded, shallow):
         add("app.excluded")
     # bench/app.py:1026: only a dir holding .git is pulled; anything else is skipped.
     elif not os.path.exists(os.path.join(d, ".git")):
-        add("app.not_git")
+        if not core:
+            add("app.not_git")
     else:
         pulled = True
     # bench/utils/bench.py:667-694 (validate_branch) and :141-166 (is_version_upgrade)
@@ -147,6 +148,8 @@ def check_app(app, excluded, shallow):
     if rc != 0:
         if "dubious ownership" in err:
             add("git.dubious_ownership", path=os.path.realpath(d))
+        elif core and "not a git repository" in err:
+            add("git.not_a_checkout")
         else:
             add("git.unreadable", error=last_line(err) or "git did not answer")
         return found, probes, d
@@ -488,6 +491,11 @@ _RULES: dict[str, tuple[str, str, str | None]] = {
         "git refuses the repository at {path}: another user owns it (dubious ownership)",
         "cwcli apps update {q_project} {q_app}{selector_flag} --force re-owns it to the "
         "container user (and pulls that app)",
+    ),
+    "git.not_a_checkout": (
+        BLOCKER,
+        "not a git checkout; bench reads {app}'s branch before updating anything and fails",
+        _OPEN + "replace apps/{q_app} with a git clone of it",
     ),
     "git.unreadable": (UNVERIFIED, "git could not read the repository ({error})", None),
     "git.no_remote": (
