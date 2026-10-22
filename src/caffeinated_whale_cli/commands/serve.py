@@ -87,7 +87,8 @@ when set, otherwise a random token made fresh for each launch. It is read from
 the ENVIRONMENT only and never from a flag, so it stays out of ``ps`` output
 (the ``core/init.py`` secret-transport rule), and it is never printed. Comparison
 is ``hmac.compare_digest``. A browser signs in through the one-time login code
-the banner prints as ``http://127.0.0.1:<port>/#login=<code>``: the fragment is
+the banner prints as ``http://<bound address>:<port>/#login=<code>`` (``127.0.0.1``
+by default; a wildcard bind prints the outbound address): the fragment is
 never sent to a server or in a ``Referer``, the page posts it once to
 ``/api/session`` and strips it from history, and a redeemed code is dead, so a
 link copied out of history or scrollback cannot be replayed. ``GET /`` and
