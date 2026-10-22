@@ -20,13 +20,22 @@ import shlex
 import sys
 
 import typer
+from rich.markup import escape
 from rich.status import Status as RichStatus
 from rich.table import Table
 
 from ..core import update as core_update
+from ..core import update_preflight
 from ..core.envelope import Status
 from ..core.errors import CwcliError
-from ..core.update import UpdateAborted, UpdateOutput, UpdateReport, UpdateStepEnd, UpdateStepStart
+from ..core.update import (
+    UpdateAborted,
+    UpdateOutput,
+    UpdatePreflight,
+    UpdateReport,
+    UpdateStepEnd,
+    UpdateStepStart,
+)
 from ..utils.completion_utils import complete_app_names, complete_project_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import handle_docker_errors
@@ -35,6 +44,13 @@ from ..utils.docker_utils import handle_docker_errors
 # success line, failure line) with {item} / {index} / {total} placeholders; None
 # means "say nothing at this point", which is what the quiet phases want.
 _PHASES = {
+    "preflight": {
+        "header": (
+            "[bold green]→[/bold green] Preflight: checking apps, remotes and sites "
+            "before 'bench update --reset'"
+        ),
+        "spinner": "Preflight: checking apps, remotes and sites...",
+    },
     "pull": {
         "header": "[bold green]→[/bold green] Updating app: [cyan]{item}[/cyan]",
         "spinner": "Pulling app: {item} ({index}/{total})",
@@ -139,6 +155,11 @@ class _Renderer:
             self._on_output(event)
         elif isinstance(event, UpdateStepEnd):
             self._on_end(event)
+        elif isinstance(event, UpdatePreflight):
+            # Rendered now, before the reset starts: a data-loss warning printed
+            # after bench has run would warn about nothing.
+            self._stop_spinner()
+            _render_preflight(event)
         elif isinstance(event, UpdateAborted):
             # The run is unwinding, so this report will never be returned. Print it
             # here or lose a stuck site's remediation entirely.
@@ -270,6 +291,51 @@ class _Renderer:
                 console.print(line.format(item=event.item))
 
 
+# Severity -> (group heading, row marker), in the order the groups print.
+_PREFLIGHT_GROUPS = (
+    (
+        update_preflight.BLOCKER,
+        "Blocking - bench update --reset would fail:",
+        "[bold red]✗[/bold red]",
+    ),
+    (
+        update_preflight.DATA_LOSS,
+        "Data loss - bench update --reset discards this local work:",
+        "[bold yellow]![/bold yellow]",
+    ),
+    (update_preflight.UNVERIFIED, "Could not verify:", "[yellow]?[/yellow]"),
+    (update_preflight.NOTICE, "Notices:", "[dim]•[/dim]"),
+)
+
+
+def _render_preflight(event: UpdatePreflight) -> None:
+    """Print the preflight's findings grouped by severity, each with its remedy."""
+    if not event.findings:
+        console.print(f"[bold green]✓[/bold green] Preflight passed: {escape(event.summary)}")
+        return
+    console.print(f"[bold]Preflight:[/bold] {escape(event.summary)}")
+
+    def subject(finding: update_preflight.PreflightFinding) -> str:
+        if finding.app:
+            return finding.app
+        return f"site {finding.site}" if finding.site else "bench"
+
+    width = max(len(subject(f)) for f in event.findings)
+    for severity, heading, marker in _PREFLIGHT_GROUPS:
+        group = [f for f in event.findings if f.severity == severity]
+        if not group:
+            continue
+        console.print(f"\n  [bold]{heading}[/bold]")
+        for finding in group:
+            console.print(
+                f"    {marker} [cyan]{escape(subject(finding)).ljust(width)}[/cyan]  "
+                f"{escape(finding.message)}"
+            )
+            if finding.remedy:
+                console.print(f"      {' ' * width}  [dim]fix: {escape(finding.remedy)}[/dim]")
+    console.print()
+
+
 def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = None) -> None:
     """Print the summary of every phase.
 
@@ -280,6 +346,16 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
     a stuck site lost its remediation line; now the report is a returned value and
     cannot be skipped at all.
     """
+    if report.preflight_blocked:
+        # The findings were rendered when the preflight finished; this is the verdict.
+        blockers = [f for f in report.preflight if f.severity == update_preflight.BLOCKER]
+        console.print(
+            f"[bold red]Refusing to start: {len(blockers)} blocking problem(s). "
+            "Nothing was changed.[/bold red]"
+        )
+        console.print("Re-run with --no-preflight to run bench anyway.")
+        return
+
     successful_apps = len(report.apps) - len(report.failed_apps) - len(report.unknown_apps)
 
     if successful_apps > 0 and not report.aborted:
@@ -439,6 +515,7 @@ def run_app_update(
     skip_maintenance: bool = False,
     no_recache: bool = False,
     force: bool = False,
+    no_preflight: bool = False,
     yes: bool = False,
     sites: list[str] | None = None,
     json_output: bool = False,
@@ -492,6 +569,7 @@ def run_app_update(
             skip_maintenance=skip_maintenance,
             no_recache=no_recache,
             force=force,
+            preflight=not no_preflight,
             auto_start=yes,
             on_event=renderer,
         )
@@ -538,6 +616,13 @@ def run_app_update(
 # `bench_left_in_maintenance` flag alone does not say how to bring them back.
 _BENCH_LEFT_DOWN_CODES = frozenset(
     {"frappe_reset.left_in_maintenance", "frappe_reset.maintenance_unknown"}
+)
+
+# Shared by all three surfaces (apps update, the deprecated update, axi apps update).
+NO_PREFLIGHT_HELP = (
+    "Updating frappe only: skip the checks that run before 'bench update --reset' "
+    "(app remotes and branches, sites, services, migrate locks). Use when a check is "
+    "a false positive; bench then fails wherever it fails."
 )
 
 # The benches and sites the post-pull recache and the site discovery could not
@@ -662,6 +747,11 @@ def update(
         "--no-recache",
         help="Skip re-caching project after app updates (uses existing cache for site detection).",
     ),
+    no_preflight: bool = typer.Option(
+        False,
+        "--no-preflight",
+        help=NO_PREFLIGHT_HELP,
+    ),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Auto-start stopped containers without prompting."
     ),
@@ -700,6 +790,7 @@ def update(
         build=build,
         skip_maintenance=skip_maintenance,
         no_recache=no_recache,
+        no_preflight=no_preflight,
         yes=yes,
         sites=sites,
     )

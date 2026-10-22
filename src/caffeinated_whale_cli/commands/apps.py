@@ -42,7 +42,7 @@ from ..utils import cache
 from ..utils.completion_utils import complete_app_names, complete_project_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import handle_docker_errors
-from .update import run_app_update
+from .update import NO_PREFLIGHT_HELP, run_app_update
 from .utils import confirm_or_exit, ensure_containers_running, resolve_bench_path
 
 app = typer.Typer(help="Manage Frappe apps: list, install, uninstall, update, checkout.")
@@ -641,6 +641,7 @@ def update_apps(
             "update is untouched."
         ),
     ),
+    no_preflight: bool = typer.Option(False, "--no-preflight", help=NO_PREFLIGHT_HELP),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Auto-start stopped containers without prompting."
@@ -649,8 +650,12 @@ def update_apps(
 ):
     """Update app(s) and migrate affected sites (the canonical update path).
 
-    Updating 'frappe' runs 'bench update --reset'. This is what the deprecated
-    'cwcli update' now delegates to.
+    Updating 'frappe' runs 'bench update --reset', which hard-resets EVERY app in
+    the bench to its remote branch, backs up and migrates every site, and rebuilds.
+    A preflight runs first and refuses, with nothing changed, when bench would
+    certainly fail late (an app on a branch its remote lacks, an unreachable remote,
+    a detached HEAD, a site that cannot be opened, a held migrate lock, ...).
+    This is what the deprecated 'cwcli update' now delegates to.
 
     With --force, an app whose git update hits a CONFLICT (local changes) is
     hard-reset to its remote tracking branch, discarding those local changes, so the
@@ -669,6 +674,7 @@ def update_apps(
         skip_maintenance=skip_maintenance,
         no_recache=no_recache,
         force=force,
+        no_preflight=no_preflight,
         yes=yes,
         sites=sites,
         json_output=json_output,

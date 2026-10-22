@@ -9,6 +9,7 @@ The command-level behaviour lives in `test_apps.py` and
 `test_update_characterization.py`; these drive the core directly.
 """
 
+import contextlib
 import dataclasses
 import json
 import shlex
@@ -16,22 +17,22 @@ import types
 
 import pytest
 
-from caffeinated_whale_cli.core import bench_ops
+from caffeinated_whale_cli.core import bench_ops, resolvers, update_preflight
 from caffeinated_whale_cli.core import docker as core_docker
 from caffeinated_whale_cli.core import exec_stream as exec_stream_mod
-from caffeinated_whale_cli.core import resolvers
 from caffeinated_whale_cli.core import update as core_update
 from caffeinated_whale_cli.core.envelope import Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from caffeinated_whale_cli.core.update import (
     UpdateAborted,
     UpdateOutput,
+    UpdatePreflight,
     UpdateStepEnd,
     UpdateStepStart,
 )
 
 from .batched_probes import emulate_batched
-from .test_apps import _FakeAPI, FakeFrappeContainer, _wire_stopped_bench
+from .test_apps import FakeFrappeContainer, _FakeAPI, _wire_stopped_bench
 
 BENCH = "/workspace/frappe-bench"
 
@@ -622,6 +623,144 @@ class TestFrappeFork:
         assert note
         assert "--clear-cache" in note[0].text
         assert "--site" in note[0].text
+
+
+# ------------------------------------------------------------- the frappe preflight
+
+
+def _finding(severity, code, app="someapp"):
+    return update_preflight.PreflightFinding(
+        severity=severity, code=code, app=app, site=None, message=code, remedy=None
+    )
+
+
+@pytest.fixture()
+def preflight_finds(monkeypatch):
+    """Make the preflight report ``findings``; return the recorded calls."""
+    calls = []
+
+    def arm(*findings):
+        def fake(container, bench_path, *, project, bench=None):
+            calls.append((bench_path, project, bench))
+            return update_preflight.PreflightOutcome(
+                findings=list(findings), apps=2, sites=1, elapsed=0.1, bench_path=bench_path
+            )
+
+        monkeypatch.setattr(core_update.update_preflight, "run_preflight", fake)
+        return calls
+
+    return arm
+
+
+class TestFrappePreflight:
+    def test_a_blocker_refuses_with_nothing_run(self, monkeypatch, wired, preflight_finds):
+        recaches = []
+        monkeypatch.setattr(
+            core_update.cache, "recache_project", lambda *a, **k: recaches.append(a) or True
+        )
+        preflight_finds(
+            _finding(update_preflight.BLOCKER, "git.branch_not_on_remote"),
+            _finding(update_preflight.DATA_LOSS, "git.uncommitted", "other"),
+        )
+
+        report = _update(apps=["frappe"]).data
+
+        assert not any("bench update --reset" in c for c in wired.calls)
+        assert recaches == []  # nothing changed, so nothing to refresh
+        assert report.preflight_blocked is True
+        assert report.ok is False
+        assert report.failed_apps == []  # bench never ran, so nothing "failed"
+        # The refusal carries EVERY finding, not just the blocker.
+        assert [f.code for f in report.preflight] == ["git.branch_not_on_remote", "git.uncommitted"]
+
+    def test_data_loss_and_notices_do_not_block_in_this_release(self, wired, preflight_finds):
+        preflight_finds(
+            _finding(update_preflight.DATA_LOSS, "git.unpushed"),
+            _finding(update_preflight.NOTICE, "git.no_remote"),
+            _finding(update_preflight.UNVERIFIED, "git.remote_unverified"),
+        )
+
+        report = _update(apps=["frappe"]).data
+
+        assert any("bench update --reset" in c for c in wired.calls)
+        assert report.preflight_blocked is False
+        assert report.ok is True
+        assert len(report.preflight) == 3
+
+    def test_it_runs_inside_the_credential_bridge_against_the_resolved_bench(
+        self, monkeypatch, wired, preflight_finds
+    ):
+        inside = []
+        calls = preflight_finds()
+
+        @contextlib.contextmanager
+        def bridge(container, bench_path):
+            inside.append(True)
+            yield
+            inside.append(False)
+
+        monkeypatch.setattr(core_update.credbridge, "credential_bridge", bridge)
+        real = core_update.update_preflight.run_preflight
+        monkeypatch.setattr(
+            core_update.update_preflight,
+            "run_preflight",
+            lambda *a, **k: (calls.append(inside[-1]), real(*a, **k))[1],
+        )
+
+        monkeypatch.setattr(
+            core_update.resolvers,
+            "resolve_bench",
+            lambda *a, **k: core_update.Result(status=Status.OK, data=BENCH, warnings=[]),
+        )
+        _update(apps=["frappe"], bench="1", bench_path=None)
+
+        # The bridge was open while the preflight probed, against the resolved bench.
+        assert calls == [True, (BENCH, "proj", "1")]
+
+    def test_no_preflight_skips_it_and_reports_nothing(self, wired, preflight_finds):
+        calls = preflight_finds(_finding(update_preflight.BLOCKER, "git.detached_head"))
+
+        report = _update(apps=["frappe"], preflight=False).data
+
+        assert calls == []
+        assert any("bench update --reset" in c for c in wired.calls)
+        assert report.preflight == [] and report.preflight_blocked is False
+
+    def test_the_per_app_path_never_runs_it(self, wired, preflight_finds):
+        calls = preflight_finds(_finding(update_preflight.BLOCKER, "git.detached_head"))
+
+        report = _update(apps=["payments"]).data
+
+        assert calls == []
+        assert report.ok is True
+
+    def test_its_findings_are_emitted_before_the_reset_starts(self, wired, preflight_finds):
+        preflight_finds(_finding(update_preflight.NOTICE, "git.no_remote"))
+        events = []
+
+        _update(apps=["frappe"], on_event=events.append)
+
+        phases = [
+            (type(e).__name__, getattr(e, "phase", None))
+            for e in events
+            if isinstance(e, (UpdateStepStart, UpdatePreflight))
+        ]
+        assert phases[:3] == [
+            ("UpdateStepStart", "preflight"),
+            ("UpdatePreflight", None),
+            ("UpdateStepStart", "frappe_reset"),
+        ]
+        preflight_event = next(e for e in events if isinstance(e, UpdatePreflight))
+        assert preflight_event.blocked is False
+        assert preflight_event.summary.startswith("2 app(s), 1 site(s)")
+
+    def test_a_preflight_that_could_not_run_does_not_block(self, wired):
+        # The base fake answers the script's exec with no record at all.
+        report = _update(apps=["frappe"]).data
+
+        assert [f.code for f in report.preflight] == ["preflight.unverified"]
+        assert report.ok is True
+        assert any("bench update --reset" in c for c in wired.calls)
 
 
 # ----------------------------------------------------------------- the callback
