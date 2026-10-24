@@ -572,12 +572,43 @@ def test_a_checked_out_branch_a_single_branch_clone_does_not_track_is_a_blocker(
     # The remedy makes bench's own fetch write the ref, so nothing is left to report.
     remedy = finding.remedy.split(": ", 1)[1]
     assert "+refs/heads/feature-x:refs/remotes/upstream/feature-x" in remedy
+    assert remedy.endswith("fetch --depth=1 upstream feature-x")  # keeps the clone shallow
     subprocess.run(remedy, shell=True, cwd=bench.path, env=bench.env, check=True)
     assert not [f for f in bench.findings() if f.app == "feature"]
 
     # A refspec that stops covering it leaves the ref behind: bench resets to it.
     bench.git("config", "--unset", "remote.upstream.fetch", "feature-x", cwd=app)
     assert by_code(bench.findings(), "git.branch_tracking_stale").severity == up.NOTICE
+
+
+def test_local_commits_on_an_untracked_branch_its_remote_has_are_still_data_loss(bench):
+    app = bench.app("feature", depth=1)
+    src = bench.remotes / "feature.src"
+    bench.git("checkout", "-q", "-b", "feature-x", cwd=src)
+    (src / "feature" / "new.py").write_text("x = 1\n")
+    bench.git("add", "-A", cwd=src)
+    bench.git("commit", "-qm", "feature", cwd=src)
+    bench.git("push", "-q", str(bench.remotes / "feature.git"), "feature-x", cwd=src)
+    bench.git("fetch", "-q", "upstream", "feature-x", cwd=app)
+    bench.git("checkout", "-q", "-B", "feature-x", "FETCH_HEAD", cwd=app)
+    (app / "feature" / "local.py").write_text("y = 1\n")
+    bench.git("add", "-A", cwd=app)
+    bench.git("commit", "-qm", "local", cwd=app)
+
+    findings = bench.findings()
+    assert by_code(findings, "git.branch_not_tracked").app == "feature"
+    unpushed = by_code(findings, "git.unpushed")
+    assert unpushed.app == "feature"
+    assert unpushed.message.startswith("1 commit(s)")
+
+    # Once the remote moves to a tip this clone has never fetched, the count is unknown.
+    (src / "feature" / "more.py").write_text("z = 1\n")
+    bench.git("add", "-A", cwd=src)
+    bench.git("commit", "-qm", "more", cwd=src)
+    bench.git("push", "-q", str(bench.remotes / "feature.git"), "feature-x", cwd=src)
+    found = codes(bench.findings())
+    assert ("git.local_work_unverified", "feature") in found
+    assert ("git.unpushed", "feature") not in found
 
 
 def test_local_commits_on_an_untracked_branch_missing_on_its_remote_stay_data_loss(bench):

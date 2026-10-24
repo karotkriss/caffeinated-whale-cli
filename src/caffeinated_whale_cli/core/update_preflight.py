@@ -144,6 +144,28 @@ def maps_branch(specs, remote, branch):
     return mapped
 
 
+def shallow_boundary(d):
+    try:
+        with open(os.path.join(d, ".git", "shallow")) as handle:
+            return handle.read().split()
+    except OSError:
+        return []
+
+
+def count_ahead(d, branch, extra=()):
+    """Commits only this branch holds: on no remote ref, other branch or tag. The
+    shallow boundary is excluded too: a shallow clone only ever receives those
+    commits FROM a remote, and once a depth-1 fetch moves the remote ref past one
+    (bench's own version check fetches frappe that way) its history is cut, so
+    "<remote>/<branch>..HEAD" would count a commit the remote always had."""
+    return git(
+        d, ["rev-list", "--count", "--ignore-missing", "HEAD", "--not",
+            "--exclude=" + branch, "--branches", "--tags", "--remotes"]
+        + shallow_boundary(d) + list(extra),
+        opts["local_timeout"],
+    )
+
+
 def check_app(app, excluded, shallow):
     found = []
     probes = []
@@ -252,27 +274,13 @@ def check_app(app, excluded, shallow):
             add("git.uncommitted", count=len(tracked), shallow_clone=shallow)
     else:
         add("git.local_work_unverified", error=git_error(err) or "git status did not answer")
-    # Commits only this branch holds: on no remote ref, other branch or tag. The
-    # shallow boundary is excluded too: a shallow clone only ever receives those
-    # commits FROM a remote, and once a depth-1 fetch moves the remote ref past one
-    # (bench's own version check fetches frappe that way) its history is cut, so
-    # "<remote>/<branch>..HEAD" would count a commit the remote always had.
     if branch:
-        try:
-            with open(os.path.join(d, ".git", "shallow")) as handle:
-                boundary = handle.read().split()
-        except OSError:
-            boundary = []
-        rc, ahead, err = git(
-            d, ["rev-list", "--count", "--ignore-missing", "HEAD", "--not",
-                "--exclude=" + branch, "--branches", "--tags", "--remotes"] + boundary,
-            opts["local_timeout"],
-        )
+        rc, ahead, err = count_ahead(d, branch)
         if rc != 0 or not ahead.isdigit():
             add("git.local_work_unverified", error=git_error(err) or "git rev-list did not answer")
         elif int(ahead) > 0:
             # Without a tracking ref the remote's copy of these commits is not visible
-            # locally: the probe drops them once the remote confirms the branch.
+            # locally: the probe recounts them against the remote's tip.
             add("git.unpushed", to=None if covered or stale else held,
                 count=int(ahead), branch=branch, shallow_clone=shallow)
 
@@ -291,7 +299,7 @@ def probe(app, d, remote, branch, covered, stale, held, shallow):
         args = ["ls-remote", "--exit-code", "--heads", remote, "refs/heads/" + branch]
     else:
         args = ["ls-remote", remote, "HEAD"]
-    rc, _, err = git(d, args, opts["net_timeout"])
+    rc, out, err = git(d, args, opts["net_timeout"])
     base = {"app": app, "remote": remote}
     if rc is None:
         return [dict(base, code="git.remote_unverified", error=err)] + held
@@ -307,7 +315,20 @@ def probe(app, d, remote, branch, covered, stale, held, shallow):
         # The fetch leaves <remote>/<branch> as it was: absent, so the reset fails;
         # present, so bench resets to its old commit.
         code = "git.branch_tracking_stale" if stale else "git.branch_not_tracked"
-        return [dict(base, code=code, branch=branch)]
+        found = [dict(base, code=code, branch=branch, shallow_repo=bool(shallow_boundary(d)))]
+        if held:
+            tip = (out.split() or [""])[0]
+            if tip and git(d, ["cat-file", "-e", tip + "^{commit}"], opts["local_timeout"])[0] == 0:
+                rc, ahead, err = count_ahead(d, branch, [tip])
+            else:
+                rc, ahead, err = None, "", "the tip of %s on %s is not fetched" % (branch, remote)
+            if rc == 0 and ahead.isdigit():
+                if int(ahead) > 0:
+                    found.append(dict(held[0], count=int(ahead)))
+            else:
+                found.append({"code": "git.local_work_unverified", "app": app,
+                              "error": git_error(err) or "git rev-list did not answer"})
+        return found
     return []
 
 
@@ -614,14 +635,14 @@ _RULES: dict[str, tuple[str, str, str | None]] = {
         "remote '{remote}' is not fetched into {remote}/{branch} (its fetch refspec does "
         "not cover '{branch}'), so bench's reset to {remote}/{branch} would fail",
         _OPEN + "git -C apps/{q_app} config --add remote.{q_remote}.fetch {q_refspec} "
-        "&& git -C apps/{q_app} fetch {q_remote}",
+        "&& git -C apps/{q_app} fetch {fetch_depth}{q_remote} {q_branch}",
     ),
     "git.branch_tracking_stale": (
         NOTICE,
         "remote '{remote}' is not fetched into {remote}/{branch} (its fetch refspec does "
         "not cover '{branch}'); bench would reset to the stale local {remote}/{branch}",
         _OPEN + "git -C apps/{q_app} config --add remote.{q_remote}.fetch {q_refspec} "
-        "&& git -C apps/{q_app} fetch {q_remote}",
+        "&& git -C apps/{q_app} fetch {fetch_depth}{q_remote} {q_branch}",
     ),
     "site.unreadable": (
         BLOCKER,
@@ -676,6 +697,8 @@ def classify(
             q_app=shlex.quote(str(fact.get("app") or "")),
             q_site=shlex.quote(str(fact.get("site") or "")),
             q_remote=shlex.quote(str(fact.get("remote") or "")),
+            q_branch=shlex.quote(str(fact.get("branch") or "")),
+            fetch_depth="--depth=1 " if fact.get("shallow_repo") else "",
             q_path=shlex.quote(str(fact.get("path") or "")),
         )
         fields["q_refspec"] = shlex.quote(
