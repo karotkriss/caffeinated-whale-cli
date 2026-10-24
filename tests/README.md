@@ -14,8 +14,11 @@ The suite is split into two tiers by pytest marker.
   These live under [`tests/e2e/`](e2e/) and drive the real `cwcli` console script against genuine throwaway Frappe instances (real `cwcli init` up, real side-effect assertions, `cwcli rm` down).
   They require a reachable Docker daemon and are excluded by default; run them explicitly with `-m e2e`.
   See [E2E harness](#e2e-harness-real-docker) below.
+- **`packaging`** - no Docker, but needs the web UI built first (`cd webui && npm ci && npm run build`).
+  `tests/test_packaging_contents.py` builds the real sdist and wheel and asserts what ships, including `webui/dist`.
+  It is excluded by default and from `-m unit`, so a fresh clone without Node still runs the unit tier; CI's `Pytest` job builds the UI and runs `-m packaging`.
 
-The `unit`, `e2e`, `e2e_p2p`, `e2e_pkg`, and `standalone` markers are registered in `pyproject.toml`; `tests/conftest.py` auto-applies `unit` to any test not marked `e2e`/`e2e_p2p`/`e2e_pkg`, so there is nothing to hand-mark. `e2e_pkg` is the runtime-deps-only packaging leg (one full lifecycle driven against a `uv tool install .` binary via `CWCLI_BIN`); it is excluded from `-m e2e` so it does not double the version matrix's init cost. `standalone` is the one marker that *is* hand-applied: it names each `e2e` test that never touches the shared session instance, and CI splits every version leg into a `standalone` and a `shared` job on it (see [CI/CD](#cicd) below).
+The `unit`, `e2e`, `e2e_p2p`, `e2e_pkg`, `packaging`, and `standalone` markers are registered in `pyproject.toml`; `tests/conftest.py` auto-applies `unit` to any test not marked `e2e`/`e2e_p2p`/`e2e_pkg`/`packaging`. `e2e_pkg` is the runtime-deps-only packaging leg (one full lifecycle driven against a `uv tool install .` binary via `CWCLI_BIN`); it is excluded from `-m e2e` so it does not double the version matrix's init cost. `standalone` is the one marker that *is* hand-applied: it names each `e2e` test that never touches the shared session instance, and CI splits every version leg into a `standalone` and a `shared` job on it (see [CI/CD](#cicd) below).
 
 ## Quick Reference
 
@@ -28,6 +31,9 @@ uv run pytest -m unit --cov=caffeinated_whale_cli
 
 # Prove the fast tier is mock-free: still green with a dead Docker endpoint
 DOCKER_HOST=tcp://127.0.0.1:1 uv run pytest -m unit
+
+# What the sdist and wheel ship (build the web UI first)
+(cd webui && npm ci && npm run build) && uv run pytest -m packaging
 
 # Real-Docker E2E tier (needs a Docker daemon), one Frappe version leg
 CWE2E_FRAPPE_MAJOR=16 uv run pytest tests/e2e -m e2e
@@ -313,12 +319,13 @@ python_functions = ["test_*"]
 console_output_style = "classic"
 # The default `-m` deselects the real-Docker tiers, so a bare `pytest` runs only
 # the fast unit tier; override with `-m e2e` on the CLI (the last `-m` wins).
-addopts = ["-q", "--strict-markers", "--tb=short", "--cov-report=", "-m", "not e2e and not e2e_p2p and not e2e_pkg"]
+addopts = ["-q", "--strict-markers", "--tb=short", "--cov-report=", "-m", "not e2e and not e2e_p2p and not e2e_pkg and not packaging"]
 markers = [
     "unit: fast tests that need no Docker daemon (the default tier)",
     "e2e: real-Docker end-to-end tests driving the real cwcli binary",
     "e2e_p2p: real-Docker P2P (sendme loopback) end-to-end tests (also carry e2e, so they ride the version matrix version-gated)",
     "e2e_pkg: real-Docker full-lifecycle test against a runtime-deps-only uv-tool-install binary (CWCLI_BIN)",
+    "packaging: builds the real sdist and wheel and asserts what ships (needs the web UI built)",
     "standalone: an e2e test that never touches the shared session instance (the CI group split)",
 ]
 ```
@@ -340,7 +347,11 @@ CI is two-tiered.
   ```yaml
   - name: Run unit tests with coverage
     run: uv run pytest -m unit --cov=caffeinated_whale_cli
+  - name: Run packaging tests
+    run: uv run pytest -m packaging
   ```
+
+  The same job builds the web UI first, which the `packaging` tier needs.
 
   The required-check configuration is documented in the [CI/CD Workflows guide](../docs/contributing/ci-cd.md).
 

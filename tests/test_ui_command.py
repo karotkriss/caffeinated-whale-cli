@@ -72,8 +72,6 @@ class TestStartDetached:
             "--no-browser",
             "--port",
             "8765",
-            "--interval",
-            "2.5",
         ]
         token = spawned["env"][ui_cmd.serve_cmd.TOKEN_ENV]
         assert token and token not in " ".join(spawned["argv"]), "the token never rides argv"

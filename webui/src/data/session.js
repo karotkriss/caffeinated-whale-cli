@@ -33,15 +33,3 @@ export async function boot() {
     session.meta = null
   }
 }
-
-// The operator path: a token they chose (CWCLI_SERVE_TOKEN) typed into the page.
-export async function signInWithToken(token) {
-  const res = await fetch('/api/v1/session', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: '{}',
-  })
-  if (!res.ok) return false
-  session.signedOut = false
-  return true
-}

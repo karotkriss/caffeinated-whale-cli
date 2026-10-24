@@ -9,8 +9,10 @@ as throwaway scaffolding rather than published material.
 
 `MANIFEST.in` now states the decision as a deny-all allow-list, so a newly added
 test or fixture directory is out by construction. This file is the gate that
-keeps it that way, and it runs in the fast `unit` tier so the existing `Pytest`
-check blocks a regression with no extra CI workflow step.
+keeps it that way. It carries the `packaging` marker, off the default and
+`-m unit` selections because the wheel must carry the built web UI and a fresh
+clone has no Node build; CI's `Pytest` job builds the UI and runs
+`-m packaging`, so a regression still blocks the merge.
 
 The artifact checks are allow-lists too. A deny-list here would repeat the same
 mistake one level up: a newly added source package such as `src/qa/` could enter
@@ -34,6 +36,8 @@ import zipfile
 from pathlib import Path
 
 import pytest
+
+pytestmark = pytest.mark.packaging
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DIST_NAME = "caffeinated_whale_cli"

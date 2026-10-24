@@ -106,8 +106,6 @@ def daemon(running_instance):
             "--no-browser",
             "--port",
             str(port),
-            "--interval",
-            "1",
         ],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
@@ -278,7 +276,7 @@ class TestDeltaSuppression:
             _wait_for(lambda: client.frames, desc="the opening snapshot")
             before = _instance(daemon.base, daemon.project)
 
-            # ~15 probe cycles at --interval 1. Every process's uptime advances,
+            # ~6 probe cycles at the 2.5s default. Every process's uptime advances,
             # cpu and rss move, and each probe takes a different number of
             # milliseconds - so this is a real test of the stable-field digest,
             # not of a frozen fixture.

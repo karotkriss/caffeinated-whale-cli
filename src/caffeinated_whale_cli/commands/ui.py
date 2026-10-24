@@ -115,7 +115,7 @@ def mint_code(port: int, token: str) -> str:
         return str(json.loads(r.read())["data"]["code"])
 
 
-def _spawn_detached(port: int, interval: float, token: str) -> None:
+def _spawn_detached(port: int, token: str) -> None:
     """Start ``cwcli ui --foreground --no-browser`` as its own session, logging to ``ui.log``."""
     run_dir().mkdir(parents=True, exist_ok=True)
     argv = [
@@ -127,8 +127,6 @@ def _spawn_detached(port: int, interval: float, token: str) -> None:
         "--no-browser",
         "--port",
         str(port),
-        "--interval",
-        str(interval),
     ]
     env = {**os.environ, serve_cmd.TOKEN_ENV: token}
     if sys.platform == "win32":
@@ -186,7 +184,7 @@ def _stop() -> None:
     console.print(f"cwcli ui stopped (pid {pid}).")
 
 
-def _foreground(port: int, interval: float, *, no_browser: bool) -> None:
+def _foreground(port: int, *, no_browser: bool) -> None:
     if daemon_identity.is_running(pid_file()):
         stderr_console.print(
             "[red]cwcli ui is already running (detached).[/red] "
@@ -204,13 +202,15 @@ def _foreground(port: int, interval: float, *, no_browser: bool) -> None:
             ).start()
 
     try:
-        serve_cmd.run_daemon(HOST, port, interval, env_token=token, on_ready=_ready)
+        serve_cmd.run_daemon(
+            HOST, port, serve_cmd.DEFAULT_INTERVAL, env_token=token, on_ready=_ready
+        )
     finally:
         if daemon_identity.get_pid(pid_file()) == os.getpid():
             _clear_state()
 
 
-def _start_or_reuse(port: int, interval: float, *, no_browser: bool) -> None:
+def _start_or_reuse(port: int, *, no_browser: bool) -> None:
     state = _read_state() if daemon_identity.is_running(pid_file()) else None
     if state is not None:
         if state["port"] != port and port != serve_cmd.DEFAULT_PORT:
@@ -225,7 +225,7 @@ def _start_or_reuse(port: int, interval: float, *, no_browser: bool) -> None:
     else:
         _clear_state()
         token = secrets.token_urlsafe(32)
-        _spawn_detached(port, interval, token)
+        _spawn_detached(port, token)
         deadline = time.monotonic() + _READY_TIMEOUT_S
         while time.monotonic() < deadline:
             if _meta_answers(port) and _read_state() is not None:
@@ -260,22 +260,14 @@ def ui(
     no_browser: bool = typer.Option(
         False, "--no-browser", help="Print the sign-in link instead of opening a browser."
     ),
-    interval: float = typer.Option(
-        serve_cmd.DEFAULT_INTERVAL,
-        "--interval",
-        help="Seconds between health probes of each running instance.",
-    ),
 ):
     """Open the cwcli web UI in your browser (starts the local daemon if needed)."""
-    if interval <= 0:
-        stderr_console.print("[red]--interval must be greater than 0.[/red]")
-        raise typer.Exit(code=2)
     if stop and foreground:
         stderr_console.print("[red]--stop and --foreground are mutually exclusive.[/red]")
         raise typer.Exit(code=2)
     if stop:
         _stop()
     elif foreground:
-        _foreground(port, interval, no_browser=no_browser)
+        _foreground(port, no_browser=no_browser)
     else:
-        _start_or_reuse(port, interval, no_browser=no_browser)
+        _start_or_reuse(port, no_browser=no_browser)

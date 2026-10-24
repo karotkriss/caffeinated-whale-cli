@@ -50,6 +50,11 @@ jobs:
       - name: Run unit tests with coverage
         run: uv run pytest -m unit --cov=caffeinated_whale_cli
 
+      # What the sdist and wheel ship, web UI included (built above). Its own
+      # marker so `-m unit` on a fresh clone needs no Node.
+      - name: Run packaging tests
+        run: uv run pytest -m packaging
+
   # Every other job here runs ubuntu-latest, which is precisely how Windows-only
   # defects hide. Two live in this repo's history:
   #   - utils/auto_inspect.py: os.kill(pid, 0) is an inert liveness probe on POSIX,
