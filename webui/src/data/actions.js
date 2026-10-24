@@ -102,7 +102,7 @@ export const ACTIONS = {
     icon: 'lucide-tag',
     confirm: 'confirm',
     field: { name: 'label', label: 'Label', placeholder: 'v15-main' },
-    cli: (c, v) => `cwcli label ${q(c.project)} ${q(v?.label || '<label>')}${benchFlag(c)}`,
+    cli: (c, v) => `cwcli label ${q(c.project)} ${q(c.bench)} ${q(v?.label || '<label>')}`,
     says: () => 'A durable name usable anywhere a bench selector is. Stored in the cache and in a marker file inside the bench.',
     request: (c, v) => ({ action: 'set_label', project: c.project, bench: c.bench, label: v.label }),
     done: (c, out) => `bench labelled ${out?.label}`,

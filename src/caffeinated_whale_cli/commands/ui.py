@@ -40,6 +40,7 @@ from pathlib import Path
 
 import typer
 
+from ..core.version import _is_frozen
 from ..utils import daemon_identity, shared_home
 from ..utils.config_utils import cwcli_home
 from ..utils.console import console, stderr_console
@@ -54,26 +55,31 @@ def run_dir() -> Path:
     return cwcli_home() / "run"
 
 
+def _stem() -> str:
+    """``ui``, or ``ui-<uid>`` in shared mode, where ``run/`` is one dir for the whole group."""
+    return f"ui-{os.getuid()}" if shared_home.shared_mode() else "ui"
+
+
 def pid_file() -> Path:
-    return run_dir() / "ui.pid"
+    return run_dir() / f"{_stem()}.pid"
 
 
 def state_file() -> Path:
     """``{"port": int}`` plus the bearer token; 0600 (the token lives here)."""
-    return run_dir() / "ui.json"
+    return run_dir() / f"{_stem()}.json"
 
 
 def log_file() -> Path:
-    return run_dir() / "ui.log"
+    return run_dir() / f"{_stem()}.log"
 
 
 def _write_state(port: int, token: str) -> None:
     run_dir().mkdir(parents=True, exist_ok=True)
     path = state_file()
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, shared_home.file_mode(0o600))
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         json.dump({"port": port, "token": token}, f)
-    os.chmod(path, shared_home.file_mode(0o600))
+    os.chmod(path, 0o600)
 
 
 def _read_state() -> dict | None:
@@ -118,10 +124,9 @@ def mint_code(port: int, token: str) -> str:
 def _spawn_detached(port: int, token: str) -> None:
     """Start ``cwcli ui --foreground --no-browser`` as its own session, logging to ``ui.log``."""
     run_dir().mkdir(parents=True, exist_ok=True)
+    prefix = [sys.argv[0]] if _is_frozen() else [sys.executable, "-m", "caffeinated_whale_cli"]
     argv = [
-        sys.executable,
-        "-m",
-        "caffeinated_whale_cli",
+        *prefix,
         "ui",
         "--foreground",
         "--no-browser",
@@ -228,7 +233,9 @@ def _start_or_reuse(port: int, *, no_browser: bool) -> None:
         _spawn_detached(port, token)
         deadline = time.monotonic() + _READY_TIMEOUT_S
         while time.monotonic() < deadline:
-            if _meta_answers(port) and _read_state() is not None:
+            state = _read_state()
+            if state is not None and _meta_answers(port):
+                token = state["token"]
                 break
             time.sleep(0.2)
         else:
