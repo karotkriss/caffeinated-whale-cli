@@ -5,7 +5,7 @@ The suite is split into a fast ``unit`` tier (no Docker) and a real-Docker
 test, this hook auto-applies the ``unit`` marker to any collected test that is
 not already marked ``e2e`` / ``e2e_p2p``. That way:
 
-- a bare ``pytest`` (default ``-m "not e2e and not e2e_p2p and not e2e_pkg"``) runs the unit tier,
+- a bare ``pytest`` (default ``-m "not e2e and not e2e_p2p and not e2e_pkg and not packaging"``) runs the unit tier,
 - the unit CI job (``-m unit``) selects the same set, and
 - ``-m e2e`` selects only the real-Docker tier.
 
@@ -178,6 +178,7 @@ def pytest_collection_modifyitems(config, items):
             item.get_closest_marker("e2e")
             or item.get_closest_marker("e2e_p2p")
             or item.get_closest_marker("e2e_pkg")
+            or item.get_closest_marker("packaging")
         ):
             item.add_marker(pytest.mark.unit)
 
@@ -191,7 +192,7 @@ def pytest_collection_finish(session):
     # standalone tiers legitimately run long and are driven through subprocesses,
     # so enforce only when NOTHING selected carries one of those markers.
     global _enforce_guard
-    _off = ("e2e", "e2e_p2p", "e2e_pkg", "standalone")
+    _off = ("e2e", "e2e_p2p", "e2e_pkg", "packaging", "standalone")
     _enforce_guard = not any(item.get_closest_marker(m) for item in session.items for m in _off)
 
 

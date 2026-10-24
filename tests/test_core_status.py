@@ -758,6 +758,20 @@ class TestMaintenanceMode:
         assert _bench(result.data).maintenance_mode is False
         assert not any(w.code == "status.maintenance_mode" for w in result.warnings)
 
+    def test_the_fused_tier_reports_it_too(self, wire, monkeypatch):
+        # `cwcli ui`'s FAST tier polls fused=True; its Site page shows this field.
+        monkeypatch.setattr(
+            core_status.resolvers, "resolve_representative_site", lambda *a, **k: "dev.localhost"
+        )
+        monkeypatch.setattr(core_status.supervision, "maintenance_mode_on", lambda *a, **k: True)
+        wire(FakeContainer(marker=_MARKER, web_code="503"), benches=[{"path": BENCH}])
+
+        bench = _bench(core_status.status("proj", fused=True).data)
+
+        assert bench.supervisor_up is True  # the fused path itself, not the delegation
+        assert bench.maintenance_mode is True
+        assert bench.web_site == "dev.localhost"
+
     def test_watch_mode_skips_the_maintenance_read(self, wire, monkeypatch):
         calls: list = []
         monkeypatch.setattr(

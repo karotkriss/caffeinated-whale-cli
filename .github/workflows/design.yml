@@ -1,8 +1,8 @@
 name: Design system
 
 # Design-system adherence lint. Node-only tooling (eslint + the maintainer's
-# design/_adherence.oxlintrc.json policy) that also checks the Console at
-# src/caffeinated_whale_cli/commands/console.html, so it runs on EVERY change
+# design/_adherence.oxlintrc.json policy) that also checks the web UI source
+# under webui/src (semantic frappe-ui tokens only), so it runs on EVERY change
 # rather than only when tools/design-adherence/ changes.
 
 permissions:
@@ -43,5 +43,5 @@ jobs:
       - name: Lint design-consuming JS/JSX against the policy
         run: npm run lint
 
-      - name: Check Console inline styles for raw hex outside the token layer
-        run: npm run check:css
+      - name: Check the web UI for colour outside frappe-ui's semantic tokens
+        run: npm run check:webui

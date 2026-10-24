@@ -33,3 +33,6 @@ blobs.db
 # AGENTS.md points to, so those DO ship in the repo (but not the CLI package).
 .claude/*
 !.claude/skills/
+# The built web UI (package data). `cd webui && npm run build` regenerates it.
+src/caffeinated_whale_cli/webui/dist/
+webui/node_modules/

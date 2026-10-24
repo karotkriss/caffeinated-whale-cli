@@ -1072,51 +1072,49 @@ class TestNoAxiCredBridgeMutator:
         assert "config" in registered
 
 
-class TestServeUnreachable:
-    """``cwcli serve`` (the Console GUI) is UNRELEASED and deliberately not exposed
-    in a released build (captain ruling 2026-07-29): it must be unreachable from
-    both the human CLI and the ``axi`` surface - not registered, not invocable, not
-    listed in help - while the module itself (``commands/serve.py``, ``core/fleet.py``)
-    stays in the tree, since this withholds an unready feature rather than deleting
-    the work. ``tests/test_serve_frontend.py`` and ``tests/test_serve_auth.py``
-    continue to exercise it directly by importing the module, bypassing the CLI
-    registry entirely, so they are unaffected by this de-registration."""
+class TestWebUiRegistry:
+    """The web UI ships as ``cwcli ui`` on the HUMAN CLI only (Phase 1 of the
+    frappe-ui web app, reversing the 2026-07-29 "serve stays unreachable" ruling
+    on the captain's build order). Two boundaries stay pinned: the daemon module
+    itself (``commands/serve.py``) is still NOT a registered command - its
+    ``--host`` override lives only behind the internal module entry - and nothing
+    about the UI is reachable from ``cwcli axi`` (an agent must not stand up a
+    browser-facing daemon). ``tests/test_serve_frontend.py`` and
+    ``tests/test_serve_auth.py`` exercise the daemon directly by importing the
+    module; ``tests/test_ui_command.py`` covers the launcher."""
 
-    def test_serve_not_registered_on_the_human_cli(self):
+    def test_ui_is_registered_on_the_human_cli(self):
         from caffeinated_whale_cli.main import app as root_app
 
-        registered = {c.name for c in root_app.registered_commands}
-        assert "serve" not in registered
+        assert "ui" in {c.name for c in root_app.registered_commands}
+        result = runner.invoke(root_app, ["ui", "--help"])
+        assert result.exit_code == 0
+        # Rich styles the help when CI forces a terminal (GITHUB_ACTIONS), splitting
+        # each flag across escape codes; compare the unstyled text.
+        text = click.unstyle(result.output)
+        for flag in ("--port", "--foreground", "--stop", "--no-browser"):
+            assert flag in text
 
-    def test_serve_not_invocable_on_the_human_cli(self):
+    def test_serve_itself_stays_unregistered(self):
         from caffeinated_whale_cli.main import app as root_app
 
+        assert "serve" not in {c.name for c in root_app.registered_commands}
         result = runner.invoke(root_app, ["serve", "--help"])
         assert result.exit_code != 0
         assert "No such command" in result.output
 
-    def test_serve_absent_from_root_help_listing(self):
-        from caffeinated_whale_cli.main import app as root_app
-
-        result = runner.invoke(root_app, ["--help"])
-        assert result.exit_code == 0
-        assert not re.search(r"\bserve\b", result.output, re.IGNORECASE)
-
-    def test_serve_not_registered_under_axi(self):
-        registered = {c.name for c in axi_mod.app.registered_commands}
-        assert "serve" not in registered
+    def test_nothing_ui_related_is_registered_under_axi(self):
+        names = {c.name for c in axi_mod.app.registered_commands}
         for group in axi_mod.app.registered_groups:
-            sub = {c.name for c in group.typer_instance.registered_commands}
-            assert "serve" not in sub
+            names |= {c.name for c in group.typer_instance.registered_commands}
+        assert not names & {"serve", "ui", "webui"}
 
     def test_the_daemon_launches_via_the_internal_module_entry(self):
-        """A developer starts the daemon by running the serve MODULE as a script -
-        ``<python> -m caffeinated_whale_cli.commands.serve`` - never ``cwcli serve``,
-        which does not exist. This keeps the withheld surface withheld: the module
-        entry adds no ``[project.scripts]`` binary and no Typer command, so nothing a
-        ``cwcli --help`` or ``cwcli axi`` listing can discover changes, yet the daemon
-        has a real launch path. Run with ``--help`` so it parses argv and exits 0
-        without binding a socket or touching Docker."""
+        """A developer starts the daemon with a non-loopback ``--host`` by running
+        the serve MODULE as a script - ``<python> -m caffeinated_whale_cli.commands.serve``
+        - which is the one entry that takes ``--host``. ``cwcli ui`` always binds
+        loopback. Run with ``--help`` so it parses argv and exits 0 without binding
+        a socket or touching Docker."""
         result = subprocess.run(
             [sys.executable, "-m", "caffeinated_whale_cli.commands.serve", "--help"],
             capture_output=True,
