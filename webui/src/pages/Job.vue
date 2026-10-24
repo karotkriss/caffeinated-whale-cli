@@ -73,14 +73,28 @@ async function detach() {
   } catch (error) { actionError.value = error }
 }
 
-async function continueChoice() {
+const benchOptions = computed(() => record.value?.choice?.param === 'bench' ? record.value.choice.options || [] : [])
+
+async function continueChoice(value) {
   const job = record.value
-  if (job.choice?.param === 'consent') {
-    const next = await createJob({ verb: job.verb, target: job.target, args: job.args, consent: true })
-    await router.push(`/jobs/${next.id}`)
-  } else {
-    openJob(job.verb, { ...job.target, args: job.args })
+  const param = job.choice?.param
+  if (job.verb === 'init') {
+    openJob('init', { ...job.target, args: param === 'reuse_bench' ? { ...job.args, reuse_bench: true } : job.args })
+    return
   }
+  let spec = { verb: job.verb, target: job.target, args: job.args, consent: job.consent }
+  if (param === 'consent') spec.consent = true
+  else if (param === 'bench') spec.target = { ...job.target, bench: String(value) }
+  else if (param === 'auto_start') spec = { verb: 'start', target: { project: job.target.project, ...(job.target.bench != null ? { bench: job.target.bench } : {}) }, args: {} }
+  else {
+    openJob(job.verb, { ...job.target, args: job.args })
+    return
+  }
+  actionError.value = null
+  try {
+    const next = await createJob(spec)
+    await router.push(`/jobs/${next.id}`)
+  } catch (error) { actionError.value = error }
 }
 </script>
 
@@ -106,7 +120,13 @@ async function continueChoice() {
       </div>
 
       <Alert v-if="record.state === 'unknown'" theme="gray" title="The job process vanished" :description="record.error?.message" />
-      <Alert v-else-if="record.state === 'needs_choice'" theme="amber" title="cwcli needs a decision" :description="record.choice?.prompt || 'Review the job and choose how to continue.'" :primary-action="{ label: 'Continue', onClick: continueChoice }" />
+      <template v-else-if="record.state === 'needs_choice'">
+        <Alert v-if="benchOptions.length" theme="amber" title="cwcli needs a decision" :description="record.choice.prompt" />
+        <Alert v-else theme="amber" title="cwcli needs a decision" :description="record.choice?.prompt || 'Review the job and choose how to continue.'" :primary-action="{ label: record.choice?.param === 'auto_start' && record.verb !== 'init' ? 'Start instance' : 'Continue', onClick: () => continueChoice() }" />
+        <div v-if="benchOptions.length" class="flex flex-wrap gap-2">
+          <Button v-for="option in benchOptions" :key="option.value" icon-left="lucide-layers" :label="option.label" @click="continueChoice(option.value)" />
+        </div>
+      </template>
       <Alert v-else-if="record.error" theme="red" :title="record.error.code || 'Job failed'" :description="`${record.error.message}${record.error.hint ? ` ${record.error.hint}` : ''}`" />
       <ErrorMessage :message="actionError" />
 

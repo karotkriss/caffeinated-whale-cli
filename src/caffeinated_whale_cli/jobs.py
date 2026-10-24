@@ -14,6 +14,7 @@ starts, and are scrubbed from every event, result, and error before persistence.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -43,7 +44,7 @@ from .core import stop as core_stop
 from .core import unlock as core_unlock
 from .core import update as core_update
 from .core import version as core_version
-from .core.envelope import Result, Status
+from .core.envelope import Message, Result, Status
 from .core.errors import CwcliError, ErrorKind
 from .core.version import _is_frozen
 from .utils import cache, daemon_identity, shared_home, signals
@@ -88,7 +89,6 @@ _UI_ENV = {
     "session": "CWCLI_JOB_UI_SESSION",
 }
 _CREATE_LOCK = threading.Lock()
-_STATE_LOCK = threading.Lock()
 # The workers this daemon spawned, so they are reaped: an unreaped child stays a
 # zombie that ``pid_alive`` reports alive, and a job whose worker died abnormally
 # would then never become ``unknown``.
@@ -165,8 +165,37 @@ def _state(job_id: str) -> dict[str, Any]:
     return _read_json(_json_path(job_id, "state.json"))
 
 
+@contextlib.contextmanager
+def _state_lock(job_id: str):
+    """Serialize every ``state.json`` read-modify-write across the daemon and the worker.
+
+    Each holder opens its own descriptor, so the kernel lock also excludes the
+    recorder's flush thread from the worker's main thread.
+    """
+    fd = os.open(
+        _json_path(job_id, "state.lock"), os.O_CREAT | os.O_RDWR, shared_home.file_mode(0o600)
+    )
+    try:
+        if sys.platform == "win32":  # pragma: no cover - exercised on Windows CI
+            import msvcrt
+
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        if sys.platform == "win32":  # pragma: no cover - exercised on Windows CI
+            import msvcrt
+
+            with contextlib.suppress(OSError):
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        os.close(fd)
+
+
 def _merge_state(job_id: str, **changes: Any) -> dict[str, Any]:
-    with _STATE_LOCK:  # the recorder's trailing flush and the main thread both write
+    with _state_lock(job_id):
         state = _state(job_id)
         state.update(_plain(changes))
         state["updated_at"] = _now()
@@ -228,20 +257,24 @@ def _refresh_unknown(job_id: str, state: dict[str, Any]) -> dict[str, Any]:
     created = state.get("created_epoch")
     if state.get("pid") is None and isinstance(created, (int, float)) and time.time() - created < 5:
         return state
-    state.update(
-        {
-            "state": "unknown",
-            "finished_at": _now(),
-            "updated_at": _now(),
-            "error": {
-                "type": "process_vanished",
-                "code": "job.process_vanished",
-                "message": "The job process vanished without recording a final result.",
-                "hint": "Review its last event before deciding whether it is safe to retry.",
-            },
-        }
-    )
-    _write_json(_json_path(job_id, "state.json"), state)
+    with _state_lock(job_id):
+        state = _state(job_id)
+        if state.get("state") not in ACTIVE_STATES or _process_is_job(state):
+            return state
+        state.update(
+            {
+                "state": "unknown",
+                "finished_at": _now(),
+                "updated_at": _now(),
+                "error": {
+                    "type": "process_vanished",
+                    "code": "job.process_vanished",
+                    "message": "The job process vanished without recording a final result.",
+                    "hint": "Review its last event before deciding whether it is safe to retry.",
+                },
+            }
+        )
+        _write_json(_json_path(job_id, "state.json"), state)
     return state
 
 
@@ -448,18 +481,21 @@ def _create_job(
 
 
 def interrupt_job(job_id: str) -> dict[str, Any]:
-    state = _refresh_unknown(job_id, _state(job_id))
-    if state.get("state") not in ACTIVE_STATES:
-        return read_job(job_id)
-    if not _process_is_job(state):
-        return read_job(job_id)
+    _refresh_unknown(job_id, _state(job_id))
     # Recorded in state, not events.jsonl: the worker is that file's only writer.
-    _merge_state(job_id, state="interrupting", interrupt_requested_at=_now())
-    pid = int(state["pid"])
-    if sys.platform != "win32":
-        os.killpg(pid, signal.SIGTERM)
-    else:  # pragma: no cover - Windows process signaling is exercised on Windows CI
-        os.kill(pid, signal.SIGTERM)
+    with _state_lock(job_id):
+        state = _state(job_id)
+        armed = state.get("state") in ACTIVE_STATES and _process_is_job(state)
+        if armed:
+            state.update(state="interrupting", interrupt_requested_at=_now(), updated_at=_now())
+            _write_json(_json_path(job_id, "state.json"), state)
+    if armed:
+        pid = int(state["pid"])
+        with contextlib.suppress(ProcessLookupError):
+            if sys.platform != "win32":
+                os.killpg(pid, signal.SIGTERM)
+            else:  # pragma: no cover - Windows process signaling is exercised on Windows CI
+                os.kill(pid, signal.SIGTERM)
     return read_job(job_id)
 
 
@@ -551,14 +587,24 @@ def _project(target: dict[str, Any]) -> str:
 
 def _restart_instance(target: dict[str, Any], emit: _Recorder) -> Result:
     project = _project(target)
+    resolved = core_resolvers.resolve_bench(project, _bench(target), None)
+    if resolved is None:
+        bench_path = core_resolvers.DEFAULT_BENCH_PATH
+        bench_warnings = [Message(code="bench.default_used", text=f"Using default: {bench_path}")]
+    elif resolved.status is Status.NEEDS_CHOICE:
+        return resolved
+    else:
+        assert resolved.data is not None
+        bench_path = resolved.data
+        bench_warnings = list(resolved.warnings)
     stopped = core_stop.stop(project, on_event=emit)
     if stopped.data is not None and stopped.data.db_clean_shutdown is False:
         return stopped
-    started = core_start.start(project, bench=_bench(target), on_event=emit)
+    started = core_start.start(project, bench_path=bench_path, on_event=emit)
     return Result(
         status=started.status,
         data={"stopped": _plain(stopped.data), "started": _plain(started.data)},
-        warnings=[*stopped.warnings, *started.warnings],
+        warnings=[*bench_warnings, *stopped.warnings, *started.warnings],
         choice=started.choice,
     )
 

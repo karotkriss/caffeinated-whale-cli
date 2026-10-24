@@ -124,6 +124,67 @@ def test_interrupt_refuses_a_reused_pid(fake_spawn, monkeypatch):
     assert refreshed["state"] == "unknown"
 
 
+def test_interrupt_keeps_the_result_of_a_job_that_finished_meanwhile(fake_spawn, monkeypatch):
+    record = jobs.create_job("backup", {"project": "p"}, {})
+    refresh = jobs._refresh_unknown
+
+    def worker_finishes_during_the_check(job_id, state):
+        checked = refresh(job_id, state)
+        jobs._merge_state(job_id, state="succeeded", result={"ok": True})
+        return checked
+
+    monkeypatch.setattr(jobs, "_refresh_unknown", worker_finishes_during_the_check)
+    monkeypatch.setattr(jobs.os, "killpg", lambda *args: pytest.fail("finished job was signalled"))
+
+    refreshed = jobs.interrupt_job(record["id"])
+
+    assert refreshed["state"] == "succeeded"
+    assert refreshed["result"] == {"ok": True}
+    assert "interrupt_requested_at" not in refreshed
+
+
+def test_interrupt_tolerates_a_process_that_exits_before_the_signal(fake_spawn, monkeypatch):
+    record = jobs.create_job("backup", {"project": "p"}, {})
+
+    def gone(pid, signal):
+        raise ProcessLookupError(pid)
+
+    monkeypatch.setattr(jobs.os, "killpg", gone)
+
+    assert jobs.interrupt_job(record["id"])["state"] == "interrupting"
+
+
+def test_restart_asks_which_bench_before_stopping_anything(fake_spawn, monkeypatch):
+    choice = Result(status=Status.NEEDS_CHOICE)
+    monkeypatch.setattr(jobs.core_resolvers, "resolve_bench", lambda *args: choice)
+    monkeypatch.setattr(jobs.core_stop, "stop", lambda *a, **k: pytest.fail("stopped first"))
+
+    assert jobs._restart_instance({"project": "p"}, lambda event: None) is choice
+
+
+def test_restart_starts_the_bench_it_resolved_before_the_stop(fake_spawn, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        jobs.core_resolvers,
+        "resolve_bench",
+        lambda project, bench, path: Result(status=Status.OK, data=f"/workspace/{bench}"),
+    )
+    monkeypatch.setattr(
+        jobs.core_stop,
+        "stop",
+        lambda project, **kwargs: calls.append("stop") or Result(status=Status.OK),
+    )
+    monkeypatch.setattr(
+        jobs.core_start,
+        "start",
+        lambda project, **kwargs: calls.append(kwargs["bench_path"]) or Result(status=Status.OK),
+    )
+
+    jobs._restart_instance({"project": "p", "bench": "b1"}, lambda event: None)
+
+    assert calls == ["stop", "/workspace/b1"]
+
+
 def test_run_job_records_typed_events_and_terminal_result(fake_spawn, monkeypatch):
     record = jobs.create_job("backup", {"project": "p"}, {})
 
