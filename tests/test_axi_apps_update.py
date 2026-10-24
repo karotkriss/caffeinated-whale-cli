@@ -18,6 +18,7 @@ from caffeinated_whale_cli.commands import apps as apps_mod
 from caffeinated_whale_cli.commands import axi as axi_mod
 from caffeinated_whale_cli.commands import update as update_mod
 from caffeinated_whale_cli.core import update as core_update
+from caffeinated_whale_cli.core import update_preflight
 
 from .test_apps import FakeFrappeContainer, _count_discovery, _no_sleep, _wire_update
 
@@ -78,6 +79,7 @@ def _json_update(**kwargs):
         build=kwargs.pop("build", False),
         skip_maintenance=kwargs.pop("skip_maintenance", False),
         no_recache=kwargs.pop("no_recache", True),
+        no_preflight=kwargs.pop("no_preflight", False),
         json_output=True,
         yes=True,
         verbose=kwargs.pop("verbose"),
@@ -162,6 +164,7 @@ def _axi_update(**kwargs):
         build=False,
         skip_maintenance=False,
         no_recache=True,
+        no_preflight=kwargs.pop("no_preflight", False),
     )
 
 
@@ -409,6 +412,7 @@ class TestFailedResetLeavesTheBenchInMaintenance:
                 build=False,
                 skip_maintenance=False,
                 no_recache=True,
+                no_preflight=False,
                 force=False,
                 json_output=False,
                 yes=True,
@@ -448,3 +452,105 @@ class TestFailedResetLeavesTheBenchInMaintenance:
             "cwcli run proj --bench 1 set-config --global --parse maintenance_mode 0 && "
             "cwcli run proj --bench 1 set-config --global --parse pause_scheduler 0"
         ) in err
+
+
+# ------------------------------------------------------------- the frappe preflight
+
+
+@pytest.fixture()
+def preflight_finds(monkeypatch):
+    """Make the preflight report the given (severity, code) findings; return its calls."""
+    calls = []
+
+    def arm(*pairs):
+        def fake(container, bench_path, *, project, bench=None, path=None):
+            calls.append(project)
+            findings = [
+                update_preflight.PreflightFinding(
+                    severity=severity,
+                    code=code,
+                    app="localbranch",
+                    site=None,
+                    message="branch 'feature-x' does not exist on remote 'upstream'",
+                    remedy="cwcli apps checkout proj localbranch <published-branch>",
+                )
+                for severity, code in pairs
+            ]
+            return update_preflight.PreflightOutcome(
+                findings=findings, apps=2, sites=1, elapsed=0.1, bench_path=bench_path
+            )
+
+        monkeypatch.setattr(core_update.update_preflight, "run_preflight", fake)
+        return calls
+
+    return arm
+
+
+_BLOCKER = (update_preflight.BLOCKER, "git.branch_not_on_remote")
+
+
+class TestPreflightOnTheStructuredSurfaces:
+    def test_axi_blocked_is_one_toon_document_exit_one_and_nothing_run(
+        self, wired, preflight_finds, capsys
+    ):
+        preflight_finds(_BLOCKER)
+
+        with pytest.raises(typer.Exit) as exc:
+            _axi_update(apps=["frappe"])
+
+        assert exc.value.exit_code == 1  # a precondition failure, not a usage error
+        out = capsys.readouterr().out
+        assert "preflight[1]{severity,code,app,site,message,remedy}:" in out
+        assert "blocker,git.branch_not_on_remote,localbranch,null," in out
+        assert "preflight_blocked: true" in out
+        assert "ok: false" in out
+        assert out.count("project: proj") == 1  # one document
+        assert not any("bench update --reset" in c for c in wired.calls)
+
+    def test_axi_clean_twin_runs_the_reset_and_exits_zero(self, wired, preflight_finds, capsys):
+        calls = preflight_finds()
+
+        with pytest.raises(typer.Exit) as exc:
+            _axi_update(apps=["frappe"])
+
+        assert exc.value.exit_code == 0
+        out = capsys.readouterr().out
+        assert "preflight[0]" in out and "preflight_blocked: false" in out
+        assert "Updating DocType" not in out  # bench's output still never reaches stdout
+        assert calls == ["proj"]
+        assert any("bench update --reset" in c for c in wired.calls)
+
+    def test_axi_no_preflight_skips_it_and_runs_bench(self, wired, preflight_finds, capsys):
+        calls = preflight_finds(_BLOCKER)
+
+        with pytest.raises(typer.Exit) as exc:
+            _axi_update(apps=["frappe"], no_preflight=True)
+
+        assert exc.value.exit_code == 0
+        assert calls == []
+        assert any("bench update --reset" in c for c in wired.calls)
+
+    def test_human_json_blocked_carries_the_findings_and_exits_one(
+        self, wired, preflight_finds, capsys
+    ):
+        preflight_finds(_BLOCKER, (update_preflight.DATA_LOSS, "git.uncommitted"))
+
+        with pytest.raises(typer.Exit) as exc:
+            _json_update(apps=["frappe"])
+
+        assert exc.value.exit_code == 1
+        doc = json.loads(capsys.readouterr().out)  # still exactly one document
+        assert doc["preflight_blocked"] is True
+        assert [f["code"] for f in doc["preflight"]] == [
+            "git.branch_not_on_remote",
+            "git.uncommitted",
+        ]
+        assert doc["preflight"][0]["remedy"].startswith("cwcli apps checkout proj")
+
+    def test_human_json_no_preflight_skips_it(self, wired, preflight_finds, capsys):
+        calls = preflight_finds(_BLOCKER)
+
+        _json_update(apps=["frappe"], no_preflight=True)
+
+        assert calls == []
+        assert json.loads(capsys.readouterr().out)["preflight"] == []
