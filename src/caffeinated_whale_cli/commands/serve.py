@@ -1412,7 +1412,11 @@ def _choice_response(action: str, project: str, result: Result) -> tuple[int, di
             "needs_choice",
             code,
             message,
-            hint="Select a single bench or process, then retry.",
+            hint=(
+                f"Start the instance first (cwcli start {project}), then retry."
+                if code == "confirm_start"
+                else "Select a single bench or process, then retry."
+            ),
             action=action,
             choice=_plain(choice) if choice is not None else None,
             warnings=[_plain(w) for w in result.warnings],
