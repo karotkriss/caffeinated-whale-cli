@@ -85,7 +85,7 @@ def _preflight_rows(stdout: str) -> list[str]:
     return rows
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture()
 def planted(running_instance):
     """A throwaway frappe-shaped app checked out on a branch its remote lacks."""
     inst = running_instance
