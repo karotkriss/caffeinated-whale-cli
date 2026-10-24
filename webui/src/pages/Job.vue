@@ -79,7 +79,7 @@ async function continueChoice(value) {
   const job = record.value
   const param = job.choice?.param
   if (job.verb === 'init') {
-    openJob('init', { ...job.target, args: param === 'reuse_bench' ? { ...job.args, reuse_bench: true } : job.args })
+    openJob('init', { ...job.target, args: param === 'reuse_bench' || param === 'auto_start' ? { ...job.args, [param]: true } : job.args })
     return
   }
   let spec = { verb: job.verb, target: job.target, args: job.args, consent: job.consent }

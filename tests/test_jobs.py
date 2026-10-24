@@ -185,6 +185,27 @@ def test_restart_starts_the_bench_it_resolved_before_the_stop(fake_spawn, monkey
     assert calls == ["stop", "/workspace/b1"]
 
 
+def test_init_answers_confirm_start_with_one_capped_auto_start_retry(fake_spawn, monkeypatch):
+    calls = []
+    monkeypatch.setattr(jobs, "check_start_port_conflicts", lambda project: calls.append("ports"))
+    monkeypatch.setattr(
+        jobs.core_init,
+        "init_instance",
+        lambda project, **kwargs: calls.append(("instance", kwargs["auto_start"]))
+        or Result(status=Status.OK),
+    )
+    monkeypatch.setattr(
+        jobs.core_init,
+        "init_bench",
+        lambda project, **kwargs: calls.append(("bench", kwargs["auto_start"]))
+        or Result(status=Status.NEEDS_CHOICE),
+    )
+
+    jobs._run_init({"project": "p"}, {"auto_start": True}, {"admin_password": "x"}, lambda e: None)
+
+    assert calls == ["ports", ("instance", True), ("bench", True)]
+
+
 def test_run_job_records_typed_events_and_terminal_result(fake_spawn, monkeypatch):
     record = jobs.create_job("backup", {"project": "p"}, {})
 
