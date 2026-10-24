@@ -363,19 +363,74 @@ def test_an_interrupt_request_file_unwinds_the_worker_through_its_cleanup(fake_s
 
     assert jobs.run_job(record["id"]) == 130
     assert cleaned == ["maintenance cleared"]
+    assert jobs._json_path(record["id"], jobs._CLEANUP_STARTED).exists()
     assert jobs.read_job(record["id"])["state"] == "interrupted"
 
 
-def test_a_worker_that_ignores_the_request_is_terminated_after_the_grace(monkeypatch):
+class _Clock:
+    """A fake monotonic clock that only moves when the code under test sleeps."""
+
+    def __init__(self, monkeypatch, on_tick=lambda now: None):
+        self.now = 0.0
+        self.on_tick = on_tick
+        monkeypatch.setattr(jobs.time, "monotonic", lambda: self.now)
+        monkeypatch.setattr(jobs.time, "sleep", self.sleep)
+
+    def sleep(self, seconds):
+        self.now += seconds
+        self.on_tick(self.now)
+
+
+def test_the_cleanup_allowance_counts_from_cleanup_start_not_the_request(fake_spawn, monkeypatch):
+    record = jobs.create_job("migrate", {"project": "p", "site": "s"}, {})
+    marker = jobs._json_path(record["id"], jobs._CLEANUP_STARTED)
+    clock = _Clock(monkeypatch, lambda now: now >= 200 and marker.touch())
     killed = []
-    alive = iter([True, True, True])
-    monkeypatch.setattr(jobs, "INTERRUPT_GRACE_S", 0.0)
-    monkeypatch.setattr(jobs, "_process_is_job", lambda state: next(alive))
-    monkeypatch.setattr(jobs.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(jobs.os, "kill", lambda pid, sig: killed.append(clock.now))
 
-    jobs._terminate_after_grace({"pid": 77})
+    jobs._terminate_after_grace(record["id"], jobs._state(record["id"]))
 
-    assert killed == [(77, jobs.signal.SIGTERM)]
+    assert killed == [200 + jobs.INTERRUPT_CLEANUP_S]
+
+
+def test_a_worker_that_never_starts_cleanup_is_terminated_and_marked_unknown(
+    fake_spawn, monkeypatch
+):
+    record = jobs.create_job("migrate", {"project": "p", "site": "s"}, {})
+    clock = _Clock(monkeypatch)
+    killed = []
+    monkeypatch.setattr(jobs.os, "kill", lambda pid, sig: killed.append(clock.now))
+
+    jobs._terminate_after_grace(record["id"], jobs._state(record["id"]))
+
+    assert killed == [jobs.INTERRUPT_DELIVERY_S]
+    state = jobs._state(record["id"])
+    assert state["state"] == "unknown"
+    assert state["error"]["code"] == "job.cleanup_not_started"
+    assert "cleanup may not have run" in state["error"]["message"]
+
+
+def test_a_worker_that_finishes_cleanup_in_time_is_not_terminated(fake_spawn, monkeypatch):
+    record = jobs.create_job("migrate", {"project": "p", "site": "s"}, {})
+    jobs._json_path(record["id"], jobs._CLEANUP_STARTED).touch()
+    clock = _Clock(monkeypatch)
+    monkeypatch.setattr(jobs, "_process_is_job", lambda state: clock.now < 30)
+    monkeypatch.setattr(jobs.os, "kill", lambda *args: pytest.fail("cleanup was cut short"))
+
+    jobs._terminate_after_grace(record["id"], jobs._state(record["id"]))
+
+
+def test_a_second_interrupt_leaves_an_interrupting_job_alone(fake_spawn, monkeypatch):
+    record = jobs.create_job("migrate", {"project": "p", "site": "s"}, {})
+    signalled = []
+    monkeypatch.setattr(jobs.os, "killpg", lambda pid, sig: signalled.append(pid))
+    first = jobs.interrupt_job(record["id"])
+
+    second = jobs.interrupt_job(record["id"])
+
+    assert signalled == [4242]
+    assert second["interrupt_requested_at"] == first["interrupt_requested_at"]
+    assert second["state"] == "interrupting"
 
 
 def test_creating_a_job_prunes_finished_history_but_keeps_active_jobs(fake_spawn):

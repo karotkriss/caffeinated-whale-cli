@@ -79,8 +79,11 @@ ALLOWED_VERBS = frozenset(
 )
 
 FINISHED_RETENTION = 100
-INTERRUPT_GRACE_S = 60.0
+INTERRUPT_DELIVERY_S = 300.0
+INTERRUPT_CLEANUP_S = 120.0
+_INTERRUPTIBLE_STATES = frozenset({"queued", "running"})
 _INTERRUPT_REQUEST = "interrupt.request"
+_CLEANUP_STARTED = "cleanup.started"
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{7,80}$")
 _SECRET_ENV = {
     "admin_password": "CWCLI_JOB_ADMIN_PASSWORD",
@@ -508,7 +511,7 @@ def interrupt_job(job_id: str) -> dict[str, Any]:
     # Recorded in state, not events.jsonl: the worker is that file's only writer.
     with _state_lock(job_id):
         state = _state(job_id)
-        armed = state.get("state") in ACTIVE_STATES and _process_is_job(state)
+        armed = state.get("state") in _INTERRUPTIBLE_STATES and _process_is_job(state)
         if armed:
             state.update(state="interrupting", interrupt_requested_at=_now(), updated_at=_now())
             _write_json(_json_path(job_id, "state.json"), state)
@@ -518,19 +521,60 @@ def interrupt_job(job_id: str) -> dict[str, Any]:
                 os.killpg(int(state["pid"]), signal.SIGTERM)
         else:
             _json_path(job_id, _INTERRUPT_REQUEST).touch()
-            threading.Thread(target=_terminate_after_grace, args=(state,), daemon=True).start()
+            threading.Thread(
+                target=_terminate_after_grace, args=(job_id, state), daemon=True
+            ).start()
     return read_job(job_id)
 
 
-def _terminate_after_grace(state: dict[str, Any]) -> None:
-    deadline = time.monotonic() + INTERRUPT_GRACE_S
-    while time.monotonic() < deadline:
-        if not _process_is_job(state):
-            return
+def _wait_until(done, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while not done():
+        if time.monotonic() >= deadline:
+            return False
         time.sleep(0.5)
-    if _process_is_job(state):
+    return True
+
+
+def _terminate_after_grace(job_id: str, state: dict[str, Any]) -> None:
+    """Windows only: terminate a worker whose cleanup never started or never finished.
+
+    Delivery waits for the worker's main thread to run Python again, so the cleanup
+    allowance counts from the worker's ``cleanup.started`` marker, not from the request.
+    """
+    started = _json_path(job_id, _CLEANUP_STARTED)
+
+    def gone() -> bool:
+        return not _process_is_job(state)
+
+    if _wait_until(lambda: started.exists() or gone(), INTERRUPT_DELIVERY_S):
+        if gone() or _wait_until(gone, INTERRUPT_CLEANUP_S):
+            return
         with contextlib.suppress(OSError):
             os.kill(int(state["pid"]), signal.SIGTERM)
+        return
+    with contextlib.suppress(OSError):
+        os.kill(int(state["pid"]), signal.SIGTERM)
+    with _state_lock(job_id):
+        current = _state(job_id)
+        if current.get("state") not in ACTIVE_STATES:
+            return
+        current.update(
+            state="unknown",
+            finished_at=_now(),
+            updated_at=_now(),
+            error={
+                "type": "process_vanished",
+                "code": "job.cleanup_not_started",
+                "message": (
+                    "The job did not respond to the interrupt within "
+                    f"{int(INTERRUPT_DELIVERY_S)} seconds and was terminated; "
+                    "its cleanup may not have run."
+                ),
+                "hint": ("Check maintenance mode and the instance's state before retrying."),
+            },
+        )
+        _write_json(_json_path(job_id, "state.json"), current)
 
 
 def _watch_interrupt_request(job_id: str, stop: threading.Event, interval: float = 0.25) -> None:
@@ -987,6 +1031,13 @@ def run_job(job_id: str) -> int:
         started_at=_now(),
     )
     emit.lifecycle("job_started", f"{spec['verb']} started", phase="job")
+    cleanup_started = _json_path(job_id, _CLEANUP_STARTED)
+
+    def _begin_cleanup(_signum, _frame):
+        cleanup_started.touch()
+        raise KeyboardInterrupt
+
+    previous_sigint = signal.signal(signal.SIGINT, _begin_cleanup)
     stop_watching = threading.Event()
     threading.Thread(
         target=_watch_interrupt_request, args=(job_id, stop_watching), daemon=True
@@ -1062,6 +1113,7 @@ def run_job(job_id: str) -> int:
         return 1
     finally:
         stop_watching.set()
+        signal.signal(signal.SIGINT, previous_sigint)
 
 
 def _schedule_ui_restart() -> None:

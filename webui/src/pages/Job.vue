@@ -110,7 +110,7 @@ async function continueChoice(value) {
     <div v-if="record" class="flex items-center gap-2">
       <Badge :theme="JOB_THEME[record.state] || 'gray'" :label="record.state.replace('_', ' ')" />
       <Button v-if="active" icon-left="lucide-panel-right-close" label="Detach" @click="detach" />
-      <Button v-if="active" theme="red" icon-left="lucide-square" label="Interrupt" @click="interrupt" />
+      <Button v-if="active" theme="red" icon-left="lucide-square" :label="record.state === 'interrupting' ? 'Cleaning up' : 'Interrupt'" :disabled="record.state === 'interrupting'" @click="interrupt" />
     </div>
   </PageHeader>
 
