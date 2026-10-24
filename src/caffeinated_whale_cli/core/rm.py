@@ -56,11 +56,12 @@ from .errors import DOCKER_UNREACHABLE_HINT, CwcliError, ErrorKind
 from .resolvers import DEFAULT_BENCH_PATH
 from .stop import is_database, stop_database
 
-# Marker in a Frappe backup filename that identifies the database dump - the one
+# Suffix of a Frappe backup filename that identifies the database dump - the one
 # artifact a "backup" cannot be trusted without (Frappe names it
-# ``<timestamp>-<site>-database.sql.gz``). Matched case-insensitively so an
-# uncompressed ``.sql`` variant is still recognised.
-DB_DUMP_MARKER = "database.sql"
+# ``<timestamp>-<site>-database.sql.gz``, ``-database-enc.sql.gz`` when encrypted).
+# Matched case-insensitively and with an optional ``.gz`` so an uncompressed
+# ``.sql`` variant is still recognised.
+DB_DUMP_RE = re.compile(r"-database(-enc)?\.sql(\.gz)?$", re.IGNORECASE)
 
 # The two file archives ``bench backup --with-files`` writes beside the dump
 # (``<ts>-<site>-files.tar`` and ``<ts>-<site>-private-files.tar``; ``.tgz`` when
@@ -379,7 +380,7 @@ def backup_site(
         except OSError:
             size = 0
 
-        if DB_DUMP_MARKER in backup_file.lower() and size > 0:
+        if DB_DUMP_RE.search(backup_file) and size > 0:
             db_dump_saved = True
 
         emit(RmTrace(text=f"Copied {backup_file} to archive"))

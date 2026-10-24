@@ -1148,6 +1148,22 @@ class TestBackupSitesReturn:
         )
         assert _backup_sites("proj", container, BENCH, self._archive(tmp_path)) is False
 
+    def test_encrypted_backup_run_returns_true(self, tmp_path):
+        # Frappe names an encrypted run's artifacts with an `-enc` infix; its dump
+        # (`-database-enc.sql.gz`) is still the verified dump the gate asks for.
+        site = "a.localhost"
+        container = FakeFrappeContainer(
+            [site],
+            artifacts={
+                site: {
+                    f"backup-{site}-database-enc.sql.gz": b"DBDUMPBYTES",
+                    f"backup-{site}-files-enc.tar": b"TARBYTES",
+                    f"backup-{site}-private-files-enc.tar": b"TARBYTES",
+                }
+            },
+        )
+        assert _backup_sites("proj", container, BENCH, self._archive(tmp_path)) is True
+
     def test_no_dump_among_files_returns_false(self, tmp_path):
         # bench backup exits 0 but only config + file archives exist - no database dump.
         site = "a.localhost"

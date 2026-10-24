@@ -252,7 +252,7 @@ def _has_verified_dump(backups_dir: Path) -> bool:
     """True if ``backups_dir`` holds a non-empty database dump (the host-side check)."""
     try:
         return any(
-            f.is_file() and core_rm.DB_DUMP_MARKER in f.name.lower() and f.stat().st_size > 0
+            f.is_file() and core_rm.DB_DUMP_RE.search(f.name) and f.stat().st_size > 0
             for f in backups_dir.iterdir()
         )
     except OSError:
