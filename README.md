@@ -1947,7 +1947,6 @@ cwcli ui [OPTIONS]
 | `--foreground` | Run the daemon in this terminal (Ctrl-C to stop) instead of detached |
 | `--stop` | Stop the detached daemon |
 | `--no-browser` | Print the one-time sign-in link instead of opening a browser |
-| `--interval FLOAT` | Seconds between health probes of each running instance (default: 2.5) |
 
 **How it runs:** `cwcli ui` starts the daemon detached if none is running
 (otherwise it reuses the live one), then opens your browser on a **one-time

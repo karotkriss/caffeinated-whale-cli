@@ -72,7 +72,7 @@ python_functions = ["test_*"]
 console_output_style = "classic"
 # The default `-m` deselects the real-Docker tiers, so a bare `pytest` is the
 # fast unit tier; `-m e2e` on the CLI overrides it (the last `-m` wins).
-addopts = ["-q", "--strict-markers", "--tb=short", "--cov-report=", "-m", "not e2e and not e2e_p2p and not e2e_pkg"]
+addopts = ["-q", "--strict-markers", "--tb=short", "--cov-report=", "-m", "not e2e and not e2e_p2p and not e2e_pkg and not packaging"]
 markers = [
     "unit: fast tests that need no Docker daemon (the default tier)",
     "e2e: real-Docker end-to-end tests driving the real cwcli binary",
@@ -250,7 +250,7 @@ def test_real_docker_behavior(session_instance):
 
 Run by type:
 ```bash
-pytest                # Default -m "not e2e and not e2e_p2p and not e2e_pkg": only the fast unit tier
+pytest                # Default -m "not e2e and not e2e_p2p and not e2e_pkg and not packaging": only the fast unit tier
 pytest -m unit         # Explicitly the unit tier
 pytest tests/e2e -m e2e  # The real-Docker tier (needs a Docker daemon)
 ```

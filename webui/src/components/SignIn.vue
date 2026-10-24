@@ -1,26 +1,5 @@
 <script setup>
-import { ref } from 'vue'
-import { Button, FormControl, ErrorMessage } from 'frappe-ui'
 import CommandLine from './CommandLine.vue'
-import { signInWithToken } from '../data/session'
-import { startFleet } from '../data/fleet'
-
-const token = ref('')
-const error = ref(null)
-const busy = ref(false)
-
-async function submit() {
-  busy.value = true
-  error.value = null
-  const ok = await signInWithToken(token.value.trim())
-  busy.value = false
-  if (ok) {
-    token.value = ''
-    startFleet()
-  } else {
-    error.value = 'That token was not accepted.'
-  }
-}
 </script>
 
 <template>
@@ -37,19 +16,6 @@ async function submit() {
         <p class="text-p-sm text-ink-gray-7">Get a fresh one-time sign-in link from the terminal:</p>
         <CommandLine command="cwcli ui" />
       </div>
-      <form class="mt-6 space-y-3" @submit.prevent="submit">
-        <FormControl
-          v-model="token"
-          type="password"
-          label="Or paste the daemon's token"
-          description="Only if you started it with CWCLI_SERVE_TOKEN set."
-          autocomplete="off"
-        />
-        <ErrorMessage :message="error" />
-        <div class="flex justify-end">
-          <Button variant="solid" type="submit" :loading="busy" :disabled="!token.trim()" label="Sign in" />
-        </div>
-      </form>
     </div>
   </div>
 </template>
