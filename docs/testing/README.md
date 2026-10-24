@@ -6,7 +6,7 @@ The authoritative team norms for validating a change - gate scope, both-modes te
 
 ## Two-tier model: fast `unit` vs real-Docker `e2e`
 
-The suite is split into two tiers by pytest marker (registered in `pyproject.toml`; `tests/conftest.py` auto-applies `unit` to anything not marked `e2e`/`e2e_p2p`).
+The suite is split into two tiers by pytest marker (registered in `pyproject.toml`; `tests/conftest.py` auto-applies `unit` to anything not marked `e2e`/`e2e_p2p`/`e2e_pkg`/`packaging`).
 
 - **`unit`** - fast, needs no Docker daemon, and is the default tier a bare `pytest` runs.
   It verifies pure logic and command wiring against fakes and runs inside the uv container in CI (`test.yml`, `-m unit`).
@@ -77,6 +77,9 @@ markers = [
     "unit: fast tests that need no Docker daemon (the default tier)",
     "e2e: real-Docker end-to-end tests driving the real cwcli binary",
     "e2e_p2p: real-Docker P2P (sendme loopback) end-to-end tests (also carries e2e, version-gated)",
+    "e2e_pkg: real-Docker full-lifecycle test against a runtime-deps-only uv-tool-install binary (CWCLI_BIN)",
+    "packaging: builds the real sdist and wheel and asserts what ships (needs the web UI built)",
+    "standalone: an e2e test that never touches the shared session instance (the CI group split)",
 ]
 ```
 
