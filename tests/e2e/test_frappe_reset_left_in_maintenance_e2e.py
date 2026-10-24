@@ -31,7 +31,9 @@ remote-tracking ref - the checkout, HEAD and the running code are unchanged.
 
 The throwaway app is never registered in ``sites/apps.txt`` and never installed on a
 site, so nothing here can break the shared bench (the poisoning lesson), and the
-run uses ``--no-recache`` so the cache never remembers it.
+run uses ``--no-recache`` so the cache never remembers it. It also passes
+``--no-preflight``, because cwcli's own preflight catches this exact app before bench
+starts (``tests/e2e/test_update_preflight_e2e.py`` covers that refusal).
 """
 
 from __future__ import annotations
@@ -129,7 +131,11 @@ def test_a_failed_reset_reports_the_bench_left_down_and_its_remedy_works(running
         )
         _plant_app_on_a_local_only_branch(inst)
 
-        update = harness.run_cwcli("axi", "apps", "update", inst.name, "frappe", "--no-recache")
+        # --no-preflight: cwcli's own preflight refuses this exact bench before bench
+        # starts (git.branch_not_on_remote); this test needs bench's late failure.
+        update = harness.run_cwcli(
+            "axi", "apps", "update", inst.name, "frappe", "--no-recache", "--no-preflight"
+        )
 
         assert update.returncode == 1, update.stdout + update.stderr
         assert "failed_apps[1]: frappe" in update.stdout, update.stdout
