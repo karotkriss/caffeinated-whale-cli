@@ -21,18 +21,20 @@ site up AND removes its database - and then deleting the bench directory, while
 every sibling bench (and every container) keeps running. There is no per-bench
 volume to remove; the whole-instance named volumes belong to ``core.rm``.
 
-**Composition, not a reimplemented gate.** Each site is removed by reusing the
-proven, real-instance-validated :func:`core.rm_site.drop_site`: ``bench
-drop-site --force`` backs the site up AND drops its database in one command, and
-cwcli then copies that credential-bearing archive OUT to the managed host
-archive (``cwcli_home()/archive/<project>_dropped_sites/``) and verifies it
-landed non-empty on the host. This is not ``core.rm``'s verified-backup-BEFORE-
-destroy gate (bench's own backup runs first, but as part of the same drop): the
-data-safety property here is that the bench DIRECTORY is deleted ONLY once EVERY
-site's archive is confirmed on the host, so no site's backup is destroyed
-unverified. If any site's archive could not be copied out, the directory (which
-still holds that trapped in-container archive) is kept and the failure is
-reported, so the one place the backup survives is never destroyed.
+**Composition, not a reimplemented gate.** Each site goes through the two halves
+of :func:`core.rm_site.drop_site`, which itself runs ``core.rm``'s verified
+backup gate. First EVERY site is backed up
+(:func:`core.rm_site.backup_before_drop`: ``bench backup --with-files``, this
+run's dump and file archives copied out to
+``cwcli_home()/archive/<project>_dropped_sites/<site>_<timestamp>/backups/``,
+the dump verified non-empty there); a failure on ANY site stops the removal
+before a single site is dropped, the ``core.rm`` C1 gate's early abort. Only
+then is each site dropped with ``bench drop-site --no-backup``
+(:func:`core.rm_site.drop_backed_up_site`), which also copies bench's
+credential-bearing site archive out beside the backup. The bench DIRECTORY is
+deleted ONLY once EVERY site's archive is confirmed on the host; if any could
+not be copied out, the directory (which still holds that trapped in-container
+archive) is kept and the failure is reported.
 
 **Refuse while running.** A bench whose dev processes are up (cwcli supervisord
 OR a honcho / ``bench start`` manager) is refused with ``CONFLICT`` before
@@ -46,8 +48,10 @@ proceeding on an implicit yes, so ``axi`` and a future GUI cannot bypass it.
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from ..utils import bench_sites
 from . import resolvers, supervision
@@ -231,17 +235,17 @@ def remove_bench(
 
     See the module docstring. Resolves the container and the ``--bench`` selector,
     refuses a running bench (``CONFLICT``/``bench.running``, naming ``cwcli stop``),
-    then - once consent is granted - drops each site through
-    :func:`core.rm_site.drop_site` (which backs it up and relocates its archive to
-    the host) and deletes the bench directory only if every archive is confirmed
-    on the host.
+    then - once consent is granted - takes every site's verified backup on the
+    host, drops each site (relocating its archive beside that backup), and deletes
+    the bench directory only if every archive is confirmed on the host.
 
     Returns ``NEEDS_CHOICE`` (``confirm_start`` for a stopped container, then
     ``select_bench`` for an unselected multi-bench project, then
     ``confirm_remove_bench`` for missing consent) the same way every other
     bench-scoped verb does; each frontend resolves it its own way. Raises
     ``CwcliError`` for hard failures (Docker unreachable, no such bench, a running
-    bench, a ``bench drop-site`` that itself failed).
+    bench, a site backup that failed or could not be verified, a ``bench
+    drop-site`` that itself failed).
     """
     emit: OnEvent = on_event or _noop
     warnings: list[Message] = []
@@ -307,20 +311,36 @@ def remove_bench(
         elif isinstance(event, core_rm_site.DropSiteNotice):
             emit(BenchRmNotice(text=event.text))
 
+    # Back up EVERY site before dropping ANY (the core.rm C1 gate's early abort): a
+    # backup that fails on the last site must not find the others already dropped.
+    # A failure raises CwcliError, so nothing is dropped and nothing is removed.
+    drop_dirs: dict[str, Path] = {}
+    try:
+        for site in sites:
+            emit(BenchRmStep(label=f"Backing up site '{site}'...", style="cyan"))
+            drop_dirs[site] = core_rm_site.backup_before_drop(
+                container, project_name, path, site, on_event=_forward
+            )
+    except CwcliError:
+        # Nothing was dropped, so the backups already taken are copies of sites that
+        # still exist; do not leave them behind as "dropped site" archives.
+        for drop_dir in drop_dirs.values():
+            shutil.rmtree(drop_dir, ignore_errors=True)
+        raise
+
     for site in sites:
-        emit(BenchRmStep(label=f"Backing up and dropping site '{site}'...", style="cyan"))
-        result = core_rm_site.drop_site(
+        emit(BenchRmStep(label=f"Dropping site '{site}'...", style="red"))
+        result = core_rm_site.drop_backed_up_site(
+            container,
             project_name,
+            path,
             site,
-            bench_path=path,
-            consent=True,
+            drop_dirs[site],
             db_root_password=db_root_password,
             on_event=_forward,
         )
-        # drop_site with consent=True and an explicit bench_path against a running
-        # container never returns NEEDS_CHOICE; a hard failure raised CwcliError
-        # above and propagates (the bench directory, and any partial archive, is
-        # left intact for recovery).
+        # A hard failure raised CwcliError above and propagates (the bench
+        # directory, and any partial archive, is left intact for recovery).
         assert result.data is not None
         outcome = result.data
         # Skip drop_site's "could not prune the in-container copy" warning: we are
@@ -332,11 +352,11 @@ def remove_bench(
             sites_dropped.append(site)
             archived_host_paths.append(outcome.archived_host_path)
         else:
-            # The site's database was dropped but its backup archive could not be
-            # copied out of the container. Keep the bench directory so that trapped
+            # The site's database was dropped but its archive could not be confirmed
+            # on the host. Keep the bench directory so that trapped in-container
             # archive is not destroyed.
             sites_failed.append(site)
-            failures.append(f"site '{site}' was dropped but its backup could not be copied out")
+            failures.append(f"site '{site}' was dropped but its archive could not be copied out")
 
     dir_removed = False
     if sites_failed:
