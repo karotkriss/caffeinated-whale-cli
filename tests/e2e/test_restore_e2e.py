@@ -16,9 +16,12 @@ real ``cwcli init`` torn down with ``cwcli rm``.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from . import harness
+from .conftest import SESSION_ADMIN_PW
 
 pytestmark = pytest.mark.e2e
 
@@ -254,3 +257,77 @@ def test_mutually_exclusive_flags(running_instance):
         != 0
     )
     assert harness.run_cwcli("restore", inst.name, "--latest", "--send").returncode != 0
+
+
+# --------------------------------------------------------------------------- #
+# A site whose name contains hyphens (the backup-filename parse regression).
+# --------------------------------------------------------------------------- #
+HYPHEN_SITE = "my-hyphen-site.localhost"
+
+
+def _site_exists(inst, site: str) -> bool:
+    code, _ = harness.exec_in_frappe(inst.name, f"test -d {inst.bench}/sites/{site}")
+    return code == 0
+
+
+def _drop_site(inst, site: str) -> None:
+    if _site_exists(inst, site):
+        r = harness.run_cwcli("rm-site", inst.name, site, "--yes", timeout=300)
+        assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_restore_of_a_hyphenated_site_is_genuine(running_instance):
+    """Frappe names a backup ``<ts>-my-hyphen-site_localhost-database.sql.gz``; the
+    old parser took the site as "up to the next hyphen", so restore found no
+    backup set for any site whose name contains a hyphen. Runs on a throwaway
+    site of its own, dropped afterwards, so the shared ``inst.site`` is untouched.
+    """
+    inst = running_instance
+    site_inst = replace(inst, site=HYPHEN_SITE)
+    _drop_site(inst, HYPHEN_SITE)  # a leftover from an aborted earlier run
+    r = harness.run_cwcli(
+        "run",
+        inst.name,
+        "-i",
+        "new-site",
+        HYPHEN_SITE,
+        "--db-root-password",
+        DB_PW,
+        "--admin-password",
+        SESSION_ADMIN_PW,
+        timeout=300,
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    try:
+        _seed_marker(site_inst, "ORIGINAL")
+        r = harness.run_cwcli("backup", inst.name, "--site", HYPHEN_SITE, "-y")
+        assert r.returncode == 0, r.stdout + r.stderr
+        # The backup really carries the hyphenated name this test is about.
+        code, out = harness.exec_in_frappe(
+            inst.name,
+            f"ls {inst.bench}/sites/{HYPHEN_SITE}/private/backups/"
+            " | grep -- '-my-hyphen-site_localhost-database.sql.gz$'",
+        )
+        assert code == 0, f"no hyphenated database backup found: {out}"
+        _mutate_marker(site_inst, "MUTATED")
+
+        r = harness.run_cwcli(
+            "restore",
+            inst.name,
+            "--site",
+            HYPHEN_SITE,
+            "--latest",
+            "--yes",
+            "--mariadb-root-password",
+            DB_PW,
+        )
+        assert r.returncode == 0, f"restore failed: {r.stdout}\n{r.stderr}"
+        assert "Successfully restored" in r.stdout
+
+        marker = _read_marker(site_inst)
+        assert "ORIGINAL" in marker and "MUTATED" not in marker, marker
+        harness.wait_for_site_ready(inst.name, HYPHEN_SITE)
+    finally:
+        harness.run_cwcli("start", inst.name, "--yes")
+        _drop_site(inst, HYPHEN_SITE)
+        harness.wait_for_site_ready(inst.name, inst.site)
