@@ -109,6 +109,14 @@ def _cfg_name(site):
     return f"backup-{site}-site_config_backup.json"
 
 
+def _files(site):
+    """The two file archives a real ``bench backup --with-files`` run writes."""
+    return {
+        f"backup-{site}-files.tar": b"TARBYTES",
+        f"backup-{site}-private-files.tar": b"TARBYTES",
+    }
+
+
 def _tar_bytes(name, data):
     """Wrap ``data`` in an uncompressed tar with a single member ``name`` -
     exactly the shape docker-py's ``get_archive`` streams back for one file."""
@@ -170,7 +178,10 @@ class FakeFrappeContainer:
         self._backup_ok = backup_ok
         self._list_ok = list_ok
         if artifacts is None:
-            artifacts = {s: {_db_name(s): b"DBDUMPBYTES", _cfg_name(s): b"{}"} for s in self.sites}
+            artifacts = {
+                s: {_db_name(s): b"DBDUMPBYTES", _cfg_name(s): b"{}", **_files(s)}
+                for s in self.sites
+            }
         self.artifacts = artifacts
 
     def _backup_exit(self, site):
@@ -626,6 +637,7 @@ class TestBackupGate:
                 f"20260703_120000-{site}-database.sql.gz": b"DBDUMPBYTES",
                 f"20260703_120000-{site}-site_config_backup.json": b"{}",
                 f"20260703_120000-{site}-files.tar": b"TARBYTES",
+                f"20260703_120000-{site}-private-files.tar": b"TARBYTES",
                 f"20250101_000000-{site}-database.sql.gz": None,  # stale, cat fails
             }
         }
@@ -1131,13 +1143,38 @@ class TestBackupSitesReturn:
 
     def test_empty_dump_returns_false(self, tmp_path):
         site = "a.localhost"
-        container = FakeFrappeContainer([site], artifacts={site: {_db_name(site): b""}})
+        container = FakeFrappeContainer(
+            [site], artifacts={site: {_db_name(site): b"", **_files(site)}}
+        )
         assert _backup_sites("proj", container, BENCH, self._archive(tmp_path)) is False
 
     def test_no_dump_among_files_returns_false(self, tmp_path):
-        # bench backup exits 0 but only a config file exists - no database dump.
+        # bench backup exits 0 but only config + file archives exist - no database dump.
         site = "a.localhost"
-        container = FakeFrappeContainer([site], artifacts={site: {_cfg_name(site): b"{}"}})
+        container = FakeFrappeContainer(
+            [site], artifacts={site: {_cfg_name(site): b"{}", **_files(site)}}
+        )
+        assert _backup_sites("proj", container, BENCH, self._archive(tmp_path)) is False
+
+    @pytest.mark.parametrize("missing", ["files.tar", "private-files.tar"])
+    def test_missing_files_archive_returns_false(self, tmp_path, missing):
+        # The gate asks for --with-files: a run whose dump landed but which wrote
+        # only one of the two file archives is not the backup it asked for.
+        site = "a.localhost"
+        artifacts = {site: {_db_name(site): b"DBDUMPBYTES", _cfg_name(site): b"{}"}}
+        artifacts[site].update(
+            {name: data for name, data in _files(site).items() if not name.endswith(missing)}
+        )
+        container = FakeFrappeContainer([site], artifacts=artifacts)
+        assert _backup_sites("proj", container, BENCH, self._archive(tmp_path)) is False
+
+    def test_a_site_named_files_cannot_pass_on_its_dump_alone(self, tmp_path):
+        # The files check is anchored on the archive suffix, so a site whose own
+        # name carries "-files" does not satisfy it with its database dump.
+        site = "x-files.localhost"
+        container = FakeFrappeContainer(
+            [site], artifacts={site: {_db_name(site): b"DBDUMPBYTES", _cfg_name(site): b"{}"}}
+        )
         assert _backup_sites("proj", container, BENCH, self._archive(tmp_path)) is False
 
     def test_secondary_artifact_copy_failure_returns_false(self, tmp_path):
@@ -1164,6 +1201,7 @@ class TestBackupSitesReturn:
                 f"20260703_120000-{site}-database.sql.gz": b"DBDUMPBYTES",
                 f"20260703_120000-{site}-site_config_backup.json": b"{}",
                 f"20260703_120000-{site}-files.tar": b"TARBYTES",
+                f"20260703_120000-{site}-private-files.tar": b"TARBYTES",
                 f"20250101_000000-{site}-database.sql.gz": None,  # stale, cat fails
             }
         }
@@ -1178,7 +1216,7 @@ class TestBackupSitesReturn:
         # artifact is never buffered whole in host RAM), never a whole-file `cat`.
         site = "a.localhost"
         payload = b"DBDUMPBYTES" * 4096  # large enough to span many stream chunks
-        artifacts = {site: {_db_name(site): payload, _cfg_name(site): b"{}"}}
+        artifacts = {site: {_db_name(site): payload, _cfg_name(site): b"{}", **_files(site)}}
         container = FakeFrappeContainer([site], artifacts=artifacts)
         archive = self._archive(tmp_path)
 

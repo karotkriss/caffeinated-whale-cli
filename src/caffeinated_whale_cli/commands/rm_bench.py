@@ -9,7 +9,8 @@ running" gate, and the per-site backup-then-drop the deletion is built from.
 
 This module only prompts, resolves the bench, streams each site drop's own
 output, and renders the outcome; the resolution, the running gate, the
-``bench drop-site`` fan-out, and the directory deletion live in the core.
+verified backups, the ``bench drop-site`` fan-out, and the directory deletion
+live in the core.
 """
 
 import sys
@@ -30,7 +31,12 @@ from ..utils import cache
 from ..utils.completion_utils import complete_project_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import handle_docker_errors
-from .utils import confirm_or_exit, ensure_containers_running, resolve_bench_path
+from .utils import (
+    confirm_or_exit,
+    ensure_containers_running,
+    render_captured_output_tail,
+    resolve_bench_path,
+)
 
 
 def _make_renderer(*, verbose: bool):
@@ -56,6 +62,7 @@ def _make_renderer(*, verbose: bool):
 
 def _exit_on_error(e: CwcliError):
     stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
+    render_captured_output_tail(e)
     if e.hint:
         stderr_console.print(f"[dim]{e.hint}[/dim]")
     raise typer.Exit(code=1) from e
@@ -92,11 +99,16 @@ def rm_bench(
     instance).
 
     A bench that is still running is refused: stop it first with
-    'cwcli stop <project> --bench <selector>'. Each site's backup is copied out
-    to ~/.cwcli/archive/<project>_dropped_sites/ (or $CWCLI_HOME/archive/... if
-    that override is set) and verified on disk before the bench directory is
-    deleted; if a backup cannot be copied out, the directory is kept so the
-    backup is never destroyed, and this command exits non-zero.
+    'cwcli stop <project> --bench <selector>'. Every site is backed up BEFORE any
+    site is dropped, with the same verified gate 'cwcli rm' uses: 'bench backup
+    --with-files', with the database dump and file archives copied out to
+    ~/.cwcli/archive/<project>_dropped_sites/<site>_<timestamp>/backups/ (or
+    $CWCLI_HOME/archive/... if that override is set) and the dump checked
+    non-empty there. If any backup fails, nothing is dropped or deleted and this
+    command exits non-zero with bench's own error. Each site is then dropped with
+    'bench drop-site --no-backup' and its archived site directory copied out
+    beside its backup; if an archive cannot be copied out, the bench directory
+    is kept so it is never destroyed, and this command exits non-zero.
 
     Examples:
         cwcli rm-bench my-project --bench 2
@@ -174,7 +186,7 @@ def rm_bench(
         )
         if outcome.archived_host_paths:
             console.print(
-                "[dim]Each dropped site's backup archive was copied to "
+                "[dim]Each dropped site's verified backup and archive were copied to "
                 f"{outcome.archived_host_paths[0].rsplit('/', 1)[0]}/.[/dim]"
             )
     else:

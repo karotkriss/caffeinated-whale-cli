@@ -30,7 +30,9 @@ rm's ``_backup_sites`` is a copy-out-and-VERIFY gate, distinct from
 ``core.backup``'s in-container dump: it streams each artifact out of the
 container and confirms the database dump landed non-empty on the host archive,
 because the volume the in-container dump lives in is about to be deleted. Reusing
-``core.backup`` would drop that verification, which IS the C1 gate.
+``core.backup`` would drop that verification, which IS the C1 gate. Its per-site
+unit, :func:`backup_site`, is public because ``core.rm_site`` (and through it
+``core.rm_bench``) runs the SAME gate before every ``bench drop-site --no-backup``.
 """
 
 from __future__ import annotations
@@ -58,7 +60,15 @@ from .stop import is_database, stop_database
 # artifact a "backup" cannot be trusted without (Frappe names it
 # ``<timestamp>-<site>-database.sql.gz``). Matched case-insensitively so an
 # uncompressed ``.sql`` variant is still recognised.
-_DB_DUMP_MARKER = "database.sql"
+DB_DUMP_MARKER = "database.sql"
+
+# The two file archives ``bench backup --with-files`` writes beside the dump
+# (``<ts>-<site>-files.tar`` and ``<ts>-<site>-private-files.tar``; ``.tgz`` when
+# compressed, ``-enc`` when encrypted). The gate asks for files, so a run missing
+# either one is not the backup it asked for. Anchored on the suffix so a site whose
+# own name contains ``-files`` cannot satisfy the check with its database dump.
+_PUBLIC_FILES_RE = re.compile(r"(?<!-private)-files(-enc)?\.(tar|tgz)$")
+_PRIVATE_FILES_RE = re.compile(r"-private-files(-enc)?\.(tar|tgz)$")
 
 
 # --------------------------------------------------------------------------- DTO
@@ -290,6 +300,107 @@ def _stream_container_file(
     return False
 
 
+def backup_site(
+    container,
+    bench_path: str,
+    site: str,
+    dest_dir: Path,
+    emit: OnEvent,
+) -> bool:
+    """Back up ONE site and copy this run's artifacts into ``dest_dir`` (verified copy-out).
+
+    The C1 gate's per-site unit, shared by ``rm`` (every site, before the volumes
+    go) and ``core.rm_site`` (before ``bench drop-site --no-backup``). Returns True
+    only if ``bench backup --with-files`` exited 0 AND this run's database dump
+    landed non-empty in ``dest_dir`` AND both file archives were produced AND every
+    artifact copied out whole. Anything less is False, so the caller never destroys
+    a site whose backup is missing. The one-line reason rides an ``RmWarning``;
+    bench's own output rides an ``RmTrace``. A Docker error propagates.
+    """
+    emit(RmTrace(text=f"Backing up site '{site}'..."))
+
+    backup_cmd = f"cd {bench_path} && bench --site {site} backup --with-files"
+    exit_code, output = container.exec_run(f"sh -c '{backup_cmd}'", workdir=bench_path)
+
+    if exit_code != 0:
+        emit(RmWarning(text=f"Could not backup site '{site}'"))
+        emit(RmTrace(text=f"Backup command output: {output.decode('utf-8')}"))
+        return False
+
+    emit(RmTrace(text=f"Backup created for '{site}'"))
+
+    # A zero exit from `bench backup` only means the dump was written INSIDE the
+    # container (i.e. inside the data we are about to delete). It is not a backup
+    # until the bytes are copied out to the host archive, so verify each expected
+    # artifact actually lands here and, critically, that the database dump is
+    # present and non-empty.
+    site_backup_dir = f"{bench_path}/sites/{site}/private/backups"
+    exit_code, ls_output = container.exec_run(f"ls -1t {site_backup_dir}")
+
+    if exit_code != 0:
+        emit(RmWarning(text=f"Could not list backups for site '{site}'"))
+        return False
+
+    backup_files = [f.strip() for f in ls_output.decode("utf-8").split("\n") if f.strip()]
+
+    # Select only THIS run's artifacts. `ls -1t` is newest-first and Frappe names
+    # every artifact of one run with a shared leading timestamp token
+    # (`<YYYYMMDD_HHMMSS>-<site>-<part>`), so the newest file's token identifies the
+    # current run. Verifying a fixed top-N window instead would bleed into prior
+    # runs, letting a stale, broken artifact falsely fail an otherwise complete
+    # fresh backup.
+    run_ts = backup_files[0].split("-", 1)[0] if backup_files else ""
+    current_files = [f for f in backup_files if f.split("-", 1)[0] == run_ts]
+
+    dest_dir.mkdir(exist_ok=True)
+
+    db_dump_saved = False
+    copy_failed = False
+    for backup_file in current_files:
+        source_path = f"{site_backup_dir}/{backup_file}"
+        dest_file = dest_dir / backup_file
+
+        # Stream the artifact out in fixed-size chunks so a multi-GB `--with-files`
+        # backup is never held in host RAM as one blob.
+        if not _stream_container_file(container, source_path, dest_file):
+            # An artifact we could not copy out (missing, read error, or a
+            # truncated stream). Fail closed: a backup missing any of its parts
+            # is not a trustworthy backup.
+            copy_failed = True
+            emit(RmTrace(text=f"Could not copy {backup_file} to archive"))
+            continue
+
+        # Confirm the artifact actually landed on the host. The database dump
+        # additionally must be non-empty - an empty dump is no backup at all (other
+        # artifacts, e.g. a files tar, may legitimately be small, so only the dump
+        # is size-checked).
+        try:
+            size = dest_file.stat().st_size
+        except OSError:
+            size = 0
+
+        if DB_DUMP_MARKER in backup_file.lower() and size > 0:
+            db_dump_saved = True
+
+        emit(RmTrace(text=f"Copied {backup_file} to archive"))
+
+    files_saved = any(_PUBLIC_FILES_RE.search(f) for f in current_files) and any(
+        _PRIVATE_FILES_RE.search(f) for f in current_files
+    )
+    if db_dump_saved and files_saved and not copy_failed:
+        return True
+
+    emit(
+        RmWarning(
+            text=(
+                f"Backup for site '{site}' was not fully copied to the host archive "
+                "(missing or empty database dump, or a missing files archive)"
+            )
+        )
+    )
+    return False
+
+
 def _backup_sites(
     project_name: str,
     container,
@@ -318,91 +429,12 @@ def _backup_sites(
         backups_dir = archive_dir / "backups"
         backups_dir.mkdir(exist_ok=True)
 
-        backed_up_count = 0
-        failed_sites: list[str] = []
-        for site in sites:
-            emit(RmTrace(text=f"Backing up site '{site}'..."))
-
-            backup_cmd = f"cd {bench_path} && bench --site {site} backup --with-files"
-            exit_code, output = container.exec_run(f"sh -c '{backup_cmd}'", workdir=bench_path)
-
-            if exit_code != 0:
-                emit(RmWarning(text=f"Could not backup site '{site}'"))
-                emit(RmTrace(text=f"Backup command output: {output.decode('utf-8')}"))
-                failed_sites.append(site)
-                continue
-
-            emit(RmTrace(text=f"Backup created for '{site}'"))
-
-            # A zero exit from `bench backup` only means the dump was written
-            # INSIDE the container (i.e. inside the volume we are about to
-            # delete). It is not a backup until the bytes are copied out to the
-            # host archive, so verify each expected artifact actually lands here
-            # and, critically, that the database dump is present and non-empty.
-            site_backup_dir = f"{bench_path}/sites/{site}/private/backups"
-            exit_code, ls_output = container.exec_run(f"ls -1t {site_backup_dir}")
-
-            if exit_code != 0:
-                emit(RmWarning(text=f"Could not list backups for site '{site}'"))
-                failed_sites.append(site)
-                continue
-
-            backup_files = [f.strip() for f in ls_output.decode("utf-8").split("\n") if f.strip()]
-
-            # Select only THIS run's artifacts. `ls -1t` is newest-first and
-            # Frappe names every artifact of one run with a shared leading
-            # timestamp token (`<YYYYMMDD_HHMMSS>-<site>-<part>`), so the newest
-            # file's token identifies the current run. Verifying a fixed top-N
-            # window instead would bleed into prior runs, letting a stale, broken
-            # artifact falsely fail an otherwise complete fresh backup.
-            run_ts = backup_files[0].split("-", 1)[0] if backup_files else ""
-            current_files = [f for f in backup_files if f.split("-", 1)[0] == run_ts]
-
-            site_archive_backups = backups_dir / site
-            site_archive_backups.mkdir(exist_ok=True)
-
-            db_dump_saved = False
-            copy_failed = False
-            for backup_file in current_files:
-                source_path = f"{site_backup_dir}/{backup_file}"
-                dest_file = site_archive_backups / backup_file
-
-                # Stream the artifact out in fixed-size chunks so a multi-GB
-                # `--with-files` backup is never held in host RAM as one blob.
-                if not _stream_container_file(container, source_path, dest_file):
-                    # An artifact we could not copy out (missing, read error, or
-                    # a truncated stream). Fail closed: a backup missing any of
-                    # its parts is not a trustworthy backup.
-                    copy_failed = True
-                    emit(RmTrace(text=f"Could not copy {backup_file} to archive"))
-                    continue
-
-                # Confirm the artifact actually landed on the host. The database
-                # dump additionally must be non-empty - an empty dump is no backup
-                # at all (other artifacts, e.g. a files tar, may legitimately be
-                # small, so only the dump is size-checked).
-                try:
-                    size = dest_file.stat().st_size
-                except OSError:
-                    size = 0
-
-                if _DB_DUMP_MARKER in backup_file.lower() and size > 0:
-                    db_dump_saved = True
-
-                emit(RmTrace(text=f"Copied {backup_file} to archive"))
-
-            if db_dump_saved and not copy_failed:
-                backed_up_count += 1
-            else:
-                emit(
-                    RmWarning(
-                        text=(
-                            f"Backup for site '{site}' was not fully copied to the host archive "
-                            "(missing or empty database dump)"
-                        )
-                    )
-                )
-                failed_sites.append(site)
+        failed_sites = [
+            site
+            for site in sites
+            if not backup_site(container, bench_path, site, backups_dir / site, emit)
+        ]
+        backed_up_count = len(sites) - len(failed_sites)
 
         if backed_up_count > 0:
             emit(RmNotice(text=f"Backed up {backed_up_count} site(s) to {backups_dir}"))

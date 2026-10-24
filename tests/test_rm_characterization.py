@@ -63,6 +63,14 @@ def _cfg_name(site):
     return f"backup-{site}-site_config_backup.json"
 
 
+def _files(site):
+    """The two file archives a real ``bench backup --with-files`` run writes."""
+    return {
+        f"backup-{site}-files.tar": b"TARBYTES",
+        f"backup-{site}-private-files.tar": b"TARBYTES",
+    }
+
+
 def _tar_bytes(name, data):
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
@@ -99,7 +107,10 @@ class FakeFrappeContainer:
         self.sites = list(sites)
         self._backup_ok = backup_ok
         if artifacts is None:
-            artifacts = {s: {_db_name(s): b"DBDUMPBYTES", _cfg_name(s): b"{}"} for s in self.sites}
+            artifacts = {
+                s: {_db_name(s): b"DBDUMPBYTES", _cfg_name(s): b"{}", **_files(s)}
+                for s in self.sites
+            }
         self.artifacts = artifacts
 
     def _backup_exit(self, site):
@@ -394,7 +405,8 @@ class TestMultiBench:
             if cmd.startswith("sh -c 'cd ") and bench2 in cmd and "backup" in cmd:
                 return (0, b"backup output")
             if cmd == f"ls -1t {bench2}/sites/b.localhost/private/backups":
-                return (0, _db_name("b.localhost").encode())
+                listing = [_db_name("b.localhost"), *_files("b.localhost")]
+                return (0, "\n".join(listing).encode())
             return orig_exec(cmd, workdir=workdir)
 
         container.exec_run = exec_run

@@ -16,41 +16,45 @@ Built entirely from the shared bench-op primitives ``unlock``/``bench_ops``
 already use (``resolvers.resolve_container_and_bench``, the site/path validation
 and probe helpers, ``exec_stream`` for the narrated ``bench drop-site`` call, the
 ``consent``-as-core-parameter pattern ``apps.uninstall_apps``/``restore_apply``
-established). It adds exactly one new piece of logic: what happens to the
-archive ``bench drop-site`` creates.
+established), plus ``core.rm``'s own backup gate. Its own logic is the order
+(verified backup first, drop second) and what happens to the archive
+``bench drop-site`` creates.
 
-**The archive decision (the hard requirement this module exists to satisfy).**
-``bench drop-site`` (without ``--no-backup``) takes its own backup, then MOVES
-the site's whole directory - ``site_config.json`` (the database credentials)
-included - under ``{bench_path}/archived/sites/`` inside the container, normally
-named after the site and given a numeric suffix when that name already exists.
-Left there, that folder grows by one credential-bearing
-entry every drop, forever, unpruned, inside a container that keeps running for
-the rest of the bench's life. That is the same unbounded-residue shape the
-network-leak fix in ``core.rm`` closed for the whole-instance path, so it gets
-the same answer here, not a different one: cwcli does NOT rely on bench's own
-archive as the durable copy. Immediately after a successful drop, this module
-copies that one archived path out to the SAME managed host archive location
-``core.rm`` already uses (``cwcli_home()/archive/``, disclosed and never
-silently grown), and - ONLY once that copy is verified non-empty on the host -
-deletes the in-container copy. A copy that cannot be verified is left in place
-rather than deleted unbacked (fail closed, the ``core.rm`` C1 gate's own logic
-applied here), and every one of these outcomes rides ``DropSiteOutcome.ok`` /
-warnings rather than a silent success: a caller that only checks the exit code
-still finds out its site's credentials did not make it safely out of the
-container.
+**The backup gate (the hard requirement this module exists to satisfy).**
+cwcli takes the site's backup ITSELF, before anything is destroyed, with the
+SAME gate ``cwcli rm`` uses (:func:`core.rm.backup_site`): ``bench --site <site>
+backup --with-files``, this run's database dump and file archives streamed out
+to the managed host archive (``cwcli_home()/archive/<project>_dropped_sites/
+<site>_<timestamp>/backups/``), and the dump verified non-empty there. Only then
+does it run ``bench drop-site --no-backup``. It must never lean on bench's own
+drop-time backup: ``bench drop-site --force`` wraps that backup in a ``try`` and,
+under ``--force``, ignores a failed backup and drops the database anyway, which
+once dropped a real site's database while cwcli reported ``ok: true``. A backup or
+verification failure raises ``rm_site.backup_failed`` with bench's own output,
+and nothing is dropped.
 
-This is NOT a verified-backup-BEFORE-destroy gate the way ``core.rm``'s is:
-bench's own backup-then-archive-then-drop runs as one external command before
-cwcli ever learns the archive's path, so there is no point at which cwcli could
-gate the destruction itself on the archive's fate. What it can, and does, own
-is the archive's fate immediately AFTER, honestly reported either way.
+**The archive decision.** ``bench drop-site`` MOVES the site's whole directory -
+``site_config.json`` (the database credentials) included - under
+``{bench_path}/archived/sites/`` inside the container, normally named after the
+site and given a numeric suffix when that name already exists. Left there, that
+folder grows by one credential-bearing entry every drop, forever, unpruned,
+inside a container that keeps running for the rest of the bench's life. That is
+the same unbounded-residue shape the network-leak fix in ``core.rm`` closed for
+the whole-instance path, so it gets the same answer here: immediately after a
+successful drop, this module copies that one archived path out beside the
+verified backup (``<site>.tar`` in the same host directory) and - ONLY once the
+dump is re-confirmed in the host archive AND that copy is verified non-empty -
+deletes the in-container copy. Anything that cannot be verified is left in place
+rather than deleted unbacked (fail closed, the ``core.rm`` C1 gate's own logic),
+and every one of these outcomes rides ``DropSiteOutcome.ok`` / warnings rather
+than a silent success.
 """
 
 from __future__ import annotations
 
 import os
 import shlex
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -59,6 +63,7 @@ from pathlib import Path, PurePosixPath
 from ..utils import shared_home
 from ..utils.config_utils import cwcli_home
 from . import resolvers
+from . import rm as core_rm
 from .envelope import Choice, Message, Result, Status
 from .errors import CwcliError, ErrorKind
 from .exec_stream import ExecChunk, exec_stream
@@ -70,12 +75,15 @@ from .exec_stream import ExecChunk, exec_stream
 class DropSiteOutcome:
     """The typed outcome of a site drop (serializable, no live objects).
 
-    ``ok`` is True only when the site was dropped AND its archive was both
-    copied out to ``archived_host_path`` and pruned from the container - the
-    fully clean case. A drop that succeeded but left its archive un-relocated
-    or un-pruned still reports the site as gone (it is), but ``ok=False`` and a
-    warning names exactly what remains, so a caller reading only the exit code
-    still learns its site's credentials may not be safely out of the container.
+    ``archived_host_path`` is the host directory holding the site's verified
+    backup (``backups/``: the database dump, the file archives, and the site
+    config) and bench's archived site directory (``<site>.tar``); it is None
+    when that archive could not be confirmed there. ``ok`` is True only when the
+    site was dropped, its verified dump is still in that host archive after the
+    drop, and the in-container archive was both copied out and pruned - the fully
+    clean case. A drop that succeeded but left any of that unconfirmed still
+    reports the site as gone (it is), but ``ok=False`` and a warning names exactly
+    what remains, so a caller reading only the exit code still learns it.
     """
 
     project: str
@@ -237,6 +245,230 @@ def _copy_out_archived_site(container, source_path: str, dest_file: Path) -> boo
         return False
 
 
+# ------------------------------------------------------------------- backup gate
+
+
+def _has_verified_dump(backups_dir: Path) -> bool:
+    """True if ``backups_dir`` holds a non-empty database dump (the host-side check)."""
+    try:
+        return any(
+            f.is_file() and core_rm.DB_DUMP_MARKER in f.name.lower() and f.stat().st_size > 0
+            for f in backups_dir.iterdir()
+        )
+    except OSError:
+        return False
+
+
+def backup_before_drop(
+    container,
+    project_name: str,
+    bench_path: str,
+    site: str,
+    *,
+    on_event: OnEvent | None = None,
+) -> Path:
+    """Take ``site``'s verified backup on the host BEFORE anything is dropped.
+
+    Runs ``core.rm``'s own C1 gate (:func:`core.rm.backup_site`) into a fresh
+    ``cwcli_home()/archive/<project>_dropped_sites/<site>_<timestamp>/backups/``
+    and returns that ``<site>_<timestamp>`` directory. On ANY failure the
+    half-written directory is removed and ``CwcliError(PRECONDITION,
+    "rm_site.backup_failed")`` carries bench's own output: nothing was dropped.
+    """
+    emit: OnEvent = on_event or _noop
+    _validate_plain_component(project_name, kind="project")
+    resolvers.validate_site_name(site)
+    _validate_plain_component(site, kind="site")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    sites_dir = cwcli_home() / "archive" / f"{project_name}_dropped_sites"
+    drop_dir = sites_dir / f"{site}_{timestamp}"
+    try:
+        sites_dir.mkdir(parents=True, exist_ok=True, mode=shared_home.dir_mode(0o700))
+        # Never exist_ok: the failure cleanup below may only ever remove this run's own dir.
+        drop_dir.mkdir(mode=shared_home.dir_mode(0o700))
+        for d in (sites_dir, drop_dir):
+            d.chmod(shared_home.dir_mode(0o700))
+            shared_home.apply_group(d)
+    except OSError as e:
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "rm_site.backup_failed",
+            f"Could not create the host archive directory {drop_dir}; nothing was dropped.",
+            detail={"output": str(e)},
+        ) from e
+
+    events: list[core_rm.RmEvent] = []
+    try:
+        ok = core_rm.backup_site(container, bench_path, site, drop_dir / "backups", events.append)
+    except Exception as e:  # noqa: BLE001 - a Docker error mid-backup is a failed backup
+        ok = False
+        events.append(core_rm.RmTrace(text=str(e)))
+    if not ok:
+        shutil.rmtree(drop_dir, ignore_errors=True)
+        reason = next(
+            (e.text for e in events if isinstance(e, core_rm.RmWarning)),
+            f"Could not backup site '{site}'",
+        )
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "rm_site.backup_failed",
+            f"{reason}; nothing was dropped.",
+            hint=(
+                "Fix the backup failure and re-run, or drop the site deliberately without a "
+                f"backup with 'cwcli run {project_name} --path {bench_path} -i drop-site "
+                f"{site} --no-backup'."
+            ),
+            detail={"output": "\n".join(e.text for e in events if isinstance(e, core_rm.RmTrace))},
+        )
+
+    emit(DropSiteNotice(text=f"Backed up site '{site}' to {drop_dir / 'backups'}"))
+    return drop_dir
+
+
+def drop_backed_up_site(
+    container,
+    project_name: str,
+    bench_path: str,
+    site: str,
+    drop_dir: Path,
+    *,
+    db_root_password: str = "123",
+    on_event: OnEvent | None = None,
+) -> Result[DropSiteOutcome]:
+    """Drop a site whose verified backup :func:`backup_before_drop` put in ``drop_dir``.
+
+    Refuses (``rm_site.backup_missing``) unless ``drop_dir/backups`` holds a
+    non-empty database dump, so this can never be a drop without a backup. Then
+    ``bench drop-site --no-backup`` (never ``--force``: it exists to ignore a failed
+    backup), then the archive relocation and the post-drop check.
+    """
+    emit: OnEvent = on_event or _noop
+    warnings: list[Message] = []
+    backups_dir = drop_dir / "backups"
+
+    if not _has_verified_dump(backups_dir):
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "rm_site.backup_missing",
+            f"No verified database dump for site '{site}' in {backups_dir}; the site was not "
+            "dropped.",
+        )
+
+    archive_root = _archived_sites_root(bench_path)
+    archives_before = _archived_site_names(container, archive_root)
+    if archives_before is None:
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "rm_site.archive_state_unknown",
+            f"Could not inspect existing site archives at {archive_root}; the site was not dropped.",
+        )
+
+    # Secret rides the environment, never the argv (the restore.py M5 pattern):
+    # the traced command below is the $-ref, never the value.
+    env = {"CWCLI_DB_ROOT_PASSWORD": db_root_password}
+    cmd_str = (
+        f"bench drop-site {shlex.quote(site)} "
+        '--db-root-password "$CWCLI_DB_ROOT_PASSWORD" --no-backup'
+    )
+    emit(DropSiteCommand(command=cmd_str))
+    exit_code = 1
+    for event in exec_stream(container, ["sh", "-c", cmd_str], workdir=bench_path, environment=env):
+        if isinstance(event, ExecChunk):
+            emit(DropSiteOutput(stream=event.stream, text=event.text))
+        else:
+            exit_code = event.exit_code
+
+    if exit_code != 0:
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "rm_site.failed",
+            f"Failed to drop site '{site}' (bench drop-site exited {exit_code}).",
+        )
+
+    archives_after = _archived_site_names(container, archive_root)
+    source = (
+        _new_archived_site_path(archive_root, site, archives_before, archives_after)
+        if archives_after is not None
+        else None
+    )
+    archived_host_path: str | None = None
+    archive_pruned = False
+
+    source_exists = _archived_site_exists(container, source) if source is not None else False
+
+    if not _has_verified_dump(backups_dir):
+        # The post-drop check: the database is gone now, so the host dump is the
+        # backup. If it is not there, keep everything still in the container.
+        warnings.append(
+            Message(
+                "rm_site.backup_missing",
+                f"The verified database dump for '{site}' is no longer in {backups_dir} after "
+                "the drop; the dropped site's in-container archive was left in place rather "
+                "than deleted.",
+            )
+        )
+    elif source is not None and source_exists:
+        site_tar = drop_dir / f"{site}.tar"
+        if _copy_out_archived_site(container, source, site_tar):
+            archived_host_path = str(drop_dir)
+            emit(DropSiteNotice(text=f"Archived dropped site to {drop_dir}"))
+            archive_pruned = _prune_archived_site(container, source)
+            if not archive_pruned:
+                warnings.append(
+                    Message(
+                        "rm_site.archive_not_pruned",
+                        f"Copied the dropped site's archive to {site_tar}, but could not "
+                        f"remove the in-container copy at {source}; it still holds "
+                        "site_config.json (database credentials).",
+                    )
+                )
+        else:
+            warnings.append(
+                Message(
+                    "rm_site.archive_not_copied",
+                    "bench archived the dropped site (including site_config.json and its "
+                    f"database credentials) at {source} inside the container, but cwcli could "
+                    "not copy it out; it was left in place rather than deleted unbacked. The "
+                    f"verified backup is in {backups_dir}. Copy the archive out manually, then "
+                    "remove it.",
+                )
+            )
+    elif source is not None and source_exists is None:
+        warnings.append(
+            Message(
+                "rm_site.archive_probe_failed",
+                f"bench created the dropped site's archive at {source}, but cwcli could not "
+                "verify it after the drop; nothing was copied out or pruned, and the "
+                "credential-bearing archive may remain there.",
+            )
+        )
+    else:
+        warnings.append(
+            Message(
+                "rm_site.archive_not_found",
+                f"cwcli could not uniquely identify the archive bench created under "
+                f"{archive_root}; the credential-bearing archive may remain there, and "
+                "nothing was copied out or pruned.",
+            )
+        )
+
+    ok = archived_host_path is not None and archive_pruned
+
+    return Result(
+        status=Status.OK if ok else Status.WARNING,
+        data=DropSiteOutcome(
+            project=project_name,
+            site=site,
+            bench_path=bench_path,
+            archived_host_path=archived_host_path,
+            archive_pruned_in_container=archive_pruned,
+            ok=ok,
+        ),
+        warnings=warnings,
+    )
+
+
 # --------------------------------------------------------------------- drop_site
 
 
@@ -251,7 +483,7 @@ def drop_site(
     db_root_password: str = "123",
     on_event: OnEvent | None = None,
 ) -> Result[DropSiteOutcome]:
-    """Permanently drop ONE site (``bench drop-site --force``), then relocate its archive.
+    """Permanently drop ONE site: verified backup first, then ``bench drop-site --no-backup``.
 
     ``site`` is a required, explicit target - unlike ``backup``/``unlock``, there
     is no default-site fallback, matching ``bench_ops.run_tests``' captain ruling
@@ -267,7 +499,8 @@ def drop_site(
     hardcoded ``MYSQL_ROOT_PASSWORD: 123``, shielded off the argv/echo via the
     exec environment, not randomized.
 
-    See the module docstring for the archive-relocation contract this owns.
+    See the module docstring for the backup gate and the archive-relocation
+    contract this owns.
     """
     emit: OnEvent = on_event or _noop
     warnings: list[Message] = []
@@ -301,115 +534,14 @@ def drop_site(
             ),
         )
 
-    archive_root = _archived_sites_root(path)
-    archives_before = _archived_site_names(container, archive_root)
-    if archives_before is None:
-        raise CwcliError(
-            ErrorKind.PRECONDITION,
-            "rm_site.archive_state_unknown",
-            f"Could not inspect existing site archives at {archive_root}; the site was not dropped.",
-        )
-
-    # Secret rides the environment, never the argv (the restore.py M5 pattern):
-    # the traced command below is the $-ref, never the value.
-    env = {"CWCLI_DB_ROOT_PASSWORD": db_root_password}
-    cmd_str = (
-        f"bench drop-site {shlex.quote(site)} "
-        '--db-root-password "$CWCLI_DB_ROOT_PASSWORD" --force'
+    drop_dir = backup_before_drop(container, project_name, path, site, on_event=emit)
+    dropped = drop_backed_up_site(
+        container,
+        project_name,
+        path,
+        site,
+        drop_dir,
+        db_root_password=db_root_password,
+        on_event=emit,
     )
-    emit(DropSiteCommand(command=cmd_str))
-    exit_code = 1
-    for event in exec_stream(container, ["sh", "-c", cmd_str], workdir=path, environment=env):
-        if isinstance(event, ExecChunk):
-            emit(DropSiteOutput(stream=event.stream, text=event.text))
-        else:
-            exit_code = event.exit_code
-
-    if exit_code != 0:
-        raise CwcliError(
-            ErrorKind.PRECONDITION,
-            "rm_site.failed",
-            f"Failed to drop site '{site}' (bench drop-site exited {exit_code}).",
-        )
-
-    archives_after = _archived_site_names(container, archive_root)
-    source = (
-        _new_archived_site_path(archive_root, site, archives_before, archives_after)
-        if archives_after is not None
-        else None
-    )
-    archived_host_path: str | None = None
-    archive_pruned = False
-
-    source_exists = _archived_site_exists(container, source) if source is not None else False
-
-    if source is not None and source_exists:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        dest_dir = cwcli_home() / "archive" / f"{project_name}_dropped_sites"
-        dest_file = dest_dir / f"{site}_{timestamp}.tar"
-
-        archive_dir_ready = False
-        try:
-            dest_dir.mkdir(parents=True, exist_ok=True, mode=shared_home.dir_mode(0o700))
-            dest_dir.chmod(shared_home.dir_mode(0o700))
-            shared_home.apply_group(dest_dir)
-            archive_dir_ready = True
-        except OSError:
-            pass
-
-        if archive_dir_ready and _copy_out_archived_site(container, source, dest_file):
-            archived_host_path = str(dest_file)
-            emit(DropSiteNotice(text=f"Archived dropped site to {dest_file}"))
-            archive_pruned = _prune_archived_site(container, source)
-            if not archive_pruned:
-                warnings.append(
-                    Message(
-                        "rm_site.archive_not_pruned",
-                        f"Copied the dropped site's archive to {dest_file}, but could not "
-                        f"remove the in-container copy at {source}; it still holds "
-                        "site_config.json (database credentials).",
-                    )
-                )
-        else:
-            warnings.append(
-                Message(
-                    "rm_site.archive_not_copied",
-                    "bench archived the dropped site (including site_config.json and its "
-                    f"database credentials) at {source} inside the container, but cwcli could "
-                    "not copy it out; it was left in place rather than deleted unbacked. Copy "
-                    "it out manually, then remove it.",
-                )
-            )
-    elif source is not None and source_exists is None:
-        warnings.append(
-            Message(
-                "rm_site.archive_probe_failed",
-                f"bench created the dropped site's archive at {source}, but cwcli could not "
-                "verify it after the drop; nothing was copied out or pruned, and the "
-                "credential-bearing archive may remain there.",
-            )
-        )
-    else:
-        warnings.append(
-            Message(
-                "rm_site.archive_not_found",
-                f"cwcli could not uniquely identify the archive bench created under "
-                f"{archive_root}; the credential-bearing archive may remain there, and "
-                "nothing was copied out or pruned.",
-            )
-        )
-
-    ok = archived_host_path is not None and archive_pruned
-
-    return Result(
-        status=Status.OK if ok else Status.WARNING,
-        data=DropSiteOutcome(
-            project=project_name,
-            site=site,
-            bench_path=path,
-            archived_host_path=archived_host_path,
-            archive_pruned_in_container=archive_pruned,
-            ok=ok,
-        ),
-        warnings=warnings,
-    )
+    return Result(status=dropped.status, data=dropped.data, warnings=[*warnings, *dropped.warnings])
