@@ -273,3 +273,75 @@ class TestForeground:
         assert result.exit_code == 1
         assert ui_cmd.pid_file().read_text() == "4242"
         assert ui_cmd._read_state() == {"port": 8765, "token": "other-token"}
+
+
+_SURVIVOR = """
+import sys
+from caffeinated_whale_cli.commands import serve
+from caffeinated_whale_cli.core import fleet
+from caffeinated_whale_cli.core.envelope import Result, Status
+fleet.list_instances = lambda: Result(status=Status.OK, data=[])
+fleet.event_loop = fleet.probe_loop = lambda *a, **kw: None
+serve.KEEPALIVE_S = 0.1
+from caffeinated_whale_cli.main import cli
+sys.argv = ["cwcli", "ui", "--foreground", "--no-browser", "--port", sys.argv[1]]
+cli()
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGPIPE is POSIX-only")
+def test_a_browser_dropping_its_stream_does_not_kill_the_foreground_daemon(home):
+    """``main.cli`` resets SIGPIPE to SIG_DFL for ``cwcli ls | head``; in the
+    long-lived daemon that let a closed tab's next keepalive write kill the whole
+    process. Driven through the real ``cli()`` entry the detached spawn uses."""
+    import socket
+    import subprocess
+    import time
+    import urllib.request
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    env = {**os.environ, "CWCLI_SERVE_TOKEN": "sigpipe-token"}
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _SURVIVOR, str(port)],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    def _meta():
+        try:
+            return urllib.request.urlopen(f"http://127.0.0.1:{port}/api/v1/meta", timeout=1).status
+        except OSError:
+            return None
+
+    try:
+        deadline = time.monotonic() + 8
+        while _meta() != 200:
+            assert proc.poll() is None and time.monotonic() < deadline, "daemon never came up"
+            time.sleep(0.05)
+        client = socket.create_connection(("127.0.0.1", port))
+        client.sendall(
+            f"GET /api/v1/stream HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+            "Authorization: Bearer sigpipe-token\r\n\r\n".encode()
+        )
+        client.settimeout(2)
+        seen = b""
+        while b"event: snapshot" not in seen:
+            chunk = client.recv(65536)
+            assert chunk, "stream closed before its snapshot"
+            seen += chunk
+        client.settimeout(0.2)
+        try:
+            client.recv(65536)  # take a keepalive, then hang up like a closed tab
+        except socket.timeout:
+            pass
+        client.close()
+        time.sleep(1.0)  # ten keepalives: the second write after the RST raised SIGPIPE
+
+        assert proc.poll() is None, f"daemon died (returncode {proc.returncode})"
+        assert _meta() == 200
+    finally:
+        proc.terminate()
+        proc.wait(5)
