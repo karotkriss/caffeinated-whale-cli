@@ -301,35 +301,34 @@ def probe(app, d, remote, branch, covered, stale, held, shallow):
         args = ["ls-remote", remote, "HEAD"]
     rc, out, err = git(d, args, opts["net_timeout"])
     base = {"app": app, "remote": remote}
-    if rc is None:
-        return [dict(base, code="git.remote_unverified", error=err)] + held
     if rc == 2 and branch:
         # Without shallow_clone a stale local <remote>/<branch> ref survives
         # `git fetch --all` (no --prune), and bench resets to its old commit.
         code = "git.branch_deleted_upstream" if stale and not shallow else "git.branch_not_on_remote"
         return [dict(base, code=code, branch=branch)] + held
-    if rc != 0:
-        err = git_error(err) or "exit %s" % rc
-        return [dict(base, code="git.remote_unreachable", error=err)] + held
-    if not covered:
-        # The fetch leaves <remote>/<branch> as it was: absent, so the reset fails;
-        # present, so bench resets to its old commit.
+    found = []
+    if rc is None:
+        found.append(dict(base, code="git.remote_unverified", error=err))
+    elif rc != 0:
+        found.append(dict(base, code="git.remote_unreachable", error=git_error(err) or "exit %s" % rc))
+    # The fetch leaves <remote>/<branch> as it was: absent, so the reset fails whatever
+    # the remote answers; present, so bench resets to its old commit.
+    if not covered and (rc == 0 or not stale):
         code = "git.branch_tracking_stale" if stale else "git.branch_not_tracked"
-        found = [dict(base, code=code, branch=branch, shallow_repo=bool(shallow_boundary(d)))]
-        if held:
-            tip = (out.split() or [""])[0]
-            if tip and git(d, ["cat-file", "-e", tip + "^{commit}"], opts["local_timeout"])[0] == 0:
-                rc, ahead, err = count_ahead(d, branch, [tip])
-            else:
-                rc, ahead, err = None, "", "the tip of %s on %s is not fetched" % (branch, remote)
-            if rc == 0 and ahead.isdigit():
-                if int(ahead) > 0:
-                    found.append(dict(held[0], count=int(ahead)))
-            else:
-                found.append({"code": "git.local_work_unverified", "app": app,
-                              "error": git_error(err) or "git rev-list did not answer"})
-        return found
-    return []
+        found.append(dict(base, code=code, branch=branch, shallow_repo=bool(shallow_boundary(d))))
+    if held:
+        tip = (out.split() or [""])[0] if rc == 0 else ""
+        if tip and git(d, ["cat-file", "-e", tip + "^{commit}"], opts["local_timeout"])[0] == 0:
+            rc, ahead, err = count_ahead(d, branch, [tip])
+        else:
+            rc, ahead, err = None, "", "the tip of %s on %s could not be compared" % (branch, remote)
+        if rc == 0 and ahead.isdigit():
+            if int(ahead) > 0:
+                found.append(dict(held[0], count=int(ahead)))
+        else:
+            found.append({"code": "git.local_work_unverified", "app": app,
+                          "error": git_error(err) or "git rev-list did not answer"})
+    return found
 
 
 def tcp(kind, host, port):
