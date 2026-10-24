@@ -124,13 +124,33 @@ def is_frappe_app(path):
     return all(glob.glob(os.path.join(path, "**", f)) for f in ("hooks.py", "modules.txt", "patches.txt"))
 
 
+def maps_branch(specs, remote, branch):
+    """Whether a fetch refspec stores refs/heads/<branch> as refs/remotes/<remote>/<branch>."""
+    src, dst = "refs/heads/" + branch, "refs/remotes/%s/%s" % (remote, branch)
+    mapped = False
+    for spec in specs:
+        negative = spec.startswith("^")
+        left, _, right = spec.lstrip("+^").partition(":")
+        pre, star, post = left.partition("*")
+        if not star:
+            hit = left == src and (negative or right == dst)
+        elif src.startswith(pre) and src.endswith(post) and len(src) >= len(pre) + len(post):
+            hit = negative or right.replace("*", src[len(pre):len(src) - len(post)], 1) == dst
+        else:
+            hit = False
+        if hit and negative:
+            return False
+        mapped = mapped or hit
+    return mapped
+
+
 def check_app(app, excluded, shallow):
     found = []
     probes = []
 
-    def add(code, **facts):
+    def add(code, to=None, **facts):
         facts.update(code=code, app=app)
-        found.append(facts)
+        (found if to is None else to).append(facts)
 
     d = os.path.join(bench, "apps", app)
     core = app in ("frappe", "erpnext")
@@ -204,6 +224,18 @@ def check_app(app, excluded, shallow):
     if not core and branch is None:
         add("git.detached_head")
 
+    # bench/app.py (pull_apps) resets to <remote>/<branch>, a ref its fetch only writes
+    # when the remote's fetch refspec maps refs/heads/<branch> to it; a --depth 1
+    # clone's refspec covers only the branch it cloned, and `cwcli apps checkout`
+    # fetches into FETCH_HEAD, so a checked-out feature branch can have no such ref.
+    covered, stale, held = True, False, []
+    if branch and remote and remote in remotes:
+        rc, specs, _ = git(d, ["config", "--get-all", "remote.%s.fetch" % remote],
+                           opts["local_timeout"])
+        covered = rc not in (0, 1) or maps_branch(specs.split(), remote, branch)
+        stale = git(d, ["rev-parse", "--verify", "-q", "refs/remotes/%s/%s" % (remote, branch)],
+                    opts["local_timeout"])[0] == 0
+
     for path in (d, os.path.join(d, ".git")):
         if os.path.isdir(path) and not os.access(path, os.W_OK):
             add("app.not_writable", path=os.path.realpath(path))
@@ -239,19 +271,22 @@ def check_app(app, excluded, shallow):
         if rc != 0 or not ahead.isdigit():
             add("git.local_work_unverified", error=git_error(err) or "git rev-list did not answer")
         elif int(ahead) > 0:
-            add("git.unpushed", count=int(ahead), branch=branch, shallow_clone=shallow)
+            # Without a tracking ref the remote's copy of these commits is not visible
+            # locally: the probe drops them once the remote confirms the branch.
+            add("git.unpushed", to=None if covered or stale else held,
+                count=int(ahead), branch=branch, shallow_clone=shallow)
 
     # bench/app.py:1039-1047: with shallow_clone bench fetches ONLY <remote> <branch>
     # (`git fetch --depth=1 --no-tags`); without it, `git fetch --all` contacts EVERY
     # remote, so one dead remote nobody uses stops the update.
     if remote and remote in remotes:
-        probes.append((remote, branch))
+        probes.append((remote, branch, covered, stale, held))
     if not shallow:
-        probes.extend((r, None) for r in remotes if r != remote)
+        probes.extend((r, None, True, False, []) for r in remotes if r != remote)
     return found, probes, d
 
 
-def probe(app, d, remote, branch, shallow):
+def probe(app, d, remote, branch, covered, stale, held, shallow):
     if branch:
         args = ["ls-remote", "--exit-code", "--heads", remote, "refs/heads/" + branch]
     else:
@@ -259,16 +294,20 @@ def probe(app, d, remote, branch, shallow):
     rc, _, err = git(d, args, opts["net_timeout"])
     base = {"app": app, "remote": remote}
     if rc is None:
-        return [dict(base, code="git.remote_unverified", error=err)]
+        return [dict(base, code="git.remote_unverified", error=err)] + held
     if rc == 2 and branch:
         # Without shallow_clone a stale local <remote>/<branch> ref survives
         # `git fetch --all` (no --prune), and bench resets to its old commit.
-        stale = git(d, ["rev-parse", "--verify", "-q", "refs/remotes/%s/%s" % (remote, branch)],
-                    opts["local_timeout"])[0] == 0
         code = "git.branch_deleted_upstream" if stale and not shallow else "git.branch_not_on_remote"
-        return [dict(base, code=code, branch=branch)]
+        return [dict(base, code=code, branch=branch)] + held
     if rc != 0:
-        return [dict(base, code="git.remote_unreachable", error=git_error(err) or "exit %s" % rc)]
+        err = git_error(err) or "exit %s" % rc
+        return [dict(base, code="git.remote_unreachable", error=err)] + held
+    if not covered:
+        # The fetch leaves <remote>/<branch> as it was: absent, so the reset fails;
+        # present, so bench resets to its old commit.
+        code = "git.branch_tracking_stale" if stale else "git.branch_not_tracked"
+        return [dict(base, code=code, branch=branch)]
     return []
 
 
@@ -371,8 +410,8 @@ def main():
 
     with ThreadPoolExecutor(max_workers=opts["workers"]) as pool:
         checked = list(pool.map(lambda a: check_app(a, excluded, shallow), apps))
-        jobs = [(app, d, r, b) for app, (_, probes, d) in zip(apps, checked) for r, b in probes]
-        probed = list(pool.map(lambda job: probe(job[0], job[1], job[2], job[3], shallow), jobs))
+        jobs = [(app, d) + p for app, (_, probes, d) in zip(apps, checked) for p in probes]
+        probed = list(pool.map(lambda job: probe(*(job + (shallow,))), jobs))
     for app, (found, _, _) in zip(apps, checked):
         out.extend(found)
         for job, result in zip(jobs, probed):
@@ -570,6 +609,20 @@ _RULES: dict[str, tuple[str, str, str | None]] = {
         "stale local {remote}/{branch}",
         "cwcli apps checkout {q_project} {q_app} <published-branch>{selector_flag}",
     ),
+    "git.branch_not_tracked": (
+        BLOCKER,
+        "remote '{remote}' is not fetched into {remote}/{branch} (its fetch refspec does "
+        "not cover '{branch}'), so bench's reset to {remote}/{branch} would fail",
+        _OPEN + "git -C apps/{q_app} config --add remote.{q_remote}.fetch {q_refspec} "
+        "&& git -C apps/{q_app} fetch {q_remote}",
+    ),
+    "git.branch_tracking_stale": (
+        NOTICE,
+        "remote '{remote}' is not fetched into {remote}/{branch} (its fetch refspec does "
+        "not cover '{branch}'); bench would reset to the stale local {remote}/{branch}",
+        _OPEN + "git -C apps/{q_app} config --add remote.{q_remote}.fetch {q_refspec} "
+        "&& git -C apps/{q_app} fetch {q_remote}",
+    ),
     "site.unreadable": (
         BLOCKER,
         "site '{site}' could not be opened ({error}); bench backs up every site first, "
@@ -624,6 +677,9 @@ def classify(
             q_site=shlex.quote(str(fact.get("site") or "")),
             q_remote=shlex.quote(str(fact.get("remote") or "")),
             q_path=shlex.quote(str(fact.get("path") or "")),
+        )
+        fields["q_refspec"] = shlex.quote(
+            "+refs/heads/{0}:refs/remotes/{1}/{0}".format(fact.get("branch"), fact.get("remote"))
         )
         if code == "git.dubious_ownership" and fact.get("app") == "frappe":
             remedy = _OPEN + "sudo chown -R frappe:frappe {q_path}"

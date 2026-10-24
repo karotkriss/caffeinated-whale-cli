@@ -548,6 +548,51 @@ def test_a_stale_tracking_ref_is_a_notice_without_shallow_clone_and_a_blocker_wi
     assert by_code(b.findings(), "git.branch_not_on_remote").severity == up.BLOCKER
 
 
+def test_a_checked_out_branch_a_single_branch_clone_does_not_track_is_a_blocker(bench):
+    # bench resets to upstream/<branch>, which neither its fetch nor `cwcli apps
+    # checkout`'s `fetch upstream <ref>` writes when the refspec covers only the
+    # branch a --depth 1 clone cloned.
+    app = bench.app("feature", depth=1)
+    src = bench.remotes / "feature.src"
+    bench.git("checkout", "-q", "-b", "feature-x", cwd=src)
+    (src / "feature" / "new.py").write_text("x = 1\n")
+    bench.git("add", "-A", cwd=src)
+    bench.git("commit", "-qm", "feature", cwd=src)
+    bench.git("push", "-q", str(bench.remotes / "feature.git"), "feature-x", cwd=src)
+    bench.git("fetch", "-q", "upstream", "feature-x", cwd=app)
+    bench.git("checkout", "-q", "-B", "feature-x", "FETCH_HEAD", cwd=app)
+
+    findings = bench.findings()
+    finding = by_code(findings, "git.branch_not_tracked")
+    assert finding.severity == up.BLOCKER
+    assert finding.app == "feature"
+    # The commits are on the remote, so they are not reported as existing nowhere else.
+    assert ("git.unpushed", "feature") not in codes(findings)
+
+    # The remedy makes bench's own fetch write the ref, so nothing is left to report.
+    remedy = finding.remedy.split(": ", 1)[1]
+    assert "+refs/heads/feature-x:refs/remotes/upstream/feature-x" in remedy
+    subprocess.run(remedy, shell=True, cwd=bench.path, env=bench.env, check=True)
+    assert not [f for f in bench.findings() if f.app == "feature"]
+
+    # A refspec that stops covering it leaves the ref behind: bench resets to it.
+    bench.git("config", "--unset", "remote.upstream.fetch", "feature-x", cwd=app)
+    assert by_code(bench.findings(), "git.branch_tracking_stale").severity == up.NOTICE
+
+
+def test_local_commits_on_an_untracked_branch_missing_on_its_remote_stay_data_loss(bench):
+    app = bench.app("localonly", depth=1)
+    bench.git("checkout", "-q", "-b", "feature-z", cwd=app)
+    (app / "localonly" / "new.py").write_text("x = 1\n")
+    bench.git("add", "-A", cwd=app)
+    bench.git("commit", "-qm", "local", cwd=app)
+
+    found = codes(bench.findings())
+    assert ("git.branch_not_on_remote", "localonly") in found
+    assert ("git.unpushed", "localonly") in found
+    assert ("git.branch_not_tracked", "localonly") not in found
+
+
 # ------------------------------------------------------------------ fail honest
 
 
