@@ -838,7 +838,7 @@ class TestBenchWideFlags:
         assert "cwcli run proj set-config --global --parse maintenance_mode 0" in maintenance.text
         # The per-site remedy would bring back only this site and leave the rest down.
         assert "set-maintenance-mode off" not in maintenance.text
-        assert maintenance.detail == {"bench_path": BENCH, "scope": "bench"}
+        assert maintenance.detail == {"bench_path": BENCH}
         scheduler = next(w for w in result.warnings if w.code == "status.scheduler_paused")
         assert "cwcli run proj set-config --global --parse pause_scheduler 0" in scheduler.text
         assert scheduler.detail == {"bench_path": BENCH}
@@ -905,7 +905,7 @@ class TestBenchWideFlags:
 
         maintenance = next(w for w in result.warnings if w.code == "status.maintenance_mode")
         assert "cwcli run proj --site dev.localhost set-maintenance-mode off" in maintenance.text
-        assert maintenance.detail == {"bench_path": BENCH, "scope": "site"}
+        assert maintenance.detail == {"bench_path": BENCH}
 
     def test_a_clear_bench_warns_nothing(self, wire):
         c = _BenchConfigContainer(
