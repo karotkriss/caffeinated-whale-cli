@@ -1972,11 +1972,12 @@ Run `cwcli ui` again for a fresh link for a second browser on this machine.
 While the daemon runs it polls process health for every running instance; the web check only runs for an instance a page has open.
 It refuses any request whose `Host` is not this machine, so another site in your browser cannot read or drive it.
 
-**What it can do:** everything the CLI reads (`ls`, `status`, `inspect`, `where`, `doctor`, `logs`, `axi url`, `config show`) and the safe lifecycle set: start, stop and restart an instance or a bench, restart one process, set a bench label, unlock a site, take a site out of maintenance mode, widen the port range, and check out an app ref without `--reset`.
+**What it can do:** everything the CLI reads (`ls`, `status`, `inspect`, `where`, `doctor`, `logs`, `axi url`, `config show`) and the safe lifecycle set: start, stop and restart an instance or a bench, restart one process, set a bench label, unlock a site, take a site out of maintenance mode, widen the port range (the same core confirmation `cwcli scale` asks for, typed back as the instance name), and check out an app ref without `--reset`.
 These lifecycle changes run as jobs too, so their steps and outcome remain visible after navigation.
 The long-job forms cover `init`, `apps install`, `apps update`, `apps checkout`, `backup`, `migrate`, `run-tests`, `build`, `setup-wizard`, and `self-update`.
 `apps update` runs the same preflight as the CLI and shows every finding in the job view before the reset begins.
 Interrupt requests use the command's cleanup path; Detach only leaves the page, and an active record whose process disappears becomes `unknown` instead of being reported as failed or successful.
+Jobs keeps every active job and the 100 most recent finished ones; older finished records are pruned when a new job starts.
 The `self-update` job restarts the local daemon and the open page reloads after its protocol check sees the replacement.
 Guarded destructive verbs (`rm`, `rm-site`, `rm-bench`, `restore`, `apps uninstall`, and `apps checkout --reset`) and settings writes are not in the UI.
 

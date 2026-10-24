@@ -13,12 +13,14 @@ starts, and are scrubbed from every event, result, and error before persistence.
 
 from __future__ import annotations
 
+import _thread
 import argparse
 import contextlib
 import json
 import os
 import re
 import secrets as secrets_module
+import shutil
 import signal
 import subprocess
 import sys
@@ -76,6 +78,9 @@ ALLOWED_VERBS = frozenset(
     }
 )
 
+FINISHED_RETENTION = 100
+INTERRUPT_GRACE_S = 60.0
+_INTERRUPT_REQUEST = "interrupt.request"
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{7,80}$")
 _SECRET_ENV = {
     "admin_password": "CWCLI_JOB_ADMIN_PASSWORD",
@@ -231,7 +236,7 @@ def _events(job_id: str, *, after: int = 0) -> list[dict[str, Any]]:
     except OSError:
         return []
     rows: list[dict[str, Any]] = []
-    for line in lines:
+    for line in lines[after:]:
         try:
             row = json.loads(line)
         except ValueError:
@@ -287,21 +292,37 @@ def read_job(job_id: str, *, include_events: bool = False, after: int = 0) -> di
     return record
 
 
-def list_jobs() -> list[dict[str, Any]]:
-    root = jobs_dir()
+def _job_ids() -> list[str]:
     try:
-        ids = [
-            path.name for path in root.iterdir() if path.is_dir() and _ID_RE.fullmatch(path.name)
+        return [
+            path.name
+            for path in jobs_dir().iterdir()
+            if path.is_dir() and _ID_RE.fullmatch(path.name)
         ]
     except OSError:
         return []
+
+
+def _summary(record: dict[str, Any]) -> dict[str, Any]:
+    """A list row: the full record minus its result payload, which is fetched per job."""
+    return {key: value for key, value in record.items() if key != "result"}
+
+
+def list_jobs() -> list[dict[str, Any]]:
     records = []
-    for job_id in ids:
+    for job_id in _job_ids():
         try:
-            records.append(read_job(job_id))
+            records.append(_summary(read_job(job_id)))
         except CwcliError:
             continue
     return sorted(records, key=lambda row: str(row.get("created_at") or ""), reverse=True)
+
+
+def _prune(records: list[dict[str, Any]]) -> None:
+    """Delete finished jobs past the newest ``FINISHED_RETENTION``; ``records`` is newest first."""
+    finished = [row for row in records if row.get("state") not in ACTIVE_STATES]
+    for row in finished[FINISHED_RETENTION:]:
+        shutil.rmtree(job_dir(str(row["id"])), ignore_errors=True)
 
 
 def _project_key(target: dict[str, Any], verb: str) -> str:
@@ -391,7 +412,9 @@ def _create_job(
     """Persist a secret-free spec and spawn its worker in a new process session."""
     _validate_spec(verb, target, args)
     project_key = _project_key(target, verb)
-    for existing in list_jobs():
+    existing_jobs = list_jobs()
+    _prune(existing_jobs)
+    for existing in existing_jobs:
         if existing.get("project_key") == project_key and existing.get("state") in ACTIVE_STATES:
             raise CwcliError(
                 ErrorKind.CONFLICT,
@@ -490,13 +513,33 @@ def interrupt_job(job_id: str) -> dict[str, Any]:
             state.update(state="interrupting", interrupt_requested_at=_now(), updated_at=_now())
             _write_json(_json_path(job_id, "state.json"), state)
     if armed:
-        pid = int(state["pid"])
-        with contextlib.suppress(ProcessLookupError):
-            if sys.platform != "win32":
-                os.killpg(pid, signal.SIGTERM)
-            else:  # pragma: no cover - Windows process signaling is exercised on Windows CI
-                os.kill(pid, signal.SIGTERM)
+        if sys.platform != "win32":
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(int(state["pid"]), signal.SIGTERM)
+        else:
+            _json_path(job_id, _INTERRUPT_REQUEST).touch()
+            threading.Thread(target=_terminate_after_grace, args=(state,), daemon=True).start()
     return read_job(job_id)
+
+
+def _terminate_after_grace(state: dict[str, Any]) -> None:
+    deadline = time.monotonic() + INTERRUPT_GRACE_S
+    while time.monotonic() < deadline:
+        if not _process_is_job(state):
+            return
+        time.sleep(0.5)
+    if _process_is_job(state):
+        with contextlib.suppress(OSError):
+            os.kill(int(state["pid"]), signal.SIGTERM)
+
+
+def _watch_interrupt_request(job_id: str, stop: threading.Event, interval: float = 0.25) -> None:
+    """Turn the daemon's interrupt request into the same KeyboardInterrupt unwind a signal gets."""
+    request = _json_path(job_id, _INTERRUPT_REQUEST)
+    while not stop.wait(interval):
+        if request.exists():
+            _thread.interrupt_main()
+            return
 
 
 def detach_job(job_id: str) -> dict[str, Any]:
@@ -944,6 +987,10 @@ def run_job(job_id: str) -> int:
         started_at=_now(),
     )
     emit.lifecycle("job_started", f"{spec['verb']} started", phase="job")
+    stop_watching = threading.Event()
+    threading.Thread(
+        target=_watch_interrupt_request, args=(job_id, stop_watching), daemon=True
+    ).start()
     try:
         result = _dispatch(
             str(spec["verb"]),
@@ -1013,6 +1060,8 @@ def run_job(job_id: str) -> int:
             },
         )
         return 1
+    finally:
+        stop_watching.set()
 
 
 def _schedule_ui_restart() -> None:
@@ -1067,17 +1116,29 @@ def reap_children() -> None:
 
 
 def watch_loop(publish, stop, *, active=lambda: True, interval: float = 0.25) -> None:
-    """Tail state files and publish changed job summaries to the daemon's SSE hub."""
-    seen: dict[str, str] = {}
+    """Publish changed job summaries to the daemon's SSE hub.
+
+    A finished job is re-read only when its ``state.json`` changes. An active one is
+    re-read every tick, because a vanished worker becomes ``unknown`` on read.
+    """
+    seen: dict[str, tuple[int, dict[str, Any]]] = {}
     while not stop.wait(interval):
         reap_children()
         if not active():
             continue
-        current: dict[str, str] = {}
-        for record in list_jobs():
-            fingerprint = json.dumps(record, sort_keys=True, separators=(",", ":"))
-            current[str(record["id"])] = fingerprint
-            if seen.get(str(record["id"])) != fingerprint:
+        current: dict[str, tuple[int, dict[str, Any]]] = {}
+        for job_id in _job_ids():
+            prior = seen.get(job_id)
+            try:
+                mtime = _json_path(job_id, "state.json").stat().st_mtime_ns
+                if prior and prior[0] == mtime and prior[1].get("state") not in ACTIVE_STATES:
+                    current[job_id] = prior
+                    continue
+                record = _summary(read_job(job_id))
+            except (OSError, CwcliError):
+                continue
+            current[job_id] = (mtime, record)
+            if prior is None or prior[1] != record:
                 publish(record)
         for removed in set(seen) - set(current):
             publish({"id": removed, "removed": True})

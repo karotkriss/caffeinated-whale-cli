@@ -56,7 +56,6 @@ export const ACTIONS = {
   },
   'instance.scale': {
     job: true,
-    consent: true,
     needsRunning: true,
     label: 'Widen port range',
     icon: 'lucide-arrow-left-right',

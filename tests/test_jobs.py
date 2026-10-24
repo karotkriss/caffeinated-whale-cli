@@ -335,3 +335,96 @@ def test_the_daemon_reaps_exited_workers_so_they_stop_reading_as_alive(fake_spaw
     jobs.reap_children()
 
     assert set(jobs._CHILDREN) == {second["id"]}
+
+
+def _finished_job(job_id: str, created_at: str, state: str = "succeeded") -> None:
+    directory = jobs.job_dir(job_id)
+    spec = {"id": job_id, "verb": "backup", "target": {"project": "p"}, "args": {}}
+    jobs._write_json(directory / "spec.json", {**spec, "created_at": created_at})
+    jobs._write_json(
+        directory / "state.json", {"id": job_id, "state": state, "result": {"ok": True}}
+    )
+
+
+def test_an_interrupt_request_file_unwinds_the_worker_through_its_cleanup(fake_spawn, monkeypatch):
+    record = jobs.create_job("migrate", {"project": "p", "site": "s"}, {})
+    cleaned = []
+
+    def dispatch(*_args):
+        jobs._json_path(record["id"], jobs._INTERRUPT_REQUEST).touch()
+        try:
+            for _ in range(500):
+                time.sleep(0.01)
+        finally:
+            cleaned.append("maintenance cleared")
+        pytest.fail("the interrupt request never reached the worker")
+
+    monkeypatch.setattr(jobs, "_dispatch", dispatch)
+
+    assert jobs.run_job(record["id"]) == 130
+    assert cleaned == ["maintenance cleared"]
+    assert jobs.read_job(record["id"])["state"] == "interrupted"
+
+
+def test_a_worker_that_ignores_the_request_is_terminated_after_the_grace(monkeypatch):
+    killed = []
+    alive = iter([True, True, True])
+    monkeypatch.setattr(jobs, "INTERRUPT_GRACE_S", 0.0)
+    monkeypatch.setattr(jobs, "_process_is_job", lambda state: next(alive))
+    monkeypatch.setattr(jobs.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+
+    jobs._terminate_after_grace({"pid": 77})
+
+    assert killed == [(77, jobs.signal.SIGTERM)]
+
+
+def test_creating_a_job_prunes_finished_history_but_keeps_active_jobs(fake_spawn):
+    for n in range(jobs.FINISHED_RETENTION + 2):
+        _finished_job(f"20260101{n:06d}-old", f"2026-01-01T00:00:{n:06d}Z")
+    active = jobs.create_job("backup", {"project": "busy"}, {})
+
+    jobs.create_job("backup", {"project": "other"}, {})
+
+    ids = {row["id"] for row in jobs.list_jobs()}
+    assert active["id"] in ids
+    assert "20260101000000-old" not in ids and "20260101000001-old" not in ids
+    assert "20260101000002-old" in ids
+
+
+def test_the_list_omits_result_payloads_that_the_job_read_still_carries(fake_spawn):
+    _finished_job("20260101000000-done", "2026-01-01T00:00:00Z")
+
+    assert "result" not in jobs.list_jobs()[0]
+    assert jobs.read_job("20260101000000-done")["result"] == {"ok": True}
+
+
+def test_event_reads_after_a_cursor_return_only_newer_lines(fake_spawn):
+    record = jobs.create_job("backup", {"project": "p"}, {})
+    for seq in (1, 2, 3):
+        jobs._append_event(record["id"], seq, {"type": "event", "message": str(seq)})
+
+    events = jobs.read_job(record["id"], include_events=True, after=2)["events"]
+
+    assert [event["seq"] for event in events] == [3]
+
+
+def test_the_watcher_rereads_a_finished_job_only_when_its_state_changes(fake_spawn, monkeypatch):
+    _finished_job("20260101000000-done", "2026-01-01T00:00:00Z")
+    reads = []
+    real_read = jobs.read_job
+    monkeypatch.setattr(
+        jobs, "read_job", lambda job_id, **kw: reads.append(job_id) or real_read(job_id, **kw)
+    )
+    published = []
+
+    class Ticks:
+        remaining = 3
+
+        def wait(self, _interval):
+            self.remaining -= 1
+            return self.remaining < 0
+
+    jobs.watch_loop(published.append, Ticks())
+
+    assert reads == ["20260101000000-done"]
+    assert [row["id"] for row in published] == ["20260101000000-done"]
