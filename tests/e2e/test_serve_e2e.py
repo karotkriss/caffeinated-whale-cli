@@ -186,10 +186,14 @@ class TestThePage:
             f"GET /api/v1/meta HTTP/1.1\r\nHost: rebind.evil.example:{port}\r\n"
             f"Authorization: Bearer {_TOKEN}\r\nConnection: close\r\n\r\n".encode()
         )
-        head = conn.recv(4096).decode()
+        # Connection: close - read to EOF, the body can arrive after the headers.
+        chunks = []
+        while chunk := conn.recv(4096):
+            chunks.append(chunk)
         conn.close()
-        assert head.startswith("HTTP/1.1 403")
-        assert "host.forbidden" in head
+        response = b"".join(chunks).decode()
+        assert response.startswith("HTTP/1.1 403")
+        assert "host.forbidden" in response
 
     def test_the_login_code_signs_a_browser_in_exactly_once(self, daemon):
         # `cwcli ui` mints through the bearer endpoint, the page redeems it without one.

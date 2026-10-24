@@ -1088,8 +1088,11 @@ class TestWebUiRegistry:
         assert "ui" in {c.name for c in root_app.registered_commands}
         result = runner.invoke(root_app, ["ui", "--help"])
         assert result.exit_code == 0
+        # Rich styles the help when CI forces a terminal (GITHUB_ACTIONS), splitting
+        # each flag across escape codes; compare the unstyled text.
+        text = click.unstyle(result.output)
         for flag in ("--port", "--foreground", "--stop", "--no-browser"):
-            assert flag in result.output
+            assert flag in text
 
     def test_serve_itself_stays_unregistered(self):
         from caffeinated_whale_cli.main import app as root_app
