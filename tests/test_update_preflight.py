@@ -256,14 +256,13 @@ def test_a_dubious_ownership_refusal_is_a_blocker(bench, monkeypatch):
 
     refused = {f.app: f for f in findings if f.code == "git.dubious_ownership"}
     assert {f.severity for f in refused.values()} == {up.BLOCKER}
-    # Per-app --force re-owns goodapp; the frappe path ignores --force, so frappe's
-    # remedy is the same re-own done by hand.
-    assert "cwcli apps update proj goodapp --force" in refused["goodapp"].remedy
-    frappe_path = os.path.realpath(bench.path / "apps" / "frappe")
-    assert refused["frappe"].remedy == (
-        f"in `cwcli open proj`: sudo chown -R frappe:frappe {frappe_path}"
-    )
-    assert "--force" not in refused["frappe"].remedy
+    # The preflight never checked a refused repo for local work, so the remedy is the
+    # non-destructive re-own for every app, never the destructive --force.
+    for app in ("goodapp", "frappe"):
+        app_path = os.path.realpath(bench.path / "apps" / app)
+        assert refused[app].remedy == (
+            f"in `cwcli open proj`: sudo chown -R frappe:frappe {app_path}"
+        )
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores write permission")

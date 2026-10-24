@@ -553,8 +553,7 @@ _RULES: dict[str, tuple[str, str, str | None]] = {
     "git.dubious_ownership": (
         BLOCKER,
         "git refuses the repository at {path}: another user owns it (dubious ownership)",
-        "cwcli apps update {q_project} {q_app}{selector_flag} --force re-owns it to the "
-        "container user (and pulls that app)",
+        _OPEN + "sudo chown -R frappe:frappe {q_path}",
     ),
     "git.not_a_checkout": (
         BLOCKER,
@@ -703,8 +702,6 @@ def classify(
         fields["q_refspec"] = shlex.quote(
             "+refs/heads/{0}:refs/remotes/{1}/{0}".format(fact.get("branch"), fact.get("remote"))
         )
-        if code == "git.dubious_ownership" and fact.get("app") == "frappe":
-            remedy = _OPEN + "sudo chown -R frappe:frappe {q_path}"
         if code == "frappe.no_upstream" and fact.get("remotes"):
             remedy = _OPEN + "git -C apps/frappe remote rename {q_tracked} upstream"
             fields["q_tracked"] = shlex.quote(str(fact["remotes"][0]))
