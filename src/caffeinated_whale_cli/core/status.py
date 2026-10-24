@@ -481,7 +481,7 @@ def _bench_status(
                 + supervision.clear_bench_wide_flags_hint(
                     project_name, ["maintenance_mode"], bench_flag
                 ),
-                detail={"bench_path": bench_path, "scope": "bench"},
+                detail={"bench_path": bench_path},
             )
         )
     if maintenance and (
@@ -494,7 +494,7 @@ def _bench_status(
                 f"MAINTENANCE MODE ON for site '{web_site}' (it answers 503 to users). "
                 f"Take it out with: cwcli run {project_name}{bench_flag} --site {web_site} "
                 "set-maintenance-mode off",
-                detail={"bench_path": bench_path, "scope": "site"},
+                detail={"bench_path": bench_path},
             )
         )
     if "pause_scheduler" in bench_flags:

@@ -308,7 +308,7 @@ def test_maintenance_mode_is_named_plainly_with_the_way_out(monkeypatch, capsys)
         "status.maintenance_mode",
         "MAINTENANCE MODE ON for site 'site.localhost' (it answers 503 to users). "
         "Take it out with: cwcli run proj --site site.localhost set-maintenance-mode off",
-        detail={"bench_path": bench.bench_path, "scope": "site"},
+        detail={"bench_path": bench.bench_path},
     )
     captured = _run(monkeypatch, capsys, report, warnings=[warning])
     err = harness_collapse(captured.err)
