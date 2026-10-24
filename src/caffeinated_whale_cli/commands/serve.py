@@ -154,6 +154,7 @@ import os
 import platform
 import queue
 import secrets
+import signal
 import socket
 import threading
 from collections.abc import Callable
@@ -1608,6 +1609,12 @@ def run_daemon(
     if on_ready is not None:
         on_ready(link)
 
+    # main.cli() resets SIGPIPE to SIG_DFL so `cwcli ls | head` exits quietly; in
+    # this long-lived server that lets one closed browser tab's next stream write
+    # kill the whole daemon. Ignored, the write raises BrokenPipeError instead,
+    # which the handlers already treat as a client going away. POSIX only.
+    if hasattr(signal, "SIGPIPE"):
+        signal.signal(signal.SIGPIPE, signal.SIG_IGN)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
