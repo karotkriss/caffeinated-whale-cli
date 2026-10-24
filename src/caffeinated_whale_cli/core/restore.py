@@ -151,7 +151,7 @@ def _decode(output) -> str:
 # --------------------------------------------------------------------------- #
 # Pure helpers - moved verbatim from commands/restore.py (no UI).
 # --------------------------------------------------------------------------- #
-_BACKUP_TYPES = r"(private-files|files|database|site_config_backup)"
+_BACKUP_TYPES = r"(private-files|files|partial-database|database|site_config_backup)"
 
 
 def parse_backup_filename(filename: str, site_slug: str | None = None) -> dict | None:
@@ -491,7 +491,9 @@ def _build_plan(
         frappe_container, project_name, bench_path, db_path, on_event=on_event
     )
 
-    origin_parsed = parse_backup_filename(db["filename"])
+    origin_parsed = parse_backup_filename(
+        db["filename"], site_slug=transform_site_name_to_backup_format(site)
+    )
     origin_site = origin_parsed["site_name"] if origin_parsed else None
     origin_mismatch = (
         origin_site
@@ -675,8 +677,14 @@ def receive_plan(
     files = [Path(f) for f in downloaded_files]
     database_file = files_archive = private_files_archive = config_backup = None
     # The database file's site name is unambiguous and settles `-private-files`.
+    target_slug = transform_site_name_to_backup_format(site)
     db_parsed = next(
-        (p for p in (parse_backup_filename(f.name) for f in files) if p and p["is_database"]), None
+        (
+            p
+            for p in (parse_backup_filename(f.name, site_slug=target_slug) for f in files)
+            if p and p["is_database"]
+        ),
+        None,
     )
     site_slug = db_parsed["site_name"] if db_parsed else None
     for f in files:

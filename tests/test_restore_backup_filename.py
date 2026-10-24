@@ -107,3 +107,31 @@ def test_scan_passes_the_directory_slug_so_a_private_suffix_site_is_not_misread(
     by_type = {b["backup_type"]: b for b in backups}
     assert set(by_type) == {"files", "database"}
     assert by_type["files"]["site_name"] == "x-private_localhost"
+
+
+@pytest.mark.parametrize("site", ["site.localhost", "my-site.localhost"])
+@pytest.mark.parametrize("hinted", [True, False])
+def test_partial_database_dump_is_never_read_as_a_full_database(site, hinted):
+    slug = transform_site_name_to_backup_format(site)
+    parsed = parse_backup_filename(
+        f"{TS}-{slug}-partial-database.sql.gz", site_slug=slug if hinted else None
+    )
+    assert (parsed["site_name"], parsed["backup_type"]) == (slug, "partial-database")
+    assert not parsed["is_database"]
+
+
+def test_a_newer_partial_dump_is_not_offered_as_a_restorable_backup():
+    site = "site.localhost"
+    slug = transform_site_name_to_backup_format(site)
+    backups = []
+    for name in (
+        f"20261024_010101-{slug}-database.sql.gz",
+        f"{TS}-{slug}-partial-database.sql.gz",
+    ):
+        parsed = parse_backup_filename(name, site_slug=slug)
+        parsed["site_dir"] = site
+        parsed["full_path"] = f"/b/{name}"
+        backups.append(parsed)
+    target, other = group_and_sort_backups(backups, site)
+    assert other == []
+    assert [b["timestamp_str"] for b in target] == ["20261024_010101"]
