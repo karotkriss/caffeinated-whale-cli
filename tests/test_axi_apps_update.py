@@ -314,3 +314,137 @@ class TestAxiWrongCopy:
         assert "/workspace/.hdsrc/payments,true,true" in out  # imported,diverged,checked
         # The warning naming both copies rides the TOON document too.
         assert "other copy" in out.lower()
+
+
+# ------------------------------------------- a failed reset that leaves the bench down
+
+
+class _BenchUpdateContainer(_NoisyContainer):
+    """Models what bench 5.31.0 does to ``sites/common_site_config.json``.
+
+    ``bench update`` writes ``maintenance_mode: 1, pause_scheduler: 1`` before its
+    first site backup and writes 0 back only when the whole update succeeds - there
+    is no ``finally`` - so a reset that fails leaves both set.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.common = {"maintenance_mode": 0, "pause_scheduler": 0}
+
+    def _run(self, cmd, workdir=None):
+        cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
+        if cmd_str == "cat sites/common_site_config.json":
+            self.calls.append(cmd_str)
+            return 0, json.dumps(self.common)
+        if cmd_str == "bench update --reset":
+            failing = any(sub in cmd_str for sub in self.fail_on)
+            self.common = dict.fromkeys(self.common, 1 if failing else 0)
+        return super()._run(cmd, workdir)
+
+
+@pytest.fixture()
+def bench_like(wired, monkeypatch):
+    container = _BenchUpdateContainer(available_apps=["frappe", "payments"])
+    _wire_update(monkeypatch, container)
+    return container
+
+
+_REMEDY = (
+    "cwcli run proj set-config --global --parse maintenance_mode 0 && "
+    "cwcli run proj set-config --global --parse pause_scheduler 0"
+)
+
+
+class TestFailedResetLeavesTheBenchInMaintenance:
+    """A failed ``bench update --reset`` used to be reported as ``failed_apps:
+    [frappe]`` and nothing else, while every site on the bench sat at 503 with its
+    scheduler paused. Every surface now says so, with the commands that clear it."""
+
+    def test_axi_reports_the_flag_the_warning_and_exits_one(self, bench_like, capsys):
+        bench_like.fail_on = ["bench update --reset"]
+
+        with pytest.raises(typer.Exit) as exc:
+            _axi_update(apps=["frappe"])
+
+        assert exc.value.exit_code == 1
+        out = capsys.readouterr().out
+        assert "bench_left_in_maintenance: true" in out
+        assert "left maintenance_mode and pause_scheduler set bench-wide" in out
+        assert _REMEDY in out
+
+    def test_axi_success_twin_reports_neither(self, bench_like, capsys):
+        with pytest.raises(typer.Exit) as exc:
+            _axi_update(apps=["frappe"])
+
+        assert exc.value.exit_code == 0
+        out = capsys.readouterr().out
+        assert "bench_left_in_maintenance: false" in out
+        assert "set-config" not in out
+
+    def test_json_carries_the_field_and_stderr_the_way_out(self, bench_like, capsys):
+        bench_like.fail_on = ["bench update --reset"]
+
+        with pytest.raises(typer.Exit) as exc:
+            _json_update(apps=["frappe"])
+
+        assert exc.value.exit_code == 1
+        captured = capsys.readouterr()
+        doc = json.loads(captured.out)  # the remedy never corrupts the document
+        assert doc["bench_left_in_maintenance"] is True
+        assert doc["ok"] is False
+        assert _REMEDY in " ".join(captured.err.split())
+
+    def test_the_human_summary_names_the_way_out(self, bench_like, capsys):
+        bench_like.fail_on = ["bench update --reset"]
+
+        with pytest.raises(typer.Exit) as exc:
+            apps_mod.update_apps(
+                "proj",
+                ["frappe"],
+                bench=None,
+                bench_path=BENCH,
+                sites=None,
+                clear_cache=False,
+                clear_website_cache=False,
+                build=False,
+                skip_maintenance=False,
+                no_recache=True,
+                force=False,
+                json_output=False,
+                yes=True,
+                verbose=False,
+            )
+
+        assert exc.value.exit_code == 1
+        captured = capsys.readouterr()
+        err = " ".join(captured.err.split())
+        assert "every site on the bench that does not override them answers HTTP 503" in err
+        assert _REMEDY in err
+        # The reset is not a git pull, so the summary does not call it one.
+        assert "frappe: bench update --reset failed" in captured.out
+        assert "Git pull failed" not in captured.out
+
+    def test_the_human_remedy_names_the_bench_on_a_multi_bench_instance(
+        self, bench_like, monkeypatch, capsys
+    ):
+        # The human frontend resolves the bench itself and hands the core only the
+        # path; the remedy must still carry the --bench that clears THAT bench.
+        monkeypatch.setattr(
+            core_update.resolvers,
+            "cached_benches",
+            lambda _p: [
+                {"path": "/workspace/other-bench", "index": 0, "label": None},
+                {"path": BENCH, "index": 1, "label": None},
+            ],
+        )
+        bench_like.fail_on = ["bench update --reset"]
+
+        with pytest.raises(typer.Exit) as exc:
+            update_mod.run_app_update("proj", ["frappe"], bench_path=BENCH, yes=True)
+
+        assert exc.value.exit_code == 1
+        err = " ".join(capsys.readouterr().err.split())
+        assert (
+            "cwcli run proj --bench 1 set-config --global --parse maintenance_mode 0 && "
+            "cwcli run proj --bench 1 set-config --global --parse pause_scheduler 0"
+        ) in err
