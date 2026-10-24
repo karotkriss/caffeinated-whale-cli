@@ -24,8 +24,12 @@ and the archived backup - never by trusting cwcli's own success text alone:
 
 Provisions its OWN two-bench instance (the shared session fixture is single-bench
 and every other test depends on it), version-agnostic so it runs once on the v16
-leg, and does the whole arc in ONE function so it pays for provisioning once -
-the OOM-tight box wants one throwaway instance at a time.
+leg. The instance is ONE module-scoped fixture so it is paid for once - the
+OOM-tight box wants one throwaway instance at a time - and the arc is split into
+named tests that run in file order against it: refuse while running (4), a failed
+backup drops nothing (5), then a real removal whose backup restores (1, 2, 3).
+Each later test stops the target bench itself, so it does not depend on an
+earlier test having passed.
 """
 
 from __future__ import annotations
@@ -36,18 +40,19 @@ import os
 import shlex
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from . import harness
 from .conftest import SESSION_ADMIN_PW
 
-pytestmark = [pytest.mark.e2e, pytest.mark.standalone]
-
 v16_only = pytest.mark.skipif(
     harness.FRAPPE_MAJOR != 16,
     reason="version-agnostic (the drop+delete mechanics do not vary by Frappe major); runs once",
 )
+
+pytestmark = [pytest.mark.e2e, pytest.mark.standalone, v16_only]
 
 MARKER = "CWE2E-RMBENCH-MARKER"
 
@@ -195,14 +200,15 @@ def _dropped_site_dir(project: str, site: str) -> Path:
     return dirs[0]
 
 
-@v16_only
-def test_rm_bench_removes_one_bench_and_leaves_the_rest_serving(port_allocator):
+@pytest.fixture(scope="module")
+def bench_instance(port_allocator):
+    """A real two-bench instance: the TARGET bench holds two sites (seeded record on
+    TARGET_SITE), the SURVIVOR bench holds the default site, and both are serving."""
     harness.enforce_isolation()
     name = harness.project_name("rmbench")
     port = port_allocator.next()
 
     try:
-        # --- build a real two-bench instance ---
         first = _init(name, port)
         assert first.returncode == 0, first.stdout + first.stderr
         harness.wait_for_site_ready(name, SURVIVOR_SITE, bench=SURVIVOR_BENCH_PATH)
@@ -215,140 +221,168 @@ def test_rm_bench_removes_one_bench_and_leaves_the_rest_serving(port_allocator):
         assert insp.returncode == 0, insp.stdout + insp.stderr
         indices = _bench_indices(name)
         assert TARGET_BENCH_PATH in indices and SURVIVOR_BENCH_PATH in indices, indices
-        target_index = indices[TARGET_BENCH_PATH]
 
-        target_port = _web_port(name, TARGET_BENCH_PATH)
-        survivor_port = _web_port(name, SURVIVOR_BENCH_PATH)
-        assert target_port != survivor_port, (target_port, survivor_port)
-        target_db = _db_name(name, TARGET_BENCH_PATH, TARGET_SITE)
-        survivor_db = _db_name(name, SURVIVOR_BENCH_PATH, SURVIVOR_SITE)
+        inst = SimpleNamespace(
+            name=name,
+            target_index=indices[TARGET_BENCH_PATH],
+            survivor_index=indices[SURVIVOR_BENCH_PATH],
+            target_port=_web_port(name, TARGET_BENCH_PATH),
+            survivor_port=_web_port(name, SURVIVOR_BENCH_PATH),
+            target_db=_db_name(name, TARGET_BENCH_PATH, TARGET_SITE),
+            survivor_db=_db_name(name, SURVIVOR_BENCH_PATH, SURVIVOR_SITE),
+        )
+        assert inst.target_port != inst.survivor_port, (inst.target_port, inst.survivor_port)
 
-        # --- a second site on the target bench, for the backup-order proof ---
-        created = _new_site(name, target_index, SECOND_SITE)
+        # A second site on the target bench, for the backup-order proof.
+        created = _new_site(name, inst.target_index, SECOND_SITE)
         assert created.returncode == 0, created.stdout + created.stderr
-        second_db = _db_name(name, TARGET_BENCH_PATH, SECOND_SITE)
+        inst.second_db = _db_name(name, TARGET_BENCH_PATH, SECOND_SITE)
 
-        # --- seed identifiable data into the TARGET bench's site; prove it landed ---
+        # Seed identifiable data into the TARGET bench's site; prove it landed.
         _seed_marker(name, TARGET_SITE, TARGET_BENCH_PATH, MARKER)
         assert _count_marker(name, TARGET_SITE, TARGET_BENCH_PATH, MARKER) == 1, "seed did not land"
 
-        # both benches genuinely serving (the baseline every later claim stands on)
+        # Both benches genuinely serving (the baseline every later claim stands on).
         harness.wait_until(
-            lambda: _http_code(name, target_port, TARGET_SITE) == "200",
+            lambda: _http_code(name, inst.target_port, TARGET_SITE) == "200",
             timeout=300,
             desc="target bench serving",
         )
         harness.wait_until(
-            lambda: _http_code(name, survivor_port, SURVIVOR_SITE) == "200",
+            lambda: _http_code(name, inst.survivor_port, SURVIVOR_SITE) == "200",
             timeout=300,
             desc="survivor bench serving",
         )
-
-        # --- 4. REFUSE while the target bench is running ---
-        refused = harness.run_cwcli("axi", "rm-bench", name, "--bench", str(target_index), "--yes")
-        assert refused.returncode != 0, refused.stdout + refused.stderr
-        combined = harness.collapse_ws(harness.strip_ansi(refused.stdout + refused.stderr)).lower()
-        assert "running" in combined, combined
-        assert "cwcli stop" in combined, combined
-        # nothing was touched: the target still serves and its DB is intact
-        assert _http_code(name, target_port, TARGET_SITE) == "200"
-        assert _database_exists(name, target_db)
-
-        # --- stop the target bench ---
-        stopped = harness.run_cwcli("stop", name, "--bench", str(target_index))
-        assert stopped.returncode == 0, stopped.stdout + stopped.stderr
-
-        # --- 5. a FAILED backup (of the site listed LAST) drops nothing and removes
-        # nothing: TARGET_SITE, whose backup succeeds first, must not be dropped ---
-        backups = f"{TARGET_BENCH_PATH}/sites/{SECOND_SITE}/private/backups"
-        code, out = harness.exec_in_frappe(name, f"mkdir -p {backups} && chmod 0555 {backups}")
-        assert code == 0, out
-        try:
-            failed = harness.run_cwcli(
-                "axi", "rm-bench", name, "--bench", str(target_index), "--yes"
-            )
-        finally:
-            harness.exec_in_frappe(name, f"chmod 0755 {backups}")
-        combined = harness.collapse_ws(harness.strip_ansi(failed.stdout + failed.stderr))
-        assert failed.returncode == 1, combined
-        assert "nothing was dropped" in combined, combined
-        assert "Backup failed for Site" in combined, "bench's own error was not surfaced"
-        code, _ = harness.exec_in_frappe(name, f"test -d {shlex.quote(TARGET_BENCH_PATH)}")
-        assert code == 0, "the bench directory was removed despite the failed backup"
-        assert _database_exists(name, target_db), "a site was dropped before every backup ran"
-        assert _count_marker(name, TARGET_SITE, TARGET_BENCH_PATH, MARKER) == 1, "data was lost"
-        assert _database_exists(name, second_db), "the failing site's database was dropped"
-        for site in (TARGET_SITE, SECOND_SITE):
-            code, _ = harness.exec_in_frappe(name, f"test -d {TARGET_BENCH_PATH}/sites/{site}")
-            assert code == 0, f"{site} was dropped despite the failed backup"
-        archive = Path(os.environ["CWCLI_HOME"]) / "archive" / f"{name}_dropped_sites"
-        leftovers = list(archive.iterdir()) if archive.exists() else []
-        assert leftovers == [], f"backups of sites that were never dropped were left: {leftovers}"
-
-        # --- now remove it for real ---
-        removed = harness.run_cwcli("axi", "rm-bench", name, "--bench", str(target_index), "--yes")
-        assert removed.returncode == 0, removed.stdout + removed.stderr
-        out = removed.stdout
-        assert f"bench_path: {TARGET_BENCH_PATH}" in out, out
-        assert "ok: true" in out, out
-        assert "dir_removed: true" in out, out
-        assert f"sites_dropped[2]: {TARGET_SITE},{SECOND_SITE}" in out, out
-
-        # --- 1. the backup exists BEFORE deletion and genuinely holds the seeded data ---
-        drop_dir = _dropped_site_dir(name, TARGET_SITE)
-        second_dir = _dropped_site_dir(name, SECOND_SITE)
-        assert f"archived_host_paths[2]: {drop_dir},{second_dir}" in out, out
-        assert any(f.name.endswith("-database.sql.gz") for f in (second_dir / "backups").iterdir())
-        assert (drop_dir / f"{TARGET_SITE}.tar").stat().st_size > 0, "site archive missing"
-        backup_files = sorted((drop_dir / "backups").iterdir())
-        dumps = [f for f in backup_files if f.name.endswith("-database.sql.gz")]
-        assert len(dumps) == 1, backup_files
-        sql = gzip.decompress(dumps[0].read_bytes())
-        assert b"CREATE TABLE" in sql, "the archived dump is not a real SQL backup"
-        assert MARKER.encode() in sql, "the seeded record is not in the archived backup"
-
-        # --- 2. the removed bench's directory AND database are genuinely gone ---
-        code, _ = harness.exec_in_frappe(name, f"test -d {shlex.quote(TARGET_BENCH_PATH)}")
-        assert code != 0, "the target bench directory still exists inside the container"
-        assert _host_bench_dir(name, TARGET_BENCH_NAME) is None, "target bench dir survives on host"
-        assert not _database_exists(name, target_db), "the target site's database was not dropped"
-        assert not _database_exists(name, second_db), "the second site's database was not dropped"
-
-        # --- 3. every OTHER bench survives intact and still serves ---
-        code, _ = harness.exec_in_frappe(name, f"test -d {shlex.quote(SURVIVOR_BENCH_PATH)}")
-        assert code == 0, "the survivor bench directory was removed"
-        assert _host_bench_dir(name, "frappe-bench") is not None, "survivor bench dir gone on host"
-        assert _database_exists(name, survivor_db), "the survivor site's database was dropped"
-        assert _http_code(name, survivor_port, SURVIVOR_SITE) == "200", "survivor stopped serving"
-
-        # --- 1b. the archived dump genuinely restores: into a site of the same name,
-        # recreated on the surviving bench, and read back through Frappe ---
-        survivor_index = indices[SURVIVOR_BENCH_PATH]
-        created = _new_site(name, survivor_index, TARGET_SITE)
-        assert created.returncode == 0, created.stdout + created.stderr
-        assert _count_marker(name, TARGET_SITE, SURVIVOR_BENCH_PATH, MARKER) == 0
-        survivor_dir = _host_bench_dir(name, "frappe-bench")
-        assert survivor_dir is not None
-        dest = survivor_dir / "sites" / TARGET_SITE / "private" / "backups"
-        dest.mkdir(parents=True, exist_ok=True)
-        for f in backup_files:
-            shutil.copy(f, dest / f.name)
-        restored = harness.run_cwcli(
-            "restore",
-            name,
-            "--bench",
-            str(survivor_index),
-            "--site",
-            TARGET_SITE,
-            "--latest",
-            "--yes",
-            "--mariadb-root-username",
-            "root",
-            "--mariadb-root-password",
-            "123",
-            timeout=900,
-        )
-        assert restored.returncode == 0, restored.stdout + restored.stderr
-        assert _count_marker(name, TARGET_SITE, SURVIVOR_BENCH_PATH, MARKER) == 1
+        yield inst
     finally:
         harness.cwcli_rm(name)
+
+
+def _stop_target(inst) -> None:
+    """Stop the target bench (rm-bench refuses a running one). A no-op if stopped."""
+    stopped = harness.run_cwcli("stop", inst.name, "--bench", str(inst.target_index))
+    assert stopped.returncode == 0, stopped.stdout + stopped.stderr
+
+
+def _rm_bench(inst):
+    return harness.run_cwcli(
+        "axi", "rm-bench", inst.name, "--bench", str(inst.target_index), "--yes"
+    )
+
+
+def test_rm_bench_refuses_a_running_bench(bench_instance):
+    """4. A bench that is still serving is refused, and nothing is touched."""
+    inst = bench_instance
+    refused = _rm_bench(inst)
+    assert refused.returncode != 0, refused.stdout + refused.stderr
+    combined = harness.collapse_ws(harness.strip_ansi(refused.stdout + refused.stderr)).lower()
+    assert "running" in combined, combined
+    assert "cwcli stop" in combined, combined
+    assert _http_code(inst.name, inst.target_port, TARGET_SITE) == "200"
+    assert _database_exists(inst.name, inst.target_db)
+
+
+def test_rm_bench_drops_nothing_when_one_site_backup_fails(bench_instance):
+    """5. The backup of the site listed LAST fails (its backups directory made
+    unwritable), so rm-bench exits 1 with bench's own error and drops NOTHING:
+    TARGET_SITE, whose backup succeeded first, is not dropped, both sites and
+    their databases and data survive, the bench directory stays, and no
+    "dropped site" archive is left for sites that were never dropped."""
+    inst = bench_instance
+    _stop_target(inst)
+    backups = f"{TARGET_BENCH_PATH}/sites/{SECOND_SITE}/private/backups"
+    code, out = harness.exec_in_frappe(inst.name, f"mkdir -p {backups} && chmod 0555 {backups}")
+    assert code == 0, out
+    try:
+        failed = _rm_bench(inst)
+    finally:
+        harness.exec_in_frappe(inst.name, f"chmod 0755 {backups}")
+
+    combined = harness.collapse_ws(harness.strip_ansi(failed.stdout + failed.stderr))
+    assert failed.returncode == 1, combined
+    assert "nothing was dropped" in combined, combined
+    assert "Backup failed for Site" in combined, "bench's own error was not surfaced"
+    code, _ = harness.exec_in_frappe(inst.name, f"test -d {shlex.quote(TARGET_BENCH_PATH)}")
+    assert code == 0, "the bench directory was removed despite the failed backup"
+    assert _database_exists(inst.name, inst.target_db), "a site was dropped before every backup ran"
+    assert _count_marker(inst.name, TARGET_SITE, TARGET_BENCH_PATH, MARKER) == 1, "data was lost"
+    assert _database_exists(inst.name, inst.second_db), "the failing site's database was dropped"
+    for site in (TARGET_SITE, SECOND_SITE):
+        code, _ = harness.exec_in_frappe(inst.name, f"test -d {TARGET_BENCH_PATH}/sites/{site}")
+        assert code == 0, f"{site} was dropped despite the failed backup"
+    archive = Path(os.environ["CWCLI_HOME"]) / "archive" / f"{inst.name}_dropped_sites"
+    leftovers = list(archive.iterdir()) if archive.exists() else []
+    assert leftovers == [], f"backups of sites that were never dropped were left: {leftovers}"
+
+
+def test_rm_bench_backs_up_every_site_drops_them_and_the_dump_restores(bench_instance):
+    """1-3. A real rm-bench backs up BOTH sites, drops them, and deletes the bench;
+    the archived dump holds the seeded record and genuinely restores it; every
+    other bench survives and still serves."""
+    inst = bench_instance
+    name = inst.name
+    _stop_target(inst)
+
+    removed = _rm_bench(inst)
+    assert removed.returncode == 0, removed.stdout + removed.stderr
+    out = removed.stdout
+    assert f"bench_path: {TARGET_BENCH_PATH}" in out, out
+    assert "ok: true" in out, out
+    assert "dir_removed: true" in out, out
+    assert f"sites_dropped[2]: {TARGET_SITE},{SECOND_SITE}" in out, out
+
+    # --- 1. the backup exists BEFORE deletion and genuinely holds the seeded data ---
+    drop_dir = _dropped_site_dir(name, TARGET_SITE)
+    second_dir = _dropped_site_dir(name, SECOND_SITE)
+    assert f"archived_host_paths[2]: {drop_dir},{second_dir}" in out, out
+    assert any(f.name.endswith("-database.sql.gz") for f in (second_dir / "backups").iterdir())
+    assert (drop_dir / f"{TARGET_SITE}.tar").stat().st_size > 0, "site archive missing"
+    backup_files = sorted((drop_dir / "backups").iterdir())
+    dumps = [f for f in backup_files if f.name.endswith("-database.sql.gz")]
+    assert len(dumps) == 1, backup_files
+    sql = gzip.decompress(dumps[0].read_bytes())
+    assert b"CREATE TABLE" in sql, "the archived dump is not a real SQL backup"
+    assert MARKER.encode() in sql, "the seeded record is not in the archived backup"
+
+    # --- 2. the removed bench's directory AND databases are genuinely gone ---
+    code, _ = harness.exec_in_frappe(name, f"test -d {shlex.quote(TARGET_BENCH_PATH)}")
+    assert code != 0, "the target bench directory still exists inside the container"
+    assert _host_bench_dir(name, TARGET_BENCH_NAME) is None, "target bench dir survives on host"
+    assert not _database_exists(name, inst.target_db), "the target site's database was not dropped"
+    assert not _database_exists(name, inst.second_db), "the second site's database was not dropped"
+
+    # --- 3. every OTHER bench survives intact and still serves ---
+    code, _ = harness.exec_in_frappe(name, f"test -d {shlex.quote(SURVIVOR_BENCH_PATH)}")
+    assert code == 0, "the survivor bench directory was removed"
+    assert _host_bench_dir(name, "frappe-bench") is not None, "survivor bench dir gone on host"
+    assert _database_exists(name, inst.survivor_db), "the survivor site's database was dropped"
+    assert _http_code(name, inst.survivor_port, SURVIVOR_SITE) == "200", "survivor stopped serving"
+
+    # --- 1b. the archived dump genuinely restores: into a site of the same name,
+    # recreated on the surviving bench, and read back through Frappe ---
+    created = _new_site(name, inst.survivor_index, TARGET_SITE)
+    assert created.returncode == 0, created.stdout + created.stderr
+    assert _count_marker(name, TARGET_SITE, SURVIVOR_BENCH_PATH, MARKER) == 0
+    survivor_dir = _host_bench_dir(name, "frappe-bench")
+    assert survivor_dir is not None
+    dest = survivor_dir / "sites" / TARGET_SITE / "private" / "backups"
+    dest.mkdir(parents=True, exist_ok=True)
+    for f in backup_files:
+        shutil.copy(f, dest / f.name)
+    restored = harness.run_cwcli(
+        "restore",
+        name,
+        "--bench",
+        str(inst.survivor_index),
+        "--site",
+        TARGET_SITE,
+        "--latest",
+        "--yes",
+        "--mariadb-root-username",
+        "root",
+        "--mariadb-root-password",
+        "123",
+        timeout=900,
+    )
+    assert restored.returncode == 0, restored.stdout + restored.stderr
+    assert _count_marker(name, TARGET_SITE, SURVIVOR_BENCH_PATH, MARKER) == 1
