@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Alert, Badge, Breadcrumbs, Button, ErrorMessage, PageHeader, LoadingText } from 'frappe-ui'
+import { Alert, Badge, Breadcrumbs, Button, ErrorMessage, FormControl, PageHeader, LoadingText } from 'frappe-ui'
 import { ACTIVE_STATES, JOB_THEME, createJob, detachJob, elapsed, interruptJob, jobLabel, jobTarget, jobs, loadJob } from '../data/jobs'
 import { openJob } from '../data/job-dialog'
 import { setFocus } from '../data/fleet'
@@ -74,6 +74,9 @@ async function detach() {
 }
 
 const benchOptions = computed(() => record.value?.choice?.param === 'bench' ? record.value.choice.options || [] : [])
+const consentNeeded = computed(() => record.value?.choice?.param === 'consent')
+const typedName = ref('')
+const consentTyped = computed(() => typedName.value.trim() === record.value?.target?.project)
 
 async function continueChoice(value) {
   const job = record.value
@@ -83,7 +86,10 @@ async function continueChoice(value) {
     return
   }
   let spec = { verb: job.verb, target: job.target, args: job.args, consent: job.consent }
-  if (param === 'consent') spec.consent = true
+  if (param === 'consent') {
+    if (!consentTyped.value) return
+    spec.consent = true
+  }
   else if (param === 'bench') spec.target = { ...job.target, bench: String(value) }
   else if (param === 'auto_start') spec = { verb: 'start', target: { project: job.target.project, ...(job.target.bench != null ? { bench: job.target.bench } : {}) }, args: {} }
   else {
@@ -121,10 +127,14 @@ async function continueChoice(value) {
 
       <Alert v-if="record.state === 'unknown'" theme="gray" title="The job process vanished" :description="record.error?.message" />
       <template v-else-if="record.state === 'needs_choice'">
-        <Alert v-if="benchOptions.length" theme="amber" title="cwcli needs a decision" :description="record.choice.prompt" />
+        <Alert v-if="benchOptions.length || consentNeeded" theme="amber" title="cwcli needs a decision" :description="record.choice.prompt" />
         <Alert v-else theme="amber" title="cwcli needs a decision" :description="record.choice?.prompt || 'Review the job and choose how to continue.'" :primary-action="{ label: record.choice?.param === 'auto_start' && record.verb !== 'init' ? 'Start instance' : 'Continue', onClick: () => continueChoice() }" />
         <div v-if="benchOptions.length" class="flex flex-wrap gap-2">
           <Button v-for="option in benchOptions" :key="option.value" icon-left="lucide-layers" :label="option.label" @click="continueChoice(option.value)" />
+        </div>
+        <div v-if="consentNeeded" class="flex flex-wrap items-end gap-2">
+          <FormControl v-model="typedName" class="w-72" :label="`Type ${record.target.project} to confirm`" :placeholder="record.target.project" autocomplete="off" />
+          <Button variant="solid" label="Continue" :disabled="!consentTyped" @click="continueChoice()" />
         </div>
       </template>
       <Alert v-else-if="record.error" theme="red" :title="record.error.code || 'Job failed'" :description="`${record.error.message}${record.error.hint ? ` ${record.error.hint}` : ''}`" />

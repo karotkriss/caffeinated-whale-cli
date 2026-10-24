@@ -2,7 +2,7 @@ import { reactive } from 'vue'
 import { toast } from 'frappe-ui'
 import { ACTIONS, availability } from './actions'
 import { instance, loadDetail, getJsonUrl } from './fleet'
-import { postJson, ApiError } from './api'
+import { postJson } from './api'
 import { createJob } from './jobs'
 import { router } from '../router'
 
@@ -13,7 +13,6 @@ export const dialogState = reactive({
   ctx: {},
   values: {},
   error: null, // ApiError from the last attempt
-  typedConfirm: null, // a core NEEDS_CHOICE confirm (e.g. confirm_scale) -> type the name
   running: false,
 })
 
@@ -31,18 +30,16 @@ export function openAction(id, ctx = {}) {
   dialogState.ctx = full
   dialogState.values = {}
   dialogState.error = null
-  dialogState.typedConfirm = null
   dialogState.open = true
   return null
 }
 
-// POST the action; on scale's core NEEDS_CHOICE confirm, re-open as a typed confirm.
-// Every other needs_choice (confirm_start on a stopped instance) is a plain error.
-export async function runAction(id, ctx, values, { consent = false } = {}) {
+// Start the job (or POST the quick action). A job's own needs_choice, such as
+// scale's confirm_scale, is answered on its job page.
+export async function runAction(id, ctx, values) {
   const a = ACTIONS[id]
   if (a.read) return openSite(ctx)
   const payload = a.request(ctx, values)
-  if (consent || a.consent) payload.consent = true
   dialogState.running = true
   try {
     const data = a.job ? await createJob(payload) : await postJson('/api/v1/actions', payload)
@@ -57,17 +54,6 @@ export async function runAction(id, ctx, values, { consent = false } = {}) {
     dialogState.open = false
     return data
   } catch (e) {
-    if (e instanceof ApiError && e.type === 'needs_choice' && e.code === 'confirm_scale') {
-      // Consent is the core's decision: it refused before any mutation and
-      // explains why; the user types the instance name to grant it.
-      dialogState.id = id
-      dialogState.ctx = ctx
-      dialogState.values = values
-      dialogState.error = null
-      dialogState.typedConfirm = { message: e.message, target: ctx.project }
-      dialogState.open = true
-      return null
-    }
     dialogState.error = e
     if (!dialogState.open) toast.error(a.label + ' failed', { description: hint(e) })
     return null
