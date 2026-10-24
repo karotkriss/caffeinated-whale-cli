@@ -652,7 +652,8 @@ class TestVendoredClickIsCaught:
         standalone-Click and a Click-vendoring Typer."""
         base_module = sys.modules[_typer_core.TyperGroup.__mro__[1].__module__]
         click_pkg = base_module.__name__.rsplit(".", 1)[0]  # 'click' or 'typer._click'
-        exc = importlib.import_module(click_pkg + ".exceptions")
+        # A dynamic import on purpose: the active Click flavor is only known at runtime.
+        exc = importlib.import_module(click_pkg + ".exceptions")  # noqa: TID251
 
         assert exc.ClickException in axi_mod._CLICK_EXCEPTIONS
         assert exc.UsageError in axi_mod._USAGE_ERRORS
