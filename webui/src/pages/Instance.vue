@@ -32,9 +32,11 @@ const apps = computed(() => {
 })
 const ports = computed(() => publishedRange(inst.value?.ports))
 const running = computed(() => inst.value?.container_running)
+// No container on this daemon: nothing to start, stop or inspect here.
+const gone = computed(() => !inst.value && fleet.connection === 'live')
 const dataLabel = computed(() => {
   if (detail.loading && !detail.data) return 'reading'
-  if (!detail.data) return 'not cached'
+  if (!detail.data) return gone.value ? 'not read' : 'not cached'
   if (detail.data.served_from === 'full') return 'read live'
   const at = detail.data.cached_at ? Date.parse(detail.data.cached_at.replace(' ', 'T')) : null
   return at ? `from cache, ${ago(at)}` : 'from cache'
@@ -52,26 +54,28 @@ const more = computed(() => [
     <Breadcrumbs :items="[{ label: 'Instances', route: '/instances' }, { label: project, route: `/instances/${project}` }]" />
     <div class="flex items-center gap-2">
       <StatusBadge class="max-md:hidden" :token="inst?.overall" size="md" />
+      <template v-if="!gone">
       <Button v-if="!running" variant="solid" icon-left="lucide-play" label="Start" @click="openAction('instance.start', ctx)" />
       <Button v-else icon-left="lucide-square" label="Stop" @click="openAction('instance.stop', ctx)" />
       <Dropdown :options="more" align="end">
         <Button icon="lucide-ellipsis" aria-label="More actions" />
       </Dropdown>
+      </template>
     </div>
   </PageHeader>
 
   <div class="space-y-5 px-3 pb-20 pt-5 sm:px-5">
-    <Alert v-if="!inst && fleet.connection === 'live'" theme="gray" :title="`${project} is not on this Docker daemon`" description="It may have been removed; the cache below is what cwcli remembers." />
+    <Alert v-if="!inst && fleet.connection === 'live'" theme="gray" :title="`${project} is not on this Docker daemon`" description="It may have been removed or live on another Docker daemon. Search (Ctrl+K) finds the benches and sites cwcli remembers for it." />
     <Alert v-else-if="inst && !running" theme="gray" :title="`${project} is stopped`" description="Benches, sites and apps below are remembered from the cwcli cache. Process health and logs need the container running." />
 
     <div class="grid grid-cols-2 gap-px overflow-hidden rounded-6 border border-outline-gray-1 bg-surface-gray-2 lg:grid-cols-4">
       <div class="bg-surface-base px-4 py-3">
         <div class="text-sm text-ink-gray-5">Container</div>
-        <div class="mt-1.5 font-mono text-base text-ink-gray-8">{{ inst?.docker_status || 'unknown' }}</div>
+        <div class="mt-1.5 font-mono text-base text-ink-gray-8">{{ inst?.docker_status || (gone ? 'not on Docker' : 'unknown') }}</div>
       </div>
       <div class="bg-surface-base px-4 py-3">
         <div class="text-sm text-ink-gray-5">Benches / sites</div>
-        <div class="mt-1.5 text-base tabular-nums text-ink-gray-8"><template v-if="detail.data">{{ detail.data.benches.length }} / {{ countSites(detail.data) }}</template><template v-else>{{ detail.loading ? 'reading' : 'not cached' }}</template></div>
+        <div class="mt-1.5 text-base tabular-nums text-ink-gray-8"><template v-if="detail.data">{{ detail.data.benches.length }} / {{ countSites(detail.data) }}</template><template v-else>{{ detail.loading ? 'reading' : gone ? 'not read' : 'not cached' }}</template></div>
       </div>
       <div class="bg-surface-base px-4 py-3">
         <div class="text-sm text-ink-gray-5">Published web ports</div>
@@ -84,6 +88,10 @@ const more = computed(() => [
     </div>
 
     <LoadingText v-if="detail.loading && !detail.data" text="Reading the cache..." />
+    <div v-else-if="detail.error && gone" class="rounded-6 border border-outline-gray-1 px-4 py-10 text-center">
+      <p class="text-base text-ink-gray-7">Docker has no container for {{ project }}, so there is nothing to read live.</p>
+      <p class="mt-1 text-sm text-ink-gray-5">{{ detail.error.message }}</p>
+    </div>
     <div v-else-if="detail.error" class="rounded-6 border border-outline-gray-1 px-4 py-10 text-center">
       <p class="text-base text-ink-gray-7">cwcli has not inspected {{ project }}{{ running ? '' : ', and it is stopped' }}.</p>
       <p class="mt-1 text-sm text-ink-gray-5">{{ detail.error.message }}</p>

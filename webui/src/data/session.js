@@ -14,10 +14,14 @@ export const session = reactive({
   protocolMismatch: false,
 })
 
+// Read and strip the code at module load: main.js imports this module before
+// the router, whose history captures the location (fragment included) when it
+// is created and writes it back on the first navigation.
+const code = new URLSearchParams(location.hash.replace(/^#/, '')).get('login')
+if (code) history.replaceState(null, '', location.pathname + location.search)
+
 export async function boot() {
-  const code = new URLSearchParams(location.hash.replace(/^#/, '')).get('login')
   if (code) {
-    history.replaceState(null, '', location.pathname + location.search)
     const res = await fetch('/api/v1/session', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
