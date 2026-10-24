@@ -642,6 +642,14 @@ def _bench_status_fused(
             bench_flag=bench_flag,
         )
 
+    # The site's own maintenance flag, read as the default path reads it: a site
+    # stuck in maintenance answers 503 with no other signal, and the web UI's Site
+    # page shows (and offers to clear) exactly this field.
+    maintenance = (
+        supervision.maintenance_mode_on(frappe_container, bench_path, web_site)
+        if probe_web and web_site
+        else None
+    )
     return BenchStatus(
         index=index,
         bench_path=bench_path,
@@ -656,8 +664,9 @@ def _bench_status_fused(
         supervisor_up=True,
         web_port=web_port,
         web_port_verified=web_port is not None,
-        web_site=web_site if probed else None,
+        web_site=web_site if (probed or maintenance is not None) else None,
         web_http_code=fused.web_http_code,
+        maintenance_mode=maintenance,
         processes=fused.processes,
     )
 

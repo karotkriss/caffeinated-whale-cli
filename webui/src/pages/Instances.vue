@@ -59,8 +59,8 @@ const menu = (i) => [
             <span class="text-sm text-ink-gray-5">container {{ item.docker_status }}</span>
           </ListCell>
           <ListCell><StatusBadge :token="item.overall" /></ListCell>
-          <ListCell class="max-lg:hidden"><span class="whitespace-nowrap tabular-nums text-ink-gray-7">{{ benchCount(item.project) ?? (details[item.project]?.loading ? 'reading' : 'not cached') }}</span></ListCell>
-          <ListCell class="max-lg:hidden"><span class="whitespace-nowrap tabular-nums text-ink-gray-7">{{ details[item.project]?.data ? countSites(details[item.project].data) : details[item.project]?.loading ? 'reading' : 'not cached' }}</span></ListCell>
+          <ListCell class="max-lg:hidden"><span class="whitespace-nowrap tabular-nums text-base text-ink-gray-7">{{ benchCount(item.project) ?? (details[item.project]?.loading ? 'reading' : 'not cached') }}</span></ListCell>
+          <ListCell class="max-lg:hidden"><span class="whitespace-nowrap tabular-nums text-base text-ink-gray-7">{{ details[item.project]?.data ? countSites(details[item.project].data) : details[item.project]?.loading ? 'reading' : 'not cached' }}</span></ListCell>
           <ListCell class="max-lg:hidden">
             <span class="font-mono text-sm text-ink-gray-6">{{ publishedRange(item.ports).web || 'none' }}</span>
             <span class="ml-2 text-xs text-ink-gray-4">{{ publishedRange(item.ports).count }} web</span>

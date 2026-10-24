@@ -117,8 +117,9 @@ export const doctor = onceStore('/api/v1/doctor')
 export const config = onceStore('/api/v1/config')
 export const cacheProjects = onceStore('/api/v1/cache')
 
-export function getJsonUrl(project, query) {
-  return getJson(`/api/v1/instances/${encodeURIComponent(project)}/url?${query}`)
+// The route answers the action envelope; callers want the probe itself ({url, reachable, http_code}).
+export async function getJsonUrl(project, query) {
+  return (await getJson(`/api/v1/instances/${encodeURIComponent(project)}/url?${query}`)).outcome
 }
 
 export function search(term) {
