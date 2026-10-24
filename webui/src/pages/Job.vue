@@ -42,6 +42,7 @@ const rows = computed(() => {
 })
 const terminal = (text) =>
   text
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
     .split('\n')
     .map((line) => line.slice(line.lastIndexOf('\r') + 1))
     .join('\n')
