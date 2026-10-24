@@ -31,6 +31,12 @@ def home(monkeypatch, tmp_path):
     return tmp_path / ".cwcli"
 
 
+def _child_up(port: int, token: str) -> None:
+    """What a detached child does once bound: state file first, then its pid file."""
+    ui_cmd._write_state(port, token)
+    ui_cmd.daemon_identity.write_pid_file(ui_cmd.pid_file())
+
+
 @pytest.fixture
 def no_daemon(monkeypatch):
     monkeypatch.setattr(ui_cmd.daemon_identity, "is_running", lambda pid_file: False)
@@ -48,7 +54,7 @@ class TestStartDetached:
             spawned["stdin"] = kwargs["stdin"]
             spawned["session"] = kwargs.get("start_new_session")
             # The child writes the state file once it is up; emulate that.
-            ui_cmd._write_state(8765, kwargs["env"][ui_cmd.serve_cmd.TOKEN_ENV])
+            _child_up(8765, kwargs["env"][ui_cmd.serve_cmd.TOKEN_ENV])
 
         monkeypatch.setattr(ui_cmd.subprocess, "Popen", _popen)
         monkeypatch.setattr(ui_cmd, "_meta_answers", lambda port: True)
@@ -84,9 +90,7 @@ class TestStartDetached:
         assert "#login=one-time-code" in result.output
 
     def test_no_browser_prints_the_link_only(self, home, no_daemon, monkeypatch):
-        monkeypatch.setattr(
-            ui_cmd.subprocess, "Popen", lambda argv, **kw: ui_cmd._write_state(9000, "t")
-        )
+        monkeypatch.setattr(ui_cmd.subprocess, "Popen", lambda argv, **kw: _child_up(9000, "t"))
         monkeypatch.setattr(ui_cmd, "_meta_answers", lambda port: True)
         monkeypatch.setattr(ui_cmd, "mint_code", lambda port, token: "code")
         monkeypatch.setattr(
@@ -140,7 +144,7 @@ class TestStartDetached:
 
         def _popen(argv, **kwargs):
             spawned["argv"] = argv
-            ui_cmd._write_state(8765, kwargs["env"][ui_cmd.serve_cmd.TOKEN_ENV])
+            _child_up(8765, kwargs["env"][ui_cmd.serve_cmd.TOKEN_ENV])
 
         monkeypatch.setattr(ui_cmd, "_is_frozen", lambda: True)
         monkeypatch.setattr(ui_cmd.sys, "argv", ["C:/tools/cwcli.exe", "ui"])
@@ -164,7 +168,7 @@ class TestStartDetached:
         self, home, no_daemon, monkeypatch
     ):
         monkeypatch.setattr(
-            ui_cmd.subprocess, "Popen", lambda argv, **kw: ui_cmd._write_state(8765, "winner")
+            ui_cmd.subprocess, "Popen", lambda argv, **kw: _child_up(8765, "winner")
         )
         monkeypatch.setattr(ui_cmd, "_meta_answers", lambda port: True)
         minted: list = []
@@ -174,6 +178,51 @@ class TestStartDetached:
 
         assert result.exit_code == 0, result.output
         assert minted == ["winner"]
+
+    def test_a_launch_that_loses_the_bind_reuses_the_winners_state_instead_of_erasing_it(
+        self, home, no_daemon, monkeypatch
+    ):
+        _child_up(8765, "winner")
+        monkeypatch.setattr(ui_cmd.subprocess, "Popen", lambda argv, **kw: None)
+        monkeypatch.setattr(ui_cmd, "_meta_answers", lambda port: True)
+        minted: list = []
+        monkeypatch.setattr(ui_cmd, "mint_code", lambda port, token: minted.append(token) or "c")
+
+        result = runner.invoke(root_app, ["ui", "--no-browser"])
+
+        assert result.exit_code == 0, result.output
+        assert minted == ["winner"]
+        assert ui_cmd._read_state() == {"port": 8765, "token": "winner"}
+        assert ui_cmd.pid_file().exists()
+
+    def test_a_stale_state_file_without_a_live_pid_is_not_taken_as_ready(
+        self, home, no_daemon, monkeypatch
+    ):
+        ui_cmd._write_state(8765, "stale")
+        monkeypatch.setattr(ui_cmd.subprocess, "Popen", lambda argv, **kw: None)
+        monkeypatch.setattr(ui_cmd, "_meta_answers", lambda port: True)
+        monkeypatch.setattr(ui_cmd, "mint_code", lambda port, token: pytest.fail("not ready"))
+        monkeypatch.setattr(ui_cmd, "_READY_TIMEOUT_S", 0.3)
+
+        result = runner.invoke(root_app, ["ui", "--no-browser"])
+
+        assert result.exit_code == 1
+        assert "did not come up" in result.output
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+    def test_the_daemon_log_is_private_to_the_user(self, home, no_daemon, monkeypatch):
+        ui_cmd.run_dir().mkdir(parents=True)
+        ui_cmd.log_file().write_text("old\n")
+        ui_cmd.log_file().chmod(0o644)
+        monkeypatch.setattr(ui_cmd.subprocess, "Popen", lambda argv, **kw: _child_up(8765, "t"))
+        monkeypatch.setattr(ui_cmd, "_meta_answers", lambda port: True)
+        monkeypatch.setattr(ui_cmd, "mint_code", lambda port, token: "c")
+
+        result = runner.invoke(root_app, ["ui", "--no-browser"])
+
+        assert result.exit_code == 0, result.output
+        assert stat.S_IMODE(ui_cmd.log_file().stat().st_mode) == 0o600
+        assert ui_cmd.log_file().read_text() == "old\n"
 
 
 class TestReuse:
@@ -214,7 +263,7 @@ class TestReuse:
         monkeypatch.setattr(
             ui_cmd.subprocess,
             "Popen",
-            lambda argv, **kw: spawned.append(argv) or ui_cmd._write_state(8765, "fresh"),
+            lambda argv, **kw: spawned.append(argv) or _child_up(8765, "fresh"),
         )
         monkeypatch.setattr(ui_cmd, "_meta_answers", lambda port: True)
         monkeypatch.setattr(ui_cmd, "mint_code", lambda port, token: "c3")

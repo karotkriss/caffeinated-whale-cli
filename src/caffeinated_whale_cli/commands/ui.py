@@ -140,7 +140,9 @@ def _spawn_detached(port: int, token: str) -> None:
     else:
         creationflags = 0
         new_session = True
-    with open(log_file(), "a") as log:
+    fd = os.open(log_file(), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    os.chmod(log_file(), 0o600)
+    with os.fdopen(fd, "a") as log:
         subprocess.Popen(
             argv,
             close_fds=True,
@@ -228,13 +230,12 @@ def _start_or_reuse(port: int, *, no_browser: bool) -> None:
         console.print(f"[bold]cwcli ui[/bold] already running on [cyan]{_base(port)}[/cyan]")
         token = state["token"]
     else:
-        _clear_state()
         token = secrets.token_urlsafe(32)
         _spawn_detached(port, token)
         deadline = time.monotonic() + _READY_TIMEOUT_S
         while time.monotonic() < deadline:
-            state = _read_state()
-            if state is not None and _meta_answers(port):
+            state = _read_state() if daemon_identity.get_pid(pid_file()) is not None else None
+            if state is not None and state["port"] == port and _meta_answers(port):
                 token = state["token"]
                 break
             time.sleep(0.2)
