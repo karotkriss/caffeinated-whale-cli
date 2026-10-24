@@ -99,6 +99,20 @@ jobs:
           echo "Release body:"
           cat "$RUNNER_TEMP/release-body.md"
 
+      - name: Set up Node (web UI build)
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a  # v4.2.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Build the web UI into package data
+        # `cwcli ui` serves webui/dist from inside the wheel; the packaging test
+        # and the serve E2E assert it is there. Source in webui/, output under
+        # src/caffeinated_whale_cli/webui/dist (git-ignored).
+        run: npm ci --no-audit --no-fund && npm run build
+        working-directory: webui
+
       - name: Build package
         run: |
           echo "Building caffeinated-whale-cli v${{ steps.version.outputs.version }}"
@@ -300,17 +314,30 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      - name: Set up Node (web UI build)
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a  # v4.2.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Build the web UI into package data
+        # webui/dist is git-ignored, so a fresh checkout has none to bundle.
+        run: npm ci --no-audit --no-fund && npm run build
+        working-directory: webui
+
       - name: Build standalone exe (Nuitka --onefile)
         # Nuitka compiles Python -> C -> native code, which reads to AV heuristics
         # like a normal program (far fewer false positives than a PyInstaller
         # self-extractor). Installing the package (`.`) brings in the runtime deps
-        # and lets --include-package pull the WHOLE package + its console.html
+        # and lets --include-package pull the WHOLE package + its webui/dist
         # data in, so lazily-imported command modules are not missed by static
         # analysis. The frozen binary has no dist-info; core.version reads the
         # baked-in __version__ literal at runtime.
         run: |
           python -m pip install --upgrade pip
           python -m pip install nuitka .
+          python -c "from caffeinated_whale_cli.commands.serve import webui_available; assert webui_available(), 'webui/dist missing from the installed package'"
           python -m nuitka --onefile --assume-yes-for-downloads `
             --include-package=caffeinated_whale_cli `
             --include-package-data=caffeinated_whale_cli `

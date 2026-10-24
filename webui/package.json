@@ -1,0 +1,26 @@
+{
+  "name": "cwcli-webui",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@vueuse/core": "^15.0.0",
+    "frappe-ui": "^1.0.2",
+    "vue": "^3.5.44",
+    "vue-router": "^4.6.4"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.10",
+    "autoprefixer": "^10.6.1",
+    "postcss": "^8.5.31",
+    "tailwindcss": "^3.4.19",
+    "vite": "^7.3.7"
+  },
+  "description": "The cwcli web UI (frappe-ui), built into the Python package as caffeinated_whale_cli/webui/dist. Not published."
+}

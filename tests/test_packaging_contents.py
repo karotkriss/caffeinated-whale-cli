@@ -9,8 +9,10 @@ as throwaway scaffolding rather than published material.
 
 `MANIFEST.in` now states the decision as a deny-all allow-list, so a newly added
 test or fixture directory is out by construction. This file is the gate that
-keeps it that way, and it runs in the fast `unit` tier so the existing `Pytest`
-check blocks a regression with no extra CI workflow step.
+keeps it that way. It carries the `packaging` marker, off the default and
+`-m unit` selections because the wheel must carry the built web UI and a fresh
+clone has no Node build; CI's `Pytest` job builds the UI and runs
+`-m packaging`, so a regression still blocks the merge.
 
 The artifact checks are allow-lists too. A deny-list here would repeat the same
 mistake one level up: a newly added source package such as `src/qa/` could enter
@@ -34,6 +36,8 @@ import zipfile
 from pathlib import Path
 
 import pytest
+
+pytestmark = pytest.mark.packaging
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DIST_NAME = "caffeinated_whale_cli"
@@ -94,9 +98,16 @@ class TestTheWheelShipsThePackage:
         assert len(modules) > 50, f"wheel looks empty: {modules}"
         assert f"{DIST_NAME}/main.py" in modules
         assert f"{DIST_NAME}/core/rm.py" in modules
-        # The one package-data file. It is served by `cwcli serve`, so a wheel
-        # without it installs cleanly and then fails at runtime.
-        assert f"{DIST_NAME}/commands/console.html" in modules
+        # The package-data tree: the built web UI `cwcli ui` serves. A wheel
+        # without it installs cleanly and then serves the "not built" notice, so
+        # the build step (`cd webui && npm run build`) must have run before this
+        # test; CI's test job does so, and so must a local release build.
+        assert f"{DIST_NAME}/webui/dist/index.html" in modules, (
+            "webui/dist is missing from the wheel: run `cd webui && npm ci && "
+            "npm run build` before building"
+        )
+        assert any(n.startswith(f"{DIST_NAME}/webui/dist/assets/") for n in modules)
+        assert f"{DIST_NAME}/webui/dist/csp.json" in modules
 
         unexpected = []
         for name in wheel_names:

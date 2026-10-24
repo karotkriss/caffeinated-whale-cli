@@ -17,14 +17,11 @@
 // script runs eslint with `--max-warnings 0` to make any adherence warning block
 // (see package.json `lint`). We gate on his rules without editing his severities.
 //
-// Scope: JS/JSX under tools/design-adherence/. DS-T3 rebuilt the Console onto
-// the design system with no build step (the components map onto same-DOM/token
-// markup by hand), so it stays the single `commands/console.html`; this pass
-// stays ready for a future Console JSX build. The Console's
-// inline CSS in `commands/console.html` is a `<style>` block, i.e. raw CSS text,
-// NOT JS `Literal`/JSX nodes, so ESLint's AST selectors cannot reach it; that gap
-// is covered by `check-console-css.mjs`. Tooling and built/vendor trees are
-// ignored so the pass only sees design-consuming app code.
+// Scope: JS/JSX under tools/design-adherence/. The web UI (webui/, a frappe-ui
+// Vue app) is not JSX and takes its colour from frappe-ui's Tailwind tokens, so
+// it is covered by `check-webui-tokens.mjs` (semantic tokens only), not by this
+// pass. Tooling and built/vendor trees are ignored so the pass only sees
+// design-consuming app code.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";

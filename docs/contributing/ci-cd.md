@@ -9,9 +9,9 @@ We use six GitHub Actions workflows:
 | Workflow | Triggers | Purpose |
 |----------|----------|---------|
 | **Lint** | All branches, all PRs | Code quality checks (Black, Ruff) |
-| **Test** | All branches, all PRs | Run the fast `unit` pytest tier (required gate) + mypy (zero-error gate), a narrow Windows-native leg (`tests/test_auto_inspect.py` + `tests/test_core_credbridge.py`) on `windows-latest`, and a runtime-deps-only clean-install smoke test |
+| **Test** | All branches, all PRs | Run the fast `unit` pytest tier then the `packaging` tier (required gate) + mypy (zero-error gate), a narrow Windows-native leg (`tests/test_auto_inspect.py` + `tests/test_core_credbridge.py`) on `windows-latest`, and a runtime-deps-only clean-install smoke test |
 | **E2E** | PRs into `develop`/`master`, `e2e`-labeled PRs, manual dispatch | Run the real-Docker `e2e` tier on a v14/v15/v16 Frappe matrix, plus a runtime-deps-only full-lifecycle leg (`e2e_pkg`) that drives a `uv tool install .` binary via `CWCLI_BIN` |
-| **Design system** | All branches, all PRs | Always-run design-system adherence lint (ESLint over the maintainer's policy, plus a raw-hex check of the Console's inline CSS) |
+| **Design system** | All branches, all PRs | Always-run design-system adherence lint (ESLint over the maintainer's policy, plus the web UI's semantic-colour-token check) |
 | **Build** | Push to `master`, manual dispatch | Build package, verify version consistency |
 | **Release** | Tags `v*.*.*` | Publish to PyPI, create GitHub release |
 
@@ -51,7 +51,7 @@ See [Code Quality Guide](./code-quality.md) for details.
 
 Runs on every push and PR. Has four jobs:
 
-- **Pytest** - runs the fast `unit` tier with coverage (`uv run pytest -m unit --cov=caffeinated_whale_cli`). It needs no Docker daemon and runs inside the uv container.
+- **Pytest** - runs the fast `unit` tier with coverage (`uv run pytest -m unit --cov=caffeinated_whale_cli`), then the `packaging` tier (`uv run pytest -m packaging`). It needs no Docker daemon and runs inside the uv container. It first builds the web UI (`actions/setup-node` + `npm ci && npm run build` in `webui/`), because the `packaging` tier (`tests/test_packaging_contents.py`) builds the real wheel and asserts `caffeinated_whale_cli/webui/dist/index.html` is inside it; that tier has its own marker so `-m unit` on a fresh clone needs no Node; Build, Release and both E2E jobs run the same two steps before `uv build` / `uv tool install` for the same reason.
 - **Mypy** - runs `uv run mypy src/` as a zero-error gate. The historical ~50 errors across ~14 files were burned down to zero and `continue-on-error` was dropped from the step, so any new type error fails the job.
 - **Pytest (Windows, native)** - runs `tests/test_auto_inspect.py` and `tests/test_core_credbridge.py` on `windows-latest`, the one non-Linux runner in this repo. It exists because every other job runs `ubuntu-latest`, and that is exactly how Windows-only defects go unnoticed: `utils/auto_inspect.py`'s `os.kill(pid, 0)` is not a genuine liveness probe on Windows, and `core/credbridge.py`'s `AF_UNIX` git credential bridge crashed on Windows (no `socket.AF_UNIX`) until it grew a loopback-TCP transport that now serves Windows AND macOS (both Docker Desktop) while native Linux keeps `AF_UNIX`. Deliberately narrow rather than `-m unit`: the other jobs run inside a Linux uv container this runner can't use, and the rest of the unit tier has never been exercised on Windows. See [Testing Guide](../testing/guide.md#the-windows-job-why-it-exists-and-why-it-is-narrow).
 - **Clean install smoke** - does a runtime-deps-only `uv tool install .` into an isolated tool dir (`UV_TOOL_DIR`/`UV_TOOL_BIN_DIR`), asserts the resulting env is runtime-only (`click` present, `pytest` absent), then runs `cwcli --help`, `config --help`, `config edit` (`EDITOR=true`), and `config path`. Every other job and the local dev loop use `uv sync --all-extras`, where transitive/dev deps mask an undeclared runtime import; this job (and E2E's `e2e-runtime-only` job below) are the only two that exercise a runtime-deps-only install - this one over `--help`/`config` reads only, the other over a full real-Docker lifecycle. This is exactly how cwcli once shipped broken: `commands/config.py` imported `click` directly, but only `typer` was declared, and typer 0.27 stopped supplying `click` transitively, so a real `uv tool install` had no `click` and every command died at import with `ModuleNotFoundError`.
@@ -59,6 +59,7 @@ Runs on every push and PR. Has four jobs:
 **Run locally:**
 ```bash
 uv run pytest -m unit --cov=caffeinated_whale_cli
+(cd webui && npm ci && npm run build) && uv run pytest -m packaging
 uv run mypy src/
 ```
 
@@ -113,15 +114,15 @@ CWCLI_BIN=/path/to/runtime-only/cwcli uv run pytest tests/e2e -m e2e_pkg -o addo
 ### Design system (`.github/workflows/design.yml`)
 
 Runs on every push and PR.
-Its one `Design-system adherence` job runs on **every** change, because the Console it checks lives at `src/caffeinated_whale_cli/commands/console.html`, outside `tools/design-adherence/`.
-It is Node-only tooling that enforces the maintainer's `design/_adherence.oxlintrc.json` policy through ESLint (`npm test`, `npm run lint`, `npm run check:css` under `tools/design-adherence/`).
-The runner, its honest reachability limits, and the supplementary Console check are owned by [`tools/design-adherence/README.md`](../../tools/design-adherence/README.md).
+Its one `Design-system adherence` job runs on **every** change, because the web UI source it checks lives in `webui/src`, outside `tools/design-adherence/`.
+It is Node-only tooling that enforces the maintainer's `design/_adherence.oxlintrc.json` policy through ESLint (`npm test`, `npm run lint`) and checks the web UI for colour outside frappe-ui's semantic tokens (`npm run check:webui`), all under `tools/design-adherence/`.
+The runner, its honest reachability limits, and the web UI check are owned by [`tools/design-adherence/README.md`](../../tools/design-adherence/README.md).
 
 Run the checks locally:
 
 ```bash
 cd tools/design-adherence
-npm ci && npm run lint && npm test && npm run check:css
+npm ci && npm run lint && npm test && npm run check:webui
 ```
 
 ---

@@ -179,6 +179,7 @@ class TestHealthKey:
             ("web_port_verified", False),
             ("web_site", "b.localhost"),
             ("web_http_code", "500"),
+            ("maintenance_mode", True),
             ("not_cwcli_supervised", True),
             ("label", "staging"),
             ("index", 1),

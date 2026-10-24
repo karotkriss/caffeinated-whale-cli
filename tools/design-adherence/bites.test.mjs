@@ -55,10 +55,10 @@ check(good.code === 0 && goodProblems === 0, "good.jsx passes with zero problems
 
 // --- raw-hex detector self-check ---
 try {
-  execFileSync("node", [here("check-console-css.mjs"), "--selfcheck"], { stdio: "inherit" });
-  console.log("  ok: check-console-css selfcheck passed");
+  execFileSync("node", [here("check-webui-tokens.mjs"), "--selfcheck"], { stdio: "inherit" });
+  console.log("  ok: check-webui-tokens selfcheck passed");
 } catch {
-  console.error("  FAIL: check-console-css selfcheck");
+  console.error("  FAIL: check-webui-tokens selfcheck");
   failed = true;
 }
 

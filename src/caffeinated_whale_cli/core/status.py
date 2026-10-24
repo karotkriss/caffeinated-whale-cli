@@ -242,8 +242,9 @@ def status(
 
     ``fused=True`` reads each SUPERVISED bench through
     :func:`supervision.fused_probe` - ONE ``docker exec`` instead of the default
-    path's five - for a repeating caller that cannot afford the round trips
-    (the retained Console frontend's FAST tier polls every RUNNING instance every
+    path's five, plus the site's maintenance-flag read when the web is probed -
+    for a repeating caller that cannot afford the round trips
+    (the web UI daemon's FAST tier polls every RUNNING instance every
     few seconds when driven directly; measured 758ms -> 252ms per instance). It is
     an exec-budget choice ONLY: the
     returned :class:`StatusReport` is the same shape with the same tokens, and an
@@ -642,6 +643,14 @@ def _bench_status_fused(
             bench_flag=bench_flag,
         )
 
+    # The site's own maintenance flag, read as the default path reads it: a site
+    # stuck in maintenance answers 503 with no other signal, and the web UI's Site
+    # page shows (and offers to clear) exactly this field.
+    maintenance = (
+        supervision.maintenance_mode_on(frappe_container, bench_path, web_site)
+        if probe_web and web_site
+        else None
+    )
     return BenchStatus(
         index=index,
         bench_path=bench_path,
@@ -656,8 +665,9 @@ def _bench_status_fused(
         supervisor_up=True,
         web_port=web_port,
         web_port_verified=web_port is not None,
-        web_site=web_site if probed else None,
+        web_site=web_site if (probed or maintenance is not None) else None,
         web_http_code=fused.web_http_code,
+        maintenance_mode=maintenance,
         processes=fused.processes,
     )
 
