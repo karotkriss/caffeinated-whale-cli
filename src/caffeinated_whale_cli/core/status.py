@@ -242,7 +242,8 @@ def status(
 
     ``fused=True`` reads each SUPERVISED bench through
     :func:`supervision.fused_probe` - ONE ``docker exec`` instead of the default
-    path's five - for a repeating caller that cannot afford the round trips
+    path's five, plus the site's maintenance-flag read when the web is probed -
+    for a repeating caller that cannot afford the round trips
     (the web UI daemon's FAST tier polls every RUNNING instance every
     few seconds when driven directly; measured 758ms -> 252ms per instance). It is
     an exec-budget choice ONLY: the

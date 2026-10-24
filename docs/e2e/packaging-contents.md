@@ -26,16 +26,9 @@ Nothing already on PyPI was altered or unpublished here.
 
 ## The decision, stated in config
 
-`MANIFEST.in` is a **deny-all allow-list**, not a deny-list:
-
-```
-global-exclude *
-include pyproject.toml
-include README.md
-include LICENSE
-recursive-include src/caffeinated_whale_cli *.py
-recursive-include src/caffeinated_whale_cli *.html
-```
+`MANIFEST.in` is a **deny-all allow-list**, not a deny-list: `global-exclude *`, then
+explicit `include`/`recursive-include` lines for the build inputs and the package files by
+extension. The file itself is authoritative for the current list.
 
 A `prune tests` deny-list would only exclude the directories that existed when it was
 written. With the allow-list, a newly added test, fixture or scaffolding directory is
@@ -84,8 +77,9 @@ console.html present: True
 test files: 0
 ```
 
-`commands/console.html` belongs to the retained, unregistered Console frontend.
-It remains package data so the withheld implementation stays package-complete without exposing its command.
+This run predates the web UI: `commands/console.html` has since been retired, and the
+package data is now the built web UI under `caffeinated_whale_cli/webui/dist/`, which the
+packaging test asserts is present.
 
 ### 4. The tool genuinely installs and runs FROM THE SDIST
 
@@ -124,9 +118,10 @@ file list identical to the source-tree wheel: True (86 entries)
 
 ## Regression coverage
 
-`tests/test_packaging_contents.py` runs in the fast `unit` tier, so the existing `Pytest`
-CI check blocks a regression with no extra workflow step. It builds the real sdist and a
-real source-tree wheel and asserts the positive before the negative.
+`tests/test_packaging_contents.py` carries the `packaging` marker and runs as its own step
+in CI's `Pytest` job, after that job builds the web UI, so a regression blocks the merge.
+It builds the real sdist and a real source-tree wheel and asserts the positive before the
+negative.
 
 Each assertion was falsified against a deliberately broken tree:
 
