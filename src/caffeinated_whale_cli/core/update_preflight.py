@@ -76,7 +76,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 opts = json.loads(sys.argv[1])
 bench = sys.argv[2].rstrip("/")
-ENV = dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0", LC_ALL="C")
+ENV = dict(
+    os.environ,
+    GIT_TERMINAL_PROMPT="0",
+    GIT_SSH_COMMAND="ssh -o BatchMode=yes",
+    GIT_OPTIONAL_LOCKS="0",
+    LC_ALL="C",
+)
 START = time.time()
 
 
