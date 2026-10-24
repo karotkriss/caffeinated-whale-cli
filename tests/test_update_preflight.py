@@ -186,6 +186,8 @@ def test_an_unreachable_remote_is_a_blocker(bench):
     finding = by_code(bench.findings(), "git.remote_unreachable")
     assert finding.severity == up.BLOCKER
     assert finding.app == "deadremote"
+    # git's cause, not the last line of its multi-line access-rights hint.
+    assert "does not appear to be a git repository" in finding.message
 
 
 def test_a_dead_extra_remote_blocks_only_without_shallow_clone(bench):
@@ -686,17 +688,22 @@ def test_unparseable_output_is_unverified_and_never_blocks(wired):
 
 def test_a_site_that_cannot_be_opened_blocks_and_any_other_read_failure_is_unverified(wired):
     container = FakeContainer(
-        _record(sites=["down.localhost", "odd.localhost", "ok.localhost"]),
+        _record(sites=["down.localhost", "lazy.localhost", "odd.localhost", "ok.localhost"]),
         site_errors={
             "down.localhost": "frappe.connect failed (OperationalError)",
+            # v16's connect is lazy: a rejected DB login surfaces at the first query.
+            "lazy.localhost": "list-apps failed (OperationalError)",
             "odd.localhost": "list-apps failed (DoesNotExistError)",
         },
     )
 
     findings = up.run_preflight(container, "/w/b", project="proj").findings
 
-    down = by_code(findings, "site.unreadable")
-    assert (down.site, down.severity) == ("down.localhost", up.BLOCKER)
+    unreadable = [f for f in findings if f.code == "site.unreadable"]
+    assert [(f.site, f.severity) for f in unreadable] == [
+        ("down.localhost", up.BLOCKER),
+        ("lazy.localhost", up.BLOCKER),
+    ]
     odd = by_code(findings, "site.unverified")
     assert (odd.site, odd.severity) == ("odd.localhost", up.UNVERIFIED)
 
