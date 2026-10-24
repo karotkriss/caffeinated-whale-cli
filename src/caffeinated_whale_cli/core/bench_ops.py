@@ -348,8 +348,12 @@ def interrupt_recheck_hint(project: str, site: str, bench: str | None = None) ->
     )
 
 
-def _migrate_lock_held(container, bench_path: str, site: str) -> bool:
+def migrate_lock_held(container, bench_path: str, site: str) -> bool:
     """True when frappe's OWN migrate lock is genuinely held by a live process.
+
+    Public because the ``apps update ... frappe`` preflight
+    (:mod:`.update_preflight`) is its second caller: the migrate inside
+    ``bench update --reset`` trips over the same lock. Promoted, not copied.
 
     ``bench migrate`` wraps its whole run in ``frappe.utils.synchronization.
     filelock("bench_migrate", timeout=1)``, an ``fcntl``-based advisory lock on
@@ -450,7 +454,7 @@ def migrate_site(
     reported via ``maintenance_left_on`` and fails the operation.
 
     A THIRD gate runs first, before maintenance mode is touched: a site whose
-    migrate lock is genuinely held (:func:`_migrate_lock_held`) is refused,
+    migrate lock is genuinely held (:func:`migrate_lock_held`) is refused,
     naming ``cwcli unlock`` as the remedy.
     """
     emit: OnEvent = on_event or _noop
@@ -467,7 +471,7 @@ def migrate_site(
     results: list[BenchOpResult] = []
     maintenance_left_on = False
 
-    if _migrate_lock_held(container, path, target):
+    if migrate_lock_held(container, path, target):
         # Name the exact cause and remedy before maintenance mode is touched.
         bench_flag = f" --bench {bench}" if bench else ""
         message = (

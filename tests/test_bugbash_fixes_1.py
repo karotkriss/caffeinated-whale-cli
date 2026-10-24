@@ -9,25 +9,20 @@ the real ``cwcli`` binary during validation; this file covers the pieces that
 need a real Frappe bench to hit through the CLI but whose logic is unit-drivable.
 """
 
-import json
-
 import pytest
 import typer
 
 from caffeinated_whale_cli.commands import axi as axi_mod
+from caffeinated_whale_cli.commands import status as status_mod
 from caffeinated_whale_cli.commands import update as update_mod
 from caffeinated_whale_cli.commands.utils import render_captured_output_tail
-from caffeinated_whale_cli.core import resolvers
+from caffeinated_whale_cli.core import resolvers, supervision
 from caffeinated_whale_cli.core import rm_bench as core_rm_bench
-from caffeinated_whale_cli.core import supervision
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
-
-from caffeinated_whale_cli.commands import status as status_mod
 
 from .test_apps import FakeFrappeContainer
 from .test_status_frontend import _report
 from .test_update_characterization import _out, _wire
-
 
 # ------------------------------------------------------------- BUG-6: site resolve
 #
@@ -97,7 +92,9 @@ class _FailingInstallContainer:
 
 def _install_failure_error() -> CwcliError:
     with pytest.raises(CwcliError) as exc:
-        supervision.ensure_supervisor_installed(_FailingInstallContainer(), "/workspace/frappe-bench")
+        supervision.ensure_supervisor_installed(
+            _FailingInstallContainer(), "/workspace/frappe-bench"
+        )
     return exc.value
 
 
@@ -158,8 +155,10 @@ def test_rm_bench_selector_substitutes_the_real_cached_index(monkeypatch):
     monkeypatch.setattr(
         resolvers,
         "cached_benches",
-        lambda p: [{"path": "/w/b0", "index": 0, "label": None},
-                   {"path": "/w/b1", "index": 3, "label": "prod"}],
+        lambda p: [
+            {"path": "/w/b0", "index": 0, "label": None},
+            {"path": "/w/b1", "index": 3, "label": "prod"},
+        ],
     )
     assert core_rm_bench._selector_for_path("proj", "/w/b1") == "3"
 
