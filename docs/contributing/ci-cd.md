@@ -9,9 +9,9 @@ We use six GitHub Actions workflows:
 | Workflow | Triggers | Purpose |
 |----------|----------|---------|
 | **Lint** | All branches, all PRs | Code quality checks (Black, Ruff) |
-| **Test** | All branches, all PRs | Run the fast `unit` pytest tier (required gate) + mypy (zero-error gate), a narrow Windows-native leg (`tests/test_auto_inspect.py` + `tests/test_core_credbridge.py`) on `windows-latest`, and a runtime-deps-only clean-install smoke test |
+| **Test** | All branches, all PRs | Run the fast `unit` pytest tier then the `packaging` tier (required gate) + mypy (zero-error gate), a narrow Windows-native leg (`tests/test_auto_inspect.py` + `tests/test_core_credbridge.py`) on `windows-latest`, and a runtime-deps-only clean-install smoke test |
 | **E2E** | PRs into `develop`/`master`, `e2e`-labeled PRs, manual dispatch | Run the real-Docker `e2e` tier on a v14/v15/v16 Frappe matrix, plus a runtime-deps-only full-lifecycle leg (`e2e_pkg`) that drives a `uv tool install .` binary via `CWCLI_BIN` |
-| **Design system** | All branches, all PRs | Always-run design-system adherence lint (ESLint over the maintainer's policy, plus a raw-hex check of the Console's inline CSS) |
+| **Design system** | All branches, all PRs | Always-run design-system adherence lint (ESLint over the maintainer's policy, plus the web UI's semantic-colour-token check) |
 | **Build** | Push to `master`, manual dispatch | Build package, verify version consistency |
 | **Release** | Tags `v*.*.*` | Publish to PyPI, create GitHub release |
 
