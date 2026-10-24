@@ -49,7 +49,8 @@ async function poll() {
       const entry = logs.value[t.process] || (logs.value[t.process] = { lines: [], offset: 0 })
       // A cold read (no cursor yet) replaces; a warm one appends only what is new.
       const previous = entry.offset
-      entry.lines = previous ? entry.lines.concat(t.lines) : t.lines
+      const gap = t.skipped_bytes ? [`... ${t.skipped_bytes} bytes skipped (written faster than this pane polls) ...`] : []
+      entry.lines = previous ? entry.lines.concat(gap, t.lines) : t.lines
       if (entry.lines.length > MAX_LINES) entry.lines.splice(0, entry.lines.length - MAX_LINES)
       entry.offset = t.offset
     }

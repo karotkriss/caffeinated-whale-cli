@@ -400,6 +400,7 @@ class ProcessTail:
     file: str
     lines: list[str]
     offset: int  # bytes consumed so far; pass back as ``after`` to resume
+    skipped_bytes: int = 0  # bytes jumped over because the delta exceeded the resume cap
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -414,6 +415,9 @@ class LogsTail:
     logs: list[ProcessTail]
 
 
+RESUME_CAP_BYTES = 1024 * 1024
+
+
 def read_logs_since(
     project_name: str,
     *,
@@ -423,7 +427,9 @@ def read_logs_since(
     after: dict[str, int] | None = None,
 ) -> Result[LogsTail]:
     """Bounded, RESUMABLE tail: the last ``lines`` lines on a cold read, then only the
-    bytes written since each process's ``after[process]`` offset on a warm one.
+    bytes written since each process's ``after[process]`` offset on a warm one, at most
+    ``RESUME_CAP_BYTES`` of it: a larger delta is skipped to its last whole lines and
+    reported as ``skipped_bytes`` rather than buffered.
 
     The poll a browser log pane makes every couple of seconds, instead of holding an
     exec stream (``tail -F`` through ``exec_stream`` leaks an orphan per stop; see the
@@ -455,9 +461,22 @@ def read_logs_since(
             if start == size:
                 tails.append(ProcessTail(process=label, file=path, lines=[], offset=start))
                 continue
-            _code, raw = r.container.exec_run(["tail", "-c", f"+{start + 1}", path])
+            base = max(start, size - RESUME_CAP_BYTES)
+            _code, raw = r.container.exec_run(
+                [
+                    "sh",
+                    "-c",
+                    'tail -c +"$1" "$2" | head -c "$3"',
+                    "sh",
+                    str(base + 1),
+                    path,
+                    str(size - base),
+                ]
+            )
             data = bytes(raw or b"")
-            base = start
+            if base > start:
+                partial = data.find(b"\n") + 1
+                data, base = data[partial:], base + partial
         else:
             # Bounded to the stat'd size, so bytes appended since are left for the next poll.
             _code, raw = r.container.exec_run(
@@ -468,8 +487,15 @@ def read_logs_since(
         cut = data.rfind(b"\n") + 1  # whole lines only
         consumed, data = base + cut, data[:cut]
         text = supervision._decode(data)
+        skipped = base - start if start is not None and 0 <= start < base else 0
         tails.append(
-            ProcessTail(process=label, file=path, lines=text.splitlines(), offset=consumed)
+            ProcessTail(
+                process=label,
+                file=path,
+                lines=text.splitlines(),
+                offset=consumed,
+                skipped_bytes=skipped,
+            )
         )
     return Result(
         status=Status.OK,
