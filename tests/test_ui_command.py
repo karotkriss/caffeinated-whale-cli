@@ -119,6 +119,62 @@ class TestStartDetached:
         assert json.loads(path.read_text()) == {"port": 8765, "token": "secret-token"}
         assert ui_cmd._read_state() == {"port": 8765, "token": "secret-token"}
 
+    @pytest.mark.skipif(os.name != "posix", reason="shared mode is POSIX-only")
+    def test_shared_mode_keeps_run_files_per_user_and_the_token_private(
+        self, home, monkeypatch, tmp_path
+    ):
+        marker = tmp_path / "shared.toml"
+        marker.write_text("enabled = true\n")
+        monkeypatch.setenv("CWCLI_SHARED_MARKER", str(marker))
+        uid = os.getuid()
+
+        ui_cmd._write_state(8765, "secret-token")
+
+        assert ui_cmd.pid_file().name == f"ui-{uid}.pid"
+        assert ui_cmd.log_file().name == f"ui-{uid}.log"
+        assert ui_cmd.state_file().name == f"ui-{uid}.json"
+        assert stat.S_IMODE(ui_cmd.state_file().stat().st_mode) == 0o600
+
+    def test_a_frozen_build_spawns_its_own_binary(self, home, no_daemon, monkeypatch):
+        spawned: dict = {}
+
+        def _popen(argv, **kwargs):
+            spawned["argv"] = argv
+            ui_cmd._write_state(8765, kwargs["env"][ui_cmd.serve_cmd.TOKEN_ENV])
+
+        monkeypatch.setattr(ui_cmd, "_is_frozen", lambda: True)
+        monkeypatch.setattr(ui_cmd.sys, "argv", ["C:/tools/cwcli.exe", "ui"])
+        monkeypatch.setattr(ui_cmd.subprocess, "Popen", _popen)
+        monkeypatch.setattr(ui_cmd, "_meta_answers", lambda port: True)
+        monkeypatch.setattr(ui_cmd, "mint_code", lambda port, token: "code")
+
+        result = runner.invoke(root_app, ["ui", "--no-browser"])
+
+        assert result.exit_code == 0, result.output
+        assert spawned["argv"] == [
+            "C:/tools/cwcli.exe",
+            "ui",
+            "--foreground",
+            "--no-browser",
+            "--port",
+            "8765",
+        ]
+
+    def test_a_concurrent_launch_mints_with_the_token_of_the_daemon_that_won(
+        self, home, no_daemon, monkeypatch
+    ):
+        monkeypatch.setattr(
+            ui_cmd.subprocess, "Popen", lambda argv, **kw: ui_cmd._write_state(8765, "winner")
+        )
+        monkeypatch.setattr(ui_cmd, "_meta_answers", lambda port: True)
+        minted: list = []
+        monkeypatch.setattr(ui_cmd, "mint_code", lambda port, token: minted.append(token) or "c")
+
+        result = runner.invoke(root_app, ["ui", "--no-browser"])
+
+        assert result.exit_code == 0, result.output
+        assert minted == ["winner"]
+
 
 class TestReuse:
     @pytest.fixture

@@ -1953,8 +1953,8 @@ cwcli ui [OPTIONS]
 sign-in link**. The daemon requires sign-in even on loopback: each launch gets
 its own random token, the browser trades a single-use code for a session
 cookie, and a used link is dead, so a link copied from scrollback signs nobody
-else in. Run `cwcli ui` again for a fresh link (a second browser, a second
-machine user). `cwcli ui --stop` stops it. While the daemon runs it polls
+else in. Run `cwcli ui` again for a fresh link (a second browser, another
+machine). `cwcli ui --stop` stops it. While the daemon runs it polls
 process health for every running instance; the web check only runs for an
 instance a page has open. It refuses any request whose `Host` is not this
 machine, so another site in your browser cannot read or drive it.
