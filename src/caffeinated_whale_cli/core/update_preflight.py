@@ -76,13 +76,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 opts = json.loads(sys.argv[1])
 bench = sys.argv[2].rstrip("/")
-ENV = dict(
-    os.environ,
-    GIT_TERMINAL_PROMPT="0",
-    GIT_SSH_COMMAND="ssh -o BatchMode=yes",
-    GIT_OPTIONAL_LOCKS="0",
-    LC_ALL="C",
-)
+# No GIT_SSH_COMMAND/BatchMode: it would override each app's core.sshCommand and any env ssh
+# setup that bench's own fetch honors. No-hang already holds: stdin=DEVNULL, no TTY in the
+# docker exec, and the process-group kill at the probe timeout.
+ENV = dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0", LC_ALL="C")
 START = time.time()
 
 
