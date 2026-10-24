@@ -34,7 +34,8 @@ export function openAction(id, ctx = {}) {
   return null
 }
 
-// POST the action; on a core NEEDS_CHOICE confirm (scale), re-open as a typed confirm.
+// POST the action; on scale's core NEEDS_CHOICE confirm, re-open as a typed confirm.
+// Every other needs_choice (confirm_start on a stopped instance) is a plain error.
 export async function runAction(id, ctx, values, { consent = false } = {}) {
   const a = ACTIONS[id]
   if (a.read) return openSite(ctx)
@@ -49,7 +50,7 @@ export async function runAction(id, ctx, values, { consent = false } = {}) {
     dialogState.open = false
     return data
   } catch (e) {
-    if (e instanceof ApiError && e.type === 'needs_choice' && e.code?.startsWith('confirm_')) {
+    if (e instanceof ApiError && e.type === 'needs_choice' && e.code === 'confirm_scale') {
       // Consent is the core's decision: it refused before any mutation and
       // explains why; the user types the instance name to grant it.
       dialogState.id = id

@@ -57,6 +57,9 @@ function openStream() {
   source.onerror = () => {
     if (session.signedOut) source?.close()
     else fleet.connection = 'reconnecting'
+    // A 401 closes the stream without saying why; one authenticated read
+    // surfaces it (api.js flips session.signedOut on a 401).
+    if (source?.readyState === EventSource.CLOSED) getJson('/api/v1/instances').catch(() => {})
   }
 }
 
@@ -152,10 +155,17 @@ export function parseApp(entry) {
   return { name, version: version || null, branch: rest.join(' ') || null }
 }
 
+// Web and socketio are two consecutive runs (P.. and P+1000..), whatever base
+// `cwcli init --port` chose: split on the gap, the lower run is web.
 export function publishedRange(ports) {
-  const nums = (ports || []).map(Number).filter((n) => !Number.isNaN(n))
-  const web = nums.filter((n) => n < 9000)
-  const sock = nums.filter((n) => n >= 9000)
+  const nums = [...new Set((ports || []).map(Number).filter((n) => !Number.isNaN(n)))].sort((a, b) => a - b)
+  const runs = []
+  for (const n of nums) {
+    const run = runs[runs.length - 1]
+    if (run && n === run[run.length - 1] + 1) run.push(n)
+    else runs.push([n])
+  }
+  const [web = [], sock = []] = runs
   const span = (xs) => (xs.length ? `${Math.min(...xs)}-${Math.max(...xs)}` : null)
   return { web: span(web), socketio: span(sock), count: web.length }
 }

@@ -187,11 +187,17 @@ def _stop() -> None:
 
 
 def _foreground(port: int, interval: float, *, no_browser: bool) -> None:
+    if daemon_identity.is_running(pid_file()):
+        stderr_console.print(
+            "[red]cwcli ui is already running (detached).[/red] "
+            "Run 'cwcli ui --stop' first to run it in the foreground."
+        )
+        raise typer.Exit(code=1)
     token = serve_cmd.auth_token() or secrets.token_urlsafe(32)
-    _write_state(port, token)
-    daemon_identity.write_pid_file(pid_file())
 
     def _ready(link: str) -> None:
+        _write_state(port, token)
+        daemon_identity.write_pid_file(pid_file())
         if not no_browser:
             threading.Thread(
                 target=_open, args=(link,), kwargs={"no_browser": False}, daemon=True
@@ -200,7 +206,8 @@ def _foreground(port: int, interval: float, *, no_browser: bool) -> None:
     try:
         serve_cmd.run_daemon(HOST, port, interval, env_token=token, on_ready=_ready)
     finally:
-        _clear_state()
+        if daemon_identity.get_pid(pid_file()) == os.getpid():
+            _clear_state()
 
 
 def _start_or_reuse(port: int, interval: float, *, no_browser: bool) -> None:

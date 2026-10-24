@@ -314,6 +314,18 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      - name: Set up Node (web UI build)
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a  # v4.2.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Build the web UI into package data
+        # webui/dist is git-ignored, so a fresh checkout has none to bundle.
+        run: npm ci --no-audit --no-fund && npm run build
+        working-directory: webui
+
       - name: Build standalone exe (Nuitka --onefile)
         # Nuitka compiles Python -> C -> native code, which reads to AV heuristics
         # like a normal program (far fewer false positives than a PyInstaller
@@ -325,6 +337,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install nuitka .
+          python -c "from caffeinated_whale_cli.commands.serve import webui_available; assert webui_available(), 'webui/dist missing from the installed package'"
           python -m nuitka --onefile --assume-yes-for-downloads `
             --include-package=caffeinated_whale_cli `
             --include-package-data=caffeinated_whale_cli `

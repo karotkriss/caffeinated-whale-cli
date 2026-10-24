@@ -19,7 +19,8 @@ const props = defineProps({
 const POLL_MS = 2000
 const MAX_LINES = 2000
 
-const filter = ref(props.process || 'all')
+// Status labels a worker `worker:<q>`; its log is keyed by the raw program `worker_<q>`.
+const filter = ref(props.process ? props.process.replace(/^worker:/, 'worker_') : 'all')
 const follow = ref(true)
 const error = ref(null)
 const loading = ref(true)
@@ -52,6 +53,7 @@ async function poll() {
       if (entry.lines.length > MAX_LINES) entry.lines.splice(0, entry.lines.length - MAX_LINES)
       entry.offset = t.offset
     }
+    if (filter.value !== 'all' && !logs.value[filter.value]) filter.value = 'all'
     error.value = null
     if (follow.value) nextTick(() => pane.value && (pane.value.scrollTop = pane.value.scrollHeight))
   } catch (e) {
