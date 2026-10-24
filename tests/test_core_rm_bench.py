@@ -1,11 +1,13 @@
 """``core.remove_bench`` - every branch it owns, against a faked container.
 
-``remove_bench`` COMPOSES the already-proven ``core.rm_site.drop_site`` (tested in
-``test_core_rm_site.py``) once per site, so these tests monkeypatch ``drop_site``
-to return controllable outcomes and pin only what this module itself owns: the
-"refuse while running" gate, the consent gate, the fail-closed directory deletion
-(deleted only when EVERY site's backup archive is confirmed on the host), the
-outcome aggregation, and the path-safety guard on the ``rm -rf`` target.
+``remove_bench`` COMPOSES the two already-proven halves of ``core.rm_site.drop_site``
+(tested in ``test_core_rm_site.py``): ``backup_before_drop`` for EVERY site, then
+``drop_backed_up_site`` for each. These tests monkeypatch both to controllable
+outcomes and pin only what this module itself owns: the "refuse while running"
+gate, the consent gate, the backup-every-site-before-dropping-any order, the
+fail-closed directory deletion (deleted only when EVERY site's archive is
+confirmed on the host), the outcome aggregation, and the path-safety guard on the
+``rm -rf`` target.
 """
 
 from __future__ import annotations
@@ -95,14 +97,32 @@ def _patch_sites(monkeypatch, sites):
     monkeypatch.setattr(bench_sites, "list_sites", lambda *_a, **_k: sites)
 
 
-def _patch_drops(monkeypatch, outcomes_by_site):
+def _drop_dir(site):
+    return f"/host/archive/proj_dropped_sites/{site}_ts"
+
+
+def _patch_drops(monkeypatch, outcomes_by_site, *, failing_backup=None):
+    """Patch both halves; ``seen`` records ``(phase, site)`` in call order."""
     seen = []
 
-    def _drop(project, site, **kwargs):
-        seen.append((site, kwargs))
+    def _backup(container, project, path, site, **kwargs):
+        seen.append(("backup", site))
+        assert (project, path) == ("proj", BENCH)
+        if site == failing_backup:
+            raise CwcliError(
+                ErrorKind.PRECONDITION,
+                "rm_site.backup_failed",
+                f"Could not backup site '{site}'; nothing was dropped.",
+            )
+        return _drop_dir(site)
+
+    def _drop(container, project, path, site, drop_dir, **kwargs):
+        seen.append(("drop", site))
+        assert (project, path, drop_dir) == ("proj", BENCH, _drop_dir(site))
         return outcomes_by_site[site]
 
-    monkeypatch.setattr(core_rm_site, "drop_site", _drop)
+    monkeypatch.setattr(core_rm_site, "backup_before_drop", _backup)
+    monkeypatch.setattr(core_rm_site, "drop_backed_up_site", _drop)
     return seen
 
 
@@ -144,9 +164,13 @@ class TestConsent:
         assert outcome.sites_dropped == ["a.localhost", "b.localhost"]
         assert outcome.sites_failed == []
         assert len(outcome.archived_host_paths) == 2
-        # Each drop was consented and targeted at the resolved bench path.
-        assert [s for s, _ in seen] == ["a.localhost", "b.localhost"]
-        assert all(kw.get("consent") is True and kw.get("bench_path") == BENCH for _, kw in seen)
+        # EVERY site is backed up before ANY is dropped, each at the resolved bench.
+        assert seen == [
+            ("backup", "a.localhost"),
+            ("backup", "b.localhost"),
+            ("drop", "a.localhost"),
+            ("drop", "b.localhost"),
+        ]
         assert container.rm_calls() == [["rm", "-rf", BENCH]]
 
 
@@ -212,13 +236,43 @@ class TestFailClosedDeletion:
         # The directory is NEVER deleted while a backup is trapped inside it.
         assert container.rm_calls() == []
 
+    def test_a_failed_backup_on_any_site_drops_no_site_and_deletes_nothing(
+        self, container, monkeypatch
+    ):
+        # The last site's backup fails: the first site must NOT already be dropped.
+        _patch_sites(monkeypatch, ["a.localhost", "b.localhost"])
+        seen = _patch_drops(monkeypatch, {}, failing_backup="b.localhost")
+
+        with pytest.raises(CwcliError) as exc:
+            core_rm_bench.remove_bench("proj", bench="2", consent=True)
+
+        assert exc.value.code == "rm_site.backup_failed"
+        assert seen == [("backup", "a.localhost"), ("backup", "b.localhost")]
+        assert container.rm_calls() == []
+
+    def test_a_failed_backup_removes_the_backups_already_taken(self, container, monkeypatch):
+        # Nothing was dropped, so a.localhost's backup is a copy of a live site and
+        # must not linger as a "dropped site" archive.
+        _patch_sites(monkeypatch, ["a.localhost", "b.localhost"])
+        _patch_drops(monkeypatch, {}, failing_backup="b.localhost")
+        removed = []
+        monkeypatch.setattr(
+            core_rm_bench.shutil, "rmtree", lambda path, **_k: removed.append(str(path))
+        )
+
+        with pytest.raises(CwcliError):
+            core_rm_bench.remove_bench("proj", bench="2", consent=True)
+
+        assert removed == [_drop_dir("a.localhost")]
+
     def test_a_failed_drop_site_propagates_and_deletes_nothing(self, container, monkeypatch):
         _patch_sites(monkeypatch, ["a.localhost"])
+        _patch_drops(monkeypatch, {})
 
-        def _drop(project, site, **kwargs):
+        def _drop(*args, **kwargs):
             raise CwcliError(ErrorKind.PRECONDITION, "rm_site.failed", "bench drop-site exited 1")
 
-        monkeypatch.setattr(core_rm_site, "drop_site", _drop)
+        monkeypatch.setattr(core_rm_site, "drop_backed_up_site", _drop)
 
         with pytest.raises(CwcliError) as exc:
             core_rm_bench.remove_bench("proj", bench="2", consent=True)
@@ -257,7 +311,7 @@ class TestFailClosedDeletion:
         out = _drop_outcome("a.localhost")
         out.warnings.append(Message("rm_site.archive_not_pruned", "could not prune in-container"))
         out.warnings.append(Message("some.other", "kept"))
-        monkeypatch.setattr(core_rm_site, "drop_site", lambda *a, **k: out)
+        _patch_drops(monkeypatch, {"a.localhost": out})
 
         result = core_rm_bench.remove_bench("proj", bench="2", consent=True)
 
@@ -298,9 +352,10 @@ class TestPathSafety:
             supervision, "discover_unsupervised_stack", lambda *_a, **_k: _Unsup(manager_up=False)
         )
         monkeypatch.setattr(bench_sites, "list_sites", lambda *_a, **_k: ["a.localhost"])
-        monkeypatch.setattr(
-            core_rm_site, "drop_site", lambda *a, **k: pytest.fail("drop_site must not run")
-        )
+        for half in ("backup_before_drop", "drop_backed_up_site"):
+            monkeypatch.setattr(
+                core_rm_site, half, lambda *a, **k: pytest.fail("no site may be touched")
+            )
 
         with pytest.raises(CwcliError) as exc:
             core_rm_bench.remove_bench("proj", bench_path=unsafe, consent=True)
