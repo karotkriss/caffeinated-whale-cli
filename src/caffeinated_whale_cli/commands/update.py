@@ -21,6 +21,7 @@ import sys
 
 import typer
 from rich.markup import escape
+from rich.padding import Padding
 from rich.status import Status as RichStatus
 from rich.table import Table
 
@@ -326,13 +327,19 @@ def _render_preflight(event: UpdatePreflight) -> None:
         if not group:
             continue
         console.print(f"\n  [bold]{heading}[/bold]")
+        # A grid, so a long message or remedy wraps inside its own column instead of
+        # falling back to column 0.
+        rows = Table.grid(padding=(0, 1))
+        rows.add_column(no_wrap=True)
+        rows.add_column(no_wrap=True, min_width=width + 1)
+        rows.add_column()
         for finding in group:
-            console.print(
-                f"    {marker} [cyan]{escape(subject(finding)).ljust(width)}[/cyan]  "
-                f"{escape(finding.message)}"
+            rows.add_row(
+                marker, f"[cyan]{escape(subject(finding))}[/cyan]", escape(finding.message)
             )
             if finding.remedy:
-                console.print(f"      {' ' * width}  [dim]fix: {escape(finding.remedy)}[/dim]")
+                rows.add_row("", "", f"[dim]fix: {escape(finding.remedy)}[/dim]")
+        console.print(Padding(rows, (0, 0, 0, 4)))
     console.print()
 
 

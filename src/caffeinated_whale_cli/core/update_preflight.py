@@ -87,9 +87,11 @@ def dec(data):
     return (data or b"").decode("utf-8", "replace").strip()
 
 
-def last_line(text):
-    lines = [l for l in text.splitlines() if l.strip()]
-    return lines[-1].strip() if lines else ""
+def git_error(text):
+    """git's cause: its first fatal: line, else the last line (a hint often trails it)."""
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    fatal = [l for l in lines if l.startswith("fatal:")]
+    return fatal[0] if fatal else (lines[-1] if lines else "")
 
 
 def git(cwd, args, timeout):
@@ -154,7 +156,7 @@ def check_app(app, excluded, shallow):
         elif core and "not a git repository" in err:
             add("git.not_a_checkout")
         else:
-            add("git.unreadable", error=last_line(err) or "git did not answer")
+            add("git.unreadable", error=git_error(err) or "git did not answer")
         return found, probes, d
 
     # bench/utils/app.py:215-228 (get_remote): "upstream" whenever `git remote -v`
@@ -162,7 +164,7 @@ def check_app(app, excluded, shallow):
     rc, remote_v, err = git(d, ["remote", "-v"], opts["local_timeout"])
     rc2, names, _ = git(d, ["remote"], opts["local_timeout"])
     if rc != 0 or rc2 != 0:
-        add("git.unreadable", error=last_line(err) or "git remote did not answer")
+        add("git.unreadable", error=git_error(err) or "git remote did not answer")
         return found, probes, d
     remotes = names.split()
     # bench/utils/app.py:141-166: the version check reads upstream/<branch> of frappe,
@@ -217,7 +219,7 @@ def check_app(app, excluded, shallow):
         if tracked:
             add("git.uncommitted", count=len(tracked), shallow_clone=shallow)
     else:
-        add("git.local_work_unverified", error=last_line(err) or "git status did not answer")
+        add("git.local_work_unverified", error=git_error(err) or "git status did not answer")
     # Commits only this branch holds: on no remote ref, other branch or tag. The
     # shallow boundary is excluded too: a shallow clone only ever receives those
     # commits FROM a remote, and once a depth-1 fetch moves the remote ref past one
@@ -235,7 +237,7 @@ def check_app(app, excluded, shallow):
             opts["local_timeout"],
         )
         if rc != 0 or not ahead.isdigit():
-            add("git.local_work_unverified", error=last_line(err) or "git rev-list did not answer")
+            add("git.local_work_unverified", error=git_error(err) or "git rev-list did not answer")
         elif int(ahead) > 0:
             add("git.unpushed", count=int(ahead), branch=branch, shallow_clone=shallow)
 
@@ -266,7 +268,7 @@ def probe(app, d, remote, branch, shallow):
         code = "git.branch_deleted_upstream" if stale and not shallow else "git.branch_not_on_remote"
         return [dict(base, code=code, branch=branch)]
     if rc != 0:
-        return [dict(base, code="git.remote_unreachable", error=last_line(err) or "exit %s" % rc)]
+        return [dict(base, code="git.remote_unreachable", error=git_error(err) or "exit %s" % rc)]
     return []
 
 
@@ -695,7 +697,11 @@ def _site_facts(container, bench_path: str, sites: list[str]) -> list[dict]:
         error = site.error or "no answer"
         # Only a failed init/connect predicts the backup's failure for certain (it
         # opens the same site_config.json and database); anything else is unverified.
-        certain = error.startswith(("frappe.init failed", "frappe.connect failed"))
+        # A DB-level OperationalError counts wherever it surfaced: v16's connect is
+        # lazy, so a rejected login first fails at list-apps' query.
+        certain = error.startswith(
+            ("frappe.init failed", "frappe.connect failed")
+        ) or error.endswith("(OperationalError)")
         facts.append(
             {
                 "code": "site.unreadable" if certain else "site.unverified",

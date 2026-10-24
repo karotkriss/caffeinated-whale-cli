@@ -1048,6 +1048,37 @@ def test_update_frappe_preflight_blocker_refuses_and_names_the_fix(monkeypatch, 
     assert not any("bench update --reset" in c for c in container.calls)
 
 
+def test_update_frappe_preflight_long_rows_wrap_under_their_own_column(monkeypatch):
+    import io
+
+    from rich.console import Console
+
+    from caffeinated_whale_cli.core import update_preflight
+
+    out = io.StringIO()
+    monkeypatch.setattr(update_mod, "console", Console(file=out, width=60, color_system=None))
+    finding = update_preflight.PreflightFinding(
+        severity=update_preflight.BLOCKER,
+        code="git.remote_unreachable",
+        app="deadremote",
+        site=None,
+        message="remote 'upstream' is unreachable (fatal: '/workspace/remotes/gone.git' "
+        "does not appear to be a git repository)",
+        remedy="in `cwcli open proj`: repair it, or remove it with "
+        "git -C apps/deadremote remote remove upstream",
+    )
+
+    update_mod._render_preflight(
+        core_update.UpdatePreflight(findings=[finding], summary="1 app(s)", blocked=True)
+    )
+
+    rows = out.getvalue().split("Blocking - bench update --reset would fail:")[1]
+    lines = [line for line in rows.splitlines() if line.strip()]
+    assert len(lines) > 2  # the message and the remedy both wrapped
+    text_column = lines[0].index("remote 'upstream'")
+    assert all(line[:text_column].strip() == "" for line in lines[1:])
+
+
 def test_update_frappe_preflight_warnings_print_before_the_reset_runs(monkeypatch, capsys):
     # A data-loss warning printed after bench has reset the app warns about nothing.
     container = FakeFrappeContainer(available_apps=["frappe"])
