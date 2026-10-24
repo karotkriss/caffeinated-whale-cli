@@ -86,6 +86,21 @@ def wire(monkeypatch):
 
 
 class TestSuccess:
+    def test_emits_typed_steps_in_execution_order(self, wire):
+        wire(FakeContainer())
+        events = []
+
+        core_unlock.unlock("proj", site=SITE, on_event=events.append)
+
+        assert [(type(event).__name__, event.phase) for event in events] == [
+            ("UnlockStepStart", "resolve"),
+            ("UnlockStepEnd", "resolve"),
+            ("UnlockStepStart", "locks"),
+            ("UnlockStepEnd", "locks"),
+            ("UnlockStepStart", "remove"),
+            ("UnlockStepEnd", "remove"),
+        ]
+
     def test_removes_locks_and_returns_the_removed_paths(self, wire):
         c = FakeContainer()
         wire(c)

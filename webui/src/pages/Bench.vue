@@ -10,6 +10,7 @@ import LogsPane from '../components/LogsPane.vue'
 import CommandLine from '../components/CommandLine.vue'
 import { instance as findInstance, loadDetail, benchName, setFocus } from '../data/fleet'
 import { openAction, menuOption } from '../data/dialog'
+import { openJob } from '../data/job-dialog'
 
 const route = useRoute()
 const { project, bench: index } = route.params
@@ -25,7 +26,17 @@ const down = computed(() => (health.value?.processes || []).filter((p) => !p.up)
 const name = computed(() => (bench.value ? benchName(bench.value) : `#${index}`))
 const benchUp = computed(() => ['running', 'degraded'].includes(health.value?.overall))
 const ctx = computed(() => ({ project, bench: String(index), benchName: name.value }))
-const more = computed(() => [menuOption('bench.restart', ctx.value, health.value), menuOption('bench.label', ctx.value, health.value)])
+const jobOption = (label, icon, verb) => ({ label: running.value ? label : `${label} (needs the instance running)`, icon, disabled: !running.value, onClick: () => openJob(verb, ctx.value) })
+const more = computed(() => [
+  menuOption('bench.restart', ctx.value, health.value),
+  jobOption('Back up default site', 'lucide-database-backup', 'backup'),
+  jobOption('Install apps', 'lucide-package-plus', 'apps-install'),
+  jobOption('Update apps', 'lucide-package-check', 'apps-update'),
+  jobOption('Migrate default site', 'lucide-database-zap', 'migrate'),
+  jobOption('Build assets', 'lucide-hammer', 'build'),
+  jobOption('Complete setup wizard', 'lucide-list-checks', 'setup-wizard'),
+  menuOption('bench.label', ctx.value, health.value),
+])
 
 function showLogs(process) {
   logsProcess.value = process

@@ -36,6 +36,22 @@ def wire(monkeypatch):
 
 
 class TestStop:
+    def test_emits_typed_steps_for_each_container(self, wire):
+        first, second = _container("first"), _container("second")
+        wire([first, second])
+        events = []
+
+        core_stop.stop("proj", on_event=events.append)
+
+        assert [(type(event).__name__, event.phase, event.item) for event in events] == [
+            ("StopStepStart", "resolve", None),
+            ("StopStepEnd", "resolve", None),
+            ("StopStepStart", "container", "first"),
+            ("StopStepEnd", "container", "first"),
+            ("StopStepStart", "container", "second"),
+            ("StopStepEnd", "container", "second"),
+        ]
+
     def test_stops_running_containers_and_reports_them(self, wire):
         frappe, db = _container("proj-frappe-1"), _container("proj-db-1")
         wire([frappe, db])

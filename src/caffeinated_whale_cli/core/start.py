@@ -23,6 +23,7 @@ fork (that stays in the OTHER commands that need an already-running container).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from docker.errors import APIError, DockerException, NotFound
@@ -65,6 +66,30 @@ class StartOutcome:
     web_ready: bool | None = None
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class StartStepStart:
+    """A lifecycle step began."""
+
+    phase: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class StartStepEnd:
+    """A lifecycle step finished with an honest status token."""
+
+    phase: str
+    status: str = "ok"
+
+
+StartEvent = StartStepStart | StartStepEnd
+OnEvent = Callable[[StartEvent], None]
+
+
+def _noop(_event: StartEvent) -> None:
+    """The drain-and-discard consumption mode."""
+
+
 def start(
     project_name: str,
     *,
@@ -74,6 +99,7 @@ def start(
     restart: bool = False,
     autorestart: bool = True,
     uid_override: int | None = None,
+    on_event: OnEvent | None = None,
 ) -> Result[StartOutcome]:
     """Start a project's containers and its bench. See module docstring.
 
@@ -98,8 +124,10 @@ def start(
     as before.
     """
     warnings: list[Message] = []
+    emit = on_event or _noop
 
     # 1. Resolve the project's containers (raises DOCKER / NOT_FOUND).
+    emit(StartStepStart(phase="resolve", message="Resolving the instance containers"))
     containers = get_project_containers(project_name)
     if containers is None:
         raise CwcliError(
@@ -112,12 +140,15 @@ def start(
         raise CwcliError(
             ErrorKind.NOT_FOUND, "project.not_found", f"Project '{project_name}' not found."
         )
+    emit(StartStepEnd(phase="resolve"))
 
     # 2. Start every stopped container (unconditional - start's whole job).
+    emit(StartStepStart(phase="containers", message="Starting stopped containers"))
     for container in containers:
         if container.status != "running":
             container.start()
             container.reload()
+    emit(StartStepEnd(phase="containers"))
 
     frappe_container = next(
         (c for c in containers if c.labels.get("com.docker.compose.service") == "frappe"),
@@ -153,6 +184,7 @@ def start(
             restart=restart,
             autorestart=autorestart,
             uid_override=uid_override,
+            emit=emit,
         )
     except (APIError, CwcliError):
         _require_running(frappe_container, project_name, after_remap=any(remapped))
@@ -199,9 +231,11 @@ def _start_bench(
     restart: bool,
     autorestart: bool,
     uid_override: int | None,
+    emit: OnEvent,
 ) -> Result[StartOutcome]:
     """Steps 3-6 of :func:`start`, against a frappe container that is running."""
     # 3. Resolve which bench to run (--bench/--path, else single, else default).
+    emit(StartStepStart(phase="bench", message="Resolving the bench"))
     resolved = resolvers.resolve_bench(project_name, bench, bench_path)
     if resolved is None:
         resolved_path = resolvers.DEFAULT_BENCH_PATH
@@ -217,6 +251,7 @@ def _start_bench(
         assert resolved.data is not None
         resolved_path = resolved.data
         warnings.extend(resolved.warnings)
+    emit(StartStepEnd(phase="bench"))
 
     if any(char in resolved_path for char in _INVALID_CHARS):
         raise CwcliError(
@@ -233,12 +268,14 @@ def _start_bench(
     # In shared mode a remap also re-owns the resolved bench dir, so a migrated
     # instance's workspace stays writable by the remapped user (the path is
     # resolved and validated above, so it is safe to pass into align's shell).
+    emit(StartStepStart(phase="ownership", message="Aligning workspace ownership"))
     did_remap, remap_err = align_container_user_to_host(
         frappe_container, bench_paths=[resolved_path], uid_override=uid_override
     )
     remapped.append(did_remap)
     if remap_err:
         warnings.append(Message("start.uid_align_failed", remap_err))
+    emit(StartStepEnd(phase="ownership", status="warning" if remap_err else "ok"))
 
     # Persistent credential bridge (opt-in): wire this instance in on every launch
     # - the same cheap per-launch fixup slot as the uid re-align above, so a
@@ -253,6 +290,7 @@ def _start_bench(
 
     # 4. Idempotency: an already-running supervisord for THIS bench is a clean no-op
     #    - UNLESS restart=True, which terminates it first for a genuine relaunch.
+    emit(StartStepStart(phase="supervisor", message="Checking the bench supervisor"))
     snapshot = supervision.discover_stack(frappe_container, resolved_path)
     if snapshot.supervisor_up:
         if not restart:
@@ -268,6 +306,7 @@ def _start_bench(
                     )
                     if port_warning is not None:
                         idle_warnings.append(port_warning)
+            emit(StartStepEnd(phase="supervisor", status="already-running"))
             return Result(
                 status=Status.OK,
                 data=StartOutcome(
@@ -288,6 +327,7 @@ def _start_bench(
     supervision.write_marker(frappe_container, resolved_path)
     launched = supervision.discover_stack(frappe_container, resolved_path)
     processes = _launched_processes(frappe_container, resolved_path, launched)
+    emit(StartStepEnd(phase="supervisor"))
 
     # 6. Block until the web server actually binds THIS BENCH's port before reporting
     #    running. supervisord reports its programs up a beat before `bench serve`
@@ -305,6 +345,7 @@ def _start_bench(
     #    spending the timeout on a guess is worse than saying nothing.
     web_ready: bool | None = None
     if "web" in {p.label for p in processes}:
+        emit(StartStepStart(phase="web_ready", message="Waiting for the web server"))
         ports = resolvers.resolve_assigned_ports(
             frappe_container, [resolved_path], fill_defaults=False
         ).get(resolved_path)
@@ -332,6 +373,12 @@ def _start_bench(
             )
             if port_warning is not None:
                 warnings.append(port_warning)
+        emit(
+            StartStepEnd(
+                phase="web_ready",
+                status="ok" if web_ready is not False else "warning",
+            )
+        )
 
     return Result(
         status=Status.OK,

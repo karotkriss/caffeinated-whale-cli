@@ -1,9 +1,10 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { PageHeader, PageHeaderTitle, Badge, LoadingText, ErrorMessage } from 'frappe-ui'
+import { PageHeader, PageHeaderTitle, Badge, Button, LoadingText, ErrorMessage } from 'frappe-ui'
 import CommandLine from '../components/CommandLine.vue'
 import { config, cacheProjects, setFocus } from '../data/fleet'
 import { session } from '../data/session'
+import { openJob } from '../data/job-dialog'
 
 // Read-only in Phase 1: every row shows the cwcli command that changes it.
 onMounted(() => {
@@ -87,6 +88,7 @@ const onOff = (v) => (v ? 'on' : 'off')
         <div class="mt-3 flex items-center justify-between gap-4">
           <div><div class="text-base text-ink-gray-8">Version {{ session.meta?.version || 'unknown' }}</div>
             <div class="mt-1 text-sm text-ink-gray-5">web UI protocol {{ session.meta?.protocol ?? 'unknown' }} · tips {{ onOff(c.show_tips) }} · config {{ c.config_file }}</div></div>
+          <Button icon-left="lucide-arrow-up-circle" label="Update cwcli" @click="openJob('self-update')" />
         </div>
         <div class="mt-3 space-y-2"><CommandLine command="cwcli self-update --check" /><CommandLine command="cwcli config show" /></div>
       </section>

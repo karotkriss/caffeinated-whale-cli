@@ -450,3 +450,17 @@ def test_a_browser_dropping_its_stream_does_not_kill_the_foreground_daemon(home)
     finally:
         proc.terminate()
         proc.wait(5)
+
+
+def test_a_frozen_exe_reenters_the_job_worker_through_the_hidden_job_flag(home, monkeypatch):
+    """A standalone exe has no ``python -m caffeinated_whale_cli.jobs``; ``ui --job`` is its route."""
+    from caffeinated_whale_cli import jobs
+
+    seen: list[str] = []
+    monkeypatch.setattr(jobs, "run_job", lambda job_id: seen.append(job_id) or 3)
+
+    result = runner.invoke(root_app, ["ui", "--job", "20261024120000-abcdef123456"])
+
+    assert seen == ["20261024120000-abcdef123456"]
+    assert result.exit_code == 3
+    assert "--job" not in runner.invoke(root_app, ["ui", "--help"]).output

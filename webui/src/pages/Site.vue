@@ -6,6 +6,7 @@ import { List, ListHeader, ListHeaderCell, ListRows, ListRow, ListCell } from 'f
 import CommandLine from '../components/CommandLine.vue'
 import { instance as findInstance, loadDetail, benchName, parseApp, setFocus, getJsonUrl } from '../data/fleet'
 import { openAction, menuOption } from '../data/dialog'
+import { openJob } from '../data/job-dialog'
 
 const route = useRoute()
 const { project, bench: index, site: siteName } = route.params
@@ -18,7 +19,15 @@ const apps = computed(() => (site.value?.installed_apps || []).map(parseApp))
 const health = computed(() => inst.value?.benches?.find((b) => String(b.index) === String(index)))
 const running = computed(() => inst.value?.container_running)
 const ctx = computed(() => ({ project, bench: String(index), benchName: bench.value ? benchName(bench.value) : index, site: siteName }))
-const more = computed(() => [menuOption('site.unlock', ctx.value), menuOption('site.maintenance_off', ctx.value)])
+const jobOption = (label, icon, verb) => ({ label: running.value ? label : `${label} (needs the instance running)`, icon, disabled: !running.value, onClick: () => openJob(verb, ctx.value) })
+const more = computed(() => [
+  jobOption('Back up site', 'lucide-database-backup', 'backup'),
+  jobOption('Migrate site', 'lucide-database-zap', 'migrate'),
+  jobOption('Run tests', 'lucide-flask-conical', 'run-tests'),
+  jobOption('Complete setup wizard', 'lucide-list-checks', 'setup-wizard'),
+  menuOption('site.unlock', ctx.value),
+  menuOption('site.maintenance_off', ctx.value),
+])
 
 // The address is two hops (bench port from its config, then the host port Docker
 // publishes), asked of the daemon fresh: never a guessed :8000.

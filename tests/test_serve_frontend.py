@@ -649,7 +649,7 @@ class TestActions:
 
     def test_start_instance_dispatches_to_the_core(self, daemon, monkeypatch):
         called = {}
-        monkeypatch.setattr(serve_cmd.start_cmd, "_frappe_running", lambda project: True)
+        monkeypatch.setattr(serve_cmd.core_jobs.start_cmd, "_frappe_running", lambda project: True)
 
         def _start(project, **kwargs):
             called.update({"project": project, **kwargs})
@@ -744,7 +744,7 @@ class TestActions:
 
     def test_restart_instance_completes_with_the_stop_warning(self, daemon, monkeypatch):
         warning = Message("stop.db_unclean", "The database exited with code 137.")
-        monkeypatch.setattr(serve_cmd.start_cmd, "_frappe_running", lambda project: True)
+        monkeypatch.setattr(serve_cmd.core_jobs.start_cmd, "_frappe_running", lambda project: True)
         monkeypatch.setattr(
             serve_cmd.core_resolvers,
             "resolve_bench",
@@ -830,9 +830,9 @@ class TestActions:
     def test_start_refuses_port_conflicts_without_stopping_other_instances(
         self, daemon, monkeypatch
     ):
-        monkeypatch.setattr(serve_cmd.start_cmd, "_frappe_running", lambda project: False)
+        monkeypatch.setattr(serve_cmd.core_jobs.start_cmd, "_frappe_running", lambda project: False)
         monkeypatch.setattr(
-            serve_cmd.start_cmd,
+            serve_cmd.core_jobs.start_cmd,
             "detect_port_conflicts",
             lambda project: (["other"], [8100]),
         )
@@ -858,7 +858,7 @@ class TestActions:
             prompt="Project 'p' has multiple benches; select one.",
             options=[{"value": "0", "label": "/workspace/frappe-bench"}],
         )
-        monkeypatch.setattr(serve_cmd.start_cmd, "_frappe_running", lambda project: True)
+        monkeypatch.setattr(serve_cmd.core_jobs.start_cmd, "_frappe_running", lambda project: True)
         monkeypatch.setattr(
             serve_cmd.core_resolvers,
             "resolve_bench",
@@ -1879,3 +1879,117 @@ class TestDoctorEndpoint:
 
         assert e.value.code == 403
         assert e.value.headers.get("Access-Control-Allow-Origin") is None
+
+
+class TestJobsEndpoint:
+    """The HTTP boundary for durable jobs, including the existing security guards."""
+
+    def test_list_and_detail_return_durable_records(self, daemon, monkeypatch):
+        records = [{"id": "20261024120000-abcdef123456", "state": "running"}]
+        monkeypatch.setattr(serve_cmd.core_jobs, "list_jobs", lambda: records)
+        monkeypatch.setattr(
+            serve_cmd.core_jobs,
+            "read_job",
+            lambda job_id, **kwargs: {
+                **records[0],
+                "id": job_id,
+                "events": [{"seq": kwargs["after"] + 1}],
+            },
+        )
+
+        assert _get(daemon.base + "/api/v1/jobs") == (200, {"data": records})
+        status, body = _get(
+            daemon.base + "/api/v1/jobs/20261024120000-abcdef123456?after=4"
+        )
+        assert status == 200
+        assert body["data"]["events"] == [{"seq": 5}]
+
+    def test_create_keeps_secrets_in_the_dedicated_channel(self, daemon, monkeypatch):
+        seen = {}
+
+        def create(verb, target, args, **kwargs):
+            seen.update({"verb": verb, "target": target, "args": args, **kwargs})
+            return {
+                "id": "20261024120000-abcdef123456",
+                "verb": verb,
+                "target": target,
+                "args": args,
+                "state": "queued",
+            }
+
+        monkeypatch.setattr(serve_cmd.core_jobs, "create_job", create)
+
+        status, body = _post(
+            daemon.base + "/api/v1/jobs",
+            {
+                "verb": "init",
+                "target": {"project": "new-site"},
+                "args": {"version": "16"},
+                "secrets": {"admin_password": "not-persisted"},
+            },
+        )
+
+        assert status == 202
+        assert body["data"]["state"] == "queued"
+        assert seen["secret_values"] == {"admin_password": "not-persisted"}
+        assert seen["args"] == {"version": "16"}
+        assert seen["ui_context"]["token"] == _TOKEN
+        assert "not-persisted" not in json.dumps(body)
+
+    def test_interrupt_and_detach_dispatch_to_the_named_job(self, daemon, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            serve_cmd.core_jobs,
+            "interrupt_job",
+            lambda job_id: calls.append(("interrupt", job_id)) or {"id": job_id},
+        )
+        monkeypatch.setattr(
+            serve_cmd.core_jobs,
+            "detach_job",
+            lambda job_id: calls.append(("detach", job_id)) or {"id": job_id},
+        )
+
+        job_id = "20261024120000-abcdef123456"
+        assert _post(daemon.base + f"/api/v1/jobs/{job_id}/interrupt", {})[0] == 200
+        assert _post(daemon.base + f"/api/v1/jobs/{job_id}/detach", {})[0] == 200
+        assert calls == [("interrupt", job_id), ("detach", job_id)]
+
+    def test_job_changes_reach_the_existing_event_stream(self, daemon, monkeypatch):
+        monkeypatch.setattr(serve_cmd.core_jobs, "list_jobs", lambda: [])
+        stream = _Stream(daemon.base + "/api/v1/stream")
+        try:
+            event, snapshot = stream.next_frame()
+            assert event == "snapshot" and snapshot["jobs"] == []
+            daemon.hub.publish_job(
+                {"id": "20261024120000-abcdef123456", "state": "running"}
+            )
+            event, record = stream.next_frame()
+            assert event == "job"
+            assert record["state"] == "running"
+        finally:
+            stream.close()
+
+    def test_cross_origin_create_is_refused_before_dispatch(self, daemon, monkeypatch):
+        monkeypatch.setattr(
+            serve_cmd.core_jobs,
+            "create_job",
+            lambda *args, **kwargs: pytest.fail("cross-origin create reached the job runner"),
+        )
+        request = urllib.request.Request(
+            daemon.base + "/api/v1/jobs",
+            data=json.dumps(
+                {"verb": "backup", "target": {"project": "p"}, "args": {}}
+            ).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "https://example.invalid",
+                "Sec-Fetch-Site": "cross-site",
+            },
+            method="POST",
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request, timeout=_TIMEOUT)  # noqa: S310
+
+        assert error.value.code == 403
+        assert error.value.headers.get("Access-Control-Allow-Origin") is None
