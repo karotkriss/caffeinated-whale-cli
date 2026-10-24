@@ -130,7 +130,7 @@ def _request(url, *, data=None, headers=None, method=None):
 def _post_action(base, headers=None):
     merged = {"Content-Type": "application/json"}
     merged.update(headers or {})
-    return _request(base + "/api/action", data=_ACTION, headers=merged, method="POST")
+    return _request(base + "/api/v1/actions", data=_ACTION, headers=merged, method="POST")
 
 
 def _stub_server(monkeypatch, resolves_to: str | None = None) -> list:
@@ -210,7 +210,7 @@ class TestTheLanActionExposure:
         """
         status, body, headers = _post_action(guarded)
         assert status == 401
-        assert json.loads(body)["error"]["code"] == "auth.required"
+        assert json.loads(body)["errors"][0]["title"] == "auth.required"
         assert headers.get("WWW-Authenticate", "").startswith("Bearer")
         assert stopped == [], "an unauthenticated action must not reach the core"
 
@@ -280,11 +280,16 @@ class TestAuthIsAlwaysOn:
     """Loopback used to mean no authentication at all; now every read and action needs it."""
 
     def test_the_loopback_default_refuses_credential_less_reads_and_actions(self, daemon, stopped):
-        for path in ("/api/snapshot", "/api/events", "/api/instance/p/detail", "/api/doctor"):
+        for path in (
+            "/api/v1/instances",
+            "/api/v1/stream",
+            "/api/v1/instances/p",
+            "/api/v1/doctor",
+        ):
             assert _request(daemon + path)[0] == 401, path
         status, body, _ = _post_action(daemon)
         assert status == 401
-        assert json.loads(body)["error"]["code"] == "auth.required"
+        assert json.loads(body)["errors"][0]["title"] == "auth.required"
         assert stopped == [], "an unauthenticated action must not reach the core"
 
 
@@ -292,7 +297,7 @@ class TestAuthEnabled:
     def test_a_valid_bearer_token_succeeds(self, guarded, stopped):
         status, body, _ = _post_action(guarded, {"Authorization": f"Bearer {_TOKEN}"})
         assert status == 200
-        assert json.loads(body)["ok"] is True
+        assert "data" in json.loads(body)
         assert stopped == ["p"]
 
     @pytest.mark.parametrize(
@@ -307,19 +312,19 @@ class TestAuthEnabled:
     @pytest.mark.parametrize(
         "path",
         [
-            "/api/snapshot",
-            "/api/events",
-            "/api/instance/p/detail",
-            "/api/instance/p/logs",
-            "/api/where?q=p",
-            "/nope",
+            "/api/v1/instances",
+            "/api/v1/stream",
+            "/api/v1/instances/p",
+            "/api/v1/instances/p/logs",
+            "/api/v1/search?q=p",
+            "/api/v1/nope",
         ],
     )
     def test_every_api_read_is_gated(self, guarded, path):
         assert _request(guarded + path)[0] == 401
 
-    def test_the_console_page_itself_stays_open(self, guarded):
-        """A gated page would leave a browser with no way to reach the prompt."""
+    def test_the_page_itself_stays_open(self, guarded):
+        """A gated page would leave a browser with no way to reach the sign-in."""
         status, body, _ = _request(guarded + "/")
         assert status == 200
         assert b"<html" in body.lower()
@@ -327,7 +332,7 @@ class TestAuthEnabled:
 
     def test_options_is_the_no_data_no_action_auth_exception(self, guarded, stopped):
         status, body, headers = _request(
-            guarded + "/api/action",
+            guarded + "/api/v1/actions",
             headers={
                 "Origin": "https://example.invalid",
                 "Access-Control-Request-Method": "POST",
@@ -343,47 +348,26 @@ class TestAuthEnabled:
 class TestBrowserSession:
     """``EventSource`` cannot send headers, so a browser trades the token for a cookie."""
 
-    def test_the_authentication_dialog_cannot_be_dismissed_with_escape(self):
-        page = serve_cmd.CONSOLE_PAGE
-        cancel_handler = page.split('modal.addEventListener("cancel"', 1)[1].split(
-            "});", 1
-        )[0]
-        assert "event.preventDefault()" in cancel_handler
-        assert "{dismissible: false}" in page.split("function askForToken", 1)[1]
-
-    def test_a_whitespace_token_keeps_the_authentication_dialog_open(self):
-        page = serve_cmd.CONSOLE_PAGE
-        submit_handler = page.split(
-            'el("modal-form").addEventListener("submit"', 1
-        )[1].split("});", 1)[0]
-        auth_handler = page.split("function askForToken", 1)[1].split(
-            "function openTokenSession", 1
-        )[0]
-        assert "submit(values) === false" in submit_handler
-        assert "event.preventDefault()" in submit_handler
-        assert "input.setCustomValidity" in auth_handler
-        assert "return false" in auth_handler
-
     def test_the_session_cookie_authenticates_subsequent_requests(self, guarded, stopped):
         status, _, headers = _request(
-            guarded + "/api/session",
+            guarded + "/api/v1/session",
             data=b"{}",
             headers={"Authorization": f"Bearer {_TOKEN}", "Content-Type": "application/json"},
             method="POST",
         )
-        assert status == 204
+        assert status == 200
         cookie = headers["Set-Cookie"]
         assert "HttpOnly" in cookie and "SameSite=Strict" in cookie
         assert _TOKEN not in cookie, "the cookie must carry a session id, never the token"
 
         jar = cookie.split(";", 1)[0]
-        assert _request(guarded + "/api/snapshot", headers={"Cookie": jar})[0] == 200
+        assert _request(guarded + "/api/v1/instances", headers={"Cookie": jar})[0] == 200
         assert _post_action(guarded, {"Cookie": jar})[0] == 200
         assert stopped == ["p"]
 
     def test_an_unauthenticated_caller_cannot_open_a_session(self, guarded):
         status, _, headers = _request(
-            guarded + "/api/session",
+            guarded + "/api/v1/session",
             data=b"{}",
             headers={"Content-Type": "application/json"},
             method="POST",
@@ -407,7 +391,7 @@ class TestKeepAliveSurvivesEveryPostOutcome:
     HTTP/1.1 keep-alive: a guard that replies without reading the body leaves
     those bytes in the socket, so the NEXT request on that connection is parsed
     starting mid-body and comes back as a bogus ``501 Unsupported method``. Found
-    in a real browser on the ``/api/session`` 204, and the pre-existing 403 and
+    in a real browser on the ``/api/v1/session`` 204, and the pre-existing 403 and
     415 replies had it too, so the drain lives once at the top of ``do_POST``.
     """
 
@@ -425,7 +409,7 @@ class TestKeepAliveSurvivesEveryPostOutcome:
         try:
             merged = {"Content-Type": "application/json"}
             merged.update(headers)
-            conn.request("POST", "/api/action", body=_ACTION, headers=merged)
+            conn.request("POST", "/api/v1/actions", body=_ACTION, headers=merged)
             assert conn.getresponse().read() is not None
             assert conn.sock is not None, "the guard closed a keep-alive connection"
 
@@ -442,7 +426,7 @@ class TestKeepAliveSurvivesEveryPostOutcome:
         try:
             conn.request(
                 "POST",
-                "/api/session",
+                "/api/v1/session",
                 body=b"{}",
                 headers={
                     "Authorization": f"Bearer {_TOKEN}",
@@ -450,11 +434,11 @@ class TestKeepAliveSurvivesEveryPostOutcome:
                 },
             )
             first = conn.getresponse()
-            assert first.status == 204
+            assert first.status == 200
             jar = first.getheader("Set-Cookie").split(";", 1)[0]
             first.read()
 
-            conn.request("GET", "/api/snapshot", headers={"Cookie": jar, "Connection": "close"})
+            conn.request("GET", "/api/v1/instances", headers={"Cookie": jar, "Connection": "close"})
             assert conn.getresponse().status == 200
         finally:
             conn.close()
@@ -473,11 +457,11 @@ class TestSameOriginGuardSurvives:
             },
         )
         assert status == 403
-        assert json.loads(body)["error"]["code"] == "action.origin_forbidden"
+        assert json.loads(body)["errors"][0]["title"] == "action.origin_forbidden"
         assert stopped == []
 
     def test_the_sensitive_reads_keep_their_guard_too(self, guarded):
-        for path in ("/api/instance/p/logs", "/api/where?q=p"):
+        for path in ("/api/v1/instances/p/logs", "/api/v1/search?q=p"):
             status, body, _ = _request(
                 guarded + path,
                 headers={
@@ -579,7 +563,7 @@ class TestS1NoCorsAnywhere:
             core_inspect, "inspect", lambda p, **kw: Result(status=Status.OK, data=_detail_report())
         )
         auth = {"Authorization": f"Bearer {_TOKEN}", **self._FOREIGN}
-        for path in ("/api/snapshot", "/api/events", "/api/instance/p/detail"):
+        for path in ("/api/v1/instances", "/api/v1/stream", "/api/v1/instances/p"):
             status, headers = _headers_of(guarded, "GET", path, auth)
             assert status == 200, path
             leaked = [h for h in headers if h.lower().startswith("access-control-")]
@@ -590,13 +574,13 @@ class TestS1NoCorsAnywhere:
         [
             ("GET", "/"),
             ("GET", "/api/v1/meta"),
-            ("GET", "/api/snapshot"),
-            ("GET", "/api/instance/p/detail"),
+            ("GET", "/api/v1/instances"),
+            ("GET", "/api/v1/instances/p"),
             ("GET", "/nope"),
-            ("OPTIONS", "/api/snapshot"),
-            ("OPTIONS", "/api/action"),
-            ("POST", "/api/session"),
-            ("POST", "/api/action"),
+            ("OPTIONS", "/api/v1/instances"),
+            ("OPTIONS", "/api/v1/actions"),
+            ("POST", "/api/v1/session"),
+            ("POST", "/api/v1/actions"),
         ],
     )
     def test_no_response_of_any_kind_carries_a_cors_header(self, daemon, method, path):
@@ -627,10 +611,10 @@ class TestS2HostAllowlist:
             guarded, {**self._REBIND, "Authorization": f"Bearer {_TOKEN}"}
         )
         assert status == 403
-        assert json.loads(body)["error"]["code"] == "host.forbidden"
+        assert json.loads(body)["errors"][0]["title"] == "host.forbidden"
         assert stopped == [], "a rebinding request must not reach the core"
 
-    @pytest.mark.parametrize("path", ["/", "/api/v1/meta", "/api/snapshot", "/api/events"])
+    @pytest.mark.parametrize("path", ["/", "/api/v1/meta", "/api/v1/instances", "/api/v1/stream"])
     def test_every_read_including_the_static_page_is_refused_too(self, guarded, path):
         status, _ = _headers_of(
             guarded, "GET", path, {**self._REBIND, "Authorization": f"Bearer {_TOKEN}"}
@@ -639,13 +623,13 @@ class TestS2HostAllowlist:
 
     def test_the_session_exchange_is_refused_and_the_code_survives(self, daemon):
         status, body, headers = _request(
-            daemon + "/api/session",
+            daemon + "/api/v1/session",
             data=json.dumps({"code": _LOGIN}).encode(),
             headers={"Content-Type": "application/json", **self._REBIND},
             method="POST",
         )
         assert status == 403 and "Set-Cookie" not in headers
-        assert _redeem(daemon)[0] == 204, "a refused request must not burn the login code"
+        assert _redeem(daemon)[0] == 200, "a refused request must not burn the login code"
 
     @pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "[::1]"])
     def test_the_loopback_names_are_admitted(self, guarded, stopped, host):
@@ -704,7 +688,7 @@ class TestS2HostAllowlist:
     def test_a_loopback_bind_refusal_points_at_loopback(self, guarded):
         status, body, _ = _request(guarded + "/api/v1/meta", headers=self._REBIND)
         assert status == 403
-        assert "http://127.0.0.1:<port>/" in json.loads(body)["error"]["hint"]
+        assert "http://127.0.0.1:<port>/" in json.loads(body)["errors"][0]["hint"]
 
     def test_a_remote_bind_refusal_points_at_the_machine_ip_not_loopback(self, stopped):
         port, shutdown = _serve_on("0.0.0.0", _TOKEN)  # noqa: S104 - the remote-bind shape
@@ -713,7 +697,7 @@ class TestS2HostAllowlist:
         finally:
             shutdown()
         assert status == 403
-        hint = json.loads(body)["error"]["hint"]
+        hint = json.loads(body)["errors"][0]["hint"]
         assert "IP address" in hint
         assert "127.0.0.1" not in hint and "localhost" not in hint
 
@@ -730,7 +714,7 @@ class TestS2HostAllowlist:
 
 def _redeem(base, code=_LOGIN):
     return _request(
-        base + "/api/session",
+        base + "/api/v1/session",
         data=json.dumps({"code": code}).encode(),
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -742,12 +726,12 @@ class TestOneTimeLoginCode:
 
     def test_the_code_buys_a_session_cookie_that_authenticates(self, daemon, stopped):
         status, _, headers = _redeem(daemon)
-        assert status == 204
+        assert status == 200
         cookie = headers["Set-Cookie"]
         assert "HttpOnly" in cookie and "SameSite=Strict" in cookie
         assert _LOGIN not in cookie, "the cookie carries a session id, never the code"
         jar = cookie.split(";", 1)[0]
-        assert _request(daemon + "/api/snapshot", headers={"Cookie": jar})[0] == 200
+        assert _request(daemon + "/api/v1/instances", headers={"Cookie": jar})[0] == 200
         assert _post_action(daemon, {"Cookie": jar})[0] == 200
         assert stopped == ["p"]
 
@@ -761,20 +745,20 @@ class TestOneTimeLoginCode:
                 name, _, value = _redeem(base)[2]["Set-Cookie"].split(";", 1)[0].partition("=")
                 jar[name] = value
             sent = "; ".join(f"{k}={v}" for k, v in jar.items())
-            assert _request(daemon + "/api/snapshot", headers={"Cookie": sent})[0] == 200
+            assert _request(daemon + "/api/v1/instances", headers={"Cookie": sent})[0] == 200
             assert (
-                _request(f"http://127.0.0.1:{port}/api/snapshot", headers={"Cookie": sent})[0]
+                _request(f"http://127.0.0.1:{port}/api/v1/instances", headers={"Cookie": sent})[0]
                 == 200
             )
         finally:
             shutdown()
 
     def test_the_code_works_once(self, daemon):
-        assert _redeem(daemon)[0] == 204
+        assert _redeem(daemon)[0] == 200
         status, body, headers = _redeem(daemon)
         assert status == 401
         assert "Set-Cookie" not in headers
-        assert json.loads(body)["error"]["code"] == "auth.required"
+        assert json.loads(body)["errors"][0]["title"] == "auth.required"
 
     @pytest.mark.parametrize(
         "body",
@@ -782,23 +766,23 @@ class TestOneTimeLoginCode:
     )
     def test_anything_but_the_code_is_refused_and_does_not_burn_it(self, daemon, body):
         status, _, headers = _request(
-            daemon + "/api/session",
+            daemon + "/api/v1/session",
             data=body,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         assert status == 401 and "Set-Cookie" not in headers
-        assert _redeem(daemon)[0] == 204
+        assert _redeem(daemon)[0] == 200
 
     def test_a_cross_site_redemption_is_refused_and_does_not_burn_it(self, daemon):
         status, _, headers = _request(
-            daemon + "/api/session",
+            daemon + "/api/v1/session",
             data=json.dumps({"code": _LOGIN}).encode(),
             headers={"Content-Type": "application/json", "Sec-Fetch-Site": "cross-site"},
             method="POST",
         )
         assert status == 403 and "Set-Cookie" not in headers
-        assert _redeem(daemon)[0] == 204
+        assert _redeem(daemon)[0] == 200
 
     def test_the_banner_prints_the_login_link_and_never_a_token(self, monkeypatch, capsys):
         monkeypatch.setenv(serve_cmd.TOKEN_ENV, _TOKEN)

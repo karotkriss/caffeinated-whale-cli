@@ -161,4 +161,6 @@ caffeinated-whale-cli = "caffeinated_whale_cli.main:cli"
 cwcli = "caffeinated_whale_cli.main:cli"
 
 [tool.setuptools.package-data]
-"caffeinated_whale_cli.commands" = ["console.html"]
+# The built web UI (`cd webui && npm run build`); served by `cwcli ui`. The
+# same file types must be allow-listed in MANIFEST.in (deny-all there).
+"caffeinated_whale_cli.webui" = ["dist/**/*"]

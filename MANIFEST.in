@@ -25,4 +25,5 @@ include LICENSE
 # file type must be added BOTH to [tool.setuptools.package-data] and here, and
 # the packaging test fails if only one of the two is done.
 recursive-include src/caffeinated_whale_cli *.py
-recursive-include src/caffeinated_whale_cli *.html
+# The built web UI under caffeinated_whale_cli/webui/dist (served by `cwcli ui`).
+recursive-include src/caffeinated_whale_cli/webui/dist *.html *.js *.css *.json *.svg *.png *.ico *.woff *.woff2 *.txt

@@ -2,11 +2,11 @@
   "name": "cwcli-design-adherence",
   "version": "0.1.0",
   "private": true,
-  "description": "Design-system adherence lint for the cwcli GUI frontend. Not shipped; dev tooling only.",
+  "description": "Design-system adherence lint for the cwcli web UI (webui/) and design-consuming JS/JSX. Not shipped; dev tooling only.",
   "type": "module",
   "scripts": {
     "lint": "eslint . --max-warnings 0 --no-error-on-unmatched-pattern",
-    "check:css": "node check-console-css.mjs",
+    "check:webui": "node check-webui-tokens.mjs",
     "test": "node bites.test.mjs"
   },
   "devDependencies": {

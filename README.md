@@ -11,6 +11,7 @@ A command-line interface (CLI) for managing Frappe/ERPNext Docker instances duri
 - **Container Lifecycle** - Start, stop, and restart projects with ease
 - **Scale Beyond Six Benches** - Widen an instance's published port range on demand with `cwcli scale` so more than six benches are reachable from the host - database-safe (only the frappe service is recreated)
 - **Development Tools** - VS Code integration, log viewing, and command execution
+- **Web UI** - A local browser dashboard over every instance, bench, site and app with `cwcli ui`: live health, logs, the health check, and the everyday lifecycle actions
 - **Cache System** - Fast project inspection with SQLite-based caching and configuration storage
 - **Multi-Bench Support** - Address individual benches in a multi-bench instance by numeric index or a durable label with `--bench`
 - **Default Site Support** - Optional `--site` flag when default site is configured
@@ -1921,6 +1922,71 @@ cwcli status frappe-one -v           # token on stdout, per-bench detail on stde
 cwcli status --watch frappe-one      # live table, no web-log spam; Ctrl-C to exit
 cwcli status -w --interval 5 frappe-one   # refresh every 5s
 ```
+
+---
+
+### `ui` - Open the Web UI
+
+Opens a local browser dashboard over your instances: every instance, bench,
+site and app in one place, live process health, a resumable log pane, the
+`doctor` health check, a read-only view of your settings, a command palette
+(Ctrl+K) that searches the cache, and the everyday lifecycle actions.
+The daemon binds `127.0.0.1` only and is served by cwcli itself; nothing is
+installed or fetched, and no Node is needed - the UI ships prebuilt inside the
+package.
+
+```bash
+cwcli ui [OPTIONS]
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `-p`, `--port INTEGER` | Port to listen on (default: 8765) |
+| `--foreground` | Run the daemon in this terminal (Ctrl-C to stop) instead of detached |
+| `--stop` | Stop the detached daemon |
+| `--no-browser` | Print the one-time sign-in link instead of opening a browser |
+| `--interval FLOAT` | Seconds between health probes of each running instance (default: 2.5) |
+
+**How it runs:** `cwcli ui` starts the daemon detached if none is running
+(otherwise it reuses the live one), then opens your browser on a **one-time
+sign-in link**. The daemon requires sign-in even on loopback: each launch gets
+its own random token, the browser trades a single-use code for a session
+cookie, and a used link is dead, so a link copied from scrollback signs nobody
+else in. Run `cwcli ui` again for a fresh link (a second browser, a second
+machine user). `cwcli ui --stop` stops it. The daemon only probes Docker while
+a page is open, and only ever refuses a request whose `Host` is not this
+machine, so another site in your browser cannot read or drive it.
+
+**What it can do:** everything the CLI reads (`ls`, `status`, `inspect`,
+`where`, `doctor`, `logs`, `axi url`, `config show`) and the safe lifecycle
+set: start, stop and restart an instance or a bench, restart one process, set a
+bench label, unlock a site, take a site out of maintenance mode, widen the port
+range (the same core confirmation `cwcli scale` asks for, typed back as the
+instance name), and check out an app ref without `--reset`. Every confirmation
+shows the equivalent `cwcli` command. Long-running verbs (init, backup, apps
+install/update, migrate) and destructive ones (rm, rm-site, restore) are not in
+the UI yet; it prints the command to run instead.
+
+**Honest states:** the UI distinguishes `unknown` (not probed) from `offline`,
+labels cache-backed data as remembered versus verified, and never guesses a
+port - a site whose host port cannot be resolved reads "not serving".
+
+**Under WSL:** a Windows browser reaches `http://localhost:8765` through WSL's
+localhost forwarding; the link `cwcli ui` prints already works from there.
+
+**Example:**
+
+```bash
+cwcli ui                       # start (or reuse) and open the browser
+cwcli ui --no-browser          # print the sign-in link instead
+cwcli ui --stop                # stop the detached daemon
+cwcli ui --foreground -p 9000  # run in this terminal on port 9000
+```
+
+There is deliberately no `cwcli axi ui`: an agent does not stand up a
+browser-facing daemon.
 
 ---
 

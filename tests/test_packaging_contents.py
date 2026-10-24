@@ -94,9 +94,16 @@ class TestTheWheelShipsThePackage:
         assert len(modules) > 50, f"wheel looks empty: {modules}"
         assert f"{DIST_NAME}/main.py" in modules
         assert f"{DIST_NAME}/core/rm.py" in modules
-        # The one package-data file. It is served by `cwcli serve`, so a wheel
-        # without it installs cleanly and then fails at runtime.
-        assert f"{DIST_NAME}/commands/console.html" in modules
+        # The package-data tree: the built web UI `cwcli ui` serves. A wheel
+        # without it installs cleanly and then serves the "not built" notice, so
+        # the build step (`cd webui && npm run build`) must have run before this
+        # test; CI's test job does so, and so must a local release build.
+        assert f"{DIST_NAME}/webui/dist/index.html" in modules, (
+            "webui/dist is missing from the wheel: run `cd webui && npm ci && "
+            "npm run build` before building"
+        )
+        assert any(n.startswith(f"{DIST_NAME}/webui/dist/assets/") for n in modules)
+        assert f"{DIST_NAME}/webui/dist/csp.json" in modules
 
         unexpected = []
         for name in wheel_names:
