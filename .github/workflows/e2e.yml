@@ -224,6 +224,22 @@ jobs:
             exit 78
           fi
 
+      - name: Set up Node (web UI build)
+        if: needs.changes.outputs.run == 'true'
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a  # v4.2.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Build the web UI into package data
+        if: needs.changes.outputs.run == 'true'
+        # `cwcli ui` serves webui/dist from inside the wheel; the packaging test
+        # and the serve E2E assert it is there. Source in webui/, output under
+        # src/caffeinated_whale_cli/webui/dist (git-ignored).
+        run: npm ci --no-audit --no-fund && npm run build
+        working-directory: webui
+
       - name: Install dependencies
         if: needs.changes.outputs.run == 'true'
         run: uv sync --frozen --all-extras
@@ -348,6 +364,22 @@ jobs:
 
       # The binary under test: runtime deps ONLY (no dev, no extras), exactly
       # what `uv tool install caffeinated-whale-cli` gives a user.
+      - name: Set up Node (web UI build)
+        if: needs.changes.outputs.run == 'true'
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a  # v4.2.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Build the web UI into package data
+        if: needs.changes.outputs.run == 'true'
+        # `cwcli ui` serves webui/dist from inside the wheel; the packaging test
+        # and the serve E2E assert it is there. Source in webui/, output under
+        # src/caffeinated_whale_cli/webui/dist (git-ignored).
+        run: npm ci --no-audit --no-fund && npm run build
+        working-directory: webui
+
       - name: Install cwcli as a uv tool (runtime deps only)
         if: needs.changes.outputs.run == 'true'
         run: uv tool install .

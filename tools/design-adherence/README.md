@@ -11,12 +11,12 @@ The runner lives here and runs in the always-run `Design-system adherence` job i
   `design/` is never modified: the runner adapts to the config, not the reverse.
   Rule severities are authored as `warn`, so `npm run lint` runs with `--max-warnings 0` to make any adherence warning block.
 - **Scope / honest limits.** ESLint's selectors are AST-based (`Literal`, `JSXOpeningElement`), so the policy's full rule set (raw hex/px, off-system fonts, restricted props/variants, restricted imports) runs on **JS/JSX under `tools/design-adherence/`**.
-  DS-T3 (the Console rebuild onto the design-system component library) deliberately kept the Console as a single self-contained `commands/console.html` with **no build step**: the design-system components are themselves inline-style/token primitives (no CSS class library), so they map faithfully onto same-DOM/same-token markup by hand, and the served artifact stays the zero-dependency file `serve` reads verbatim (which is what keeps its CSP tight).
-  That rebuild is therefore covered by `check-console-css.mjs` (below), not by the ESLint JS/JSX pass; the ESLint pass stays wired and ready for a future JSX build should the Console ever adopt one.
-  The Console (`commands/console.html`) is a single HTML file whose tokens and consuming rules live in a `<style>` block, i.e. raw CSS text that ESLint's AST rules genuinely cannot see.
-  So `check-console-css.mjs` supplements it with the smallest zero-false-positive check there: a raw **hex** colour used in consuming CSS instead of a `var()` token (token-layer `--custom-property` definitions and HTML numeric entities are correctly allowed).
-  Raw **px** is deliberately not grepped in the Console: it documents ~50 legitimate raw-px exceptions (structural layout, hairlines, breakpoints, the focus ring, fixed chrome), so a px grep would be all false positives; px stays enforced by ESLint on JS/JSX, where it is clean.
-- **Proof it bites.** `npm test` (`bites.test.mjs`) runs the real ESLint pass over `fixtures/bad.jsx` (one violation per family) asserting each is flagged, over `good.jsx` asserting zero, and self-checks the hex detector - so a regression back to the oxlint no-op fails CI.
+  The web UI (`webui/`, the frappe-ui Vue app `cwcli ui` serves) is not JSX and its colour comes from frappe-ui's Tailwind preset, not from the design system's inline-style components, so it is covered by `check-webui-tokens.mjs` (below) rather than by the ESLint pass.
+  That check enforces the one rule that matters there: every colour in `webui/src` is a **semantic frappe-ui token** (`bg-surface-*`, `text-ink-*`, `border-outline-*` and their siblings), never a raw Tailwind palette class (`bg-gray-100`, `hover:text-red-500`) and never a raw hex literal.
+  A raw palette class compiles under the preset and silently stops following the theme, which is exactly why a lint has to catch it.
+  It is textual, so a class assembled in a `<script>` block is caught too; px is not checked for the web UI (frappe-ui's own sizing utilities carry the spacing scale).
+  It succeeds the retired `check-console-css.mjs` that covered the single-file Console the web UI replaced.
+- **Proof it bites.** `npm test` (`bites.test.mjs`) runs the real ESLint pass over `fixtures/bad.jsx` (one violation per family) asserting each is flagged, over `good.jsx` asserting zero, and self-checks the web UI token detector - so a regression back to the oxlint no-op fails CI.
 
-Local commands (`cd tools/design-adherence`): `npm ci`, then `npm run lint`, `npm test`, `npm run check:css`.
+Local commands (`cd tools/design-adherence`): `npm ci`, then `npm run lint`, `npm test`, `npm run check:webui`.
 Frontend lint tooling is a dev dependency only (`tools/design-adherence/package.json`), never a Python runtime dep.

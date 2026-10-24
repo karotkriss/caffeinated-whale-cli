@@ -391,6 +391,111 @@ def read_logs(
     )
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ProcessTail:
+    """One process's resumable tail: the lines read plus the byte ``offset`` the
+    NEXT read should start from (serializable; no Docker object)."""
+
+    process: str  # raw Procfile program key, as ProcessLog.process
+    file: str
+    lines: list[str]
+    offset: int  # bytes consumed so far; pass back as ``after`` to resume
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LogsTail:
+    """A resumable read of a bench's logs (the web UI's log pane behind
+    ``cwcli ui``). Same resolve as ``read_logs``; the tail is cursor-based."""
+
+    project: str
+    container_name: str
+    bench_path: str
+    not_cwcli_supervised: bool
+    logs: list[ProcessTail]
+
+
+def read_logs_since(
+    project_name: str,
+    *,
+    bench: str | None = None,
+    process: str | None = None,
+    lines: int = 200,
+    after: dict[str, int] | None = None,
+) -> Result[LogsTail]:
+    """Bounded, RESUMABLE tail: the last ``lines`` lines on a cold read, then only the
+    bytes written since each process's ``after[process]`` offset on a warm one.
+
+    The poll a browser log pane makes every couple of seconds, instead of holding an
+    exec stream (``tail -F`` through ``exec_stream`` leaks an orphan per stop; see the
+    module docstring). One ``stat`` for every file, then one ``tail`` per file. A file
+    that shrank (rotation) or an unknown offset falls back to the cold read, so a
+    stale cursor can never hang a pane. Only whole lines are consumed: the cursor
+    stops at the last newline, so a half-written line is read on the next poll.
+    """
+    resolved = _resolve_log_files(
+        project_name, bench=bench, bench_path=None, process=process, auto_start=False
+    )
+    if resolved.status is Status.NEEDS_CHOICE:
+        return Result(
+            status=Status.NEEDS_CHOICE, choice=resolved.choice, warnings=resolved.warnings
+        )
+    r = resolved.data
+    assert r is not None
+    warnings = list(resolved.warnings)
+    if not r.log_files and not r.manager_up:
+        _raise_no_logs(project_name, r.bench_path, process, manager_up=False)
+
+    sizes = _file_sizes(r.container, r.log_files)
+    tails: list[ProcessTail] = []
+    for path in r.log_files:
+        label = _process_label_for_file(path)
+        size = sizes.get(path, 0)
+        start = (after or {}).get(label)
+        if start is not None and 0 <= start <= size:
+            if start == size:
+                tails.append(ProcessTail(process=label, file=path, lines=[], offset=start))
+                continue
+            _code, raw = r.container.exec_run(["tail", "-c", f"+{start + 1}", path])
+            base = start
+        else:
+            _code, raw = r.container.exec_run(["tail", "-n", str(lines), path])
+            base = size  # a cold read ends at the file's current end
+        data = bytes(raw or b"")
+        if start is not None and 0 <= start < size:
+            cut = data.rfind(b"\n") + 1  # whole lines only
+            consumed, data = base + cut, data[:cut]
+        else:
+            consumed = base
+        text = supervision._decode(data)
+        tails.append(
+            ProcessTail(process=label, file=path, lines=text.splitlines(), offset=consumed)
+        )
+    return Result(
+        status=Status.OK,
+        data=LogsTail(
+            project=project_name,
+            container_name=r.container_name,
+            bench_path=r.bench_path,
+            not_cwcli_supervised=r.not_cwcli_supervised,
+            logs=tails,
+        ),
+        warnings=warnings,
+    )
+
+
+def _file_sizes(container, files: list[str]) -> dict[str, int]:
+    """``{path: bytes}`` for every file, one exec; an unreadable file reads as 0."""
+    if not files:
+        return {}
+    _code, output = container.exec_run(["stat", "-c", "%s %n", *files])
+    sizes: dict[str, int] = {}
+    for line in supervision._decode(output).splitlines():
+        size, _sep, path = line.partition(" ")
+        if size.isdigit() and path:
+            sizes[path] = int(size)
+    return sizes
+
+
 def _tail_header_path(line: str) -> str | None:
     """The path in a ``tail -v`` ``==> <path> <==`` header line, else None."""
     if line.startswith("==> ") and line.endswith(" <=="):

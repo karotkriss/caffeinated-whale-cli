@@ -1,7 +1,8 @@
-"""``cwcli serve`` against a REAL instance: the three tiers, and the quiet in between.
+"""``cwcli ui`` against a REAL instance: the three tiers, the page, and the quiet in between.
 
-The daemon is the shipped binary in a subprocess and the client is an ordinary
-HTTP/SSE reader, so what is measured here is the whole path a browser takes.
+The daemon is the shipped binary (``cwcli ui --foreground``) in a subprocess and the
+client is an ordinary HTTP/SSE reader, so what is measured here is the whole path a
+browser takes.
 
 What each tier is proven to do, and why a unit test could not:
 
@@ -31,6 +32,7 @@ import socket
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -38,17 +40,7 @@ import pytest
 
 from . import harness
 
-pytestmark = [
-    pytest.mark.e2e,
-    pytest.mark.skip(
-        reason="cwcli serve is deliberately unreachable in a released build "
-        "(captain ruling 2026-07-29: the Console GUI is unreleased and not ready "
-        "to ship). This suite drives the shipped binary's `serve` subcommand "
-        "directly, so it cannot exercise anything until the command is exposed "
-        "again; the module itself is untouched and stays covered directly by "
-        "tests/test_serve_frontend.py and tests/test_serve_auth.py."
-    ),
-]
+pytestmark = [pytest.mark.e2e]
 
 _HTTP_TIMEOUT = 10
 # Authentication is always on; a configured token is how a non-browser client gets in.
@@ -67,6 +59,7 @@ class _Client:
 
     def __init__(self, url: str):
         self.frames: list[tuple[str, dict]] = []
+        self.ids: list[int] = []
         self.keepalives = 0
         self._resp = urllib.request.urlopen(  # noqa: S310
             urllib.request.Request(url, headers=_AUTH), timeout=_HTTP_TIMEOUT
@@ -81,6 +74,8 @@ class _Client:
                 line = raw.decode().rstrip("\n")
                 if line.startswith(": "):
                     self.keepalives += 1
+                elif line.startswith("id: "):
+                    self.ids.append(int(line[len("id: ") :]))
                 elif line.startswith("event: "):
                     event = line[len("event: ") :]
                 elif line.startswith("data: "):
@@ -101,10 +96,19 @@ class _Client:
 
 @pytest.fixture
 def daemon(running_instance):
-    """The shipped ``cwcli serve`` in a subprocess, bound to a free local port."""
+    """The shipped ``cwcli ui --foreground`` in a subprocess, bound to a free local port."""
     port = _free_port()
     proc = subprocess.Popen(
-        [harness.CWCLI, "serve", "--port", str(port), "--host", "127.0.0.1", "--interval", "1"],
+        [
+            harness.CWCLI,
+            "ui",
+            "--foreground",
+            "--no-browser",
+            "--port",
+            str(port),
+            "--interval",
+            "1",
+        ],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -114,12 +118,12 @@ def daemon(running_instance):
     base = f"http://127.0.0.1:{port}"
 
     def _up():
-        req = urllib.request.Request(base + "/api/snapshot", headers=_AUTH)
+        req = urllib.request.Request(base + "/api/v1/instances", headers=_AUTH)
         with urllib.request.urlopen(req, timeout=2) as r:  # noqa: S310
             return json.loads(r.read())
 
     try:
-        harness.wait_until(_up, timeout=60, interval=0.5, desc="cwcli serve listening")
+        harness.wait_until(_up, timeout=60, interval=0.5, desc="cwcli ui listening")
         yield type("D", (), {"base": base, "proc": proc, "project": running_instance.name})
     finally:
         proc.terminate()
@@ -147,12 +151,70 @@ def _post(url: str, payload: dict):
 
 
 def _instance(base: str, project: str) -> dict:
-    body = _get(base + "/api/snapshot")
-    return next(i for i in body["instances"] if i["project"] == project)
+    body = _get(base + "/api/v1/instances")
+    return next(i for i in body["data"] if i["project"] == project)
 
 
 def _wait_for(predicate, *, timeout=90, desc="condition"):
     return harness.wait_until(predicate, timeout=timeout, interval=0.5, desc=desc)
+
+
+class TestThePage:
+    def test_the_built_ui_is_served_under_the_strict_csp(self, daemon):
+        """The wheel/tool install carries ``webui/dist``; ``/`` and deep links serve it."""
+        for path in ("/", "/instances/" + daemon.project):
+            with urllib.request.urlopen(
+                daemon.base + path, timeout=_HTTP_TIMEOUT
+            ) as resp:  # noqa: S310
+                body = resp.read().decode()
+            assert resp.status == 200
+            assert '<div id="app"' in body, "the built SPA, not the 'not built' notice"
+            csp = resp.headers["Content-Security-Policy"]
+            assert "script-src 'self'" in csp and "unsafe-inline" not in csp
+            assert "connect-src 'self'" in csp and "frame-ancestors 'none'" in csp
+        # The bundle's own assets are reachable and typed.
+        script = re.search(r'src="(/assets/[^"]+\.js)"', body)
+        assert script, body[:500]
+        with urllib.request.urlopen(
+            daemon.base + script.group(1), timeout=_HTTP_TIMEOUT
+        ) as resp:  # noqa: S310
+            assert resp.headers["Content-Type"] == "text/javascript"
+            assert "immutable" in resp.headers["Cache-Control"]
+
+    def test_a_foreign_host_is_refused_before_anything_else(self, daemon):
+        port = daemon.base.rsplit(":", 1)[1]
+        conn = socket.create_connection(("127.0.0.1", int(port)), timeout=_HTTP_TIMEOUT)
+        conn.sendall(
+            f"GET /api/v1/meta HTTP/1.1\r\nHost: rebind.evil.example:{port}\r\n"
+            f"Authorization: Bearer {_TOKEN}\r\nConnection: close\r\n\r\n".encode()
+        )
+        head = conn.recv(4096).decode()
+        conn.close()
+        assert head.startswith("HTTP/1.1 403")
+        assert "host.forbidden" in head
+
+    def test_the_login_code_signs_a_browser_in_exactly_once(self, daemon):
+        # `cwcli ui` mints through the bearer endpoint, the page redeems it without one.
+        minted = _post(daemon.base + "/api/v1/session/code", {})
+        code = minted["data"]["code"]
+        bare = urllib.request.build_opener()
+        req = urllib.request.Request(
+            daemon.base + "/api/v1/session",
+            data=json.dumps({"code": code}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with bare.open(req, timeout=_HTTP_TIMEOUT) as resp:
+            cookie = resp.headers["Set-Cookie"].split(";", 1)[0]
+        with pytest.raises(urllib.error.HTTPError) as replay:
+            bare.open(req, timeout=_HTTP_TIMEOUT)
+        assert replay.value.code == 401
+        # The cookie reads the fleet without the token.
+        signed = urllib.request.Request(
+            daemon.base + "/api/v1/instances", headers={"Cookie": cookie}
+        )
+        with bare.open(signed, timeout=_HTTP_TIMEOUT) as resp:
+            assert resp.status == 200
 
 
 class TestSnapshot:
@@ -187,7 +249,7 @@ class TestSnapshot:
         )
         assert _instance(daemon.base, daemon.project)["benches"][0]["web_http_code"] is None
 
-        client = _Client(daemon.base + f"/api/events?focus={daemon.project}")
+        client = _Client(daemon.base + f"/api/v1/stream?focus={daemon.project}")
         try:
             state = _wait_for(
                 lambda: (
@@ -211,7 +273,7 @@ class TestDeltaSuppression:
             lambda: _instance(daemon.base, daemon.project)["overall"] != "unknown",
             desc="the FAST tier's first probe",
         )
-        client = _Client(daemon.base + "/api/events")
+        client = _Client(daemon.base + "/api/v1/stream")
         try:
             _wait_for(lambda: client.frames, desc="the opening snapshot")
             before = _instance(daemon.base, daemon.project)
@@ -225,6 +287,7 @@ class TestDeltaSuppression:
             after = _instance(daemon.base, daemon.project)
             assert after["probed_at"] > before["probed_at"], "the probe loop must be running"
             assert client.deltas() == [], "a steady instance must stay silent"
+            assert client.ids and client.ids == sorted(client.ids), "every frame is numbered"
         finally:
             client.close()
 
@@ -238,17 +301,17 @@ class TestFastTier:
         before = _instance(daemon.base, daemon.project)
         old_pid = next(p for p in before["benches"][0]["processes"] if p["label"] == "web")["pid"]
 
-        client = _Client(daemon.base + "/api/events")
+        client = _Client(daemon.base + "/api/v1/stream")
         try:
             _wait_for(lambda: client.frames, desc="the opening snapshot")
 
-            # Restores itself: the Console rail's process restart leaves the program
-            # RUNNING, so the shared instance ends this test exactly as it started it.
+            # Restores itself: the process restart leaves the program RUNNING, so
+            # the shared instance ends this test exactly as it started it.
             result = _post(
-                daemon.base + "/api/action",
+                daemon.base + "/api/v1/actions",
                 {"action": "restart_process", "project": daemon.project, "process": "web"},
             )
-            assert result["ok"] is True
+            assert "data" in result
 
             _wait_for(lambda: client.deltas("fast"), desc="a FAST delta for the restart")
 
@@ -269,7 +332,7 @@ class TestInstantTier:
             lambda: _instance(daemon.base, daemon.project)["overall"] != "unknown",
             desc="the FAST tier's first probe",
         )
-        client = _Client(daemon.base + "/api/events")
+        client = _Client(daemon.base + "/api/v1/stream")
         try:
             _wait_for(lambda: client.frames, desc="the opening snapshot")
 
@@ -323,7 +386,7 @@ class TestInstantTier:
 
 class TestLazyTier:
     def test_the_detail_endpoint_carries_inspects_own_freshness_labels(self, daemon):
-        body = _get(daemon.base + f"/api/instance/{daemon.project}/detail")
+        body = _get(daemon.base + f"/api/v1/instances/{daemon.project}")["data"]
 
         assert body["project"] == daemon.project
         assert body["served_from"] in ("cache", "partial", "full")
@@ -333,17 +396,17 @@ class TestLazyTier:
         assert any(a.startswith("frappe") for a in site["installed_apps"])
         # The verified-or-remembered token: True only on a full re-inspect.
         assert site["installed_apps_verified"] == (body["served_from"] == "full")
+        assert body["cached_at"], "a cached answer says how old it is"
 
     def test_an_unknown_project_is_a_404_not_an_empty_success(self, daemon):
-        import urllib.error
-
         with pytest.raises(urllib.error.HTTPError) as e:
-            _get(daemon.base + "/api/instance/cwe2e-no-such-project/detail")
+            _get(daemon.base + "/api/v1/instances/cwe2e-no-such-project")
         assert e.value.code == 404
+        assert json.loads(e.value.read())["errors"][0]["type"] == "not_found"
 
 
-class TestTierAActions:
-    """The Tier A rail expansion against the real instance: each verb round-trips
+class TestSafeActions:
+    """The safe action set against the real instance: each verb round-trips
     through the daemon into real core against a real container, the scale confirm
     provably arrives FROM core (before any mutation), and every test leaves the
     shared instance exactly as it found it."""
@@ -351,20 +414,19 @@ class TestTierAActions:
     def _prime(self, daemon) -> None:
         # The detail endpoint runs core.inspect(refresh="auto"), so serving it once
         # populates the cache the bench-scoped verbs resolve against.
-        body = _get(daemon.base + f"/api/instance/{daemon.project}/detail")
+        body = _get(daemon.base + f"/api/v1/instances/{daemon.project}")["data"]
         assert body["benches"], "the cache must know the bench before bench-scoped verbs"
 
     def test_set_label_round_trips_and_is_cleared(self, daemon):
         self._prime(daemon)
         try:
             body = _post(
-                daemon.base + "/api/action",
+                daemon.base + "/api/v1/actions",
                 {"action": "set_label", "project": daemon.project, "label": "tiera"},
             )
-            assert body["ok"] is True
-            assert body["outcome"]["label"] == "tiera"
+            assert body["data"]["outcome"]["label"] == "tiera"
 
-            detail = _get(daemon.base + f"/api/instance/{daemon.project}/detail")
+            detail = _get(daemon.base + f"/api/v1/instances/{daemon.project}")["data"]
             assert detail["benches"][0]["label"] == "tiera"
         finally:
             # Shared-group convention: remove the label again (DB and marker).
@@ -374,17 +436,89 @@ class TestTierAActions:
     def test_unlock_resolves_the_site_in_core_and_touches_the_real_container(self, daemon):
         # Removing a locks folder is self-restoring state: absent is the clean state.
         body = _post(
-            daemon.base + "/api/action",
+            daemon.base + "/api/v1/actions",
             {"action": "unlock_site", "project": daemon.project, "site": harness.DEFAULT_SITE},
         )
 
-        assert body["ok"] is True
-        assert body["outcome"]["site"] == harness.DEFAULT_SITE
-        assert body["outcome"]["locks_path"].endswith(f"{harness.DEFAULT_SITE}/locks")
+        assert body["data"]["outcome"]["site"] == harness.DEFAULT_SITE
+        assert body["data"]["outcome"]["locks_path"].endswith(f"{harness.DEFAULT_SITE}/locks")
+
+    def test_clear_maintenance_takes_a_real_site_out_of_maintenance(self, daemon):
+        """Put the site INTO maintenance through bench itself, then prove the new
+        Phase 1 action takes it out, reading the live flag back both ways."""
+        self._prime(daemon)
+        site = harness.DEFAULT_SITE
+        flag = f"{harness.DEFAULT_BENCH_PATH}/sites/{site}/site_config.json"
+
+        def _maintenance_on() -> bool:
+            code, out = harness.exec_in_frappe(daemon.project, f"cat {flag}")
+            assert code == 0, out
+            return bool(json.loads(out).get("maintenance_mode"))
+
+        code, out = harness.exec_in_frappe(
+            daemon.project,
+            f"cd {harness.DEFAULT_BENCH_PATH} && bench --site {site} set-maintenance-mode on",
+        )
+        assert code == 0, out
+        try:
+            assert _maintenance_on() is True, "the precondition: the site IS in maintenance"
+            body = _post(
+                daemon.base + "/api/v1/actions",
+                {"action": "clear_maintenance", "project": daemon.project, "site": site},
+            )
+            assert body["data"]["outcome"] == {
+                "project": daemon.project,
+                "bench_path": harness.DEFAULT_BENCH_PATH,
+                "site": site,
+                "maintenance_off": True,
+            }
+            assert _maintenance_on() is False
+        finally:
+            # Belt and braces: never leave the shared site at 503.
+            harness.exec_in_frappe(
+                daemon.project,
+                f"cd {harness.DEFAULT_BENCH_PATH} && bench --site {site} set-maintenance-mode off",
+            )
+
+    def test_stop_bench_then_start_restores_the_shared_bench(self, daemon):
+        """``stop_bench`` takes ONE bench's supervisord down and leaves the
+        container up; ``start_instance`` with the same bench brings it back."""
+        self._prime(daemon)
+        _wait_for(
+            lambda: _instance(daemon.base, daemon.project)["overall"] == "running",
+            desc="a running bench to stop",
+        )
+        try:
+            body = _post(
+                daemon.base + "/api/v1/actions",
+                {"action": "stop_bench", "project": daemon.project, "bench": "0"},
+            )
+            outcome = body["data"]["outcome"]
+            assert outcome["already_stopped"] is False
+            assert "web" in outcome["stopped_processes"]
+            state = _wait_for(
+                lambda: (
+                    _instance(daemon.base, daemon.project)
+                    if _instance(daemon.base, daemon.project)["overall"] in ("online", "offline")
+                    else None
+                ),
+                desc="the bench to read as down",
+            )
+            assert state["container_running"] is True, "only the bench stopped, not the container"
+        finally:
+            started = _post(
+                daemon.base + "/api/v1/actions",
+                {"action": "start_instance", "project": daemon.project, "bench": "0"},
+            )
+            assert "data" in started
+            harness.wait_for_site_ready(daemon.project, harness.DEFAULT_SITE)
+            _wait_for(
+                lambda: _instance(daemon.base, daemon.project)["overall"] == "running",
+                desc="the bench to serve again",
+                timeout=180,
+            )
 
     def test_the_scale_confirm_arrives_from_core_not_the_page(self, daemon):
-        import urllib.error
-
         self._prime(daemon)
         # Another shared-instance E2E may already have widened the init default of
         # six ports. Request one beyond the live compose range so expansion is
@@ -403,7 +537,7 @@ class TestTierAActions:
         requested_count = int(web_range.group(1)) - 8000 + 2
         with pytest.raises(urllib.error.HTTPError) as e:
             _post(
-                daemon.base + "/api/action",
+                daemon.base + "/api/v1/actions",
                 {
                     "action": "scale_instance",
                     "project": daemon.project,
@@ -412,35 +546,40 @@ class TestTierAActions:
             )
 
         assert e.value.code == 409
-        body = json.loads(e.value.read())
-        assert body["error"]["kind"] == "needs_choice"
-        assert body["error"]["code"] == "confirm_scale"
-        assert "RESTARTS" in body["error"]["message"]
+        error = json.loads(e.value.read())["errors"][0]
+        assert error["type"] == "needs_choice"
+        assert error["title"] == "confirm_scale"
+        assert "RESTARTS" in error["message"]
 
         # The covering case is a consent-free idempotent no-op that changes nothing.
         noop = _post(
-            daemon.base + "/api/action",
+            daemon.base + "/api/v1/actions",
             {"action": "scale_instance", "project": daemon.project},
         )
-        assert noop["ok"] is True
-        assert noop["outcome"]["expanded"] is False
+        assert noop["data"]["outcome"]["expanded"] is False
 
-    def test_the_logs_read_serves_real_supervisor_logs(self, daemon):
-        body = _get(daemon.base + f"/api/instance/{daemon.project}/logs?lines=20")
+    def test_the_logs_read_is_resumable_against_real_supervisor_logs(self, daemon):
+        body = _get(daemon.base + f"/api/v1/instances/{daemon.project}/logs?lines=20")["data"]
 
-        assert body["ok"] is True
         read = body["outcome"]
         assert read["not_cwcli_supervised"] is False
         processes = {group["process"] for group in read["logs"]}
         assert "web" in processes
         web = next(g for g in read["logs"] if g["process"] == "web")
         assert web["lines"], "a served bench's web log must not be empty"
+        assert web["offset"] > 0
 
-    def test_where_reports_the_real_instance_as_present_and_verified(self, daemon):
+        # Resume from the cursor: nothing new is nothing, never the same lines again.
+        after = ",".join(f"{g['process']}:{g['offset']}" for g in read["logs"])
+        again = _get(daemon.base + f"/api/v1/instances/{daemon.project}/logs?after={after}")["data"]
+        web_again = next(g for g in again["outcome"]["logs"] if g["process"] == "web")
+        assert web_again["offset"] >= web["offset"]
+        assert web["lines"][-1] not in web_again["lines"] or web_again["offset"] > web["offset"]
+
+    def test_search_reports_the_real_instance_as_present_and_verified(self, daemon):
         self._prime(daemon)
-        body = _get(daemon.base + "/api/where?q=frappe")
+        body = _get(daemon.base + "/api/v1/search?q=frappe")["data"]
 
-        assert body["ok"] is True
         assert body["verified"] is True, "with Docker reachable the sweep must verify"
         ours = [m for m in body["matches"] if m["project"] == daemon.project]
         assert ours, "the real instance's frappe app must match"
@@ -448,7 +587,6 @@ class TestTierAActions:
 
     def test_refresh_and_checkout_round_trip_without_leaving_git_state(self, daemon):
         import shlex
-        import urllib.error
 
         self._prime(daemon)
         app_dir = f"{harness.DEFAULT_BENCH_PATH}/apps/frappe"
@@ -471,15 +609,14 @@ class TestTierAActions:
 
         try:
             refreshed = _post(
-                daemon.base + "/api/action",
+                daemon.base + "/api/v1/actions",
                 {"action": "refresh_status", "project": daemon.project},
             )
-            assert refreshed["ok"] is True
-            assert refreshed["outcome"]["project"] == daemon.project
-            assert refreshed["outcome"]["container_running"] is True
+            assert refreshed["data"]["outcome"]["project"] == daemon.project
+            assert refreshed["data"]["outcome"]["container_running"] is True
 
             checked_out = _post(
-                daemon.base + "/api/action",
+                daemon.base + "/api/v1/actions",
                 {
                     "action": "checkout_app",
                     "project": daemon.project,
@@ -487,8 +624,7 @@ class TestTierAActions:
                     "ref": branch,
                 },
             )
-            assert checked_out["ok"] is True
-            assert [row["action"] for row in checked_out["outcome"]["results"]] == [
+            assert [row["action"] for row in checked_out["data"]["outcome"]["results"]] == [
                 "fetch",
                 "checkout",
                 "restart-processes",
@@ -502,7 +638,7 @@ class TestTierAActions:
             assert code == 0, output
             with pytest.raises(urllib.error.HTTPError) as exc:
                 _post(
-                    daemon.base + "/api/action",
+                    daemon.base + "/api/v1/actions",
                     {
                         "action": "checkout_app",
                         "project": daemon.project,
@@ -511,9 +647,9 @@ class TestTierAActions:
                     },
                 )
             assert exc.value.code == 409
-            refusal = json.loads(exc.value.read())
-            assert refusal["error"]["code"] == "app.dirty_tree"
-            assert "README.md" in refusal["error"]["message"]
+            refusal = json.loads(exc.value.read())["errors"][0]
+            assert refusal["title"] == "app.dirty_tree"
+            assert "README.md" in refusal["message"]
             code, output = harness.exec_in_frappe(
                 daemon.project, f"grep -F {shlex.quote(marker)} {shlex.quote(tracked)}"
             )

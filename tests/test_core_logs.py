@@ -14,6 +14,7 @@ file pins that the command tests could not:
 
 from __future__ import annotations
 
+import dataclasses
 import shlex
 
 import pytest
@@ -473,3 +474,73 @@ def test_read_carries_no_live_object_and_is_plain_data(wire):
     assert isinstance(dumped, dict)
     assert "docker" not in repr(dumped)
     assert all(isinstance(g["file"], str) for g in dumped["logs"])
+
+
+# ------------------------------------------------------------ the resumable tail
+# `read_logs_since` backs the web UI's log pane (polled every couple of seconds):
+# a cold read is the last N lines plus a byte cursor per process, a warm read is
+# only the bytes written since that cursor, whole lines only.
+
+
+class CursorContainer(LogFsContainer):
+    """``LogFsContainer`` plus the two reads the resumable tail makes: ``stat -c``
+    for sizes and ``tail -c +N`` / ``tail -n N`` over raw bytes."""
+
+    def __init__(self, raw: dict[str, bytes]):
+        super().__init__(existing=list(raw))
+        self.raw = raw
+
+    def exec_run(self, cmd, workdir=None, environment=None):
+        if cmd[0] == "stat":
+            return 0, "".join(f"{len(self.raw[p])} {p}\n" for p in cmd[3:]).encode()
+        if cmd[0] == "tail" and cmd[1] == "-c":
+            return 0, self.raw[cmd[3]][int(cmd[2][1:]) - 1 :]
+        if cmd[0] == "tail" and cmd[1] == "-n":
+            return 0, b"".join(self.raw[cmd[3]].splitlines(keepends=True)[-int(cmd[2]) :])
+        return super().exec_run(cmd, workdir, environment)
+
+
+def test_since_cold_read_is_the_last_lines_plus_a_cursor_at_the_end(wire):
+    c = CursorContainer({"/w/bench/logs/web.supervisor.log": b"a\nb\nc\n"})
+    wire(c)
+    result = core_logs.read_logs_since("proj", lines=2)
+    assert result.status is Status.OK
+    tail = result.data.logs[0]
+    assert tail.process == "web"
+    assert tail.lines == ["b", "c"]
+    assert tail.offset == 6  # the file's current end, so the next poll sees only new bytes
+
+
+def test_since_warm_read_returns_only_whole_new_lines(wire):
+    path = "/w/bench/logs/web.supervisor.log"
+    c = CursorContainer({path: b"a\nb\nc\nd\ne"})  # "e" has no newline yet
+    wire(c)
+    tail = core_logs.read_logs_since("proj", after={"web": 6}).data.logs[0]
+    assert tail.lines == ["d"]
+    assert tail.offset == 8  # stops at the last newline; "e" is read next time
+    c.raw[path] += b"\nf\n"
+    tail = core_logs.read_logs_since("proj", after={"web": 8}).data.logs[0]
+    assert tail.lines == ["e", "f"]
+    assert tail.offset == 12
+
+
+def test_since_idle_and_rotated_files_never_hang_the_cursor(wire):
+    path = "/w/bench/logs/web.supervisor.log"
+    c = CursorContainer({path: b"a\nb\n"})
+    wire(c)
+    idle = core_logs.read_logs_since("proj", after={"web": 4}).data.logs[0]
+    assert idle.lines == [] and idle.offset == 4
+    c.raw[path] = b"x\n"  # rotated: smaller than the cursor -> cold read again
+    rotated = core_logs.read_logs_since("proj", after={"web": 4}).data.logs[0]
+    assert rotated.lines == ["x"] and rotated.offset == 2
+
+
+def test_since_carries_no_live_object_and_shares_the_resolve(wire):
+    c = CursorContainer({"/w/bench/logs/web.supervisor.log": b"a\n"})
+    wire(c)
+    data = core_logs.read_logs_since("proj").data
+    assert dataclasses.asdict(data)  # plain data all the way down
+    assert data.bench_path == "/w/bench" and data.container_name == "proj-frappe-1"
+    # The same resolve as read_logs: an unknown process is its select_process choice.
+    unknown = core_logs.read_logs_since("proj", process="nope")
+    assert unknown.status is Status.NEEDS_CHOICE and unknown.choice.kind == "select_process"

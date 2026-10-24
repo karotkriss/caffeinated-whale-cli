@@ -7,11 +7,8 @@ the shipped ones - the parts a mocked handler would never catch.
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import http.client
 import json
-import re
 import socket
 import threading
 import time
@@ -31,36 +28,16 @@ from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from caffeinated_whale_cli.core.inspect import BenchInfo, InspectReport, SiteInfo
 from caffeinated_whale_cli.core.label import LabelOutcome
 from caffeinated_whale_cli.core.list import InstanceDTO
-from caffeinated_whale_cli.core.logs import LogsRead, ProcessLog
+from caffeinated_whale_cli.core.logs import LogsTail, ProcessTail
 from caffeinated_whale_cli.core.restart import ProcessRestartOutcome
 from caffeinated_whale_cli.core.start import ProcessLaunch, StartOutcome
-from caffeinated_whale_cli.core.stop import StopOutcome
+from caffeinated_whale_cli.core.stop import BenchStopOutcome, StopOutcome
 from caffeinated_whale_cli.core.unlock import UnlockOutcome
 from caffeinated_whale_cli.core.url import UrlProbe
 from caffeinated_whale_cli.core.where import WhereMatch, WhereResult
 
 _TIMEOUT = 5.0
 _TOKEN = "frontend-test-token"
-
-
-def _render_template_pattern(source, name):
-    tag = source.split(f'name="{name}"', 1)[1].split(">", 1)[0]
-    encoded = tag.split('pattern="', 1)[1].split('"', 1)[0]
-    rendered = []
-    cursor = 0
-    while cursor < len(encoded):
-        if encoded[cursor] != "\\":
-            rendered.append(encoded[cursor])
-            cursor += 1
-            continue
-        cursor += 1
-        if cursor == len(encoded):
-            rendered.append("\\")
-            break
-        escaped = encoded[cursor]
-        rendered.append({"\\": "\\", "n": "\n", "r": "\r", "t": "\t"}.get(escaped, escaped))
-        cursor += 1
-    return tag, "".join(rendered)
 
 
 @pytest.fixture
@@ -191,148 +168,154 @@ def _wait_for(predicate, message):
 
 class TestSnapshot:
     def test_the_whole_model_is_one_json_read(self, daemon):
-        status, body = _get(daemon.base + "/api/snapshot")
+        status, body = _get(daemon.base + "/api/v1/instances")
         assert status == 200
-        assert [i["project"] for i in body["instances"]] == ["p"]
+        assert [i["project"] for i in body["data"]] == ["p"]
         # Nothing has probed yet, and the snapshot says so rather than guessing.
-        assert body["instances"][0]["overall"] == core_fleet.UNKNOWN
-        assert body["instances"][0]["probe_ms"] is None
-        assert body["instances"][0]["probe_failed_at"] is None
+        assert body["data"][0]["overall"] == core_fleet.UNKNOWN
+        assert body["data"][0]["probe_ms"] is None
+        assert body["data"][0]["probe_failed_at"] is None
 
     def test_an_unknown_path_is_404(self, daemon):
         with pytest.raises(urllib.error.HTTPError) as e:
             _get(daemon.base + "/api/nope")
         assert e.value.code == 404
 
-    def test_the_root_serves_the_console_ui(self, daemon):
-        with urllib.request.urlopen(daemon.base + "/", timeout=_TIMEOUT) as resp:  # noqa: S310
-            body = resp.read().decode()
-        assert resp.status == 200
-        # The daemon sends the page's OWN content CSP. connect-src 'self' confines
-        # fetch/EventSource to this origin so instance data cannot be exfiltrated
-        # to a remote host.
-        csp = resp.headers["Content-Security-Policy"]
-        assert csp == serve_cmd._CONSOLE_CSP
-        assert "default-src 'none'" in csp
-        assert "connect-src 'self'" in csp
-        assert "frame-ancestors 'none'" in csp
-        assert resp.headers["X-Frame-Options"] == "DENY"
-        assert resp.headers["X-Content-Type-Options"] == "nosniff"
-        assert 'data-app="cw-console"' in body
-        assert "EventSource" in body
-        assert "start_instance" in body
-        assert "restart_process" in body
-        assert 'role="status" aria-live="polite"' in body
-        assert "restoreControlFocus" in body
-        assert 'role="tablist" aria-label="Instance details"' in body
-        assert 'role="tabpanel"' in body
-        assert 'aria-selected="${selectedTab ? "true" : "false"}"' in body
-        assert 'aria-controls="detail"' in body
-        assert 'event.key === "ArrowRight"' in body
-        assert 'role="${lastAction.ok' not in body
-        assert 'textContent = lastAction ? lastAction.text : ""' in body
-        assert "throwaway test page" not in body
-        assert "rm-site" not in body
-        assert "Delete instance" not in body
 
-    def test_the_csp_is_strict_and_allows_exactly_the_pages_own_inline_blocks(self, daemon):
-        """No 'unsafe-inline': the one inline <script> and the one inline <style>
-        are each allowed by the sha256 of the bytes actually served, so any other
-        inline script, handler or style - an injection - is refused by the browser.
-        """
+class TestWebUi:
+    """``/`` and every non-API path serve the built single-page app (package data)."""
+
+    @pytest.fixture
+    def built(self, monkeypatch, tmp_path):
+        dist = tmp_path / "dist"
+        (dist / "assets").mkdir(parents=True)
+        (dist / "index.html").write_text("<!doctype html><div id=app></div>")
+        (dist / "assets" / "app-abc123.js").write_text("console.log(1)")
+        (dist / "csp.json").write_text(json.dumps({"style-src": ["'sha256-reka'"]}))
+        (tmp_path / "secret.txt").write_text("outside dist")
+        monkeypatch.setattr(serve_cmd, "WEBUI_DIST", dist)
+        return dist
+
+    def test_an_unbuilt_install_says_so_at_the_root_only(self, daemon, monkeypatch, tmp_path):
+        monkeypatch.setattr(serve_cmd, "WEBUI_DIST", tmp_path / "missing")
         with urllib.request.urlopen(daemon.base + "/", timeout=_TIMEOUT) as resp:  # noqa: S310
             body = resp.read().decode()
-            csp = resp.headers["Content-Security-Policy"]
+        assert "not built" in body and "npm run build" in body
+        assert "<script" not in body
+        assert resp.headers["Content-Security-Policy"].startswith("default-src 'none'")
+        with pytest.raises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(daemon.base + "/instances", timeout=_TIMEOUT)  # noqa: S310
+        assert e.value.code == 404
+
+    def test_the_index_carries_the_strict_csp_with_the_builds_hashes(self, daemon, built):
+        with urllib.request.urlopen(daemon.base + "/", timeout=_TIMEOUT) as resp:  # noqa: S310
+            body = resp.read().decode()
+        assert "id=app" in body
+        csp = resp.headers["Content-Security-Policy"]
         assert "unsafe-inline" not in csp and "unsafe-eval" not in csp
         directives = dict(d.strip().split(" ", 1) for d in csp.split(";"))
-        for tag, directive in (("script", "script-src"), ("style", "style-src")):
-            assert body.count(f"<{tag}") == 1, f"a second inline <{tag}> would be blocked"
-            block = body.split(f"<{tag}>", 1)[1].split(f"</{tag}>", 1)[0]
-            digest = base64.b64encode(hashlib.sha256(block.encode()).digest()).decode()
-            assert directives[directive] == f"'sha256-{digest}'"
-        # Inline handlers and style attributes would need 'unsafe-inline'.
-        assert not re.search(r"<[a-z]+\b[^<>]*\s(on[a-z]+|style)\s*=", body)
+        assert directives["default-src"] == "'none'"
+        assert directives["script-src"] == "'self'"
+        assert directives["style-src"] == "'self' 'sha256-reka'"  # merged from csp.json
+        assert directives["connect-src"] == "'self'"
+        assert directives["frame-ancestors"] == "'none'"
+        assert resp.headers["X-Frame-Options"] == "DENY"
+        assert resp.headers["Cache-Control"] == "no-cache"
 
-    def test_required_action_inputs_reject_whitespace_only_natively(self, daemon):
-        """P2-1: a whitespace-only value used to pass ``required``, get dropped
-        by the JS ``.trim()`` guard, and close the modal with no action and no
-        feedback - two adjacent invalid inputs behaving completely differently.
+    def test_deep_links_fall_back_to_the_index_so_the_router_owns_them(self, daemon, built):
+        for path in ("/instances", "/instances/p/benches/0", "/settings"):
+            with urllib.request.urlopen(daemon.base + path, timeout=_TIMEOUT) as resp:  # noqa: S310
+                assert "id=app" in resp.read().decode(), path
+                assert "Content-Security-Policy" in resp.headers
 
-        The fix makes native validation catch whitespace exactly as it catches
-        empty, on every required rail-action input that is then trimmed. The
-        ``site`` input is deliberately NOT in this set: blank there means the
-        bench's default site, a valid choice, not a silent discard.
-        """
-        with urllib.request.urlopen(daemon.base + "/", timeout=_TIMEOUT) as resp:  # noqa: S310
+    def test_hashed_assets_are_immutable_and_typed(self, daemon, built):
+        url = daemon.base + "/assets/app-abc123.js"
+        with urllib.request.urlopen(url, timeout=_TIMEOUT) as resp:  # noqa: S310
+            assert resp.read() == b"console.log(1)"
+        assert resp.headers["Content-Type"] == "text/javascript"
+        assert "immutable" in resp.headers["Cache-Control"]
+        assert "Content-Security-Policy" not in resp.headers
+
+    @pytest.mark.parametrize(
+        "path", ["/../secret.txt", "/assets/../../secret.txt", "/%2e%2e/secret.txt"]
+    )
+    def test_a_traversal_never_leaves_dist(self, daemon, built, path):
+        # A refused segment degrades to the index fallback, never to the file.
+        with urllib.request.urlopen(daemon.base + path, timeout=_TIMEOUT) as resp:  # noqa: S310
             body = resp.read().decode()
-        for name in ("label", "app", "ref"):
-            tag, rendered_pattern = _render_template_pattern(body, name)
-            assert "required" in tag
-            assert rendered_pattern == r".*\S.*"
-        # The optional site input keeps blank meaning "default site".
-        site_tag = body.split('name="site"', 1)[1].split(">", 1)[0]
-        assert "required" not in site_tag
+        assert "outside dist" not in body
 
-    def test_the_console_ui_keeps_its_tightening_invariants(self, daemon):
-        """The phase-4 hardening pins: connection honesty, honest boot state,
-        screen-reader churn control, and exposed tree semantics."""
-        with urllib.request.urlopen(daemon.base + "/", timeout=_TIMEOUT) as resp:  # noqa: S310
-            body = resp.read().decode()
-        # A lost connection is shown, not whispered: a visible banner names the
-        # stale data and its timestamp, and a dedicated live region announces
-        # the loss and the recovery exactly once each.
-        assert 'id="conn-banner"' in body
-        assert "Connection lost - reconnecting. Showing last known state" in body
-        assert "Connection restored - live again." in body
-        assert 'id="conn-status"' in body
-        # A hard-closed EventSource self-reconnects; every reconnect re-opens
-        # /api/events whose first frame is a full snapshot - never a replay.
-        assert "EventSource.CLOSED" in body
-        assert "since=" not in body
-        # Transport readiness is not data readiness: only an applied snapshot
-        # restores live state, and callbacks from a replaced source do nothing.
-        assert "const es = new EventSource(url);" in body
-        assert body.count("if (source !== es) return;") == 4
-        open_handler = body.split('es.addEventListener("open"', 1)[1].split(
-            'es.addEventListener("snapshot"', 1
-        )[0]
-        assert 'setConnection("open")' not in open_handler
-        snapshot_handler = body.split('es.addEventListener("snapshot"', 1)[1].split(
-            'es.addEventListener("delta"', 1
-        )[0]
-        assert snapshot_handler.index("render();") < snapshot_handler.index(
-            'setConnection("open");'
+    def test_spa_file_refuses_every_escape_shape(self, built):
+        assert serve_cmd._spa_file("/../secret.txt") is None
+        assert serve_cmd._spa_file("/assets/..\\..\\secret.txt") is None
+        assert serve_cmd._spa_file("/nope.js") is None
+        assert serve_cmd._spa_file("/assets/app-abc123.js") is not None
+
+    def test_the_page_and_every_api_route_are_distinct(self, daemon, built):
+        """``/api/*`` is never the page: an unknown API path is a 404, not index.html."""
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _get(daemon.base + "/api/v1/nope")
+        assert e.value.code == 404
+        assert json.loads(e.value.read())["errors"][0]["title"] == "route.not_found"
+
+
+class TestLoginCodeMint:
+    """``POST /api/v1/session/code``: how ``cwcli ui`` signs a second browser in."""
+
+    def test_a_bearer_caller_gets_a_fresh_single_use_code(self, daemon):
+        status, body = _post(daemon.base + "/api/v1/session/code", {})
+        assert status == 200
+        code = body["data"]["code"]
+        assert len(code) > 20
+        # It redeems exactly once.
+        req = urllib.request.Request(
+            daemon.base + "/api/v1/session",
+            data=json.dumps({"code": code}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
         )
-        # A removal delta can replace the selected instance, so the visible
-        # selection and the daemon's per-tab probe focus must move together.
-        delta_handler = body.split('es.addEventListener("delta"', 1)[1].split("es.onerror", 1)[0]
-        assert delta_handler.index("render();") < delta_handler.index("syncFocus();")
-        # "No instances found" is a claim only a snapshot can back; before one
-        # arrives the page says it is still waiting.
-        assert "Waiting for the daemon - no fleet data yet" in body
-        # The event log is a visual feed, NOT a live region: it is re-rendered
-        # wholesale on every delta, which a polite region re-announces in full.
-        assert '<div id="event-log" class="event-log"></div>' in body
-        # Tree semantics are exposed, not just styled.
-        assert "aria-expanded" in body
-        assert 'aria-current="true"' in body
-        # Above 760px the viewport-fixed shell makes panels scroll; the narrow
-        # layout deliberately restores page scrolling.
-        assert "height: 100vh" in body
-        assert ".rail {\n    max-height: none;\n  }" in body
-        # The summary reflows when the action rail becomes a bottom band, so
-        # long values do not leave a one-letter orphan in the narrow detail pane.
-        mid_width_rules = body.split("@media (max-width: 1050px)", 1)[1].split(
-            "@media (max-width: 760px)", 1
-        )[0]
-        assert (
-            ".summary-grid {\n    grid-template-columns: repeat(2, minmax(0, 1fr));\n  }"
-        ) in mid_width_rules
+        bare = urllib.request.build_opener()  # the fixture's opener carries the bearer
+        with bare.open(req, timeout=_TIMEOUT) as resp:
+            assert resp.status == 200 and "Set-Cookie" in resp.headers
+        with pytest.raises(urllib.error.HTTPError) as e:
+            bare.open(req, timeout=_TIMEOUT)
+        assert e.value.code == 401
+
+    def test_minting_replaces_the_outstanding_code(self, daemon):
+        first = _post(daemon.base + "/api/v1/session/code", {})[1]["data"]["code"]
+        _post(daemon.base + "/api/v1/session/code", {})
+        req = urllib.request.Request(
+            daemon.base + "/api/v1/session",
+            data=json.dumps({"code": first}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as e:
+            urllib.request.build_opener().open(req, timeout=_TIMEOUT)
+        assert e.value.code == 401
+
+    def test_a_session_cookie_cannot_mint(self, daemon):
+        """A signed-in page must not be able to make sign-in links for others."""
+        _status, _body = _post(daemon.base + "/api/v1/session", {})
+        # The opener carries the bearer; a cookie-only client is a fresh request.
+        port = daemon.base.rsplit(":", 1)[1]
+        handler = daemon.httpd.RequestHandlerClass
+        jar = f"{serve_cmd.SESSION_COOKIE}_{port}={handler.session_id}"
+        req = urllib.request.Request(
+            daemon.base + "/api/v1/session/code",
+            data=b"{}",
+            headers={"Content-Type": "application/json", "Cookie": jar},
+            method="POST",
+        )
+        opener = urllib.request.build_opener()  # no bearer header
+        with pytest.raises(urllib.error.HTTPError) as e:
+            opener.open(req, timeout=_TIMEOUT)
+        assert e.value.code == 401
 
 
 class TestEventStream:
     def test_the_first_frame_is_a_full_snapshot(self, daemon):
-        stream = _Stream(daemon.base + "/api/events")
+        stream = _Stream(daemon.base + "/api/v1/stream")
         try:
             event, data = stream.next_frame()
             assert event == "snapshot"
@@ -341,7 +324,7 @@ class TestEventStream:
             stream.close()
 
     def test_a_fast_delta_reaches_the_client_tagged_with_its_tier(self, daemon):
-        stream = _Stream(daemon.base + "/api/events")
+        stream = _Stream(daemon.base + "/api/v1/stream")
         try:
             stream.next_frame()  # the snapshot
             _wait_for(lambda: daemon.hub.client_count() == 1, "client never registered")
@@ -357,7 +340,7 @@ class TestEventStream:
             stream.close()
 
     def test_an_instant_delta_carries_the_docker_action_that_caused_it(self, daemon):
-        stream = _Stream(daemon.base + "/api/events")
+        stream = _Stream(daemon.base + "/api/v1/stream")
         try:
             stream.next_frame()
             _wait_for(lambda: daemon.hub.client_count() == 1, "client never registered")
@@ -383,7 +366,7 @@ class TestEventStream:
             stream.close()
 
     def test_a_removal_is_published_as_a_null_instance(self, daemon):
-        stream = _Stream(daemon.base + "/api/events")
+        stream = _Stream(daemon.base + "/api/v1/stream")
         try:
             stream.next_frame()
             _wait_for(lambda: daemon.hub.client_count() == 1, "client never registered")
@@ -397,7 +380,7 @@ class TestEventStream:
             stream.close()
 
     def test_every_client_gets_the_same_delta(self, daemon):
-        streams = [_Stream(daemon.base + "/api/events") for _ in range(3)]
+        streams = [_Stream(daemon.base + "/api/v1/stream") for _ in range(3)]
         try:
             for s in streams:
                 s.next_frame()
@@ -412,7 +395,7 @@ class TestEventStream:
                 s.close()
 
     def test_an_idle_connection_gets_keepalive_comments(self, daemon):
-        stream = _Stream(daemon.base + "/api/events")
+        stream = _Stream(daemon.base + "/api/v1/stream")
         try:
             stream.next_frame()
             _wait_for(lambda: daemon.hub.client_count() == 1, "client never registered")
@@ -428,7 +411,7 @@ class TestEventStream:
             stream.close()
 
     def test_a_browser_half_closed_request_still_receives_deltas(self, daemon):
-        stream = _RawSseSocket(daemon.base, "/api/events?focus=p")
+        stream = _RawSseSocket(daemon.base, "/api/v1/stream?focus=p")
         try:
             stream.next_frame()
             _wait_for(lambda: daemon.hub.client_count() == 1, "client never registered")
@@ -476,7 +459,7 @@ class TestFocus:
     def test_the_connection_itself_carries_which_instance_is_open(self, daemon):
         assert daemon.fleet.should_probe_web("p") is False
 
-        stream = _Stream(daemon.base + "/api/events?focus=p")
+        stream = _Stream(daemon.base + "/api/v1/stream?focus=p")
         try:
             stream.next_frame()
             _wait_for(
@@ -490,7 +473,7 @@ class TestFocus:
         self, daemon, monkeypatch
     ):
         monkeypatch.setattr(serve_cmd, "KEEPALIVE_S", 0.05)
-        stream = _Stream(daemon.base + "/api/events?focus=p")
+        stream = _Stream(daemon.base + "/api/v1/stream?focus=p")
         stream.next_frame()
         _wait_for(lambda: daemon.fleet.should_probe_web("p"), "focus never reached the fleet")
 
@@ -538,11 +521,11 @@ class TestDetail:
             ),
         )
 
-        status, body = _get(daemon.base + "/api/instance/p/detail")
+        status, body = _get(daemon.base + "/api/v1/instances/p")
 
         assert status == 200
-        assert body["served_from"] == "partial"
-        site = body["benches"][0]["sites"][0]
+        assert body["data"]["served_from"] == "partial"
+        site = body["data"]["benches"][0]["sites"][0]
         assert site["installed_apps_verified"] is False, "a remembered ref must not read as fresh"
 
     def test_it_never_auto_starts_a_stopped_instance(self, daemon, monkeypatch):
@@ -558,7 +541,7 @@ class TestDetail:
             )
 
         monkeypatch.setattr(core_inspect, "inspect", _inspect)
-        _get(daemon.base + "/api/instance/p/detail")
+        _get(daemon.base + "/api/v1/instances/p")
 
         assert seen["refresh"] == "auto"
         assert seen["offer_choice"] is False
@@ -582,9 +565,9 @@ class TestDetail:
         monkeypatch.setattr(core_inspect, "inspect", _raise)
 
         with pytest.raises(urllib.error.HTTPError) as e:
-            _get(daemon.base + "/api/instance/p/detail")
+            _get(daemon.base + "/api/v1/instances/p")
         assert e.value.code == expected
-        assert json.loads(e.value.read())["error"]["code"] == "some.code"
+        assert json.loads(e.value.read())["errors"][0]["title"] == "some.code"
 
 
 class TestActions:
@@ -592,7 +575,7 @@ class TestActions:
 
     def test_action_preflight_does_not_grant_cross_origin_access(self, daemon):
         req = urllib.request.Request(
-            daemon.base + "/api/action",
+            daemon.base + "/api/v1/actions",
             method="OPTIONS",
             headers={
                 "Origin": "https://example.invalid",
@@ -612,7 +595,7 @@ class TestActions:
             lambda project: pytest.fail("cross-origin action must not dispatch"),
         )
         req = urllib.request.Request(
-            daemon.base + "/api/action",
+            daemon.base + "/api/v1/actions",
             data=b'{"action": "stop_instance", "project": "p"}',
             method="POST",
             headers={
@@ -627,7 +610,7 @@ class TestActions:
 
         assert e.value.code == 403
         body = json.loads(e.value.read())
-        assert body["error"]["code"] == "action.origin_forbidden"
+        assert body["errors"][0]["title"] == "action.origin_forbidden"
 
     def test_action_body_must_be_json_before_dispatch(self, daemon, monkeypatch):
         monkeypatch.setattr(
@@ -636,7 +619,7 @@ class TestActions:
             lambda project: pytest.fail("non-JSON action must not dispatch"),
         )
         req = urllib.request.Request(
-            daemon.base + "/api/action",
+            daemon.base + "/api/v1/actions",
             data=b'{"action": "stop_instance", "project": "p"}',
             method="POST",
             headers={"Content-Type": "text/plain"},
@@ -647,12 +630,12 @@ class TestActions:
 
         assert e.value.code == 415
         body = json.loads(e.value.read())
-        assert body["error"]["code"] == "request.content_type_invalid"
+        assert body["errors"][0]["title"] == "request.content_type_invalid"
 
     def test_negative_content_length_is_rejected_before_reading(self, daemon):
         host, port = daemon.base.removeprefix("http://").split(":", 1)
         connection = http.client.HTTPConnection(host, int(port), timeout=_TIMEOUT)
-        connection.putrequest("POST", "/api/action")
+        connection.putrequest("POST", "/api/v1/actions")
         connection.putheader("Content-Type", "application/json")
         connection.putheader("Content-Length", "-1")
         connection.endheaders()
@@ -662,7 +645,7 @@ class TestActions:
         connection.close()
 
         assert response.status == 400
-        assert body["error"]["code"] == "request.length_invalid"
+        assert body["errors"][0]["title"] == "request.length_invalid"
 
     def test_start_instance_dispatches_to_the_core(self, daemon, monkeypatch):
         called = {}
@@ -687,13 +670,13 @@ class TestActions:
         monkeypatch.setattr(serve_cmd.core_start, "start", _start)
 
         status, body = _post(
-            daemon.base + "/api/action",
+            daemon.base + "/api/v1/actions",
             {"action": "start_instance", "project": "p", "bench": "0"},
         )
 
         assert status == 200
-        assert body["ok"] is True
-        assert body["outcome"]["bench_path"] == "/workspace/frappe-bench"
+        assert "data" in body
+        assert body["data"]["outcome"]["bench_path"] == "/workspace/frappe-bench"
         assert called["project"] == "p"
         assert called["bench"] == "0"
 
@@ -715,7 +698,7 @@ class TestActions:
         monkeypatch.setattr(serve_cmd.core_stop, "stop", _stop)
 
         status, body = _post(
-            daemon.base + "/api/action",
+            daemon.base + "/api/v1/actions",
             {"action": "stop_instance", "project": "p"},
             headers={
                 "Origin": daemon.base,
@@ -724,8 +707,8 @@ class TestActions:
         )
 
         assert status == 200
-        assert body["ok"] is True
-        assert body["outcome"]["stopped"] == 3
+        assert "data" in body
+        assert body["data"]["outcome"]["stopped"] == 3
         assert called["project"] == "p"
 
     def test_stop_instance_reports_an_unclean_database_as_failure(self, daemon, monkeypatch):
@@ -750,14 +733,14 @@ class TestActions:
         )
 
         with pytest.raises(urllib.error.HTTPError) as exc:
-            _post(daemon.base + "/api/action", {"action": "stop_instance", "project": "p"})
+            _post(daemon.base + "/api/v1/actions", {"action": "stop_instance", "project": "p"})
 
         assert exc.value.code == 500
         body = json.loads(exc.value.read())
-        assert body["ok"] is False
-        assert body["error"]["code"] == "stop.db_unclean"
-        assert body["warnings"][0]["code"] == "stop.db_unclean"
-        assert body["warnings"][0]["text"] == warning.text
+        assert "errors" in body
+        assert body["errors"][0]["title"] == "stop.db_unclean"
+        assert body["errors"][0]["warnings"][0]["code"] == "stop.db_unclean"
+        assert body["errors"][0]["warnings"][0]["text"] == warning.text
 
     def test_restart_instance_completes_with_the_stop_warning(self, daemon, monkeypatch):
         warning = Message("stop.db_unclean", "The database exited with code 137.")
@@ -801,13 +784,13 @@ class TestActions:
         )
 
         status, body = _post(
-            daemon.base + "/api/action", {"action": "restart_instance", "project": "p"}
+            daemon.base + "/api/v1/actions", {"action": "restart_instance", "project": "p"}
         )
 
         assert status == 200
-        assert body["ok"] is True
-        assert body["warnings"][0]["code"] == "stop.db_unclean"
-        assert body["warnings"][0]["text"] == warning.text
+        assert "data" in body
+        assert body["data"]["warnings"][0]["code"] == "stop.db_unclean"
+        assert body["data"]["warnings"][0]["text"] == warning.text
 
     def test_restart_process_dispatches_to_the_core_and_refreshes_fast_tier(
         self, daemon, monkeypatch
@@ -834,14 +817,14 @@ class TestActions:
         )
 
         status, body = _post(
-            daemon.base + "/api/action",
+            daemon.base + "/api/v1/actions",
             {"action": "restart_process", "project": "p", "bench": "0", "process": "web"},
         )
 
         assert status == 200
-        assert body["ok"] is True
-        assert body["outcome"]["old_pid"] == 11
-        assert body["outcome"]["new_pid"] == 12
+        assert "data" in body
+        assert body["data"]["outcome"]["old_pid"] == 11
+        assert body["data"]["outcome"]["new_pid"] == 12
         assert called == {"project": "p", "process": "web", "bench": "0", "probe": "p"}
 
     def test_start_refuses_port_conflicts_without_stopping_other_instances(
@@ -860,13 +843,13 @@ class TestActions:
         )
 
         with pytest.raises(urllib.error.HTTPError) as e:
-            _post(daemon.base + "/api/action", {"action": "start_instance", "project": "p"})
+            _post(daemon.base + "/api/v1/actions", {"action": "start_instance", "project": "p"})
 
         assert e.value.code == 409
         body = json.loads(e.value.read())
-        assert body["error"]["code"] == "start.port_conflict"
-        assert "other" in body["error"]["message"]
-        assert "8100" in body["error"]["message"]
+        assert body["errors"][0]["title"] == "start.port_conflict"
+        assert "other" in body["errors"][0]["message"]
+        assert "8100" in body["errors"][0]["message"]
 
     def test_restart_instance_resolves_bench_before_stopping(self, daemon, monkeypatch):
         choice = Choice(
@@ -888,12 +871,12 @@ class TestActions:
         )
 
         with pytest.raises(urllib.error.HTTPError) as e:
-            _post(daemon.base + "/api/action", {"action": "restart_instance", "project": "p"})
+            _post(daemon.base + "/api/v1/actions", {"action": "restart_instance", "project": "p"})
 
         assert e.value.code == 409
         body = json.loads(e.value.read())
-        assert body["error"]["code"] == "select_bench"
-        assert body["choice"]["options"][0]["value"] == "0"
+        assert body["errors"][0]["title"] == "select_bench"
+        assert body["errors"][0]["choice"]["options"][0]["value"] == "0"
 
     def test_same_project_actions_are_serialized(self, daemon, monkeypatch):
         entered = threading.Event()
@@ -928,7 +911,7 @@ class TestActions:
         def _request():
             try:
                 _post(
-                    daemon.base + "/api/action",
+                    daemon.base + "/api/v1/actions",
                     {"action": "stop_instance", "project": "p"},
                 )
             except Exception as error:
@@ -964,11 +947,11 @@ class TestActions:
 
     def test_unsupported_actions_are_rejected(self, daemon):
         with pytest.raises(urllib.error.HTTPError) as e:
-            _post(daemon.base + "/api/action", {"action": "rm_instance", "project": "p"})
+            _post(daemon.base + "/api/v1/actions", {"action": "rm_instance", "project": "p"})
 
         assert e.value.code == 400
         body = json.loads(e.value.read())
-        assert body["error"]["code"] == "action.unsupported"
+        assert body["errors"][0]["title"] == "action.unsupported"
 
     def test_the_action_set_is_exactly_tier_a(self, daemon):
         """The allowed set is the captain's Tier A ruling and nothing more: no
@@ -976,21 +959,24 @@ class TestActions:
         build/rm/rm-site) and no deferred Tier C verb (restore/uninstall/run/
         open/config) may appear here without its own decision."""
         with pytest.raises(urllib.error.HTTPError) as e:
-            _post(daemon.base + "/api/action", {"action": "nope", "project": "p"})
+            _post(daemon.base + "/api/v1/actions", {"action": "nope", "project": "p"})
 
-        hint = json.loads(e.value.read())["error"]["hint"]
+        hint = json.loads(e.value.read())["errors"][0]["hint"]
         named = set(hint.removeprefix("Allowed actions are ").removesuffix(".").split(", "))
         assert named == {
             "start_instance",
             "stop_instance",
             "restart_instance",
+            "stop_bench",
             "restart_process",
             "refresh_status",
             "set_label",
             "unlock_site",
+            "clear_maintenance",
             "scale_instance",
             "checkout_app",
         }
+        assert named == set(serve_cmd.ACTIONS)
 
 
 class TestTierAActions:
@@ -1019,21 +1005,21 @@ class TestTierAActions:
         )
 
         status, body = _post(
-            daemon.base + "/api/action",
+            daemon.base + "/api/v1/actions",
             {"action": "set_label", "project": "p", "bench": "0", "label": "dev"},
         )
 
         assert status == 200
-        assert body["ok"] is True
-        assert body["outcome"]["label"] == "dev"
+        assert "data" in body
+        assert body["data"]["outcome"]["label"] == "dev"
         assert called == {"project": "p", "bench": "0", "label": "dev", "probe": "p"}
 
     def test_set_label_requires_a_label(self, daemon):
         with pytest.raises(urllib.error.HTTPError) as e:
-            _post(daemon.base + "/api/action", {"action": "set_label", "project": "p"})
+            _post(daemon.base + "/api/v1/actions", {"action": "set_label", "project": "p"})
 
         assert e.value.code == 400
-        assert json.loads(e.value.read())["error"]["code"] == "action.label_required"
+        assert json.loads(e.value.read())["errors"][0]["title"] == "action.label_required"
 
     def test_unlock_site_dispatches_to_the_core(self, daemon, monkeypatch):
         called = {}
@@ -1054,13 +1040,13 @@ class TestTierAActions:
         monkeypatch.setattr(serve_cmd.core_unlock, "unlock", _unlock)
 
         status, body = _post(
-            daemon.base + "/api/action",
+            daemon.base + "/api/v1/actions",
             {"action": "unlock_site", "project": "p", "site": "a.localhost"},
         )
 
         assert status == 200
-        assert body["ok"] is True
-        assert body["outcome"]["removed"] == ["a.lock"]
+        assert "data" in body
+        assert body["data"]["outcome"]["removed"] == ["a.lock"]
         # site omitted or blank means "the bench's default site", resolved by core.
         assert called == {"project": "p", "site": "a.localhost", "bench": None}
 
@@ -1079,12 +1065,145 @@ class TestTierAActions:
         )
 
         with pytest.raises(urllib.error.HTTPError) as e:
-            _post(daemon.base + "/api/action", {"action": "unlock_site", "project": "p"})
+            _post(daemon.base + "/api/v1/actions", {"action": "unlock_site", "project": "p"})
 
         assert e.value.code == 409
         body = json.loads(e.value.read())
-        assert body["error"]["kind"] == "needs_choice"
-        assert body["error"]["code"] == "confirm_start"
+        assert body["errors"][0]["type"] == "needs_choice"
+        assert body["errors"][0]["title"] == "confirm_start"
+
+    def test_stop_bench_dispatches_to_the_core_and_reprobes(self, daemon, monkeypatch):
+        called = {}
+
+        def _stop_bench(project, *, bench, bench_path=None):
+            called.update({"project": project, "bench": bench})
+            return Result(
+                status=Status.OK,
+                data=BenchStopOutcome(
+                    project=project,
+                    bench_path="/workspace/frappe-bench",
+                    stopped_processes=["web", "worker"],
+                    already_stopped=False,
+                ),
+            )
+
+        monkeypatch.setattr(serve_cmd.core_stop, "stop_bench", _stop_bench)
+        monkeypatch.setattr(serve_cmd.core_stop, "stop", lambda p: pytest.fail("not the instance"))
+        monkeypatch.setattr(
+            core_fleet.Fleet, "probe", lambda self, project: called.update({"probe": project})
+        )
+
+        status, body = _post(
+            daemon.base + "/api/v1/actions",
+            {"action": "stop_bench", "project": "p", "bench": "1"},
+        )
+
+        assert status == 200
+        assert body["data"]["outcome"]["stopped_processes"] == ["web", "worker"]
+        assert called == {"project": "p", "bench": "1", "probe": "p"}
+
+    def test_clear_maintenance_turns_maintenance_off_for_one_named_site(self, daemon, monkeypatch):
+        called = {}
+        container = object()
+        monkeypatch.setattr(
+            serve_cmd.core_resolvers,
+            "resolve_container_and_bench",
+            lambda project, bench, path: (container, "/workspace/frappe-bench", []),
+        )
+
+        def _clear(c, bench_path, site, *, recheck):
+            called.update(
+                {"container": c, "bench_path": bench_path, "site": site, "recheck": recheck}
+            )
+            return True
+
+        monkeypatch.setattr(serve_cmd.core_bench_ops, "clear_maintenance", _clear)
+        monkeypatch.setattr(core_fleet.Fleet, "probe", lambda self, project: None)
+
+        status, body = _post(
+            daemon.base + "/api/v1/actions",
+            {"action": "clear_maintenance", "project": "p", "site": "a.localhost"},
+        )
+
+        assert status == 200
+        assert body["data"]["outcome"] == {
+            "project": "p",
+            "bench_path": "/workspace/frappe-bench",
+            "site": "a.localhost",
+            "maintenance_off": True,
+        }
+        # Only ever OFF (recheck is the interrupt path's settle; not needed here).
+        assert called == {
+            "container": container,
+            "bench_path": "/workspace/frappe-bench",
+            "site": "a.localhost",
+            "recheck": False,
+        }
+
+    def test_clear_maintenance_requires_a_site_and_validates_it(self, daemon, monkeypatch):
+        monkeypatch.setattr(
+            serve_cmd.core_resolvers,
+            "resolve_container_and_bench",
+            lambda *a: pytest.fail("must not resolve before the site is validated"),
+        )
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _post(daemon.base + "/api/v1/actions", {"action": "clear_maintenance", "project": "p"})
+        assert e.value.code == 400
+        assert json.loads(e.value.read())["errors"][0]["title"] == "action.site_required"
+
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _post(
+                daemon.base + "/api/v1/actions",
+                {"action": "clear_maintenance", "project": "p", "site": "a;rm -rf /"},
+            )
+        assert e.value.code == 400
+
+    def test_clear_maintenance_that_leaves_the_site_on_is_a_failure(self, daemon, monkeypatch):
+        monkeypatch.setattr(
+            serve_cmd.core_resolvers,
+            "resolve_container_and_bench",
+            lambda project, bench, path: (object(), "/workspace/frappe-bench", []),
+        )
+        monkeypatch.setattr(serve_cmd.core_bench_ops, "clear_maintenance", lambda *a, **kw: False)
+        monkeypatch.setattr(core_fleet.Fleet, "probe", lambda self, project: None)
+
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _post(
+                daemon.base + "/api/v1/actions",
+                {"action": "clear_maintenance", "project": "p", "site": "a.localhost"},
+            )
+        assert e.value.code == 500
+        body = json.loads(e.value.read())
+        assert body["errors"][0]["title"] == "maintenance.still_on"
+        assert "set-maintenance-mode off" in body["errors"][0]["hint"]
+        assert body["errors"][0]["outcome"]["maintenance_off"] is False
+
+    def test_clear_maintenance_on_a_stopped_instance_is_a_409_not_an_auto_start(
+        self, daemon, monkeypatch
+    ):
+        choice = Choice(
+            kind="confirm_start",
+            param="auto_start",
+            prompt="Project 'p' is not running.",
+            options=[],
+        )
+        monkeypatch.setattr(
+            serve_cmd.core_resolvers,
+            "resolve_container_and_bench",
+            lambda project, bench, path: Result(status=Status.NEEDS_CHOICE, choice=choice),
+        )
+        monkeypatch.setattr(
+            serve_cmd.core_bench_ops,
+            "clear_maintenance",
+            lambda *a, **kw: pytest.fail("must not run on a stopped instance"),
+        )
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _post(
+                daemon.base + "/api/v1/actions",
+                {"action": "clear_maintenance", "project": "p", "site": "a.localhost"},
+            )
+        assert e.value.code == 409
+        assert json.loads(e.value.read())["errors"][0]["title"] == "confirm_start"
 
     def test_scale_without_consent_relays_the_core_confirm(self, daemon, monkeypatch):
         """The scale confirm is CORE-driven: core.scale answers NEEDS_CHOICE/
@@ -1108,13 +1227,13 @@ class TestTierAActions:
         monkeypatch.setattr(serve_cmd.core_scale, "scale", _scale)
 
         with pytest.raises(urllib.error.HTTPError) as e:
-            _post(daemon.base + "/api/action", {"action": "scale_instance", "project": "p"})
+            _post(daemon.base + "/api/v1/actions", {"action": "scale_instance", "project": "p"})
 
         assert e.value.code == 409
         body = json.loads(e.value.read())
-        assert body["error"]["kind"] == "needs_choice"
-        assert body["error"]["code"] == "confirm_scale"
-        assert "RESTARTS" in body["error"]["message"]
+        assert body["errors"][0]["type"] == "needs_choice"
+        assert body["errors"][0]["title"] == "confirm_scale"
+        assert "RESTARTS" in body["errors"][0]["message"]
         assert called == {"project": "p", "to": None, "consent": False}
 
     def test_scale_consent_must_be_the_json_boolean_true(self, daemon, monkeypatch):
@@ -1134,12 +1253,12 @@ class TestTierAActions:
 
         with pytest.raises(urllib.error.HTTPError):
             _post(
-                daemon.base + "/api/action",
+                daemon.base + "/api/v1/actions",
                 {"action": "scale_instance", "project": "p", "consent": "yes"},
             )
         with pytest.raises(urllib.error.HTTPError):
             _post(
-                daemon.base + "/api/action",
+                daemon.base + "/api/v1/actions",
                 {"action": "scale_instance", "project": "p", "consent": 1},
             )
 
@@ -1159,7 +1278,7 @@ class TestTierAActions:
 
         with pytest.raises(urllib.error.HTTPError):
             _post(
-                daemon.base + "/api/action",
+                daemon.base + "/api/v1/actions",
                 {"action": "scale_instance", "project": "p", "to": 8},
             )
         assert calls == [{"to": 8, "consent": False}]
@@ -1169,11 +1288,11 @@ class TestTierAActions:
         for bad in (True, "8"):
             with pytest.raises(urllib.error.HTTPError) as e:
                 _post(
-                    daemon.base + "/api/action",
+                    daemon.base + "/api/v1/actions",
                     {"action": "scale_instance", "project": "p", "to": bad},
                 )
             assert e.value.code == 400
-            assert json.loads(e.value.read())["error"]["code"] == "action.to_invalid"
+            assert json.loads(e.value.read())["errors"][0]["title"] == "action.to_invalid"
         assert len(calls) == 1
 
     def test_checkout_app_never_forwards_reset_or_auto_start(self, daemon, monkeypatch):
@@ -1200,7 +1319,7 @@ class TestTierAActions:
         monkeypatch.setattr(serve_cmd.cache, "recache_project", lambda project, **_k: True)
 
         status, body = _post(
-            daemon.base + "/api/action",
+            daemon.base + "/api/v1/actions",
             {
                 "action": "checkout_app",
                 "project": "p",
@@ -1212,7 +1331,7 @@ class TestTierAActions:
         )
 
         assert status == 200
-        assert body["ok"] is True
+        assert "data" in body
         assert called["project"] == "p"
         assert called["app"] == "erpnext"
         assert called["ref"] == "feature-x"
@@ -1229,7 +1348,7 @@ class TestTierAActions:
 
         with pytest.raises(urllib.error.HTTPError) as exc:
             _post(
-                daemon.base + "/api/action",
+                daemon.base + "/api/v1/actions",
                 {
                     "action": "checkout_app",
                     "project": "p",
@@ -1239,7 +1358,7 @@ class TestTierAActions:
             )
 
         assert exc.value.code == 400
-        assert json.loads(exc.value.read())["error"]["code"] == "app.invalid_component"
+        assert json.loads(exc.value.read())["errors"][0]["title"] == "app.invalid_component"
         assert dispatched == []
 
     def test_a_failed_checkout_reports_failure_with_gits_own_words(self, daemon, monkeypatch):
@@ -1276,15 +1395,19 @@ class TestTierAActions:
             or True,
         )
 
-        status, body = _post(
-            daemon.base + "/api/action",
-            {"action": "checkout_app", "project": "p", "app": "erpnext", "ref": "nope"},
-        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            _post(
+                daemon.base + "/api/v1/actions",
+                {"action": "checkout_app", "project": "p", "app": "erpnext", "ref": "nope"},
+            )
 
-        assert status == 200
-        assert body["ok"] is False
-        assert body["error"]["code"] == "app.step_failed"
-        assert "couldn't find remote ref" in body["error"]["message"]
+        # A failed git step is NOT a 200: the envelope's errors[0] is what the
+        # page renders, and the report rides along as its outcome.
+        assert exc.value.code == 422
+        body = json.loads(exc.value.read())
+        assert body["errors"][0]["title"] == "app.step_failed"
+        assert body["errors"][0]["outcome"]["ok"] is False
+        assert "couldn't find remote ref" in body["errors"][0]["message"]
         assert recached == []
 
     def test_a_successful_checkout_recaches_and_a_failed_recache_is_a_warning(
@@ -1310,14 +1433,14 @@ class TestTierAActions:
         )
 
         status, body = _post(
-            daemon.base + "/api/action",
+            daemon.base + "/api/v1/actions",
             {"action": "checkout_app", "project": "p", "app": "erpnext", "ref": "main"},
         )
 
         assert recached == [("p", "/workspace/frappe-bench")]  # only the checked-out bench
         assert status == 200
-        assert body["ok"] is True, "the checkout landed; a failed recache must not fail it"
-        assert any(w["code"] == "cache.recache_failed" for w in body["warnings"])
+        assert "data" in body, "the checkout landed; a failed recache must not fail it"
+        assert any(w["code"] == "cache.recache_failed" for w in body["data"]["warnings"])
 
     def test_refresh_status_rebootstraps_and_reprobes(self, daemon, monkeypatch):
         called = []
@@ -1327,23 +1450,23 @@ class TestTierAActions:
         )
 
         status, body = _post(
-            daemon.base + "/api/action", {"action": "refresh_status", "project": "p"}
+            daemon.base + "/api/v1/actions", {"action": "refresh_status", "project": "p"}
         )
 
         assert status == 200
-        assert body["ok"] is True
-        assert body["outcome"]["project"] == "p"
+        assert "data" in body
+        assert body["data"]["outcome"]["project"] == "p"
         assert called == ["bootstrap", "probe:p"]
 
     def test_refresh_status_of_a_missing_project_is_404(self, daemon):
         with pytest.raises(urllib.error.HTTPError) as e:
-            _post(daemon.base + "/api/action", {"action": "refresh_status", "project": "ghost"})
+            _post(daemon.base + "/api/v1/actions", {"action": "refresh_status", "project": "ghost"})
 
         assert e.value.code == 404
 
 
 class TestLogsEndpoint:
-    """GET /api/instance/<p>/logs - the bounded read, action-guarded."""
+    """GET /api/v1/instances/<p>/logs - the bounded read, action-guarded."""
 
     def _read(self, monkeypatch, result_or_exc, seen=None):
         def _read_logs(project, **kwargs):
@@ -1353,7 +1476,7 @@ class TestLogsEndpoint:
                 raise result_or_exc
             return result_or_exc
 
-        monkeypatch.setattr(serve_cmd.core_logs, "read_logs", _read_logs)
+        monkeypatch.setattr(serve_cmd.core_logs, "read_logs_since", _read_logs)
 
     def test_it_dispatches_the_query_to_the_core_read(self, daemon, monkeypatch):
         seen: dict = {}
@@ -1361,17 +1484,17 @@ class TestLogsEndpoint:
             monkeypatch,
             Result(
                 status=Status.OK,
-                data=LogsRead(
+                data=LogsTail(
                     project="p",
                     container_name="p-frappe-1",
                     bench_path="/workspace/frappe-bench",
-                    lines_requested=50,
                     not_cwcli_supervised=False,
                     logs=[
-                        ProcessLog(
+                        ProcessTail(
                             process="web",
                             file="/workspace/frappe-bench/logs/web.supervisor.log",
                             lines=["one", "two"],
+                            offset=8,
                         )
                     ],
                 ),
@@ -1379,17 +1502,26 @@ class TestLogsEndpoint:
             seen,
         )
 
-        status, body = _get(daemon.base + "/api/instance/p/logs?lines=50&bench=0&process=web")
+        status, body = _get(
+            daemon.base + "/api/v1/instances/p/logs?lines=50&bench=0&process=web&after=web:3"
+        )
 
         assert status == 200
-        assert body["ok"] is True
-        assert body["outcome"]["logs"][0]["lines"] == ["one", "two"]
-        assert seen == {"project": "p", "bench": "0", "process": "web", "lines": 50}
+        assert body["data"]["outcome"]["logs"][0]["lines"] == ["one", "two"]
+        # The cursor rides back so the next poll resumes from it.
+        assert body["data"]["outcome"]["logs"][0]["offset"] == 8
+        assert seen == {
+            "project": "p",
+            "bench": "0",
+            "process": "web",
+            "lines": 50,
+            "after": {"web": 3},
+        }
 
     def test_it_is_not_cors_open_and_refuses_cross_origin_reads(self, daemon, monkeypatch):
         self._read(monkeypatch, AssertionError("cross-origin read must not dispatch"))
         req = urllib.request.Request(
-            daemon.base + "/api/instance/p/logs",
+            daemon.base + "/api/v1/instances/p/logs",
             headers={"Origin": "https://example.invalid", "Sec-Fetch-Site": "cross-site"},
         )
 
@@ -1413,25 +1545,25 @@ class TestLogsEndpoint:
         )
 
         with pytest.raises(urllib.error.HTTPError) as e:
-            _get(daemon.base + "/api/instance/p/logs")
+            _get(daemon.base + "/api/v1/instances/p/logs")
 
         assert e.value.code == 409
         body = json.loads(e.value.read())
-        assert body["error"]["kind"] == "needs_choice"
-        assert body["choice"]["options"][0]["value"] == "0"
+        assert body["errors"][0]["type"] == "needs_choice"
+        assert body["errors"][0]["choice"]["options"][0]["value"] == "0"
 
     def test_bad_lines_values_are_400_without_dispatch(self, daemon, monkeypatch):
         self._read(monkeypatch, AssertionError("an invalid lines value must not dispatch"))
 
         for lines in ("abc", "0", "1001", "-5"):
             with pytest.raises(urllib.error.HTTPError) as e:
-                _get(daemon.base + f"/api/instance/p/logs?lines={lines}")
+                _get(daemon.base + f"/api/v1/instances/p/logs?lines={lines}")
             assert e.value.code == 400
-            assert json.loads(e.value.read())["error"]["code"] == "logs.lines_invalid"
+            assert json.loads(e.value.read())["errors"][0]["title"] == "logs.lines_invalid"
 
 
 class TestWhereEndpoint:
-    """GET /api/where - the cache search, verified/remembered tokens intact."""
+    """GET /api/v1/search - the cache search, verified/remembered tokens intact."""
 
     def test_the_verified_and_project_state_tokens_pass_through(self, daemon, monkeypatch):
         seen: dict = {}
@@ -1459,12 +1591,12 @@ class TestWhereEndpoint:
 
         monkeypatch.setattr(serve_cmd.core_where, "where", _where)
 
-        status, body = _get(daemon.base + "/api/where?q=erp")
+        status, body = _get(daemon.base + "/api/v1/search?q=erp")
 
         assert status == 200
         assert seen["term"] == "erp"
-        assert body["verified"] is False, "an unreachable daemon must not read as verified"
-        assert body["matches"][0]["project_state"] == "unverified"
+        assert body["data"]["verified"] is False, "an unreachable daemon must not read as verified"
+        assert body["data"]["matches"][0]["project_state"] == "unverified"
 
     def test_an_empty_term_is_400(self, daemon, monkeypatch):
         monkeypatch.setattr(
@@ -1475,9 +1607,9 @@ class TestWhereEndpoint:
 
         for query in ("", "?q=", "?q=%20"):
             with pytest.raises(urllib.error.HTTPError) as e:
-                _get(daemon.base + "/api/where" + query)
+                _get(daemon.base + "/api/v1/search" + query)
             assert e.value.code == 400
-            assert json.loads(e.value.read())["error"]["code"] == "where.term_required"
+            assert json.loads(e.value.read())["errors"][0]["title"] == "where.term_required"
 
     def test_it_refuses_cross_origin_reads(self, daemon, monkeypatch):
         monkeypatch.setattr(
@@ -1486,7 +1618,7 @@ class TestWhereEndpoint:
             lambda term, **kw: pytest.fail("cross-origin read must not dispatch"),
         )
         req = urllib.request.Request(
-            daemon.base + "/api/where?q=erp",
+            daemon.base + "/api/v1/search?q=erp",
             headers={"Origin": "https://example.invalid", "Sec-Fetch-Site": "cross-site"},
         )
 
@@ -1496,95 +1628,8 @@ class TestWhereEndpoint:
         assert e.value.code == 403
 
 
-class TestTierAConsoleUi:
-    """The page's Tier A pins: exact button set, core-driven confirm, honest reads."""
-
-    @pytest.fixture
-    def page(self, daemon):
-        with urllib.request.urlopen(daemon.base + "/", timeout=_TIMEOUT) as resp:  # noqa: S310
-            return resp.read().decode()
-
-    def test_the_rail_renders_exactly_the_tier_a_buttons(self, page):
-        """A greyed-out or dead button for an excluded verb counts as building
-        it; the button set is pinned to exactly the allowed action set."""
-        import re
-
-        rendered = set(re.findall(r'actionButton\("([a-z_]+)"', page))
-        assert rendered == {
-            "start_instance",
-            "stop_instance",
-            "restart_instance",
-            "restart_process",
-            "refresh_status",
-            "set_label",
-            "unlock_site",
-            "scale_instance",
-            "checkout_app",
-        }
-
-    def test_no_excluded_tier_verb_has_a_surface(self, page):
-        # Tier B waits on the job backend; Tier C is deferred per-verb. None of
-        # them may appear as a button label or an action token.
-        for token in (
-            "Backup",
-            "Migrate",
-            "Restore",
-            "Uninstall",
-            "Install app",
-            "Update app",
-            "Run tests",
-            "Build assets",
-            "Remove instance",
-            "Drop site",
-            "rm-site",
-            "Delete instance",
-        ):
-            assert token not in page, f"excluded verb surfaced: {token}"
-
-    def test_the_scale_confirm_is_core_driven_and_typed_name(self, page):
-        # The modal opens ONLY off core's 409 confirm_scale, renders core's own
-        # message, and the confirm button stays disabled until the project name
-        # is typed back exactly. Its retry stays bound to the project whose
-        # request produced that confirmation, even if selection changes.
-        assert 'error.code === "confirm_scale"' in page
-        assert "openScaleConfirm(payload.project, error.message" in page
-        assert "confirm.disabled = input.value !== project;" in page
-        assert "Object.assign({consent: true}" in page
-        assert "Object.assign({consent: false}" in page
-        assert "async function runAction(action, extra, targetProject)" in page
-        assert "targetProject ? model.get(targetProject)" in page
-        consent_retry = page.split("Object.assign({consent: true}", 1)[1].split(");", 1)[0]
-        assert "project" in consent_retry
-
-    def test_the_checkout_form_sends_only_app_and_ref(self, page):
-        assert 'runAction("checkout_app", {app, ref})' in page
-        assert "reset: " not in page, "the page must never send a reset flag"
-
-    def test_the_new_read_surfaces_render_honest_unknowns(self, page):
-        # where: the three project_state tokens each have a distinct rendering,
-        # and an unverified sweep is announced rather than dressed as live.
-        assert "could not verify" in page
-        assert "instance gone" in page
-        assert "matches are remembered, not verified" in page
-        # logs: an empty read and a not-cwcli-supervised bench say what they are.
-        assert "No logs written yet" in page
-        assert "raw bench logs - not cwcli supervised" in page
-        # apps detail: a cache row missing version/branch says "not recorded".
-        assert "not recorded" in page
-
-    def test_the_fleet_search_lives_outside_the_rerendered_rail(self, page):
-        # The rail body re-renders on every delta; an input inside it would
-        # lose its text and focus mid-typing. The search panel is static.
-        rail_body_render = page.split('el("rail-body").innerHTML')[1].split("restoreControlFocus")[
-            0
-        ]
-        assert "where-input" not in rail_body_render
-        assert '<form id="where-form"' in page
-        assert 'id="where-input"' in page
-
-
 class TestUrlEndpoint:
-    """GET /api/instance/<p>/url - the fresh host-URL + reachability probe.
+    """GET /api/v1/instances/<p>/url - the fresh host-URL + reachability probe.
 
     A pure read, but it execs curl in the container, so it inherits the action
     guards (same-origin only, serialized under the project lock) - the read_logs
@@ -1620,12 +1665,12 @@ class TestUrlEndpoint:
             seen,
         )
 
-        status, body = _get(daemon.base + "/api/instance/p/url?bench=0&site=dev.localhost")
+        status, body = _get(daemon.base + "/api/v1/instances/p/url?bench=0&site=dev.localhost")
 
         assert status == 200
-        assert body["ok"] is True
-        assert body["outcome"]["url"] == "http://dev.localhost:8000"
-        assert body["outcome"]["reachable"] is True
+        assert "data" in body
+        assert body["data"]["outcome"]["url"] == "http://dev.localhost:8000"
+        assert body["data"]["outcome"]["reachable"] is True
         assert seen == {"project": "p", "bench": "0", "site": "dev.localhost"}
 
     def test_an_unresolved_port_is_reported_honestly_not_guessed(self, daemon, monkeypatch):
@@ -1645,16 +1690,16 @@ class TestUrlEndpoint:
             ),
         )
 
-        status, body = _get(daemon.base + "/api/instance/p/url")
+        status, body = _get(daemon.base + "/api/v1/instances/p/url")
 
         assert status == 200
-        assert body["outcome"]["url"] is None
-        assert body["outcome"]["reachable"] is False
+        assert body["data"]["outcome"]["url"] is None
+        assert body["data"]["outcome"]["reachable"] is False
 
     def test_it_refuses_cross_origin_reads(self, daemon, monkeypatch):
         self._probe(monkeypatch, AssertionError("cross-origin read must not dispatch"))
         req = urllib.request.Request(
-            daemon.base + "/api/instance/p/url",
+            daemon.base + "/api/v1/instances/p/url",
             headers={"Origin": "https://example.invalid", "Sec-Fetch-Site": "cross-site"},
         )
 
@@ -1678,12 +1723,12 @@ class TestUrlEndpoint:
         )
 
         with pytest.raises(urllib.error.HTTPError) as e:
-            _get(daemon.base + "/api/instance/p/url")
+            _get(daemon.base + "/api/v1/instances/p/url")
 
         assert e.value.code == 409
         body = json.loads(e.value.read())
-        assert body["error"]["kind"] == "needs_choice"
-        assert body["choice"]["options"][0]["value"] == "0"
+        assert body["errors"][0]["type"] == "needs_choice"
+        assert body["errors"][0]["choice"]["options"][0]["value"] == "0"
 
     def test_a_core_error_becomes_the_matching_http_status(self, daemon, monkeypatch):
         self._probe(
@@ -1692,13 +1737,13 @@ class TestUrlEndpoint:
         )
 
         with pytest.raises(urllib.error.HTTPError) as e:
-            _get(daemon.base + "/api/instance/p/url")
+            _get(daemon.base + "/api/v1/instances/p/url")
 
         assert e.value.code == 404
 
 
 class TestDoctorEndpoint:
-    """GET /api/doctor - the system-wide read-only preflight."""
+    """GET /api/v1/doctor - the system-wide read-only preflight."""
 
     def _report(self, monkeypatch, report):
         monkeypatch.setattr(
@@ -1741,15 +1786,20 @@ class TestDoctorEndpoint:
             ),
         )
 
-        status, body = _get(daemon.base + "/api/doctor")
+        status, body = _get(daemon.base + "/api/v1/doctor")
 
         assert status == 200
-        assert (body["passed"], body["warned"], body["failed"], body["ok"]) == (2, 1, 0, True)
+        assert (
+            body["data"]["passed"],
+            body["data"]["warned"],
+            body["data"]["failed"],
+            body["data"]["ok"],
+        ) == (2, 1, 0, True)
         # The enum is flattened to its value token, not left unserializable.
-        assert [c["status"] for c in body["checks"]] == ["pass", "pass", "warn"]
+        assert [c["status"] for c in body["data"]["checks"]] == ["pass", "pass", "warn"]
         # A version check that could not reach PyPI stays honestly unverified.
-        assert body["checks"][1]["version_verified"] is False
-        assert body["checks"][2]["fix"] == "install sendme for peer-to-peer transfer"
+        assert body["data"]["checks"][1]["version_verified"] is False
+        assert body["data"]["checks"][2]["fix"] == "install sendme for peer-to-peer transfer"
 
     def test_a_failed_check_carries_through_so_the_page_can_render_action_needed(
         self, daemon, monkeypatch
@@ -1774,11 +1824,11 @@ class TestDoctorEndpoint:
             ),
         )
 
-        status, body = _get(daemon.base + "/api/doctor")
+        status, body = _get(daemon.base + "/api/v1/doctor")
 
         assert status == 200
-        assert body["ok"] is False
-        assert body["checks"][0]["status"] == "fail"
+        assert body["data"]["ok"] is False
+        assert body["data"]["checks"][0]["status"] == "fail"
 
     def test_it_is_gated_by_authentication(self, monkeypatch):
         # The read reveals home paths, versions and port collisions, so it sits
@@ -1806,7 +1856,7 @@ class TestDoctorEndpoint:
         base = f"http://127.0.0.1:{httpd.server_address[1]}"
         try:
             with pytest.raises(urllib.error.HTTPError) as e:
-                _get(base + "/api/doctor")
+                _get(base + "/api/v1/doctor")
             assert e.value.code in (401, 403)
         finally:
             httpd.shutdown()
@@ -1819,7 +1869,7 @@ class TestDoctorEndpoint:
             lambda: pytest.fail("cross-origin doctor must not dispatch"),
         )
         req = urllib.request.Request(
-            daemon.base + "/api/doctor",
+            daemon.base + "/api/v1/doctor",
             headers={"Origin": "https://example.invalid", "Sec-Fetch-Site": "cross-site"},
         )
 
@@ -1828,46 +1878,3 @@ class TestDoctorEndpoint:
 
         assert e.value.code == 403
         assert e.value.headers.get("Access-Control-Allow-Origin") is None
-
-
-class TestPhase1ReadSurfaces:
-    """The page carries the doctor and url READ surfaces, kept off the pinned
-    Tier A action-button set (a read is not a mutating action)."""
-
-    @pytest.fixture
-    def page(self, daemon):
-        with urllib.request.urlopen(daemon.base + "/", timeout=_TIMEOUT) as resp:  # noqa: S310
-            return resp.read().decode()
-
-    def test_the_doctor_screen_is_reachable_and_renders_all_three_tiers(self, page):
-        assert 'id="doctor-button"' in page
-        assert "async function runDoctor()" in page
-        assert 'fetch("/api/doctor")' in page
-        # pass/warn/fail all have a pill class, so no tier renders as a blank.
-        for token in (".pill.pass", ".pill.warn", ".pill.fail"):
-            assert token in page
-
-    def test_the_url_read_is_a_read_not_a_tier_a_action(self, page):
-        assert "function runUrlProbe(" in page
-        assert "/url${query}" in page
-        # It must NOT be built as an actionButton - that surface is pinned exact.
-        assert 'actionButton("probe_url"' not in page
-        assert 'readButton("url"' in page
-
-    def test_the_url_read_preserves_focus_and_announces_its_lifecycle(self, page):
-        assert "return `read:${node.dataset.read}`" in page
-        assert "URL check in progress for ${inst.project}" in page
-        assert 'el("action-status").textContent = lastAction ? lastAction.text : "";' in page
-
-    def test_the_url_read_binds_results_to_the_originating_selection(self, page):
-        assert "benchKey: benchKey(bench)" in page
-        assert "selected.project === origin.project" in page
-        assert '(selected.benchKey || "") === origin.benchKey' in page
-        assert "lastAction = selectionStillMatches ? probeResult : null;" in page
-        assert "`${p.project} / ${p.bench_path}:" in page
-
-    def test_no_later_phase_mutation_button_is_rendered(self, page):
-        # Phase 1 wires reads + lifecycle; a greyed slot for a later-phase verb
-        # would still be building its surface (the Tier A rail ruling).
-        for token in ("apps_install", "migrate_site", "backup_restore", "remove_instance"):
-            assert f'data-action="{token}"' not in page

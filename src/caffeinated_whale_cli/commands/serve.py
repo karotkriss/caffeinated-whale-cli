@@ -1,53 +1,69 @@
-"""``cwcli serve`` - the streaming Console daemon, a third frontend over the core.
+"""The cwcli web UI daemon - the HTTP/SSE frontend over the core, behind ``cwcli ui``.
 
-A FOREGROUND command started by hand and stopped with Ctrl-C. There is no
-auto-start, no background service, no boot unit: a dashboard nobody is looking at
-should not be probing anyone's Docker daemon.
+``cwcli ui`` (``commands/ui.py``) starts this daemon detached, reuses a live one,
+and opens the browser; ``cwcli ui --foreground`` runs it in the terminal. The
+``python -m caffeinated_whale_cli.commands.serve`` module entry stays as the
+developer entry with a ``--host`` override. There is no auto-start, no boot
+unit: a dashboard nobody is looking at should not be probing anyone's Docker
+daemon, and the FAST probe loop only speaks when state changes.
 
 Stdlib only (``http.server.ThreadingHTTPServer`` + ``queue`` + ``threading``) over
 ``docker``, which is already a runtime dependency - no web framework, no asyncio,
 no new dependency. Browser-native SSE over plain HTTP is what keeps this
-cross-platform down to "any browser", including the case this was built for: a
-**Windows** browser reaching a daemon bound inside **WSL**.
+cross-platform down to "any browser", including a **Windows** browser reaching
+a daemon bound inside **WSL**.
 
-Endpoints:
+The page is the built frappe-ui single-page app shipped as package data under
+``caffeinated_whale_cli/webui/dist/`` (source in the repo's ``webui/``). Every
+non-``/api/`` path serves it: a real file by name, otherwise ``index.html`` so
+the router owns deep links. An install without a build gets a one-screen notice
+naming the build command.
 
-* ``GET /``                            - the Console browser UI
-* ``GET /api/v1/meta``                 - ``version`` and the integer ``protocol``
-  a page checks before trusting the API shape it was built against (open, like
-  ``/``: it carries no fleet data)
-* ``GET /api/snapshot``                - the whole fleet model as JSON
-* ``GET /api/events[?focus=<project>]``- SSE: one ``snapshot`` event, then
-  ``delta`` events tagged ``tier: instant|fast``
-* ``GET /api/instance/<project>/detail``- the LAZY tier: cache-backed
-  ``core.inspect``, carrying its ``served_from`` and ``installed_apps_verified``
-  freshness labels through unchanged
-* ``GET /api/instance/<project>/logs`` - bounded ``core.read_logs`` tail
-  (same-origin only, like the action endpoint - log lines are more sensitive
-  than fleet health, so this read also gets the same-origin check)
-* ``GET /api/instance/<project>/url``  - ``core.url.probe_url`` host URL plus a
-  fresh reachability probe (same-origin only and serialized with project
+Endpoints. Every success body is ``{"data": ...}`` and every failure is
+``{"errors": [{"type", "title", "message", "hint", "indicator", ...}]}``, the
+envelope frappe-ui's fetch layer reads natively (``type`` is the core's
+``ErrorKind`` and ``title`` its error code).
+
+* ``GET /``                                 - the web UI (open, static)
+* ``GET /api/v1/meta``                      - ``version`` and the integer
+  ``protocol`` a page checks before trusting the API shape it was built against
+  (open, like ``/``: it carries no fleet data; deliberately NOT enveloped, since
+  it is the one read a page makes before it knows the envelope)
+* ``GET /api/v1/instances``                 - the whole fleet model
+* ``GET /api/v1/instances/<p>``             - the LAZY tier: cache-backed
+  ``core.inspect`` carrying its ``served_from`` and ``installed_apps_verified``
+  freshness labels through unchanged, plus ``cached_at``
+* ``GET /api/v1/instances/<p>/logs``        - resumable ``core.read_logs_since``
+  tail (``?bench=&process=&lines=&after=<proc>:<offset>,...``); same-origin
+  only - log lines are more sensitive than fleet health
+* ``GET /api/v1/instances/<p>/url``         - ``core.url.probe_url`` host URL plus
+  a fresh reachability probe (same-origin, serialized with the project's
   actions because it execs ``curl`` in the container)
-* ``GET /api/doctor``                  - system-wide ``core.doctor.run_all``
-  preflight, preserving every check's status and ``version_verified`` qualifier
-  (same-origin only because it exposes local environment details)
-* ``GET /api/where?q=<term>``          - ``core.where`` cache search, its
-  per-row ``project_state`` verified/remembered token passed through unchanged
-  (same-origin only, like ``/logs``)
-* ``POST /api/session``                - exchange the one-time login code (JSON
-  ``{"code": ...}``) or the bearer token for the browser session cookie
-* ``POST /api/action``                 - the Console rail's synchronous safe
-  set (the captain's Tier A ruling, 2026-07-24): start/stop/restart one
-  instance, restart one supervised process, refresh one instance's health,
-  set a bench label, unlock a site, scale the published port range (consent
-  is CORE-enforced: ``core.scale`` returns ``NEEDS_CHOICE``/``confirm_scale``
-  which this daemon renders as ``409 needs_choice`` and the page renders as a
-  typed-name confirm), and ``apps checkout`` in its no-reset form ONLY (the
-  ``reset`` flag - checkout's one destructive element - is never read from the
-  request). Long-running verbs (init, backup, apps install/update, migrate,
-  run-tests, build, rm, rm-site) wait on a job backend that does not exist
-  yet; restore/uninstall/run/open/config mutations are deferred per-verb
-  captain decisions. Neither group may grow a button or an action name here.
+* ``GET /api/v1/doctor``                    - system-wide ``core.doctor.run_all``
+* ``GET /api/v1/config``                    - ``core.config.show_config`` (read)
+* ``GET /api/v1/cache``                     - the cache inventory (remembered projects)
+* ``GET /api/v1/search?q=<term>``           - ``core.where``, its per-row
+  ``project_state`` verified/remembered token passed through unchanged
+* ``GET /api/v1/stream[?focus=<project>]``  - SSE: one ``snapshot`` event, then
+  ``delta`` events tagged ``tier: instant|fast``; one stream per tab, every
+  frame numbered with an ``id`` so ``Last-Event-ID`` reconnects are honest
+  (a reconnect always gets a fresh snapshot, which IS the resume)
+* ``POST /api/v1/session``                  - exchange the one-time login code
+  (JSON ``{"code": ...}``) or the bearer token for the browser session cookie
+* ``POST /api/v1/session/code``             - mint a fresh one-time login code
+  (bearer token ONLY; how ``cwcli ui`` signs a second browser in)
+* ``POST /api/v1/actions``                  - the synchronous safe set (the
+  captain's Tier A ruling, 2026-07-24, plus Phase 1's bench verbs): start/stop/
+  restart one instance or one bench, stop one bench, restart one supervised
+  process, refresh one instance's health, set a bench label, unlock a site,
+  take a site out of maintenance, scale the published port range (consent is
+  CORE-enforced: ``core.scale`` returns ``NEEDS_CHOICE``/``confirm_scale`` which
+  this daemon renders as ``409 needs_choice``), and ``apps checkout`` in its
+  no-reset form ONLY (the ``reset`` flag - checkout's one destructive element -
+  is never read from the request). Long-running verbs (init, backup, apps
+  install/update, migrate, run-tests, build, rm, rm-site) wait on the job
+  backend (Phase 2); restore/uninstall/run/open/config mutations are deferred
+  per-verb captain decisions. Neither group may grow an action name here.
 
 ``?focus=<project>`` is how the browser says which instance it currently has
 open, and it is the whole mechanism behind the web-probe cadence: the SSE
@@ -55,10 +71,10 @@ connection itself carries the answer, so closing the tab retracts focus when a
 later delta or keepalive discovers the closed response stream. See
 ``core.fleet.Fleet.set_focus``.
 
-**Binding.** The default is ``127.0.0.1``. Every endpoint names local projects,
-ports and sites, and the action endpoint drives lifecycle operations, so the
-listener is this machine's by default and reaching it from elsewhere is a
-deliberate act.
+**Binding.** The default is ``127.0.0.1``, and ``cwcli ui`` binds nothing else.
+Every endpoint names local projects, ports and sites, and the action endpoint
+drives lifecycle operations, so the listener is this machine's by default and
+reaching it from elsewhere is a deliberate act through the module entry.
 
 A Windows browser CAN reach a WSL-only ``127.0.0.1`` listener: WSL's default NAT
 mode forwards ``localhost`` into the distro, which Microsoft documents
@@ -87,14 +103,14 @@ when set, otherwise a random token made fresh for each launch. It is read from
 the ENVIRONMENT only and never from a flag, so it stays out of ``ps`` output
 (the ``core/init.py`` secret-transport rule), and it is never printed. Comparison
 is ``hmac.compare_digest``. A browser signs in through the one-time login code
-the banner prints as ``http://<bound address>:<port>/#login=<code>`` (``127.0.0.1``
-by default; a wildcard bind prints the outbound address): the fragment is
-never sent to a server or in a ``Referer``, the page posts it once to
-``/api/session`` and strips it from history, and a redeemed code is dead, so a
-link copied out of history or scrollback cannot be replayed. ``GET /`` and
-``GET /api/v1/meta`` stay open because they carry no fleet data, and a browser
-that could not load the page could never sign in. ``OPTIONS`` returns no data
-and dispatches no action.
+in ``http://<bound address>:<port>/#login=<code>``: the fragment is never sent
+to a server or in a ``Referer``, the page posts it once to ``/api/v1/session``
+and strips it from history, and a redeemed code is dead, so a link copied out of
+history or scrollback cannot be replayed. ``cwcli ui`` mints a fresh code for
+every browser it opens through ``POST /api/v1/session/code`` with the bearer
+token it holds in a 0600 file. ``GET /`` and ``GET /api/v1/meta`` stay open
+because they carry no fleet data, and a browser that could not load the page
+could never sign in. ``OPTIONS`` returns no data and dispatches no action.
 
 **A non-loopback bind REFUSES TO START without a token.** An explicit
 ``--host 0.0.0.0`` used to be silently unauthenticated: the same-origin guard
@@ -104,9 +120,9 @@ on the LAN could stop or restart an instance with one ``curl``. That guard is a
 CSRF guard and is correct as one; it was never authentication, and it is kept
 here as defense in depth rather than relied on.
 
-Browsers authenticate once via ``POST /api/session``, which exchanges the login
-code (or the bearer token) for a ``HttpOnly``/``SameSite=Strict`` session cookie.
-That exists because ``EventSource`` cannot send request headers, so a
+Browsers authenticate once via ``POST /api/v1/session``, which exchanges the
+login code (or the bearer token) for a ``HttpOnly``/``SameSite=Strict`` session
+cookie. That exists because ``EventSource`` cannot send request headers, so a
 header-only scheme would leave the SSE stream unauthenticatable from a page. The
 cookie carries one random daemon-wide session id, never the token itself. It is
 replayable if captured until that daemon restarts. ``HttpOnly`` and ``SameSite``
@@ -114,28 +130,33 @@ constrain browser behavior; they do not encrypt plain HTTP. A non-loopback
 listener belongs only on a trusted network.
 
 **No CORS, anywhere.** No response carries an ``Access-Control-*`` header, so no
-other origin's page can read any of it. The snapshot, event and detail reads used
-to answer every origin with ``Access-Control-Allow-Origin: *``, which let any
-website open in the browser read every bench path, site name and app branch
-while the daemon ran. Non-browser clients send the bearer token; browsers use
-the same-origin Console page and its session cookie. Cross-origin browser
-actions and the sensitive logs/url/doctor/where reads are also refused by the
-same-origin check.
+other origin's page can read any of it. Non-browser clients send the bearer
+token; browsers use the same-origin page and its session cookie. Cross-origin
+browser actions and the sensitive logs/url/doctor/config/cache/search reads are
+also refused by the same-origin check.
+
+**Content-Security-Policy.** The SPA runs under ``script-src 'self'`` with no
+inline script (Vite's ``assetsInlineLimit: 0`` keeps fonts and icons out of
+``data:`` script/style URIs). The one exception is the ``<style>`` block reka-ui's
+ScrollArea injects at runtime, allowed by hash: the webui build computes it from
+the installed reka-ui and writes ``dist/csp.json``, which this daemon merges into
+``style-src``, so the hash follows the dependency version rather than a constant
+someone has to remember to update.
 """
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import hmac
 import ipaddress
 import json
+import mimetypes
 import os
 import platform
 import queue
 import secrets
 import socket
 import threading
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, is_dataclass
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -146,6 +167,8 @@ import typer
 
 from .. import __version__
 from ..core import apps as core_apps
+from ..core import bench_ops as core_bench_ops
+from ..core import config as core_config
 from ..core import doctor as core_doctor
 from ..core import fleet as core_fleet
 from ..core import inspect as core_inspect
@@ -173,7 +196,8 @@ TOKEN_ENV = "CWCLI_SERVE_TOKEN"
 SESSION_COOKIE = "cwcli_serve_session"
 # Bumped on any change a page built against an older daemon could misread, so a
 # page compares it with the number it was built for instead of parsing versions.
-PROTOCOL_VERSION = 1
+# 2: the /api/v1 routes and the {data}/{errors} envelope (Phase 1).
+PROTOCOL_VERSION = 2
 
 # Map the core's closed error kinds onto equivalent HTTP statuses.
 _HTTP_FOR_KIND = {
@@ -186,39 +210,103 @@ _HTTP_FOR_KIND = {
 }
 _MAX_ACTION_BODY = 64 * 1024
 _ACTION_LOCK_STRIPES = 64
-CONSOLE_PAGE = (
-    files("caffeinated_whale_cli.commands").joinpath("console.html").read_text(encoding="utf-8")
+
+# The synchronous safe action set. See the module docstring for what may NOT be
+# added here without its own decision.
+ACTIONS = frozenset(
+    {
+        "start_instance",
+        "stop_instance",
+        "restart_instance",
+        "stop_bench",
+        "restart_process",
+        "refresh_status",
+        "set_label",
+        "unlock_site",
+        "clear_maintenance",
+        "scale_instance",
+        "checkout_app",
+    }
 )
 
+# ------------------------------------------------------------------ the web UI
 
-def _inline_source_hash(page: str, tag: str) -> str:
-    """The CSP hash source for the page's ONE inline ``<tag>`` block."""
-    body = page.split(f"<{tag}>", 1)[1].split(f"</{tag}>", 1)[0]
-    digest = base64.b64encode(hashlib.sha256(body.encode("utf-8")).digest()).decode()
-    return f"'sha256-{digest}'"
+# Package data written by `cd webui && npm run build`; git-ignored in the tree.
+WEBUI_DIST = files("caffeinated_whale_cli.webui").joinpath("dist")
+_SPA_CSP_BASE: dict[str, list[str]] = {
+    "default-src": ["'none'"],
+    "script-src": ["'self'"],
+    "style-src": ["'self'"],
+    # lucide icons are CSS masks on data: SVG URIs (frappe-ui's tailwind plugin).
+    "img-src": ["'self'", "data:"],
+    "font-src": ["'self'"],
+    "connect-src": ["'self'"],
+    "base-uri": ["'none'"],
+    "form-action": ["'none'"],
+    "frame-ancestors": ["'none'"],
+}
+_MIME = {
+    ".js": "text/javascript",
+    ".mjs": "text/javascript",
+    ".css": "text/css",
+    ".json": "application/json",
+    ".svg": "image/svg+xml",
+    ".woff2": "font/woff2",
+    ".woff": "font/woff",
+    ".html": "text/html; charset=utf-8",
+}
+# The notice an unbuilt install serves at `/`: no script, no style, so its CSP
+# is the strictest possible and nothing on it needs a hash.
+UNBUILT_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>cwcli web UI not built</title></head>
+<body><h1>The cwcli web UI is not built in this install.</h1>
+<p>This is a source checkout without a frontend build. From the repository root run:</p>
+<pre>cd webui &amp;&amp; npm ci &amp;&amp; npm run build</pre>
+<p>then reload. Released packages ship the UI prebuilt.</p>
+</body></html>
+"""
 
 
-# Content-Security-Policy served WITH the Console page.
-#
-# Strict: no ``'unsafe-inline'``. ``console.html`` is one self-contained file with
-# exactly one inline ``<script>`` and one inline ``<style>`` and no inline event
-# handlers or ``style`` attributes, so each block is allowed by its own hash and
-# nothing else inline can run - an injected ``<script>`` or ``onerror=`` is
-# refused by the browser even if a rendering sink ever lets markup through. The
-# hashes are computed from the page as shipped, so editing it cannot desync them.
-# ``connect-src 'self'`` confines every ``fetch`` and ``EventSource`` to this
-# origin, so a page rendering instance names, ports and log tails cannot be
-# turned into an exfiltration channel. ``default-src 'none'`` denies everything
-# not named here; framing, base-URI hijack and form posts are all shut.
-_CONSOLE_CSP = (
-    "default-src 'none'; "
-    f"script-src {_inline_source_hash(CONSOLE_PAGE, 'script')}; "
-    f"style-src {_inline_source_hash(CONSOLE_PAGE, 'style')}; "
-    "connect-src 'self'; "
-    "base-uri 'none'; "
-    "form-action 'none'; "
-    "frame-ancestors 'none'"
-)
+def webui_available() -> bool:
+    """Whether a built UI is installed (the ``index.html`` package-data file exists)."""
+    try:
+        return WEBUI_DIST.joinpath("index.html").is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def spa_csp() -> str:
+    """The SPA's policy, with the build's extra hashes (``dist/csp.json``) merged in."""
+    policy = {k: list(v) for k, v in _SPA_CSP_BASE.items()}
+    try:
+        extra = json.loads(WEBUI_DIST.joinpath("csp.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        extra = {}
+    for directive, sources in extra.items():
+        if directive in policy and isinstance(sources, list):
+            policy[directive].extend(str(s) for s in sources if s)
+    return "; ".join(f"{k} {' '.join(v)}" for k, v in policy.items())
+
+
+def _spa_file(path: str):
+    """The built file a request path names, or None (``..`` and the like refuse).
+
+    Walks the package-data tree one validated segment at a time rather than
+    resolving a filesystem path: a segment that is empty, ``.``, ``..`` or carries
+    a separator can never leave ``dist/``.
+    """
+    segments = [unquote(s) for s in path.strip("/").split("/") if s]
+    if not segments:
+        return None
+    node = WEBUI_DIST
+    for segment in segments:
+        if segment in {".", ".."} or "/" in segment or "\\" in segment or "\0" in segment:
+            return None
+        node = node.joinpath(segment)
+    try:
+        return node if node.is_file() else None
+    except (OSError, ValueError):
+        return None
 
 
 def auth_token() -> str | None:
@@ -282,14 +370,13 @@ def _secret_matches(presented: str, expected: str) -> bool:
 
 
 class _LoginCode:
-    """The browser's single-use way in, redeemable exactly once per launch.
+    """The browser's single-use way in: one outstanding code, redeemable exactly once.
 
     A redeemed code is dead, so the link that carried it - in browser history, a
-    terminal's scrollback, a pasted bug report - signs nobody else in.
+    terminal's scrollback, a pasted bug report - signs nobody else in. ``mint``
+    replaces the outstanding code (a second browser, a second ``cwcli ui``), so
+    at most ONE unredeemed code exists at any time.
     """
-
-    # ponytail: one code per launch; a second browser needs CWCLI_SERVE_TOKEN or a
-    # restart. Upgrade path: the planned ``cwcli ui`` minting fresh codes on demand.
 
     def __init__(self, code: str) -> None:
         self._code: str | None = code
@@ -302,14 +389,29 @@ class _LoginCode:
             self._code = None
             return True
 
+    def mint(self) -> str:
+        with self._lock:
+            self._code = secrets.token_urlsafe(24)
+            return self._code
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class InstanceRestartOutcome:
-    """The narrow Console action result for stop-then-start instance restart."""
+    """The narrow action result for stop-then-start instance restart."""
 
     project: str
     stopped: core_stop.StopOutcome
     started: core_start.StartOutcome | None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MaintenanceOutcome:
+    """``clear_maintenance``: whether the site ended OUT of maintenance mode."""
+
+    project: str
+    bench_path: str
+    site: str
+    maintenance_off: bool
 
 
 class _Hub:
@@ -320,6 +422,11 @@ class _Hub:
     and a dropped delta is a UI that is quietly wrong. The FAST tier only speaks
     when state actually changes, so a queue that grows without bound means the
     client is stalled rather than ordinary steady-state traffic.
+
+    Every published frame carries a monotonic ``id`` so a reconnecting
+    ``EventSource`` sends ``Last-Event-ID``; the daemon answers any reconnect with
+    a fresh snapshot (the model is state, not a journal, so the snapshot IS the
+    resume), and the id lets a client tell a replayed stream from a new one.
     """
 
     def __init__(self, on_focus) -> None:
@@ -327,6 +434,7 @@ class _Hub:
         self._focus_lock = threading.Lock()
         self._clients: dict[int, tuple[queue.Queue, str | None]] = {}
         self._next = 0
+        self._event_id = 0
         self._on_focus = on_focus
 
     def subscribe(self, focus: str | None) -> tuple[int, queue.Queue]:
@@ -350,6 +458,11 @@ class _Hub:
                 focused = {f for _q, f in self._clients.values() if f}
             self._on_focus(focused)
 
+    def next_id(self) -> int:
+        with self._lock:
+            self._event_id += 1
+            return self._event_id
+
     def publish(self, tier, project, state, cause) -> None:
         payload = {
             "tier": tier,
@@ -359,7 +472,7 @@ class _Hub:
         }
         if cause:
             payload["cause"] = cause
-        frame = _sse_frame("delta", payload)
+        frame = _sse_frame("delta", payload, self.next_id())
         with self._lock:
             queues = [q for q, _f in self._clients.values()]
         for q in queues:
@@ -370,8 +483,17 @@ class _Hub:
             return len(self._clients)
 
 
-def _sse_frame(event: str, data: dict) -> bytes:
-    return f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
+def _sse_frame(event: str, data: dict, event_id: int | None = None) -> bytes:
+    head = f"id: {event_id}\n" if event_id is not None else ""
+    return f"{head}event: {event}\ndata: {json.dumps(data)}\n\n".encode()
+
+
+def _error_body(kind: str, code: str, message: str, hint: str | None = None, **extra) -> dict:
+    """The frappe-ui error envelope: ``errors[0]`` is what its fetch layer reads."""
+    error: dict = {"type": kind, "title": code, "message": message, "hint": hint}
+    error["indicator"] = "red"
+    error.update(extra)
+    return {"errors": [error]}
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -400,16 +522,50 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_html(self, body: str) -> None:
-        raw = body.encode()
+    def _send_error(self, status: int, kind: str, code: str, message: str, **extra) -> None:
+        self._send_json(_error_body(kind, code, message, **extra), status=status)
+
+    def _send_bytes(self, raw: bytes, content_type: str, *, csp: str | None, cache: str) -> None:
         self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(raw)))
-        self.send_header("Content-Security-Policy", _CONSOLE_CSP)
-        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Cache-Control", cache)
+        if csp is not None:
+            self.send_header("Content-Security-Policy", csp)
+            self.send_header("X-Frame-Options", "DENY")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(raw)
+
+    def _send_spa(self, path: str) -> None:
+        """A built file by name, else ``index.html`` (the router owns deep links)."""
+        if not webui_available():
+            if path == "/":
+                self._send_bytes(
+                    UNBUILT_PAGE.encode(),
+                    _MIME[".html"],
+                    csp="default-src 'none'; frame-ancestors 'none'",
+                    cache="no-cache",
+                )
+            else:
+                self._send_error(404, ErrorKind.NOT_FOUND.value, "webui.not_built", "not found")
+            return
+        node = _spa_file(path)
+        if node is None:
+            raw = WEBUI_DIST.joinpath("index.html").read_bytes()
+            self._send_bytes(raw, _MIME[".html"], csp=spa_csp(), cache="no-cache")
+            return
+        suffix = os.path.splitext(node.name)[1].lower()
+        content_type = (
+            _MIME.get(suffix) or mimetypes.guess_type(node.name)[0] or "application/octet-stream"
+        )
+        immutable = path.startswith("/assets/")  # Vite's content-hashed bundle dir
+        self._send_bytes(
+            node.read_bytes(),
+            content_type,
+            csp=spa_csp() if suffix == ".html" else None,
+            cache="public, max-age=31536000, immutable" if immutable else "no-cache",
+        )
 
     # ------------------------------------------------------------------- auth
 
@@ -423,38 +579,36 @@ class _Handler(BaseHTTPRequestHandler):
         if host_allowed(self.headers.get("Host"), remote_bind=self.remote_bind):
             return False
         self.close_connection = True
-        self._send_json(
-            {
-                "ok": False,
-                "error": {
-                    "kind": ErrorKind.PRECONDITION.value,
-                    "code": "host.forbidden",
-                    "message": "This cwcli serve daemon only answers requests addressed "
-                    "to localhost or its IP address.",
-                    "hint": (
-                        "Open it at http://<this machine's IP address>:<port>/."
-                        if self.remote_bind
-                        else "Open it at http://127.0.0.1:<port>/ or http://localhost:<port>/."
-                    ),
-                },
-            },
-            status=403,
+        self._send_error(
+            403,
+            ErrorKind.PRECONDITION.value,
+            "host.forbidden",
+            "This cwcli serve daemon only answers requests addressed "
+            "to localhost or its IP address.",
+            hint=(
+                "Open it at http://<this machine's IP address>:<port>/."
+                if self.remote_bind
+                else "Open it at http://127.0.0.1:<port>/ or http://localhost:<port>/."
+            ),
         )
         return True
+
+    def _bearer_authenticated(self) -> bool:
+        scheme, _, presented = (self.headers.get("Authorization") or "").partition(" ")
+        return scheme.lower() == "bearer" and _secret_matches(presented.strip(), self.token)
 
     def _authenticated(self) -> bool:
         """Whether this request carries the credential. There is no unauthenticated mode.
 
         Two accepted forms. ``Authorization: Bearer`` is what a programmatic
-        client (curl, a script) sends. The session cookie is what a BROWSER
-        falls back to, and it exists for one concrete reason: ``EventSource``
-        cannot set request headers, so a header-only scheme would leave
-        ``/api/events`` unreachable from the Console page.
+        client (curl, a script, ``cwcli ui`` itself) sends. The session cookie is
+        what a BROWSER falls back to, and it exists for one concrete reason:
+        ``EventSource`` cannot set request headers, so a header-only scheme would
+        leave the stream unreachable from the page.
         """
-        scheme, _, presented = (self.headers.get("Authorization") or "").partition(" ")
-        if scheme.lower() == "bearer" and _secret_matches(presented.strip(), self.token):
-            return True
-        return _secret_matches(self._session_cookie(), self.session_id)
+        return self._bearer_authenticated() or _secret_matches(
+            self._session_cookie(), self.session_id
+        )
 
     @property
     def _cookie_name(self) -> str:
@@ -484,16 +638,13 @@ class _Handler(BaseHTTPRequestHandler):
         console, the terminal and any bug report copied out of them.
         """
         body = json.dumps(
-            {
-                "ok": False,
-                "error": {
-                    "kind": ErrorKind.PRECONDITION.value,
-                    "code": "auth.required",
-                    "message": "This cwcli serve daemon requires you to sign in.",
-                    "hint": "Open the one-time login link the daemon printed when it "
-                    f"started, or send 'Authorization: Bearer <token>' matching {TOKEN_ENV}.",
-                },
-            }
+            _error_body(
+                ErrorKind.PRECONDITION.value,
+                "auth.required",
+                "This cwcli serve daemon requires you to sign in.",
+                hint="Run 'cwcli ui' for a fresh one-time sign-in link, or send "
+                f"'Authorization: Bearer <token>' matching {TOKEN_ENV}.",
+            )
         ).encode()
         self.send_response(401)
         self.send_header("Content-Type", "application/json")
@@ -519,20 +670,23 @@ class _Handler(BaseHTTPRequestHandler):
         restarts. ``HttpOnly`` keeps page scripts from reading it back and
         ``SameSite=Strict`` keeps a cross-site request from carrying it.
         """
-        self.send_response(204)
+        body = json.dumps({"data": {"signed_in": True}}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
         self.send_header(
             "Set-Cookie",
             f"{self._cookie_name}={self.session_id}; Path=/; HttpOnly; SameSite=Strict",
         )
-        self.send_header("Content-Length", "0")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
+        self.wfile.write(body)
 
     def do_OPTIONS(self):  # noqa: N802 - stdlib hook name
         """No data, no action, and no ``Access-Control-*`` header, so no preflight passes."""
         if self._refuse_foreign_host():
             return
         self.send_response(204)
-        post = urlparse(self.path).path in {"/api/action", "/api/session"}
+        post = urlparse(self.path).path in _POST_PATHS
         self.send_header("Allow", "POST, OPTIONS" if post else "GET, OPTIONS")
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -544,43 +698,50 @@ class _Handler(BaseHTTPRequestHandler):
             return
         parsed = urlparse(self.path)
         path = parsed.path
-        if path == "/":
+        query = parse_qs(parsed.query)
+        if not path.startswith("/api/"):
             # The page itself is static and holds no fleet data, and gating it
             # would leave a browser with no way to reach the sign-in it needs.
-            self._send_html(CONSOLE_PAGE)
+            self._send_spa(path)
             return
         if path == "/api/v1/meta":
             self._send_json({"version": __version__, "protocol": PROTOCOL_VERSION})
             return
         if self._refuse_unauthenticated():
             return
-        if path == "/api/snapshot":
-            self._send_json({"instances": self.fleet.snapshot()})
-        elif path == "/api/events":
-            focus = (parse_qs(parsed.query).get("focus") or [None])[0]
-            self._stream_events(focus)
-        elif path.startswith("/api/instance/") and path.endswith("/detail"):
-            project = unquote(path[len("/api/instance/") : -len("/detail")])
-            self._send_detail(project)
-        elif path.startswith("/api/instance/") and path.endswith("/logs"):
-            project = unquote(path[len("/api/instance/") : -len("/logs")])
-            self._send_logs(project, parse_qs(parsed.query))
-        elif path.startswith("/api/instance/") and path.endswith("/url"):
-            project = unquote(path[len("/api/instance/") : -len("/url")])
-            self._send_url(project, parse_qs(parsed.query))
-        elif path == "/api/doctor":
+        if path == "/api/v1/instances":
+            self._send_json({"data": self.fleet.snapshot()})
+        elif path == "/api/v1/stream":
+            self._stream_events((query.get("focus") or [None])[0])
+        elif path.startswith("/api/v1/instances/"):
+            rest = path[len("/api/v1/instances/") :]
+            project, _sep, verb = rest.partition("/")
+            project = unquote(project)
+            if not verb:
+                self._send_detail(project)
+            elif verb == "logs":
+                self._send_logs(project, query)
+            elif verb == "url":
+                self._send_url(project, query)
+            else:
+                self._send_error(404, ErrorKind.NOT_FOUND.value, "route.not_found", "not found")
+        elif path == "/api/v1/doctor":
             self._send_doctor()
-        elif path == "/api/where":
-            self._send_where(parse_qs(parsed.query))
+        elif path == "/api/v1/config":
+            self._send_config()
+        elif path == "/api/v1/cache":
+            self._send_cache()
+        elif path == "/api/v1/search":
+            self._send_where(query)
         else:
-            self._send_json({"error": "not found"}, status=404)
+            self._send_error(404, ErrorKind.NOT_FOUND.value, "route.not_found", "not found")
 
     def do_POST(self):  # noqa: N802 - stdlib hook name
         if self._refuse_foreign_host():
             return
         parsed = urlparse(self.path)
-        if parsed.path not in {"/api/action", "/api/session"}:
-            self._send_json({"ok": False, "error": {"message": "not found"}}, status=404)
+        if parsed.path not in _POST_PATHS:
+            self._send_error(404, ErrorKind.NOT_FOUND.value, "route.not_found", "not found")
             self.close_connection = True
             return
         # Drain the body BEFORE any guard. This is HTTP/1.1 with keep-alive, so a
@@ -593,7 +754,7 @@ class _Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             self._send_core_error(e)
             return
-        if parsed.path == "/api/session":
+        if parsed.path == "/api/v1/session":
             if self._refuse_cross_origin():
                 return
             if self._authenticated() or self._redeem_login_code(raw):
@@ -601,19 +762,21 @@ class _Handler(BaseHTTPRequestHandler):
             else:
                 self._send_unauthenticated()
             return
+        if parsed.path == "/api/v1/session/code":
+            # Bearer ONLY: a signed-in page must not be able to mint sign-in links.
+            if not self._bearer_authenticated():
+                self._send_unauthenticated()
+                return
+            self._send_json({"data": {"code": self.login.mint()}})
+            return
         if self._refuse_unauthenticated() or self._refuse_cross_origin():
             return
         if not self._action_json_content_type():
-            self._send_json(
-                {
-                    "ok": False,
-                    "error": {
-                        "kind": ErrorKind.USAGE.value,
-                        "code": "request.content_type_invalid",
-                        "message": "Console action request body must be application/json.",
-                    },
-                },
-                status=415,
+            self._send_error(
+                415,
+                ErrorKind.USAGE.value,
+                "request.content_type_invalid",
+                "Action request body must be application/json.",
             )
             return
         try:
@@ -623,17 +786,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_core_error(e)
             return
         except Exception as e:  # pragma: no cover - defensive HTTP boundary
-            self._send_json(
-                {
-                    "ok": False,
-                    "error": {
-                        "kind": ErrorKind.INTERNAL.value,
-                        "code": "action.internal_error",
-                        "message": str(e),
-                    },
-                },
-                status=500,
-            )
+            self._send_error(500, ErrorKind.INTERNAL.value, "action.internal_error", str(e))
             return
         self._send_json(body, status=status)
 
@@ -646,16 +799,11 @@ class _Handler(BaseHTTPRequestHandler):
         """
         if self._action_same_origin():
             return False
-        self._send_json(
-            {
-                "ok": False,
-                "error": {
-                    "kind": ErrorKind.PRECONDITION.value,
-                    "code": "action.origin_forbidden",
-                    "message": "Console actions must be sent from this daemon's own page.",
-                },
-            },
-            status=403,
+        self._send_error(
+            403,
+            ErrorKind.PRECONDITION.value,
+            "action.origin_forbidden",
+            "Actions must be sent from this daemon's own page.",
         )
         return True
 
@@ -706,23 +854,12 @@ class _Handler(BaseHTTPRequestHandler):
         action = _required_str(payload, "action")
         project = _required_str(payload, "project")
         bench = _optional_str(payload.get("bench"))
-        allowed = {
-            "start_instance",
-            "stop_instance",
-            "restart_instance",
-            "restart_process",
-            "refresh_status",
-            "set_label",
-            "unlock_site",
-            "scale_instance",
-            "checkout_app",
-        }
-        if action not in allowed:
+        if action not in ACTIONS:
             raise CwcliError(
                 ErrorKind.USAGE,
                 "action.unsupported",
-                f"Unsupported Console action '{action}'.",
-                hint="Allowed actions are " + ", ".join(sorted(allowed)) + ".",
+                f"Unsupported action '{action}'.",
+                hint="Allowed actions are " + ", ".join(sorted(ACTIONS)) + ".",
             )
         process = _required_str(payload, "process") if action == "restart_process" else None
 
@@ -736,6 +873,10 @@ class _Handler(BaseHTTPRequestHandler):
                 stop_result = core_stop.stop(project)
                 self._refresh_lifecycle(project, stop_result.warnings)
                 return _stop_response(action, project, stop_result)
+            if action == "stop_bench":
+                bench_stop = core_stop.stop_bench(project, bench=bench)
+                self._refresh_process(project, bench_stop.warnings)
+                return _result_response(action, project, bench_stop)
             if action == "restart_instance":
                 return self._restart_instance(project, bench)
             if action == "refresh_status":
@@ -749,6 +890,8 @@ class _Handler(BaseHTTPRequestHandler):
                 site = _optional_str(payload.get("site"))
                 unlock_result = core_unlock.unlock(project, site=site, bench=bench)
                 return _result_response(action, project, unlock_result)
+            if action == "clear_maintenance":
+                return self._clear_maintenance(project, bench, _required_str(payload, "site"))
             if action == "scale_instance":
                 # Consent is strictly the JSON boolean true, and it means consent
                 # ONLY: nothing here starts a stopped instance (core.scale refuses
@@ -800,17 +943,7 @@ class _Handler(BaseHTTPRequestHandler):
             stopped=stop_result.data,
             started=start_result.data,
         )
-        return (
-            200,
-            {
-                "ok": True,
-                "action": "restart_instance",
-                "project": project,
-                "status": Status.OK.value,
-                "outcome": _plain(outcome),
-                "warnings": [_plain(w) for w in warnings],
-            },
-        )
+        return _ok_response("restart_instance", project, Status.OK, outcome, warnings)
 
     def _refresh_status(self, project: str) -> tuple[int, dict]:
         """The manual status refresh: re-list the fleet, re-probe this instance.
@@ -828,17 +961,42 @@ class _Handler(BaseHTTPRequestHandler):
                 "instance.not_found",
                 f"No instance named '{project}' exists.",
             )
-        return (
-            200,
-            {
-                "ok": True,
-                "action": "refresh_status",
-                "project": project,
-                "status": Status.OK.value,
-                "outcome": core_fleet.as_json(state),
-                "warnings": [_plain(w) for w in warnings],
-            },
+        return _ok_response(
+            "refresh_status", project, Status.OK, core_fleet.as_json(state), warnings
         )
+
+    def _clear_maintenance(self, project: str, bench: str | None, site: str) -> tuple[int, dict]:
+        """Take ONE site out of maintenance mode (``core.bench_ops.clear_maintenance``).
+
+        The Phase 1 addition to the safe set: the state ``core.status`` reports as
+        ``maintenance_mode`` (a killed migrate's leftover 503) and the fix it names
+        (``set-maintenance-mode off``), reachable without a terminal. Safe by
+        construction - it only ever turns maintenance OFF, writes no schema, and
+        a site that stays on is reported as a failure, never a success.
+        """
+        core_resolvers.validate_site_name(site)
+        resolved = core_resolvers.resolve_container_and_bench(project, bench, None)
+        if isinstance(resolved, Result):
+            return _choice_response("clear_maintenance", project, resolved)
+        container, bench_path, warnings = resolved
+        off = core_bench_ops.clear_maintenance(container, bench_path, site, recheck=False)
+        self._refresh_process(project, warnings)
+        outcome = MaintenanceOutcome(
+            project=project, bench_path=bench_path, site=site, maintenance_off=off
+        )
+        if not off:
+            return (
+                500,
+                _error_body(
+                    "step_failed",
+                    "maintenance.still_on",
+                    f"bench refused to take '{site}' out of maintenance mode.",
+                    hint=f"Try: cwcli run {project} --site {site} set-maintenance-mode off",
+                    outcome=_plain(outcome),
+                    warnings=[_plain(w) for w in warnings],
+                ),
+            )
+        return _ok_response("clear_maintenance", project, Status.OK, outcome, warnings)
 
     def _checkout_app(
         self, project: str, bench: str | None, app: str, ref: str
@@ -879,27 +1037,24 @@ class _Handler(BaseHTTPRequestHandler):
                     "run 'cwcli inspect --update' to refresh.",
                 )
             )
-        body: dict = {
-            # ok reads report.ok, NOT result.status: a failed git step is a
-            # WARNING-shaped envelope (the exit-code precedent, in HTTP clothes).
-            "ok": report.ok,
-            "action": "checkout_app",
-            "project": project,
-            "status": result.status.value,
-            "outcome": _plain(report),
-            "warnings": [_plain(w) for w in warnings],
-        }
-        if not report.ok:
-            failed = next((r for r in report.results if not r.ok), None)
-            step = f" at step '{failed.action}'" if failed else ""
-            output = "".join(tail)[-600:].strip()
-            body["error"] = {
-                "kind": "step_failed",
-                "code": "app.step_failed",
-                "message": f"Checkout of '{ref}' into '{app}' failed{step}."
+        # ok reads report.ok, NOT result.status: a failed git step is a
+        # WARNING-shaped envelope (the exit-code precedent, in HTTP clothes).
+        if report.ok:
+            return _ok_response("checkout_app", project, result.status, report, warnings)
+        failed = next((r for r in report.results if not r.ok), None)
+        step = f" at step '{failed.action}'" if failed else ""
+        output = "".join(tail)[-600:].strip()
+        return (
+            422,
+            _error_body(
+                "step_failed",
+                "app.step_failed",
+                f"Checkout of '{ref}' into '{app}' failed{step}."
                 + (f" Git said: {output}" if output else ""),
-            }
-        return 200, body
+                outcome=_plain(report),
+                warnings=[_plain(w) for w in warnings],
+            ),
+        )
 
     def _refresh_lifecycle(self, project: str, warnings: list) -> None:
         try:
@@ -914,71 +1069,66 @@ class _Handler(BaseHTTPRequestHandler):
             warnings.append({"code": "fleet.refresh_failed", "text": str(e)})
 
     def _send_core_error(self, e: CwcliError) -> None:
-        self._send_json(
-            {
-                "ok": False,
-                "error": {
-                    "kind": e.kind.value,
-                    "code": e.code,
-                    "message": e.message,
-                    "hint": e.hint,
-                    "detail": e.detail,
-                },
-            },
-            status=_HTTP_FOR_KIND.get(e.kind, 500),
+        self._send_error(
+            _HTTP_FOR_KIND.get(e.kind, 500),
+            e.kind.value,
+            e.code,
+            e.message,
+            hint=e.hint,
+            detail=e.detail,
         )
 
     def _send_detail(self, project: str) -> None:
-        """The LAZY tier. Cache-backed, never auto-starts, freshness labels intact."""
+        """The LAZY tier. Cache-backed, never auto-starts, freshness labels intact,
+        plus ``cached_at`` so a remembered answer can say how old it is."""
         if not project:
-            self._send_json({"error": "no project"}, status=400)
+            self._send_error(400, ErrorKind.USAGE.value, "project.required", "no project")
             return
         try:
             report = core_inspect.inspect(project, refresh="auto", offer_choice=False).data
         except CwcliError as e:
-            self._send_json(
-                {"error": {"kind": e.kind.value, "code": e.code, "message": e.message}},
-                status=_HTTP_FOR_KIND.get(e.kind, 500),
-            )
+            self._send_core_error(e)
             return
         assert report is not None
-        self._send_json(asdict(report))
+        rows = core_config.cached_projects().data or []
+        cached_at = next((r.last_updated for r in rows if r.name == project), None)
+        self._send_json({"data": {**asdict(report), "cached_at": cached_at}})
 
     def _send_logs(self, project: str, query: dict) -> None:
-        """Bounded ``core.read_logs`` tail. A PURE READ - launches nothing.
+        """Resumable ``core.read_logs_since`` tail. A PURE READ - launches nothing.
 
         Same-origin only and serialized under the project's action lock, matching
         the action endpoint's guards (raw log lines are more sensitive than fleet
         health, and a tail exec'ing into a container mid-restart helps nobody).
+        ``after=<process>:<offset>,...`` resumes each process from the byte offset
+        the previous read returned.
         """
         if self._refuse_cross_origin():
             return
         if not project:
-            self._send_json({"error": "no project"}, status=400)
+            self._send_error(400, ErrorKind.USAGE.value, "project.required", "no project")
             return
         bench = _optional_str((query.get("bench") or [None])[0])
         process = _optional_str((query.get("process") or [None])[0])
-        raw_lines = (query.get("lines") or ["100"])[0]
+        raw_lines = (query.get("lines") or ["200"])[0]
         try:
             lines = int(raw_lines)
         except ValueError:
             lines = -1
         if not 1 <= lines <= 1000:
-            self._send_json(
-                {
-                    "ok": False,
-                    "error": {
-                        "kind": ErrorKind.USAGE.value,
-                        "code": "logs.lines_invalid",
-                        "message": "lines must be a whole number between 1 and 1000.",
-                    },
-                },
-                status=400,
+            self._send_error(
+                400,
+                ErrorKind.USAGE.value,
+                "logs.lines_invalid",
+                "lines must be a whole number between 1 and 1000.",
             )
             return
+        after = _parse_after((query.get("after") or [""])[0])
         try:
             with self._action_lock(project):
-                result = core_logs.read_logs(project, bench=bench, process=process, lines=lines)
+                result = core_logs.read_logs_since(
+                    project, bench=bench, process=process, lines=lines, after=after
+                )
         except CwcliError as e:
             self._send_core_error(e)
             return
@@ -997,7 +1147,7 @@ class _Handler(BaseHTTPRequestHandler):
         if self._refuse_cross_origin():
             return
         if not project:
-            self._send_json({"error": "no project"}, status=400)
+            self._send_error(400, ErrorKind.USAGE.value, "project.required", "no project")
             return
         bench = _optional_str((query.get("bench") or [None])[0])
         site = _optional_str((query.get("site") or [None])[0])
@@ -1021,7 +1171,22 @@ class _Handler(BaseHTTPRequestHandler):
             return
         report = core_doctor.run_all().data
         assert report is not None
-        self._send_json(_doctor_json(report))
+        self._send_json({"data": _doctor_json(report)})
+
+    def _send_config(self) -> None:
+        """``core.config.show_config``, read-only (Settings is read-only in Phase 1)."""
+        if self._refuse_cross_origin():
+            return
+        report = core_config.show_config().data
+        assert report is not None
+        self._send_json({"data": asdict(report)})
+
+    def _send_cache(self) -> None:
+        """The cache inventory: every remembered project, live or not."""
+        if self._refuse_cross_origin():
+            return
+        rows = core_config.cached_projects().data or []
+        self._send_json({"data": [asdict(r) for r in rows]})
 
     def _send_where(self, query: dict) -> None:
         """``core.where``: the cache search, verified/remembered tokens intact.
@@ -1035,16 +1200,11 @@ class _Handler(BaseHTTPRequestHandler):
             return
         term = ((query.get("q") or [""])[0] or "").strip()
         if not term:
-            self._send_json(
-                {
-                    "ok": False,
-                    "error": {
-                        "kind": ErrorKind.USAGE.value,
-                        "code": "where.term_required",
-                        "message": "A non-empty search term 'q' is required.",
-                    },
-                },
-                status=400,
+            self._send_error(
+                400,
+                ErrorKind.USAGE.value,
+                "where.term_required",
+                "A non-empty search term 'q' is required.",
             )
             return
         try:
@@ -1055,9 +1215,10 @@ class _Handler(BaseHTTPRequestHandler):
         assert result.data is not None  # where never returns NEEDS_CHOICE
         self._send_json(
             {
-                "ok": True,
-                **asdict(result.data),
-                "warnings": [_plain(w) for w in result.warnings],
+                "data": {
+                    **asdict(result.data),
+                    "warnings": [_plain(w) for w in result.warnings],
+                }
             }
         )
 
@@ -1071,7 +1232,9 @@ class _Handler(BaseHTTPRequestHandler):
             # does, which is what an infinite stream means over HTTP/1.1.
             self.send_header("Connection", "close")
             self.end_headers()
-            self.wfile.write(_sse_frame("snapshot", {"instances": self.fleet.snapshot()}))
+            self.wfile.write(
+                _sse_frame("snapshot", {"instances": self.fleet.snapshot()}, self.hub.next_id())
+            )
             self.wfile.flush()
             while True:
                 try:
@@ -1084,6 +1247,19 @@ class _Handler(BaseHTTPRequestHandler):
             pass  # the client went away; the finally below is the whole cleanup
         finally:
             self.hub.unsubscribe(client_id)
+
+
+_POST_PATHS = {"/api/v1/actions", "/api/v1/session", "/api/v1/session/code"}
+
+
+def _parse_after(raw: str) -> dict[str, int] | None:
+    """``web:1234,worker_default:99`` -> ``{"web": 1234, ...}``; malformed entries drop."""
+    after: dict[str, int] = {}
+    for item in raw.split(","):
+        process, sep, offset = item.strip().partition(":")
+        if sep and process and offset.isdigit():
+            after[process] = int(offset)
+    return after or None
 
 
 def _parse_action_body(raw: bytes) -> dict:
@@ -1110,7 +1286,7 @@ def _required_str(payload: dict, key: str) -> str:
         raise CwcliError(
             ErrorKind.USAGE,
             f"action.{key}_required",
-            f"Console action requires a non-empty '{key}' string.",
+            f"Action requires a non-empty '{key}' string.",
         )
     return value.strip()
 
@@ -1128,7 +1304,7 @@ def _optional_to(value) -> int | None:
         raise CwcliError(
             ErrorKind.USAGE,
             "action.to_invalid",
-            "Console action 'to' must be an integer when present.",
+            "Action 'to' must be an integer when present.",
         )
     return int(value)
 
@@ -1140,13 +1316,13 @@ def _optional_str(value) -> str | None:
         raise CwcliError(
             ErrorKind.USAGE,
             "action.bench_invalid",
-            "Console action 'bench' must be a string when present.",
+            "Action 'bench' must be a string when present.",
         )
     return value.strip() or None
 
 
 def _plain(value):
-    if is_dataclass(value):
+    if is_dataclass(value) and not isinstance(value, type):
         return asdict(value)
     if isinstance(value, list):
         return [_plain(v) for v in value]
@@ -1183,20 +1359,25 @@ def _doctor_json(report) -> dict:
     }
 
 
-def _result_response(action: str, project: str, result: Result) -> tuple[int, dict]:
-    if result.status is Status.NEEDS_CHOICE:
-        return _choice_response(action, project, result)
+def _ok_response(action: str, project: str, status: Status, outcome, warnings) -> tuple[int, dict]:
     return (
         200,
         {
-            "ok": True,
-            "action": action,
-            "project": project,
-            "status": result.status.value,
-            "outcome": _plain(result.data),
-            "warnings": [_plain(w) for w in result.warnings],
+            "data": {
+                "action": action,
+                "project": project,
+                "status": status.value,
+                "outcome": _plain(outcome),
+                "warnings": [_plain(w) for w in warnings],
+            }
         },
     )
+
+
+def _result_response(action: str, project: str, result: Result) -> tuple[int, dict]:
+    if result.status is Status.NEEDS_CHOICE:
+        return _choice_response(action, project, result)
+    return _ok_response(action, project, result.status, result.data, result.warnings)
 
 
 def _stop_response(action: str, project: str, result: Result) -> tuple[int, dict]:
@@ -1210,41 +1391,32 @@ def _stop_response(action: str, project: str, result: Result) -> tuple[int, dict
     )
     return (
         500,
-        {
-            "ok": False,
-            "action": action,
-            "project": project,
-            "status": result.status.value,
-            "outcome": _plain(outcome),
-            "warnings": warnings,
-            "error": {
-                "kind": "unclean_shutdown",
-                "code": "stop.db_unclean",
-                "message": warning["text"],
-            },
-        },
+        _error_body(
+            "unclean_shutdown",
+            "stop.db_unclean",
+            warning["text"],
+            action=action,
+            outcome=_plain(outcome),
+            warnings=warnings,
+        ),
     )
 
 
 def _choice_response(action: str, project: str, result: Result) -> tuple[int, dict]:
     choice = result.choice
-    message = choice.prompt if choice is not None else "Console action requires a choice."
+    message = choice.prompt if choice is not None else "This action requires a choice."
     code = choice.kind if choice is not None else "choice_required"
     return (
         409,
-        {
-            "ok": False,
-            "action": action,
-            "project": project,
-            "error": {
-                "kind": "needs_choice",
-                "code": code,
-                "message": message,
-                "hint": "Select a single bench or process, then retry.",
-            },
-            "choice": _plain(choice) if choice is not None else None,
-            "warnings": [_plain(w) for w in result.warnings],
-        },
+        _error_body(
+            "needs_choice",
+            code,
+            message,
+            hint="Select a single bench or process, then retry.",
+            action=action,
+            choice=_plain(choice) if choice is not None else None,
+            warnings=[_plain(w) for w in result.warnings],
+        ),
     )
 
 
@@ -1347,40 +1519,26 @@ def _outbound_address() -> str | None:
     return None if addr.startswith("127.") else addr
 
 
-def serve(
-    port: int = typer.Option(DEFAULT_PORT, "--port", "-p", help="Port to listen on."),
-    host: str = typer.Option(
-        DEFAULT_HOST,
-        "--host",
-        help="Address to bind. Defaults to loopback, which a Windows browser still "
-        f"reaches under WSL. Any value other than a loopback IP literal requires "
-        f"${TOKEN_ENV}.",
-    ),
-    interval: float = typer.Option(
-        DEFAULT_INTERVAL,
-        "--interval",
-        help="Seconds between FAST-tier health probes of each running instance.",
-    ),
-):
-    """Serve the live fleet model over HTTP + SSE (foreground; Ctrl-C to stop)."""
-    if interval <= 0:
-        stderr_console.print("[red]--interval must be greater than 0.[/red]")
-        raise typer.Exit(code=2)
+def login_url(host: str, port: int, code: str) -> str:
+    """The one-time sign-in link for a daemon bound at ``host:port``."""
+    return f"http://{_url_host(host)}:{port}/#login={code}"
 
-    # Refuse BEFORE anything binds or probes. Reaching the daemon from the
-    # network is a deliberate act, so it takes a secret the operator chose, never
-    # only the per-launch token every loopback run gets.
-    env_token = auth_token()
-    if env_token is None and not is_loopback(host):
-        stderr_console.print(
-            f"[red]Refusing to bind {host} without {TOKEN_ENV}.[/red]\n"
-            f"  That address is reachable from other machines, so exposing the "
-            f"daemon there takes a token you chose.\n"
-            f"  Set {TOKEN_ENV} to a secret of your choosing, or bind "
-            f"{DEFAULT_HOST} (which a Windows browser still reaches under WSL)."
-        )
-        raise typer.Exit(code=2)
 
+def run_daemon(
+    host: str,
+    port: int,
+    interval: float,
+    *,
+    env_token: str | None,
+    on_ready: Callable[[str], None] | None = None,
+) -> None:
+    """Bootstrap the fleet, bind, print the banner, serve until interrupted.
+
+    The body shared by the ``serve`` module entry and ``cwcli ui --foreground``.
+    ``on_ready`` is called once with the sign-in link after the bind succeeds,
+    which is how ``ui --foreground`` opens the browser. Raises ``typer.Exit`` on
+    a failed bootstrap or bind (the callers are both Typer commands).
+    """
     # The two reference each other (the fleet publishes through the hub; the hub
     # reports focus back to the fleet), so the delta sink is bound after both exist.
     fleet = core_fleet.Fleet()
@@ -1425,23 +1583,26 @@ def serve(
         raise typer.Exit(code=1) from e
 
     bound, port = str(httpd.server_address[0]), httpd.server_address[1]
-    console.print(f"[bold]cwcli serve[/bold] on [cyan]http://{_url_host(bound)}:{port}[/cyan]")
+    console.print(f"[bold]cwcli ui[/bold] on [cyan]http://{_url_host(bound)}:{port}[/cyan]")
     console.print(f"  instances: {len(fleet.snapshot())}   probe interval: {interval}s")
+    if not webui_available():
+        console.print("  [yellow]web UI not built[/yellow] (cd webui && npm ci && npm run build)")
     # Neither token is EVER printed - only which one is in force. The login code
     # is printed because it is single-use: once a browser redeems it, it is dead.
     in_force = f"${TOKEN_ENV}" if env_token else "per-launch token"
     console.print(f"  auth: [green]required[/green] ({in_force})")
     sign_in = _url_host((_outbound_address() or bound) if _binds_everywhere(bound) else bound)
-    login = f"/#login={login_code}"
-    console.print(
-        f"  sign in (works once): [cyan]http://{sign_in}:{port}{login}[/cyan]", soft_wrap=True
-    )
+    link = login_url(sign_in, port, login_code)
+    console.print(f"  sign in (works once): [cyan]{link}[/cyan]", soft_wrap=True)
     if "microsoft" in platform.uname().release.lower():
         console.print(
-            f"  from Windows: [cyan]http://localhost:{port}{login}[/cyan] (WSL forwarding)",
+            f"  from Windows: [cyan]http://localhost:{port}/#login={login_code}[/cyan] "
+            "(WSL forwarding)",
             soft_wrap=True,
         )
     console.print("  Ctrl-C to stop")
+    if on_ready is not None:
+        on_ready(link)
 
     try:
         httpd.serve_forever()
@@ -1453,20 +1614,45 @@ def serve(
         httpd.server_close()
 
 
+def serve(
+    port: int = typer.Option(DEFAULT_PORT, "--port", "-p", help="Port to listen on."),
+    host: str = typer.Option(
+        DEFAULT_HOST,
+        "--host",
+        help="Address to bind. Defaults to loopback, which a Windows browser still "
+        f"reaches under WSL. Any value other than a loopback IP literal requires "
+        f"${TOKEN_ENV}.",
+    ),
+    interval: float = typer.Option(
+        DEFAULT_INTERVAL,
+        "--interval",
+        help="Seconds between FAST-tier health probes of each running instance.",
+    ),
+):
+    """Serve the web UI and live fleet model over HTTP + SSE (foreground; Ctrl-C to stop)."""
+    if interval <= 0:
+        stderr_console.print("[red]--interval must be greater than 0.[/red]")
+        raise typer.Exit(code=2)
+
+    # Refuse BEFORE anything binds or probes. Reaching the daemon from the
+    # network is a deliberate act, so it takes a secret the operator chose, never
+    # only the per-launch token every loopback run gets.
+    env_token = auth_token()
+    if env_token is None and not is_loopback(host):
+        stderr_console.print(
+            f"[red]Refusing to bind {host} without {TOKEN_ENV}.[/red]\n"
+            f"  That address is reachable from other machines, so exposing the "
+            f"daemon there takes a token you chose.\n"
+            f"  Set {TOKEN_ENV} to a secret of your choosing, or bind "
+            f"{DEFAULT_HOST} (which a Windows browser still reaches under WSL)."
+        )
+        raise typer.Exit(code=2)
+    run_daemon(host, port, interval, env_token=env_token)
+
+
 if __name__ == "__main__":
-    # The INTERNAL developer entry point.
-    #
-    # ``serve`` is deliberately NOT registered on ``cwcli`` or ``cwcli axi``
-    # (it is absent from ``main.py``) because the Console was not ready to ship
-    # as a released surface. A developer launches the daemon by running THIS
-    # MODULE as a script:
-    #
-    #     <python> -m caffeinated_whale_cli.commands.serve --host 127.0.0.1 --port <p>
-    #
-    # where ``<python>`` is the interpreter that runs the user's installed
-    # ``cwcli``. Running the module is an internal path: it adds no
-    # ``[project.scripts]`` entry, no Typer command, and nothing that a
-    # ``cwcli --help`` or ``cwcli axi`` listing can discover, so the public
-    # surfaces stay exactly as withheld. ``typer.run`` gives this one function
-    # real ``--host/--port/--interval`` parsing without a registered app.
+    # The INTERNAL developer entry point: the one place a non-loopback ``--host``
+    # can be given. The public command is ``cwcli ui`` (commands/ui.py), which
+    # always binds loopback. ``typer.run`` gives this one function real
+    # ``--host/--port/--interval`` parsing without a registered app.
     typer.run(serve)

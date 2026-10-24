@@ -1,0 +1,7 @@
+@import '@fontsource-variable/jetbrains-mono';
+@import 'frappe-ui/style.css';
+
+html,
+body {
+  height: 100%;
+}
