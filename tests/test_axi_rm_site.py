@@ -53,8 +53,9 @@ def test_human_backup_failure_exits_one_with_bench_s_own_error(monkeypatch, caps
     monkeypatch.setattr(rm_site_cmd, "resolve_bench_path", lambda *a, **k: "/workspace/b")
     monkeypatch.setattr(core_rm_site, "drop_site", _backup_failed)
 
+    # __wrapped__ skips @handle_docker_errors' live Docker preflight.
     with pytest.raises(typer.Exit) as exc:
-        rm_site_cmd.rm_site(
+        rm_site_cmd.rm_site.__wrapped__(
             "proj",
             "a.localhost",
             bench=None,
