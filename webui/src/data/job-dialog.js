@@ -51,6 +51,9 @@ export function openJob(verb, context = {}) {
   jobDialog.context = { ...context }
   jobDialog.values = { ...(defaults[verb] || {}), ...(context.args || {}) }
   if (verb === 'init') {
+    const reuse = context.args?.reuse_bench
+    jobDialog.values.reuse_bench = reuse === true ? 'reuse' : reuse === false ? 'refuse' : ''
+    jobDialog.values.frappe_url = jobDialog.values.frappe_url || ''
     jobDialog.values.project = context.project || jobDialog.values.project
     if (!jobDialog.values.site_name && context.project) jobDialog.values.site_name = `${context.project}.localhost`
   }
