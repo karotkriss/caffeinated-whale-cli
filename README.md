@@ -1948,13 +1948,9 @@ cwcli status -w --interval 5 frappe-one   # refresh every 5s
 
 ### `ui` - Open the Web UI
 
-Opens a local browser dashboard over your instances: every instance, bench,
-site and app in one place, live process health, a resumable log pane, the
-`doctor` health check, a read-only view of your settings, a command palette
-(Ctrl+K) that searches the cache, and the everyday lifecycle actions.
-The daemon binds `127.0.0.1` only and is served by cwcli itself; nothing is
-installed or fetched, and no Node is needed - the UI ships prebuilt inside the
-package.
+Opens a local browser dashboard over your instances: every instance, bench, site and app in one place, live process health, a resumable log pane, the `doctor` health check, a read-only view of your settings, a command palette (Ctrl+K) that searches the cache, and the everyday lifecycle actions.
+Long work runs as detached jobs with a durable event log, so it continues when the tab closes and can be opened again from Jobs.
+The daemon binds `127.0.0.1` only and is served by cwcli itself; nothing is installed or fetched, and no Node is needed because the UI ships prebuilt inside the package.
 
 ```bash
 cwcli ui [OPTIONS]
@@ -1969,26 +1965,20 @@ cwcli ui [OPTIONS]
 | `--stop` | Stop the detached daemon |
 | `--no-browser` | Print the one-time sign-in link instead of opening a browser |
 
-**How it runs:** `cwcli ui` starts the daemon detached if none is running
-(otherwise it reuses the live one), then opens your browser on a **one-time
-sign-in link**. The daemon requires sign-in even on loopback: each launch gets
-its own random token, the browser trades a single-use code for a session
-cookie, and a used link is dead, so a link copied from scrollback signs nobody
-else in. Run `cwcli ui` again for a fresh link (for a second browser on this
-machine). `cwcli ui --stop` stops it. While the daemon runs it polls
-process health for every running instance; the web check only runs for an
-instance a page has open. It refuses any request whose `Host` is not this
-machine, so another site in your browser cannot read or drive it.
+**How it runs:** `cwcli ui` starts the daemon detached if none is running (otherwise it reuses the live one), then opens your browser on a **one-time sign-in link**.
+The daemon requires sign-in even on loopback: each launch gets its own random token, the browser trades a single-use code for a session cookie, and a used link is dead, so a link copied from scrollback signs nobody else in.
+Run `cwcli ui` again for a fresh link for a second browser on this machine.
+`cwcli ui --stop` stops it.
+While the daemon runs it polls process health for every running instance; the web check only runs for an instance a page has open.
+It refuses any request whose `Host` is not this machine, so another site in your browser cannot read or drive it.
 
-**What it can do:** everything the CLI reads (`ls`, `status`, `inspect`,
-`where`, `doctor`, `logs`, `axi url`, `config show`) and the safe lifecycle
-set: start, stop and restart an instance or a bench, restart one process, set a
-bench label, unlock a site, take a site out of maintenance mode, widen the port
-range (the same core confirmation `cwcli scale` asks for, typed back as the
-instance name), and check out an app ref without `--reset`. Every confirmation
-shows the equivalent `cwcli` command. Long-running verbs (init, backup, apps
-install/update, migrate) and destructive ones (rm, rm-site, restore) are not in
-the UI yet; it prints the command to run instead.
+**What it can do:** everything the CLI reads (`ls`, `status`, `inspect`, `where`, `doctor`, `logs`, `axi url`, `config show`) and the safe lifecycle set: start, stop and restart an instance or a bench, restart one process, set a bench label, unlock a site, take a site out of maintenance mode, widen the port range, and check out an app ref without `--reset`.
+These lifecycle changes run as jobs too, so their steps and outcome remain visible after navigation.
+The long-job forms cover `init`, `apps install`, `apps update`, `apps checkout`, `backup`, `migrate`, `run-tests`, `build`, `setup-wizard`, and `self-update`.
+`apps update` runs the same preflight as the CLI and shows every finding in the job view before the reset begins.
+Interrupt requests use the command's cleanup path; Detach only leaves the page, and an active record whose process disappears becomes `unknown` instead of being reported as failed or successful.
+The `self-update` job restarts the local daemon and the open page reloads after its protocol check sees the replacement.
+Guarded destructive verbs (`rm`, `rm-site`, `rm-bench`, `restore`, `apps uninstall`, and `apps checkout --reset`) and settings writes are not in the UI.
 
 **Honest states:** the UI distinguishes `unknown` (not probed) from `offline`,
 labels cache-backed data as remembered versus verified, and never guesses a

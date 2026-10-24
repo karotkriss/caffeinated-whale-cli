@@ -6,7 +6,7 @@
 // scrollback is dead the moment it has been used.
 import { reactive } from 'vue'
 
-export const PROTOCOL = 2 // the daemon's PROTOCOL_VERSION this page was built against
+export const PROTOCOL = 3 // the daemon's PROTOCOL_VERSION this page was built against
 
 export const session = reactive({
   signedOut: false,
@@ -29,10 +29,23 @@ export async function boot() {
     })
     if (!res.ok) session.signedOut = true
   }
+  await recheckMeta()
+}
+
+// Called at boot and whenever the event stream reconnects. A self-update
+// replaces the daemon, which drops every stream; the reconnect that follows
+// sees a new version or protocol and reloads the page, with no polling between.
+export async function recheckMeta() {
   try {
-    const res = await fetch('/api/v1/meta')
-    session.meta = await res.json()
-    session.protocolMismatch = session.meta.protocol !== PROTOCOL
+    const res = await fetch('/api/v1/meta', { cache: 'no-store' })
+    const meta = await res.json()
+    const prior = session.meta
+    if (prior && (meta.protocol !== prior.protocol || meta.version !== prior.version)) {
+      location.reload()
+      return
+    }
+    session.meta = meta
+    session.protocolMismatch = meta.protocol !== PROTOCOL
   } catch {
     session.meta = null
   }

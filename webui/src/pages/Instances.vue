@@ -7,6 +7,7 @@ import StatusBadge from '../components/StatusBadge.vue'
 import CommandLine from '../components/CommandLine.vue'
 import { fleet, instances, details, publishedRange, countSites, doctor, cacheProjects, setFocus } from '../data/fleet'
 import { openAction, menuOption } from '../data/dialog'
+import { openJob } from '../data/job-dialog'
 
 const router = useRouter()
 onMounted(() => {
@@ -27,6 +28,7 @@ const menu = (i) => [
 <template>
   <PageHeader>
     <PageHeaderTitle title="Instances" />
+    <Button variant="solid" icon-left="lucide-plus" label="New instance" @click="openJob('init')" />
   </PageHeader>
   <div class="space-y-8 px-3 pb-20 pt-5 sm:px-5">
     <Alert
@@ -40,8 +42,8 @@ const menu = (i) => [
     <div v-else-if="!instances.length" class="flex flex-col items-center justify-center gap-3 py-16 text-center">
       <div class="rounded-full bg-surface-gray-2 p-3 text-ink-gray-5"><span class="lucide-boxes size-6" aria-hidden="true" /></div>
       <p class="text-base text-ink-gray-7">No instances on this Docker daemon</p>
-      <p class="text-sm text-ink-gray-5">Create one from the terminal; it appears here the moment its containers exist.</p>
-      <div class="w-full max-w-sm"><CommandLine command="cwcli init my-instance --version 16" /></div>
+      <p class="text-sm text-ink-gray-5">Create one here. The detached job keeps going if you close this tab.</p>
+      <Button variant="solid" icon-left="lucide-plus" label="Create instance" @click="openJob('init')" />
     </div>
     <List v-else class="-mx-3 list-row-px-3" :columns="{ base: ['minmax(0,1fr)', '6.5rem', '2.5rem'], lg: ['minmax(10rem,1.3fr)', '6.5rem', '6rem', '6rem', 'minmax(8rem,1fr)', '7rem'] }" :row-height="56">
       <ListHeader>

@@ -157,6 +157,19 @@ def _wait_for(predicate, *, timeout=90, desc="condition"):
     return harness.wait_until(predicate, timeout=timeout, interval=0.5, desc=desc)
 
 
+def _job(base: str, job_id: str) -> dict:
+    return _get(base + f"/api/v1/jobs/{job_id}")["data"]
+
+
+def _wait_for_job(base: str, job_id: str, *, timeout=300) -> dict:
+    terminal = {"succeeded", "failed", "interrupted", "unknown", "needs_choice"}
+    return _wait_for(
+        lambda: (record if (record := _job(base, job_id))["state"] in terminal else None),
+        timeout=timeout,
+        desc=f"job {job_id} to finish",
+    )
+
+
 class TestThePage:
     def test_the_built_ui_is_served_under_the_strict_csp(self, daemon):
         """The wheel/tool install carries ``webui/dist``; ``/`` and deep links serve it."""
@@ -409,6 +422,68 @@ class TestLazyTier:
             _get(daemon.base + "/api/v1/instances/cwe2e-no-such-project")
         assert e.value.code == 404
         assert json.loads(e.value.read())["errors"][0]["type"] == "not_found"
+
+
+class TestDetachedJobs:
+    """Detached work against the real instance, read back through the shipped API."""
+
+    def test_backup_runs_detached_and_keeps_its_typed_event_log(self, daemon):
+        created = _post(
+            daemon.base + "/api/v1/jobs",
+            {
+                "verb": "backup",
+                "target": {"project": daemon.project, "site": harness.DEFAULT_SITE},
+                "args": {"with_files": False},
+            },
+        )["data"]
+
+        assert created["pid"] != daemon.proc.pid, "the daemon must not own the long work"
+        finished = _wait_for_job(daemon.base, created["id"])
+        assert finished["state"] == "succeeded", finished
+        assert finished["result"]["site"] == harness.DEFAULT_SITE
+        assert finished["result"]["artifact_path"].endswith(".sql.gz")
+        event_types = [event["type"] for event in finished["events"]]
+        assert "backup_step_start" in event_types
+        assert "backup_step_end" in event_types
+
+        # A fresh read after the worker exited is the same durable result. This is
+        # the browser reattach path after its tab or SSE stream has gone away.
+        attached = _job(daemon.base, created["id"])
+        assert attached["state"] == "succeeded"
+        assert attached["event_count"] == finished["event_count"]
+
+    def test_stop_and_start_bench_are_jobs_and_leave_the_instance_serving(self, daemon):
+        try:
+            stopped = _post(
+                daemon.base + "/api/v1/jobs",
+                {
+                    "verb": "stop-bench",
+                    "target": {"project": daemon.project, "bench": "0"},
+                    "args": {},
+                },
+            )["data"]
+            stop_result = _wait_for_job(daemon.base, stopped["id"])
+            assert stop_result["state"] == "succeeded", stop_result
+            assert "stop_step_start" in [event["type"] for event in stop_result["events"]]
+
+            started = _post(
+                daemon.base + "/api/v1/jobs",
+                {
+                    "verb": "start",
+                    "target": {"project": daemon.project, "bench": "0"},
+                    "args": {},
+                },
+            )["data"]
+            start_result = _wait_for_job(daemon.base, started["id"], timeout=600)
+            assert start_result["state"] == "succeeded", start_result
+            assert "start_step_start" in [event["type"] for event in start_result["events"]]
+            harness.wait_for_site_ready(daemon.project, harness.DEFAULT_SITE)
+        finally:
+            if harness.frappe_container_id(daemon.project) is None:
+                harness.run_cwcli("start", daemon.project, "--yes", timeout=600)
+            else:
+                harness.run_cwcli("start", daemon.project, "--bench", "0", timeout=600)
+            harness.wait_for_site_ready(daemon.project, harness.DEFAULT_SITE)
 
 
 class TestSafeActions:

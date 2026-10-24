@@ -3,6 +3,8 @@ import { toast } from 'frappe-ui'
 import { ACTIONS, availability } from './actions'
 import { instance, loadDetail, getJsonUrl } from './fleet'
 import { postJson, ApiError } from './api'
+import { createJob } from './jobs'
+import { router } from '../router'
 
 // One action dialog for the whole app (components/ActionDialog.vue renders it).
 export const dialogState = reactive({
@@ -40,10 +42,15 @@ export async function runAction(id, ctx, values, { consent = false } = {}) {
   const a = ACTIONS[id]
   if (a.read) return openSite(ctx)
   const payload = a.request(ctx, values)
-  if (consent) payload.consent = true
+  if (consent || a.consent) payload.consent = true
   dialogState.running = true
   try {
-    const data = await postJson('/api/v1/actions', payload)
+    const data = a.job ? await createJob(payload) : await postJson('/api/v1/actions', payload)
+    if (a.job) {
+      dialogState.open = false
+      await router.push(`/jobs/${data.id}`)
+      return data
+    }
     toast.success(a.done ? a.done(ctx, data?.outcome, values) : a.label, { description: a.cli(ctx, values) })
     for (const w of data?.warnings || []) toast.warning(w.text || w.code)
     loadDetail(ctx.project, { force: true })
