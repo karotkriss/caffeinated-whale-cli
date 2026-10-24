@@ -670,11 +670,15 @@ def _run_init(
     bench_parent = str(args.get("bench_parent") or "/workspace")
     uid = args.get("uid")
     uid = int(uid) if uid is not None else None
+    auto_start = args.get("auto_start") is True
+    if auto_start:
+        check_start_port_conflicts(project)
     instance_result = core_init.init_instance(
         project,
         port=int(args.get("port") or 8000),
         bench_parent=bench_parent,
         bench_image_tag=args.get("bench_image_tag") or None,
+        auto_start=auto_start,
         uid=uid,
         stream_output=True,
         on_event=emit,
@@ -701,6 +705,7 @@ def _run_init(
         reuse_bench=args.get("reuse_bench"),
         install_erpnext=bool(args.get("install_erpnext")),
         erpnext_branch=erpnext_branch,
+        auto_start=auto_start,
         uid=uid,
         stream_output=True,
         on_event=emit,

@@ -82,6 +82,7 @@ function spec() {
         install_erpnext: value.install_erpnext,
         start: value.start,
         reuse_bench: value.reuse_bench === '' ? null : value.reuse_bench === 'reuse',
+        auto_start: value.auto_start === true,
       },
       secrets: { admin_password: value.admin_password, db_root_password: value.db_root_password },
     }
