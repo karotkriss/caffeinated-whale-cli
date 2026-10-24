@@ -21,6 +21,7 @@ import sys
 
 import typer
 from rich.status import Status as RichStatus
+from rich.table import Table
 
 from ..core import update as core_update
 from ..core.envelope import Status
@@ -330,7 +331,8 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
     if report.failed_apps:
         console.print(f"[bold red]✗ Failed to update {len(report.failed_apps)} app(s):[/bold red]")
         for app in report.failed_apps:
-            console.print(f"  • {app}: Git pull failed")
+            what = "bench update --reset failed" if report.frappe_reset else "Git pull failed"
+            console.print(f"  • {app}: {what}")
             # Fold in git's own error (network/auth/dubious-ownership/conflict) so
             # the default (non-verbose) output is actionable - not just "Git pull
             # failed". Rendered raw (markup=False) since git output is arbitrary
@@ -519,12 +521,24 @@ def run_app_update(
     for warning in result.warnings:
         if warning.code in _UNREAD_WARNING_CODES:
             stderr_console.print(f"[yellow]Warning:[/yellow] {warning.text}")
+        elif warning.code in _BENCH_LEFT_DOWN_CODES:
+            # A grid, so the long remedy wraps with a hanging indent under its mark.
+            grid = Table.grid(padding=(0, 1))
+            grid.add_row("[bold red]✗[/bold red]", warning.text)
+            stderr_console.print(grid)
 
     # The exit code reads report.ok, NOT result.status: a partial failure is a
     # WARNING-shaped envelope, and every other verb maps WARNING to 0.
     if not report.ok:
         raise typer.Exit(code=1)
 
+
+# A failed `bench update --reset` that left (or may have left) the whole bench in
+# maintenance mode with its scheduler paused: every site is down, and the report's
+# `bench_left_in_maintenance` flag alone does not say how to bring them back.
+_BENCH_LEFT_DOWN_CODES = frozenset(
+    {"frappe_reset.left_in_maintenance", "frappe_reset.maintenance_unknown"}
+)
 
 # The benches and sites the post-pull recache and the site discovery could not
 # read; no event narrates them, so the summary is followed by each one.

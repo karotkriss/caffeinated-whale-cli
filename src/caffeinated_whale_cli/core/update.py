@@ -109,6 +109,12 @@ class UpdateReport:
     # from. An app flagged `diverged` was pulled into a copy the running site does
     # not load, so `ok` is False even though the git pull "succeeded".
     app_imports: list[resolvers.AppImport]
+    # A failed `bench update --reset` leaves maintenance_mode/pause_scheduler set in
+    # sites/common_site_config.json: EVERY site that does not override them answers
+    # 503 with its scheduler paused. True when that is what the failure left; None
+    # when it cannot be told (the reset failed and that file could not be read, or
+    # the reset's outcome is unknown and it may still be running); False otherwise.
+    bench_left_in_maintenance: bool | None
     aborted: bool  # the fan-out stopped early (Ctrl-C / an unexpected error)
     ok: bool  # pre-computed aggregate; the frontends' exit code reads THIS
 
@@ -505,6 +511,7 @@ def _build_report(
     failed_maintenance_disable: list[str],
     app_imports: list[resolvers.AppImport] | None = None,
     resync: supervision.ResyncOutcome | None = None,
+    bench_left_in_maintenance: bool | None = False,
     aborted: bool,
 ) -> UpdateReport:
     """Assemble the report and pre-compute ``ok``.
@@ -558,6 +565,7 @@ def _build_report(
         unserved_sites=list(resync.unserved_sites),
         resync_error=resync.error,
         app_imports=list(app_imports),
+        bench_left_in_maintenance=bench_left_in_maintenance,
         aborted=aborted,
         ok=ok,
     )
@@ -575,6 +583,13 @@ def _recache(project_name: str, bench_path: str, warnings: list[Message], emit: 
                 "Failed to recache project. Site detection may be inaccurate.",
             )
         )
+
+
+# What each bench-wide flag `bench update` leaves behind does to the bench's sites.
+_BENCH_FLAG_EFFECTS = {
+    "maintenance_mode": "answers HTTP 503",
+    "pause_scheduler": "runs no scheduled jobs",
+}
 
 
 def _frappe_reset(
@@ -595,6 +610,14 @@ def _frappe_reset(
     and rebuilds. It therefore ignores the per-app/per-site options, and it returns
     BEFORE the maintenance-mode state machine is ever entered - it enables no
     maintenance and has no ``finally``; ``bench update --reset`` manages its own.
+
+    bench's own handling has no ``finally`` either: it sets ``maintenance_mode`` and
+    ``pause_scheduler`` bench-wide before backing up the first site and clears them
+    only when everything succeeds. So after a failed reset this reads them back and
+    REPORTS what was left, with the commands that clear them. It deliberately does
+    not clear them itself: a reset that failed part-way can leave some apps on new
+    code against unmigrated databases, and whether the sites come back up in that
+    state is the operator's call, not cwcli's.
     """
     note = None
     if ignored:
@@ -629,6 +652,59 @@ def _frappe_reset(
     else:
         status = "ok"
     emit(UpdateStepEnd(phase="frappe_reset", item="frappe", status=status, message=lost))
+
+    # The flags are read only after a definite failure: an unknown outcome may still
+    # be running, and a run in flight has them set legitimately.
+    left_in_maintenance: bool | None = False
+    if status == "unknown":
+        left_in_maintenance = None
+        remedy = supervision.clear_bench_wide_flags_hint(
+            project_name,
+            list(supervision.BENCH_WIDE_FLAGS),
+            resolvers.bench_cli_flag(project_name, bench_path),
+        )
+        warnings.append(
+            Message(
+                "frappe_reset.maintenance_unknown",
+                "The outcome of bench update --reset is unknown, so whether it left "
+                f"{bench_path} in maintenance mode is unknown too: it may still be running, "
+                "and a running bench update keeps maintenance_mode and pause_scheduler set "
+                "bench-wide. If the bench is still in maintenance once it has stopped, "
+                f"clear them with: {remedy}",
+                detail={"bench_path": bench_path},
+            )
+        )
+    elif status == "failed":
+        flags = supervision.bench_wide_flags(
+            supervision.common_site_config(frappe_container, bench_path)
+        )
+        left_in_maintenance = None if flags is None else bool(flags)
+        if flags:
+            them = "them" if len(flags) > 1 else "it"
+            effects = " and ".join(_BENCH_FLAG_EFFECTS[flag] for flag in flags)
+            remedy = supervision.clear_bench_wide_flags_hint(
+                project_name, flags, resolvers.bench_cli_flag(project_name, bench_path)
+            )
+            warnings.append(
+                Message(
+                    "frappe_reset.left_in_maintenance",
+                    f"bench update --reset failed and left {' and '.join(flags)} set "
+                    f"bench-wide in {bench_path}/sites/common_site_config.json, so every "
+                    f"site on the bench that does not override {them} {effects}. Once the "
+                    f"bench is fixed, clear {them} with: {remedy}",
+                    detail={"bench_path": bench_path, "flags": flags},
+                )
+            )
+        elif flags is None:
+            warnings.append(
+                Message(
+                    "frappe_reset.maintenance_unknown",
+                    f"bench update --reset failed, and {bench_path}/sites/"
+                    "common_site_config.json could not be read to check whether it left "
+                    "the bench in maintenance mode.",
+                    detail={"bench_path": bench_path},
+                )
+            )
 
     # Recache BEFORE the exit code is consulted, exactly as this path always has: a
     # partially-applied reset genuinely changes the cache, so a failed reset still
@@ -704,6 +780,7 @@ def _frappe_reset(
         failed_website_cache_clears=[],
         failed_maintenance_disable=[],
         resync=resync,
+        bench_left_in_maintenance=left_in_maintenance,
         aborted=False,
     )
     return Result(status=Status.OK if report.ok else Status.WARNING, data=report, warnings=warnings)

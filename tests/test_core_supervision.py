@@ -1452,3 +1452,115 @@ class TestMaintenanceModeOn:
     def test_none_when_unparseable(self):
         c = self._CfgFake((0, b"not json at all"))
         assert supervision.maintenance_mode_on(c, BENCH, "dev.localhost") is None
+
+
+class _BenchConfigsFake:
+    """Answers ``cat sites/...`` per relative path; ``None`` means the read fails.
+
+    The site file and the bench-wide file differ in the cases that matter, so one
+    canned answer for every read (``_CfgFake``) cannot express them.
+    """
+
+    def __init__(self, *, site, common):
+        self.files = {
+            "cat sites/dev.localhost/site_config.json": site,
+            "cat sites/common_site_config.json": common,
+        }
+        self.calls: list = []
+
+    def exec_run(self, cmd, workdir=None, environment=None):
+        self.calls.append((cmd, workdir))
+        body = self.files.get(cmd)
+        if body is None:
+            return (1, b"cat: No such file or directory")
+        return (0, body.encode() if isinstance(body, str) else json.dumps(body).encode())
+
+
+class TestMaintenanceModeMergesTheBenchWideFlag:
+    """``maintenance_mode_on`` reads the flag the way frappe does: common_site_config
+    first, the site's own site_config overriding. ``bench update`` sets it in the
+    COMMON file and leaves it there when it fails, so a site-only read reported such
+    a site as "not in maintenance" while it answered 503."""
+
+    def test_common_on_with_the_site_silent_is_on(self):
+        c = _BenchConfigsFake(site={"db_name": "x"}, common={"maintenance_mode": 1})
+        assert supervision.maintenance_mode_on(c, BENCH, "dev.localhost") is True
+
+    def test_the_site_turning_it_off_overrides_the_common_on(self):
+        # `set-maintenance-mode off` writes an explicit 0 into the site's own file.
+        c = _BenchConfigsFake(site={"maintenance_mode": 0}, common={"maintenance_mode": 1})
+        assert supervision.maintenance_mode_on(c, BENCH, "dev.localhost") is False
+
+    def test_the_site_turning_it_on_wins_over_a_clear_common(self):
+        c = _BenchConfigsFake(site={"maintenance_mode": 1}, common={"maintenance_mode": 0})
+        assert supervision.maintenance_mode_on(c, BENCH, "dev.localhost") is True
+
+    def test_an_unreadable_common_falls_back_to_the_site_value(self):
+        # frappe itself treats a missing or invalid common config as empty.
+        assert (
+            supervision.maintenance_mode_on(
+                _BenchConfigsFake(site={"maintenance_mode": 1}, common=None),
+                BENCH,
+                "dev.localhost",
+            )
+            is True
+        )
+        assert (
+            supervision.maintenance_mode_on(
+                _BenchConfigsFake(site={}, common="not json"), BENCH, "dev.localhost"
+            )
+            is False
+        )
+
+    def test_both_unreadable_is_none(self):
+        c = _BenchConfigsFake(site=None, common=None)
+        assert supervision.maintenance_mode_on(c, BENCH, "dev.localhost") is None
+
+    def test_an_unreadable_site_is_none_even_when_the_common_is_on(self):
+        # The site's own file could override the common value either way, so a
+        # missing read is "could not tell", never a guess from the common file.
+        c = _BenchConfigsFake(site=None, common={"maintenance_mode": 1})
+        assert supervision.maintenance_mode_on(c, BENCH, "dev.localhost") is None
+
+    def test_both_reads_go_through_workdir_never_an_interpolated_bench_path(self):
+        c = _BenchConfigsFake(site={}, common={})
+        supervision.maintenance_mode_on(c, BENCH, "dev.localhost")
+        assert c.calls == [
+            ("cat sites/dev.localhost/site_config.json", BENCH),
+            ("cat sites/common_site_config.json", BENCH),
+        ]
+
+
+class TestBenchWideFlags:
+    def test_reports_each_flag_bench_update_left_set(self):
+        c = _BenchConfigsFake(site=None, common={"maintenance_mode": 1, "pause_scheduler": 1})
+        assert supervision.bench_wide_flags(supervision.common_site_config(c, BENCH)) == [
+            "maintenance_mode",
+            "pause_scheduler",
+        ]
+
+    def test_a_clear_bench_is_an_empty_list(self):
+        c = _BenchConfigsFake(site=None, common={"maintenance_mode": 0, "webserver_port": 8000})
+        assert supervision.bench_wide_flags(supervision.common_site_config(c, BENCH)) == []
+
+    def test_an_unreadable_config_is_none_not_clear(self):
+        for common in (None, "{oops"):
+            c = _BenchConfigsFake(site=None, common=common)
+            assert supervision.bench_wide_flags(supervision.common_site_config(c, BENCH)) is None
+
+
+class TestClearBenchWideFlagsHint:
+    def test_uses_parse_so_zero_is_stored_as_an_int_and_the_long_flag_forms(self):
+        hint = supervision.clear_bench_wide_flags_hint("proj", ["maintenance_mode"])
+        # --parse stores an int 0 rather than a string; `-p` is
+        # `cwcli run`'s own --path, so only the long forms reach bench.
+        assert hint == "cwcli run proj set-config --global --parse maintenance_mode 0"
+
+    def test_one_command_per_flag_and_the_bench_selector_when_given(self):
+        hint = supervision.clear_bench_wide_flags_hint(
+            "proj", ["maintenance_mode", "pause_scheduler"], " --bench main"
+        )
+        assert hint == (
+            "cwcli run proj --bench main set-config --global --parse maintenance_mode 0 && "
+            "cwcli run proj --bench main set-config --global --parse pause_scheduler 0"
+        )

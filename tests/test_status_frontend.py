@@ -11,7 +11,7 @@ import pytest
 import typer
 
 from caffeinated_whale_cli.commands import status as status_mod
-from caffeinated_whale_cli.core.envelope import Result, Status
+from caffeinated_whale_cli.core.envelope import Message, Result, Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from caffeinated_whale_cli.core.status import BenchStatus, StatusReport
 from caffeinated_whale_cli.core.supervision import ProcessHealth
@@ -74,7 +74,7 @@ class _FakeContainer:
     }
 
 
-def _run(monkeypatch, capsys, report, *, container=_FakeContainer):
+def _run(monkeypatch, capsys, report, *, container=_FakeContainer, warnings=()):
     # Neutralize @handle_docker_errors' real docker CLI/daemon preflight (this
     # unit tier runs without Docker; see test_yes_flag.py's `_neutralize`).
     monkeypatch.setattr(docker_utils.shutil, "which", lambda _n: "/usr/bin/docker")
@@ -82,7 +82,9 @@ def _run(monkeypatch, capsys, report, *, container=_FakeContainer):
         docker_utils.docker, "from_env", lambda: type("C", (), {"ping": lambda s: True})()
     )
     monkeypatch.setattr(
-        status_mod.core_status, "status", lambda *a, **k: Result(status=Status.OK, data=report)
+        status_mod.core_status,
+        "status",
+        lambda *a, **k: Result(status=Status.OK, data=report, warnings=list(warnings)),
     )
     # The human web line resolves the HOST address from the container's live
     # bindings; ``container=None`` makes that unresolvable (the in-container fallback).
@@ -179,9 +181,7 @@ def test_bare_status_prints_the_all_instances_summary(monkeypatch, capsys):
         docker_utils.docker, "from_env", lambda: type("C", (), {"ping": lambda s: True})()
     )
     calls = []
-    monkeypatch.setattr(
-        status_mod, "render_instances_summary", lambda **k: calls.append(k) or None
-    )
+    monkeypatch.setattr(status_mod, "render_instances_summary", lambda **k: calls.append(k) or None)
 
     def _boom(*a, **k):
         raise AssertionError("bare status must not reach core.status at all")
@@ -189,9 +189,7 @@ def test_bare_status_prints_the_all_instances_summary(monkeypatch, capsys):
     monkeypatch.setattr(status_mod.core_status, "status", _boom)
 
     with pytest.raises(typer.Exit) as exc:
-        status_mod.status(
-            project_name=None, bench=None, verbose=False, watch=False, interval=2.0
-        )
+        status_mod.status(project_name=None, bench=None, verbose=False, watch=False, interval=2.0)
     assert exc.value.exit_code == 0
     assert calls == [{"verbose": False}]
 
@@ -304,10 +302,54 @@ def test_maintenance_mode_is_named_plainly_with_the_way_out(monkeypatch, capsys)
 
     bench = dataclasses.replace(_bench("degraded"), maintenance_mode=True)
     report = _report("degraded", benches=[bench])
-    captured = _run(monkeypatch, capsys, report)
+    # The renderer prints the core's own warning under the bench it names, so the
+    # remedy is written in exactly one place.
+    warning = Message(
+        "status.maintenance_mode",
+        "MAINTENANCE MODE ON for site 'site.localhost' (it answers 503 to users). "
+        "Take it out with: cwcli run proj --site site.localhost set-maintenance-mode off",
+        detail={"bench_path": bench.bench_path},
+    )
+    captured = _run(monkeypatch, capsys, report, warnings=[warning])
+    err = harness_collapse(captured.err)
 
-    assert "MAINTENANCE MODE ON" in captured.err
-    assert "site.localhost" in captured.err
-    assert "set-maintenance-mode off" in captured.err
+    assert "MAINTENANCE MODE ON" in err
+    assert "site.localhost" in err
+    assert "set-maintenance-mode off" in err
     # stdout stays exactly one machine token.
     assert captured.out.strip() == "degraded"
+
+
+def test_a_bench_left_down_by_bench_update_is_named_with_the_bench_wide_way_out(
+    monkeypatch, capsys
+):
+    # The REAL core produces the warnings: a failed `bench update` left both flags in
+    # the bench's common config. Both faults print under the bench heading even
+    # without --verbose, and neither is echoed twice.
+    from tests.test_core_status import wire_bench_left_down_by_bench_update
+
+    monkeypatch.setattr(docker_utils.shutil, "which", lambda _n: "/usr/bin/docker")
+    monkeypatch.setattr(
+        docker_utils.docker, "from_env", lambda: type("C", (), {"ping": lambda s: True})()
+    )
+    container = wire_bench_left_down_by_bench_update(monkeypatch)
+    monkeypatch.setattr(status_mod.core_docker, "get_frappe_container", lambda name: container)
+
+    for verbose in (False, True):
+        with pytest.raises(typer.Exit):
+            status_mod.status(
+                project_name="proj", bench=None, verbose=verbose, watch=False, interval=2.0
+            )
+        err = harness_collapse(capsys.readouterr().err)
+
+        assert "MAINTENANCE MODE ON bench-wide" in err
+        assert "cwcli run proj set-config --global --parse maintenance_mode 0" in err
+        assert "SCHEDULER PAUSED bench-wide" in err
+        assert "cwcli run proj set-config --global --parse pause_scheduler 0" in err
+        assert err.count("set-config --global --parse maintenance_mode 0") == 1
+        assert "set-maintenance-mode off" not in err
+
+
+def harness_collapse(text: str) -> str:
+    """Rich wraps long lines at the console width; compare on collapsed whitespace."""
+    return " ".join(text.split())

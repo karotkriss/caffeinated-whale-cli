@@ -7,6 +7,7 @@ is also the command this batch refactors onto new machinery, so these exist
 because refactoring it blind was the actual risk.
 """
 
+import shlex
 import subprocess
 import types
 
@@ -17,7 +18,7 @@ from typer.testing import CliRunner
 from caffeinated_whale_cli.commands import run as run_mod
 from caffeinated_whale_cli.core import docker as core_docker
 from caffeinated_whale_cli.core import exec_stream as es
-from caffeinated_whale_cli.core import resolvers
+from caffeinated_whale_cli.core import resolvers, supervision
 from caffeinated_whale_cli.core import run as core_run
 from caffeinated_whale_cli.core.envelope import Result, Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
@@ -682,6 +683,32 @@ def test_run_double_dash_shields_a_bench_dash_i(parsed):
     calls = cli(parsed, "--", "some-cmd", "-i")
 
     assert calls["args"] == ["some-cmd", "-i"]
+
+
+@pytest.mark.parametrize(
+    ("bench_flag", "bench", "path"),
+    [("", None, None), (" --bench staging", "staging", None), (" --path '/w/a b'", None, "/w/a b")],
+)
+def test_the_bench_wide_flag_remedy_reaches_bench_exactly_as_printed(
+    parsed, bench_flag, bench, path
+):
+    """`status`/`apps update` print this remedy for a bench a failed `bench update`
+    left down. It must survive `cwcli run`'s parser intact: `--global`/`--parse`
+    pass through to frappe's set-config, and `-p` would have been cwcli's `--path`."""
+    hint = supervision.clear_bench_wide_flags_hint(
+        "proj", ["maintenance_mode", "pause_scheduler"], bench_flag
+    )
+
+    for command, flag in zip(
+        hint.split(" && "), ("maintenance_mode", "pause_scheduler"), strict=True
+    ):
+        argv = shlex.split(command)
+        assert argv[:3] == ["cwcli", "run", "proj"]
+        calls = cli(parsed, *argv[3:])
+
+        assert calls["args"] == ["set-config", "--global", "--parse", flag, "0"]
+        assert calls["bench"] == bench
+        assert calls["path"] == path
 
 
 # ------------------------------------------------------------------ credential bridge

@@ -26,6 +26,7 @@ snapshot instead of starting the live loop.
 
 import sys
 import time
+from collections.abc import Sequence
 
 import typer
 from rich.live import Live
@@ -34,7 +35,7 @@ from rich.table import Table
 from ..core import docker as core_docker
 from ..core import resolvers
 from ..core import status as core_status
-from ..core.envelope import Result
+from ..core.envelope import Message, Result
 from ..core.errors import CwcliError
 from ..core.status import BenchStatus, StatusReport
 from ..utils.completion_utils import complete_project_names
@@ -108,13 +109,13 @@ def status(
     assert report is not None  # OK/WARNING always carries a StatusReport
     if verbose:
         for warning in result.warnings:
-            # The not-cwcli-supervised hint and the maintenance-mode fault are
+            # The not-cwcli-supervised hint and the maintenance/scheduler faults are
             # rendered by _render_detail (in BOTH modes), so don't also echo them
             # here as warnings - they would double up.
-            if warning.code in ("supervisor.not_cwcli", "status.maintenance_mode"):
+            if warning.code in ("supervisor.not_cwcli", *_BENCH_FAULT_CODES):
                 continue
             stderr_console.print(f"[dim]{warning.text}[/dim]")
-    _render_detail(report, verbose)
+    _render_detail(report, verbose, result.warnings)
 
     # The one machine-readable token on stdout (nothing else).
     typer.echo(report.overall)
@@ -280,7 +281,12 @@ def _web_line(bench: BenchStatus, verbose: bool, host_target: str | None) -> str
     return None
 
 
-def _render_detail(report: StatusReport, verbose: bool) -> None:
+# Faults the core reports per bench (``detail["bench_path"]``), rendered under that
+# bench's heading with the core's own text, so the remedy is written in one place.
+_BENCH_FAULT_CODES = ("status.maintenance_mode", "status.scheduler_paused")
+
+
+def _render_detail(report: StatusReport, verbose: bool, warnings: Sequence[Message] = ()) -> None:
     """Render each bench's health + its own web probe to stderr (never stdout)."""
     stderr_console.print(_title(report))
     # Resolve the frappe container ONCE (all benches share it) so the web line can
@@ -301,15 +307,21 @@ def _render_detail(report: StatusReport, verbose: bool) -> None:
         line = _web_line(bench, verbose, _host_web_target(container, bench))
         if line is not None:
             stderr_console.print(f"  {line}")
-        if bench.maintenance_mode:
-            # A site stuck in maintenance answers 503 with no other signal; say so
-            # plainly and name the way out (this is the SIGTERM/SIGHUP-killed-migrate
-            # state). Rendered even without --verbose - it is a fault, not detail.
-            stderr_console.print(
-                f"  [bold red]MAINTENANCE MODE ON[/bold red] for site '{bench.web_site}' "
-                f"(answers 503). Take it out with: [bold]cwcli run {report.project} "
-                f"--site {bench.web_site} set-maintenance-mode off[/bold]"
-            )
+        # Maintenance mode and a paused scheduler answer 503 / run nothing with no
+        # other signal; say so plainly and name the way out. Rendered even without
+        # --verbose - they are faults, not detail.
+        faults = [
+            w
+            for w in warnings
+            if w.code in _BENCH_FAULT_CODES
+            and (w.detail or {}).get("bench_path") == bench.bench_path
+        ]
+        if faults:
+            # A grid, so a fault that wraps keeps a hanging indent under its mark.
+            grid = Table.grid(padding=(0, 1))
+            for fault in faults:
+                grid.add_row("  [bold red]✗[/bold red]", fault.text)
+            stderr_console.print(grid)
 
         for p in bench.processes:
             mark = _up_mark(p.up)

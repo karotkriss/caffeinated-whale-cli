@@ -892,33 +892,93 @@ def web_http_code(
     return code or None
 
 
-def maintenance_mode_on(container, bench_path: str, site: str) -> bool | None:
-    """Whether ``site`` is in maintenance mode, read LIVE from its site_config.json.
+def _read_bench_json(container, bench_path: str, relative_path: str) -> dict | None:
+    """One JSON object file under ``bench_path``, or None when unreadable/unparseable.
 
-    A site left stuck in maintenance mode answers HTTP 503 to every user with no
-    other signal - which is exactly the state a ``migrate``/``apps update`` killed
-    by SIGTERM/SIGHUP leaves behind. ``status`` must say so plainly, so it reads the
-    authoritative flag directly (``maintenance_mode`` truthy in
-    ``sites/<site>/site_config.json``) rather than inferring it from a 503, which can
-    have other causes.
-
-    Returns None (fail-honest) when the file is missing or unparseable: "could not
-    tell" must never read as "not in maintenance". Run via ``workdir`` rather than
-    interpolating ``bench_path``/``site`` into the command (the quoting guard the
-    rest of this module uses).
+    Run via ``workdir`` rather than interpolating ``bench_path`` into the command
+    (the quoting guard the rest of this module uses); the caller quotes any
+    user-supplied segment of ``relative_path``.
     """
-    exit_code, output = container.exec_run(
-        f"cat sites/{shlex.quote(site)}/site_config.json", workdir=bench_path
-    )
+    exit_code, output = container.exec_run(f"cat {relative_path}", workdir=bench_path)
     if exit_code not in (0, None):
         return None
     try:
         config = json.loads(_decode(output))
     except (json.JSONDecodeError, TypeError):
         return None
-    if not isinstance(config, dict):
+    return config if isinstance(config, dict) else None
+
+
+#: The keys ``bench update`` writes into ``sites/common_site_config.json`` before its
+#: first backup and clears only when the WHOLE update succeeds (bench 5.31.0
+#: ``bench/utils/bench.py:487-488`` vs ``:515-516``, no ``finally``), so any failure
+#: after the first second leaves every site that does not override them down (503)
+#: with its scheduler paused.
+BENCH_WIDE_FLAGS = ("maintenance_mode", "pause_scheduler")
+
+
+def common_site_config(container, bench_path: str) -> dict | None:
+    """The bench's ``sites/common_site_config.json``, or None when unreadable."""
+    return _read_bench_json(container, bench_path, "sites/common_site_config.json")
+
+
+def bench_wide_flags(common: dict | None) -> list[str] | None:
+    """Which :data:`BENCH_WIDE_FLAGS` are set in ``common`` (a
+    :func:`common_site_config` read).
+
+    Returns None (fail-honest) when the file could not be read, never an empty list:
+    "could not tell" must not read as "the bench is clear".
+    """
+    if common is None:
         return None
-    return bool(config.get("maintenance_mode"))
+    return [flag for flag in BENCH_WIDE_FLAGS if common.get(flag)]
+
+
+def clear_bench_wide_flags_hint(project: str, flags: list[str], bench_flag: str = "") -> str:
+    """The copy-paste command that clears bench-wide ``flags``.
+
+    ``bench_flag`` is the :func:`resolvers.bench_cli_flag` fragment naming the bench.
+    ``--parse`` makes the stored type explicit (an int 0, not a string). The long
+    flag forms are deliberate: ``-p`` is ``cwcli run``'s own ``--path``.
+    """
+    return " && ".join(
+        f"cwcli run {project}{bench_flag} set-config --global --parse {flag} 0" for flag in flags
+    )
+
+
+def maintenance_mode_on(
+    container, bench_path: str, site: str, *, common: dict | None = None
+) -> bool | None:
+    """Whether ``site`` is in maintenance mode, read LIVE from its effective config.
+
+    A site left stuck in maintenance mode answers HTTP 503 to every user with no
+    other signal - which is exactly the state a ``migrate``/``apps update`` killed
+    by SIGTERM/SIGHUP leaves behind, and the state a failed ``bench update`` leaves
+    the WHOLE bench in. ``status`` must say so plainly, so it reads the
+    authoritative flag directly rather than inferring it from a 503, which can have
+    other causes.
+
+    The flag is read the way frappe merges it: ``sites/common_site_config.json``
+    first, ``sites/<site>/site_config.json`` overriding (frappe ``get_site_config``).
+    So a site that sets ``maintenance_mode`` itself (``set-maintenance-mode`` writes
+    1 or 0) answers from its own file, and one that does not inherits the bench-wide
+    value - the value ``bench update`` leaves at 1 when it fails.
+
+    Returns None (fail-honest) when the site's file is missing or unparseable:
+    "could not tell" must never read as "not in maintenance". An unreadable common
+    config counts as empty, exactly as frappe treats it. A caller that already read
+    the common config passes it as ``common`` rather than reading it twice.
+    """
+    site_config = _read_bench_json(
+        container, bench_path, f"sites/{shlex.quote(site)}/site_config.json"
+    )
+    if site_config is None:
+        return None
+    if "maintenance_mode" in site_config:
+        return bool(site_config["maintenance_mode"])
+    if common is None:
+        common = common_site_config(container, bench_path) or {}
+    return bool(common.get("maintenance_mode"))
 
 
 def web_is_serving(container, *, port: int, site: str | None = None) -> bool:

@@ -342,6 +342,23 @@ class TestAxiStatus:
         assert "maintenance_mode: true" in result.stdout
         assert "set-maintenance-mode off" in result.stdout
 
+    def test_a_bench_left_down_by_bench_update_is_in_the_toon(self, monkeypatch):
+        # A failed `bench update` sets the flags in the bench's COMMON config. The real
+        # core reads them, and both warnings reach the agent with the bench-wide
+        # remedies, beside the merged per-site field.
+        from tests.test_core_status import wire_bench_left_down_by_bench_update
+
+        wire_bench_left_down_by_bench_update(monkeypatch)
+
+        result = runner.invoke(axi_mod.app, ["status", "proj"])
+
+        assert result.exit_code == 0
+        assert "maintenance_mode: true" in result.stdout
+        assert "MAINTENANCE MODE ON bench-wide" in result.stdout
+        assert "SCHEDULER PAUSED bench-wide" in result.stdout
+        assert "set-config --global --parse maintenance_mode 0" in result.stdout
+        assert "set-config --global --parse pause_scheduler 0" in result.stdout
+
     def test_multi_bench_reports_every_bench_exit_0(self, monkeypatch):
         # REPLACES test_multi_bench_names_the_flag_exit_2 (this class's copy only -
         # TestAxiStart's identically-named test pins `axi start`'s refusal, which this
