@@ -493,8 +493,9 @@ class CursorContainer(LogFsContainer):
     def exec_run(self, cmd, workdir=None, environment=None):
         if cmd[0] == "stat":
             return 0, "".join(f"{len(self.raw[p])} {p}\n" for p in cmd[3:]).encode()
-        if cmd[0] == "tail" and cmd[1] == "-c":
-            return 0, self.raw[cmd[3]][int(cmd[2][1:]) - 1 :]
+        if cmd[0] == "sh" and "tail -c" in cmd[2]:
+            begin, path, count = int(cmd[4]) - 1, cmd[5], int(cmd[6])
+            return 0, self.raw[path][begin : begin + count]
         if cmd[0] == "sh" and "head -c" in cmd[2]:
             size, path, lines = int(cmd[4]), cmd[5], int(cmd[6])
             return 0, b"".join(self.raw[path][:size].splitlines(keepends=True)[-lines:])
@@ -544,6 +545,20 @@ def test_since_warm_read_returns_only_whole_new_lines(wire):
     tail = core_logs.read_logs_since("proj", after={"web": 8}).data.logs[0]
     assert tail.lines == ["e", "f"]
     assert tail.offset == 12
+
+
+def test_since_warm_read_is_capped_and_reports_what_it_skipped(wire, monkeypatch):
+    monkeypatch.setattr(core_logs, "RESUME_CAP_BYTES", 10)
+    path = "/w/bench/logs/web.supervisor.log"
+    c = CursorContainer({path: b"a\n"})
+    wire(c)
+    c.raw[path] += b"".join(b"line%02d\n" % i for i in range(20))  # 140 new bytes
+    tail = core_logs.read_logs_since("proj", after={"web": 2}).data.logs[0]
+    assert tail.lines == ["line19"], "only the last whole lines inside the cap"
+    assert tail.offset == len(c.raw[path])
+    assert tail.skipped_bytes == len(c.raw[path]) - 7 - 2
+    small = core_logs.read_logs_since("proj", after={"web": tail.offset}).data.logs[0]
+    assert small.lines == [] and small.skipped_bytes == 0
 
 
 def test_since_idle_and_rotated_files_never_hang_the_cursor(wire):
