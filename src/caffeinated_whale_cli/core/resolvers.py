@@ -202,14 +202,13 @@ def _bench_option_label(bench: dict) -> str:
     return f"{prefix}{bench.get('path', '?')}"
 
 
-def bench_cli_flag(project_name: str, bench_path: str, *, allow_path: bool = True) -> str | None:
+def bench_cli_flag(project_name: str, bench_path: str) -> str:
     """The `` --bench``/`` --path`` fragment a suggested ``cwcli <verb> <project>`` needs
     to act on ``bench_path`` - empty when :func:`resolve_bench` already lands there
     with no selector (the sole cached bench, or the default with nothing cached).
 
     A path no cached ``--bench`` value names falls back to `` --path`` rather than
-    to no selector, which would act on a DIFFERENT bench. ``allow_path=False`` is for
-    a verb without ``--path``: it returns None there instead.
+    to no selector, which would act on a DIFFERENT bench.
     """
     benches = cached_benches(project_name)
     if not benches:
@@ -221,7 +220,7 @@ def bench_cli_flag(project_name: str, bench_path: str, *, allow_path: bool = Tru
     for position, cached in enumerate(benches):
         if cached.get("path") == bench_path:
             return f" --bench {cached.get('label') or cached.get('index', position)}"
-    return f" --path {shlex.quote(bench_path)}" if allow_path else None
+    return f" --path {shlex.quote(bench_path)}"
 
 
 def resolve_bench(

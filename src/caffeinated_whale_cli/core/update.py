@@ -661,7 +661,7 @@ def _frappe_reset(
         remedy = supervision.clear_bench_wide_flags_hint(
             project_name,
             list(supervision.BENCH_WIDE_FLAGS),
-            resolvers.bench_cli_flag(project_name, bench_path) or "",
+            resolvers.bench_cli_flag(project_name, bench_path),
         )
         warnings.append(
             Message(
@@ -683,7 +683,7 @@ def _frappe_reset(
             them = "them" if len(flags) > 1 else "it"
             effects = " and ".join(_BENCH_FLAG_EFFECTS[flag] for flag in flags)
             remedy = supervision.clear_bench_wide_flags_hint(
-                project_name, flags, resolvers.bench_cli_flag(project_name, bench_path) or ""
+                project_name, flags, resolvers.bench_cli_flag(project_name, bench_path)
             )
             warnings.append(
                 Message(
@@ -696,18 +696,12 @@ def _frappe_reset(
                 )
             )
         elif flags is None:
-            status_flag = resolvers.bench_cli_flag(project_name, bench_path, allow_path=False)
-            check = (
-                f" Check with: cwcli status {project_name}{status_flag}"
-                if status_flag is not None
-                else ""
-            )
             warnings.append(
                 Message(
                     "frappe_reset.maintenance_unknown",
                     f"bench update --reset failed, and {bench_path}/sites/"
                     "common_site_config.json could not be read to check whether it left "
-                    f"the bench in maintenance mode.{check}",
+                    "the bench in maintenance mode.",
                     detail={"bench_path": bench_path},
                 )
             )

@@ -519,7 +519,7 @@ class TestFrappeFork:
 
         assert result.data.bench_left_in_maintenance is None
         unknown = next(w for w in result.warnings if w.code == "frappe_reset.maintenance_unknown")
-        assert "cwcli status proj" in unknown.text
+        assert f"{BENCH}/sites/common_site_config.json" in unknown.text
         assert not any(w.code == "frappe_reset.left_in_maintenance" for w in result.warnings)
 
     def test_a_lost_reset_stream_reports_the_state_unknown_and_reads_no_flags(
@@ -614,33 +614,6 @@ class TestFrappeFork:
             "cwcli run proj --path /workspace/other-bench set-config --global --parse "
             "maintenance_mode 0"
         ) in left.text
-
-    def test_an_unreadable_config_on_an_uncached_path_points_at_no_other_bench(
-        self, monkeypatch, wired
-    ):
-        # `cwcli status` has no --path, so no status command can name this bench.
-        monkeypatch.setattr(core_update.supervision, "bench_wide_flags", lambda *a, **k: None)
-        monkeypatch.setattr(
-            core_update.resolvers,
-            "cached_benches",
-            lambda _p: [{"path": "/workspace/frappe-bench", "index": 0, "label": None}],
-        )
-        wired.fail_on = ["bench update --reset"]
-
-        result = core_update._frappe_reset(
-            wired,
-            project_name="proj",
-            bench_path="/workspace/other-bench",
-            apps=["frappe"],
-            no_recache=True,
-            ignored=[],
-            emit=lambda _e: None,
-            warnings=[],
-        )
-
-        unknown = next(w for w in result.warnings if w.code == "frappe_reset.maintenance_unknown")
-        assert "/workspace/other-bench/sites/common_site_config.json" in unknown.text
-        assert "cwcli status" not in unknown.text
 
     def test_ignored_options_are_announced_not_silently_dropped(self, wired):
         result = _update(apps=["frappe"], clear_cache=True, sites=["a.localhost"])
