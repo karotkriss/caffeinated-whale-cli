@@ -1071,6 +1071,7 @@ class TestTierAActions:
         body = json.loads(e.value.read())
         assert body["errors"][0]["type"] == "needs_choice"
         assert body["errors"][0]["title"] == "confirm_start"
+        assert body["errors"][0]["hint"] == "Start the instance first (cwcli start p), then retry."
 
     def test_stop_bench_dispatches_to_the_core_and_reprobes(self, daemon, monkeypatch):
         called = {}
