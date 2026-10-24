@@ -1,14 +1,18 @@
 """``core.drop_site`` - every branch, against faked exec + streaming I/O.
 
-Pins the two things this module owns beyond what ``unlock``/``bench_ops`` already
+Pins the three things this module owns beyond what ``unlock``/``bench_ops`` already
 prove work: the ``consent``-gated destructive confirm (the ``apps.uninstall_apps``
-pattern), and the archive-relocation contract (copy the site's archived
-directory out to the host, prune it from the container ONLY once that copy is
+pattern), the backup gate (``core.rm``'s verified backup taken and copied to the
+host BEFORE ``bench drop-site --no-backup``, and nothing dropped when it fails),
+and the archive-relocation contract (copy the site's archived directory out to
+the host, prune it from the container ONLY once that copy and the dump are
 verified, and report the honest ``ok`` either way).
 """
 
 from __future__ import annotations
 
+import io
+import tarfile
 import types
 from pathlib import Path
 
@@ -22,6 +26,27 @@ from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 
 BENCH = "/workspace/frappe-bench"
 SITE = "task.localhost"
+BACKUPS = f"{BENCH}/sites/{SITE}/private/backups"
+DUMP = "20261024_120000-task_localhost-database.sql.gz"
+
+
+def _artifacts():
+    """One real ``bench backup --with-files`` run's artifacts (shared timestamp)."""
+    return {
+        DUMP: b"DBDUMPBYTES",
+        "20261024_120000-task_localhost-site_config_backup.json": b"{}",
+        "20261024_120000-task_localhost-files.tar": b"TARBYTES",
+        "20261024_120000-task_localhost-private-files.tar": b"TARBYTES",
+    }
+
+
+def _tar_bytes(name, data):
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        info = tarfile.TarInfo(name=name)
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
 
 
 class FakeAPI:
@@ -61,6 +86,8 @@ class FakeContainer:
         get_archive_ok=True,
         prune_ok=True,
         archive_bytes=b"FAKETAR",
+        backup_ok=True,
+        artifacts=None,
     ):
         self.status = status
         self.bench_dir_ok = bench_dir_ok
@@ -69,6 +96,10 @@ class FakeContainer:
         self.get_archive_ok = get_archive_ok
         self.prune_ok = prune_ok
         self.archive_bytes = archive_bytes
+        self.backup_ok = backup_ok
+        self.artifacts = _artifacts() if artifacts is None else artifacts
+        self.on_drop = None
+        self._backed_up = False
         self.calls: list = []
         self.get_archive_path: str | None = None
         self._dropped = False
@@ -84,12 +115,23 @@ class FakeContainer:
         if "drop-site" in cmd_str:
             if self.drop_site_ok:
                 self._dropped = True
+                if self.on_drop:
+                    self.on_drop()
                 return 0, "Dropped site\n"
             return 1, "Error dropping site\n"
         return 0, ""
 
     def exec_run(self, cmd, workdir=None, **kwargs):
         self.calls.append(cmd)
+        if isinstance(cmd, str):
+            if "bench --site" in cmd and "backup --with-files" in cmd:
+                if not self.backup_ok:
+                    return (1, b"Backup failed for Site task.localhost. Database corrupted\n")
+                self._backed_up = True
+                return (0, b"Backup for Site task.localhost has been successfully completed\n")
+            if cmd == f"ls -1t {BACKUPS}":
+                return (0, "\n".join(self.artifacts if self._backed_up else []).encode())
+            return (1, b"")
         if cmd[:2] == ["test", "-d"]:
             target = cmd[2]
             if target == f"{BENCH}/sites":
@@ -104,6 +146,12 @@ class FakeContainer:
         return (0, b"")
 
     def get_archive(self, path):
+        if path.startswith(f"{BACKUPS}/"):
+            name = path.rsplit("/", 1)[1]
+            data = self.artifacts.get(name)
+            if data is None:
+                raise FileNotFoundError(path)
+            return ([_tar_bytes(name, data)], {"name": name, "size": len(data)})
         self.get_archive_path = path
         if not self.get_archive_ok:
             raise RuntimeError("boom")
@@ -165,12 +213,17 @@ class TestSuccess:
         assert outcome.ok is True
         assert outcome.archive_pruned_in_container is True
         assert outcome.archived_host_path is not None
-        host_path = __import__("pathlib").Path(outcome.archived_host_path)
-        assert host_path.exists()
-        assert host_path.read_bytes() == container.archive_bytes
-        assert host_path.parent == tmp_path / "archive" / "proj_dropped_sites"
-        assert host_path.stat().st_mode & 0o777 == 0o600
-        assert host_path.parent.stat().st_mode & 0o777 == 0o700
+        drop_dir = Path(outcome.archived_host_path)
+        assert drop_dir.parent == tmp_path / "archive" / "proj_dropped_sites"
+        assert drop_dir.name.startswith(f"{SITE}_")
+        site_tar = drop_dir / f"{SITE}.tar"
+        assert site_tar.read_bytes() == container.archive_bytes
+        assert site_tar.stat().st_mode & 0o777 == 0o600
+        assert drop_dir.stat().st_mode & 0o777 == 0o700
+        assert drop_dir.parent.stat().st_mode & 0o777 == 0o700
+        # The verified backup is in the same host archive, byte for byte.
+        backups = drop_dir / "backups"
+        assert {f.name: f.read_bytes() for f in backups.iterdir()} == container.artifacts
 
         prune_calls = [c for c in container.calls if isinstance(c, list) and c[:2] == ["rm", "-rf"]]
         assert prune_calls == [["rm", "-rf", f"{BENCH}/archived/sites/{SITE}"]]
@@ -182,10 +235,20 @@ class TestSuccess:
         assert not any("s3cr3t" in c for c in commands)
         assert any("$CWCLI_DB_ROOT_PASSWORD" in c for c in commands)
 
-    def test_uses_force_so_bench_never_prompts(self, container):
+    def test_drops_with_no_backup_and_never_force(self, container):
+        # bench's own drop-time backup is the one --force silently skips on
+        # failure, so cwcli takes its own and never passes --force.
         core_rm_site.drop_site("proj", SITE, consent=True)
         commands = [c for c in container.calls if isinstance(c, str) and "drop-site" in c]
-        assert commands and all("--force" in c for c in commands)
+        assert commands and all("--no-backup" in c for c in commands)
+        assert not any("--force" in c for c in commands)
+
+    def test_the_backup_runs_before_the_drop(self, container):
+        core_rm_site.drop_site("proj", SITE, consent=True)
+        strings = [c for c in container.calls if isinstance(c, str)]
+        backup = next(i for i, c in enumerate(strings) if "backup --with-files" in c)
+        drop = next(i for i, c in enumerate(strings) if "drop-site" in c)
+        assert backup < drop
 
 
 # --------------------------------------------------------------------- archive honesty
@@ -221,7 +284,11 @@ class TestArchiveHonesty:
     def test_no_new_archive_entry_is_reported_not_silently_ignored(self, monkeypatch, container):
         # bench dropped the site but the archive path cwcli expects is absent
         # (e.g. --no-backup was somehow effective, or a bench version differs).
+        original = container.exec_run
+
         def _exec_run(cmd, workdir=None, **kwargs):
+            if isinstance(cmd, str):
+                return original(cmd, workdir=workdir, **kwargs)
             container.calls.append(cmd)
             if cmd[:2] == ["test", "-d"] and cmd[2] == f"{BENCH}/archived/sites/{SITE}":
                 return (1, b"")  # never archived, before or after
@@ -259,7 +326,7 @@ class TestArchiveHonesty:
             ["rm", "-rf", f"{BENCH}/archived/sites/{SITE}1"]
         ]
 
-    def test_archive_directory_creation_failure_is_reported_after_drop(
+    def test_archive_directory_creation_failure_refuses_before_the_drop(
         self, monkeypatch, container
     ):
         def _mkdir(*args, **kwargs):
@@ -267,11 +334,11 @@ class TestArchiveHonesty:
 
         monkeypatch.setattr(Path, "mkdir", _mkdir)
 
-        result = core_rm_site.drop_site("proj", SITE, consent=True)
+        with pytest.raises(CwcliError) as exc:
+            core_rm_site.drop_site("proj", SITE, consent=True)
 
-        assert result.status is Status.WARNING
-        assert result.data.ok is False
-        assert any(w.code == "rm_site.archive_not_copied" for w in result.warnings)
+        assert exc.value.code == "rm_site.backup_failed"
+        assert not any("drop-site" in str(c) for c in container.calls)
         assert not [c for c in container.calls if isinstance(c, list) and c[:2] == ["rm", "-rf"]]
 
     def test_post_drop_archive_listing_exception_returns_an_honest_outcome(
@@ -385,3 +452,111 @@ class TestHardFailures:
         with pytest.raises(CwcliError) as exc:
             core_rm_site.drop_site("proj", SITE, consent=True)
         assert exc.value.kind is ErrorKind.NOT_FOUND
+
+
+# -------------------------------------------------------------------- the backup gate
+
+
+def _dropped_site_dirs(tmp_path):
+    root = tmp_path / "archive" / "proj_dropped_sites"
+    return sorted(root.iterdir()) if root.exists() else []
+
+
+class TestBackupGate:
+    """Nothing is dropped unless cwcli's own verified backup landed on the host first.
+
+    The defect these pin: ``bench drop-site --force`` ignores a failed drop-time
+    backup and drops the database anyway, and cwcli reported ``ok: true`` from a
+    non-empty archive with no dump in it.
+    """
+
+    def _assert_nothing_dropped(self, container, tmp_path):
+        assert not any("drop-site" in str(c) for c in container.calls)
+        assert not [c for c in container.calls if isinstance(c, list) and c[:2] == ["rm", "-rf"]]
+        # The half-written host archive dir of the failed attempt is not left behind.
+        assert _dropped_site_dirs(tmp_path) == []
+
+    def test_a_failed_bench_backup_drops_nothing_and_carries_bench_s_error(
+        self, container, tmp_path
+    ):
+        container.backup_ok = False
+
+        with pytest.raises(CwcliError) as exc:
+            core_rm_site.drop_site("proj", SITE, consent=True)
+
+        assert exc.value.kind is ErrorKind.PRECONDITION
+        assert exc.value.code == "rm_site.backup_failed"
+        assert "nothing was dropped" in exc.value.message
+        assert "Database corrupted" in exc.value.detail["output"]
+        assert f"cwcli run proj --path {BENCH} -i drop-site {SITE} --no-backup" in exc.value.hint
+        self._assert_nothing_dropped(container, tmp_path)
+
+    @pytest.mark.parametrize(
+        "artifacts",
+        [
+            pytest.param({k: v for k, v in _artifacts().items() if k != DUMP}, id="no-dump"),
+            pytest.param({**_artifacts(), DUMP: b""}, id="empty-dump"),
+            pytest.param({**_artifacts(), DUMP: None}, id="dump-not-copyable"),
+            pytest.param(
+                {k: v for k, v in _artifacts().items() if not k.endswith("-private-files.tar")},
+                id="no-private-files",
+            ),
+        ],
+    )
+    def test_an_unverified_backup_drops_nothing(self, container, tmp_path, artifacts):
+        # bench backup exits 0, but this run's artifacts do not verify on the host.
+        container.artifacts = artifacts
+
+        with pytest.raises(CwcliError) as exc:
+            core_rm_site.drop_site("proj", SITE, consent=True)
+
+        assert exc.value.code == "rm_site.backup_failed"
+        self._assert_nothing_dropped(container, tmp_path)
+
+    def test_a_docker_error_mid_backup_drops_nothing(self, monkeypatch, container, tmp_path):
+        original = container.exec_run
+
+        def _exec_run(cmd, workdir=None, **kwargs):
+            if isinstance(cmd, str) and "backup --with-files" in cmd:
+                raise RuntimeError("Docker connection lost")
+            return original(cmd, workdir=workdir, **kwargs)
+
+        monkeypatch.setattr(container, "exec_run", _exec_run)
+
+        with pytest.raises(CwcliError) as exc:
+            core_rm_site.drop_site("proj", SITE, consent=True)
+
+        assert exc.value.code == "rm_site.backup_failed"
+        assert "Docker connection lost" in exc.value.detail["output"]
+        self._assert_nothing_dropped(container, tmp_path)
+
+    def test_drop_backed_up_site_refuses_without_a_verified_dump(self, container, tmp_path):
+        # The drop half is never a drop-without-a-backup, whoever calls it.
+        empty = tmp_path / "not-a-backup"
+        (empty / "backups").mkdir(parents=True)
+
+        with pytest.raises(CwcliError) as exc:
+            core_rm_site.drop_backed_up_site(container, "proj", BENCH, SITE, empty)
+
+        assert exc.value.code == "rm_site.backup_missing"
+        assert not any("drop-site" in str(c) for c in container.calls)
+
+    def test_post_drop_check_keeps_the_in_container_archive_when_the_dump_is_gone(
+        self, container, tmp_path
+    ):
+        # The dump is verified before the drop; if it is no longer in the host
+        # archive afterwards, the in-container archive is the only copy left.
+        def _lose_the_host_dump():
+            for dump in (tmp_path / "archive").rglob("*-database.sql.gz"):
+                dump.unlink()
+
+        container.on_drop = _lose_the_host_dump
+
+        result = core_rm_site.drop_site("proj", SITE, consent=True)
+
+        assert result.status is Status.WARNING
+        assert result.data.ok is False
+        assert result.data.archived_host_path is None
+        assert result.data.archive_pruned_in_container is False
+        assert any(w.code == "rm_site.backup_missing" for w in result.warnings)
+        assert not [c for c in container.calls if isinstance(c, list) and c[:2] == ["rm", "-rf"]]

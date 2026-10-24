@@ -2831,18 +2831,23 @@ def axi_rm_site(
     other bench-scoped axi verb (`axi backup`, `axi unlock`, `axi migrate`)
     already refuses it.
 
+    The site is backed up BEFORE it is dropped, with the same verified gate
+    `axi rm` uses: `bench backup --with-files`, this run's database dump and file
+    archives copied out to the managed host archive, and the dump checked
+    non-empty there. If that fails, nothing is dropped and the error (exit 1)
+    carries bench's own output. Only then does it run `bench drop-site
+    --no-backup`.
+
     `bench drop-site` archives the dropped site's full directory - including
     site_config.json (its database credentials and, if set, its encryption
-    key) - inside the container's own `archived/sites/` folder before this
-    command ever sees it.
-    Left there it would grow, unpruned, forever, so this immediately copies that
-    one archive out to the SAME managed host location `cwcli rm` already uses
-    (`archived_host_path` in the report) and, only once that copy is verified on
+    key) - inside the container's own `archived/sites/` folder.
+    Left there it would grow, unpruned, forever, so this copies that archive out
+    beside the verified backup (`archived_host_path` in the report holds both)
+    and, only once the dump is re-confirmed there and that copy is verified on
     disk, deletes the in-container copy (`archive_pruned_in_container: true`).
-    If the copy could not be verified, the in-container archive is left in place
-    rather than deleted unbacked, and `ok: false` plus a warning names exactly
-    what remains - a caller that only checks the exit code still learns its
-    site's credentials may not be safely out of the container.
+    Anything that could not be verified is left in place rather than deleted
+    unbacked, and `ok: false` plus a warning names exactly what remains - a
+    caller that only checks the exit code still learns it.
 
     bench's own output goes to stderr in full and unparsed.
     """
@@ -2954,12 +2959,16 @@ def axi_rm_bench(
     `cwcli stop <project> --bench <selector>`: a live bench is never deleted out
     from under its own running code.
 
-    Each site is dropped through the same verified copy-out `axi rm-site` uses:
-    `bench drop-site` backs the site up, and cwcli copies that archive out to the
-    managed host location (`archived_host_paths` in the report) and verifies it on
-    disk before the bench directory is deleted. If any site's archive could not be
-    copied out, the directory is kept (to preserve that trapped archive), the site
-    is reported in `sites_failed`, and `ok: false` with a non-zero exit.
+    Every site is backed up BEFORE any site is dropped, with the same verified
+    gate `axi rm-site` uses (`bench backup --with-files`, the dump and file
+    archives copied out to the managed host archive, the dump checked non-empty
+    there); if any backup fails, nothing is dropped or deleted and the error
+    (exit 1) carries bench's own output. Each site is then dropped with `bench
+    drop-site --no-backup` and its archived site directory copied out beside its
+    backup (`archived_host_paths` in the report) before the bench directory is
+    deleted. If any site's archive could not be copied out, the directory is kept
+    (to preserve that trapped archive), the site is reported in `sites_failed`,
+    and `ok: false` with a non-zero exit.
 
     Each `bench drop-site`'s own output goes to stderr in full and unparsed.
     """

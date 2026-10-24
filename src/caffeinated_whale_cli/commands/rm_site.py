@@ -8,8 +8,8 @@ footgun (forgetting the flag nukes the instance instead of one site). See
 handling this command discloses.
 
 This module only prompts, resolves the bench, streams the command's own output,
-and renders the outcome; the resolution, the ``bench drop-site`` exec, and the
-archive relocation live in ``core.drop_site``.
+and renders the outcome; the resolution, the verified backup, the ``bench
+drop-site`` exec, and the archive relocation live in ``core.drop_site``.
 """
 
 import sys
@@ -24,7 +24,12 @@ from ..utils import cache
 from ..utils.completion_utils import complete_project_names, complete_site_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import handle_docker_errors
-from .utils import confirm_or_exit, ensure_containers_running, resolve_bench_path
+from .utils import (
+    confirm_or_exit,
+    ensure_containers_running,
+    render_captured_output_tail,
+    resolve_bench_path,
+)
 
 
 def _make_renderer(*, verbose: bool):
@@ -43,6 +48,7 @@ def _make_renderer(*, verbose: bool):
 
 def _exit_on_exec_error(e: CwcliError):
     stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
+    render_captured_output_tail(e)
     if e.hint:
         stderr_console.print(f"[dim]{e.hint}[/dim]")
     raise typer.Exit(code=1) from e
@@ -75,19 +81,23 @@ def rm_site(
 ):
     """Permanently drop ONE site from a running bench (destructive).
 
-    Runs 'bench drop-site --force', which deletes the site's database and its
-    files. The instance and every OTHER site on it keep running - this never
-    touches containers, volumes, or the project directory (use 'cwcli rm' to
-    remove the whole instance).
+    Backs the site up first, then runs 'bench drop-site --no-backup', which
+    deletes the site's database and its files. The instance and every OTHER site
+    on it keep running - this never touches containers, volumes, or the project
+    directory (use 'cwcli rm' to remove the whole instance).
 
-    'bench drop-site' archives the dropped site's full directory - including
-    site_config.json (its database credentials and, if set, its encryption
-    key) - inside the container's own archived/sites/ folder before this
-    command ever sees it.
-    Left there it would grow, unpruned, forever. So this command immediately
-    copies that one archive out to ~/.cwcli/archive/{project}_dropped_sites/ (or
-    $CWCLI_HOME/archive/... if that override is set) - the same managed location
-    'cwcli rm' already uses - and, only once that copy is verified on disk,
+    The backup is the same verified gate 'cwcli rm' uses: 'bench backup
+    --with-files', with the database dump and file archives copied out to
+    ~/.cwcli/archive/{project}_dropped_sites/{site}_{timestamp}/backups/ (or
+    $CWCLI_HOME/archive/... if that override is set) and the dump checked
+    non-empty there. If the backup fails or cannot be verified, nothing is
+    dropped and this command exits non-zero with bench's own error.
+
+    'bench drop-site' then archives the dropped site's full directory -
+    including site_config.json (its database credentials and, if set, its
+    encryption key) - inside the container's own archived/sites/ folder.
+    Left there it would grow, unpruned, forever. So this command copies that
+    archive out beside the backup and, only once that copy is verified on disk,
     deletes the in-container copy. If the copy cannot be verified, the
     in-container archive is left in place rather than deleted unbacked, and this
     command exits non-zero so the leftover credentials are never silently missed.
@@ -181,8 +191,9 @@ def rm_site(
     console.print(f"[bold green]✓[/bold green] Site '{outcome.site}' dropped.")
     if outcome.archived_host_path and outcome.archive_pruned_in_container:
         console.print(
-            f"[dim]Its archive (site_config.json and any credentials it holds) was "
-            f"copied to {outcome.archived_host_path} and removed from the container.[/dim]"
+            f"[dim]Its verified backup and archive (site_config.json and any credentials it "
+            f"holds) were copied to {outcome.archived_host_path} and removed from the "
+            "container.[/dim]"
         )
     elif outcome.archived_host_path:
         console.print(

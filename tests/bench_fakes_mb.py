@@ -64,6 +64,8 @@ class FakeFrappeContainerMB:
             s: {
                 f"backup-{s}-database.sql.gz": b"DBDUMPBYTES",
                 f"backup-{s}-site_config_backup.json": b"{}",
+                f"backup-{s}-files.tar": b"TARBYTES",
+                f"backup-{s}-private-files.tar": b"TARBYTES",
             }
             for s in self._sites(bp)
         }
