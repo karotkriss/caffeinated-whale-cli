@@ -18,6 +18,8 @@ const props = defineProps({
 })
 const POLL_MS = 2000
 const MAX_LINES = 2000
+// Frappe's dev servers colour their output; show the text, not the escape glyphs.
+const ANSI_SGR = /\x1b\[[0-9;]*m/g
 
 // Status labels a worker `worker:<q>`; its log is keyed by the raw program `worker_<q>`.
 const filter = ref(props.process ? props.process.replace(/^worker:/, 'worker_') : 'all')
@@ -50,7 +52,8 @@ async function poll() {
       // A cold read (no cursor yet) replaces; a warm one appends only what is new.
       const previous = entry.offset
       const gap = t.skipped_bytes ? [`... ${t.skipped_bytes} bytes skipped (written faster than this pane polls) ...`] : []
-      entry.lines = previous ? entry.lines.concat(gap, t.lines) : t.lines
+      const lines = t.lines.map((l) => l.replace(ANSI_SGR, ''))
+      entry.lines = previous ? entry.lines.concat(gap, lines) : lines
       if (entry.lines.length > MAX_LINES) entry.lines.splice(0, entry.lines.length - MAX_LINES)
       entry.offset = t.offset
     }

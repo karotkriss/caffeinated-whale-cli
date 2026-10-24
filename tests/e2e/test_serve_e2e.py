@@ -284,7 +284,11 @@ class TestDeltaSuppression:
 
             after = _instance(daemon.base, daemon.project)
             assert after["probed_at"] > before["probed_at"], "the probe loop must be running"
-            assert client.deltas() == [], "a steady instance must stay silent"
+            # Scoped to this instance: the daemon watches every instance on the
+            # Docker host, and on a developer machine another one may genuinely
+            # change state during the window.
+            ours = [d for d in client.deltas() if d["project"] == daemon.project]
+            assert ours == [], "a steady instance must stay silent"
             assert client.ids and client.ids == sorted(client.ids), "every frame is numbered"
         finally:
             client.close()
