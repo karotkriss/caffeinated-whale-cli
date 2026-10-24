@@ -495,8 +495,9 @@ class CursorContainer(LogFsContainer):
             return 0, "".join(f"{len(self.raw[p])} {p}\n" for p in cmd[3:]).encode()
         if cmd[0] == "tail" and cmd[1] == "-c":
             return 0, self.raw[cmd[3]][int(cmd[2][1:]) - 1 :]
-        if cmd[0] == "tail" and cmd[1] == "-n":
-            return 0, b"".join(self.raw[cmd[3]].splitlines(keepends=True)[-int(cmd[2]) :])
+        if cmd[0] == "sh" and "head -c" in cmd[2]:
+            size, path, lines = int(cmd[4]), cmd[5], int(cmd[6])
+            return 0, b"".join(self.raw[path][:size].splitlines(keepends=True)[-lines:])
         return super().exec_run(cmd, workdir, environment)
 
 
@@ -509,6 +510,27 @@ def test_since_cold_read_is_the_last_lines_plus_a_cursor_at_the_end(wire):
     assert tail.process == "web"
     assert tail.lines == ["b", "c"]
     assert tail.offset == 6  # the file's current end, so the next poll sees only new bytes
+
+
+def test_since_cold_read_never_returns_bytes_past_its_cursor(wire):
+    path = "/w/bench/logs/web.supervisor.log"
+
+    class GrowsAfterStat(CursorContainer):
+        grew = False
+
+        def exec_run(self, cmd, workdir=None, environment=None):
+            out = super().exec_run(cmd, workdir, environment)
+            if cmd[0] == "stat" and not self.grew:
+                self.grew = True
+                self.raw[path] += b"\nc\n"  # a busy worker writes between the two execs
+            return out
+
+    c = GrowsAfterStat({path: b"a\nb"})  # "b" is still half-written
+    wire(c)
+    cold = core_logs.read_logs_since("proj").data.logs[0]
+    assert cold.lines == ["a"] and cold.offset == 2
+    warm = core_logs.read_logs_since("proj", after={"web": cold.offset}).data.logs[0]
+    assert warm.lines == ["b", "c"], "nothing shown twice, nothing split"
 
 
 def test_since_warm_read_returns_only_whole_new_lines(wire):

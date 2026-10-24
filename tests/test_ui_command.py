@@ -212,9 +212,10 @@ class TestForeground:
 
         def _run(host, port, interval, *, env_token, on_ready=None):
             seen.update(host=host, port=port, interval=interval, token=env_token)
+            assert not ui_cmd.pid_file().exists(), "nothing is recorded before the bind"
+            on_ready("http://127.0.0.1:8765/#login=x")
             seen["pid_file_during"] = ui_cmd.pid_file().read_text().splitlines()[0]
             seen["state_during"] = ui_cmd._read_state()
-            on_ready("http://127.0.0.1:8765/#login=x")
 
         monkeypatch.setattr(ui_cmd.serve_cmd, "run_daemon", _run)
         opened: list = []
@@ -243,3 +244,34 @@ class TestForeground:
 
         assert result.exit_code == 0, result.output
         assert seen["token"] == "operator-token"
+
+    def test_a_running_detached_daemon_is_refused_and_its_record_kept(self, home, monkeypatch):
+        ui_cmd._write_state(8765, "detached-token")
+        ui_cmd.pid_file().write_text("4242")
+        monkeypatch.setattr(ui_cmd.daemon_identity, "is_running", lambda pid_file: True)
+        monkeypatch.setattr(
+            ui_cmd.serve_cmd, "run_daemon", lambda *a, **kw: pytest.fail("must not start")
+        )
+
+        result = runner.invoke(root_app, ["ui", "--foreground", "--no-browser"])
+
+        assert result.exit_code == 1
+        assert "--stop" in result.output
+        assert ui_cmd.pid_file().read_text() == "4242"
+        assert ui_cmd._read_state() == {"port": 8765, "token": "detached-token"}
+
+    def test_a_failed_bind_leaves_another_daemons_record_alone(self, home, monkeypatch):
+        ui_cmd._write_state(8765, "other-token")
+        ui_cmd.pid_file().write_text("4242")
+        monkeypatch.setattr(ui_cmd.daemon_identity, "is_running", lambda pid_file: False)
+
+        def _bind_fails(*a, **kw):
+            raise ui_cmd.typer.Exit(code=1)
+
+        monkeypatch.setattr(ui_cmd.serve_cmd, "run_daemon", _bind_fails)
+
+        result = runner.invoke(root_app, ["ui", "--foreground", "--no-browser"])
+
+        assert result.exit_code == 1
+        assert ui_cmd.pid_file().read_text() == "4242"
+        assert ui_cmd._read_state() == {"port": 8765, "token": "other-token"}

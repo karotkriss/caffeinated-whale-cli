@@ -456,16 +456,17 @@ def read_logs_since(
                 tails.append(ProcessTail(process=label, file=path, lines=[], offset=start))
                 continue
             _code, raw = r.container.exec_run(["tail", "-c", f"+{start + 1}", path])
+            data = bytes(raw or b"")
             base = start
         else:
-            _code, raw = r.container.exec_run(["tail", "-n", str(lines), path])
-            base = size  # a cold read ends at the file's current end
-        data = bytes(raw or b"")
-        if start is not None and 0 <= start < size:
-            cut = data.rfind(b"\n") + 1  # whole lines only
-            consumed, data = base + cut, data[:cut]
-        else:
-            consumed = base
+            # Bounded to the stat'd size, so bytes appended since are left for the next poll.
+            _code, raw = r.container.exec_run(
+                ["sh", "-c", 'head -c "$1" "$2" | tail -n "$3"', "sh", str(size), path, str(lines)]
+            )
+            data = bytes(raw or b"")
+            base = size - len(data)
+        cut = data.rfind(b"\n") + 1  # whole lines only
+        consumed, data = base + cut, data[:cut]
         text = supervision._decode(data)
         tails.append(
             ProcessTail(process=label, file=path, lines=text.splitlines(), offset=consumed)
