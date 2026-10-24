@@ -611,6 +611,31 @@ def test_local_commits_on_an_untracked_branch_its_remote_has_are_still_data_loss
     assert ("git.unpushed", "feature") not in found
 
 
+@pytest.mark.parametrize("unanswered", ["gone", "hangs"])
+def test_an_untracked_branch_blocks_even_when_its_remote_does_not_answer(bench, unanswered):
+    # No refspec writes upstream/<branch>, so bench's reset fails whatever the remote
+    # says; and an unanswered remote cannot show the feature commits exist nowhere else.
+    app = bench.app("feature", depth=1)
+    src = bench.remotes / "feature.src"
+    bench.git("checkout", "-q", "-b", "feature-x", cwd=src)
+    (src / "feature" / "new.py").write_text("x = 1\n")
+    bench.git("add", "-A", cwd=src)
+    bench.git("commit", "-qm", "feature", cwd=src)
+    bench.git("push", "-q", str(bench.remotes / "feature.git"), "feature-x", cwd=src)
+    bench.git("fetch", "-q", "upstream", "feature-x", cwd=app)
+    bench.git("checkout", "-q", "-B", "feature-x", "FETCH_HEAD", cwd=app)
+    if unanswered == "gone":
+        bench.git("remote", "set-url", "upstream", str(bench.root / "gone.git"), cwd=app)
+    else:
+        bench.git("config", "remote.upstream.uploadpack", "sleep 30; git-upload-pack", cwd=app)
+
+    found = codes(bench.findings(net_timeout=0.5))
+
+    assert ("git.branch_not_tracked", "feature") in found
+    assert ("git.local_work_unverified", "feature") in found
+    assert ("git.unpushed", "feature") not in found
+
+
 def test_local_commits_on_an_untracked_branch_missing_on_its_remote_stay_data_loss(bench):
     app = bench.app("localonly", depth=1)
     bench.git("checkout", "-q", "-b", "feature-z", cwd=app)
