@@ -334,7 +334,7 @@ def status(
                     web_site=resolvers.resolve_representative_site(project_name, path),
                     probe_web=probe_web,
                     warnings=warnings,
-                    bench_flag=resolvers.bench_cli_flag(project_name, path) or "",
+                    bench_flag=resolvers.bench_cli_flag(project_name, path),
                 ),
                 bench_present=_present_state(present, path),
             )
