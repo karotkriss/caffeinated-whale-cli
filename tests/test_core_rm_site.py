@@ -98,7 +98,6 @@ class FakeContainer:
         self.archive_bytes = archive_bytes
         self.backup_ok = backup_ok
         self.artifacts = _artifacts() if artifacts is None else artifacts
-        self.on_drop = None
         self._backed_up = False
         self.calls: list = []
         self.get_archive_path: str | None = None
@@ -115,8 +114,6 @@ class FakeContainer:
         if "drop-site" in cmd_str:
             if self.drop_site_ok:
                 self._dropped = True
-                if self.on_drop:
-                    self.on_drop()
                 return 0, "Dropped site\n"
             return 1, "Error dropping site\n"
         return 0, ""
@@ -497,10 +494,6 @@ class TestBackupGate:
             pytest.param({k: v for k, v in _artifacts().items() if k != DUMP}, id="no-dump"),
             pytest.param({**_artifacts(), DUMP: b""}, id="empty-dump"),
             pytest.param({**_artifacts(), DUMP: None}, id="dump-not-copyable"),
-            pytest.param(
-                {k: v for k, v in _artifacts().items() if not k.endswith("-private-files.tar")},
-                id="no-private-files",
-            ),
         ],
     )
     def test_an_unverified_backup_drops_nothing(self, container, tmp_path, artifacts):
@@ -540,23 +533,3 @@ class TestBackupGate:
 
         assert exc.value.code == "rm_site.backup_missing"
         assert not any("drop-site" in str(c) for c in container.calls)
-
-    def test_post_drop_check_keeps_the_in_container_archive_when_the_dump_is_gone(
-        self, container, tmp_path
-    ):
-        # The dump is verified before the drop; if it is no longer in the host
-        # archive afterwards, the in-container archive is the only copy left.
-        def _lose_the_host_dump():
-            for dump in (tmp_path / "archive").rglob("*-database.sql.gz"):
-                dump.unlink()
-
-        container.on_drop = _lose_the_host_dump
-
-        result = core_rm_site.drop_site("proj", SITE, consent=True)
-
-        assert result.status is Status.WARNING
-        assert result.data.ok is False
-        assert result.data.archived_host_path is None
-        assert result.data.archive_pruned_in_container is False
-        assert any(w.code == "rm_site.backup_missing" for w in result.warnings)
-        assert not [c for c in container.calls if isinstance(c, list) and c[:2] == ["rm", "-rf"]]

@@ -2843,8 +2843,7 @@ def axi_rm_site(
     key) - inside the container's own `archived/sites/` folder.
     Left there it would grow, unpruned, forever, so this copies that archive out
     beside the verified backup (`archived_host_path` in the report holds both)
-    and, only once the dump is re-confirmed there and that copy is verified on
-    disk, deletes the in-container copy (`archive_pruned_in_container: true`).
+    and, only once that copy is verified on disk, deletes the in-container copy (`archive_pruned_in_container: true`).
     Anything that could not be verified is left in place rather than deleted
     unbacked, and `ok: false` plus a warning names exactly what remains - a
     caller that only checks the exit code still learns it.

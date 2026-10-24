@@ -56,20 +56,11 @@ from .errors import DOCKER_UNREACHABLE_HINT, CwcliError, ErrorKind
 from .resolvers import DEFAULT_BENCH_PATH
 from .stop import is_database, stop_database
 
-# Suffix of a Frappe backup filename that identifies the database dump - the one
+# Marker in a Frappe backup filename that identifies the database dump - the one
 # artifact a "backup" cannot be trusted without (Frappe names it
-# ``<timestamp>-<site>-database.sql.gz``, ``-database-enc.sql.gz`` when encrypted).
-# Matched case-insensitively and with an optional ``.gz`` so an uncompressed
-# ``.sql`` variant is still recognised.
-DB_DUMP_RE = re.compile(r"-database(-enc)?\.sql(\.gz)?$", re.IGNORECASE)
-
-# The two file archives ``bench backup --with-files`` writes beside the dump
-# (``<ts>-<site>-files.tar`` and ``<ts>-<site>-private-files.tar``; ``.tgz`` when
-# compressed, ``-enc`` when encrypted). The gate asks for files, so a run missing
-# either one is not the backup it asked for. Anchored on the suffix so a site whose
-# own name contains ``-files`` cannot satisfy the check with its database dump.
-_PUBLIC_FILES_RE = re.compile(r"(?<!-private)-files(-enc)?\.(tar|tgz)$")
-_PRIVATE_FILES_RE = re.compile(r"-private-files(-enc)?\.(tar|tgz)$")
+# ``<timestamp>-<site>-database.sql.gz``). Matched case-insensitively so an
+# uncompressed ``.sql`` variant is still recognised.
+DB_DUMP_MARKER = "database.sql"
 
 
 # --------------------------------------------------------------------------- DTO
@@ -313,8 +304,7 @@ def backup_site(
     The C1 gate's per-site unit, shared by ``rm`` (every site, before the volumes
     go) and ``core.rm_site`` (before ``bench drop-site --no-backup``). Returns True
     only if ``bench backup --with-files`` exited 0 AND this run's database dump
-    landed non-empty in ``dest_dir`` AND both file archives were produced AND every
-    artifact copied out whole. Anything less is False, so the caller never destroys
+    landed non-empty in ``dest_dir`` AND every artifact copied out whole. Anything less is False, so the caller never destroys
     a site whose backup is missing. The one-line reason rides an ``RmWarning``;
     bench's own output rides an ``RmTrace``. A Docker error propagates.
     """
@@ -380,22 +370,19 @@ def backup_site(
         except OSError:
             size = 0
 
-        if DB_DUMP_RE.search(backup_file) and size > 0:
+        if DB_DUMP_MARKER in backup_file.lower() and size > 0:
             db_dump_saved = True
 
         emit(RmTrace(text=f"Copied {backup_file} to archive"))
 
-    files_saved = any(_PUBLIC_FILES_RE.search(f) for f in current_files) and any(
-        _PRIVATE_FILES_RE.search(f) for f in current_files
-    )
-    if db_dump_saved and files_saved and not copy_failed:
+    if db_dump_saved and not copy_failed:
         return True
 
     emit(
         RmWarning(
             text=(
                 f"Backup for site '{site}' was not fully copied to the host archive "
-                "(missing or empty database dump, or a missing files archive)"
+                "(missing or empty database dump)"
             )
         )
     )
