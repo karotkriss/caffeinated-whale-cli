@@ -877,6 +877,22 @@ class TestBenchWideFlags:
             if w.code in ("status.maintenance_mode", "status.scheduler_paused")
         ] == ["status.scheduler_paused"]
 
+    def test_a_site_also_set_on_its_own_gets_both_remedies(self, wire):
+        # Clearing only the bench-wide flag would leave this site at 503.
+        c = _BenchConfigContainer(
+            marker=_MARKER,
+            configs={BENCH: _FAILED_UPDATE_FLAGS},
+            site_configs={(BENCH, "dev.localhost"): {"maintenance_mode": 1}},
+        )
+        wire(c, benches=[{"path": BENCH}])
+
+        result = core_status.status("proj")
+
+        texts = [w.text for w in result.warnings if w.code == "status.maintenance_mode"]
+        assert len(texts) == 2
+        assert "set-config --global --parse maintenance_mode 0" in texts[0]
+        assert "cwcli run proj --site dev.localhost set-maintenance-mode off" in texts[1]
+
     def test_a_site_in_its_own_maintenance_keeps_the_per_site_remedy(self, wire):
         c = _BenchConfigContainer(
             marker=_MARKER,

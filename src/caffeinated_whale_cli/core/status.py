@@ -484,7 +484,10 @@ def _bench_status(
                 detail={"bench_path": bench_path, "scope": "bench"},
             )
         )
-    elif maintenance:
+    if maintenance and (
+        "maintenance_mode" not in bench_flags
+        or supervision.maintenance_mode_on(frappe_container, bench_path, web_site, common={})
+    ):
         warnings.append(
             Message(
                 "status.maintenance_mode",
