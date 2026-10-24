@@ -1977,6 +1977,7 @@ These lifecycle changes run as jobs too, so their steps and outcome remain visib
 The long-job forms cover `init`, `apps install`, `apps update`, `apps checkout`, `backup`, `migrate`, `run-tests`, `build`, `setup-wizard`, and `self-update`.
 `apps update` runs the same preflight as the CLI and shows every finding in the job view before the reset begins.
 Interrupt requests use the command's cleanup path; Detach only leaves the page, and an active record whose process disappears becomes `unknown` instead of being reported as failed or successful.
+On Windows a job that has not begun its cleanup five minutes after Interrupt, or has not finished it two minutes after beginning, is terminated; one that never began is marked `unknown` because its cleanup may not have run.
 Jobs keeps every active job and the 100 most recent finished ones; older finished records are pruned when a new job starts.
 The `self-update` job restarts the local daemon and the open page reloads after its protocol check sees the replacement.
 Guarded destructive verbs (`rm`, `rm-site`, `rm-bench`, `restore`, `apps uninstall`, and `apps checkout --reset`) and settings writes are not in the UI.
