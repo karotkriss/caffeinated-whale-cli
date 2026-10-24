@@ -729,7 +729,7 @@ Removes a Frappe project: its containers, named Docker volumes, own Docker Compo
 **WARNING:** This action is destructive and cannot be undone.
 Before deleting anything, the command re-caches the project, backs up the databases and files for all sites across every bench (a live `bench backup --with-files`, run once per bench on a multi-bench project), and archives the `docker-compose.yml`, `site_config.json`, and the project's `conf/` directory into a timestamped folder under `~/.cwcli/archive/` (or `$CWCLI_HOME/archive/` when the `CWCLI_HOME` override is set).
 The backup and the config archive are written first, and the named volumes and project directory are only deleted once both have succeeded.
-When volumes are being deleted (the default `--volumes`), a backup that cannot be fully created and verified blocks removal: each backup artifact is copied out of the container to the host archive, the database dump must be present and non-empty, and both file archives (`-files.tar` and `-private-files.tar`) must be present.
+When volumes are being deleted (the default `--volumes`), a backup that cannot be fully created and verified blocks removal: each backup artifact is copied out of the container to the host archive, and the database dump must be present and non-empty.
 If verification fails, the command aborts before any container is removed and exits non-zero, so data is never destroyed without a confirmed backup.
 Aborting before removal keeps the whole project intact (containers, volumes, network, directory, and cache), so a retry can still take a live backup from the running container.
 Under `--no-volumes` no volume data is destroyed, so a failed backup does not block the container, network, directory, and cache cleanup.
@@ -806,14 +806,14 @@ This is deliberately a separate, noun-scoped command rather than a `--site` flag
 **WARNING:** This action is destructive and cannot be undone.
 `cwcli rm-site` backs the site up first, then runs `bench drop-site --no-backup`, which drops the site's database and deletes its files.
 
-The backup is the same verified gate `cwcli rm` uses, taken by cwcli itself before anything is dropped: `bench --site <site> backup --with-files`, then this run's database dump and both file archives are copied out to `~/.cwcli/archive/{project}_dropped_sites/{site}_{timestamp}/backups/` (or `$CWCLI_HOME/archive/...` when that override is set) and the dump is checked non-empty there.
+The backup is the same verified gate `cwcli rm` uses, taken by cwcli itself before anything is dropped: `bench --site <site> backup --with-files`, then this run's database dump and file archives are copied out to `~/.cwcli/archive/{project}_dropped_sites/{site}_{timestamp}/backups/` (or `$CWCLI_HOME/archive/...` when that override is set) and the dump is checked non-empty there.
 If the backup fails or cannot be verified, nothing is dropped, and the command exits non-zero with bench's own error.
 cwcli never relies on `bench drop-site`'s own backup, because with `--force` bench ignores a failed backup and drops the database anyway.
 To drop a site whose backup cannot be taken, run `cwcli run <project> --path <bench> -i drop-site <site> --no-backup` yourself; the error names that command.
 
 `bench drop-site` then archives the dropped site's full directory - including `site_config.json` (its database credentials and, if set, its encryption key) - inside the container's own `archived/sites/` folder.
 Left there it would grow, unpruned, forever, for the rest of the bench's life.
-So `cwcli rm-site` copies that one archive out beside the backup (as `{site}.tar` in the same directory) and, only once the dump is re-confirmed there and that copy is verified non-empty on disk, deletes the in-container copy.
+So `cwcli rm-site` copies that one archive out beside the backup (as `{site}.tar` in the same directory) and, only once that copy is verified non-empty on disk, deletes the in-container copy.
 If anything cannot be verified, the in-container archive is left in place rather than deleted unbacked, and the command exits non-zero so the leftover credentials are never silently missed.
 
 To restore a dropped site, recreate it, copy the files from its `backups/` directory into the new site's `private/backups/`, and run `cwcli restore <project> --site <site> --latest`.
@@ -2597,7 +2597,7 @@ It is the per-site inverse of `cwcli axi init`: a workflow that creates a new si
 The site is backed up before it is dropped, with the same verified gate `cwcli axi rm` uses: `bench backup --with-files`, this run's database dump and file archives copied out to the managed host archive, and the dump checked non-empty there.
 If that fails, nothing is dropped, and the error (exit 1) carries bench's own output.
 `bench drop-site --no-backup` then archives the dropped site's full directory - including `site_config.json` and its database credentials - inside the container's own `archived/sites/` folder; left there it would grow, unpruned, forever.
-So this copies that one archive out beside the verified backup (`archived_host_path` in the TOON report holds both) and, only once the dump is re-confirmed there and that copy is verified on disk, deletes the in-container copy (`archive_pruned_in_container: true`).
+So this copies that one archive out beside the verified backup (`archived_host_path` in the TOON report holds both) and, only once that copy is verified on disk, deletes the in-container copy (`archive_pruned_in_container: true`).
 If anything could not be verified, the in-container archive is left in place rather than deleted unbacked, and `ok: false` plus a warning names exactly what remains - a caller that only checks the exit code still learns it.
 
 #### Making agents aware of the surface

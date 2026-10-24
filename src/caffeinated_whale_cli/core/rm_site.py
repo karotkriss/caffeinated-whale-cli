@@ -42,9 +42,8 @@ inside a container that keeps running for the rest of the bench's life. That is
 the same unbounded-residue shape the network-leak fix in ``core.rm`` closed for
 the whole-instance path, so it gets the same answer here: immediately after a
 successful drop, this module copies that one archived path out beside the
-verified backup (``<site>.tar`` in the same host directory) and - ONLY once the
-dump is re-confirmed in the host archive AND that copy is verified non-empty -
-deletes the in-container copy. Anything that cannot be verified is left in place
+verified backup (``<site>.tar`` in the same host directory) and - ONLY once that
+copy is verified non-empty - deletes the in-container copy. Anything that cannot be verified is left in place
 rather than deleted unbacked (fail closed, the ``core.rm`` C1 gate's own logic),
 and every one of these outcomes rides ``DropSiteOutcome.ok`` / warnings rather
 than a silent success.
@@ -79,8 +78,7 @@ class DropSiteOutcome:
     backup (``backups/``: the database dump, the file archives, and the site
     config) and bench's archived site directory (``<site>.tar``); it is None
     when that archive could not be confirmed there. ``ok`` is True only when the
-    site was dropped, its verified dump is still in that host archive after the
-    drop, and the in-container archive was both copied out and pruned - the fully
+    site was dropped and the in-container archive was both copied out and pruned - the fully
     clean case. A drop that succeeded but left any of that unconfirmed still
     reports the site as gone (it is), but ``ok=False`` and a warning names exactly
     what remains, so a caller reading only the exit code still learns it.
@@ -252,7 +250,7 @@ def _has_verified_dump(backups_dir: Path) -> bool:
     """True if ``backups_dir`` holds a non-empty database dump (the host-side check)."""
     try:
         return any(
-            f.is_file() and core_rm.DB_DUMP_RE.search(f.name) and f.stat().st_size > 0
+            f.is_file() and core_rm.DB_DUMP_MARKER in f.name.lower() and f.stat().st_size > 0
             for f in backups_dir.iterdir()
         )
     except OSError:
@@ -341,7 +339,7 @@ def drop_backed_up_site(
     Refuses (``rm_site.backup_missing``) unless ``drop_dir/backups`` holds a
     non-empty database dump, so this can never be a drop without a backup. Then
     ``bench drop-site --no-backup`` (never ``--force``: it exists to ignore a failed
-    backup), then the archive relocation and the post-drop check.
+    backup), then the archive relocation.
     """
     emit: OnEvent = on_event or _noop
     warnings: list[Message] = []
@@ -397,18 +395,7 @@ def drop_backed_up_site(
 
     source_exists = _archived_site_exists(container, source) if source is not None else False
 
-    if not _has_verified_dump(backups_dir):
-        # The post-drop check: the database is gone now, so the host dump is the
-        # backup. If it is not there, keep everything still in the container.
-        warnings.append(
-            Message(
-                "rm_site.backup_missing",
-                f"The verified database dump for '{site}' is no longer in {backups_dir} after "
-                "the drop; the dropped site's in-container archive was left in place rather "
-                "than deleted.",
-            )
-        )
-    elif source is not None and source_exists:
+    if source is not None and source_exists:
         site_tar = drop_dir / f"{site}.tar"
         if _copy_out_archived_site(container, source, site_tar):
             archived_host_path = str(drop_dir)

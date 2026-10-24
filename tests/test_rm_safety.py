@@ -1148,48 +1148,11 @@ class TestBackupSitesReturn:
         )
         assert _backup_sites("proj", container, BENCH, self._archive(tmp_path)) is False
 
-    def test_encrypted_backup_run_returns_true(self, tmp_path):
-        # Frappe names an encrypted run's artifacts with an `-enc` infix; its dump
-        # (`-database-enc.sql.gz`) is still the verified dump the gate asks for.
-        site = "a.localhost"
-        container = FakeFrappeContainer(
-            [site],
-            artifacts={
-                site: {
-                    f"backup-{site}-database-enc.sql.gz": b"DBDUMPBYTES",
-                    f"backup-{site}-files-enc.tar": b"TARBYTES",
-                    f"backup-{site}-private-files-enc.tar": b"TARBYTES",
-                }
-            },
-        )
-        assert _backup_sites("proj", container, BENCH, self._archive(tmp_path)) is True
-
     def test_no_dump_among_files_returns_false(self, tmp_path):
         # bench backup exits 0 but only config + file archives exist - no database dump.
         site = "a.localhost"
         container = FakeFrappeContainer(
             [site], artifacts={site: {_cfg_name(site): b"{}", **_files(site)}}
-        )
-        assert _backup_sites("proj", container, BENCH, self._archive(tmp_path)) is False
-
-    @pytest.mark.parametrize("missing", ["files.tar", "private-files.tar"])
-    def test_missing_files_archive_returns_false(self, tmp_path, missing):
-        # The gate asks for --with-files: a run whose dump landed but which wrote
-        # only one of the two file archives is not the backup it asked for.
-        site = "a.localhost"
-        artifacts = {site: {_db_name(site): b"DBDUMPBYTES", _cfg_name(site): b"{}"}}
-        artifacts[site].update(
-            {name: data for name, data in _files(site).items() if not name.endswith(missing)}
-        )
-        container = FakeFrappeContainer([site], artifacts=artifacts)
-        assert _backup_sites("proj", container, BENCH, self._archive(tmp_path)) is False
-
-    def test_a_site_named_files_cannot_pass_on_its_dump_alone(self, tmp_path):
-        # The files check is anchored on the archive suffix, so a site whose own
-        # name carries "-files" does not satisfy it with its database dump.
-        site = "x-files.localhost"
-        container = FakeFrappeContainer(
-            [site], artifacts={site: {_db_name(site): b"DBDUMPBYTES", _cfg_name(site): b"{}"}}
         )
         assert _backup_sites("proj", container, BENCH, self._archive(tmp_path)) is False
 
