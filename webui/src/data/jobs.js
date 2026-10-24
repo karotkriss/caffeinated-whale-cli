@@ -48,7 +48,10 @@ export async function loadJobs({ force = false } = {}) {
 export async function loadJob(id, after = 0) {
   const record = await getJson(`/api/v1/jobs/${encodeURIComponent(id)}?after=${after}`)
   const prior = jobs.records[id]
-  const events = after && prior?.events ? [...prior.events, ...(record.events || [])] : record.events || []
+  // Refreshes can overlap with the same cursor, so append only events newer than the last one held.
+  const held = after && prior?.events ? prior.events : []
+  const lastSeq = held.at(-1)?.seq || 0
+  const events = [...held, ...(record.events || []).filter((event) => event.seq > lastSeq)]
   applyJob({ ...record, events })
   return jobs.records[id]
 }
