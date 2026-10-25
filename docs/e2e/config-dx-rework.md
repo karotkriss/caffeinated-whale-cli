@@ -40,5 +40,6 @@ Teardown: `cwcli rm cwe2e-cfgdx --yes --volumes --no-backup` exit 0; `docker ps 
 The first daemon-leg run HUNG on `$(cwcli config auto-inspect enable -i 60)`: the POSIX fork child rebound `sys.stdin/stdout/stderr` but never `dup2`'d the REAL descriptors, so the detached daemon held the parent's stdout pipe open and every shell capture/pipe waited forever for EOF.
 The old ten-verb surface masked it (`enable` never started a daemon; only `start` had it); the fused `enable` made it load-bearing.
 Fixed in `utils/auto_inspect.py:start_daemon` (fds 0/1 to devnull, fd 2 to the log file, mirroring `_spawn_detached`), pinned by the mock-free `tests/test_auto_inspect.py::test_forked_daemon_releases_the_parents_stdout_pipe` (a real subprocess with a captured pipe, which fails as a 30s timeout against the unfixed code), and re-verified by the full daemon leg above.
+That fork path was later removed: both daemons now always start as a spawned interpreter, pinned by `tests/test_auto_inspect.py::test_daemon_outlives_the_command_without_holding_its_descriptors`.
 
 Boot-hook (`--startup`) flows were validated at the unit level only, deliberately: `utils/startup.py` writes to the REAL `~/.config/systemd/user`, and installing a real boot unit on the captain's machine is not a throwaway action.

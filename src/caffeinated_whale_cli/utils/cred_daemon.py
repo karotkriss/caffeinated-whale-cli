@@ -755,7 +755,7 @@ def _release_startup_lock(fd: int | None) -> None:
 
 
 def _await_started(timeout: float = 2.0) -> None:
-    """Poll until the freshly-forked/spawned daemon has written its pid file.
+    """Poll until the freshly spawned daemon has written its pid file.
 
     The startup lock is held across this wait, so a concurrent caller blocked on
     the lock observes ``is_running() == True`` when it finally acquires and no-ops
