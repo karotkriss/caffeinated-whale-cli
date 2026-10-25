@@ -36,6 +36,21 @@ DB_FILENAME = "20251109_225726-development_localhost-database.sql.gz"
 
 
 @pytest.fixture(autouse=True)
+def _ample_free_space(monkeypatch):
+    """Report ample free space by default so a test's outcome never depends on
+    how full the host's ``tmp_path`` filesystem is (a tmpfs ``/tmp`` with under
+    2 GiB free tripped the preflight in tests that do not exercise it). Tests
+    that pin the preflight patch ``shutil.disk_usage`` themselves, which wins."""
+    real_disk_usage = shutil.disk_usage
+
+    def ample(path):
+        real_disk_usage(path)  # keep a missing/unreadable path an OSError
+        return SimpleNamespace(total=100_000_000_000, free=50_000_000_000)
+
+    monkeypatch.setattr(shutil, "disk_usage", ample)
+
+
+@pytest.fixture(autouse=True)
 def _no_ambient_tmp_override(monkeypatch):
     """Neutralize any TMPDIR/TEMP/TMP the host happens to have set (macOS always
     sets TMPDIR) so these tests deterministically exercise the cwcli_home()
