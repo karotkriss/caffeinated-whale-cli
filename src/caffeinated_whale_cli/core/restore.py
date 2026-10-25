@@ -151,16 +151,33 @@ def _decode(output) -> str:
 # --------------------------------------------------------------------------- #
 # Pure helpers - moved verbatim from commands/restore.py (no UI).
 # --------------------------------------------------------------------------- #
-def parse_backup_filename(filename: str) -> dict | None:
-    """Parse a Frappe backup filename into components, or None if invalid."""
+_BACKUP_TYPES = r"(private-files|files|partial-database|database|site_config_backup)"
+
+
+def parse_backup_filename(filename: str, site_slug: str | None = None) -> dict | None:
+    """Parse a Frappe backup filename into components, or None if invalid.
+
+    Frappe names backups ``<ts>-<site with dots as underscores>-<type>``, and a
+    site name may itself contain hyphens (``my-site.localhost``), so the site is
+    everything between the timestamp and a KNOWN type suffix, never "up to the
+    next hyphen". ``<ts>-foo-private-files`` is inherently ambiguous (site
+    ``foo`` private files vs site ``foo-private`` files); ``site_slug`` (the
+    backup-format site name from the owning directory or the set's database
+    file) settles it, and without one the shortest site wins.
+    """
     name_without_ext = filename
     extensions: list[str] = []
     while "." in name_without_ext:
         name_without_ext, ext = name_without_ext.rsplit(".", 1)
         extensions.insert(0, ext)
 
-    pattern = r"^(\d{8}_\d{6})-([^-]+)-(.+)$"
-    match = re.match(pattern, name_without_ext)
+    match = None
+    if site_slug:
+        match = re.match(
+            rf"^(\d{{8}}_\d{{6}})-({re.escape(site_slug)})-{_BACKUP_TYPES}$", name_without_ext
+        )
+    if not match:
+        match = re.match(rf"^(\d{{8}}_\d{{6}})-(.+?)-{_BACKUP_TYPES}$", name_without_ext)
     if not match:
         return None
 
@@ -320,7 +337,9 @@ def scan_backups_for_all_sites(
 
         for file_path in files:
             filename = file_path.split("/")[-1]
-            parsed = parse_backup_filename(filename)
+            parsed = parse_backup_filename(
+                filename, site_slug=transform_site_name_to_backup_format(site_name)
+            )
             if parsed:
                 parsed["full_path"] = file_path
                 parsed["site_dir"] = site_name
@@ -472,7 +491,9 @@ def _build_plan(
         frappe_container, project_name, bench_path, db_path, on_event=on_event
     )
 
-    origin_parsed = parse_backup_filename(db["filename"])
+    origin_parsed = parse_backup_filename(
+        db["filename"], site_slug=transform_site_name_to_backup_format(site)
+    )
     origin_site = origin_parsed["site_name"] if origin_parsed else None
     origin_mismatch = (
         origin_site
@@ -655,8 +676,19 @@ def receive_plan(
     # Identify the downloaded components.
     files = [Path(f) for f in downloaded_files]
     database_file = files_archive = private_files_archive = config_backup = None
+    # The database file's site name is unambiguous and settles `-private-files`.
+    target_slug = transform_site_name_to_backup_format(site)
+    db_parsed = next(
+        (
+            p
+            for p in (parse_backup_filename(f.name, site_slug=target_slug) for f in files)
+            if p and p["is_database"]
+        ),
+        None,
+    )
+    site_slug = db_parsed["site_name"] if db_parsed else None
     for f in files:
-        parsed = parse_backup_filename(f.name)
+        parsed = parse_backup_filename(f.name, site_slug=site_slug)
         if not parsed:
             continue
         bt = parsed["backup_type"]
