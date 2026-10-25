@@ -35,8 +35,6 @@ from pathlib import Path
 
 import toml
 
-from .startup import get_cwcli_path
-
 #: What the hook runs. ``cwcli axi`` prints the content-first home as TOON.
 _SUBCOMMAND = "axi"
 
@@ -76,8 +74,9 @@ def hook_command() -> str:
 def _current_executable() -> str:
     raw = sys.argv[0]
     if _binary_name(raw) not in _BIN_NAMES:
-        found = get_cwcli_path()
-        raw = "" if found == "cwcli" else found
+        bin_dir = Path(sys.executable).parent
+        sibling = next((p for p in (bin_dir / "cwcli", bin_dir / "cwcli.exe") if p.exists()), None)
+        raw = str(sibling) if sibling else shutil.which("cwcli") or ""
     if not raw:
         return ""
     try:

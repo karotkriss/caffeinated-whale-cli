@@ -353,6 +353,7 @@ class TestHookCommand:
         main_py.parent.mkdir()
         main_py.write_text("")
         monkeypatch.setattr(agent_hooks.sys, "argv", [str(main_py)])
+        monkeypatch.setattr(agent_hooks.sys, "executable", str(tmp_path / "py" / "python"))
         monkeypatch.setattr(agent_hooks.shutil, "which", lambda _: str(binary))
 
         outcomes = agent_hooks.install(home=home)
@@ -371,6 +372,23 @@ class TestHookCommand:
         monkeypatch.setattr(agent_hooks.sys, "argv", [str(tmp_path / "__main__.py")])
         monkeypatch.setattr(agent_hooks.sys, "executable", str(venv_bin / "python"))
         monkeypatch.setattr(agent_hooks.shutil, "which", lambda _: None)
+
+        assert agent_hooks.hook_command() == f"{(venv_bin / 'cwcli').resolve()} axi"
+
+    def test_a_python_m_daemon_pins_its_own_venv_over_a_different_cwcli_on_path(
+        self, tmp_path, monkeypatch
+    ):
+        """`uv run cwcli ui` from a repo venv while a global cwcli is on PATH: the
+        hook must run the venv's cwcli that installed it, not the global one."""
+        venv_bin = tmp_path / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        (venv_bin / "cwcli").write_text("#!/bin/sh\n")
+        global_bin = tmp_path / "global" / "cwcli"
+        global_bin.parent.mkdir()
+        global_bin.write_text("#!/bin/sh\n")
+        monkeypatch.setattr(agent_hooks.sys, "argv", [str(tmp_path / "__main__.py")])
+        monkeypatch.setattr(agent_hooks.sys, "executable", str(venv_bin / "python"))
+        monkeypatch.setattr(agent_hooks.shutil, "which", lambda _: str(global_bin))
 
         assert agent_hooks.hook_command() == f"{(venv_bin / 'cwcli').resolve()} axi"
 
