@@ -2625,12 +2625,7 @@ def axi_init(
     payload = asdict(bench_result.data)
     if setup_wizard_payload is not None:
         payload["setup_wizard"] = setup_wizard_payload
-    typer.echo(
-        toon.encode(
-            payload,
-            warnings=[*instance_result.warnings, *bench_result.warnings, *recache_warnings],
-        )
-    )
+    typer.echo(toon.encode(payload, warnings=[*bench_result.warnings, *recache_warnings]))
 
     # Never exit 0 for a failed explicit request: --complete-setup was asked for,
     # so its own failure must be visible in the exit code, not just the payload.

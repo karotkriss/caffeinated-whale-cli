@@ -670,10 +670,9 @@ def init_instance(
     MariaDB through the compose before its data volume is first created. Blank or
     the default ``123`` leaves the downloaded compose untouched. Once the volume
     exists MariaDB keeps the password it was created with, so a different one
-    given then is reported as a warning rather than silently assumed to apply.
+    given then is reported as a notice rather than silently assumed to apply.
     """
     emit = on_event or _noop
-    warnings: list[Message] = []
     project_name = validate_project_slug(project_name)
     core_docker.ensure_compose_available()
 
@@ -803,7 +802,7 @@ def init_instance(
                 "with the required host port mappings.",
                 hint="Retry init. If the error persists, report the upstream compose change.",
             )
-    content = _apply_db_root_password(project_name, content, db_root_password, emit, warnings)
+    content = _apply_db_root_password(project_name, content, db_root_password, emit)
     compose_path.write_text(content)
 
     # Make the bind-mount source dir writable by the container 'frappe' user when
@@ -897,14 +896,16 @@ def init_instance(
         )
 
     return Result(
-        status=Status.WARNING if warnings else Status.OK,
+        status=Status.OK,
         data=InstanceUp(project=project_name, conf_dir=str(conf_dir)),
-        warnings=warnings,
     )
 
 
-def _mariadb_volume_exists(project_name: str) -> bool:
-    volumes = core_docker.get_project_volumes(project_name) or []
+def _mariadb_volume_exists(project_name: str) -> bool | None:
+    """Whether MariaDB's data volume exists; None when Docker cannot say."""
+    volumes = core_docker.get_project_volumes(project_name)
+    if volumes is None:
+        return None
     return any(
         (volume.attrs.get("Labels") or {}).get("com.docker.compose.volume") == "mariadb-data"
         for volume in volumes
@@ -916,19 +917,23 @@ def _apply_db_root_password(
     content: str,
     password: str | None,
     emit: OnEvent,
-    warnings: list[Message],
 ) -> str:
     """Make ``password`` the instance's MariaDB root password while MariaDB is still unborn."""
     if not password or (password == db_password.DEFAULT and not db_password.uses_secret(content)):
         return content
-    if _mariadb_volume_exists(project_name):
+    volume_exists = _mariadb_volume_exists(project_name)
+    if volume_exists is None:
+        return content
+    if volume_exists:
         if password != db_password.resolve(project_name, None):
-            warnings.append(
-                Message(
-                    "init.db_password_not_applied",
-                    f"MariaDB for '{project_name}' was already initialized, so it keeps the root "
-                    "password it was created with; the database root password given is used "
-                    "as-is and must match it.",
+            emit(
+                InitNotice(
+                    code="init.db_password_not_applied",
+                    text=(
+                        f"MariaDB for '{project_name}' was already initialized, so it keeps the "
+                        "root password it was created with; the database root password given is "
+                        "used as-is and must match it."
+                    ),
                 )
             )
         return content

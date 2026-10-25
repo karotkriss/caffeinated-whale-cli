@@ -126,14 +126,17 @@ _SHAPES: list[tuple[str, str, re.Pattern[str], str]] = [
 
 
 def explain(*texts: str | None) -> FailureCause | None:
-    """Return the cause of the first known failure shape in ``texts``, else None."""
-    joined = "\n".join(text for text in texts if text)
-    if not joined:
-        return None
-    for code, title, pattern, template in _SHAPES:
-        match = pattern.search(joined)
-        if match:
-            groups = [group for group in match.groups() if group]
-            subject = groups[0] if groups else "the remote host"
-            return FailureCause(code=code, title=title, text=template.format(subject))
+    """Return the cause of the first known failure shape in the first text that has one.
+
+    ``texts`` go most specific first, so a later, wider text never outranks them.
+    """
+    for text in texts:
+        if not text:
+            continue
+        for code, title, pattern, template in _SHAPES:
+            match = pattern.search(text)
+            if match:
+                groups = [group for group in match.groups() if group]
+                subject = groups[0] if groups else "the remote host"
+                return FailureCause(code=code, title=title, text=template.format(subject))
     return None
