@@ -1,10 +1,12 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Alert, Badge, Breadcrumbs, Button, ErrorMessage, FormControl, PageHeader, LoadingText } from 'frappe-ui'
 import { ACTIVE_STATES, JOB_THEME, createJob, detachJob, elapsed, interruptJob, jobLabel, jobTarget, jobs, loadJob } from '../data/jobs'
 import { openJob } from '../data/job-dialog'
 import { setFocus } from '../data/fleet'
+import FollowPane from '../components/FollowPane.vue'
+import { feed, openLine } from '../data/follow'
 
 const route = useRoute()
 const router = useRouter()
@@ -43,26 +45,35 @@ const eventTitle = (event) => {
   }
   return step || event.type.replaceAll('_', ' ')
 }
-// Consecutive output chunks (the command's own bytes) collapse into one
-// terminal block, and a \r progress bar keeps only its last repaint per line.
-const rows = computed(() => {
-  const out = []
-  for (const event of record.value?.events || []) {
-    const text = event.type.endsWith('_output') ? event.data?.text ?? event.message ?? '' : null
-    const last = out.at(-1)
-    if (text === null) out.push(event)
-    else if (last?.output) last.text += text
-    else out.push({ seq: event.seq, at: event.at, output: true, text })
+// The event log as one append-only list of rows for the windowed pane: an event,
+// or one line of an output block. Consecutive output chunks (the command's own
+// bytes) form one terminal block, and each refresh feeds it only the new chunks.
+const items = shallowRef([])
+let seen = 0
+let block = null
+watch(() => record.value?.events, (events = []) => {
+  let start = events.length
+  while (start > 0 && events[start - 1].seq > seen) start--
+  if (start === events.length) return
+  const added = []
+  for (const event of events.slice(start)) {
+    seen = event.seq
+    if (!event.type.endsWith('_output')) {
+      block = null
+      added.push({ event })
+      continue
+    }
+    if (!block) block = { at: event.at, lines: [], open: '', rows: 0 }
+    feed(block, event.data?.text ?? event.message ?? '')
+    while (block.rows < block.lines.length + (block.open ? 1 : 0)) added.push({ block, line: block.rows++ })
   }
-  return out
-})
-const terminal = (text) =>
-  text
-    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
-    .split('\n')
-    .map((line) => line.slice(line.lastIndexOf('\r') + 1))
-    .join('\n')
-    .trim()
+  items.value = items.value.concat(added)
+}, { immediate: true })
+const eventItem = (event) => event.item || event.data?.item
+const lineText = ({ block, line }) => (line < block.lines.length ? block.lines[line] : openLine(block))
+const isLast = (index) => index === items.value.length - 1
+const firstLine = (item) => item.line === 0
+const lastLine = (item) => item.line === item.block.rows - 1
 
 async function refresh(after = 0) {
   loading.value = true
@@ -180,15 +191,21 @@ async function continueChoice(value) {
 
       <section>
         <div class="flex items-baseline justify-between gap-3"><h2 class="text-lg-semibold text-ink-gray-9">Event log</h2><Button size="sm" variant="ghost" icon-left="lucide-refresh-cw" label="Refresh" :loading="loading" @click="refresh(record.events?.at(-1)?.seq || 0)" /></div>
-        <div class="mt-3 overflow-hidden rounded-6 border border-outline-gray-1 bg-surface-gray-1">
-          <div v-if="!record.events?.length" class="px-4 py-8 text-center text-p-sm text-ink-gray-5">Waiting for the first event...</div>
-          <div v-for="event in rows" :key="event.seq" class="grid grid-cols-[5rem_minmax(0,1fr)] gap-3 border-b border-outline-gray-1 px-3 py-2.5 last:border-b-0 sm:grid-cols-[5.5rem_9rem_minmax(0,1fr)]">
-            <span class="whitespace-nowrap font-mono text-xs tabular-nums text-ink-gray-4">{{ time(event.at) }}</span>
-            <span class="hidden truncate font-mono text-xs text-ink-gray-5 sm:block">{{ event.output ? 'output' : event.phase || event.action || event.type }}</span>
-            <pre v-if="event.output" class="max-h-80 min-w-0 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5 text-ink-gray-7">{{ terminal(event.text) }}</pre>
-            <div v-else class="min-w-0"><p class="break-words font-mono text-xs leading-5 text-ink-gray-7">{{ eventTitle(event) }}</p><p v-if="event.item || event.data?.item" class="mt-0.5 truncate text-xs text-ink-gray-5">{{ event.item || event.data.item }}</p></div>
-          </div>
-        </div>
+        <div v-if="!items.length" class="mt-3 rounded-6 border border-outline-gray-1 bg-surface-gray-1 px-4 py-8 text-center text-p-sm text-ink-gray-5">Waiting for the first event...</div>
+        <FollowPane v-else :items="items" class="mt-3 max-h-[60vh] rounded-6 border border-outline-gray-1 bg-surface-gray-1">
+          <template #default="{ item, index }">
+            <div v-if="item.event" :class="['grid grid-cols-[5rem_minmax(0,1fr)] gap-3 px-3 py-2.5 sm:grid-cols-[5.5rem_9rem_minmax(0,1fr)]', !isLast(index) && 'border-b border-outline-gray-1']">
+              <span class="whitespace-nowrap font-mono text-xs leading-5 tabular-nums text-ink-gray-4">{{ time(item.event.at) }}</span>
+              <span class="hidden truncate font-mono text-xs leading-5 text-ink-gray-5 sm:block">{{ item.event.phase || item.event.action || item.event.type }}</span>
+              <div class="min-w-0"><p class="break-words font-mono text-xs leading-5 text-ink-gray-7">{{ eventTitle(item.event) }}</p><p v-if="eventItem(item.event)" class="mt-0.5 break-words text-xs leading-4 text-ink-gray-5">{{ eventItem(item.event) }}</p></div>
+            </div>
+            <div v-else :class="['grid grid-cols-[5rem_minmax(0,1fr)] gap-3 px-3 sm:grid-cols-[5.5rem_9rem_minmax(0,1fr)]', firstLine(item) && 'pt-2.5', lastLine(item) && 'pb-2.5', lastLine(item) && !isLast(index) && 'border-b border-outline-gray-1']">
+              <span class="whitespace-nowrap font-mono text-xs leading-5 tabular-nums text-ink-gray-4">{{ firstLine(item) ? time(item.block.at) : '' }}</span>
+              <span class="hidden font-mono text-xs leading-5 text-ink-gray-5 sm:block">{{ firstLine(item) ? 'output' : '' }}</span>
+              <span class="min-h-5 min-w-0 whitespace-pre-wrap break-words font-mono text-xs leading-5 text-ink-gray-7">{{ lineText(item) }}</span>
+            </div>
+          </template>
+        </FollowPane>
       </section>
     </template>
   </div>
