@@ -362,8 +362,9 @@ def _run_exec(
     tail of output is always retained so the ENOSPC disk-full hint fires whether
     or not output is streamed (disk exhaustion is *most* likely during a long
     streaming bench build); that same text rides the error's ``detail`` and
-    names the cause (:func:`core.failure_causes.explain`) in its message. A lost stream or unknowable exit code raises the
-    contract's typed ``DOCKER`` errors instead of the old ``exit code None``.
+    names the cause (:func:`core.failure_causes.explain`) in its message. A lost
+    stream or unknowable exit code raises the contract's typed ``DOCKER`` errors
+    instead of the old ``exit code None``.
     """
     emit(InitTrace(text=command, code="exec.command"))
 
