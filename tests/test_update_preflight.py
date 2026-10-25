@@ -913,11 +913,14 @@ def test_the_content_fetch_is_bench_s_own_and_never_touches_the_working_tree(ben
     assert not (app / "shallow" / "new.py").exists()
 
 
-def test_without_shallow_clone_the_content_fetch_keeps_a_shallow_repo_s_history(tmp_path):
-    # A depth-1 clone that bench has since updated with full `git fetch --all`s: a
-    # depth-1 content fetch would cut the tracking ref's history, and the next run
-    # would count every commit since the clone as unpushed work.
-    b = Bench(tmp_path, shallow_clone=False)
+@pytest.mark.parametrize("shallow_clone", [False, True])
+def test_the_content_fetch_keeps_the_history_below_a_head_past_its_shallow_commit(
+    tmp_path, shallow_clone
+):
+    # A depth-1 clone moved on by full fetches (bench's `git fetch --all`, or
+    # `apps checkout`): a depth-1 content fetch would cut the tracking ref's history,
+    # and the next run would count every commit since the clone as unpushed work.
+    b = Bench(tmp_path, shallow_clone=shallow_clone)
     app = b.app("deep", depth=1)
     for n in range(2):
         b.publish("deep", {"deep/new.py": f"x = {n}\n"})
