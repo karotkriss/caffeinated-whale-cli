@@ -45,6 +45,8 @@ from caffeinated_whale_cli.core.failure_causes import explain
             "nope.git",
         ),
         ("fatal: Remote branch feat-x not found in upstream origin", "git.ref_not_found", "feat-x"),
+        ("remote: ERROR: Repository not found.", "git.repo_not_found", "The git repository was"),
+        ("Temporary failure in name resolution", "network.dns", "A host name could not"),
         (
             "fatal: unable to access: Could not resolve host: github.com",
             "network.dns",

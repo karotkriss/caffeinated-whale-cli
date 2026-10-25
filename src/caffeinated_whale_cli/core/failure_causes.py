@@ -28,8 +28,8 @@ class FailureCause:
     text: str
 
 
-# (code, title, pattern, text). A pattern's first group, when present, is
-# substituted into the text as {0}.
+# (code, title, pattern, text). A text naming {0} gets the pattern's first
+# matched group, so every alternative of its pattern must capture one.
 _SHAPES: list[tuple[str, str, re.Pattern[str], str]] = [
     (
         "db.access_denied",
@@ -82,8 +82,14 @@ _SHAPES: list[tuple[str, str, re.Pattern[str], str]] = [
     (
         "git.repo_not_found",
         "Repository not found",
-        re.compile(r"fatal: repository '([^']*)' not found|ERROR: Repository not found"),
+        re.compile(r"fatal: repository '([^']*)' not found"),
         "The git repository {0} was not found, or this account cannot see it.",
+    ),
+    (
+        "git.repo_not_found",
+        "Repository not found",
+        re.compile(r"ERROR: Repository not found"),
+        "The git repository was not found, or this account cannot see it.",
     ),
     (
         "git.ref_not_found",
@@ -97,11 +103,14 @@ _SHAPES: list[tuple[str, str, re.Pattern[str], str]] = [
     (
         "network.dns",
         "No network connection",
-        re.compile(
-            r"Could not resolve host:? '?([\w.-]+)|Temporary failure in name resolution",
-            re.IGNORECASE,
-        ),
+        re.compile(r"Could not resolve host:? '?([\w.-]+)", re.IGNORECASE),
         "The host name {0} could not be resolved. Check the network connection.",
+    ),
+    (
+        "network.dns",
+        "No network connection",
+        re.compile(r"Temporary failure in name resolution", re.IGNORECASE),
+        "A host name could not be resolved. Check the network connection.",
     ),
     (
         "python.module_missing",
@@ -137,6 +146,6 @@ def explain(*texts: str | None) -> FailureCause | None:
             match = pattern.search(text)
             if match:
                 groups = [group for group in match.groups() if group]
-                subject = groups[0] if groups else "the remote host"
+                subject = groups[0] if groups else ""
                 return FailureCause(code=code, title=title, text=template.format(subject))
     return None

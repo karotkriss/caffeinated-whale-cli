@@ -25,7 +25,10 @@ const failure = computed(() => {
   const error = job.error
   const message = error ? `${error.message}${error.hint ? ` ${error.hint}` : ''}` : ''
   const unrecognized = 'cwcli did not recognize the cause; the failing step\'s output is in the event log below.'
-  if (!cause) return { title: error?.code || 'Job failed', description: message ? `${message} ${unrecognized}` : unrecognized }
+  if (!cause) {
+    if (error && !error.detail?.output) return { title: error.code || 'Job failed', description: message }
+    return { title: error?.code || 'Job failed', description: message ? `${message} ${unrecognized}` : unrecognized }
+  }
   return { title: cause.title, description: !message ? cause.text : message.includes(cause.text) ? message : `${cause.text} ${message}` }
 })
 const time = (value) => value ? new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' }).format(new Date(value)) : ''

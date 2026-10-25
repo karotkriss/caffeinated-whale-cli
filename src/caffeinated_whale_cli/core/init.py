@@ -924,7 +924,13 @@ def _apply_db_root_password(
         return content
     volume_exists = _mariadb_volume_exists(project_name)
     if volume_exists is None:
-        return content
+        raise CwcliError(
+            ErrorKind.DOCKER,
+            "init.db_state_unknown",
+            f"Could not read whether MariaDB for '{project_name}' already exists, so the "
+            "database root password given cannot be applied safely.",
+            hint="Check that Docker is running, then retry.",
+        )
     if volume_exists:
         if password != db_password.resolve(project_name, None):
             emit(
