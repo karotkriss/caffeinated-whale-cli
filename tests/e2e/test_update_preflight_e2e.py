@@ -14,12 +14,22 @@ and proves both halves on a real bench:
   bench-wide flags, and then fails on the same app: the late failure the preflight
   exists to prevent.
 
+It also proves the data-loss guard on a real bench, with a second throwaway app
+holding an uncommitted change and an unpushed commit - work ``--reset`` discards:
+
+- without ``--force`` the update refuses, with and without ``--no-preflight``, names
+  the app, and changes nothing;
+- with ``--force`` bench runs, the report names the app, and the work is gone.
+
 The shared instance is restored in ``finally`` blocks: the config's exact bytes,
 ``sites/excluded_apps.txt``, the backups bench made, frappe's remote-tracking ref
 (bench's version check fetches it), and the planted app and remote. During the
-``--no-preflight`` leg every other app is listed in ``sites/excluded_apps.txt`` so
-bench resets nothing but the planted app: its version check and backups still run,
-which is all the leg needs.
+legs that let bench run, every other app is listed in ``sites/excluded_apps.txt``
+so bench resets nothing but the planted app: its version check and backups still
+run, which is all those legs need. The ``--force`` leg also stops bench right after
+that app's reset, before it reinstalls any app into the bench's environment: an
+unreadable untracked directory in the app makes bench's own post-reset
+``find . -name "*.pyc" -delete`` fail.
 
 Commit to run on CI (real Docker); do NOT run locally.
 """
@@ -177,6 +187,133 @@ def test_no_preflight_reproduces_bench_failing_late(planted):
         # sites up: the late failure the preflight refuses up front.
         assert '"maintenance_mode": 1' in base64.b64decode(_read(inst, _CONF)).decode()
         assert _backups(inst) - backups_before
+    finally:
+        _restore(inst, _CONF, conf_before)
+        _restore(inst, _EXCLUDED, excluded_before)
+        for path in sorted(_backups(inst) - backups_before):
+            harness.exec_in_frappe(inst.name, f"rm -f {shlex.quote(path)}")
+        if tracking_before:
+            harness.exec_in_frappe(
+                inst.name, f"git -C {frappe_dir} update-ref {tracking} {tracking_before}"
+            )
+
+    assert _read(inst, _CONF) == conf_before
+    assert _backups(inst) == backups_before
+
+
+_DIRTY = "cwe2e_dlapp"
+_DIRTY_REMOTE = f"/workspace/{_DIRTY}-remote.git"
+_DIRTY_DIR = f"{_BENCH}/apps/{_DIRTY}"
+
+
+def _list_field(stdout: str, name: str) -> list[str]:
+    """A TOON `name[N]: a,b` list field."""
+    for line in stdout.splitlines():
+        if line.startswith(f"{name}["):
+            values = line.split(":", 1)[1].strip()
+            return [v for v in values.split(",") if v]
+    raise AssertionError(f"{name} not in:\n{stdout}")
+
+
+def _work(inst) -> tuple[str, str]:
+    """The dirty app's HEAD and its tracked changes."""
+    head = _sh(inst, f"git -C {_DIRTY_DIR} rev-parse HEAD").strip()
+    status = _sh(inst, f"git -C {_DIRTY_DIR} status --porcelain --untracked-files=no")
+    return head, status.strip()
+
+
+@pytest.fixture()
+def dirty(running_instance):
+    """A throwaway app holding an uncommitted change and an unpushed commit."""
+    inst = running_instance
+    # chmod first: the --force leg plants an unreadable directory.
+    teardown = f"chmod -R u+rwx {_DIRTY_DIR} 2>/dev/null; rm -rf {_DIRTY_DIR} {_DIRTY_REMOTE}"
+    _sh(inst, teardown)
+    _sh(
+        inst,
+        textwrap.dedent(
+            f"""
+            set -e
+            A={_DIRTY_DIR}
+            G="git -c user.email=e2e@example.com -c user.name=e2e -c commit.gpgsign=false"
+            mkdir -p "$A/{_DIRTY}"
+            cd "$A"
+            printf 'app_name = "{_DIRTY}"\n' > {_DIRTY}/hooks.py
+            printf '__version__ = "0.0.1"\n' > {_DIRTY}/__init__.py
+            : > {_DIRTY}/modules.txt
+            : > {_DIRTY}/patches.txt
+            git init -q -b main
+            git add -A
+            $G commit -qm init
+            git clone -q --bare "$A" {_DIRTY_REMOTE}
+            git remote add upstream {_DIRTY_REMOTE}
+            git fetch -q upstream
+            git branch -q -u upstream/main
+            printf 'z = 3\n' > {_DIRTY}/committed.py
+            git add {_DIRTY}/committed.py
+            $G commit -qm "unpushed work"
+            printf 'x = 1\n' >> {_DIRTY}/__init__.py
+            """
+        ),
+    )
+    try:
+        yield inst
+    finally:
+        harness.exec_in_frappe(inst.name, teardown)
+
+
+@pytest.mark.parametrize("flags", [(), ("--no-preflight",)], ids=["preflight", "no-preflight"])
+def test_local_work_refuses_without_force_and_changes_nothing(dirty, flags):
+    inst = dirty
+    conf_before = _read(inst, _CONF)
+    backups_before = _backups(inst)
+    work_before = _work(inst)
+
+    result = harness.run_cwcli("axi", "apps", "update", inst.name, "frappe", *flags, timeout=300)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "data_loss_refused: true" in result.stdout
+    assert _DIRTY in _list_field(result.stdout, "data_loss_apps")
+    rows = _preflight_rows(result.stdout)
+    for code in ("git.uncommitted", "git.unpushed"):
+        assert any(row.startswith(f"data_loss,{code},{_DIRTY},") for row in rows), rows
+    # Nothing changed: bench never started, and the work is still there.
+    assert _read(inst, _CONF) == conf_before
+    assert _backups(inst) == backups_before
+    assert _work(inst) == work_before
+
+
+def test_force_lets_bench_discard_the_work_and_names_the_app(dirty):
+    inst = dirty
+    conf_before = _read(inst, _CONF)
+    excluded_before = _read(inst, _EXCLUDED)
+    backups_before = _backups(inst)
+    frappe_dir = f"{_BENCH}/apps/frappe"
+    branch = _sh(inst, f"git -C {frappe_dir} symbolic-ref --short HEAD").strip()
+    tracking = f"refs/remotes/upstream/{branch}"
+    tracking_before = harness.exec_in_frappe(
+        inst.name, f"git -C {frappe_dir} rev-parse --verify -q {tracking}"
+    )[1].strip()
+    pushed = _sh(inst, f"git -C {_DIRTY_REMOTE} rev-parse main").strip()
+    assert _work(inst)[0] != pushed and _work(inst)[1]  # the work is really there
+    # bench resets only the dirty app, then stops at its own post-reset `find`.
+    _sh(inst, f"ls -1 {_BENCH}/apps | grep -vx {_DIRTY} > {_EXCLUDED}")
+    _sh(inst, f"mkdir {_DIRTY_DIR}/locked && chmod 000 {_DIRTY_DIR}/locked")
+
+    try:
+        result = harness.run_cwcli(
+            "axi", "apps", "update", inst.name, "frappe", "--force", timeout=900
+        )
+
+        output = result.stdout + result.stderr
+        assert "data_loss_refused: false" in result.stdout, output
+        assert _DIRTY in _list_field(result.stdout, "data_loss_apps")
+        assert f"will discard any uncommitted or unpushed work in {_DIRTY}" in result.stdout
+        # bench ran over the app: the unpushed commit and the tracked edit are gone.
+        assert _work(inst) == (pushed, "")
+        # ... then stopped where this test made it stop, as a failed reset.
+        assert result.returncode == 1, output
+        assert "failed_apps[1]: frappe" in result.stdout
     finally:
         _restore(inst, _CONF, conf_before)
         _restore(inst, _EXCLUDED, excluded_before)

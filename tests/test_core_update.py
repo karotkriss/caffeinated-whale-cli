@@ -640,8 +640,10 @@ def preflight_finds(monkeypatch):
     calls = []
 
     def arm(*findings):
-        def fake(container, bench_path, *, project, bench=None, path=None):
+        def fake(container, bench_path, *, project, bench=None, path=None, local_only=False):
             calls.append((bench_path, project, bench, path))
+            if local_only:
+                calls.append("local_only")
             return update_preflight.PreflightOutcome(
                 findings=list(findings), apps=2, sites=1, elapsed=0.1, bench_path=bench_path
             )
@@ -673,9 +675,8 @@ class TestFrappePreflight:
         # The refusal carries EVERY finding, not just the blocker.
         assert [f.code for f in report.preflight] == ["git.branch_not_on_remote", "git.uncommitted"]
 
-    def test_data_loss_and_notices_do_not_block_in_this_release(self, wired, preflight_finds):
+    def test_notices_and_unverified_predictions_do_not_block(self, wired, preflight_finds):
         preflight_finds(
-            _finding(update_preflight.DATA_LOSS, "git.unpushed"),
             _finding(update_preflight.NOTICE, "git.no_remote"),
             _finding(update_preflight.UNVERIFIED, "git.remote_unverified"),
         )
@@ -683,9 +684,9 @@ class TestFrappePreflight:
         report = _update(apps=["frappe"]).data
 
         assert any("bench update --reset" in c for c in wired.calls)
-        assert report.preflight_blocked is False
+        assert report.preflight_blocked is False and report.data_loss_refused is False
         assert report.ok is True
-        assert len(report.preflight) == 3
+        assert len(report.preflight) == 2
 
     def test_it_runs_inside_the_credential_bridge_against_the_resolved_bench(
         self, monkeypatch, wired, preflight_finds
@@ -724,14 +725,18 @@ class TestFrappePreflight:
 
         assert calls == [(BENCH, "proj", None, "/workspace/chosen bench")]
 
-    def test_no_preflight_skips_it_and_reports_nothing(self, wired, preflight_finds):
+    def test_no_preflight_runs_only_the_local_tier_and_never_blocks_on_it(
+        self, wired, preflight_finds
+    ):
+        # The local tier still finds the detached HEAD; only the guard acts on it.
         calls = preflight_finds(_finding(update_preflight.BLOCKER, "git.detached_head"))
 
         report = _update(apps=["frappe"], preflight=False).data
 
-        assert calls == []
+        assert calls == [(BENCH, "proj", None, None), "local_only"]
         assert any("bench update --reset" in c for c in wired.calls)
         assert report.preflight == [] and report.preflight_blocked is False
+        assert report.ok is True
 
     def test_the_per_app_path_never_runs_it(self, wired, preflight_finds):
         calls = preflight_finds(_finding(update_preflight.BLOCKER, "git.detached_head"))
@@ -761,13 +766,225 @@ class TestFrappePreflight:
         assert preflight_event.blocked is False
         assert preflight_event.summary.startswith("2 app(s), 1 site(s)")
 
-    def test_a_preflight_that_could_not_run_does_not_block(self, wired):
-        # The base fake answers the script's exec with no record at all.
+    def test_a_preflight_that_could_not_run_fails_the_guard_closed(self, wired):
+        # No record at all: nothing says whether an app holds work the reset discards.
+        wired.preflight_output = ""
+
+        refused = _update(apps=["frappe"]).data
+
+        assert [f.code for f in refused.preflight] == ["preflight.unverified"]
+        assert refused.preflight_blocked is False  # not a blocker: a prediction failed
+        assert refused.data_loss_refused is True and refused.ok is False
+        assert not any("bench update --reset" in c for c in wired.calls)
+
+        forced = _update(apps=["frappe"], force=True).data
+
+        assert forced.ok is True
+        assert any("bench update --reset" in c for c in wired.calls)
+
+
+# --------------------------------------------------- the frappe data-loss guard
+
+
+class TestFrappeDataLossGuard:
+    """``bench update --reset`` hard-resets every app, discarding uncommitted changes
+    and unpushed commits. Without ``--force`` that refuses with nothing run - under
+    ``--no-preflight`` too, since the guard is not a prediction - and ``--force``
+    accepts it, re-owning any app repo git refuses for dubious ownership first.
+    """
+
+    @pytest.mark.parametrize("preflight", [True, False])
+    @pytest.mark.parametrize(
+        "code", ["git.uncommitted", "git.unpushed", "git.local_work_unverified"]
+    )
+    def test_local_work_refuses_with_nothing_run(
+        self, monkeypatch, wired, preflight_finds, preflight, code
+    ):
+        recaches = []
+        monkeypatch.setattr(
+            core_update.cache, "recache_project", lambda *a, **k: recaches.append(a) or True
+        )
+        severity = (
+            update_preflight.UNVERIFIED if "unverified" in code else update_preflight.DATA_LOSS
+        )
+        preflight_finds(
+            _finding(severity, code, "dirty"),
+            _finding(update_preflight.NOTICE, "git.no_remote", "noremote"),
+        )
+        events = []
+
+        report = _update(apps=["frappe"], preflight=preflight, on_event=events.append).data
+
+        assert not any("bench update --reset" in c for c in wired.calls)
+        assert recaches == []
+        assert report.data_loss_refused is True and report.preflight_blocked is False
+        assert report.data_loss_apps == ["dirty"]
+        assert report.ok is False and report.failed_apps == []
+        # Without --no-preflight every finding rides along; with it, only the guard's.
+        assert [f.code for f in report.preflight] == (
+            [code, "git.no_remote"] if preflight else [code]
+        )
+        verdict = next(e for e in events if isinstance(e, UpdatePreflight))
+        assert verdict.blocked is True and verdict.local_only is (not preflight)
+
+    @pytest.mark.parametrize("preflight", [True, False])
+    def test_force_accepts_the_loss_and_the_report_names_the_app(
+        self, wired, preflight_finds, preflight
+    ):
+        preflight_finds(_finding(update_preflight.DATA_LOSS, "git.unpushed", "dirty"))
+        events = []
+
+        result = _update(apps=["frappe"], preflight=preflight, force=True, on_event=events.append)
+
+        assert any("bench update --reset" in c for c in wired.calls)
+        report = result.data
+        assert report.ok is True and report.data_loss_refused is False
+        assert report.data_loss_apps == ["dirty"]
+        warning = next(w for w in result.warnings if w.code == "frappe_reset.discarding_local_work")
+        assert warning.detail == {"apps": ["dirty"], "all_apps_unchecked": False}
+        # Said before the reset runs, where it can still be acted on.
+        start = next(
+            e for e in events if isinstance(e, UpdateStepStart) and e.phase == "frappe_reset"
+        )
+        assert "will discard any uncommitted or unpushed work in dirty" in start.message
+        # --force is no longer an option the frappe path ignores.
+        assert not any(w.code == "frappe_reset.options_ignored" for w in result.warnings)
+
+    @pytest.mark.parametrize("preflight", [True, False])
+    def test_force_past_checks_that_never_ran_still_warns_bench_wide(
+        self, wired, preflight_finds, preflight
+    ):
+        preflight_finds(_finding(update_preflight.UNVERIFIED, "preflight.unverified", None))
+
+        refused = _update(apps=["frappe"], preflight=preflight).data
+        assert refused.data_loss_refused is True
+        assert not any("bench update --reset" in c for c in wired.calls)
+
+        result = _update(apps=["frappe"], preflight=preflight, force=True)
+
+        assert any("bench update --reset" in c for c in wired.calls)
+        assert result.data.data_loss_apps == []
+        warning = next(w for w in result.warnings if w.code == "frappe_reset.discarding_local_work")
+        assert warning.detail == {"apps": [], "all_apps_unchecked": True}
+        assert "every app, none of whose local work could be checked" in warning.text
+
+    def test_force_never_passes_a_blocker(self, wired, preflight_finds):
+        preflight_finds(
+            _finding(update_preflight.BLOCKER, "git.branch_not_on_remote", "feature"),
+            _finding(update_preflight.DATA_LOSS, "git.uncommitted", "dirty"),
+        )
+
+        report = _update(apps=["frappe"], force=True).data
+
+        assert not any("bench update --reset" in c for c in wired.calls)
+        assert report.preflight_blocked is True and report.data_loss_refused is False
+        assert report.ok is False
+
+    def test_a_blocker_and_local_work_are_both_reported(self, wired, preflight_finds):
+        preflight_finds(
+            _finding(update_preflight.BLOCKER, "git.branch_not_on_remote", "feature"),
+            _finding(update_preflight.DATA_LOSS, "git.uncommitted", "dirty"),
+        )
+
         report = _update(apps=["frappe"]).data
 
-        assert [f.code for f in report.preflight] == ["preflight.unverified"]
-        assert report.ok is True
+        assert report.preflight_blocked is True and report.data_loss_refused is True
+        assert report.data_loss_apps == ["dirty"]
+
+    def test_a_clean_bench_runs_without_force(self, wired, preflight_finds):
+        preflight_finds()
+
+        report = _update(apps=["frappe"]).data
+
         assert any("bench update --reset" in c for c in wired.calls)
+        assert report.ok is True and report.data_loss_apps == []
+
+    def test_the_per_app_path_has_no_such_guard(self, wired, preflight_finds):
+        calls = preflight_finds(_finding(update_preflight.DATA_LOSS, "git.uncommitted"))
+
+        report = _update(apps=["payments"]).data
+
+        assert calls == [] and report.ok is True and report.data_loss_refused is False
+
+
+class TestFrappeForceReownsDubiousRepos:
+    """``--force`` re-owns exactly the app repos git refused for dubious ownership
+    (an owner mismatch), then checks again so their local work is seen too."""
+
+    def _arm(self, monkeypatch, *rounds):
+        """Each preflight call returns the next round's findings; return the calls."""
+        calls = []
+
+        def fake(container, bench_path, *, project, bench=None, path=None, local_only=False):
+            calls.append(local_only)
+            return update_preflight.PreflightOutcome(
+                findings=list(rounds[min(len(calls), len(rounds)) - 1]),
+                apps=2,
+                sites=1,
+                elapsed=0.1,
+                bench_path=bench_path,
+            )
+
+        monkeypatch.setattr(core_update.update_preflight, "run_preflight", fake)
+        return calls
+
+    def _record_reown(self, monkeypatch, outcome=(True, None)):
+        seen = []
+        monkeypatch.setattr(
+            core_update.core_docker,
+            "reown_app_repo_to_frappe",
+            lambda container, app_path: seen.append(app_path) or outcome,
+        )
+        return seen
+
+    @pytest.mark.parametrize("preflight", [True, False])
+    def test_force_reowns_the_mismatched_repo_then_checks_again(
+        self, monkeypatch, wired, preflight
+    ):
+        dubious = _finding(update_preflight.BLOCKER, "git.dubious_ownership", "shared")
+        calls = self._arm(
+            monkeypatch, [dubious], [_finding(update_preflight.DATA_LOSS, "git.unpushed", "shared")]
+        )
+        seen = self._record_reown(monkeypatch)
+
+        result = _update(apps=["frappe"], preflight=preflight, force=True)
+
+        assert seen == [f"{BENCH}/apps/shared"]
+        assert calls == [not preflight, not preflight]  # checked again, same tier
+        # The re-owned repo's work is now visible, and --force accepted it.
+        assert result.data.data_loss_apps == ["shared"]
+        assert result.data.ok is True
+        assert any(w.code == "app.force_reown" for w in result.warnings)
+        assert any("bench update --reset" in c for c in wired.calls)
+
+    def test_no_mismatch_means_no_reown_and_one_check(self, monkeypatch, wired):
+        calls = self._arm(monkeypatch, [_finding(update_preflight.NOTICE, "git.no_remote")])
+        seen = self._record_reown(monkeypatch)
+
+        _update(apps=["frappe"], force=True)
+
+        assert seen == [] and calls == [False]
+
+    def test_without_force_nothing_is_reowned(self, monkeypatch, wired):
+        dubious = _finding(update_preflight.BLOCKER, "git.dubious_ownership", "shared")
+        self._arm(monkeypatch, [dubious])
+        seen = self._record_reown(monkeypatch)
+
+        report = _update(apps=["frappe"]).data
+
+        assert seen == [] and report.preflight_blocked is True
+
+    def test_a_failed_reown_is_reported_and_its_blocker_stands(self, monkeypatch, wired):
+        dubious = _finding(update_preflight.BLOCKER, "git.dubious_ownership", "shared")
+        calls = self._arm(monkeypatch, [dubious])
+        self._record_reown(monkeypatch, (False, "could not re-own the app repo: denied"))
+
+        result = _update(apps=["frappe"], force=True)
+
+        assert calls == [False]  # nothing changed, so nothing to check again
+        assert any(w.code == "app.force_reown_failed" for w in result.warnings)
+        assert result.data.preflight_blocked is True
+        assert not any("bench update --reset" in c for c in wired.calls)
 
 
 # ----------------------------------------------------------------- the callback

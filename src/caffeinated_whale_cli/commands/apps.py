@@ -42,7 +42,7 @@ from ..utils import cache
 from ..utils.completion_utils import complete_app_names, complete_project_names
 from ..utils.console import console, stderr_console
 from ..utils.docker_utils import handle_docker_errors
-from .update import NO_PREFLIGHT_HELP, run_app_update
+from .update import FORCE_HELP, NO_PREFLIGHT_HELP, run_app_update
 from .utils import confirm_or_exit, ensure_containers_running, resolve_bench_path
 
 app = typer.Typer(help="Manage Frappe apps: list, install, uninstall, update, checkout.")
@@ -631,16 +631,7 @@ def update_apps(
     no_recache: bool = typer.Option(
         False, "--no-recache", help="Skip re-caching after app updates."
     ),
-    force: bool = typer.Option(
-        False,
-        "--force",
-        help=(
-            "DESTRUCTIVE: if an app's git update hits a conflict, hard-reset that app "
-            "to its remote tracking branch (git fetch + git reset --hard), discarding "
-            "local changes, instead of failing. Applies only on conflict; a clean "
-            "update is untouched."
-        ),
-    ),
+    force: bool = typer.Option(False, "--force", help=FORCE_HELP),
     no_preflight: bool = typer.Option(False, "--no-preflight", help=NO_PREFLIGHT_HELP),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
     yes: bool = typer.Option(
@@ -655,12 +646,14 @@ def update_apps(
     A preflight runs first and refuses, with nothing changed, when bench would
     certainly fail late (an app on a branch its remote lacks, an unreachable remote,
     a detached HEAD, a site that cannot be opened, a held migrate lock, ...).
-    This is what the deprecated 'cwcli update' now delegates to.
+    It also refuses when any app holds uncommitted changes or unpushed commits the
+    reset would discard; --force accepts that loss, and --no-preflight does not skip
+    this check. This is what the deprecated 'cwcli update' now delegates to.
 
-    With --force, an app whose git update hits a CONFLICT (local changes) is
-    hard-reset to its remote tracking branch, discarding those local changes, so the
-    update completes; without --force such a conflict fails safely and discards
-    nothing. --force never touches an app whose update is clean.
+    For any other app, --force hard-resets an app whose git update hits a CONFLICT
+    (local changes) to its remote tracking branch, discarding those local changes,
+    so the update completes; without --force such a conflict fails safely and
+    discards nothing. --force never touches an app whose update is clean.
     """
     run_app_update(
         project_name,
