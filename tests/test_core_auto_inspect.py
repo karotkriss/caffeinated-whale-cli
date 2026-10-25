@@ -263,6 +263,32 @@ class TestStart:
         assert core_ai.status().data.last_log_line.endswith("failed to start: boom")
 
 
+class TestLegacyUnitRepairedBeforeTheDaemonIsTouched:
+    def test_repair_precedes_every_stop_and_start(self, cfg, monkeypatch):
+        events: list[str] = []
+        real_start, real_stop = auto_inspect.start_daemon, auto_inspect.stop_daemon
+        monkeypatch.setattr(
+            startup, "repair_startup", lambda unit=None: events.append("repair") or False
+        )
+        monkeypatch.setattr(
+            auto_inspect, "start_daemon", lambda: events.append("start") or real_start()
+        )
+        monkeypatch.setattr(
+            auto_inspect, "stop_daemon", lambda: events.append("stop") or real_stop()
+        )
+        core_ai.enable(interval=900)
+
+        for verb in (core_ai.restart, lambda: core_ai.enable(interval=1200)):
+            events.clear()
+            verb()
+            assert events == ["repair", "stop", "start"]
+
+        core_ai.stop()
+        events.clear()
+        core_ai.start()
+        assert events == ["repair", "start"]
+
+
 class TestStop:
     def test_stops_a_running_daemon_only(self, cfg):
         core_ai.enable(at_boot=True)

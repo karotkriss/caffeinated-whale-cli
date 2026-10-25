@@ -310,6 +310,30 @@ class TestReEnableOverALegacyBootUnit:
         assert systemctl == [["systemctl", "--user", "daemon-reload"]]
 
 
+class TestLegacyUnitRepairedBeforeTheDaemonIsTouched:
+    def test_repair_precedes_every_stop_and_start(self, cfg, monkeypatch):
+        cfg.enabled = True
+        events: list[str] = []
+        real_start, real_stop = daemon.start_daemon, daemon.stop_daemon
+        monkeypatch.setattr(
+            startup, "repair_startup", lambda unit=None: events.append("repair") or False
+        )
+        monkeypatch.setattr(daemon, "start_daemon", lambda: events.append("start") or real_start())
+        monkeypatch.setattr(daemon, "stop_daemon", lambda: events.append("stop") or real_stop())
+
+        core_cred.enable()
+        assert events == ["repair", "start"]
+
+        events.clear()
+        core_cred.restart()
+        assert events == ["repair", "stop", "start"]
+
+        core_cred.stop()
+        events.clear()
+        core_cred.start()
+        assert events == ["repair", "start"]
+
+
 class TestBootUnitRepairFailure:
     def test_a_failed_unit_repair_is_a_warning_over_a_started_daemon(self, cfg, monkeypatch):
         cfg.enabled = True
