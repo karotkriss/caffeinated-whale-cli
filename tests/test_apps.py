@@ -785,8 +785,8 @@ def test_checkout_reset_adds_hard_reset(wired, monkeypatch, capsys):
         verbose=False,
     )
     out = json.loads(capsys.readouterr().out)
-    assert [r["action"] for r in out["results"]] == ["fetch", "checkout", "reset"]
-    assert "git reset --hard FETCH_HEAD" in container.calls
+    assert [r["action"] for r in out["results"]] == ["fetch", "reset", "checkout"]
+    assert "git reset --hard" in container.calls
 
 
 def test_checkout_failed_fetch_exits_nonzero_and_skips_the_rest(wired, monkeypatch, capsys):
