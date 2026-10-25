@@ -18,14 +18,18 @@ nothing is installed or registered, so the shared bench cannot be left broken.
 from __future__ import annotations
 
 import shlex
+from dataclasses import replace
 
 import pytest
 
 from . import harness
+from .conftest import SESSION_ADMIN_PW
 
 pytestmark = [pytest.mark.e2e]
 
 _PROBE = "test_cwcli_run_tests_probe"
+_TEST_SITE = "cwcli-run-tests.localhost"
+_DB_ROOT_PASSWORD = "123"
 _FAILING = """\
 import unittest
 
@@ -95,13 +99,38 @@ def _run_tests(inst):
 
 
 @pytest.fixture()
-def probe(running_instance):
-    inst = running_instance
+def probe(dedicated_test_site):
+    inst = dedicated_test_site
     try:
         yield inst
     finally:
         harness.exec_in_frappe(inst.name, f"rm -f {shlex.quote(_probe_path(inst))}")
         _set_allow_tests(inst, False)
+
+
+@pytest.fixture(scope="module")
+def dedicated_test_site(session_instance):
+    """Keep arbitrary test code and its database effects off the shared site."""
+    inst = replace(session_instance, site=_TEST_SITE)
+    create = harness.run_cwcli(
+        "run",
+        inst.name,
+        "-i",
+        "new-site",
+        inst.site,
+        "--db-root-password",
+        _DB_ROOT_PASSWORD,
+        "--admin-password",
+        SESSION_ADMIN_PW,
+        timeout=300,
+    )
+    assert create.returncode == 0, create.stdout + create.stderr
+    try:
+        yield inst
+    finally:
+        harness.exec_in_frappe(inst.name, f"rm -f {shlex.quote(_probe_path(inst))}")
+        remove = harness.run_cwcli("rm-site", inst.name, inst.site, "--yes", timeout=300)
+        assert remove.returncode == 0, remove.stdout + remove.stderr
 
 
 def test_a_failed_and_erroring_suite_is_not_ok_and_exits_nonzero(probe):
