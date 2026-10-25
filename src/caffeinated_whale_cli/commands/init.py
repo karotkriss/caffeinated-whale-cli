@@ -174,6 +174,7 @@ class _InitRenderer:
             "setuptools.pin_failed",
             "init.uid_align_failed",
             "init.uid_align_root_host",
+            "init.db_password_not_applied",
         ):
             stderr_console.print(f"[yellow]Warning: {event.text}[/yellow]")
         elif code == "instance.already_running" and self.verbose:
@@ -705,7 +706,7 @@ def init(
         if result.status is Status.NEEDS_CHOICE:
             ensure_containers_running(project, require_running=True, auto_start=auto_start)
             try:
-                result = core_init.init_instance(
+                core_init.init_instance(
                     project,
                     port=port,
                     bench_parent=bench_parent,
@@ -720,8 +721,6 @@ def init(
                 renderer.close()
     except CwcliError as e:
         raise _render_error_exit(e, project, verbose=verbose) from None
-    for warning in result.warnings:
-        stderr_console.print(f"[yellow]Warning:[/yellow] {warning.text}")
 
     # ---- Stage 2: the bench + site, re-invoked per resolved choice.
     renderer.bench_name = bench

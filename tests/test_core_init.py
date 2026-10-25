@@ -1385,11 +1385,25 @@ class TestDbRootPassword:
         self, monkeypatch, tmp_path, patched
     ):
         s = _fresh_compose(monkeypatch, tmp_path, volume_exists=True)
-        result = core_init.init_instance(PROJECT, port=18000, db_root_password="Ch0sen-pw")
+        events: list = []
+        core_init.init_instance(
+            PROJECT, port=18000, db_root_password="Ch0sen-pw", on_event=events.append
+        )
 
         assert "MYSQL_ROOT_PASSWORD: 123" in s.compose_path.read_text()
         assert not (s.compose_path.parent / "db-root-password").exists()
-        assert [w.code for w in result.warnings] == ["init.db_password_not_applied"]
+        # An event, so a frontend shows it even when the init then fails.
+        notices = [e.code for e in events if isinstance(e, core_init.InitNotice)]
+        assert "init.db_password_not_applied" in notices
+
+    def test_unknown_database_state_leaves_the_compose_and_secret_alone(
+        self, monkeypatch, tmp_path, patched
+    ):
+        s = _fresh_compose(monkeypatch, tmp_path, volume_exists=None)
+        core_init.init_instance(PROJECT, port=18000, db_root_password="Ch0sen-pw")
+
+        assert "MYSQL_ROOT_PASSWORD: 123" in s.compose_path.read_text()
+        assert not (s.compose_path.parent / "db-root-password").exists()
 
     def test_new_site_uses_the_remembered_password_when_none_is_given(
         self, monkeypatch, tmp_path, patched

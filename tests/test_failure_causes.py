@@ -74,6 +74,13 @@ def test_a_1045_wins_over_the_generic_shapes_in_the_same_output():
     assert explain(output).code == "db.access_denied"
 
 
+def test_an_earlier_more_specific_text_wins_over_a_later_wider_one():
+    failing = "MySQLdb.OperationalError: (1045, \"Access denied for user 'root'@'x'\")"
+    earlier_steps = "Could not resolve host: pypi.org\nError 111 connecting to redis-cache:6379."
+    assert explain(failing, earlier_steps).code == "db.access_denied"
+    assert explain(None, "", earlier_steps).code == "network.dns"
+
+
 @pytest.mark.parametrize("output", [None, "", "Command exited 1", "Traceback: KeyError: 'x'"])
 def test_unknown_output_is_none_never_a_guess(output):
     assert explain(output) is None

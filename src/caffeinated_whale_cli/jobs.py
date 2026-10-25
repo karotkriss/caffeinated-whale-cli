@@ -885,7 +885,7 @@ def _run_init(
     if bench_result.status is Status.NEEDS_CHOICE or bench_result.data is None:
         return bench_result
     report = bench_result.data
-    warnings = [*instance_result.warnings, *bench_result.warnings]
+    warnings = list(bench_result.warnings)
     if not cache.recache_project(project, bench_path=report.bench_path, warnings=warnings):
         emit.lifecycle("cache_warning", f"Could not refresh the cache for {project}.")
     started = None
