@@ -42,9 +42,12 @@ def secret_path(project: str) -> Path:
 
 
 def remembered(project: str) -> str | None:
-    """The password stored for ``project`` at init, or None when none was set."""
+    """The password stored for ``project`` at init, or None when none was set.
+
+    Read as MariaDB's entrypoint reads the same file: only trailing newlines dropped.
+    """
     try:
-        value = secret_path(project).read_text(encoding="utf-8").strip()
+        value = secret_path(project).read_text(encoding="utf-8").rstrip("\n")
     except OSError:
         return None
     return value or None

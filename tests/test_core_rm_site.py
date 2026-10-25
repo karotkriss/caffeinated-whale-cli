@@ -563,6 +563,20 @@ class TestRootPassword:
 
         assert envs == [{"CWCLI_DB_ROOT_PASSWORD": "Ch0sen-pw"}]
 
+    def test_a_remembered_password_with_surrounding_spaces_round_trips(
+        self, container, monkeypatch, tmp_path
+    ):
+        from caffeinated_whale_cli.core import db_password
+        from caffeinated_whale_cli.utils import config_utils
+
+        monkeypatch.setattr(config_utils, "PROJECTS_DIR", tmp_path / "projects")
+        db_password.remember("proj", " pw ")
+        envs = self._drop_env(container)
+
+        core_rm_site.drop_site("proj", SITE, consent=True)
+
+        assert envs == [{"CWCLI_DB_ROOT_PASSWORD": " pw "}]
+
     def test_an_explicit_password_wins_and_none_remembered_is_123(
         self, container, monkeypatch, tmp_path
     ):
