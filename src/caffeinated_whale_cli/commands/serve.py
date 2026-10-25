@@ -262,8 +262,12 @@ SETTINGS = frozenset(
         "paths.prune",
         "auto_inspect.enable",
         "auto_inspect.disable",
+        "auto_inspect.start",
+        "auto_inspect.restart",
         "cred_bridge.enable",
         "cred_bridge.disable",
+        "cred_bridge.start",
+        "cred_bridge.restart",
         "tips.enable",
         "tips.disable",
         "agent_hooks.install",
@@ -957,12 +961,20 @@ class _Handler(BaseHTTPRequestHandler):
                 )
             elif setting == "auto_inspect.disable":
                 result = core_auto_inspect.disable()
+            elif setting == "auto_inspect.start":
+                result = core_auto_inspect.start()
+            elif setting == "auto_inspect.restart":
+                result = core_auto_inspect.restart()
             elif setting == "cred_bridge.enable":
                 result = core_cred_bridge.enable(
                     at_boot=_optional_bool(payload.get("at_boot"), "at_boot")
                 )
             elif setting == "cred_bridge.disable":
                 result = core_cred_bridge.disable()
+            elif setting == "cred_bridge.start":
+                result = core_cred_bridge.start()
+            elif setting == "cred_bridge.restart":
+                result = core_cred_bridge.restart()
             elif setting in {"tips.enable", "tips.disable"}:
                 result = core_config.set_tips(setting == "tips.enable")
             else:

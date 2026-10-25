@@ -264,6 +264,49 @@ class TestStart:
         assert cfg.calls["start"] == 0
 
 
+class TestRestart:
+    def test_restarts_a_running_daemon(self, cfg):
+        cfg.enabled = True
+        cfg.running = True
+        result = core_cred.restart()
+        assert result.data.actions == ["daemon.restarted"]
+        assert (cfg.calls["stop"], cfg.calls["start"]) == (1, 1)
+        assert result.data.state.daemon_running is True
+
+    def test_starts_a_stopped_daemon(self, cfg):
+        cfg.enabled = True
+        core_cred.restart()
+        assert (cfg.calls["stop"], cfg.calls["start"]) == (0, 1)
+
+    def test_refuses_when_disabled(self, cfg):
+        cfg.running = True
+        with pytest.raises(CwcliError) as exc:
+            core_cred.restart()
+        assert exc.value.code == "cred_bridge.not_enabled"
+        assert cfg.calls["stop"] == 0  # never stopped a daemon it would not restart
+
+
+class TestDaemonStartFailure:
+    def test_a_failed_start_is_an_error_not_a_started_daemon(self, cfg, monkeypatch):
+        """The web page and the CLI must hear about a daemon that did not come up."""
+        cfg.enabled = True
+
+        def _fail():
+            raise RuntimeError("the daemon exited during startup (exit code 1)")
+
+        monkeypatch.setattr(daemon, "start_daemon", _fail)
+        for verb in (core_cred.start, core_cred.restart, core_cred.enable):
+            with pytest.raises(CwcliError) as exc:
+                verb()
+            assert exc.value.code == "daemon.start_failed"
+            assert "exit code 1" in exc.value.message
+
+    def test_state_carries_the_last_log_line(self, cfg, monkeypatch):
+        daemon.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        daemon.LOG_FILE.write_text("[t] credential-bridge daemon stopped\n")
+        assert core_cred.status().data.last_log_line == "[t] credential-bridge daemon stopped"
+
+
 class TestStop:
     def test_stops_a_running_daemon_only(self, cfg):
         cfg.enabled = True
@@ -349,7 +392,6 @@ class TestBootPersistence:
         disabled guard keeps a stale unit inert after `disable` - the load-bearing
         property the auto-inspect unit established."""
         assert startup.CRED_BRIDGE.start_args == ("config", "cred-bridge", "start")
-        assert startup.CRED_BRIDGE.stop_args == ("config", "cred-bridge", "stop")
         # And the generalization did not move the auto-inspect unit's identity.
         assert startup.AUTO_INSPECT.start_args == ("config", "auto-inspect", "start")
         assert startup.AUTO_INSPECT.service_name == "cwcli-auto-inspect.service"

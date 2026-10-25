@@ -220,6 +220,49 @@ class TestDisable:
         assert exc.value.code == "daemon.stop_failed"
 
 
+class TestStart:
+    def test_refuses_when_disabled(self, cfg):
+        with pytest.raises(CwcliError) as exc:
+            core_ai.start()
+        assert exc.value.code == "auto_inspect.not_enabled"
+        assert cfg.calls["start"] == 0
+
+    def test_starts_a_stopped_daemon_of_an_enabled_feature(self, cfg):
+        core_ai.enable()
+        core_ai.stop()
+        result = core_ai.start()
+        assert result.data.actions == ["daemon.started"]
+        assert result.data.state.daemon_running is True
+
+    def test_already_running_is_a_noop(self, cfg):
+        core_ai.enable()
+        assert core_ai.start().data.actions == ["daemon.already_running"]
+        assert cfg.calls["start"] == 1  # only enable's
+
+    def test_restart_stops_then_starts(self, cfg):
+        core_ai.enable()
+        result = core_ai.restart()
+        assert result.data.actions == ["daemon.restarted"]
+        assert (cfg.calls["stop"], cfg.calls["start"]) == (1, 2)
+
+    def test_a_failed_start_is_an_error(self, cfg, monkeypatch):
+        core_ai.enable()
+        core_ai.stop()
+
+        def _fail():
+            raise RuntimeError("the daemon did not come up within 10s")
+
+        monkeypatch.setattr(auto_inspect, "start_daemon", _fail)
+        with pytest.raises(CwcliError) as exc:
+            core_ai.start()
+        assert exc.value.code == "daemon.start_failed"
+
+    def test_state_carries_the_last_log_line(self, cfg):
+        auto_inspect.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        auto_inspect.LOG_FILE.write_text("[t] Auto-inspect service failed to start: boom\n")
+        assert core_ai.status().data.last_log_line.endswith("failed to start: boom")
+
+
 class TestStop:
     def test_stops_a_running_daemon_only(self, cfg):
         core_ai.enable(at_boot=True)
