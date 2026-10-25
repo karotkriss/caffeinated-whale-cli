@@ -82,10 +82,15 @@ async function openSite(ctx) {
 }
 
 // A Dropdown option for an action, disabled (with its reason) when the
-// instance's state rules it out. A destructive action's entry is red.
+// instance's state rules it out even with every dialog checkbox ticked, so a
+// dialog option that can arm the action keeps its entry open. A destructive
+// action's entry is red.
 export function menuOption(id, ctx, bench) {
   const a = ACTIONS[id]
-  const { ok, reason } = availability(id, instance(ctx.project), bench)
+  const reachable = Object.fromEntries(
+    (a.fields || []).filter((f) => f.type === 'checkbox').map((f) => [f.name, true]),
+  )
+  const { ok, reason } = availability(id, instance(ctx.project), bench, reachable)
   return {
     label: ok ? a.label : `${a.label} (${reason.toLowerCase()})`,
     icon: a.icon,
