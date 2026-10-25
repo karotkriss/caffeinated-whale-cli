@@ -913,6 +913,22 @@ def test_the_content_fetch_is_bench_s_own_and_never_touches_the_working_tree(ben
     assert not (app / "shallow" / "new.py").exists()
 
 
+def test_without_shallow_clone_the_content_fetch_keeps_a_shallow_repo_s_history(tmp_path):
+    # A depth-1 clone that bench has since updated with full `git fetch --all`s: a
+    # depth-1 content fetch would cut the tracking ref's history, and the next run
+    # would count every commit since the clone as unpushed work.
+    b = Bench(tmp_path, shallow_clone=False)
+    app = b.app("deep", depth=1)
+    for n in range(2):
+        b.publish("deep", {"deep/new.py": f"x = {n}\n"})
+    b.git("fetch", "-q", "upstream", cwd=app)
+    b.git("reset", "-q", "--hard", "upstream/main", cwd=app)
+    b.publish("deep", {"deep/new.py": "x = 2\n"})
+
+    assert b.findings() == []
+    assert b.findings() == []
+
+
 def test_the_local_tier_fetches_nothing_and_checks_no_content(bench):
     # --no-preflight runs only the data-loss guard's local checks.
     bench.publish("goodapp", {"package.json": package_json("goodapp", ">=24")})

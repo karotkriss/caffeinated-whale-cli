@@ -341,14 +341,16 @@ def local_manifest(app):
     return manifest(app, read)
 
 
-def fetched_manifest(app, d, remote, branch):
+def fetched_manifest(app, d, remote, branch, shallow):
     """(manifest, error): the files bench's reset installs, from <remote>/<branch>.
 
     bench/app.py (pull_apps) fetches <remote> <branch> (--depth=1 with shallow_clone,
     else --all) and resets to <remote>/<branch>. This is that fetch, for that one
-    branch: it moves the same remote-tracking ref and never the working tree, and stays
-    --depth=1 on a shallow repo so it never pulls full history."""
-    depth = ["--depth=1"] if shallow_boundary(d) else []
+    branch: it moves the same remote-tracking ref and never the working tree. It is
+    --depth=1 only when bench's is and the repo is already shallow: a depth-1 fetch
+    cuts the ref's history, and a blocked run keeps HEAD, so any HEAD commit below the
+    cut would read as unpushed work on the next run."""
+    depth = ["--depth=1"] if shallow and shallow_boundary(d) else []
     rc, _, err = git(d, ["fetch", "--quiet", "--no-tags"] + depth + [remote, branch],
                      opts["fetch_timeout"])
     if rc != 0:
@@ -400,7 +402,7 @@ def probe(app, d, remote, branch, covered, stale, held, shallow):
                           "error": git_error(err) or "git rev-list did not answer"})
     fetched = None
     if on_remote and covered:
-        fetched, error = fetched_manifest(app, d, remote, branch)
+        fetched, error = fetched_manifest(app, d, remote, branch, shallow)
         if error:
             found.append(dict(base, code="content.unverified", error=error))
     return found, fetched
