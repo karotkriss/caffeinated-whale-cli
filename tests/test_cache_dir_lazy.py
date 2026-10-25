@@ -11,6 +11,8 @@ import sys
 
 import pytest
 
+from caffeinated_whale_cli.core import init, version
+
 
 def _run(home, *code_or_args, module=False):
     env = dict(os.environ, CWCLI_HOME=str(home), CWCLI_NO_UPDATE_CHECK="1")
@@ -51,3 +53,24 @@ def test_first_cache_use_creates_dir_0700(tmp_path):
     )
     assert stat.S_IMODE((home / "cache").stat().st_mode) == 0o700
     assert (home / "cache" / "cwc-cache.db").is_file()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Unix permissions not supported on Windows")
+@pytest.mark.parametrize(
+    "write",
+    [
+        lambda: version._record_attempt("1.0.0"),
+        lambda: init._write_bench_tag_cache("v5.0.0"),
+    ],
+    ids=["version-check", "bench-tag"],
+)
+def test_side_cache_first_creating_the_dir_creates_it_0700(tmp_path, monkeypatch, write):
+    home = tmp_path / "home"
+    monkeypatch.setenv("CWCLI_HOME", str(home))
+    old_umask = os.umask(0o022)
+    try:
+        write()
+    finally:
+        os.umask(old_umask)
+    assert stat.S_IMODE((home / "cache").stat().st_mode) == 0o700
+    assert len(list((home / "cache").iterdir())) == 1

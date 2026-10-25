@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
+from ..utils import shared_home
 from ..utils.config_utils import cwcli_home
 from .envelope import Message, Result, Status
 
@@ -438,7 +439,7 @@ def _record_attempt(latest: str | None) -> None:
             raw["latest"] = latest
             raw["checked_at"] = now
         path = _cache_file()
-        path.parent.mkdir(parents=True, exist_ok=True)
+        shared_home.ensure_private_dir(path.parent)
         path.write_text(json.dumps(raw))
     except Exception:
         pass  # a cache write must never break a version check
