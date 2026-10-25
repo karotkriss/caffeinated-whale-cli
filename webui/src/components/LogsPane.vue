@@ -6,11 +6,10 @@
 // Polling a resumable tail (every 2s while this pane is mounted) instead of
 // holding an exec stream: core/logs.py documents that a streamed `tail -F`
 // leaks an orphan per stop because Docker has no kill-exec API.
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { TabButtons, ErrorMessage, LoadingText } from 'frappe-ui'
 import CommandLine from './CommandLine.vue'
 import FollowPane from './FollowPane.vue'
-import { MAX_LINES, canAppend } from '../data/follow'
 import { getJson } from '../data/api'
 
 const props = defineProps({
@@ -23,41 +22,47 @@ const POLL_MS = 2000
 const ANSI_SGR = /\x1b\[[0-9;]*m/g
 
 // Status labels a worker `worker:<q>`; its log is keyed by the raw program `worker_<q>`.
-const following = ref(true)
 const filter = ref(props.process ? props.process.replace(/^worker:/, 'worker_') : 'all')
 const error = ref(null)
 const loading = ref(true)
 const notSupervised = ref(false)
-const logs = ref({}) // process -> { lines: [], offset }
+// Append-only, so the windowed pane never moves under a paused reader: every
+// process's lines in arrival order, and the same { p, text } rows per process.
+const logs = {} // process -> { rows: [], offset }
+const all = []
+const processes = ref([])
+const items = shallowRef([])
 let timer = null
 let inflight = false
 
-const processes = computed(() => Object.keys(logs.value).sort())
 const options = computed(() => [{ label: 'All', value: 'all' }, ...processes.value.map((p) => ({ label: p, value: p }))])
-const shown = computed(() => (filter.value === 'all' ? processes.value : processes.value.filter((p) => p === filter.value)))
+const show = () => (items.value = (filter.value === 'all' ? all : logs[filter.value]?.rows || []).slice())
+watch(filter, show)
 
 async function poll() {
-  if (inflight || !canAppend(Object.values(logs.value).map((l) => l.lines), following.value)) return
+  if (inflight) return
   inflight = true
   try {
     const q = new URLSearchParams({ bench: props.bench, lines: '200' })
-    const after = Object.entries(logs.value)
+    const after = Object.entries(logs)
       .map(([p, l]) => `${p}:${l.offset}`)
       .join(',')
     if (after) q.set('after', after)
     const data = await getJson(`/api/v1/instances/${encodeURIComponent(props.project)}/logs?${q}`)
     notSupervised.value = data.outcome.not_cwcli_supervised
     for (const t of data.outcome.logs) {
-      const entry = logs.value[t.process] || (logs.value[t.process] = { lines: [], offset: 0 })
-      // A cold read (no cursor yet) replaces; a warm one appends only what is new.
-      const previous = entry.offset
+      const entry = logs[t.process] || (logs[t.process] = { rows: [], offset: 0 })
       const gap = t.skipped_bytes ? [`... ${t.skipped_bytes} bytes skipped (written faster than this pane polls) ...`] : []
-      const lines = t.lines.map((l) => l.replace(ANSI_SGR, ''))
-      entry.lines = previous ? entry.lines.concat(gap, lines) : lines
-      if (following.value && entry.lines.length > MAX_LINES) entry.lines.splice(0, entry.lines.length - MAX_LINES)
+      for (const text of gap.concat(t.lines.map((l) => l.replace(ANSI_SGR, '')))) {
+        const row = { p: t.process, text }
+        entry.rows.push(row)
+        all.push(row)
+      }
       entry.offset = t.offset
     }
-    if (filter.value !== 'all' && !logs.value[filter.value]) filter.value = 'all'
+    processes.value = Object.keys(logs).sort()
+    if (filter.value !== 'all' && !logs[filter.value]) filter.value = 'all'
+    show()
     error.value = null
   } catch (e) {
     error.value = e.hint ? `${e.message} ${e.hint}` : e.message
@@ -83,12 +88,14 @@ onBeforeUnmount(() => clearInterval(timer))
     <p v-if="notSupervised" class="text-p-sm text-ink-amber-6">Raw bench logs: this bench runs outside cwcli's supervisor.</p>
     <ErrorMessage :message="error" />
     <LoadingText v-if="loading && !processes.length" text="Reading logs..." />
-    <div v-else-if="!processes.length && !error" class="px-3 py-10 text-center text-p-sm text-ink-gray-5">No logs written yet.</div>
-    <FollowPane v-else v-model:following="following" class="max-h-[60vh] rounded-6 border border-outline-gray-1 bg-surface-gray-1">
-      <div v-for="p in shown" :key="p" class="border-b border-outline-gray-1 last:border-b-0">
-        <div class="sticky top-0 bg-surface-gray-2 px-3 py-1 font-mono text-xs text-ink-gray-6">{{ p }}</div>
-        <pre class="whitespace-pre-wrap break-words px-3 py-2 font-mono text-xs leading-5 text-ink-gray-8">{{ logs[p].lines.join('\n') || '(empty)' }}</pre>
-      </div>
+    <div v-else-if="!items.length && !error" class="px-3 py-10 text-center text-p-sm text-ink-gray-5">No logs written yet.</div>
+    <FollowPane v-else-if="items.length" :items="items" :item-height="20" class="max-h-[60vh] rounded-6 border border-outline-gray-1 bg-surface-gray-1 py-2">
+      <template #default="{ item }">
+        <div class="flex gap-3 px-3 font-mono text-xs leading-5">
+          <span v-if="filter === 'all'" class="w-28 shrink-0 truncate text-ink-gray-5">{{ item.p }}</span>
+          <span class="whitespace-pre text-ink-gray-8">{{ item.text }}</span>
+        </div>
+      </template>
     </FollowPane>
     <CommandLine :command="`cwcli logs ${project} --bench ${bench}${filter !== 'all' ? ' --process ' + filter : ''} -f`" />
   </div>
