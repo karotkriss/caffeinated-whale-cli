@@ -516,9 +516,7 @@ def test_ensure_running_instances_only_wires_cwcli_managed(run_dir, tmp_path, mo
         monkeypatch,
     )
     wired: list[str] = []
-    monkeypatch.setattr(
-        cred_daemon, "ensure_bridge", lambda c, b, p: wired.append(p) or object()
-    )
+    monkeypatch.setattr(cred_daemon, "ensure_bridge", lambda c, b, p: wired.append(p) or object())
 
     result = cred_daemon.ensure_running_instances()
 
@@ -733,3 +731,26 @@ class TestSharedModeForkGuard:
         monkeypatch.setattr(cred_daemon, "_fork_or_spawn", lambda fd: forked.append(True))
         cred_daemon.start_daemon()
         assert forked == []
+
+
+def test_start_daemon_spawns_instead_of_forking_from_a_multithreaded_process(run_dir, monkeypatch):
+    """The `cwcli ui` daemon enables the bridge from a request thread; a fork there
+    would hand the child the daemon's listening socket (the auto_inspect lesson)."""
+    monkeypatch.setattr(cred_daemon, "is_running", lambda: False)
+    monkeypatch.setattr(cred_daemon.os, "fork", lambda: pytest.fail("forked"), raising=False)
+    monkeypatch.setattr(cred_daemon, "_await_started", lambda timeout=2.0: None)
+    spawned = []
+    monkeypatch.setattr(cred_daemon, "_spawn_detached", lambda: spawned.append(True))
+
+    import threading
+
+    release = threading.Event()
+    other = threading.Thread(target=release.wait, daemon=True)
+    other.start()
+    try:
+        cred_daemon.start_daemon()
+    finally:
+        release.set()
+        other.join()
+
+    assert spawned == [True]

@@ -76,8 +76,11 @@ async function detach() {
 
 const benchOptions = computed(() => record.value?.choice?.param === 'bench' ? record.value.choice.options || [] : [])
 const consentNeeded = computed(() => record.value?.choice?.param === 'consent')
+// The name typed back is the most specific thing the job acts on: a dropped
+// site's name, else the instance's (scale, rm, rm-bench).
+const consentTarget = computed(() => record.value?.target?.site || record.value?.target?.project)
 const typedName = ref('')
-const consentTyped = computed(() => typedName.value.trim() === record.value?.target?.project)
+const consentTyped = computed(() => !!consentTarget.value && typedName.value.trim() === consentTarget.value)
 
 async function continueChoice(value) {
   const job = record.value
@@ -134,7 +137,7 @@ async function continueChoice(value) {
           <Button v-for="option in benchOptions" :key="option.value" icon-left="lucide-layers" :label="option.label" @click="continueChoice(option.value)" />
         </div>
         <div v-if="consentNeeded" class="flex flex-wrap items-end gap-2">
-          <FormControl v-model="typedName" class="w-72" :label="`Type ${record.target.project} to confirm`" :placeholder="record.target.project" autocomplete="off" />
+          <FormControl v-model="typedName" class="w-72" :label="`Type ${consentTarget} to confirm`" :placeholder="consentTarget" autocomplete="off" />
           <Button variant="solid" label="Continue" :disabled="!consentTyped" @click="continueChoice()" />
         </div>
       </template>

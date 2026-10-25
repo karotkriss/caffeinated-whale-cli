@@ -6,7 +6,7 @@
 // scrollback is dead the moment it has been used.
 import { reactive } from 'vue'
 
-export const PROTOCOL = 3 // the daemon's PROTOCOL_VERSION this page was built against
+export const PROTOCOL = 4 // the daemon's PROTOCOL_VERSION this page was built against
 
 export const session = reactive({
   signedOut: false,

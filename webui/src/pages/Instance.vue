@@ -6,7 +6,7 @@ import { List, ListHeader, ListHeaderCell, ListRows, ListRow, ListCell } from 'f
 import StatusBadge from '../components/StatusBadge.vue'
 import CommandLine from '../components/CommandLine.vue'
 import { fleet, instance as findInstance, loadDetail, benchName, publishedRange, countSites, parseApp, setFocus, ago } from '../data/fleet'
-import { openAction, menuOption } from '../data/dialog'
+import { openAction, menuOption, dangerGroup } from '../data/dialog'
 
 const route = useRoute()
 const project = route.params.project
@@ -46,6 +46,7 @@ const more = computed(() => [
   menuOption('instance.restart', ctx),
   menuOption('instance.refresh', ctx),
   menuOption('instance.scale', ctx),
+  dangerGroup(['instance.remove'], ctx),
 ])
 </script>
 
