@@ -14,7 +14,7 @@ import { nextFollowing } from '../data/follow'
 
 const pane = ref(null)
 const content = ref(null)
-const following = ref(true)
+const following = defineModel('following', { default: true })
 let observer = null
 let lastTop = 0
 

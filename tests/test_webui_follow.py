@@ -99,3 +99,35 @@ def test_only_a_real_upward_scroll_pauses_the_follow(following, last_top, scroll
 def test_reaching_the_end_resumes_the_follow():
     pane = {"scrollTop": 1500, "scrollHeight": 1900, "clientHeight": 400}
     assert _call("nextFollowing", False, 1000, pane) is True
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_show_all_renders_every_line_of_a_capped_block():
+    """Earlier output stays reachable: the reason a job failed may sit above the tail."""
+    text = "\n".join(f"line {n}" for n in range(2500))
+    assert _call("blockView", text, {})["hidden"] == 500
+    assert _call("blockView", text, {"all": True}) == {"hidden": 0, "text": text}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_a_paused_block_keeps_its_top_while_it_grows():
+    """While the reader is scrolled up, new lines land below and none leave the top."""
+    before = "\n".join(f"line {n}" for n in range(2500))
+    held = _call("tailLines", before)["hidden"]
+    after = before + "".join(f"\nline {n}" for n in range(2500, 2600))
+    view = _call("blockView", after, {"held": held})
+    assert view == {"hidden": 500, "text": "\n".join(f"line {n}" for n in range(500, 2600))}
+    assert _call("blockView", after, {})["hidden"] == 600  # following again trims the top
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+@pytest.mark.parametrize(
+    ("text", "n", "expected"),
+    [
+        ("a\nb\nc", 0, {"hidden": 0, "text": "a\nb\nc"}),
+        ("a\nb\nc", 2, {"hidden": 2, "text": "c"}),
+        ("a", 3, {"hidden": 0, "text": "a"}),  # never more than the block holds
+    ],
+)
+def test_dropping_a_blocks_first_lines(text, n, expected):
+    assert _call("dropLines", text, n) == expected

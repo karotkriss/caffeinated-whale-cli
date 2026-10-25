@@ -19,7 +19,8 @@ The page sat at the top while events landed below the fold, and the newest lines
 
 The same init job reached 18,108 events.
 Its longest collapsed output block was 30,378 lines (7.7 MB) in one text node, and re-rendering it cost 437 ms of string work plus 1,482 ms of DOM patch and layout per refresh.
-Capped to the block's last 2,000 lines (`MAX_LINES`, the cap the Logs tab already applied to its own buffer) the patch costs 58 ms; the page shows `… 28,379 earlier lines not shown` above the tail and the full output stays in the job record on disk.
+Capped to the block's last 2,000 lines (`MAX_LINES`, the cap the Logs tab already applied to its own buffer) the patch costs 58 ms; the block shows a `Show all 30,378 lines` control above the tail that renders the full output on demand, and `Show last 2,000 lines` returns to the tail.
+While the follow is paused, a block stops dropping lines from its top, so the text never slides under a reader who scrolled up; trimming resumes on `Jump to latest`.
 
 ## Auto-follow, pause, and resume
 
