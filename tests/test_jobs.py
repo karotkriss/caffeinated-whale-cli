@@ -627,7 +627,8 @@ def test_rm_site_forwards_consent_and_the_root_password_from_the_secret_only(mon
     assert kwargs["consent"] is True
     assert kwargs["db_root_password"] == "s3cret"
     assert second["consent"] is False
-    assert second["db_root_password"] == "123"  # the compose default the core assumes
+    # Blank: None, so the core uses the instance's remembered password, else '123'.
+    assert second["db_root_password"] is None
 
     with pytest.raises(CwcliError) as error:
         jobs._dispatch("rm-site", {"project": "p"}, {}, True, {}, lambda e: None)
@@ -688,3 +689,72 @@ def test_apps_checkout_forwards_reset_only_as_the_json_boolean_true(monkeypatch)
         )
 
     assert calls == [True, False, False, False]
+
+
+def test_a_failed_job_records_its_plain_cause(fake_spawn, monkeypatch):
+    record = jobs.create_job("rm-site", {"project": "p", "site": "s.localhost"}, {})
+    denied = "(1045, \"Access denied for user 'root'@'x'\")"
+
+    def dispatch(_verb, _target, _args, _consent, _secrets, emit):
+        raise CwcliError(
+            jobs.ErrorKind.PRECONDITION,
+            "rm_site.failed",
+            "drop-site exited 1",
+            detail={"output": denied},
+        )
+
+    monkeypatch.setattr(jobs, "_dispatch", dispatch)
+
+    assert jobs.run_job(record["id"]) == 1
+    failed = jobs.read_job(record["id"])
+    assert failed["cause"]["code"] == "db.access_denied"
+    assert failed["cause"]["title"] == "MariaDB rejected the root password"
+
+
+@dataclass(frozen=True)
+class _StepOutput:
+    stream: str
+    text: str
+
+
+_BENIGN_EARLIER_OUTPUT = (
+    "Error 111 connecting to redis-cache:6379. Retrying...\n"
+    "Temporary failure in name resolution, retrying pip download\n"
+)
+
+
+def test_an_earlier_steps_benign_output_never_becomes_a_failed_jobs_cause(fake_spawn, monkeypatch):
+    record = jobs.create_job("init", {"project": "p"}, {})
+
+    def dispatch(_verb, _target, _args, _consent, _secrets, emit):
+        emit(_StepOutput(stream="stderr", text=_BENIGN_EARLIER_OUTPUT))
+        raise CwcliError(
+            jobs.ErrorKind.PRECONDITION,
+            "init.exec_failed",
+            "Command failed with exit code 1: bench migrate",
+            detail={"output": "KeyError: 'patch_field'"},
+        )
+
+    monkeypatch.setattr(jobs, "_dispatch", dispatch)
+
+    assert jobs.run_job(record["id"]) == 1
+    assert jobs.read_job(record["id"])["cause"] is None
+
+
+def test_a_failed_report_records_no_cause_from_earlier_output(fake_spawn, monkeypatch):
+    def dispatch_with(ok):
+        def dispatch(_verb, _target, _args, _consent, _secrets, emit):
+            emit(_StepOutput(stream="stderr", text=_BENIGN_EARLIER_OUTPUT))
+            return Result(status=Status.WARNING, data={"ok": ok})
+
+        return dispatch
+
+    failed = jobs.create_job("backup", {"project": "p"}, {})
+    monkeypatch.setattr(jobs, "_dispatch", dispatch_with(False))
+    assert jobs.run_job(failed["id"]) == 1
+    assert jobs.read_job(failed["id"])["cause"] is None
+
+    succeeded = jobs.create_job("backup", {"project": "q"}, {})
+    monkeypatch.setattr(jobs, "_dispatch", dispatch_with(True))
+    assert jobs.run_job(succeeded["id"]) == 0
+    assert jobs.read_job(succeeded["id"])["cause"] is None

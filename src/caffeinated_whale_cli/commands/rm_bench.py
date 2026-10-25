@@ -79,8 +79,11 @@ def rm_bench(
     bench_path: str = typer.Option(
         None, "--path", "-p", help="Explicit bench directory (lower-level alternative to --bench)."
     ),
-    db_root_password: str = typer.Option(
-        "123", "--db-root-password", help="MariaDB root password used by 'bench drop-site'."
+    db_root_password: str | None = typer.Option(
+        None,
+        "--db-root-password",
+        help="MariaDB root password used by 'bench drop-site' "
+        "(default: the instance's remembered password, else '123').",
     ),
     yes: bool = typer.Option(
         False,

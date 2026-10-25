@@ -2331,7 +2331,9 @@ def axi_init(
     db_root_password: str = typer.Option(
         None,
         "--db-root-password",
-        help="MariaDB root password. Falls back to the CWCLI_DB_ROOT_PASSWORD env var, then '123'.",
+        help="MariaDB root password; on a new instance it becomes MariaDB's root password and "
+        "is remembered for later commands. Falls back to the CWCLI_DB_ROOT_PASSWORD env var, "
+        "then the instance's remembered password, then '123'.",
     ),
     admin_password: str = typer.Option(
         None,
@@ -2412,7 +2414,8 @@ def axi_init(
     the flag wins if both are set. With NEITHER set the verb refuses (exit 2)
     naming both - it never generates a password and never prompts. The MariaDB
     root password takes the same shape via CWCLI_DB_ROOT_PASSWORD / --db-root-password
-    (default '123').
+    (default: the instance's remembered password, else '123'); on a new instance it
+    becomes MariaDB's own root password and is remembered for rm-site/rm-bench/restore.
 
     The interactive decisions the human `cwcli init` prompts for become
     non-prompting errors: an existing bench with neither --reuse-bench nor
@@ -2449,7 +2452,7 @@ def axi_init(
             )
         )
         raise typer.Exit(exit_for(ErrorKind.USAGE))
-    db_root = db_root_password or os.environ.get("CWCLI_DB_ROOT_PASSWORD") or "123"
+    db_root = db_root_password or os.environ.get("CWCLI_DB_ROOT_PASSWORD") or None
 
     # Fail-fast on a bad project/site name or --uid BEFORE stage 1 (the human
     # init's ordering): the core re-validates in init_bench, but that runs only
@@ -2494,7 +2497,12 @@ def axi_init(
     # pointing at status/logs, not the generic "start it first" usage error.
     try:
         instance_result = core_init.init_instance(
-            project, port=port, bench_parent=bench_parent, uid=uid, on_event=_init_narrate
+            project,
+            port=port,
+            bench_parent=bench_parent,
+            uid=uid,
+            db_root_password=db_root,
+            on_event=_init_narrate,
         )
     except CwcliError as error:
         emit_axi_error(error)
@@ -2815,8 +2823,11 @@ def axi_rm_site(
     project: str = typer.Argument(..., help="The Docker Compose project name."),
     site: str = typer.Argument(..., help="The site to permanently drop."),
     bench: str = typer.Option(None, "--bench", help="Which bench: numeric index or label."),
-    db_root_password: str = typer.Option(
-        "123", "--db-root-password", help="MariaDB root password used by 'bench drop-site'."
+    db_root_password: str | None = typer.Option(
+        None,
+        "--db-root-password",
+        help="MariaDB root password used by 'bench drop-site' "
+        "(default: the instance's remembered password, else '123').",
     ),
     yes: bool = typer.Option(
         False,
@@ -2940,8 +2951,11 @@ def axi_rm_bench(
     bench: str = typer.Option(
         None, "--bench", help="Which bench to remove: numeric index or label (see 'axi benches')."
     ),
-    db_root_password: str = typer.Option(
-        "123", "--db-root-password", help="MariaDB root password used by 'bench drop-site'."
+    db_root_password: str | None = typer.Option(
+        None,
+        "--db-root-password",
+        help="MariaDB root password used by 'bench drop-site' "
+        "(default: the instance's remembered password, else '123').",
     ),
     yes: bool = typer.Option(
         False,
