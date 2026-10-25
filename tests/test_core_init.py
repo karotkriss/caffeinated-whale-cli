@@ -455,9 +455,7 @@ class TestInitInstance:
     def test_stale_cache_falls_back_to_a_live_lookup(self, monkeypatch, tmp_path, patched):
         cache_file = core_init._bench_tag_cache_file()
         cache_file.parent.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(
-            json.dumps({"tag": "v0.0.1", "checked_at": time.time() - 999_999})
-        )
+        cache_file.write_text(json.dumps({"tag": "v0.0.1", "checked_at": time.time() - 999_999}))
         s = instance_setup(monkeypatch, tmp_path, hub_tags=["latest", "v5.99.0"])
         core_init.init_instance(PROJECT, port=18000)
         assert "docker.io/frappe/bench:v5.99.0" in s.compose_path.read_text()
@@ -1381,9 +1379,7 @@ class TestDbRootPassword:
             assert not (s.compose_path.parent / "db-root-password").exists()
             s.compose_path.unlink()
 
-    def test_existing_database_is_never_repointed_and_says_so(
-        self, monkeypatch, tmp_path, patched
-    ):
+    def test_existing_database_is_never_repointed_and_says_so(self, monkeypatch, tmp_path, patched):
         s = _fresh_compose(monkeypatch, tmp_path, volume_exists=True)
         events: list = []
         core_init.init_instance(
@@ -1405,6 +1401,27 @@ class TestDbRootPassword:
         assert "MYSQL_ROOT_PASSWORD: 123" in s.compose_path.read_text()
         assert not (s.compose_path.parent / "db-root-password").exists()
 
+    def test_unsupported_template_leaves_no_compose_so_the_retry_is_a_fresh_instance(
+        self, monkeypatch, tmp_path, patched
+    ):
+        s = instance_setup(monkeypatch, tmp_path, seed_compose=False)
+        reshaped = COMPOSE_WITH_MARIADB_ENV.replace("      MYSQL_ROOT_PASSWORD: 123\n", "")
+        monkeypatch.setattr(
+            urllib.request, "urlretrieve", lambda url, dest: dest.write_text(reshaped)
+        )
+        monkeypatch.setattr(core_init, "_mariadb_volume_exists", lambda _p: False)
+
+        with pytest.raises(CwcliError) as exc:
+            core_init.init_instance(PROJECT, port=18000, db_root_password="Ch0sen-pw")
+        assert exc.value.code == "compose.db_password_unsupported"
+        assert not s.compose_path.exists()
+
+        # The hint's retry, without a password, still gets every fresh-instance customization.
+        core_init.init_instance(PROJECT, port=18000)
+        content = s.compose_path.read_text()
+        assert "- ../data:/workspace:cached" in content
+        assert '      - "18000-18005:8000-8005"' in content
+
     def test_new_site_uses_the_remembered_password_when_none_is_given(
         self, monkeypatch, tmp_path, patched
     ):
@@ -1423,7 +1440,7 @@ class TestDbRootPassword:
         # The captain's failure, streamed the way the web UI job streams it.
         api = FakeApi(
             fail_command="bench new-site",
-            fail_output=b"Traceback...\nMySQLdb.OperationalError: (1045, \"Access denied for "
+            fail_output=b'Traceback...\nMySQLdb.OperationalError: (1045, "Access denied for '
             b"user 'root'@'172.23.0.5' (using password: YES)\")\n",
         )
         use_container(monkeypatch, FakeContainer(api=api))
