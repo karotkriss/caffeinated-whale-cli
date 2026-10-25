@@ -501,6 +501,22 @@ class TestBootPersistence:
         assert cfg.calls["uninstall"] == 1
         assert config_utils.load_config()["cred_bridge"]["startup_enabled"] is False
 
+    def test_enable_no_startup_restarts_a_daemon_the_hook_removal_took_down(
+        self, cfg, monkeypatch
+    ):
+        core_cred.enable(at_boot=True)
+
+        def _uninstall_kills_daemon(unit=None):
+            cfg.installed = False
+            cfg.running = False
+            return (True, None)
+
+        monkeypatch.setattr(startup, "uninstall_startup", _uninstall_kills_daemon)
+        result = core_cred.enable(at_boot=False)
+        assert "hook.removed" in result.data.actions
+        assert "daemon.started" in result.data.actions
+        assert result.data.state.daemon_running is True
+
     def test_disable_tears_the_unit_down_too(self, cfg):
         core_cred.enable(at_boot=True)
         result = core_cred.disable()

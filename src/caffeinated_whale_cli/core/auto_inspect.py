@@ -235,6 +235,9 @@ def enable(interval: int | None = None, at_boot: bool | None = None) -> Result[A
 
     if at_boot is not None:
         sync_boot_hook(at_boot, actions, warnings)
+        if not daemon.is_running():
+            _start_daemon()
+            actions.append("daemon.started")
 
     return Result(
         status=Status.WARNING if warnings else Status.OK,
