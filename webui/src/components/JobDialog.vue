@@ -1,7 +1,8 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { Alert, Button, Checkbox, Dialog, ErrorMessage, FormControl } from 'frappe-ui'
 import { jobDialog, submitJob } from '../data/job-dialog'
+import { forceConfirmTarget, forceConfirmed } from '../data/force-confirm'
 
 const titles = {
   init: 'Create an instance',
@@ -29,8 +30,11 @@ const descriptions = {
 const v = computed(() => jobDialog.values)
 const isInit = computed(() => jobDialog.verb === 'init')
 const title = computed(() => titles[jobDialog.verb] || 'Start job')
+const typed = ref('')
+watch(() => jobDialog.open, () => (typed.value = ''))
+const forceTarget = computed(() => (jobDialog.verb === 'apps-update' ? forceConfirmTarget(v.value, jobDialog.context) : ''))
 const canContinue = computed(() => {
-  if (!isInit.value) return true
+  if (!isInit.value) return jobDialog.verb !== 'apps-update' || forceConfirmed(v.value, jobDialog.context, typed.value)
   if (jobDialog.step === 0) return !!v.value.project?.trim() && !!v.value.bench_name?.trim() && !!v.value.site_name?.trim() && Number(v.value.port) > 0
   if (jobDialog.step === 1) return !!v.value.version?.trim() && !!v.value.bench_parent?.trim()
   return !!v.value.admin_password
@@ -107,9 +111,10 @@ function next() {
             <Checkbox v-model="v.clear_cache" label="Clear cache" />
             <Checkbox v-model="v.clear_website_cache" label="Clear website cache" />
             <Checkbox v-model="v.skip_maintenance" label="Skip maintenance mode" />
-            <Checkbox v-model="v.force" label="Reset tracked changes before updating" />
+            <Checkbox v-model="v.force" label="Force: discard uncommitted and unpushed app work, re-own app repos" />
           </div>
-          <Alert theme="blue" title="Preflight runs first" description="Dirty trees, branch drift, and data-loss risks are collected and shown together. A blocker stops the update." />
+          <Alert theme="blue" title="Preflight runs first" description="Dirty trees, branch drift, and data-loss risks are collected and shown together. A blocker stops the update. A frappe update refuses when an app has uncommitted or unpushed work unless Force is ticked, which discards that work permanently." />
+          <FormControl v-if="forceTarget" v-model="typed" :label="`Type ${forceTarget} to confirm`" autocomplete="off" />
         </div>
 
         <Checkbox v-else-if="jobDialog.verb === 'backup'" v-model="v.with_files" label="Include public and private files" />
