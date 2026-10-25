@@ -1002,7 +1002,7 @@ def _dispatch(
             on_event=emit,
         )
     if verb == "apps-checkout":
-        # `reset` (discard tracked local work, `git reset --hard FETCH_HEAD`) is the
+        # `reset` (discard tracked local work, `git reset --hard` before the checkout) is the
         # verb's one destructive element; the page sends it only behind a typed
         # confirmation of the app's name. It deletes no site data, so the core has
         # no consent axis for it (the `axi apps checkout --reset` ruling).
