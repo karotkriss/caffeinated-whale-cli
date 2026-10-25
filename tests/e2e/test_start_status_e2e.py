@@ -398,7 +398,7 @@ def test_start_interactive_port_conflict_prompt_is_driven(running_instance):
         # The real holder was NOT disturbed by the declined start:
         assert harness.frappe_container_id(inst.name) is not None
     finally:
-        subprocess.run(["docker", "rm", "-f", stub], capture_output=True)
+        subprocess.run(["docker", "rm", "-f", "-v", stub], capture_output=True)
 
 
 # --------------------------------------------------------------------------- #

@@ -113,7 +113,7 @@ def test_pre_fix_remap_to_uid_0_reproduces_the_exit_127_mechanism():
         assert "HOME=/root" in out, f"expected the uid-0 collision to force HOME=/root:\n{out}"
         assert "BENCH_MISSING" in out, f"expected bench off PATH under HOME=/root:\n{out}"
     finally:
-        container.remove(force=True)
+        container.remove(v=True, force=True)
 
 
 def test_align_on_a_root_host_keeps_frappe_usable(monkeypatch):
@@ -141,7 +141,7 @@ def test_align_on_a_root_host_keeps_frappe_usable(monkeypatch):
             f"HOME={_HOME}" in out and "bench-ran" in out
         ), f"root-host align broke frappe's HOME/PATH (the exit-127 bug):\n{out}"
     finally:
-        container.remove(force=True)
+        container.remove(v=True, force=True)
 
 
 def test_uid_override_on_a_root_host_remaps_to_that_uid(monkeypatch):
@@ -167,4 +167,4 @@ def test_uid_override_on_a_root_host_remaps_to_that_uid(monkeypatch):
         code, out = _frappe_login(container)
         assert f"HOME={_HOME}" in out and "bench-ran" in out, out
     finally:
-        container.remove(force=True)
+        container.remove(v=True, force=True)
