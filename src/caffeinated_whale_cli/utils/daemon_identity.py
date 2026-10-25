@@ -71,9 +71,7 @@ def pid_alive(pid: int) -> bool:
 
         handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
         if not handle:
-            # No such process, or it belongs to another user. Both mean "not our
-            # live daemon", which matches what os.kill(pid, 0) reports on POSIX
-            # (ESRCH / EPERM both raise OSError there).
+            # No such process, or it cannot be opened from this account.
             return False
         try:
             return bool(kernel32.WaitForSingleObject(handle, 0) == WAIT_TIMEOUT)
@@ -82,6 +80,8 @@ def pid_alive(pid: int) -> bool:
 
     try:
         os.kill(pid, 0)
+        return True
+    except PermissionError:
         return True
     except OSError:
         return False

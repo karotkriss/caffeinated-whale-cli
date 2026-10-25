@@ -117,14 +117,21 @@ def _start_daemon() -> None:
         raise CwcliError(
             ErrorKind.INTERNAL, "daemon.start_failed", f"Could not start credential bridge: {e}"
         ) from e
-    if not daemon.is_running():
+    if daemon.is_running():
+        return
+    if not daemon._may_fork_daemon():
         raise CwcliError(
             ErrorKind.PRECONDITION,
             "daemon.system_owned",
-            "The credential bridge daemon is owned by the shared install's system unit "
-            "and is not running; only the service account can start it.",
+            "The credential bridge daemon is managed by the shared install's system unit; "
+            "it cannot be started from this account.",
             hint=f"sudo systemctl start {startup.CRED_BRIDGE.service_name}",
         )
+    raise CwcliError(
+        ErrorKind.INTERNAL,
+        "daemon.start_failed",
+        "Could not start credential bridge: the daemon is not running after start.",
+    )
 
 
 def _stop_daemon() -> None:

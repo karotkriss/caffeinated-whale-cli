@@ -367,11 +367,24 @@ class TestDaemonStartFailure:
         daemon is still down and no verb may report it started."""
         cfg.enabled = True
         monkeypatch.setattr(daemon, "start_daemon", lambda: None)
+        monkeypatch.setattr(daemon, "_may_fork_daemon", lambda: False)
         for verb in (core_cred.start, core_cred.restart, core_cred.enable):
             with pytest.raises(CwcliError) as exc:
                 verb()
             assert exc.value.code == "daemon.system_owned"
             assert exc.value.kind is ErrorKind.PRECONDITION
+            assert "not running" not in exc.value.message
+
+    def test_a_daemon_gone_after_start_is_a_start_failure_not_system_owned(
+        self, cfg, monkeypatch
+    ):
+        cfg.enabled = True
+        monkeypatch.setattr(daemon, "start_daemon", lambda: None)
+        monkeypatch.setattr(daemon, "_may_fork_daemon", lambda: True)
+        for verb in (core_cred.start, core_cred.restart, core_cred.enable):
+            with pytest.raises(CwcliError) as exc:
+                verb()
+            assert exc.value.code == "daemon.start_failed"
 
     def test_a_daemon_that_would_not_stop_is_never_reported_restarted(self, cfg, monkeypatch):
         cfg.enabled = True
