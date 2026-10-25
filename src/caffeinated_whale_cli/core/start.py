@@ -29,7 +29,11 @@ from dataclasses import dataclass
 from docker.errors import APIError, DockerException, NotFound
 
 from . import resolvers, supervision
-from .docker import align_container_user_to_host, get_project_containers
+from .docker import (
+    align_container_user_to_host,
+    get_project_containers,
+    recreate_missing_project_networks,
+)
 from .envelope import Message, Result, Status
 from .errors import DOCKER_UNREACHABLE_HINT, CwcliError, ErrorKind
 
@@ -142,8 +146,28 @@ def start(
         )
     emit(StartStepEnd(phase="resolve"))
 
-    # 2. Start every stopped container (unconditional - start's whole job).
+    # 2. Start every stopped container (unconditional - start's whole job). A crash
+    #    that removed the compose network is repaired first, or the start dies with
+    #    Docker's raw `network <id> not found`.
     emit(StartStepStart(phase="containers", message="Starting stopped containers"))
+    stopped = [c for c in containers if c.status != "running"]
+    try:
+        recreated = recreate_missing_project_networks(project_name, stopped) if stopped else []
+    except DockerException as e:
+        raise CwcliError(
+            ErrorKind.DOCKER,
+            "docker.unreachable",
+            f"Could not check the instance network: {e}",
+            hint=DOCKER_UNREACHABLE_HINT,
+        ) from e
+    for name in recreated:
+        warnings.append(
+            Message(
+                "start.network_recreated",
+                f"The network '{name}' was missing (a Docker or WSL crash removes it); "
+                "cwcli recreated it.",
+            )
+        )
     for container in containers:
         if container.status != "running":
             container.start()

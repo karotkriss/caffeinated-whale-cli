@@ -872,3 +872,120 @@ class TestAlignBindMountSourceOwner:
         chowns = self._record_chown(monkeypatch)
         assert core_docker.align_bind_mount_source_owner(tmp_path / "nope") is None
         assert chowns == []
+
+
+class _FakeNet:
+    def __init__(self, name):
+        self.name = name
+        self.connected = []
+
+    def connect(self, container, aliases=None):
+        self.connected.append((container.name, aliases))
+
+
+class _FakeNetworks:
+    def __init__(self, existing=()):
+        self.existing = set(existing)
+        self.created = []
+        self.nets = {}
+
+    def get(self, name):
+        from docker.errors import NotFound
+
+        if name not in self.existing:
+            raise NotFound("gone")
+        return _FakeNet(name)
+
+    def create(self, name, driver, labels):
+        self.created.append((name, driver, labels))
+        self.nets[name] = _FakeNet(name)
+        return self.nets[name]
+
+
+def _stopped(name, service, networks, mode=None, version="5.1.3"):
+    nets = {n: {"Aliases": [name, service]} for n in networks}
+    return SimpleNamespace(
+        name=name,
+        labels={
+            "com.docker.compose.service": service,
+            "com.docker.compose.version": version,
+        },
+        attrs={
+            "NetworkSettings": {"Networks": nets},
+            "HostConfig": {"NetworkMode": mode or next(iter(networks), "default")},
+        },
+    )
+
+
+class TestRecreateMissingProjectNetworks:
+    """A WSL/Docker crash drops ``<project>_default``; start rebuilds it like compose."""
+
+    @pytest.fixture
+    def client(self, monkeypatch):
+        fake = SimpleNamespace(networks=_FakeNetworks())
+        monkeypatch.setattr(core_docker.docker, "from_env", lambda: fake)
+        return fake
+
+    def test_a_missing_own_network_is_recreated_with_compose_labels_and_aliases(self, client):
+        db = _stopped("p-mariadb-1", "mariadb", ["p_default"])
+        app = _stopped("p-frappe-1", "frappe", ["p_default"])
+
+        assert core_docker.recreate_missing_project_networks("p", [db, app]) == ["p_default"]
+
+        assert client.networks.created == [
+            (
+                "p_default",
+                "bridge",
+                {
+                    "com.docker.compose.project": "p",
+                    "com.docker.compose.network": "default",
+                    "com.docker.compose.version": "5.1.3",
+                },
+            )
+        ]
+        # Reconnected (replacing the stale id) with the aliases each container had,
+        # not recreated: compose's service-name DNS (`mariadb`) keeps working.
+        assert client.networks.nets["p_default"].connected == [
+            ("p-mariadb-1", ["p-mariadb-1", "mariadb"]),
+            ("p-frappe-1", ["p-frappe-1", "frappe"]),
+        ]
+
+    def test_an_existing_network_is_left_alone(self, client):
+        client.networks.existing.add("p_default")
+        db = _stopped("p-mariadb-1", "mariadb", ["p_default"])
+
+        assert core_docker.recreate_missing_project_networks("p", [db]) == []
+        assert client.networks.created == []
+
+    def test_builtin_networks_are_never_touched(self, client):
+        c = _stopped("p-x-1", "x", ["bridge"], mode="host")
+
+        assert core_docker.recreate_missing_project_networks("p", [c]) == []
+        assert client.networks.created == []
+
+    def test_a_missing_network_the_project_does_not_own_is_refused_with_the_remedy(self, client):
+        c = _stopped("p-x-1", "x", ["shared-proxy"])
+
+        with pytest.raises(CwcliError) as exc:
+            core_docker.recreate_missing_project_networks("p", [c])
+
+        assert exc.value.code == "network.external_missing"
+        assert "docker network create shared-proxy" in (exc.value.hint or "")
+        assert client.networks.created == []  # never invents a foreign network
+
+    def test_a_failed_creation_names_the_exact_remedy(self, client, monkeypatch):
+        from docker.errors import APIError
+
+        def boom(*a, **k):
+            raise APIError("pool overlaps")
+
+        monkeypatch.setattr(client.networks, "create", boom)
+        c = _stopped("p-x-1", "x", ["p_default"])
+
+        with pytest.raises(CwcliError) as exc:
+            core_docker.recreate_missing_project_networks("p", [c])
+
+        assert exc.value.code == "network.recreate_failed"
+        assert "docker network create --label com.docker.compose.project=p" in (
+            exc.value.hint or ""
+        )
