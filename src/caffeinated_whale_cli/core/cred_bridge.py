@@ -215,6 +215,9 @@ def enable(
 
     if at_boot is not None:
         sync_boot_hook(at_boot, actions, warnings, unit=startup.CRED_BRIDGE)
+        if not daemon.is_running():
+            _start_daemon()
+            actions.append("daemon.started")
 
     return Result(
         status=Status.WARNING if warnings else Status.OK,

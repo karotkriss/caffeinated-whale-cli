@@ -123,6 +123,19 @@ class TestLinuxUnits:
         assert startup.is_startup_installed(startup.CRED_BRIDGE) is False
 
 
+@pytest.mark.parametrize("unit", [startup.AUTO_INSPECT, startup.CRED_BRIDGE])
+def test_removing_a_user_unit_never_stops_the_daemon_it_started(home, monkeypatch, unit):
+    monkeypatch.setattr(startup, "get_platform", lambda: "linux")
+    startup.install_startup(unit)
+    home.calls.clear()
+
+    assert startup.uninstall_startup(unit) == (True, None)
+
+    assert startup.is_startup_installed(unit) is False
+    assert ["systemctl", "--user", "disable", unit.service_name] in home.calls
+    assert not any(call[:3] == ["systemctl", "--user", "stop"] for call in home.calls)
+
+
 class TestNoExecStop:
     """A unit must never stop a daemon it does not own.
 

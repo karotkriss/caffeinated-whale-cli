@@ -318,11 +318,7 @@ def _uninstall_linux_startup(unit: BootUnit) -> tuple[bool, str | None]:
     if not service_path.exists():
         return False, "the systemd user unit was not found"
 
-    # Stop and disable the service
-    subprocess.run(
-        ["systemctl", "--user", "stop", unit.service_name],
-        capture_output=True,
-    )
+    # Disable the service
     subprocess.run(
         ["systemctl", "--user", "disable", unit.service_name],
         capture_output=True,

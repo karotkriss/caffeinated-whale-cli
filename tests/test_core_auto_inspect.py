@@ -149,6 +149,22 @@ class TestEnable:
         assert _saved()["startup_enabled"] is False
         assert result.data.state.daemon_running is True
 
+    def test_at_boot_false_restarts_a_daemon_the_hook_removal_took_down(
+        self, cfg, monkeypatch
+    ):
+        core_ai.enable(at_boot=True)
+
+        def _uninstall_kills_daemon(unit=None):
+            cfg.installed = False
+            cfg.running = False
+            return (True, None)
+
+        monkeypatch.setattr(startup, "uninstall_startup", _uninstall_kills_daemon)
+        result = core_ai.enable(at_boot=False)
+        assert "hook.removed" in result.data.actions
+        assert "daemon.started" in result.data.actions
+        assert result.data.state.daemon_running is True
+
     def test_at_boot_none_leaves_the_hook_untouched(self, cfg):
         cfg.installed = True
         result = core_ai.enable()
