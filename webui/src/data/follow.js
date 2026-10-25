@@ -48,9 +48,41 @@ export function dropLines(text, n) {
   return { hidden: n, text: text.slice(cut + 1) }
 }
 
+// What a terminal shows of `text`: escape sequences dropped and a \r progress
+// bar reduced to its last repaint per line.
+export function terminal(text) {
+  return text
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
+    .split('\n')
+    .map((line) => line.slice(line.lastIndexOf('\r') + 1))
+    .join('\n')
+}
+
+function leadingBlankLines(text) {
+  let blank = 0
+  for (let at = 0; ; blank++) {
+    const end = text.indexOf('\n', at)
+    if (end < 0 || terminal(text.slice(at, end)).trim()) return blank
+    at = end + 1
+  }
+}
+
 // What one output block renders: everything when the reader asked for it, the
-// lines held since the follow paused, else the capped tail.
-export function blockView(text, { all = false, held = null } = {}) {
-  if (all) return { hidden: 0, text }
-  return held == null ? tailLines(text) : dropLines(text, held)
+// lines held since the follow paused, else the capped tail. `lines` counts what
+// is rendered and `total` what "Show all" would render, both after the block's
+// leading and trailing blank lines are trimmed.
+export function blockView(raw, { all = false, held = null } = {}) {
+  const { hidden, text } = all ? { hidden: 0, text: raw } : held == null ? tailLines(raw) : dropLines(raw, held)
+  const shown = hidden ? terminal(text).trimEnd() : terminal(text).trim()
+  const lines = shown ? shown.split('\n').length : 0
+  return { hidden, text: shown, lines, total: hidden ? hidden + lines - leadingBlankLines(raw) : lines }
+}
+
+// A paused log pane keeps every line it holds, so nothing slides under the
+// reader, and stops reading more once one buffer reaches this many lines; its
+// byte cursor resumes where it stopped after "Jump to latest".
+export const PAUSED_MAX_LINES = 20000
+
+export function canAppend(buffers, following) {
+  return following || buffers.every((lines) => lines.length < PAUSED_MAX_LINES)
 }

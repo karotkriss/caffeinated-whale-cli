@@ -106,7 +106,29 @@ def test_show_all_renders_every_line_of_a_capped_block():
     """Earlier output stays reachable: the reason a job failed may sit above the tail."""
     text = "\n".join(f"line {n}" for n in range(2500))
     assert _call("blockView", text, {})["hidden"] == 500
-    assert _call("blockView", text, {"all": True}) == {"hidden": 0, "text": text}
+    assert _call("blockView", text, {"all": True}) == {
+        "hidden": 0,
+        "text": text,
+        "lines": 2500,
+        "total": 2500,
+    }
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+@pytest.mark.parametrize("held", [None, 3])
+def test_the_counts_match_the_lines_each_view_renders(held):
+    """ "Show all N lines" and "Show last N lines" name what that view renders."""
+    raw = "\n\n\x1b[32m\x1b[0m\n" + "\n".join(f"line {n}" for n in range(2500)) + "\n\n"
+    collapsed = _call("blockView", raw, {"held": held})
+    full = _call("blockView", raw, {"all": True})
+    assert full["lines"] == len(full["text"].split("\n")) == 2500
+    assert collapsed["total"] == full["lines"]
+    assert collapsed["lines"] == len(collapsed["text"].split("\n"))
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_terminal_keeps_the_last_repaint_of_a_progress_line():
+    assert _call("terminal", "\x1b[1mDone\x1b[0m\n10%\r55%\r100%") == "Done\n100%"
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
@@ -116,7 +138,8 @@ def test_a_paused_block_keeps_its_top_while_it_grows():
     held = _call("tailLines", before)["hidden"]
     after = before + "".join(f"\nline {n}" for n in range(2500, 2600))
     view = _call("blockView", after, {"held": held})
-    assert view == {"hidden": 500, "text": "\n".join(f"line {n}" for n in range(500, 2600))}
+    assert view["hidden"] == 500
+    assert view["text"] == "\n".join(f"line {n}" for n in range(500, 2600))
     assert _call("blockView", after, {})["hidden"] == 600  # following again trims the top
 
 
@@ -131,3 +154,16 @@ def test_a_paused_block_keeps_its_top_while_it_grows():
 )
 def test_dropping_a_blocks_first_lines(text, n, expected):
     assert _call("dropLines", text, n) == expected
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+@pytest.mark.parametrize(
+    ("sizes", "following", "expected"),
+    [
+        ([25000, 10], True, True),  # following trims to the cap, so it always reads on
+        ([19999, 10], False, True),  # paused under the limit keeps reading
+        ([20000, 10], False, False),  # paused at the limit stops growing, trims nothing
+    ],
+)
+def test_a_paused_logs_buffer_is_bounded(sizes, following, expected):
+    assert _call("canAppend", [["x"] * n for n in sizes], following) is expected
