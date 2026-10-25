@@ -301,6 +301,30 @@ class TestDaemonStartFailure:
             assert exc.value.code == "daemon.start_failed"
             assert "exit code 1" in exc.value.message
 
+    def test_a_start_that_spawned_nothing_is_refused_not_reported_started(self, cfg, monkeypatch):
+        """Shared mode: a non-service-account start_daemon is a no-op, so the
+        daemon is still down and no verb may report it started."""
+        cfg.enabled = True
+        monkeypatch.setattr(daemon, "start_daemon", lambda: None)
+        for verb in (core_cred.start, core_cred.restart, core_cred.enable):
+            with pytest.raises(CwcliError) as exc:
+                verb()
+            assert exc.value.code == "daemon.system_owned"
+            assert exc.value.kind is ErrorKind.PRECONDITION
+
+    def test_a_daemon_that_would_not_stop_is_never_reported_restarted(self, cfg, monkeypatch):
+        cfg.enabled = True
+        cfg.running = True
+
+        def _refused():
+            raise RuntimeError("not permitted to stop the daemon (pid 5151)")
+
+        monkeypatch.setattr(daemon, "stop_daemon", _refused)
+        with pytest.raises(CwcliError) as exc:
+            core_cred.restart()
+        assert exc.value.code == "daemon.stop_failed"
+        assert cfg.calls["start"] == 0
+
     def test_state_carries_the_last_log_line(self, cfg, monkeypatch):
         daemon.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         daemon.LOG_FILE.write_text("[t] credential-bridge daemon stopped\n")

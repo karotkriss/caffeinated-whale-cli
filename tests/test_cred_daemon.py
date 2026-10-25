@@ -689,6 +689,23 @@ def test_stop_daemon_is_a_noop_when_not_running(run_dir, monkeypatch):
     assert killed == []
 
 
+def test_stop_daemon_keeps_the_pid_file_of_a_daemon_it_could_not_signal(run_dir, monkeypatch):
+    """A daemon owned by another uid refuses the signal (EPERM): forgetting its
+    pid file would leave it running with nothing able to reach it."""
+    cred_daemon.PID_DIR.mkdir(parents=True, exist_ok=True)
+    cred_daemon.PID_FILE.write_text("4242")
+    monkeypatch.setattr(cred_daemon, "is_running", lambda: True)
+    monkeypatch.setattr(cred_daemon, "get_pid", lambda: 4242)
+
+    def _eperm(pid, sig):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(cred_daemon.os, "kill", _eperm)
+    with pytest.raises(RuntimeError, match="not permitted"):
+        cred_daemon.stop_daemon()
+    assert cred_daemon.PID_FILE.exists()
+
+
 class TestSharedModeSocketGating:
     """The socket-exposure fix (report row 5 / cred_daemon.py:443).
 

@@ -817,8 +817,12 @@ def stop_daemon() -> None:
         return
     pid = get_pid()
     if pid:
-        with contextlib.suppress(OSError):
+        try:
             os.kill(pid, signal.SIGTERM)
+        except PermissionError as e:
+            raise RuntimeError(f"not permitted to stop the daemon (pid {pid})") from e
+        except OSError:
+            pass
         for _ in range(20):
             if not is_running():
                 break
