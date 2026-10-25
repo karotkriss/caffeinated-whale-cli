@@ -73,7 +73,12 @@ The guarded destructive verbs (``rm``, ``rm-site``, ``rm-bench``, ``apps
 checkout --reset``) are JOBS, not actions: ``jobs.py`` runs them through the
 same core paths as the CLI, consent is a spec field the page sets only after a
 typed confirmation of the exact instance, bench, site or app name, and no
-request can express ``--no-backup`` or ``--force``.
+request can express ``--no-backup``. The one ``force`` a request can carry is
+``apps-update``'s, which on the frappe path accepts discarding uncommitted and
+unpushed app work; on that path the page sends it only after a typed
+confirmation of the bench name. A forced update of other apps needs no typed
+confirmation, and there ``force`` still discards local changes on a git
+conflict.
 
 ``?focus=<project>`` is how the browser says which instance it currently has
 open, and it is the whole mechanism behind the web-probe cadence: the SSE

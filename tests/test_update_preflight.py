@@ -403,6 +403,123 @@ def test_untracked_files_alone_are_not_data_loss(bench):
     assert bench.findings() == []
 
 
+# ------------------------------------------------------------------ the data-loss guard
+
+
+class HostContainer:
+    """Answers ``run_preflight``'s exec by running it on the host, against the bench."""
+
+    def __init__(self, bench):
+        self.bench = bench
+
+    def exec_run(self, cmd, **_kwargs):
+        proc = subprocess.run(cmd, env=self.bench.env, capture_output=True, timeout=60)
+        return proc.returncode, proc.stdout
+
+
+def guard(bench, *, local_only):
+    """What ``core.update``'s data-loss guard acts on, through the real ``run_preflight``."""
+    outcome = up.run_preflight(
+        HostContainer(bench), str(bench.path), project="proj", local_only=local_only
+    )
+    return up.local_work(outcome.findings), outcome
+
+
+def plant_local_work(bench, app="goodapp"):
+    """An unpushed commit plus an uncommitted edit to a tracked file."""
+    path = bench.path / "apps" / app
+    (path / app / "committed.py").write_text("z = 3\n")
+    bench.git("add", f"{app}/committed.py", cwd=path)
+    bench.git("commit", "-qm", "unpushed work", cwd=path)
+    (path / app / "__init__.py").write_text("x = 2\n")
+
+
+@pytest.mark.parametrize("local_only", [False, True])
+def test_the_guard_sees_uncommitted_and_unpushed_work_on_either_tier(bench, local_only):
+    plant_local_work(bench)
+
+    at_risk, _ = guard(bench, local_only=local_only)
+
+    assert codes(at_risk) == {("git.uncommitted", "goodapp"), ("git.unpushed", "goodapp")}
+
+
+@pytest.mark.parametrize("local_only", [False, True])
+def test_untracked_files_alone_never_trigger_the_guard(bench, local_only):
+    # bench keeps them: `git reset --hard` never touches an untracked file.
+    (bench.path / "apps" / "goodapp" / "goodapp" / "new_module.py").write_text("y = 2\n")
+
+    assert guard(bench, local_only=local_only)[0] == []
+
+
+@pytest.mark.parametrize("shallow", [True, False])
+def test_shallow_clone_says_the_loss_cannot_be_recovered(tmp_path, shallow):
+    # With shallow_clone bench also expires the reflog and prunes (bench/app.py:1043),
+    # so the reflog that would otherwise still hold the work is gone too.
+    b = Bench(tmp_path, shallow_clone=shallow)
+    b.app("frappe", "version-16", version="16.0.0")
+    b.app("goodapp")
+    plant_local_work(b)
+
+    at_risk, _ = guard(b, local_only=True)
+
+    assert len(at_risk) == 2
+    assert all(("cannot be recovered" in f.message) is shallow for f in at_risk)
+
+
+def test_the_local_tier_probes_no_remote_and_no_service(bench):
+    # --no-preflight exists for a false positive in exactly these probes.
+    app = bench.app("deadremote")
+    bench.git("remote", "set-url", "upstream", str(bench.root / "gone.git"), cwd=app)
+    closed = socket.socket()
+    closed.bind(("127.0.0.1", 0))
+    port = closed.getsockname()[1]
+    closed.close()  # nothing listens there now: connection refused
+    bench.write_conf(redis_cache=f"redis://127.0.0.1:{port}")
+
+    _, local = guard(bench, local_only=True)
+    _, full = guard(bench, local_only=False)
+
+    probed = ("git.remote_unreachable", "service.unreachable")
+    assert not [f for f in local.findings if f.code in probed]
+    assert {f.code for f in full.findings} >= set(probed)  # the twin: they are real
+
+
+def test_under_no_preflight_an_app_bench_cannot_reset_holds_no_data_loss(bench):
+    # No refspec writes upstream/<branch>, so bench's reset of this app fails before
+    # it discards anything; only the network tier can tell its commits apart.
+    app = bench.app("localonly", depth=1)
+    bench.git("checkout", "-q", "-b", "feature-z", cwd=app)
+    (app / "localonly" / "new.py").write_text("x = 1\n")
+    bench.git("add", "-A", cwd=app)
+    bench.git("commit", "-qm", "local", cwd=app)
+
+    assert guard(bench, local_only=True)[0] == []
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+def test_local_work_that_cannot_be_read_fails_the_guard_closed(bench):
+    index = bench.path / "apps" / "goodapp" / ".git" / "index"
+    index.chmod(0)
+    try:
+        at_risk, _ = guard(bench, local_only=True)
+    finally:
+        index.chmod(0o644)
+
+    assert codes(at_risk) == {("git.local_work_unverified", "goodapp")}
+
+
+def test_a_repo_git_refuses_for_dubious_ownership_fails_the_guard_closed(bench):
+    # Under --no-preflight too: the guard never read that repo's work, so it may not pass.
+    bench.env["GIT_TEST_ASSUME_DIFFERENT_OWNER"] = "1"
+
+    at_risk, _ = guard(bench, local_only=True)
+
+    assert codes(at_risk) == {
+        ("git.dubious_ownership", "goodapp"),
+        ("git.dubious_ownership", "frappe"),
+    }
+
+
 # ------------------------------------------------------------------ notices
 
 

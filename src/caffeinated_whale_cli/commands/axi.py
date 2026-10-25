@@ -1513,9 +1513,10 @@ def axi_apps_update(
         False,
         "--force",
         help=(
-            "DESTRUCTIVE: on a git conflict, hard-reset the app to its remote tracking "
-            "branch (fetch + reset --hard), discarding local changes, instead of "
-            "failing. Only on conflict; a clean update is untouched."
+            "DESTRUCTIVE. frappe: run 'bench update --reset' although it discards "
+            "uncommitted or unpushed app work (refused without --force). Other apps: on "
+            "a git conflict, hard-reset to the remote tracking branch instead of "
+            "failing. Also re-owns app repos git refuses for dubious ownership."
         ),
     ),
     no_preflight: bool = typer.Option(
@@ -1523,7 +1524,8 @@ def axi_apps_update(
         "--no-preflight",
         help=(
             "Updating frappe only: skip the checks before 'bench update --reset' (for a "
-            "false positive). bench then fails wherever it fails."
+            "false positive). bench then fails wherever it fails. The local-work check "
+            "still runs; only --force passes it."
         ),
     ),
 ) -> None:
@@ -1548,14 +1550,21 @@ def axi_apps_update(
 
     `--force` is opt-in and DESTRUCTIVE: an app whose git update hits a conflict is
     hard-reset to its remote tracking branch (discarding local changes) so the update
-    completes, reported in `force_reset_apps`. It fires ONLY on a conflict - a clean
-    update is untouched - and never on a non-conflict failure (network/auth).
+    completes, reported in `force_reset_apps`. For apps other than `frappe` it fires
+    ONLY on a conflict - a clean update is untouched - and never on a non-conflict
+    failure (network/auth).
 
     Updating `frappe` runs a preflight before `bench update --reset`: every finding
     rides `preflight` (a `severity,code,app,site,message,remedy` table; branch on
     `code`), and a blocker sets `preflight_blocked: true` and exits 1 with NOTHING
     run. `--no-preflight` skips the checks for a false positive; it is not a safety
     gate, so it is offered here too.
+
+    The reset discards uncommitted and unpushed work in every app, so any such work
+    (or work that could not be checked) sets `data_loss_refused: true`, names the
+    apps in `data_loss_apps` and exits 1 with NOTHING run - under `--no-preflight`
+    too. `--force` accepts the loss: the reset runs and `data_loss_apps` names the
+    apps it was allowed to discard work in. It never passes a blocker.
     """
     try:
         result = core_update.update(

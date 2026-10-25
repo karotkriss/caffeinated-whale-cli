@@ -52,6 +52,13 @@ _PHASES = {
         ),
         "spinner": "Preflight: checking apps, remotes and sites...",
     },
+    "local_work": {
+        "header": (
+            "[bold green]→[/bold green] Checking apps for local work 'bench update --reset' "
+            "would discard"
+        ),
+        "spinner": "Checking apps for local work...",
+    },
     "pull": {
         "header": "[bold green]→[/bold green] Updating app: [cyan]{item}[/cyan]",
         "spinner": "Pulling app: {item} ({index}/{total})",
@@ -311,10 +318,11 @@ _PREFLIGHT_GROUPS = (
 
 def _render_preflight(event: UpdatePreflight) -> None:
     """Print the preflight's findings grouped by severity, each with its remedy."""
+    title = "Local work check" if event.local_only else "Preflight"
     if not event.findings:
-        console.print(f"[bold green]✓[/bold green] Preflight passed: {escape(event.summary)}")
+        console.print(f"[bold green]✓[/bold green] {title} passed: {escape(event.summary)}")
         return
-    console.print(f"[bold]Preflight:[/bold] {escape(event.summary)}")
+    console.print(f"[bold]{title}:[/bold] {escape(event.summary)}")
 
     def subject(finding: update_preflight.PreflightFinding) -> str:
         if finding.app:
@@ -343,6 +351,15 @@ def _render_preflight(event: UpdatePreflight) -> None:
     console.print()
 
 
+def _split_local_work(report: UpdateReport) -> tuple[list[str], list[str]]:
+    """``data_loss_apps`` split into apps with local work found and apps not checked."""
+    losing = {f.app for f in report.preflight if f.severity == update_preflight.DATA_LOSS and f.app}
+    return (
+        [app for app in report.data_loss_apps if app in losing],
+        [app for app in report.data_loss_apps if app not in losing],
+    )
+
+
 def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = None) -> None:
     """Print the summary of every phase.
 
@@ -353,20 +370,83 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
     a stuck site lost its remediation line; now the report is a returned value and
     cannot be skipped at all.
     """
-    if report.preflight_blocked:
-        # The findings were rendered when the preflight finished; this is the verdict.
-        blockers = [f for f in report.preflight if f.severity == update_preflight.BLOCKER]
-        console.print(
-            f"[bold red]Refusing to start: {len(blockers)} blocking problem(s). "
-            "Nothing was changed.[/bold red]"
-        )
-        console.print("Re-run with --no-preflight to run bench anyway.")
+    if report.preflight_blocked or report.data_loss_refused:
+        # The findings were rendered when the checks finished; this is the verdict.
+        # "did not run" rather than "nothing changed": --force may have re-owned a repo.
+        if report.preflight_blocked:
+            blockers = [f for f in report.preflight if f.severity == update_preflight.BLOCKER]
+            console.print(
+                f"[bold red]Refusing to start: {len(blockers)} blocking problem(s). "
+                "'bench update --reset' did not run.[/bold red]"
+            )
+            console.print(
+                "Re-run with --no-preflight to run bench anyway"
+                + (
+                    "; the local work below still needs --force."
+                    if report.data_loss_refused
+                    else "."
+                )
+            )
+        if report.data_loss_refused:
+            losing, unchecked = _split_local_work(report)
+            parts = []
+            if losing:
+                parts.append(
+                    f"'bench update --reset' would discard local work in {', '.join(losing)}"
+                )
+            if unchecked:
+                parts.append(
+                    "cwcli could not check for local work 'bench update --reset' would discard "
+                    f"in {', '.join(unchecked)}"
+                )
+            what = "; ".join(parts) or (
+                "cwcli could not check for local work 'bench update --reset' would discard"
+            )
+            console.print(
+                f"[bold red]Refusing to start: {escape(what)}, so it did not run.[/bold red]"
+            )
+            console.print(
+                "Commit and push that work, or re-run with --force to discard it; "
+                "--no-preflight does not skip this check."
+            )
         return
 
     successful_apps = len(report.apps) - len(report.failed_apps) - len(report.unknown_apps)
 
     if successful_apps > 0 and not report.aborted:
         console.print(f"\n[bold green]✓ Successfully updated {successful_apps} app(s)[/bold green]")
+
+    # bench can fail before it reaches its git reset, so an unfinished run only MAY have
+    # discarded the work - never state that loss as fact.
+    reset_finished = "frappe" not in report.failed_apps + report.unknown_apps
+    reset_lead = (
+        "--force let 'bench update --reset'"
+        if reset_finished
+        else "'bench update --reset' did not finish, so it may have"
+    )
+    if report.frappe_reset and report.data_loss_apps:
+        # --force accepted it: bench hard-resets every app it reaches.
+        losing, unchecked = _split_local_work(report)
+        if losing:
+            console.print(
+                f"[bold yellow]![/bold yellow] {reset_lead} discard"
+                f"{'' if reset_finished else 'ed'} local work in {len(losing)} app(s): "
+                f"{', '.join(losing)}"
+            )
+        if unchecked:
+            console.print(
+                f"[bold yellow]![/bold yellow] {reset_lead} reset "
+                f"{len(unchecked)} app(s) whose local work could not be checked: "
+                f"{', '.join(unchecked)}"
+            )
+
+    if report.frappe_reset and any(
+        not f.app for f in update_preflight.local_work(report.preflight)
+    ):
+        console.print(
+            f"[bold yellow]![/bold yellow] {reset_lead} reset every app "
+            "although cwcli could not check any app's local work"
+        )
 
     if report.force_reset_apps:
         # A destructive recovery worth naming even on an otherwise-clean run: these
@@ -633,7 +713,16 @@ _BENCH_LEFT_DOWN_CODES = frozenset(
 NO_PREFLIGHT_HELP = (
     "Updating frappe only: skip the checks that run before 'bench update --reset' "
     "(app remotes and branches, sites, services, migrate locks). Use when a check is "
-    "a false positive; bench then fails wherever it fails."
+    "a false positive; bench then fails wherever it fails. The check for local work "
+    "the reset would discard still runs; only --force passes it."
+)
+
+FORCE_HELP = (
+    "DESTRUCTIVE: accept losing local app changes. Updating frappe: run 'bench update "
+    "--reset' even though it discards uncommitted or unpushed work in some app "
+    "(refused without --force). Other apps: on a git conflict, hard-reset the app to "
+    "its remote tracking branch instead of failing; a clean update is untouched. "
+    "Either way, re-own app repos git refuses for dubious ownership."
 )
 
 # The benches and sites the post-pull recache and the site discovery could not
@@ -758,6 +847,7 @@ def update(
         "--no-recache",
         help="Skip re-caching project after app updates (uses existing cache for site detection).",
     ),
+    force: bool = typer.Option(False, "--force", help=FORCE_HELP),
     no_preflight: bool = typer.Option(
         False,
         "--no-preflight",
@@ -801,6 +891,7 @@ def update(
         build=build,
         skip_maintenance=skip_maintenance,
         no_recache=no_recache,
+        force=force,
         no_preflight=no_preflight,
         yes=yes,
         sites=sites,
