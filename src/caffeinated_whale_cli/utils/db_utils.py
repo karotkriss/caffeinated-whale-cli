@@ -35,22 +35,20 @@ _MEMORY_DB = ":memory:"
 # group so group members can read the cache; per-user is unchanged (see
 # shared_home).
 
-# Create cache directory with restricted permissions (0700 = owner-only access)
-# This prevents other users on the system from reading cached credentials. Skip
-# it entirely when caching is disabled, so a disabled install leaves no on-disk
-# footprint at all.
-if not config_utils.cache_disabled():
-    CACHE_DIR.mkdir(parents=True, mode=shared_home.dir_mode(0o700), exist_ok=True)
 
-    # Ensure existing directory has correct permissions
-    if CACHE_DIR.exists():
-        try:
-            CACHE_DIR.chmod(shared_home.dir_mode(0o700))
-            shared_home.apply_group(CACHE_DIR)
-        except (OSError, PermissionError):
-            # On Windows or restricted filesystems, chmod may fail
-            # Still proceed but permissions may not be as strict
-            pass
+def ensure_cache_dir() -> None:
+    """Create the cache directory (0700; see shared_home) on first actual cache use.
+
+    Deliberately NOT done at import time: importing the CLI must not touch the
+    filesystem, so a read-only command (or ``--version``) leaves no footprint. The
+    only code that opens the on-disk DB is :func:`initialize_database`, which calls
+    this first. A no-op when caching is disabled, so a disabled install leaves no
+    on-disk footprint at all. Idempotent: re-asserts the mode on an existing dir.
+    """
+    if config_utils.cache_disabled():
+        return
+    shared_home.ensure_private_dir(CACHE_DIR)
+
 
 db = SqliteDatabase(_MEMORY_DB if config_utils.cache_disabled() else DB_PATH)
 
@@ -429,6 +427,7 @@ def initialize_database():
         db.init(target)
         _live_populated.clear()
     if db.is_closed():
+        ensure_cache_dir()
         db.connect()
     # Create tables if missing
     db.create_tables(
