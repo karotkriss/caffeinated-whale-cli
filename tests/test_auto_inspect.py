@@ -374,6 +374,19 @@ def test_a_daemon_that_dies_at_startup_is_reported_not_started(isolated_run_dir,
     assert "Auto-inspect service failed to start" in auto_inspect.LOG_FILE.read_text()
 
 
+def test_invalid_interval_fails_before_readiness_is_published(isolated_run_dir, monkeypatch):
+    monkeypatch.setattr(
+        auto_inspect.config_utils,
+        "get_auto_inspect_config",
+        lambda: {"enabled": True, "interval": 0},
+    )
+
+    with pytest.raises(RuntimeError, match="exited during startup"):
+        auto_inspect.start_daemon()
+
+    assert not auto_inspect.PID_FILE.exists()
+
+
 def test_get_log_tail_returns_the_last_lines(isolated_run_dir):
     """The log tail returns the most recent lines."""
     auto_inspect.LOG_FILE.write_text("".join(f"line {i}\n" for i in range(50)))

@@ -256,6 +256,7 @@ def repair_startup(unit: BootUnit = AUTO_INSPECT) -> bool:
     Returns True when a unit was repaired. Only that line goes: the unit's
     ExecStart keeps the cwcli it was installed with (the caller may have a
     different one on PATH), its enabled state is untouched, nothing is started.
+    A failed daemon reload raises because systemd is still using the old unit.
     """
     if get_platform() != "linux":
         return False
@@ -268,7 +269,12 @@ def repair_startup(unit: BootUnit = AUTO_INSPECT) -> bool:
         service_path.write_text("".join(kept))
     except OSError:
         return False
-    subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+    result = subprocess.run(
+        ["systemctl", "--user", "daemon-reload"], capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        reason = _systemctl_reason("daemon-reload", result.stderr)
+        raise OSError(reason or "systemctl daemon-reload failed")
     return True
 
 
