@@ -44,6 +44,19 @@ def _no_ambient_tmp_override(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _ample_free_space(monkeypatch):
+    """Report ample free space by default so the free-space preflight does not
+    depend on the host's real ``tmp_path`` disk (a small tmpfs ``/tmp`` made
+    every transfer test refuse). Tests that exercise the preflight patch
+    ``shutil.disk_usage`` themselves, which overrides this default."""
+    monkeypatch.setattr(
+        shutil,
+        "disk_usage",
+        lambda path: SimpleNamespace(total=1_000_000_000_000, free=500_000_000_000),
+    )
+
+
 class TestDownloadRoot:
     """Fix #1: the download root is managed under ``cwcli_home()``, never
     the system temp dir."""
