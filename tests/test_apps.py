@@ -1099,6 +1099,26 @@ def test_update_frappe_preflight_warnings_print_before_the_reset_runs(monkeypatc
     assert "--force let 'bench update --reset' discard local work in 1 app(s): dirty" in out
 
 
+def test_update_frappe_forced_reset_that_failed_does_not_claim_the_work_is_gone(
+    monkeypatch, capsys
+):
+    # bench can die before it reaches its git reset, so a failed run may have left
+    # the work in place: the summary must not state the discard as fact.
+    container = FakeFrappeContainer(available_apps=["frappe"], fail_on=["bench update --reset"])
+    _wire_update(monkeypatch, container)
+    _arm_preflight(monkeypatch, ("data_loss", "git.uncommitted", "dirty"))
+
+    with pytest.raises(typer.Exit):
+        update_mod.run_app_update("proj", ["frappe"], verbose=False, force=True)
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert "--force let 'bench update --reset' discard local work" not in out
+    assert (
+        "'bench update --reset' did not finish, so it may have discarded local work in "
+        "1 app(s): dirty" in out
+    )
+
+
 def test_update_frappe_clean_preflight_says_so(monkeypatch, capsys):
     container = FakeFrappeContainer(available_apps=["frappe"])
     _wire_update(monkeypatch, container)
