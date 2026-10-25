@@ -33,6 +33,11 @@ fail), :data:`DATA_LOSS` (bench will succeed and destroy local work),
 timed out or could not run is UNVERIFIED, never "fine" and never a blocker, and
 only blockers stop the update.
 
+The data-loss findings are the exception, because they are a guard rather than a
+prediction: ``core.update`` refuses on :func:`local_work` unless ``--force``, even
+under ``--no-preflight`` (which runs the local tier alone for it), and local work
+that could not be checked refuses too.
+
 What no preflight can know is stated rather than implied: patch failures, schema
 sync errors, fixture/hook errors, JS build errors, dependency conflicts between new
 pins and the new code's own tooling requirements only show up by running the real
@@ -400,8 +405,9 @@ def main():
         host, _, port = hostport.partition(":")
         if host:
             endpoints.add(("redis_cache", host, port or "6379"))
-    for kind, host, port in sorted(endpoints):
-        out.extend(tcp(kind, host, port))
+    if opts["network"]:
+        for kind, host, port in sorted(endpoints):
+            out.extend(tcp(kind, host, port))
 
     try:
         stat = os.statvfs(sites_dir)
@@ -430,7 +436,12 @@ def main():
 
     with ThreadPoolExecutor(max_workers=opts["workers"]) as pool:
         checked = list(pool.map(lambda a: check_app(a, excluded, shallow), apps))
+        # Without the network tier an app's held unpushed findings are dropped with its
+        # probe: they exist only when <remote>/<branch> is absent and its fetch cannot
+        # create it, so bench's reset of that app fails before it discards anything.
         jobs = [(app, d) + p for app, (_, probes, d) in zip(apps, checked) for p in probes]
+        if not opts["network"]:
+            jobs = []
         probed = list(pool.map(lambda job: probe(*(job + (shallow,))), jobs))
     for app, (found, _, _) in zip(apps, checked):
         out.extend(found)
@@ -741,10 +752,13 @@ def parse(output: str) -> dict | None:
     return None
 
 
-def script_argv(bench_path: str, *, net_timeout: float = NET_TIMEOUT) -> list[str]:
+def script_argv(
+    bench_path: str, *, net_timeout: float = NET_TIMEOUT, network: bool = True
+) -> list[str]:
     """The exec argv. Paths and options ride as argv, never interpolated."""
     opts = json.dumps(
         {
+            "network": network,
             "net_timeout": net_timeout,
             "local_timeout": LOCAL_TIMEOUT,
             "tcp_timeout": TCP_TIMEOUT,
@@ -805,14 +819,19 @@ def run_preflight(
     project: str,
     bench: str | None = None,
     path: str | None = None,
+    local_only: bool = False,
 ) -> PreflightOutcome:
     """Run every tier against ``bench_path`` and return the classified outcome.
+
+    ``local_only`` runs only the in-container local checks (no remote, service, site
+    or lock probe): the data-loss guard's input under ``--no-preflight``, where only
+    :func:`local_work` of the outcome is acted on.
 
     Never raises for a check that could not run: that is an UNVERIFIED finding. A
     lost Docker connection raises what ``exec_run`` raises, as every read does.
     """
     started = time.monotonic()
-    exit_code, output = container.exec_run(script_argv(bench_path))
+    exit_code, output = container.exec_run(script_argv(bench_path, network=not local_only))
     raw = output[0] if isinstance(output, tuple) else output
     text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw or "")
     record = parse(text)
@@ -825,8 +844,9 @@ def run_preflight(
         facts = [f for f in record.get("findings", []) if isinstance(f, dict)]
         apps = [a for a in record.get("apps", []) if isinstance(a, str)]
         sites = [s for s in record.get("sites", []) if isinstance(s, str)]
-    facts += _site_facts(container, bench_path, sites)
-    facts += _lock_facts(container, bench_path, sites)
+    if not local_only:
+        facts += _site_facts(container, bench_path, sites)
+        facts += _lock_facts(container, bench_path, sites)
     return PreflightOutcome(
         findings=classify(facts, project=project, bench=bench, path=path),
         apps=len(apps),
@@ -834,3 +854,22 @@ def run_preflight(
         elapsed=time.monotonic() - started,
         bench_path=bench_path,
     )
+
+
+# What the data-loss guard cannot rule out: the app's local work could not be read,
+# or the checks did not run at all.
+_LOCAL_WORK_UNKNOWN = frozenset(
+    {"git.local_work_unverified", "git.unreadable", "preflight.unverified"}
+)
+
+
+def local_work(findings: list[PreflightFinding]) -> list[PreflightFinding]:
+    """The findings the data-loss guard refuses on unless ``--force``.
+
+    ``bench update --reset`` hard-resets every app it pulls, discarding uncommitted
+    changes to tracked files and commits on no remote, branch or tag. A guard, not a
+    prediction, so it FAILS CLOSED: local work that could not be checked counts too,
+    the ``apps checkout`` dirty-tree rule. Untracked files survive the reset and
+    never appear here.
+    """
+    return [f for f in findings if f.severity == DATA_LOSS or f.code in _LOCAL_WORK_UNKNOWN]

@@ -119,10 +119,18 @@ class UpdateReport:
     # the reset's outcome is unknown and it may still be running); False otherwise.
     bench_left_in_maintenance: bool | None
     # The frappe path's checks before `bench update --reset` (core.update_preflight).
-    # Empty when they did not run (another app, or --no-preflight). A blocked
-    # preflight ran NOTHING: no backup, no maintenance flag, no reset.
+    # Empty for another app; under --no-preflight, only the data-loss guard's
+    # findings. A blocked preflight ran NOTHING: no backup, no maintenance flag, no
+    # reset.
     preflight: list[PreflightFinding]
     preflight_blocked: bool
+    # The frappe path's data-loss guard (core.update_preflight.local_work): apps whose
+    # uncommitted or unpushed work `bench update --reset` discards, or whose work could
+    # not be checked. Without --force that refuses with NOTHING run
+    # (`data_loss_refused`), even under --no-preflight; with --force the reset ran
+    # over them and these are the apps it was allowed to discard work in.
+    data_loss_refused: bool
+    data_loss_apps: list[str]
     aborted: bool  # the fan-out stopped early (Ctrl-C / an unexpected error)
     ok: bool  # pre-computed aggregate; the frontends' exit code reads THIS
 
@@ -189,7 +197,8 @@ class UpdatePreflight:
 
     findings: list[PreflightFinding]
     summary: str
-    blocked: bool
+    blocked: bool  # the update will not run: a blocker, or local work without --force
+    local_only: bool = False  # --no-preflight: only the data-loss guard ran
 
 
 UpdateEvent = UpdateStepStart | UpdateOutput | UpdateStepEnd | UpdatePreflight | UpdateAborted
@@ -536,6 +545,8 @@ def _build_report(
     bench_left_in_maintenance: bool | None = False,
     preflight: list[PreflightFinding] | None = None,
     preflight_blocked: bool = False,
+    data_loss_refused: bool = False,
+    data_loss_apps: list[str] | None = None,
     aborted: bool,
 ) -> UpdateReport:
     """Assemble the report and pre-compute ``ok``.
@@ -555,6 +566,7 @@ def _build_report(
     ok = not (
         aborted
         or preflight_blocked
+        or data_loss_refused
         or failed_apps
         or unknown_apps
         or failed_maintenance_enable
@@ -593,6 +605,8 @@ def _build_report(
         bench_left_in_maintenance=bench_left_in_maintenance,
         preflight=list(preflight or []),
         preflight_blocked=preflight_blocked,
+        data_loss_refused=data_loss_refused,
+        data_loss_apps=list(data_loss_apps or []),
         aborted=aborted,
         ok=ok,
     )
@@ -628,6 +642,7 @@ def _frappe_reset(
     no_recache: bool,
     ignored: list[str],
     preflight: list[PreflightFinding] | None = None,
+    discarding: list[str] | None = None,
     emit: OnEvent,
     warnings: list[Message],
 ) -> Result[UpdateReport]:
@@ -647,15 +662,28 @@ def _frappe_reset(
     code against unmigrated databases, and whether the sites come back up in that
     state is the operator's call, not cwcli's.
     """
-    note = None
+    notes = []
     if ignored:
-        note = (
+        notes.append(
             "updating 'frappe' runs a bench-wide 'bench update --reset'; ignoring "
             f"{', '.join(ignored)} (not applicable)."
         )
         warnings.append(
-            Message("frappe_reset.options_ignored", note, detail={"ignored": list(ignored)})
+            Message("frappe_reset.options_ignored", notes[-1], detail={"ignored": list(ignored)})
         )
+    if discarding:
+        notes.append(
+            "--force: 'bench update --reset' will discard any uncommitted or unpushed "
+            f"work in {', '.join(discarding)}."
+        )
+        warnings.append(
+            Message(
+                "frappe_reset.discarding_local_work",
+                notes[-1],
+                detail={"apps": list(discarding)},
+            )
+        )
+    note = " ".join(notes) or None
 
     failed: list[str] = []
     unknown: list[str] = []
@@ -810,12 +838,39 @@ def _frappe_reset(
         resync=resync,
         bench_left_in_maintenance=left_in_maintenance,
         preflight=preflight,
+        data_loss_apps=discarding,
         aborted=False,
     )
     return Result(status=Status.OK if report.ok else Status.WARNING, data=report, warnings=warnings)
 
 
-def _frappe_preflight(
+def _reown_dubious_apps(
+    frappe_container, bench_path: str, findings: list[PreflightFinding], warnings: list[Message]
+) -> bool:
+    """``--force``: re-own every app repo git refused for dubious ownership, exactly as
+    the per-app path does before its pull. True when at least one was re-owned."""
+    reowned = False
+    for app in dict.fromkeys(f.app for f in findings if f.code == "git.dubious_ownership"):
+        if not app:
+            continue
+        done, error = core_docker.reown_app_repo_to_frappe(
+            frappe_container, f"{bench_path}/apps/{app}"
+        )
+        if done:
+            reowned = True
+            warnings.append(
+                Message(
+                    "app.force_reown",
+                    f"--force: re-owned '{app}' repository to the container user to clear "
+                    "a git ownership refusal before 'bench update --reset'.",
+                )
+            )
+        elif error:
+            warnings.append(Message("app.force_reown_failed", f"--force: '{app}': {error}"))
+    return reowned
+
+
+def _frappe_checks(
     frappe_container,
     *,
     project_name: str,
@@ -823,25 +878,56 @@ def _frappe_preflight(
     path: str | None,
     bench_path: str,
     apps: list[str],
+    preflight: bool,
+    force: bool,
     emit: OnEvent,
     warnings: list[Message],
-) -> tuple[list[PreflightFinding], Result[UpdateReport] | None]:
-    """Run the preflight; return its findings and, when it found a blocker, the
-    refusal to return instead of running ``bench update --reset``.
+) -> tuple[list[PreflightFinding], list[str], Result[UpdateReport] | None]:
+    """The checks before ``bench update --reset``: the findings to report, the apps
+    whose local work ``--force`` lets the reset discard, and the refusal to return
+    instead of running it.
 
-    The refusal is a report, not a raise: it carries EVERY finding (blockers, data
+    ``preflight`` runs every prediction (:mod:`.update_preflight`); without it only
+    the local tier runs, for the data-loss guard. The guard is not a prediction, so
+    ``--no-preflight`` never skips it and only ``--force`` passes it - the ``apps
+    checkout`` dirty-tree rule, where only ``--reset`` passes a dirty tree. ``--force``
+    never passes a blocker. It first re-owns any app repo git refuses for dubious
+    ownership, then checks again, so a re-owned repo's local work is seen too.
+
+    A refusal is a report, not a raise: it carries EVERY finding (blockers, data
     loss, notices together), which is the point of checking first - bench itself
     stops at the first problem it meets, after backing up every site.
     """
-    emit(UpdateStepStart(phase="preflight"))
-    outcome = update_preflight.run_preflight(
-        frappe_container, bench_path, project=project_name, bench=bench, path=path
-    )
+    emit(UpdateStepStart(phase="preflight" if preflight else "local_work"))
+
+    def check() -> update_preflight.PreflightOutcome:
+        return update_preflight.run_preflight(
+            frappe_container,
+            bench_path,
+            project=project_name,
+            bench=bench,
+            path=path,
+            local_only=not preflight,
+        )
+
+    outcome = check()
+    if force and _reown_dubious_apps(frappe_container, bench_path, outcome.findings, warnings):
+        outcome = check()
+    at_risk = update_preflight.local_work(outcome.findings)
+    findings = outcome.findings if preflight else at_risk
+    blocked = preflight and outcome.blocked
+    refused = bool(at_risk) and not force
+    at_risk_apps = list(dict.fromkeys(f.app for f in at_risk if f.app))
     emit(
-        UpdatePreflight(findings=outcome.findings, summary=outcome.summary, blocked=outcome.blocked)
+        UpdatePreflight(
+            findings=findings,
+            summary=outcome.summary,
+            blocked=blocked or refused,
+            local_only=not preflight,
+        )
     )
-    if not outcome.blocked:
-        return outcome.findings, None
+    if not (blocked or refused):
+        return findings, at_risk_apps, None
     report = _build_report(
         project_name=project_name,
         bench_path=bench_path,
@@ -859,11 +945,13 @@ def _frappe_preflight(
         failed_cache_clears=[],
         failed_website_cache_clears=[],
         failed_maintenance_disable=[],
-        preflight=outcome.findings,
-        preflight_blocked=True,
+        preflight=findings,
+        preflight_blocked=blocked,
+        data_loss_refused=refused,
+        data_loss_apps=at_risk_apps,
         aborted=False,
     )
-    return outcome.findings, Result(status=Status.WARNING, data=report, warnings=warnings)
+    return findings, at_risk_apps, Result(status=Status.WARNING, data=report, warnings=warnings)
 
 
 # ------------------------------------------------------------------------------ verb
@@ -893,6 +981,12 @@ def update(
     starts, everything that would make it fail late - see
     :mod:`.update_preflight`. A blocker returns a report with
     ``preflight_blocked=True`` and nothing run.
+
+    ``force`` on the frappe path accepts the data loss ``bench update --reset``
+    causes: without it, any app with uncommitted or unpushed work (or work that
+    could not be checked) returns a report with ``data_loss_refused=True`` and
+    nothing run, whether or not ``preflight`` is set. It also re-owns app repos git
+    refuses for dubious ownership, as it does before the per-app pull.
 
     Returns ``NEEDS_CHOICE`` for the multi-bench and stopped-container forks, raises
     :class:`CwcliError` for hard failures, and otherwise returns the report - which
@@ -954,26 +1048,25 @@ def update(
                     ("--clear-website-cache", clear_website_cache),
                     ("--build", build),
                     ("--skip-maintenance", skip_maintenance),
-                    ("--force", force),
                 )
                 if active
             ]
             # Inside the credential bridge on purpose: a private remote is probed
             # with exactly the credentials bench's own fetch will get.
-            findings: list[PreflightFinding] = []
-            if preflight:
-                findings, refusal = _frappe_preflight(
-                    frappe_container,
-                    project_name=project_name,
-                    bench=bench,
-                    path=path_selector,
-                    bench_path=bench_path,
-                    apps=apps,
-                    emit=emit,
-                    warnings=warnings,
-                )
-                if refusal is not None:
-                    return refusal
+            findings, discarding, refusal = _frappe_checks(
+                frappe_container,
+                project_name=project_name,
+                bench=bench,
+                path=path_selector,
+                bench_path=bench_path,
+                apps=apps,
+                preflight=preflight,
+                force=force,
+                emit=emit,
+                warnings=warnings,
+            )
+            if refusal is not None:
+                return refusal
             return _frappe_reset(
                 frappe_container,
                 project_name=project_name,
@@ -982,6 +1075,7 @@ def update(
                 no_recache=no_recache,
                 ignored=ignored,
                 preflight=findings,
+                discarding=discarding,
                 emit=emit,
                 warnings=warnings,
             )
