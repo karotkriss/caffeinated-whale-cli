@@ -13,13 +13,17 @@ OWN rules against the same state bench reads. It never reinvents them: every rul
 in :data:`_PREFLIGHT_PY` carries a comment naming the bench line it mirrors, and a
 rule that disagrees with bench is a bug here, not a judgement call.
 
-Three tiers, all read-only:
+Its tiers:
 
-- **local + services + network** run as ONE stdlib-only Python process inside the
-  frappe container (the :mod:`.bench_read` pattern). It prints raw FACTS: a code
-  per problem plus the details, never a sentence. Network probes are
-  ``git ls-remote`` (never a fetch), bounded by a per-probe timeout that kills the
-  probe's whole process group, so a hanging remote cannot hang the preflight.
+- **local + services + network + content** run as ONE stdlib-only Python process
+  inside the frappe container (the :mod:`.bench_read` pattern). It prints raw
+  FACTS: a code per problem plus the details, never a sentence. Network probes are
+  ``git ls-remote``, bounded by a per-probe timeout that ends the probe's whole
+  process group, so a hanging remote cannot hang the preflight. The content tier is
+  the one write: for an app whose branch its remote has, the same ``git fetch`` of
+  that branch bench's reset runs (remote-tracking ref and objects, never the
+  working tree), then the manifests at that ref, compared on the host
+  (:func:`_content_facts`) with the bench venv's Python and the container's node.
 - **sites** reuse :func:`.bench_read.read_benches`: one Frappe process connects to
   every site bench will back up, which is the step that would otherwise fail first.
 - **migrate locks** reuse :func:`.bench_ops.migrate_lock_held`, the same probe
@@ -39,17 +43,20 @@ under ``--no-preflight`` (which runs the local tier alone for it), and local wor
 that could not be checked refuses too.
 
 What no preflight can know is stated rather than implied: patch failures, schema
-sync errors, fixture/hook errors, JS build errors, dependency conflicts between new
-pins and the new code's own tooling requirements only show up by running the real
-update.
+sync errors, fixture/hook errors, JS build errors and dependency conflicts between
+new pins only show up by running the real update.
 """
 
 from __future__ import annotations
 
 import json
+import operator
+import re
 import shlex
 import time
 from dataclasses import dataclass
+
+import toml
 
 from . import bench_ops, bench_read
 from .errors import CwcliError
@@ -65,6 +72,9 @@ SENTINEL = "@@CWCLI-UPDATE-PREFLIGHT@@"
 # Per-probe bounds. A remote that does not answer an ls-remote in NET_TIMEOUT is
 # reported unverified rather than waited on; GitHub answered in 0.6-3 s in the recon.
 NET_TIMEOUT = 15.0
+# The content tier's fetch moves real objects (a new frappe major is a whole new tree);
+# bench reuses them, so a slow fetch costs the update nothing it would not spend anyway.
+FETCH_TIMEOUT = 120.0
 LOCAL_TIMEOUT = 10.0
 TCP_TIMEOUT = 3.0
 WORKERS = 8
@@ -99,14 +109,16 @@ def git_error(text):
     return fatal[0] if fatal else (lines[-1] if lines else "")
 
 
-def git(cwd, args, timeout):
+def run(argv, cwd, timeout):
     """(returncode, stdout, stderr); returncode None when it timed out or never ran.
 
-    Its own session, so a timeout kills git AND whatever it spawned (ssh, a remote
-    helper), which would otherwise hold the pipes open past the timeout."""
+    Its own session, so a timeout kills the command AND whatever it spawned (ssh, a
+    remote helper), which would otherwise hold the pipes open past the timeout. TERM
+    first: a fetch killed outright would strand its ref or shallow lock, and then
+    bench's own fetch fails on it."""
     try:
         proc = subprocess.Popen(
-            ["git"] + args, cwd=cwd, env=ENV, stdin=subprocess.DEVNULL,
+            argv, cwd=cwd, env=ENV, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
         )
     except OSError as error:
@@ -114,13 +126,22 @@ def git(cwd, args, timeout):
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except OSError:
-            pass
-        proc.communicate()
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(proc.pid, sig)
+            except OSError:
+                pass
+            try:
+                proc.communicate(timeout=5)
+                break
+            except subprocess.TimeoutExpired:
+                pass
         return None, "", "no answer within %ss" % timeout
     return proc.returncode, dec(out), dec(err)
+
+
+def git(cwd, args, timeout):
+    return run(["git"] + args, cwd, timeout)
 
 
 def is_frappe_app(path):
@@ -299,18 +320,62 @@ def check_app(app, excluded, shallow):
     return found, probes, d
 
 
+def manifest(app, read):
+    """What bench's requirements step installs an app from (bench/bench.py:494-507,
+    bench/app.py:891-969): pyproject.toml, package.json (yarn) and <app>/__init__.py's
+    version, read as bench/utils/app.py get_version_from_string reads it."""
+    init = read(app + "/__init__.py") or ""
+    match = re.search(r"^(\s*__version__\s*=\s*['\"])(.+?)(['\"])", init, re.S | re.M)
+    return {"pyproject": read("pyproject.toml"), "package_json": read("package.json"),
+            "version": match.group(2) if match else None}
+
+
+def local_manifest(app):
+    def read(path):
+        try:
+            with open(os.path.join(bench, "apps", app, path), encoding="utf-8",
+                      errors="replace") as handle:
+                return handle.read()
+        except (OSError, ValueError):
+            return None
+    return manifest(app, read)
+
+
+def fetched_manifest(app, d, remote, branch):
+    """(manifest, error): the files bench's reset installs, from <remote>/<branch>.
+
+    bench/app.py (pull_apps) fetches <remote> <branch> (--depth=1 with shallow_clone,
+    else --all) and resets to <remote>/<branch>. This is that fetch, for that one
+    branch: it moves the same remote-tracking ref and never the working tree, and stays
+    --depth=1 on a shallow repo so it never pulls full history."""
+    depth = ["--depth=1"] if shallow_boundary(d) else []
+    rc, _, err = git(d, ["fetch", "--quiet", "--no-tags"] + depth + [remote, branch],
+                     opts["fetch_timeout"])
+    if rc != 0:
+        return None, git_error(err) or "git fetch exited %s" % rc
+    ref = "refs/remotes/%s/%s:" % (remote, branch)
+
+    def read(path):
+        code, out, _ = git(d, ["show", ref + path], opts["local_timeout"])
+        return out if code == 0 else None
+    return manifest(app, read), None
+
+
 def probe(app, d, remote, branch, covered, stale, held, shallow):
+    """(facts, manifest): the remote's answer, plus the tracked branch's new manifest
+    when the remote has the branch and bench's fetch writes its tracking ref."""
     if branch:
         args = ["ls-remote", "--exit-code", "--heads", remote, "refs/heads/" + branch]
     else:
         args = ["ls-remote", remote, "HEAD"]
     rc, out, err = git(d, args, opts["net_timeout"])
+    on_remote = rc == 0 and bool(branch)
     base = {"app": app, "remote": remote}
     if rc == 2 and branch:
         # Without shallow_clone a stale local <remote>/<branch> ref survives
         # `git fetch --all` (no --prune), and bench resets to its old commit.
         code = "git.branch_deleted_upstream" if stale and not shallow else "git.branch_not_on_remote"
-        return [dict(base, code=code, branch=branch)] + held
+        return [dict(base, code=code, branch=branch)] + held, None
     found = []
     if rc is None:
         found.append(dict(base, code="git.remote_unverified", error=err))
@@ -333,7 +398,20 @@ def probe(app, d, remote, branch, covered, stale, held, shallow):
         else:
             found.append({"code": "git.local_work_unverified", "app": app,
                           "error": git_error(err) or "git rev-list did not answer"})
-    return found
+    fetched = None
+    if on_remote and covered:
+        fetched, error = fetched_manifest(app, d, remote, branch)
+        if error:
+            found.append(dict(base, code="content.unverified", error=error))
+    return found, fetched
+
+
+def version_of(argv):
+    """(version, error): the last line a version command printed."""
+    rc, out, err = run(argv, bench, opts["local_timeout"])
+    if rc == 0 and out:
+        return out.splitlines()[-1].strip(), None
+    return None, git_error(err) or "exit %s" % rc
 
 
 def tcp(kind, host, port):
@@ -443,14 +521,30 @@ def main():
         if not opts["network"]:
             jobs = []
         probed = list(pool.map(lambda job: probe(*(job + (shallow,))), jobs))
+    fetched = {}
     for app, (found, _, _) in zip(apps, checked):
         out.extend(found)
-        for job, result in zip(jobs, probed):
+        for job, (result, new) in zip(jobs, probed):
             if job[0] == app:
                 out.extend(result)
+                if new is not None:
+                    fetched[app] = new
 
-    record = {"apps": apps, "sites": sites, "shallow_clone": shallow,
-              "elapsed": round(time.time() - START, 3), "findings": out}
+    record = {"apps": apps, "sites": sites, "shallow_clone": shallow, "findings": out}
+    if opts["network"]:
+        # The content tier: every app as bench's requirements step reinstalls it (its
+        # fetched tip where the reset moves it), and what that runs under: the bench
+        # venv's Python (bench.python, bench/bench.py:74-75) and the node on PATH, which
+        # yarn runs. A node not on PATH is already tool.missing.
+        record["manifests"] = [
+            {"app": a, "local": local_manifest(a), "remote": fetched.get(a)} for a in apps
+        ]
+        python = version_of([os.path.join(bench, "env", "bin", "python"), "-c",
+                             "import platform; print(platform.python_version())"])
+        node = version_of(["node", "-v"]) if shutil.which("node") else (None, None)
+        record["tooling"] = {"python": python[0], "python_error": python[1],
+                             "node": node[0], "node_error": node[1]}
+    record["elapsed"] = round(time.time() - START, 3)
     sys.stdout.write("\n" + SENTINEL + json.dumps(record) + "\n")
 
 
@@ -678,6 +772,38 @@ _RULES: dict[str, tuple[str, str, str | None]] = {
         "were not checked",
         None,
     ),
+    "frappe.major_upgrade": (
+        BLOCKER,
+        "the update moves frappe from version {current} to {new}; bench stops to ask "
+        "before a major upgrade, and cwcli's run cannot answer it",
+        "to upgrade on purpose, answer bench's prompt yourself: "
+        "cwcli run {q_project}{selector_flag} -i update --reset",
+    ),
+    "tooling.python_too_old": (
+        BLOCKER,
+        "needs Python {spec} (requires-python) but the bench's environment runs Python "
+        "{python}; bench would fail reinstalling it, after backing up every site and "
+        "resetting every app",
+        None,
+    ),
+    "tooling.node_too_old": (
+        BLOCKER,
+        "needs Node {spec} (engines.node in package.json) but the container runs Node "
+        "{node}; yarn would refuse it, after bench has backed up every site and reset "
+        "every app",
+        None,
+    ),
+    "app.frappe_dependency_unsatisfied": (
+        NOTICE,
+        "requires {dep} {spec} ([tool.bench.frappe-dependencies]) but {dep} will be at "
+        "{version}; bench only warns and installs it anyway",
+        None,
+    ),
+    "content.unverified": (
+        UNVERIFIED,
+        "the Python, Node and frappe versions its code needs could not be checked ({error})",
+        None,
+    ),
 }
 
 _ORDER = {BLOCKER: 0, DATA_LOSS: 1, UNVERIFIED: 2, NOTICE: 3}
@@ -760,6 +886,7 @@ def script_argv(
         {
             "network": network,
             "net_timeout": net_timeout,
+            "fetch_timeout": FETCH_TIMEOUT,
             "local_timeout": LOCAL_TIMEOUT,
             "tcp_timeout": TCP_TIMEOUT,
             "workers": WORKERS,
@@ -768,6 +895,325 @@ def script_argv(
         }
     )
     return ["sh", "-c", _RUN_SH, "sh", _SCRIPT, opts, bench_path]
+
+
+# ------------------------------------------------------------------ the content tier
+# Each version check in the dialect of the tool that makes it: requires-python is PEP
+# 440 (uv, and pip), engines.node is node-semver (yarn v1), and
+# [tool.bench.frappe-dependencies] is semantic_version's SimpleSpec (bench itself). A
+# spec or version these do not read is UNVERIFIED, never a guess either way.
+
+_CMP = {"=": operator.eq, "<": operator.lt, "<=": operator.le, ">": operator.gt, ">=": operator.ge}
+_NPM_OP = re.compile(r"<=|>=|<|>|=|\^|~>?")
+_NPM_PART = re.compile(
+    r"^[v=]*(\d+|[xX*])(?:\.(\d+|[xX*])(?:\.(\d+|[xX*]))?)?(?:\+[0-9A-Za-z.-]+)?$"
+)
+# semantic_version 2.10's SimpleSpec.Parser.NAIVE_SPEC and Version, as bench 5.31.0 uses them.
+_SIMPLE = re.compile(
+    r"^(<|<=||=|==|>=|>|!=|\^|~|~=)(\*|0|[1-9][0-9]*)(?:\.(\*|0|[1-9][0-9]*)"
+    r"(?:\.(\*|0|[1-9][0-9]*))?)?(?:-([a-z0-9A-Z.-]*))?(?:\+([a-z0-9A-Z.-]*))?$"
+)
+_SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-([0-9a-zA-Z.-]+))?(?:\+[0-9a-zA-Z.-]+)?$")
+
+
+def _pep440_contains(spec: str, version: str) -> bool | None:
+    from packaging.specifiers import InvalidSpecifier, SpecifierSet
+    from packaging.version import InvalidVersion, Version
+
+    try:
+        return SpecifierSet(spec).contains(Version(version), prereleases=True)
+    except (InvalidSpecifier, InvalidVersion):
+        return None
+
+
+def _npm_bounds(op: str, text: str) -> list[tuple[str, tuple[int, ...]]] | None:
+    """One node-semver comparator as plain bounds on X.Y.Z (None: not read here)."""
+    match = _NPM_PART.match(text or "*")
+    if not match:
+        return None
+    parts: list[int | None] = []
+    for part in match.groups():  # after the first wildcard, everything is one
+        parts.append(int(part) if part and part.isdigit() and None not in parts else None)
+    a, b, c = parts
+    if a is None:  # "*": anything, but as an exclusive bound nothing satisfies it
+        return [("<", (0, 0, 0))] if op in ("<", ">") else []
+    low = (a, b or 0, c or 0)
+    above = (a + 1, 0, 0) if b is None else (a, b + 1, 0)  # the first version past a partial
+    if op in ("", "="):
+        return [("=", low)] if c is not None else [(">=", low), ("<", above)]
+    if op == "^":
+        if a or b is None:
+            high = (a + 1, 0, 0)
+        elif b or c is None:
+            high = (0, b + 1, 0)
+        else:
+            high = (0, 0, c + 1)
+        return [(">=", low), ("<", high)]
+    if op.startswith("~"):
+        return [(">=", low), ("<", above)]
+    if op in (">=", "<"):
+        return [(op, low)]
+    if op == ">":
+        return [(">", low)] if c is not None else [(">=", above)]
+    return [("<=", low)] if c is not None else [("<", above)]  # "<="
+
+
+def _npm_split(token: str) -> tuple[str, str]:
+    op = _NPM_OP.match(token)
+    return (op.group(0), token[op.end() :]) if op else ("", token)
+
+
+def _npm_satisfies(spec: str, version: str) -> bool | None:
+    """node-semver's ``satisfies`` for a release version: yarn v1's engines check."""
+    match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", version.strip())
+    if not match:
+        return None
+    have = tuple(int(n) for n in match.groups())
+    # node-semver reads ">= 18" as ">=18", and "A - B" as an inclusive range.
+    for alternative in re.sub(r"(<=|>=|<|>|=|\^|~>?)\s+", r"\1", spec).split("||"):
+        tokens = alternative.split()
+        if len(tokens) == 3 and tokens[1] == "-":
+            pairs = [(">=", tokens[0]), ("<=", tokens[2])]
+        else:
+            pairs = [_npm_split(token) for token in tokens] or [("", "*")]
+        bounds = []
+        for op, text in pairs:
+            found = _npm_bounds(op or "", text)
+            if found is None:
+                return None
+            bounds += found
+        if all(_CMP[op](have, bound) for op, bound in bounds):
+            return True
+    return False
+
+
+def _semver(text: object) -> tuple | None:
+    """A semantic_version Version as a precedence key: (X, Y, Z, released, prerelease)."""
+    match = _SEMVER.match(str(text or ""))
+    if not match:
+        return None
+    pre = tuple(
+        (0, int(p), "") if p.isdigit() else (1, 0, p)
+        for p in (match.group(4) or "").split(".")
+        if p
+    )
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)), not pre, pre)
+
+
+def _next(target: tuple, level: int) -> tuple:
+    """semantic_version's next_major/next_minor/next_patch (level 0/1/2)."""
+    major, minor, patch, _, pre = target
+    if level == 0:
+        return (
+            (major, 0, 0, True, ())
+            if pre and not minor and not patch
+            else (major + 1, 0, 0, True, ())
+        )
+    if level == 1:
+        return (major, minor, 0, True, ()) if pre and not patch else (major, minor + 1, 0, True, ())
+    return (major, minor, patch, True, ()) if pre else (major, minor, patch + 1, True, ())
+
+
+def _below(have: tuple, bound: tuple, natural: bool = True) -> bool:
+    # semantic_version Range OP_LT: a prerelease of the bound's own X.Y.Z is not "below" it.
+    if natural and have[4] and have[:3] == bound[:3] and not bound[4]:
+        return False
+    return have < bound
+
+
+def _simple_spec(spec: str, version: str) -> bool | None:
+    """``SimpleSpec(spec).match(Version(version))``, bench's frappe-dependency check
+    (bench/app.py:497-518), mirroring semantic_version 2.10's ``parse_block``. Every
+    block parses before any is matched, as there: one bad block is bench's error."""
+    have = _semver(version)
+    if have is None:
+        return None
+    oks = []
+    for block in spec.split(","):
+        match = _SIMPLE.match(block)
+        if not match:
+            return None
+        op, *numbers, pre, build = match.groups()
+        op = "==" if op in ("", "=") else op
+        major, minor, patch = (None if n in (None, "*") else int(n) for n in numbers)
+        partial = minor is None or patch is None
+        if (major is None and op not in ("==", ">=")) or (partial and (pre or build)):
+            return None
+        if build is not None and op not in ("==", "!="):
+            return None
+        # A wildcard ends the version: "15.*.1" is "15".
+        if major is None:
+            text = "0.0.0"
+        elif minor is None:
+            text = f"{major}.0.0"
+        elif patch is None:
+            text = f"{major}.{minor}.0"
+        else:
+            text = f"{major}.{minor}.{patch}" + (f"-{pre}" if pre else "")
+        target = _semver(text)
+        if target is None:
+            return None
+        up = 0 if minor is None else 1  # the next_major/next_minor a partial stops at
+        if major is None or op == ">=":
+            ok = have >= target
+        elif op == "^":
+            ok = have >= target and _below(have, _next(target, 0 if major else 1 if minor else 2))
+        elif op in ("~", "~="):
+            level = 0 if (minor is None if op == "~" else partial) else 1
+            ok = have >= target and _below(have, _next(target, level))
+        elif op == "==":
+            ok = have >= target and _below(have, _next(target, up)) if partial else have == target
+        elif op == "!=":
+            if partial:
+                ok = _below(have, target) or have >= _next(target, up)
+            elif pre == "" or build == "":
+                ok = have != target
+            else:  # Range OP_NEQ: a prerelease of the target's own X.Y.Z is excluded too
+                ok = have != target and not (have[4] and have[:3] == target[:3] and not target[4])
+        elif op == ">":
+            ok = have >= _next(target, up) if partial else have > target
+        elif op == "<":
+            ok = _below(have, target, natural=pre != "")
+        else:  # "<="
+            ok = _below(have, _next(target, up)) if partial else have <= target
+        oks.append(ok)
+    return all(oks)
+
+
+def _parsed(text: object, loads) -> dict | None:
+    """A manifest's top level: {} when absent, None when it does not parse."""
+    if not isinstance(text, str) or not text.strip():
+        return {}
+    try:
+        data = loads(text)
+    except Exception:  # toml raises a spread of types on malformed input
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _table(data: dict, *keys: str) -> dict:
+    for key in keys:
+        value = data.get(key)
+        data = value if isinstance(value, dict) else {}
+    return data
+
+
+def _content_facts(record: dict) -> list[dict]:
+    """What each app needs from the bench once ``bench update --reset`` has moved it.
+
+    bench's requirements step reinstalls EVERY app after the reset (bench/bench.py:
+    494-507): ``uv pip install -e`` checks requires-python against the bench venv's
+    Python, ``yarn install`` checks engines.node against the container's node, and bench
+    checks [tool.bench.frappe-dependencies], only warning. An app the reset moves is
+    read at its fetched tip; any other app as it is on disk. Before all of that,
+    bench's version check stops to ask about a frappe major upgrade.
+    """
+    tooling = record.get("tooling")
+    if not isinstance(tooling, dict):
+        return []  # the local tier alone, or a record from before the content tier
+    manifests = {
+        m["app"]: m
+        for m in record.get("manifests") or []
+        if isinstance(m, dict) and isinstance(m.get("app"), str)
+    }
+    facts: list[dict] = []
+
+    def unverified(app: str, error: str) -> None:
+        facts.append({"code": "content.unverified", "app": app, "error": error})
+
+    def installed(app: str) -> dict:
+        found = manifests[app].get("remote") or manifests[app].get("local")
+        return found if isinstance(found, dict) else {}
+
+    def version(manifest: dict) -> object:
+        # bench/utils/app.py:306-333 (get_current_version), bench/app.py:520-540
+        # (get_dep_version): pyproject's project.version, else <app>/__init__.py's.
+        return _table(_parsed(manifest.get("pyproject"), toml.loads) or {}, "project").get(
+            "version"
+        ) or manifest.get("version")
+
+    # bench/utils/app.py:24-38 (is_version_upgrade): the installed frappe's major against
+    # upstream/<branch>:frappe/__init__.py's, which bench reads straight from that file.
+    frappe = manifests.get("frappe", {})
+    if isinstance(frappe.get("remote"), dict) and isinstance(frappe.get("local"), dict):
+        was, now = version(frappe["local"]), frappe["remote"].get("version")
+        current, new = _semver(was), _semver(now)
+        if current is None or new is None:
+            unverified("frappe", f"frappe's version could not be read ({was!r} -> {now!r})")
+        elif new[0] > current[0]:
+            facts.append(
+                {
+                    "code": "frappe.major_upgrade",
+                    "app": "frappe",
+                    "current": str(current[0]),
+                    "new": str(new[0]),
+                }
+            )
+
+    python, node = tooling.get("python"), tooling.get("node")
+    for app in manifests:
+        manifest = installed(app)
+        pyproject = _parsed(manifest.get("pyproject"), toml.loads)
+        package = _parsed(manifest.get("package_json"), json.loads)
+        if pyproject is None or package is None:
+            name = "pyproject.toml" if pyproject is None else "package.json"
+            unverified(app, f"its {name} could not be parsed")
+        needs = [
+            (
+                _table(pyproject or {}, "project").get("requires-python"),
+                python,
+                tooling.get("python_error"),
+                _pep440_contains,
+                "tooling.python_too_old",
+                "python",
+                "requires-python",
+            ),
+            (
+                _table(package or {}, "engines").get("node"),
+                node,
+                tooling.get("node_error"),
+                _npm_satisfies,
+                "tooling.node_too_old",
+                "node",
+                "engines.node",
+            ),
+        ]
+        for spec, have, error, satisfies, code, tool, field in needs:
+            if not isinstance(spec, str) or not spec.strip():
+                continue
+            if not isinstance(have, str):
+                if error:  # an absent node is already tool.missing
+                    unverified(app, f"the bench's {tool} could not be run ({error})")
+                continue
+            ok = satisfies(spec, have)
+            if ok is None:
+                unverified(app, f"{field} {spec!r} could not be compared with {have}")
+            elif not ok:
+                facts.append({"code": code, "app": app, "spec": spec, tool: have})
+        deps = _table(pyproject or {}, "tool", "bench").get("frappe-dependencies")
+        for dep, spec in deps.items() if isinstance(deps, dict) else []:
+            # bench/app.py:497-518: a dependency not installed, or without a version, is
+            # skipped (bench prints the first and moves on).
+            dep_version = version(installed(dep)) if dep in manifests else None
+            if not isinstance(spec, str) or not dep_version:
+                continue
+            ok = _simple_spec(spec, str(dep_version))
+            if ok is None:
+                unverified(
+                    app,
+                    f"frappe-dependency {dep} {spec!r} could not be compared with {dep_version!r}",
+                )
+            elif not ok:
+                facts.append(
+                    {
+                        "code": "app.frappe_dependency_unsatisfied",
+                        "app": app,
+                        "dep": dep,
+                        "spec": spec,
+                        "version": str(dep_version),
+                    }
+                )
+    return facts
 
 
 def _site_facts(container, bench_path: str, sites: list[str]) -> list[dict]:
@@ -842,6 +1288,7 @@ def run_preflight(
         facts, apps, sites = [{"code": "preflight.unverified", "error": error}], [], []
     else:
         facts = [f for f in record.get("findings", []) if isinstance(f, dict)]
+        facts += _content_facts(record)
         apps = [a for a in record.get("apps", []) if isinstance(a, str)]
         sites = [s for s in record.get("sites", []) if isinstance(s, str)]
     if not local_only:

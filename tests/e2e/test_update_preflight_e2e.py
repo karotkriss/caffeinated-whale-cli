@@ -21,9 +21,15 @@ holding an uncommitted change and an unpushed commit - work ``--reset`` discards
   the app, and changes nothing;
 - with ``--force`` bench runs, the report names the app, and the work is gone.
 
+It proves the content tier on a real bench too, with frappe's upstream pointed at a
+local remote whose tip is the next major version: the preflight refuses with
+``frappe.major_upgrade`` and changes nothing, and ``--no-preflight`` shows bench's
+own refusal, the prompt cwcli's run cannot answer.
+
 The shared instance is restored in ``finally`` blocks: the config's exact bytes,
-``sites/excluded_apps.txt``, the backups bench made, frappe's remote-tracking ref
-(bench's version check fetches it), and the planted app and remote. During the
+``sites/excluded_apps.txt``, the backups bench made, what a fetch of frappe changes
+(bench's version check and the preflight's content tier both fetch it), and the
+planted app and remote. During the
 legs that let bench run, every other app is listed in ``sites/excluded_apps.txt``
 so bench resets nothing but the planted app: its version check and backups still
 run, which is all those legs need. The ``--force`` leg also stops bench right after
@@ -81,6 +87,25 @@ def _backups(inst) -> set[str]:
     return {line for line in out.splitlines() if line.strip()}
 
 
+_FRAPPE = f"{_BENCH}/apps/frappe"
+
+
+def _frappe_fetch_state(inst) -> dict[str, str]:
+    """The bytes a fetch of frappe's upstream branch can change, to put back exactly.
+
+    The objects it adds are left: unreachable once the refs are back, and deleting
+    object files risks ones a background repack moved."""
+    branch = _sh(inst, f"git -C {_FRAPPE} symbolic-ref --short HEAD").strip()
+    paths = ["config", "shallow", "FETCH_HEAD", "packed-refs"]
+    paths += [f"{kind}/remotes/upstream/{branch}" for kind in ("refs", "logs/refs")]
+    return {path: _read(inst, f"{_FRAPPE}/.git/{path}") for path in paths}
+
+
+def _restore_frappe(inst, state: dict[str, str]) -> None:
+    for path, snapshot in state.items():
+        _restore(inst, f"{_FRAPPE}/.git/{path}", snapshot)
+
+
 def _preflight_rows(stdout: str) -> list[str]:
     """The rows of the TOON `preflight[N]{...}:` table."""
     rows, inside = [], False
@@ -99,6 +124,7 @@ def _preflight_rows(stdout: str) -> list[str]:
 def planted(running_instance):
     """A throwaway frappe-shaped app checked out on a branch its remote lacks."""
     inst = running_instance
+    frappe_state = _frappe_fetch_state(inst)
     teardown = f"rm -rf {_BENCH}/apps/{_APP} {_REMOTE}"
     _sh(inst, teardown)  # belt-and-suspenders: clear any prior remnant
     _sh(
@@ -128,6 +154,7 @@ def planted(running_instance):
         yield inst
     finally:
         harness.exec_in_frappe(inst.name, teardown)
+        _restore_frappe(inst, frappe_state)
 
 
 def test_preflight_refuses_in_seconds_and_changes_nothing(planted):
@@ -161,12 +188,6 @@ def test_no_preflight_reproduces_bench_failing_late(planted):
     conf_before = _read(inst, _CONF)
     excluded_before = _read(inst, _EXCLUDED)
     backups_before = _backups(inst)
-    frappe_dir = f"{_BENCH}/apps/frappe"
-    branch = _sh(inst, f"git -C {frappe_dir} symbolic-ref --short HEAD").strip()
-    tracking = f"refs/remotes/upstream/{branch}"
-    tracking_before = harness.exec_in_frappe(
-        inst.name, f"git -C {frappe_dir} rev-parse --verify -q {tracking}"
-    )[1].strip()
     # Keep bench's reset to the planted app: every other app is excluded.
     _sh(
         inst,
@@ -192,10 +213,6 @@ def test_no_preflight_reproduces_bench_failing_late(planted):
         _restore(inst, _EXCLUDED, excluded_before)
         for path in sorted(_backups(inst) - backups_before):
             harness.exec_in_frappe(inst.name, f"rm -f {shlex.quote(path)}")
-        if tracking_before:
-            harness.exec_in_frappe(
-                inst.name, f"git -C {frappe_dir} update-ref {tracking} {tracking_before}"
-            )
 
     assert _read(inst, _CONF) == conf_before
     assert _backups(inst) == backups_before
@@ -226,6 +243,7 @@ def _work(inst) -> tuple[str, str]:
 def dirty(running_instance):
     """A throwaway app holding an uncommitted change and an unpushed commit."""
     inst = running_instance
+    frappe_state = _frappe_fetch_state(inst)
     # chmod first: the --force leg plants an unreadable directory.
     teardown = f"chmod -R u+rwx {_DIRTY_DIR} 2>/dev/null; rm -rf {_DIRTY_DIR} {_DIRTY_REMOTE}"
     _sh(inst, teardown)
@@ -260,6 +278,7 @@ def dirty(running_instance):
         yield inst
     finally:
         harness.exec_in_frappe(inst.name, teardown)
+        _restore_frappe(inst, frappe_state)
 
 
 @pytest.mark.parametrize("flags", [(), ("--no-preflight",)], ids=["preflight", "no-preflight"])
@@ -288,12 +307,6 @@ def test_force_lets_bench_discard_the_work_and_names_the_app(dirty):
     conf_before = _read(inst, _CONF)
     excluded_before = _read(inst, _EXCLUDED)
     backups_before = _backups(inst)
-    frappe_dir = f"{_BENCH}/apps/frappe"
-    branch = _sh(inst, f"git -C {frappe_dir} symbolic-ref --short HEAD").strip()
-    tracking = f"refs/remotes/upstream/{branch}"
-    tracking_before = harness.exec_in_frappe(
-        inst.name, f"git -C {frappe_dir} rev-parse --verify -q {tracking}"
-    )[1].strip()
     pushed = _sh(inst, f"git -C {_DIRTY_REMOTE} rev-parse main").strip()
     assert _work(inst)[0] != pushed and _work(inst)[1]  # the work is really there
     # bench resets only the dirty app, then stops at its own post-reset `find`.
@@ -319,10 +332,106 @@ def test_force_lets_bench_discard_the_work_and_names_the_app(dirty):
         _restore(inst, _EXCLUDED, excluded_before)
         for path in sorted(_backups(inst) - backups_before):
             harness.exec_in_frappe(inst.name, f"rm -f {shlex.quote(path)}")
-        if tracking_before:
-            harness.exec_in_frappe(
-                inst.name, f"git -C {frappe_dir} update-ref {tracking} {tracking_before}"
-            )
 
     assert _read(inst, _CONF) == conf_before
     assert _backups(inst) == backups_before
+
+
+_MAJOR_REMOTE = "/workspace/cwe2e-frappe-next-major.git"
+
+
+@pytest.fixture()
+def next_major(running_instance):
+    """frappe's upstream pointed at a local remote whose branch tip is the next major.
+
+    The remote borrows frappe's own objects (alternates) and adds one commit on top
+    of frappe's HEAD that only bumps ``__version__``, so nothing is copied or cloned.
+    """
+    inst = running_instance
+    frappe_state = _frappe_fetch_state(inst)
+    teardown = f"rm -rf {_MAJOR_REMOTE}"
+    _sh(inst, teardown)
+    try:
+        _sh(
+            inst,
+            textwrap.dedent(
+                f"""
+                set -e
+                F={_FRAPPE}
+                R={_MAJOR_REMOTE}
+                G="git --git-dir=$R -c user.email=e2e@example.com -c user.name=e2e"
+                branch=$(git -C "$F" symbolic-ref --short HEAD)
+                head=$(git -C "$F" rev-parse HEAD)
+                git init -q --bare "$R"
+                (cd "$F/.git/objects" && pwd -P) > "$R/objects/info/alternates"
+                # A shallow clone's history ends at its shallow commits; so must the remote's.
+                if [ -f "$F/.git/shallow" ]; then cp "$F/.git/shallow" "$R/shallow"; fi
+                git -C "$F" show HEAD:frappe/__init__.py > "$R/init.py"
+                major=$(sed -n 's/^__version__ = "\\([0-9][0-9]*\\)\\..*/\\1/p' "$R/init.py")
+                test -n "$major"
+                sed -i "s/^__version__ = .*/__version__ = \\"$((major + 1)).0.0\\"/" "$R/init.py"
+                blob=$($G hash-object -w "$R/init.py")
+                export GIT_INDEX_FILE="$R/next-major.index"
+                $G read-tree "$head"
+                $G update-index --cacheinfo "100644,$blob,frappe/__init__.py"
+                commit=$($G -c commit.gpgsign=false commit-tree "$($G write-tree)" -p "$head" \\
+                    -m "next major")
+                $G update-ref "refs/heads/$branch" "$commit"
+                git -C "$F" remote set-url upstream "$R"
+                """
+            ),
+        )
+        yield inst
+    finally:
+        _restore_frappe(inst, frappe_state)
+        harness.exec_in_frappe(inst.name, teardown)
+
+
+def test_a_frappe_major_upgrade_upstream_refuses_and_bench_would_stop_on_it(next_major):
+    inst = next_major
+    conf_before = _read(inst, _CONF)
+    backups_before = _backups(inst)
+    checkout = f"git -C {_FRAPPE} rev-parse HEAD && git -C {_FRAPPE} status --porcelain"
+    checkout_before = _sh(inst, checkout)
+
+    result = harness.run_cwcli("axi", "apps", "update", inst.name, "frappe", timeout=300)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "preflight_blocked: true" in result.stdout
+    rows = _preflight_rows(result.stdout)
+    major_row = "blocker,frappe.major_upgrade,frappe,null,"
+    assert any(row.startswith(major_row) for row in rows), rows
+    assert f"cwcli run {inst.name} -i update --reset" in result.stdout
+    # The bump is the only thing wrong: no other blocker on a healthy real bench.
+    blockers = [row for row in rows if row.startswith("blocker,")]
+    assert all(row.startswith(major_row) for row in blockers), blockers
+    # The content tier read the new tip from the fetched ref: nothing checked out, and
+    # bench never started.
+    assert _sh(inst, checkout) == checkout_before
+    assert _read(inst, _CONF) == conf_before
+    assert _backups(inst) == backups_before
+
+    # bench itself stops on the same upgrade, at a prompt cwcli's run cannot answer,
+    # before it sets the bench-wide flags. Every app is excluded: bench's version check
+    # reads frappe all the same, and were it to go on, bench would reset nothing.
+    excluded_before = _read(inst, _EXCLUDED)
+    _sh(inst, f"ls -1 {_BENCH}/apps > {_EXCLUDED}")
+    try:
+        result = harness.run_cwcli(
+            "apps", "update", inst.name, "frappe", "--no-preflight", "-v", timeout=300
+        )
+
+        output = result.stdout + result.stderr
+        assert result.returncode == 1, output
+        assert "This update will cause a major version change" in output
+        assert "Aborted!" in output
+        assert _read(inst, _CONF) == conf_before
+        assert _backups(inst) == backups_before
+    finally:
+        # Belt and braces: only a bench that got past its prompt changed these.
+        _restore(inst, _CONF, conf_before)
+        _restore(inst, _EXCLUDED, excluded_before)
+        for path in sorted(_backups(inst) - backups_before):
+            harness.exec_in_frappe(inst.name, f"rm -f {shlex.quote(path)}")
+
+    assert _sh(inst, checkout) == checkout_before
