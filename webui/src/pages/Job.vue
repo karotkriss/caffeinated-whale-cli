@@ -16,14 +16,16 @@ const active = computed(() => ACTIVE_STATES.has(record.value?.state))
 const preflight = computed(() => record.value?.events?.find((event) => event.type === 'update_preflight')?.data)
 const warnings = computed(() => record.value?.warnings || [])
 // A failed job leads with its plain cause (MariaDB rejected the password, git could
-// not authenticate, ...) when cwcli recognized one in the command's output.
+// not authenticate, ...) when cwcli recognized one in the failing step's own output;
+// otherwise it says so and points at that output rather than guessing.
 const failure = computed(() => {
   const job = record.value
   if (job?.state !== 'failed') return null
   const cause = job.cause
   const error = job.error
   const message = error ? `${error.message}${error.hint ? ` ${error.hint}` : ''}` : ''
-  if (!cause) return { title: error?.code || 'Job failed', description: message || 'The command reported a failure. Its output is in the event log below.' }
+  const unrecognized = 'cwcli did not recognize the cause; the failing step\'s output is in the event log below.'
+  if (!cause) return { title: error?.code || 'Job failed', description: message ? `${message} ${unrecognized}` : unrecognized }
   return { title: cause.title, description: !message ? cause.text : message.includes(cause.text) ? message : `${cause.text} ${message}` }
 })
 const time = (value) => value ? new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' }).format(new Date(value)) : ''

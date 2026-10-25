@@ -633,8 +633,6 @@ class _Recorder:
         self.job_id = job_id
         self.secret_values = secret_values
         self.seq = 0
-        # The latest command output, scanned for a plain cause when the job fails.
-        self.output_tail = ""
         self._flushed_at = 0.0
         self._pending: threading.Timer | None = None
 
@@ -660,8 +658,6 @@ class _Recorder:
     def __call__(self, event: Any) -> None:
         data = _scrub(_plain(event), self.secret_values)
         record: dict[str, Any] = {"type": _event_type(event), "data": data}
-        if record["type"].endswith("_output") and isinstance(data, dict):
-            self.output_tail = (self.output_tail + str(data.get("text") or ""))[-16384:]
         if isinstance(data, dict):
             for key in ("phase", "action", "stream", "status", "ok", "item"):
                 if key in data:
@@ -1131,7 +1127,8 @@ def _result_ok(result: Result) -> bool:
 
 
 def _cause(*texts: Any) -> dict[str, str] | None:
-    """The failure's plain cause for the top of the job page, when a known shape matches."""
+    """The failure's plain cause, read only from the failing step's own output and
+    message, when a known shape matches."""
     cause = failure_causes.explain(*(str(text) for text in texts if text))
     return {"code": cause.code, "title": cause.title, "text": cause.text} if cause else None
 
@@ -1186,13 +1183,7 @@ def run_job(job_id: str) -> int:
             return 2
         ok = _result_ok(result)
         state = "succeeded" if ok else "failed"
-        cause = None if ok else _cause(emit.output_tail)
-        emit.lifecycle(
-            "job_finished",
-            cause["text"] if cause else f"{spec['verb']} {state}",
-            phase="job",
-            ok=ok,
-        )
+        emit.lifecycle("job_finished", f"{spec['verb']} {state}", phase="job", ok=ok)
         _merge_state(
             job_id,
             state=state,
@@ -1200,7 +1191,6 @@ def run_job(job_id: str) -> int:
             exit_code=0 if ok else 1,
             result=_scrub(_plain(result.data), scrub_values),
             warnings=_scrub(_plain(result.warnings), scrub_values),
-            cause=_scrub(cause, scrub_values),
         )
         if ok and spec["verb"] == "self-update" and isinstance(result.data, dict):
             if result.data.get("updated"):
@@ -1219,9 +1209,7 @@ def run_job(job_id: str) -> int:
             "detail": exc.detail,
         }
         error = _scrub(_plain(error), scrub_values)
-        cause = _scrub(
-            _cause((exc.detail or {}).get("output"), exc.message, emit.output_tail), scrub_values
-        )
+        cause = _scrub(_cause((exc.detail or {}).get("output"), exc.message), scrub_values)
         emit.lifecycle("job_failed", error["message"], phase="job", code=error["code"])
         _merge_state(
             job_id, state="failed", finished_at=_now(), exit_code=1, error=error, cause=cause
