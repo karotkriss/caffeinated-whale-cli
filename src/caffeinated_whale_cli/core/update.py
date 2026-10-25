@@ -671,16 +671,22 @@ def _frappe_reset(
         warnings.append(
             Message("frappe_reset.options_ignored", notes[-1], detail={"ignored": list(ignored)})
         )
-    if discarding:
+    unchecked_bench = any(not f.app for f in update_preflight.local_work(preflight or []))
+    if discarding or unchecked_bench:
+        where = (
+            "every app, none of whose local work could be checked"
+            if unchecked_bench
+            else ", ".join(discarding or [])
+        )
         notes.append(
             "--force: 'bench update --reset' will discard any uncommitted or unpushed "
-            f"work in {', '.join(discarding)}."
+            f"work in {where}."
         )
         warnings.append(
             Message(
                 "frappe_reset.discarding_local_work",
                 notes[-1],
-                detail={"apps": list(discarding)},
+                detail={"apps": list(discarding or []), "all_apps_unchecked": unchecked_bench},
             )
         )
     note = " ".join(notes) or None
