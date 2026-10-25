@@ -19,7 +19,6 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import threading
 from pathlib import Path
 
 
@@ -234,18 +233,3 @@ def get_pid(pid_file: Path) -> int | None:
     """The pid recorded in ``pid_file``, or None if there is no usable record."""
     record = read_daemon_record(pid_file)
     return record[0] if record else None
-
-
-def fork_is_safe() -> bool:
-    """Whether ``os.fork`` may detach a daemon from THIS process.
-
-    ``fork()`` copies only the calling thread: every lock another thread held
-    stays held forever in the child, and every descriptor those threads own stays
-    open there. Inside the ``cwcli ui`` daemon that meant the forked auto-inspect
-    child kept the daemon's listening socket and its open SSE connections, so the
-    port stayed bound after the daemon exited and the next ``cwcli ui`` could not
-    bind it. A multithreaded host therefore takes the detached-spawn path (a fresh
-    interpreter via ``Popen(close_fds=True)``), the same one a platform without
-    ``fork`` takes; the single-threaded CLI keeps forking.
-    """
-    return hasattr(os, "fork") and threading.active_count() == 1

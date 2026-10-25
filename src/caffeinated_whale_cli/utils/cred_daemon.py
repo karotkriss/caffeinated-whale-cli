@@ -12,7 +12,7 @@ never-started daemon degrades byte-identically to today's prompt behaviour - the
 non-negotiable degradation contract (scout report §5.8).
 
 Shape mirrors ``utils/auto_inspect.py`` (the sibling detached daemon): the
-fork/setsid + ``_spawn_detached`` split, and the pid-file IDENTITY primitives
+detached-spawn shape, and the pid-file IDENTITY primitives
 promoted to ``utils/daemon_identity.py`` and shared with it. What is NEW here:
 
 * a small JSON REGISTRY (``credbridge-registry.json``) mapping project -> its
@@ -659,8 +659,8 @@ def get_pid() -> int | None:
 
 
 def _bootstrap_source(module_path: str) -> str:
-    """The Python source the detached child runs where ``os.fork`` is unavailable
-    (Windows). ``{module_path!r}`` is a literal so Windows backslashes survive."""
+    """The Python source the detached child runs. ``{module_path!r}`` is a literal
+    so Windows backslashes survive."""
     return (
         "import sys\n"
         f"sys.path.insert(0, {module_path!r})\n"
@@ -673,7 +673,7 @@ def _bootstrap_source(module_path: str) -> str:
 
 
 def _spawn_detached() -> None:
-    """Run the daemon loop in a detached child (the no-fork path).
+    """Run the daemon loop in a detached child.
 
     Child stderr goes to the LOG FILE (not DEVNULL) so a child that dies in its
     bootstrap leaves a diagnosable trace - the auto_inspect lesson.
@@ -768,50 +768,18 @@ def _await_started(timeout: float = 2.0) -> None:
         time.sleep(0.02)
 
 
-def _fork_or_spawn(lock_fd: int | None) -> None:
-    """Fork+setsid (POSIX) or detached spawn (no-fork) the daemon, holding the
-    startup lock until it is confirmed up. A multithreaded caller (the ``cwcli ui``
-    daemon) always spawns: a forked child would inherit its listening socket."""
-    if not daemon_identity.fork_is_safe():
-        _spawn_detached()  # Popen(close_fds=True) never inherits the lock fd
-        _await_started()
-        return
-    try:
-        pid = os.fork()
-    except (AttributeError, OSError):
-        _spawn_detached()  # Popen(close_fds=True) never inherits the lock fd
-        _await_started()
-        return
+def _spawn_daemon() -> None:
+    """Start the daemon as a fresh, detached interpreter and wait for its pid file.
 
-    if pid > 0:
-        _await_started()  # parent: hold the lock until the child's pid file lands
-        return
-
-    # Child: drop the inherited startup-lock fd FIRST. It shares the parent's open
-    # file description, and the daemon loop never returns, so leaving it open would
-    # pin the flock forever and brick the next start. Then detach, redirect real
-    # fds (stderr -> log, so a crash leaves a trace), write the pid file, run.
-    if lock_fd is not None:
-        with contextlib.suppress(OSError):
-            os.close(lock_fd)
-    try:
-        os.setsid()
-        _ensure_run_dir()
-        devnull_fd = os.open(os.devnull, os.O_RDWR)
-        log_fd = os.open(LOG_FILE, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
-        os.dup2(devnull_fd, 0)
-        os.dup2(devnull_fd, 1)
-        os.dup2(log_fd, 2)
-        os.close(devnull_fd)
-        os.close(log_fd)
-        _write_pid_file()
-        _log("credential-bridge daemon started")
-        _run_daemon_loop()
-        code = 0
-    except BaseException:
-        _log("credential-bridge daemon exited abnormally", exc_info=True)
-        code = 1
-    os._exit(code)
+    Never ``os.fork``: a forked daemon inherits EVERY descriptor of the calling
+    command (the caller's lock files, docker sockets, the cache DB) and its argv,
+    so ``cwcli axi start`` left a process that looked like a hung ``axi start`` and
+    held the lock of whatever wrapper launched it. ``Popen(close_fds=True)`` hands
+    the child only the descriptors named here, and also never inherits the startup
+    lock fd.
+    """
+    _spawn_detached()
+    _await_started()
 
 
 def _may_fork_daemon() -> bool:
@@ -837,9 +805,8 @@ def start_daemon() -> None:
     Idempotent (unlike auto_inspect's raise-if-running): the ensure step calls
     this speculatively on every open/start, so an already-up daemon is a clean
     no-op. Startup is serialized by a crash-safe filesystem lock held across the
-    ``is_running`` check AND the fork/spawn, so concurrent open/start/enable calls
-    can never double-fork. Forks + setsids on POSIX; falls back to a detached
-    spawn where ``os.fork`` is unavailable (Windows) or fails.
+    ``is_running`` check AND the spawn, so concurrent open/start/enable calls
+    can never double-start. The daemon is a detached fresh interpreter.
 
     In shared mode a non-service-account caller is a no-op: the daemon is owned by
     the system unit and must run as the service account (see :func:`_may_fork_daemon`).
@@ -855,7 +822,7 @@ def start_daemon() -> None:
         # brought the daemon up, so we must not fork a second one.
         if is_running():
             return
-        _fork_or_spawn(lock_fd)
+        _spawn_daemon()
     finally:
         _release_startup_lock(lock_fd)
 
