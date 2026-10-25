@@ -841,7 +841,7 @@ class TestFrappeDataLossGuard:
         assert report.ok is True and report.data_loss_refused is False
         assert report.data_loss_apps == ["dirty"]
         warning = next(w for w in result.warnings if w.code == "frappe_reset.discarding_local_work")
-        assert warning.detail == {"apps": ["dirty"]}
+        assert warning.detail == {"apps": ["dirty"], "all_apps_unchecked": False}
         # Said before the reset runs, where it can still be acted on.
         start = next(
             e for e in events if isinstance(e, UpdateStepStart) and e.phase == "frappe_reset"
@@ -849,6 +849,24 @@ class TestFrappeDataLossGuard:
         assert "will discard any uncommitted or unpushed work in dirty" in start.message
         # --force is no longer an option the frappe path ignores.
         assert not any(w.code == "frappe_reset.options_ignored" for w in result.warnings)
+
+    @pytest.mark.parametrize("preflight", [True, False])
+    def test_force_past_checks_that_never_ran_still_warns_bench_wide(
+        self, wired, preflight_finds, preflight
+    ):
+        preflight_finds(_finding(update_preflight.UNVERIFIED, "preflight.unverified", None))
+
+        refused = _update(apps=["frappe"], preflight=preflight).data
+        assert refused.data_loss_refused is True
+        assert not any("bench update --reset" in c for c in wired.calls)
+
+        result = _update(apps=["frappe"], preflight=preflight, force=True)
+
+        assert any("bench update --reset" in c for c in wired.calls)
+        assert result.data.data_loss_apps == []
+        warning = next(w for w in result.warnings if w.code == "frappe_reset.discarding_local_work")
+        assert warning.detail == {"apps": [], "all_apps_unchecked": True}
+        assert "every app, none of whose local work could be checked" in warning.text
 
     def test_force_never_passes_a_blocker(self, wired, preflight_finds):
         preflight_finds(

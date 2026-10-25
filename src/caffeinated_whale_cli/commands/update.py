@@ -431,6 +431,14 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
                 f"{', '.join(unchecked)}"
             )
 
+    if report.frappe_reset and any(
+        not f.app for f in update_preflight.local_work(report.preflight)
+    ):
+        console.print(
+            "[bold yellow]![/bold yellow] --force let 'bench update --reset' reset every app "
+            "although cwcli could not check any app's local work"
+        )
+
     if report.force_reset_apps:
         # A destructive recovery worth naming even on an otherwise-clean run: these
         # apps had local changes DISCARDED to force the update past a git conflict.

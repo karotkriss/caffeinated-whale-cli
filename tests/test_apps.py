@@ -1189,6 +1189,20 @@ def test_update_frappe_mixed_local_work_names_unchecked_apps_apart(monkeypatch, 
     ) in out
 
 
+def test_update_frappe_forced_past_checks_that_never_ran_says_so(monkeypatch, capsys):
+    container = FakeFrappeContainer(available_apps=["frappe"])
+    _wire_update(monkeypatch, container)
+    _arm_preflight(monkeypatch, ("unverified", "preflight.unverified", None))
+
+    update_mod.run_app_update("proj", ["frappe"], verbose=False, force=True)
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert (
+        "--force let 'bench update --reset' reset every app although cwcli could not check "
+        "any app's local work"
+    ) in out
+
+
 def test_update_frappe_clean_local_work_check_says_so_under_no_preflight(monkeypatch, capsys):
     container = FakeFrappeContainer(available_apps=["frappe"])
     _wire_update(monkeypatch, container)
