@@ -10,7 +10,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { TabButtons, ErrorMessage, LoadingText } from 'frappe-ui'
 import CommandLine from './CommandLine.vue'
 import FollowPane from './FollowPane.vue'
-import { MAX_LINES } from '../data/follow'
+import { MAX_LINES, canAppend } from '../data/follow'
 import { getJson } from '../data/api'
 
 const props = defineProps({
@@ -37,7 +37,7 @@ const options = computed(() => [{ label: 'All', value: 'all' }, ...processes.val
 const shown = computed(() => (filter.value === 'all' ? processes.value : processes.value.filter((p) => p === filter.value)))
 
 async function poll() {
-  if (inflight) return
+  if (inflight || !canAppend(Object.values(logs.value).map((l) => l.lines), following.value)) return
   inflight = true
   try {
     const q = new URLSearchParams({ bench: props.bench, lines: '200' })

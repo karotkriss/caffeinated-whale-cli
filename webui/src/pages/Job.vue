@@ -6,7 +6,7 @@ import { ACTIVE_STATES, JOB_THEME, createJob, detachJob, elapsed, interruptJob, 
 import { openJob } from '../data/job-dialog'
 import { setFocus } from '../data/fleet'
 import FollowPane from '../components/FollowPane.vue'
-import { MAX_LINES, blockView, tailLines } from '../data/follow'
+import { blockView, tailLines } from '../data/follow'
 
 const route = useRoute()
 const router = useRouter()
@@ -42,15 +42,9 @@ const rows = computed(() => {
   }
   return out
 })
-const terminal = (text) =>
-  text
-    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
-    .split('\n')
-    .map((line) => line.slice(line.lastIndexOf('\r') + 1))
-    .join('\n')
-    .trim()
 const following = ref(true)
 const expanded = reactive(new Set())
+watch(following, (now) => now && expanded.clear())
 const held = new Map()
 const views = computed(() => {
   const out = {}
@@ -58,9 +52,8 @@ const views = computed(() => {
     if (!row.output) continue
     if (following.value) held.delete(row.seq)
     else if (!held.has(row.seq)) held.set(row.seq, tailLines(row.text).hidden)
-    const { hidden, text } = blockView(row.text, { all: expanded.has(row.seq), held: held.get(row.seq) })
-    const shown = terminal(text)
-    out[row.seq] = { hidden, total: hidden + shown.split('\n').length, text: shown }
+    const collapsed = blockView(row.text, { held: held.get(row.seq) })
+    out[row.seq] = { collapsed, shown: expanded.has(row.seq) ? blockView(row.text, { all: true }) : collapsed }
   }
   return out
 })
@@ -188,8 +181,8 @@ async function continueChoice(value) {
             <span class="whitespace-nowrap font-mono text-xs tabular-nums text-ink-gray-4">{{ time(event.at) }}</span>
             <span class="hidden truncate font-mono text-xs text-ink-gray-5 sm:block">{{ event.output ? 'output' : event.phase || event.action || event.type }}</span>
             <div v-if="event.output" class="min-w-0">
-              <Button v-if="views[event.seq].hidden || expanded.has(event.seq)" class="mb-1.5" size="sm" variant="outline" :label="expanded.has(event.seq) ? (following ? `Show last ${MAX_LINES.toLocaleString()} lines` : 'Show less') : `Show all ${views[event.seq].total.toLocaleString()} lines`" @click="toggleBlock(event.seq)" />
-              <pre class="whitespace-pre-wrap break-words font-mono text-xs leading-5 text-ink-gray-7">{{ views[event.seq].text }}</pre>
+              <Button v-if="views[event.seq].collapsed.hidden" class="mb-1.5" size="sm" variant="outline" :label="expanded.has(event.seq) ? `Show last ${views[event.seq].collapsed.lines.toLocaleString()} lines` : `Show all ${views[event.seq].collapsed.total.toLocaleString()} lines`" @click="toggleBlock(event.seq)" />
+              <pre class="whitespace-pre-wrap break-words font-mono text-xs leading-5 text-ink-gray-7">{{ views[event.seq].shown.text }}</pre>
             </div>
             <div v-else class="min-w-0"><p class="break-words font-mono text-xs leading-5 text-ink-gray-7">{{ eventTitle(event) }}</p><p v-if="event.item || event.data?.item" class="mt-0.5 truncate text-xs text-ink-gray-5">{{ event.item || event.data.item }}</p></div>
           </div>

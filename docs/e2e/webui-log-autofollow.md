@@ -19,8 +19,10 @@ The page sat at the top while events landed below the fold, and the newest lines
 
 The same init job reached 18,108 events.
 Its longest collapsed output block was 30,378 lines (7.7 MB) in one text node, and re-rendering it cost 437 ms of string work plus 1,482 ms of DOM patch and layout per refresh.
-Capped to the block's last 2,000 lines (`MAX_LINES`, the cap the Logs tab already applied to its own buffer) the patch costs 58 ms; the block shows a `Show all 30,378 lines` control above the tail that renders the full output on demand; collapsing it again reads `Show last 2,000 lines` while the pane follows and `Show less` while the follow is paused (it then returns to the lines held since the pause).
+Capped to the block's last 2,000 lines (`MAX_LINES`, the cap the Logs tab already applied to its own buffer) the patch costs 58 ms; the block shows a `Show all 30,378 lines` control above the tail that renders the full output on demand; collapsing it again reads `Show last N lines`, where N is the line count of the view it returns to (the capped tail, or the lines held since the pause).
+`Jump to latest` collapses every expanded block back to the capped tail.
 While the follow is paused, a block stops dropping lines from its top, so the text never slides under a reader who scrolled up; trimming resumes on `Jump to latest`.
+The bench Logs tab follows the same rule: while paused it keeps every line it holds and stops polling once a process buffer reaches 20,000 lines (`PAUSED_MAX_LINES`), and its byte cursor resumes where it stopped after `Jump to latest`.
 
 ## Auto-follow, pause, and resume
 
