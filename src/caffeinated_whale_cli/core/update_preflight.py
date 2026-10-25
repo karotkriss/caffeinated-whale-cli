@@ -1036,7 +1036,7 @@ def _simple_spec(spec: str, version: str) -> bool | None:
         op, *numbers, pre, build = match.groups()
         op = "==" if op in ("", "=") else op
         major, minor, patch = (None if n in (None, "*") else int(n) for n in numbers)
-        partial = minor is None or patch is None
+        partial = None in (major, minor, patch)
         if (major is None and op not in ("==", ">=")) or (partial and (pre or build)):
             return None
         if build is not None and op not in ("==", "!="):
