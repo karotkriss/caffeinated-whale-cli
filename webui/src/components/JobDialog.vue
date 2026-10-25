@@ -75,7 +75,7 @@ function next() {
           <Alert theme="gray" title="Passwords are never written to the job record" description="They pass directly to the detached worker environment and are removed as soon as the worker starts." />
           <div class="grid gap-4 sm:grid-cols-2">
             <FormControl v-model="v.admin_password" label="Administrator password" type="password" autocomplete="new-password" />
-            <FormControl v-model="v.db_root_password" label="Database root password" type="password" autocomplete="new-password" placeholder="blank keeps the default, 123" description="A new instance's MariaDB is created with it, and cwcli remembers it for later commands." />
+            <FormControl v-model="v.db_root_password" label="Database root password" type="password" autocomplete="new-password" placeholder="blank uses the instance's saved password, else 123" description="A new instance's MariaDB is created with it, and cwcli remembers it for later commands." />
             <FormControl
               v-model="v.reuse_bench"
               class="sm:col-span-2"
