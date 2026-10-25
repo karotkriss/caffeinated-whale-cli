@@ -53,6 +53,15 @@ def test_pid_alive_false_for_a_pid_that_never_existed():
     assert daemon_identity.pid_alive(999999) is False
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX os.kill probe")
+def test_pid_alive_true_for_another_users_process(monkeypatch):
+    def _eperm(pid, sig):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(daemon_identity.os, "kill", _eperm)
+    assert daemon_identity.pid_alive(4242) is True
+
+
 def test_pid_alive_leaves_the_process_running(live_process):
     assert daemon_identity.pid_alive(live_process.pid) is True
     with pytest.raises(subprocess.TimeoutExpired):
