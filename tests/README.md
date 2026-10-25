@@ -146,8 +146,9 @@ path (`migrate-restore-core`): a cache-free DB-table marker (seed ORIGINAL ->
 `cwcli backup` -> mutate to MUTATED -> `cwcli restore` -> assert ORIGINAL is back)
 proves the restore genuinely drops-and-recreates the DB, in both the non-interactive
 (`--latest --yes --mariadb-root-password`) and interactive (pty menu + destructive
-confirm + credential prompts) modes, plus `--no-migrate`, the non-TTY refusals, and
-the flag mutual exclusions.
+confirm + credential prompts) modes, plus `--no-migrate`, the non-TTY refusals,
+the flag mutual exclusions, and a throwaway hyphenated site (`my-hyphen-site.localhost`)
+whose backup filenames the parser once could not read.
 `test_restore_p2p_e2e.py` is the `e2e_p2p` marker's real transport proof: it moves
 REAL bytes over sendme, loopback on one box - `cwcli restore --send` serves a genuine
 ticket, then the non-interactive `cwcli restore --receive --ticket <t>` pulls-and-
