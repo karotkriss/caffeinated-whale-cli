@@ -10,18 +10,20 @@
 // the observer fires after layout and before paint, so the pin never flickers.
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { Button } from 'frappe-ui'
-import { atBottom } from '../data/follow'
+import { nextFollowing } from '../data/follow'
 
 const pane = ref(null)
 const content = ref(null)
 const following = ref(true)
 let observer = null
+let lastTop = 0
 
 const stick = () => {
   pane.value.scrollTop = pane.value.scrollHeight
 }
 const onScroll = () => {
-  following.value = atBottom(pane.value)
+  following.value = nextFollowing(following.value, lastTop, pane.value)
+  lastTop = pane.value.scrollTop
 }
 const resume = () => {
   following.value = true
