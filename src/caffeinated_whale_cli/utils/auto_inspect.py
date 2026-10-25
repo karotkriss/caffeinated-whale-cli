@@ -184,16 +184,19 @@ def _bootstrap_source(module_path: str, interval: int) -> str:
     return (
         "import sys\n"
         f"sys.path.insert(0, {module_path!r})\n"
+        "import signal\n"
         "from caffeinated_whale_cli.utils.auto_inspect import "
-        "_write_pid_file, _log, _run_service_loop\n"
+        "_write_pid_file, _log, _run_service_loop, _handle_sigterm\n"
         "_write_pid_file()\n"
+        "signal.signal(signal.SIGTERM, _handle_sigterm)\n"
+        "signal.signal(signal.SIGINT, _handle_sigterm)\n"
         f'_log("Auto-inspect service started (interval: {interval}s)")\n'
         f"_run_service_loop({interval})\n"
     )
 
 
 def _spawn_detached(interval: int):
-    """Run the service loop in a detached child, where os.fork() is unavailable.
+    """Run the service loop in a detached child.
 
     The child's stderr goes to the LOG FILE rather than DEVNULL. That redirect is
     the point of this function: Popen does not wait, so a child that died in its
@@ -246,74 +249,11 @@ def start_daemon():
     # generated source, where a non-int would emit a syntax error.
     interval = int(config.get("interval", 3600))
 
-    # A multithreaded caller (the `cwcli ui` daemon's request thread) must not
-    # fork: the child would inherit the daemon's listening socket and pin its port.
-    if not daemon_identity.fork_is_safe():
-        _spawn_detached(interval)
-        return
-
-    # ONLY the fork() call is guarded: os.fork is absent on Windows
-    # (AttributeError) and can fail under resource limits (OSError). This try
-    # used to wrap the entire child body down to _run_service_loop, so an OSError
-    # escaping the *running child* dropped it into the fallback and spawned a
-    # SECOND daemon on top of itself.
-    try:
-        pid = os.fork()
-    except (AttributeError, OSError):
-        _spawn_detached(interval)
-        return
-
-    if pid > 0:
-        # Parent process - just return
-        return
-
-    # Child process - detach and run service
-    try:
-        os.setsid()
-
-        # Redirect the REAL file descriptors, not just the sys.* objects. The
-        # child inherits the parent's stdout/stderr fds, and a shell capturing
-        # the parent's output (`$(cwcli config auto-inspect enable)`, any pipe)
-        # waits for EOF on that pipe - which never comes while the daemon holds
-        # fd 1 open. Rebinding sys.stdout alone left the fd open, so every
-        # script that captured the enabling command's output hung forever.
-        # stdin/stdout go to devnull; stderr goes to the LOG FILE (mirroring
-        # _spawn_detached) so a crash below _log's reach still leaves a trace.
-        _ensure_pid_dir()
-        devnull_fd = os.open(os.devnull, os.O_RDWR)
-        log_fd = os.open(LOG_FILE, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
-        os.dup2(devnull_fd, 0)
-        os.dup2(devnull_fd, 1)
-        os.dup2(log_fd, 2)
-        os.close(devnull_fd)
-        os.close(log_fd)
-
-        # Write PID file
-        _write_pid_file()
-
-        # Set up signal handlers
-        signal.signal(signal.SIGTERM, _handle_sigterm)
-        signal.signal(signal.SIGINT, _handle_sigterm)
-
-        # Log startup
-        _log(f"Auto-inspect service started (interval: {interval}s)")
-
-        # Run service loop
-        _run_service_loop(interval)
-        code = 0
-    except SystemExit as e:
-        # The normal stop path: _handle_sigterm raises this via sys.exit(0).
-        code = e.code if isinstance(e.code, int) else 0
-    except BaseException:
-        # sys.stderr is devnull by this point, so an unhandled crash would leave
-        # no trace at all. Log it before the child goes.
-        _log("Auto-inspect daemon exited abnormally", exc_info=True)
-        code = 1
-
-    # The child must never return into the CLI's control flow and start printing
-    # the parent's success messages, so leave via os._exit rather than falling
-    # off the end of start_daemon().
-    os._exit(code)
+    # Always a fresh detached interpreter, never os.fork: a forked daemon inherits
+    # every descriptor of the calling command (a wrapper's lock file, docker
+    # sockets, a listening socket of a multithreaded host) and its argv, so it
+    # outlives the command holding all of them.
+    _spawn_detached(interval)
 
 
 def _write_pid_file():

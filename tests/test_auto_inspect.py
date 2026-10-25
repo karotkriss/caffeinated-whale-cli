@@ -176,6 +176,9 @@ def test_bootstrap_source_is_valid_python():
 
     compile(source, "<bootstrap>", "exec")
     assert "_run_service_loop(3600)" in source
+    # The fork child used to install these; the fresh interpreter must too, or a
+    # SIGTERM kills it without removing its pid file.
+    assert "signal.signal(signal.SIGTERM, _handle_sigterm)" in source
 
 
 def test_bootstrap_source_survives_a_windows_path():
@@ -194,14 +197,14 @@ def test_bootstrap_source_survives_a_windows_path():
 # ---------------------------------------------------------------------------
 
 
-def test_start_daemon_falls_back_to_spawn_when_fork_is_unavailable(isolated_run_dir, monkeypatch):
-    """No os.fork (i.e. Windows) means the detached-spawn path, not a crash."""
+def test_start_daemon_spawns_a_detached_child_and_never_forks(isolated_run_dir, monkeypatch):
+    """The daemon is always a fresh detached interpreter, on every platform."""
     monkeypatch.setattr(
         auto_inspect.config_utils,
         "get_auto_inspect_config",
         lambda: {"enabled": True, "interval": 900},
     )
-    monkeypatch.delattr(auto_inspect.os, "fork", raising=False)
+    monkeypatch.setattr(auto_inspect.os, "fork", lambda: pytest.fail("forked"), raising=False)
 
     spawned = []
     monkeypatch.setattr(auto_inspect, "_spawn_detached", lambda interval: spawned.append(interval))
@@ -218,8 +221,6 @@ def test_start_daemon_coerces_a_string_interval(isolated_run_dir, monkeypatch):
         "get_auto_inspect_config",
         lambda: {"enabled": True, "interval": "900"},
     )
-    monkeypatch.delattr(auto_inspect.os, "fork", raising=False)
-
     spawned = []
     monkeypatch.setattr(auto_inspect, "_spawn_detached", lambda interval: spawned.append(interval))
 
@@ -241,16 +242,21 @@ def test_start_daemon_refuses_when_not_enabled(isolated_run_dir, monkeypatch):
         auto_inspect.start_daemon()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX fork path")
-def test_forked_daemon_releases_the_parents_stdout_pipe(tmp_path):
-    """A shell capturing the enabling command's output must see EOF when the
-    parent exits. The forked child dup2's its REAL fds (devnull for
-    stdin/stdout, the log file for stderr) - rebinding only the sys.* objects
-    left fd 1 open in the daemon, so `$(cwcli config auto-inspect enable)` and
-    every piped invocation hung forever waiting for EOF. Mock-free: a real
-    subprocess with a captured pipe, a real fork, a real daemon (killed in
-    cleanup). Fails as a 30s TimeoutExpired against the unfixed code."""
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock")
+def test_daemon_outlives_the_command_without_holding_its_descriptors(tmp_path):
+    """The daemon must not keep anything the enabling command had open. A shell
+    capturing the command's output must see EOF when the parent exits (the daemon
+    once held fd 1 open, so `$(cwcli config auto-inspect enable)` hung), and a
+    wrapper's lock file must be free once the command returns (a forked daemon
+    inherited every fd, so a flock-wrapped command left the lock held by a process
+    that looked like the command still running). Mock-free: a real subprocess with a
+    captured pipe and a held flock, a real daemon (killed in cleanup). Fails as a
+    30s TimeoutExpired or a held lock against a forking implementation."""
+    lock_path = tmp_path / "wrapper.lock"
     script = (
+        "import fcntl, os\n"
+        f"fd = os.open({str(lock_path)!r}, os.O_CREAT | os.O_RDWR)\n"
+        "fcntl.flock(fd, fcntl.LOCK_EX)\n"
         "from caffeinated_whale_cli.utils import auto_inspect, config_utils\n"
         "config_utils.set_auto_inspect_enabled(True)\n"
         "auto_inspect.start_daemon()\n"
@@ -286,6 +292,10 @@ def test_forked_daemon_releases_the_parents_stdout_pipe(tmp_path):
             pass
     assert result.returncode == 0, result.stderr
     assert "PARENT_DONE" in result.stdout
+    import fcntl
+
+    with open(lock_path) as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)  # BlockingIOError = leaked
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX fork path")
@@ -459,32 +469,3 @@ def test_pid_dir_honors_cwcli_home():
     assert auto_inspect.LOG_FILE.parent == auto_inspect.PID_DIR
     assert not str(auto_inspect.LOG_FILE).startswith("/tmp/cwcli")
     assert os.path.isabs(str(auto_inspect.LOG_FILE))
-
-
-def test_start_daemon_spawns_instead_of_forking_from_a_multithreaded_process(
-    isolated_run_dir, monkeypatch
-):
-    """The `cwcli ui` daemon enables auto-inspect from a request thread. A fork
-    there copies the daemon's listening socket into the child, which then pins
-    the port after the daemon exits; a multithreaded host must spawn instead."""
-    monkeypatch.setattr(
-        auto_inspect.config_utils,
-        "get_auto_inspect_config",
-        lambda: {"enabled": True, "interval": 900},
-    )
-    monkeypatch.setattr(auto_inspect.os, "fork", lambda: pytest.fail("forked"), raising=False)
-    spawned = []
-    monkeypatch.setattr(auto_inspect, "_spawn_detached", lambda interval: spawned.append(interval))
-
-    import threading
-
-    release = threading.Event()
-    other = threading.Thread(target=release.wait, daemon=True)
-    other.start()
-    try:
-        auto_inspect.start_daemon()
-    finally:
-        release.set()
-        other.join()
-
-    assert spawned == [900]
