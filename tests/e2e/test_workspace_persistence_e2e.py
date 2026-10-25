@@ -4,7 +4,7 @@ Proves the workspace map (frappe mount rewritten to ``../data:{bench_parent}:cac
 end to end on real instances:
 
 - a fresh default-parent instance keeps its bench, a host-written marker, and the
-  s4 supervisor logs across a full ``docker compose down`` + ``up`` recreation,
+  s4 supervisor logs across a full ``docker compose rm`` + ``up`` recreation,
   and its bench data lives directly on the host at ``{project}/data/`` (a bind
   mount, not a named volume);
 - a custom ``--bench-parent`` builds a real running bench under that parent,
@@ -91,7 +91,7 @@ def _recreate(name: str) -> None:
 @v16_only
 def test_default_parent_persists_bench_across_recreation(running_instance):
     """A default (/workspace) instance keeps its bench, a host-written marker, and
-    the supervisor logs across a `docker compose down`+`up`, and its data lives on
+    the supervisor logs across a `docker compose rm`+`up`, and its data lives on
     the host `{project}/data/` bind mount."""
     inst = running_instance
 
