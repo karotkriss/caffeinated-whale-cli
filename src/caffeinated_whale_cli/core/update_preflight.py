@@ -856,10 +856,15 @@ def run_preflight(
     )
 
 
-# What the data-loss guard cannot rule out: the app's local work could not be read,
-# or the checks did not run at all.
+# What the data-loss guard cannot rule out: the app's local work could not be read
+# (git refused the repo or failed to answer), or the checks did not run at all.
 _LOCAL_WORK_UNKNOWN = frozenset(
-    {"git.local_work_unverified", "git.unreadable", "preflight.unverified"}
+    {
+        "git.dubious_ownership",
+        "git.local_work_unverified",
+        "git.unreadable",
+        "preflight.unverified",
+    }
 )
 
 
