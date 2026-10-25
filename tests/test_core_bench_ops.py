@@ -296,12 +296,12 @@ def test_a_failing_suite_reports_not_ok(container):
     assert result.status is Status.WARNING
 
 
-def _suite_prints(container, code, output):
-    """Make the fake's `run-tests` exec exit `code` having printed `output`."""
+def _suite_prints(container, code, output, *, verb="run-tests"):
+    """Make the fake's `verb` exec exit `code` having printed `output`."""
     run = container._run
 
     def _run(cmd):
-        if "run-tests" in (cmd if isinstance(cmd, str) else " ".join(cmd)):
+        if f" {verb}" in (cmd if isinstance(cmd, str) else " ".join(cmd)):
             container.calls.append(cmd)
             return code, output
         return run(cmd)
@@ -379,8 +379,39 @@ def test_a_run_refused_by_the_allow_tests_guard_is_not_ok_and_names_the_fix(cont
 def test_migrate_output_is_never_judged_by_the_test_summary(container):
     """Only run-tests reads output; a migrate whose logs happen to print FAILED is
     decided by its exit code alone."""
+    _suite_prints(container, 0, "Ran 5 tests in 0.1s\n\nFAILED (failures=1)\n", verb="migrate")
+
     result = bench_ops.migrate_site("proj", site=SITE)
+
+    assert any(str(c).endswith(" migrate") for c in container.calls)
     assert result.data.ok is True
+
+
+def test_a_nonzero_exit_still_names_the_reported_failure(container):
+    """v16 exits non-zero on a failed suite; the summary still rides the report."""
+    _suite_prints(container, 1, "Ran 5 tests in 0.1s\n\nFAILED (failures=1, errors=1)\n")
+
+    result = bench_ops.run_tests("proj", site=SITE, app="payments")
+
+    assert result.data.ok is False
+    assert "FAILED (failures=1, errors=1)" in result.data.results[0].message
+
+
+def test_a_stdout_flush_after_the_stderr_summary_cannot_hide_it(container, monkeypatch):
+    chunks = [
+        ExecChunk(stream="stderr", text="Ran 5 tests in 0.1s\n\nFAI"),
+        ExecChunk(stream="stdout", text="x" * 20000),
+        ExecChunk(stream="stderr", text="LED (failures=2)\n"),
+        ExecChunk(stream="stdout", text="y" * 20000),
+    ]
+    monkeypatch.setattr(
+        bench_ops, "exec_stream", lambda *a, **k: iter([*chunks, ExecDone(exit_code=0)])
+    )
+
+    result = bench_ops.run_tests("proj", site=SITE, app="payments")
+
+    assert result.data.ok is False
+    assert "FAILED (failures=2)" in result.data.results[0].message
 
 
 def test_run_tests_does_not_touch_maintenance_mode(container):
