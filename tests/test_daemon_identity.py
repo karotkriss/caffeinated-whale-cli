@@ -143,3 +143,10 @@ def test_two_daemons_use_independent_pid_files(tmp_path):
     assert daemon_identity.is_running(a) is False  # clears a
     assert daemon_identity.is_running(b) is False  # b never existed; a's clearing didn't touch it
     assert not a.exists()
+
+
+def test_last_log_line_is_the_last_non_empty_line(tmp_path):
+    log = tmp_path / "d.log"
+    assert daemon_identity.last_log_line(log) is None  # no log yet
+    log.write_text("[t] started\n[t] RuntimeError: boom\n\n")
+    assert daemon_identity.last_log_line(log) == "[t] RuntimeError: boom"

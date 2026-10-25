@@ -604,11 +604,46 @@ def test_start_daemon_is_a_noop_when_already_running(run_dir, monkeypatch):
 def test_start_daemon_spawns_and_never_forks(run_dir, monkeypatch):
     monkeypatch.setattr(cred_daemon, "is_running", lambda: False)
     monkeypatch.setattr(cred_daemon.os, "fork", lambda: pytest.fail("forked"), raising=False)
-    monkeypatch.setattr(cred_daemon, "_await_started", lambda timeout=2.0: None)
+    monkeypatch.setattr(cred_daemon, "_await_started", lambda proc: None)
     spawned = []
     monkeypatch.setattr(cred_daemon, "_spawn_detached", lambda: spawned.append(True))
     cred_daemon.start_daemon()
     assert spawned == [True]
+
+
+def test_a_daemon_that_dies_at_startup_is_reported_not_started(run_dir, monkeypatch):
+    """A child that exits before writing its pid file raises with its exit code
+    and logs the failure, instead of start_daemon returning as if it were up.
+    Mock-free: a real child that exits 3."""
+    monkeypatch.setattr(cred_daemon, "_bootstrap_source", lambda module_path: "raise SystemExit(3)")
+
+    with pytest.raises(RuntimeError, match=r"exited during startup \(exit code 3\)"):
+        cred_daemon.start_daemon()
+
+    assert "credential-bridge daemon failed to start" in cred_daemon.LOG_FILE.read_text()
+    assert not cred_daemon.is_running()
+
+
+def test_a_daemon_that_never_comes_up_times_out_loudly(run_dir, monkeypatch):
+    """A child that stays alive but never writes its pid file is a failure too."""
+    monkeypatch.setattr(
+        cred_daemon, "_bootstrap_source", lambda module_path: "import time; time.sleep(30)"
+    )
+    real_await = cred_daemon._await_started
+    procs = []
+
+    def short_await(proc):
+        procs.append(proc)
+        real_await(proc, timeout=0.3)
+
+    monkeypatch.setattr(cred_daemon, "_await_started", short_await)
+    try:
+        with pytest.raises(RuntimeError, match="did not come up within 0.3s"):
+            cred_daemon.start_daemon()
+    finally:
+        for proc in procs:
+            proc.kill()
+            proc.wait()
 
 
 def test_concurrent_start_forks_at_most_one_daemon(run_dir, monkeypatch):

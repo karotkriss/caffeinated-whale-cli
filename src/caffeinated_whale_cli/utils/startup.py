@@ -30,7 +30,6 @@ class BootUnit(NamedTuple):
     task_name: str  # Windows Task Scheduler task name
     description: str  # human description (systemd Description=)
     start_args: tuple[str, ...]  # cwcli argv that starts the daemon
-    stop_args: tuple[str, ...]  # cwcli argv that stops it
 
     @property
     def log_stem(self) -> str:
@@ -44,7 +43,6 @@ AUTO_INSPECT = BootUnit(
     task_name="CaffeinatedWhaleCliAutoInspect",
     description="Caffeinated Whale CLI Auto-Inspect Service",
     start_args=("config", "auto-inspect", "start"),
-    stop_args=("config", "auto-inspect", "stop"),
 )
 
 CRED_BRIDGE = BootUnit(
@@ -53,7 +51,6 @@ CRED_BRIDGE = BootUnit(
     task_name="CaffeinatedWhaleCliCredBridge",
     description="Caffeinated Whale CLI Credential Bridge",
     start_args=("config", "cred-bridge", "start"),
-    stop_args=("config", "cred-bridge", "stop"),
 )
 
 
@@ -226,30 +223,58 @@ def _is_linux_startup_installed(unit: BootUnit) -> bool:
     return _get_linux_service_path(unit).exists()
 
 
-def _install_linux_startup(unit: BootUnit) -> tuple[bool, str | None]:
-    """Install Linux systemd user service."""
+# Deliberately NO ExecStop. When the daemon is already running (started outside
+# systemd by `enable`, the web UI, or `cwcli open`), ExecStart's guarded start
+# no-ops and leaves the unit with no process, so systemd stops the unit at once
+# and runs ExecStop - which was `cwcli config <daemon> stop`, killing the live
+# daemon the unit never owned. systemd's default stop (SIGTERM to the unit's own
+# cgroup) already stops a daemon the unit DID start, and both daemons exit
+# cleanly on SIGTERM.
+def _write_linux_unit(unit: BootUnit) -> None:
     service_path = _get_linux_service_path(unit)
     service_path.parent.mkdir(parents=True, exist_ok=True)
-
-    cwcli_path = get_cwcli_path()
-
-    service_content = f"""[Unit]
+    service_path.write_text(
+        f"""[Unit]
 Description={unit.description}
 After=network.target
 
 [Service]
 Type=forking
-ExecStart="{cwcli_path}" {" ".join(unit.start_args)}
-ExecStop="{cwcli_path}" {" ".join(unit.stop_args)}
+ExecStart="{get_cwcli_path()}" {" ".join(unit.start_args)}
 Restart=on-failure
 RestartSec=10
 
 [Install]
 WantedBy=default.target
 """
+    )
 
-    with open(service_path, "w") as f:
-        f.write(service_content)
+
+def repair_startup(unit: BootUnit = AUTO_INSPECT) -> bool:
+    """Drop the daemon-killing ExecStop line from an installed Linux unit.
+
+    Returns True when a unit was repaired. Only that line goes: the unit's
+    ExecStart keeps the cwcli it was installed with (the caller may have a
+    different one on PATH), its enabled state is untouched, nothing is started.
+    """
+    if get_platform() != "linux":
+        return False
+    service_path = _get_linux_service_path(unit)
+    try:
+        lines = service_path.read_text().splitlines(keepends=True)
+        kept = [line for line in lines if not line.startswith("ExecStop=")]
+        if len(kept) == len(lines):
+            return False
+        service_path.write_text("".join(kept))
+    except OSError:
+        return False
+    subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+    return True
+
+
+def _install_linux_startup(unit: BootUnit) -> tuple[bool, str | None]:
+    """Install Linux systemd user service."""
+    _write_linux_unit(unit)
 
     # Reload systemd and enable the service
     result = subprocess.run(
@@ -394,6 +419,7 @@ def install_system_unit(unit: BootUnit, *, user: str, group: str, pid_file: str)
 
     cwcli_path = get_cwcli_path()
     service_path = system_unit_path(unit)
+    # No ExecStop, for the reason given above _write_linux_unit.
     service_content = f"""[Unit]
 Description={unit.description} (shared)
 After=network.target docker.service
@@ -404,7 +430,6 @@ User={user}
 Group={group}
 PIDFile={pid_file}
 ExecStart="{cwcli_path}" {" ".join(unit.start_args)}
-ExecStop="{cwcli_path}" {" ".join(unit.stop_args)}
 Restart=on-failure
 RestartSec=10
 

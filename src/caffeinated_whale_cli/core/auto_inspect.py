@@ -27,7 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..utils import auto_inspect as daemon
-from ..utils import config_utils, startup
+from ..utils import config_utils, daemon_identity, startup
 from .envelope import Message, Result, Status
 from .errors import CwcliError, ErrorKind
 
@@ -45,6 +45,7 @@ class AutoInspectState:
     startup_enabled: bool  # config: the startup_enabled flag
     boot_installed: bool  # OS: the boot unit actually present
     log_file: str
+    last_log_line: str | None  # the daemon log's last line: why it is not running
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -75,6 +76,7 @@ def _state() -> AutoInspectState:
         startup_enabled=bool(config.get("startup_enabled", False)),
         boot_installed=startup.is_startup_installed(),
         log_file=str(daemon.LOG_FILE),
+        last_log_line=daemon_identity.last_log_line(daemon.LOG_FILE),
     )
 
 
@@ -136,6 +138,17 @@ def sync_boot_hook(
                 )
     except OSError as e:  # e.g. an unsupported platform
         warnings.append(Message("startup.sync_failed", f"Could not update boot startup: {e}"))
+
+
+def repair_boot_hook(actions: list[str], *, unit: startup.BootUnit = startup.AUTO_INSPECT) -> None:
+    """Rewrite an installed boot unit that still carries the daemon-killing ExecStop.
+
+    Units installed before the fix stop the live daemon whenever systemd starts
+    them while it already runs (see ``utils/startup._write_linux_unit``), so every
+    enable/start repairs one in place. Best-effort: a failure leaves the old unit.
+    """
+    if startup.repair_startup(unit):
+        actions.append("hook.repaired")
 
 
 def _install_failed_text(unit: startup.BootUnit, reason: str | None) -> str:
@@ -204,6 +217,7 @@ def enable(interval: int | None = None, at_boot: bool | None = None) -> Result[A
     warnings: list[Message] = []
     if at_boot is not None:
         sync_boot_hook(at_boot, actions, warnings)
+    repair_boot_hook(actions)
 
     return Result(
         status=Status.WARNING if warnings else Status.OK,
@@ -234,6 +248,42 @@ def disable() -> Result[AutoInspectOutcome]:
         data=AutoInspectOutcome(actions=actions, state=_state()),
         warnings=warnings,
     )
+
+
+def _require_enabled() -> None:
+    """A start against a disabled feature would run a daemon the config says
+    should not exist, so ``start``/``restart`` refuse it."""
+    if not config_utils.get_auto_inspect_config().get("enabled"):
+        raise CwcliError(
+            ErrorKind.USAGE,
+            "auto_inspect.not_enabled",
+            "Auto-inspect is not enabled.",
+            hint="run `cwcli config auto-inspect enable` first",
+        )
+
+
+def start() -> Result[AutoInspectOutcome]:
+    """Start the daemon only, leaving config as-is; idempotent."""
+    _require_enabled()
+    actions: list[str] = []
+    if daemon.is_running():
+        actions.append("daemon.already_running")
+    else:
+        _start_daemon()
+        actions.append("daemon.started")
+    repair_boot_hook(actions)
+    return Result(status=Status.OK, data=AutoInspectOutcome(actions=actions, state=_state()))
+
+
+def restart() -> Result[AutoInspectOutcome]:
+    """Stop the daemon if it runs, then start it again."""
+    _require_enabled()
+    if daemon.is_running():
+        _stop_daemon()
+    _start_daemon()
+    actions = ["daemon.restarted"]
+    repair_boot_hook(actions)
+    return Result(status=Status.OK, data=AutoInspectOutcome(actions=actions, state=_state()))
 
 
 def stop() -> Result[AutoInspectOutcome]:

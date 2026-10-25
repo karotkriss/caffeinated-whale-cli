@@ -2064,6 +2064,10 @@ class TestSettings:
                 {"at_boot": False},
             ),
             ({"setting": "cred_bridge.disable"}, "core_cred_bridge", "disable", (), {}),
+            ({"setting": "cred_bridge.start"}, "core_cred_bridge", "start", (), {}),
+            ({"setting": "cred_bridge.restart"}, "core_cred_bridge", "restart", (), {}),
+            ({"setting": "auto_inspect.start"}, "core_auto_inspect", "start", (), {}),
+            ({"setting": "auto_inspect.restart"}, "core_auto_inspect", "restart", (), {}),
             ({"setting": "agent_hooks.install"}, "agent_hooks", "install", (), {}),
         ],
     )

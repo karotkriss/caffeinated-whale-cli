@@ -80,6 +80,12 @@ const autoAtBoot = computed({
   set: (v) => applySetting('auto_inspect.enable', { at_boot: v }, { done: v ? 'Auto-inspect starts at boot' : 'Boot hook removed' }),
 })
 
+// Start (or Restart, when it runs) the daemon of an enabled feature: enabling
+// starts it too, but a daemon can stop later and the switch would still read on.
+const startDaemon = (feature, running, name) =>
+  applySetting(`${feature}.${running ? 'restart' : 'start'}`, {}, { done: `${name} daemon ${running ? 'restarted' : 'started'}` })
+const daemonBusy = (feature) => busy(`${feature}.start`) || busy(`${feature}.restart`)
+
 // --- credential bridge ------------------------------------------------------
 const bridgeOn = computed({
   get: () => !!c.value?.cred_bridge.enabled,
@@ -179,6 +185,10 @@ const HOOK_THEME = { installed: 'green', updated: 'green', unchanged: 'gray', sk
               <Button label="Save interval" :disabled="!intervalChanged || Number(intervalMinutes) < 1" :loading="busy('auto_inspect.enable')" @click="saveInterval" />
               <Checkbox v-model="autoAtBoot" label="Start at boot" :disabled="busy('auto_inspect.enable')" />
             </div>
+            <div v-if="c.auto_inspect.enabled" class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 pl-0.5">
+              <Button :label="c.auto_inspect.daemon_running ? 'Restart daemon' : 'Start daemon'" :icon-left="c.auto_inspect.daemon_running ? 'lucide-rotate-cw' : 'lucide-play'" :variant="c.auto_inspect.daemon_running ? 'subtle' : 'solid'" :loading="daemonBusy('auto_inspect')" @click="startDaemon('auto_inspect', c.auto_inspect.daemon_running, 'Auto-inspect')" />
+              <code v-if="!c.auto_inspect.daemon_running && c.auto_inspect.last_log_line" class="min-w-0 basis-full break-words font-mono text-xs text-ink-gray-5" :title="c.auto_inspect.log_file">Last log: {{ c.auto_inspect.last_log_line }}</code>
+            </div>
           </div>
         </div>
         <div class="mt-3 space-y-2">
@@ -193,8 +203,10 @@ const HOOK_THEME = { installed: 'green', updated: 'green', unchanged: 'gray', sk
         <div class="mt-3 divide-y divide-outline-gray-1">
           <div class="py-3">
             <Switch v-model="bridgeOn" label="Persistent bridge" :description="c.cred_bridge.enabled ? (c.cred_bridge.daemon_running ? `daemon running · ${c.cred_bridge.transport} transport` : 'enabled, but the daemon is not running') : 'off; per-command bridging still works'" :disabled="busy('cred_bridge.enable') || busy('cred_bridge.disable')" />
-            <div v-if="c.cred_bridge.enabled" class="mt-3 pl-0.5">
+            <div v-if="c.cred_bridge.enabled" class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 pl-0.5">
+              <Button :label="c.cred_bridge.daemon_running ? 'Restart daemon' : 'Start daemon'" :icon-left="c.cred_bridge.daemon_running ? 'lucide-rotate-cw' : 'lucide-play'" :variant="c.cred_bridge.daemon_running ? 'subtle' : 'solid'" :loading="daemonBusy('cred_bridge')" @click="startDaemon('cred_bridge', c.cred_bridge.daemon_running, 'Credential bridge')" />
               <Checkbox v-model="bridgeAtBoot" label="Start at boot" :disabled="busy('cred_bridge.enable')" />
+              <code v-if="!c.cred_bridge.daemon_running && c.cred_bridge.last_log_line" class="min-w-0 basis-full break-words font-mono text-xs text-ink-gray-5" :title="c.cred_bridge.log_file">Last log: {{ c.cred_bridge.last_log_line }}</code>
             </div>
           </div>
           <div class="py-3">
@@ -209,7 +221,10 @@ const HOOK_THEME = { installed: 'green', updated: 'green', unchanged: 'gray', sk
             </div>
           </div>
         </div>
-        <div class="mt-3"><CommandLine :command="c.cred_bridge.enabled ? 'cwcli config cred-bridge disable' : 'cwcli config cred-bridge enable'" /></div>
+        <div class="mt-3 space-y-2">
+          <CommandLine :command="c.cred_bridge.enabled ? 'cwcli config cred-bridge disable' : 'cwcli config cred-bridge enable'" />
+          <CommandLine v-if="c.cred_bridge.enabled" command="cwcli config cred-bridge start" />
+        </div>
       </section>
 
       <section>

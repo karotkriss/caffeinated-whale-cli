@@ -673,34 +673,11 @@ def _bootstrap_source(module_path: str) -> str:
     )
 
 
-def _spawn_detached() -> None:
-    """Run the daemon loop in a detached child.
-
-    Child stderr goes to the LOG FILE (not DEVNULL) so a child that dies in its
-    bootstrap leaves a diagnosable trace - the auto_inspect lesson.
-    """
+def _spawn_detached() -> subprocess.Popen:
+    """Run the daemon loop in a detached child (stderr to the LOG FILE)."""
     _ensure_run_dir()
     source = _bootstrap_source(str(Path(__file__).parent.parent.parent))
-
-    if sys.platform == "win32":
-        DETACHED_PROCESS = 0x00000008  # noqa: N806
-        CREATE_NEW_PROCESS_GROUP = 0x00000200  # noqa: N806
-        creationflags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-        new_session = False
-    else:
-        creationflags = 0
-        new_session = True
-
-    with open(LOG_FILE, "a") as log:
-        subprocess.Popen(
-            [sys.executable, "-c", source],
-            close_fds=True,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=log,
-            creationflags=creationflags,
-            start_new_session=new_session,
-        )
+    return daemon_identity.spawn_detached(source, LOG_FILE)
 
 
 def _acquire_startup_lock() -> int | None:
@@ -754,19 +731,15 @@ def _release_startup_lock(fd: int | None) -> None:
         os.close(fd)
 
 
-def _await_started(timeout: float = 2.0) -> None:
-    """Poll until the freshly spawned daemon has written its pid file.
+def _await_started(proc: subprocess.Popen, timeout: float = 10.0) -> None:
+    """Wait until the freshly spawned daemon has written its pid file, or raise.
 
     The startup lock is held across this wait, so a concurrent caller blocked on
     the lock observes ``is_running() == True`` when it finally acquires and no-ops
-    instead of forking a rival. Bounded (ponytail: 2s ceiling) so a child that
-    dies in its bootstrap can never keep startup blocked.
+    instead of starting a rival. Bounded (ponytail: 10s ceiling, a cold import on a
+    slow disk) so a child that dies in its bootstrap can never keep startup blocked.
     """
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if is_running():
-            return
-        time.sleep(0.02)
+    daemon_identity.confirm_started(proc, PID_FILE, timeout)
 
 
 def _spawn_daemon() -> None:
@@ -778,9 +751,14 @@ def _spawn_daemon() -> None:
     held the lock of whatever wrapper launched it. ``Popen(close_fds=True)`` hands
     the child only the descriptors named here, and also never inherits the startup
     lock fd.
+
+    A daemon that does not come up is logged and raised, never reported started.
     """
-    _spawn_detached()
-    _await_started()
+    try:
+        _await_started(_spawn_detached())
+    except (OSError, RuntimeError) as e:
+        _log(f"credential-bridge daemon failed to start: {e}")
+        raise RuntimeError(f"{e}; see {LOG_FILE}") from e
 
 
 def _may_fork_daemon() -> bool:
