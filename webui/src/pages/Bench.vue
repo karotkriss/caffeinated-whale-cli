@@ -9,7 +9,7 @@ import AppsTable from '../components/AppsTable.vue'
 import LogsPane from '../components/LogsPane.vue'
 import CommandLine from '../components/CommandLine.vue'
 import { instance as findInstance, loadDetail, benchName, setFocus } from '../data/fleet'
-import { openAction, menuOption } from '../data/dialog'
+import { openAction, menuOption, dangerGroup } from '../data/dialog'
 import { openJob } from '../data/job-dialog'
 
 const route = useRoute()
@@ -36,6 +36,7 @@ const more = computed(() => [
   jobOption('Build assets', 'lucide-hammer', 'build'),
   jobOption('Complete setup wizard', 'lucide-list-checks', 'setup-wizard'),
   menuOption('bench.label', ctx.value, health.value),
+  dangerGroup(['bench.remove'], ctx.value, health.value),
 ])
 
 function showLogs(process) {
@@ -72,7 +73,7 @@ function showLogs(process) {
       <div><dt class="text-ink-gray-5">Default site</dt><dd class="mt-1 font-mono text-ink-gray-8">{{ bench.default_site || 'none set' }}</dd></div>
     </dl>
     <Alert
-      v-if="running && down.length"
+      v-if="running && benchUp && down.length"
       theme="amber"
       :title="`${down.map((p) => p.label).join(', ')} ${down.length > 1 ? 'are' : 'is'} down`"
       :description="`${down[0].label} is ${down[0].state || 'down'}${down[0].state === 'FATAL' ? ': supervisord gave up restarting it' : ''}. Its log usually names the cause.`"

@@ -962,9 +962,9 @@ def checkout_app(
     shared. It stops at the first failed step (a failed fetch makes the checkout
     meaningless).
 
-    Once the checkout step succeeds, this runs the SAME
-    :func:`_resync_after_mutation` step ``install`` and ``uninstall`` use, even if a
-    later ``reset`` step fails. Swapping the code under a running bench and leaving
+    Once a step that moves the tree succeeds (``reset`` or ``checkout``), this runs
+    the SAME :func:`_resync_after_mutation` step ``install`` and ``uninstall`` use,
+    even if the checkout then fails. Swapping the code under a running bench and leaving
     it serving the old branch is this verb's own version of that defect, and the
     quietest one - nothing errors, the developer simply tests the ref they moved
     off. The sites to prove are the ones with this app installed
@@ -993,14 +993,16 @@ def checkout_app(
     # idempotent by re-pointing an existing local branch at the new remote tip.
     # ponytail: a tag/sha names its local branch after itself (odd, harmless) -
     # the workflow's target is a feature branch, where the name is exactly right.
-    steps = [
-        ("fetch", f"git fetch {q_remote} -- {q_ref}"),
-        ("checkout", f"git checkout -B {q_ref} FETCH_HEAD"),
-    ]
+    steps = [("fetch", f"git fetch {q_remote} -- {q_ref}")]
     if reset:
-        # Discard any local edits so build/migrate run against exactly the fetched
-        # tree (bench update's dirty-tree guard; the in-instance copy holds no work).
-        steps.append(("reset", "git reset --hard FETCH_HEAD"))
+        # Discard tracked local edits BEFORE switching: `git checkout` refuses to
+        # overwrite a modified file the target ref also changes, so a reset after it
+        # never ran in exactly the case --reset exists for. Reset to HEAD, not
+        # FETCH_HEAD, so the branch being left keeps its commit; the checkout below
+        # then lands the clean tree on the fetched tip. Untracked files stay (no
+        # `git clean`, no `checkout -f`), and one in the target's way still refuses.
+        steps.append(("reset", "git reset --hard"))
+    steps.append(("checkout", f"git checkout -B {q_ref} FETCH_HEAD"))
 
     results: list[AppResult] = []
     with credbridge.credential_bridge(frappe_container, path):
@@ -1010,11 +1012,11 @@ def checkout_app(
             if code != 0:
                 break
 
-    # Gated on the CHECKOUT step, not on the whole run: `git fetch` writes only into
-    # `.git`, so a run that stopped there changed no code any process could be
-    # serving, while a failed `--reset` AFTER a good checkout did move the tree.
+    # Gated on a step that moved the tree, not on the whole run: `git fetch` writes
+    # only into `.git`, so a run that stopped there changed no code any process could
+    # be serving, while a good `--reset` followed by a failed checkout did.
     app_imports: list[resolvers.AppImport] = []
-    if any(r.action == "checkout" and r.ok for r in results):
+    if any(r.action in ("reset", "checkout") and r.ok for r in results):
         _resync_after_mutation(
             frappe_container,
             path,

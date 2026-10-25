@@ -61,6 +61,19 @@ envelope frappe-ui's fetch layer reads natively (``type`` is the core's
 * ``POST /api/v1/actions``                  - the Phase 1 compatibility endpoint;
   the Phase 2 page sends lifecycle work to jobs, while older built pages keep
   their original guarded behavior until they reload
+* ``POST /api/v1/settings``                 - one settings write (``{"setting":
+  <name>, ...}``) over the SAME core functions ``cwcli config`` and ``cwcli axi
+  setup`` call: cache clear/enable/disable, search paths add/remove/prune,
+  auto-inspect and credential-bridge enable/disable, tips, agent hooks. The
+  whole-cache clear keeps the core's own consent (``NEEDS_CHOICE``
+  ``confirm_clear`` -> 409 until ``consent: true``), and nothing here is a
+  project-scoped mutation, so it is serialized under one shared lock
+
+The guarded destructive verbs (``rm``, ``rm-site``, ``rm-bench``, ``apps
+checkout --reset``) are JOBS, not actions: ``jobs.py`` runs them through the
+same core paths as the CLI, consent is a spec field the page sets only after a
+typed confirmation of the exact instance, bench, site or app name, and no
+request can express ``--no-backup`` or ``--force``.
 
 ``?focus=<project>`` is how the browser says which instance it currently has
 open, and it is the whole mechanism behind the web-probe cadence: the SSE
@@ -166,8 +179,10 @@ import typer
 from .. import __version__
 from .. import jobs as core_jobs
 from ..core import apps as core_apps
+from ..core import auto_inspect as core_auto_inspect
 from ..core import bench_ops as core_bench_ops
 from ..core import config as core_config
+from ..core import cred_bridge as core_cred_bridge
 from ..core import doctor as core_doctor
 from ..core import fleet as core_fleet
 from ..core import inspect as core_inspect
@@ -183,7 +198,7 @@ from ..core import url as core_url
 from ..core import where as core_where
 from ..core.envelope import Message, Result, Status
 from ..core.errors import CwcliError, ErrorKind
-from ..utils import cache, daemon_identity
+from ..utils import agent_hooks, cache, daemon_identity
 from ..utils.console import console, stderr_console
 
 DEFAULT_PORT = 8765
@@ -197,7 +212,8 @@ SESSION_COOKIE = "cwcli_serve_session"
 # page compares it with the number it was built for instead of parsing versions.
 # 2: the /api/v1 routes and the {data}/{errors} envelope (Phase 1).
 # 3: durable jobs, job SSE frames, and detached lifecycle actions (Phase 2).
-PROTOCOL_VERSION = 3
+# 4: the settings endpoint and the guarded destructive job verbs (Phase 3).
+PROTOCOL_VERSION = 4
 
 # Map the core's closed error kinds onto equivalent HTTP statuses.
 _HTTP_FOR_KIND = {
@@ -228,6 +244,29 @@ ACTIONS = frozenset(
         "checkout_app",
     }
 )
+
+# Every settings write the page can ask for. Each maps onto ONE core function the
+# CLI renderer already calls; none is project-scoped lifecycle work.
+SETTINGS = frozenset(
+    {
+        "cache.clear",
+        "cache.enable",
+        "cache.disable",
+        "paths.add",
+        "paths.remove",
+        "paths.prune",
+        "auto_inspect.enable",
+        "auto_inspect.disable",
+        "cred_bridge.enable",
+        "cred_bridge.disable",
+        "tips.enable",
+        "tips.disable",
+        "agent_hooks.install",
+    }
+)
+# The lock stripe every settings write shares: the config is one TOML file read,
+# modified and written whole, so two concurrent writes would lose one.
+_SETTINGS_LOCK_KEY = "@settings"
 
 # ------------------------------------------------------------------ the web UI
 
@@ -813,6 +852,8 @@ class _Handler(BaseHTTPRequestHandler):
                 status, body = self._dispatch_action(payload)
             elif parsed.path == "/api/v1/jobs":
                 status, body = self._create_job(payload)
+            elif parsed.path == "/api/v1/settings":
+                status, body = self._apply_setting(payload)
             else:
                 status, body = self._control_job(parsed.path)
         except CwcliError as e:
@@ -869,6 +910,60 @@ class _Handler(BaseHTTPRequestHandler):
             ui_context=ui_context,
         )
         return 202, {"data": record}
+
+    def _apply_setting(self, payload: dict) -> tuple[int, dict]:
+        """One settings write, over the core function the CLI renderer calls.
+
+        Consent stays in the core: ``cache.clear`` with ``all`` returns the
+        core's ``confirm_clear`` choice (a 409) until the request carries
+        ``consent: true``, which the page sends only after its own confirmation.
+        ``agent_hooks.install`` is the one write outside ``core/``: it edits the
+        user's OWN agent-harness config files (the ``cwcli axi setup`` opt-in),
+        reports per-agent outcomes, and never bootstraps a harness it does not
+        detect.
+        """
+        setting = _required_str(payload, "setting")
+        if setting not in SETTINGS:
+            raise CwcliError(
+                ErrorKind.USAGE,
+                "setting.unsupported",
+                f"Unsupported setting '{setting}'.",
+                hint="Allowed settings are " + ", ".join(sorted(SETTINGS)) + ".",
+            )
+        with self._action_lock(_SETTINGS_LOCK_KEY):
+            if setting == "cache.clear":
+                result: Result = core_config.clear_cache(
+                    _optional_str(payload.get("project")),
+                    all_projects=payload.get("all") is True,
+                    consent=payload.get("consent") is True,
+                )
+            elif setting in {"cache.enable", "cache.disable"}:
+                result = core_config.set_cache(setting == "cache.enable")
+            elif setting == "paths.add":
+                result = core_config.add_search_path(_required_str(payload, "path"))
+            elif setting == "paths.remove":
+                result = core_config.remove_search_path(_required_str(payload, "path"))
+            elif setting == "paths.prune":
+                result = core_config.prune_search_paths(apply=payload.get("apply") is True)
+            elif setting == "auto_inspect.enable":
+                result = core_auto_inspect.enable(
+                    interval=_optional_int(payload.get("interval"), "interval"),
+                    at_boot=_optional_bool(payload.get("at_boot"), "at_boot"),
+                )
+            elif setting == "auto_inspect.disable":
+                result = core_auto_inspect.disable()
+            elif setting == "cred_bridge.enable":
+                result = core_cred_bridge.enable(
+                    at_boot=_optional_bool(payload.get("at_boot"), "at_boot")
+                )
+            elif setting == "cred_bridge.disable":
+                result = core_cred_bridge.disable()
+            elif setting in {"tips.enable", "tips.disable"}:
+                result = core_config.set_tips(setting == "tips.enable")
+            else:
+                assert setting == "agent_hooks.install"
+                result = Result(status=Status.OK, data=agent_hooks.install())
+        return _setting_response(setting, result)
 
     def _control_job(self, path: str) -> tuple[int, dict]:
         rest = path[len("/api/v1/jobs/") :]
@@ -1267,7 +1362,8 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json({"data": _doctor_json(report)})
 
     def _send_config(self) -> None:
-        """``core.config.show_config``, read-only (Settings is read-only in Phase 1)."""
+        """``core.config.show_config``, the read half of Settings (writes are
+        ``POST /api/v1/settings``)."""
         if self._refuse_cross_origin():
             return
         report = core_config.show_config().data
@@ -1346,7 +1442,13 @@ class _Handler(BaseHTTPRequestHandler):
             self.hub.unsubscribe(client_id)
 
 
-_POST_PATHS = {"/api/v1/actions", "/api/v1/session", "/api/v1/session/code", "/api/v1/jobs"}
+_POST_PATHS = {
+    "/api/v1/actions",
+    "/api/v1/session",
+    "/api/v1/session/code",
+    "/api/v1/jobs",
+    "/api/v1/settings",
+}
 
 
 def _is_post_path(path: str) -> bool:
@@ -1415,6 +1517,30 @@ def _optional_to(value) -> int | None:
     return int(value)
 
 
+def _optional_int(value, key: str) -> int | None:
+    """A JSON integer or absent; ``bool`` excluded (it is an ``int`` subclass)."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise CwcliError(
+            ErrorKind.USAGE, f"setting.{key}_invalid", f"'{key}' must be an integer when present."
+        )
+    return int(value)
+
+
+def _optional_bool(value, key: str) -> bool | None:
+    """A JSON boolean or absent (``None`` leaves the setting untouched in the core)."""
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise CwcliError(
+            ErrorKind.USAGE,
+            f"setting.{key}_invalid",
+            f"'{key}' must be true or false when present.",
+        )
+    return value
+
+
 def _optional_str(value) -> str | None:
     if value is None or value == "":
         return None
@@ -1480,6 +1606,22 @@ def _ok_response(action: str, project: str, status: Status, outcome, warnings) -
     )
 
 
+def _setting_response(setting: str, result: Result) -> tuple[int, dict]:
+    if result.status is Status.NEEDS_CHOICE:
+        return _choice_response(setting, "", result)
+    return (
+        200,
+        {
+            "data": {
+                "setting": setting,
+                "status": result.status.value,
+                "outcome": _plain(result.data),
+                "warnings": [_plain(w) for w in result.warnings],
+            }
+        },
+    )
+
+
 def _result_response(action: str, project: str, result: Result) -> tuple[int, dict]:
     if result.status is Status.NEEDS_CHOICE:
         return _choice_response(action, project, result)
@@ -1521,7 +1663,11 @@ def _choice_response(action: str, project: str, result: Result) -> tuple[int, di
             hint=(
                 f"Start the instance first (cwcli start {project}), then retry."
                 if code == "confirm_start"
-                else "Select a single bench or process, then retry."
+                else (
+                    "Confirm, then retry with consent: true."
+                    if choice is not None and choice.param == "consent"
+                    else "Select a single bench or process, then retry."
+                )
             ),
             action=action,
             choice=_plain(choice) if choice is not None else None,

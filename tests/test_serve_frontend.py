@@ -35,6 +35,7 @@ from caffeinated_whale_cli.core.stop import BenchStopOutcome, StopOutcome
 from caffeinated_whale_cli.core.unlock import UnlockOutcome
 from caffeinated_whale_cli.core.url import UrlProbe
 from caffeinated_whale_cli.core.where import WhereMatch, WhereResult
+from caffeinated_whale_cli.utils import agent_hooks
 
 _TIMEOUT = 5.0
 _TOKEN = "frontend-test-token"
@@ -1898,9 +1899,7 @@ class TestJobsEndpoint:
         )
 
         assert _get(daemon.base + "/api/v1/jobs") == (200, {"data": records})
-        status, body = _get(
-            daemon.base + "/api/v1/jobs/20261024120000-abcdef123456?after=4"
-        )
+        status, body = _get(daemon.base + "/api/v1/jobs/20261024120000-abcdef123456?after=4")
         assert status == 200
         assert body["data"]["events"] == [{"seq": 5}]
 
@@ -1960,9 +1959,7 @@ class TestJobsEndpoint:
         try:
             event, snapshot = stream.next_frame()
             assert event == "snapshot" and snapshot["jobs"] == []
-            daemon.hub.publish_job(
-                {"id": "20261024120000-abcdef123456", "state": "running"}
-            )
+            daemon.hub.publish_job({"id": "20261024120000-abcdef123456", "state": "running"})
             event, record = stream.next_frame()
             assert event == "job"
             assert record["state"] == "running"
@@ -1977,9 +1974,7 @@ class TestJobsEndpoint:
         )
         request = urllib.request.Request(
             daemon.base + "/api/v1/jobs",
-            data=json.dumps(
-                {"verb": "backup", "target": {"project": "p"}, "args": {}}
-            ).encode(),
+            data=json.dumps({"verb": "backup", "target": {"project": "p"}, "args": {}}).encode(),
             headers={
                 "Content-Type": "application/json",
                 "Origin": "https://example.invalid",
@@ -1993,3 +1988,224 @@ class TestJobsEndpoint:
 
         assert error.value.code == 403
         assert error.value.headers.get("Access-Control-Allow-Origin") is None
+
+
+class TestSettings:
+    """``POST /api/v1/settings``: each write lands on the one core function the CLI
+    renderer calls, consent stays in the core, and nothing else is reachable."""
+
+    def _post(self, daemon, payload):
+        return _post(daemon.base + "/api/v1/settings", payload)
+
+    @pytest.mark.parametrize(
+        ("payload", "module", "function", "expected_args", "expected_kwargs"),
+        [
+            ({"setting": "cache.enable"}, "core_config", "set_cache", (True,), {}),
+            ({"setting": "cache.disable"}, "core_config", "set_cache", (False,), {}),
+            ({"setting": "tips.enable"}, "core_config", "set_tips", (True,), {}),
+            ({"setting": "tips.disable"}, "core_config", "set_tips", (False,), {}),
+            ({"setting": "paths.add", "path": "/x"}, "core_config", "add_search_path", ("/x",), {}),
+            (
+                {"setting": "paths.remove", "path": "/x"},
+                "core_config",
+                "remove_search_path",
+                ("/x",),
+                {},
+            ),
+            ({"setting": "paths.prune"}, "core_config", "prune_search_paths", (), {"apply": False}),
+            (
+                {"setting": "paths.prune", "apply": True},
+                "core_config",
+                "prune_search_paths",
+                (),
+                {"apply": True},
+            ),
+            (
+                {"setting": "paths.prune", "apply": "yes"},
+                "core_config",
+                "prune_search_paths",
+                (),
+                {"apply": False},
+            ),
+            (
+                {"setting": "cache.clear", "project": "p"},
+                "core_config",
+                "clear_cache",
+                ("p",),
+                {"all_projects": False, "consent": False},
+            ),
+            (
+                {"setting": "cache.clear", "all": True, "consent": True},
+                "core_config",
+                "clear_cache",
+                (None,),
+                {"all_projects": True, "consent": True},
+            ),
+            (
+                {"setting": "auto_inspect.enable"},
+                "core_auto_inspect",
+                "enable",
+                (),
+                {"interval": None, "at_boot": None},
+            ),
+            (
+                {"setting": "auto_inspect.enable", "interval": 600, "at_boot": True},
+                "core_auto_inspect",
+                "enable",
+                (),
+                {"interval": 600, "at_boot": True},
+            ),
+            ({"setting": "auto_inspect.disable"}, "core_auto_inspect", "disable", (), {}),
+            (
+                {"setting": "cred_bridge.enable", "at_boot": False},
+                "core_cred_bridge",
+                "enable",
+                (),
+                {"at_boot": False},
+            ),
+            ({"setting": "cred_bridge.disable"}, "core_cred_bridge", "disable", (), {}),
+            ({"setting": "agent_hooks.install"}, "agent_hooks", "install", (), {}),
+        ],
+    )
+    def test_each_setting_lands_on_its_core_function(
+        self, daemon, monkeypatch, payload, module, function, expected_args, expected_kwargs
+    ):
+        calls = []
+
+        def fake(*args, **kwargs):
+            calls.append((args, kwargs))
+            if function == "install":
+                return [
+                    agent_hooks.HookOutcome("claude-code", "/h/.claude/settings.json", "installed")
+                ]
+            return Result(status=Status.OK, data={"done": True})
+
+        monkeypatch.setattr(getattr(serve_cmd, module), function, fake)
+
+        status, body = self._post(daemon, payload)
+
+        assert status == 200
+        assert calls == [(expected_args, expected_kwargs)]
+        assert body["data"]["setting"] == payload["setting"]
+        assert body["data"]["status"] == "ok"
+        if function == "install":
+            assert body["data"]["outcome"] == [
+                {
+                    "agent": "claude-code",
+                    "path": "/h/.claude/settings.json",
+                    "status": "installed",
+                    "detail": "",
+                }
+            ]
+
+    def test_clearing_the_whole_cache_keeps_the_cores_consent(self, daemon):
+        """The REAL core: `clear_cache(all_projects=True)` without consent is the
+        core's own `confirm_clear` choice, rendered 409 and naming the consent
+        field, so no page can bypass it by shaping the request."""
+        with pytest.raises(urllib.error.HTTPError) as error:
+            self._post(daemon, {"setting": "cache.clear", "all": True})
+
+        assert error.value.code == 409
+        body = json.loads(error.value.read())["errors"][0]
+        assert body["type"] == "needs_choice"
+        assert body["title"] == "confirm_clear"
+        assert body["choice"]["param"] == "consent"
+        assert "consent: true" in body["hint"]
+
+    def test_cache_clear_consent_is_strictly_the_json_boolean_true(self, daemon, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            serve_cmd.core_config,
+            "clear_cache",
+            lambda project, **kwargs: calls.append(kwargs["consent"])
+            or Result(status=Status.OK, data={"scope": "all"}),
+        )
+
+        for consent in ("yes", 1, "true"):
+            self._post(daemon, {"setting": "cache.clear", "all": True, "consent": consent})
+
+        assert calls == [False, False, False]
+
+    def test_a_core_refusal_maps_to_its_http_status(self, daemon):
+        """The REAL core refuses a relative search path as USAGE (400); the daemon
+        adds no validation of its own and loses none of the core's."""
+        with pytest.raises(urllib.error.HTTPError) as error:
+            self._post(daemon, {"setting": "paths.add", "path": "relative/bench"})
+
+        assert error.value.code == 400
+        assert json.loads(error.value.read())["errors"][0]["title"] == "path.not_absolute"
+
+    @pytest.mark.parametrize(
+        ("payload", "title"),
+        [
+            ({"setting": "auto_inspect.enable", "interval": "600"}, "setting.interval_invalid"),
+            ({"setting": "auto_inspect.enable", "interval": True}, "setting.interval_invalid"),
+            ({"setting": "auto_inspect.enable", "at_boot": "yes"}, "setting.at_boot_invalid"),
+            ({"setting": "cred_bridge.enable", "at_boot": 1}, "setting.at_boot_invalid"),
+            ({"setting": "paths.add"}, "action.path_required"),
+            ({"setting": "nope"}, "setting.unsupported"),
+            ({}, "action.setting_required"),
+        ],
+    )
+    def test_malformed_requests_are_refused_before_any_core_call(
+        self, daemon, monkeypatch, payload, title
+    ):
+        for module, names in (
+            ("core_auto_inspect", ("enable",)),
+            ("core_cred_bridge", ("enable",)),
+            ("core_config", ("add_search_path",)),
+        ):
+            for name in names:
+                monkeypatch.setattr(
+                    getattr(serve_cmd, module),
+                    name,
+                    lambda *a, **k: pytest.fail("a malformed request reached the core"),
+                )
+
+        with pytest.raises(urllib.error.HTTPError) as error:
+            self._post(daemon, payload)
+
+        assert error.value.code == 400
+        assert json.loads(error.value.read())["errors"][0]["title"] == title
+
+    def test_the_unsupported_hint_names_exactly_the_allowed_set(self, daemon):
+        with pytest.raises(urllib.error.HTTPError) as error:
+            self._post(daemon, {"setting": "nope"})
+
+        hint = json.loads(error.value.read())["errors"][0]["hint"]
+        named = set(hint.removeprefix("Allowed settings are ").removesuffix(".").split(", "))
+        assert named == set(serve_cmd.SETTINGS)
+        # No destructive verb hides here: rm/rm-site/rm-bench/checkout --reset are
+        # jobs behind a typed confirmation, and restore/uninstall stay Phase 4.
+        assert not {"rm", "restore", "uninstall"} & {n.split(".")[0] for n in named}
+
+    def test_a_cross_origin_settings_write_is_refused_before_dispatch(self, daemon, monkeypatch):
+        monkeypatch.setattr(
+            serve_cmd.core_config,
+            "set_tips",
+            lambda *a, **k: pytest.fail("a cross-origin write reached the core"),
+        )
+        request = urllib.request.Request(
+            daemon.base + "/api/v1/settings",
+            data=json.dumps({"setting": "tips.enable"}).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "https://example.invalid",
+                "Sec-Fetch-Site": "cross-site",
+            },
+            method="POST",
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request, timeout=_TIMEOUT)  # noqa: S310
+
+        assert error.value.code == 403
+
+    def test_the_destructive_verbs_stay_out_of_the_synchronous_action_set(self, daemon):
+        """They are JOBS (typed confirmation, consent in the spec, the verified
+        backup gate in the core), never a synchronous action."""
+        assert not {"rm", "rm_instance", "rm_site", "rm_bench", "remove_instance"} & set(
+            serve_cmd.ACTIONS
+        )
+        for verb in ("rm", "rm-site", "rm-bench"):
+            assert verb in serve_cmd.core_jobs.ALLOWED_VERBS

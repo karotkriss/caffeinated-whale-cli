@@ -1317,8 +1317,8 @@ def test_checkout_reset_adds_a_hard_reset_step(monkeypatch, container):
     result = core_apps.checkout_app("proj", "payments", "v1.2.0", reset=True)
 
     assert result.data.ok is True
-    assert [r.action for r in result.data.results] == ["fetch", "checkout", "reset"]
-    assert "git reset --hard FETCH_HEAD" in container.calls
+    assert [r.action for r in result.data.results] == ["fetch", "reset", "checkout"]
+    assert "git reset --hard" in container.calls
 
 
 def test_checkout_stops_at_a_failed_fetch(monkeypatch, container):
@@ -1413,8 +1413,65 @@ class TestCheckoutRefusesADirtyTree:
         result = core_apps.checkout_app("proj", "payments", "feature/x", reset=True)
 
         assert result.data.ok is True
-        assert [r.action for r in result.data.results] == ["fetch", "checkout", "reset"]
+        assert [r.action for r in result.data.results] == ["fetch", "reset", "checkout"]
         assert not any(c.startswith("git status") for c in container.calls)
+
+    def test_reset_discards_a_local_edit_the_target_ref_also_changes(
+        self, monkeypatch, container, tmp_path
+    ):
+        """Regression: --reset ran AFTER `git checkout -B`, which refuses to
+        overwrite a modified file the target ref also changes, so the reset never
+        ran in the very case it exists for. Driven against a REAL git repo."""
+        import subprocess
+
+        def git(cwd, *args):
+            subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+        origin, app = tmp_path / "origin", tmp_path / "app"
+        git(tmp_path, "init", "-q", "-b", "main", str(origin))
+        for k, v in {"user.email": "t@t", "user.name": "t"}.items():
+            git(origin, "config", k, v)
+        (origin / "hooks.py").write_text("v = 1\n")
+        git(origin, "add", ".")
+        git(origin, "commit", "-qm", "base")
+        git(origin, "checkout", "-qb", "feature")
+        (origin / "hooks.py").write_text("v = 2\n")
+        git(origin, "commit", "-qam", "feature")
+        git(origin, "checkout", "-q", "main")
+        git(tmp_path, "clone", "-q", "--origin", "upstream", str(origin), str(app))
+        (app / "hooks.py").write_text("local edit\n")
+        (app / "new_module.py").write_text("keep me\n")
+
+        fake_run = container._run
+
+        def run(cmd):
+            if isinstance(cmd, str) and cmd.startswith("git "):
+                container.calls.append(cmd)
+                proc = subprocess.run(shlex.split(cmd), cwd=app, capture_output=True, text=True)
+                return proc.returncode, proc.stdout + proc.stderr
+            return fake_run(cmd)
+
+        container._run = run
+        _cache(monkeypatch, [{"path": BENCH}])
+        _bridge_spy(monkeypatch)
+
+        result = core_apps.checkout_app("proj", "payments", "feature", reset=True)
+
+        assert [(r.action, r.ok) for r in result.data.results][:3] == [
+            ("fetch", True),
+            ("reset", True),
+            ("checkout", True),
+        ]
+        assert (app / "hooks.py").read_text() == "v = 2\n"
+        assert (app / "new_module.py").read_text() == "keep me\n"  # untracked survives
+        head = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=app, capture_output=True, text=True
+        )
+        assert head.stdout.strip() == "feature"
+        main = subprocess.run(
+            ["git", "rev-parse", "main", "upstream/main"], cwd=app, capture_output=True, text=True
+        )
+        assert len(set(main.stdout.split())) == 1  # the branch left keeps its commit
 
     def test_an_unreadable_status_fails_closed(self, monkeypatch, container):
         """core.where's fail-honest rule: unknown must never degrade to "clean"."""

@@ -73,6 +73,10 @@ def hook_command() -> str:
 
 def _current_executable() -> str:
     raw = sys.argv[0]
+    if _binary_name(raw) not in _BIN_NAMES:
+        bin_dir = Path(sys.executable).parent
+        sibling = next((p for p in (bin_dir / "cwcli", bin_dir / "cwcli.exe") if p.exists()), None)
+        raw = str(sibling) if sibling else shutil.which("cwcli") or ""
     if not raw:
         return ""
     try:
@@ -88,6 +92,13 @@ def _same_file(a: str, b: str) -> bool:
         return False
 
 
+def _binary_name(path: str) -> str:
+    name = Path(path).name
+    if name.lower().endswith(".exe"):
+        name = name[: -len(".exe")]
+    return name
+
+
 def _is_cwcli_hook(command: str) -> bool:
     """Does this existing hook entry belong to cwcli (at ANY executable path)?
 
@@ -99,10 +110,7 @@ def _is_cwcli_hook(command: str) -> bool:
     binary, sep, subcommand = command.rpartition(" ")
     if not sep or subcommand != _SUBCOMMAND:
         return False
-    name = Path(binary).name
-    if name.lower().endswith(".exe"):
-        name = name[: -len(".exe")]
-    return name in _BIN_NAMES
+    return _binary_name(binary) in _BIN_NAMES
 
 
 def _sync_session_start(config: dict, command: str) -> str:
