@@ -875,8 +875,9 @@ class TestAlignBindMountSourceOwner:
 
 
 class _FakeNet:
-    def __init__(self, name):
+    def __init__(self, name, net_id="new-id"):
         self.name = name
+        self.id = net_id
         self.connected = []
 
     def connect(self, container, aliases=None):
@@ -884,17 +885,16 @@ class _FakeNet:
 
 
 class _FakeNetworks:
-    def __init__(self, existing=()):
-        self.existing = set(existing)
+    def __init__(self):
         self.created = []
         self.nets = {}
 
     def get(self, name):
         from docker.errors import NotFound
 
-        if name not in self.existing:
+        if name not in self.nets:
             raise NotFound("gone")
-        return _FakeNet(name)
+        return self.nets[name]
 
     def create(self, name, driver, labels):
         self.created.append((name, driver, labels))
@@ -902,8 +902,8 @@ class _FakeNetworks:
         return self.nets[name]
 
 
-def _stopped(name, service, networks, mode=None, version="5.1.3"):
-    nets = {n: {"Aliases": [name, service]} for n in networks}
+def _stopped(name, service, networks, mode=None, version="5.1.3", net_id="old-id"):
+    nets = {n: {"Aliases": [name, service], "NetworkID": net_id} for n in networks}
     return SimpleNamespace(
         name=name,
         labels={
@@ -951,11 +951,46 @@ class TestRecreateMissingProjectNetworks:
         ]
 
     def test_an_existing_network_is_left_alone(self, client):
-        client.networks.existing.add("p_default")
-        db = _stopped("p-mariadb-1", "mariadb", ["p_default"])
+        client.networks.nets["p_default"] = _FakeNet("p_default", "live-id")
+        db = _stopped("p-mariadb-1", "mariadb", ["p_default"], net_id="live-id")
 
         assert core_docker.recreate_missing_project_networks("p", [db]) == []
         assert client.networks.created == []
+        assert client.networks.nets["p_default"].connected == []
+
+    def test_a_network_recreated_outside_cwcli_reconnects_the_stale_containers(self, client):
+        # The user followed a printed `docker network create` hint (or an earlier start
+        # failed after creating it): the network exists, but each stopped container
+        # still holds the crashed network's id, so its start would 404 by that id.
+        client.networks.nets["p_default"] = _FakeNet("p_default", "live-id")
+        db = _stopped("p-mariadb-1", "mariadb", ["p_default"])
+        app = _stopped("p-frappe-1", "frappe", ["p_default"], net_id="live-id")
+
+        assert core_docker.recreate_missing_project_networks("p", [db, app]) == []
+        assert client.networks.created == []
+        assert client.networks.nets["p_default"].connected == [
+            ("p-mariadb-1", ["p-mariadb-1", "mariadb"])
+        ]
+
+    def test_a_failed_reconnect_names_the_exact_remedy(self, client):
+        from docker.errors import APIError
+
+        net = client.networks.nets["p_default"] = _FakeNet("p_default", "live-id")
+
+        def boom(*a, **k):
+            raise APIError("endpoint busy")
+
+        net.connect = boom
+        c = _stopped("p-mariadb-1", "mariadb", ["p_default"])
+
+        with pytest.raises(CwcliError) as exc:
+            core_docker.recreate_missing_project_networks("p", [c])
+
+        assert exc.value.code == "network.reconnect_failed"
+        assert (
+            "docker network connect --alias p-mariadb-1 --alias mariadb p_default p-mariadb-1"
+            in (exc.value.hint or "")
+        )
 
     def test_builtin_networks_are_never_touched(self, client):
         c = _stopped("p-x-1", "x", ["bridge"], mode="host")

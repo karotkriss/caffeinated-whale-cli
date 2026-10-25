@@ -183,9 +183,12 @@ def recreate_missing_project_networks(project_name: str, containers) -> list[str
 
     A recreated network has a NEW id, and a stopped container keeps the old one (its
     start still dies with ``network <old id> not found``) and would lose its compose
-    DNS aliases (``mariadb``, ``frappe``, ...). So each attached container is connected
-    to the new network (which replaces the stale entry) with the aliases it had,
-    without being recreated: its filesystem, toolchain and data stay as they were.
+    DNS aliases (``mariadb``, ``frappe``, ...). So each attached container whose
+    recorded id is not the live network's is connected to it (which replaces the stale
+    entry) with the aliases it had, without being recreated: its filesystem, toolchain
+    and data stay as they were. This holds for a network that already exists too - one
+    created by hand, by following a hint below, or by an earlier start that failed
+    part-way - so every remedy printed here leads to a working start.
     """
     client = docker.from_env()
     wanted: dict[str, list] = {}
@@ -199,49 +202,66 @@ def recreate_missing_project_networks(project_name: str, containers) -> list[str
 
     recreated: list[str] = []
     for name, attached in sorted(wanted.items()):
-        try:
-            client.networks.get(name)
-            continue
-        except NotFound:
-            pass
         prefix = f"{project_name}_"
-        if not name.startswith(prefix) or name == prefix:
-            raise CwcliError(
-                ErrorKind.DOCKER,
-                "network.external_missing",
-                f"The network '{name}' is missing and is not owned by project '{project_name}'.",
-                hint=f"Create it with 'docker network create {name}', then run the start again.",
-            )
-        labels = {
-            "com.docker.compose.project": project_name,
-            "com.docker.compose.network": name[len(prefix) :],
-        }
-        compose_version = attached[0].labels.get("com.docker.compose.version")
-        if compose_version:
-            labels["com.docker.compose.version"] = compose_version
         try:
-            network = client.networks.create(name, driver="bridge", labels=labels)
-            for container in attached:
-                aliases = (
-                    (container.attrs.get("NetworkSettings") or {}).get("Networks") or {}
-                ).get(name, {}).get("Aliases") or [
-                    container.name,
-                    container.labels.get("com.docker.compose.service", container.name),
-                ]
+            network = client.networks.get(name)
+        except NotFound:
+            if not name.startswith(prefix) or name == prefix:
+                raise CwcliError(
+                    ErrorKind.DOCKER,
+                    "network.external_missing",
+                    f"The network '{name}' is missing and is not owned by project "
+                    f"'{project_name}'.",
+                    hint=(
+                        f"Create it with 'docker network create {name}', then run the start again."
+                    ),
+                ) from None
+            labels = {
+                "com.docker.compose.project": project_name,
+                "com.docker.compose.network": name[len(prefix) :],
+            }
+            compose_version = attached[0].labels.get("com.docker.compose.version")
+            if compose_version:
+                labels["com.docker.compose.version"] = compose_version
+            try:
+                network = client.networks.create(name, driver="bridge", labels=labels)
+            except APIError as e:
+                raise CwcliError(
+                    ErrorKind.DOCKER,
+                    "network.recreate_failed",
+                    f"Could not recreate the missing network '{name}': {e.explanation or e}",
+                    hint=(
+                        f"Create it with 'docker network create --label "
+                        f"com.docker.compose.project={project_name} --label "
+                        f"com.docker.compose.network={name[len(prefix):]} {name}', "
+                        "then run the start again."
+                    ),
+                ) from e
+            recreated.append(name)
+        for container in attached:
+            endpoint = ((container.attrs.get("NetworkSettings") or {}).get("Networks") or {}).get(
+                name
+            ) or {}
+            if endpoint.get("NetworkID") == network.id:
+                continue
+            aliases = endpoint.get("Aliases") or [
+                container.name,
+                container.labels.get("com.docker.compose.service", container.name),
+            ]
+            try:
                 network.connect(container, aliases=aliases)
-        except APIError as e:
-            raise CwcliError(
-                ErrorKind.DOCKER,
-                "network.recreate_failed",
-                f"Could not recreate the missing network '{name}': {e.explanation or e}",
-                hint=(
-                    f"Create it with 'docker network create --label "
-                    f"com.docker.compose.project={project_name} --label "
-                    f"com.docker.compose.network={name[len(prefix):]} {name}', "
-                    "then run the start again."
-                ),
-            ) from e
-        recreated.append(name)
+            except APIError as e:
+                alias_flags = "".join(f"--alias {alias} " for alias in aliases)
+                raise CwcliError(
+                    ErrorKind.DOCKER,
+                    "network.reconnect_failed",
+                    f"Could not reconnect '{container.name}' to the network '{name}': "
+                    f"{e.explanation or e}",
+                    hint=(
+                        f"Connect it with 'docker network connect {alias_flags}{name} "
+                        f"{container.name}', then run the start again."
+                    ),
+                ) from e
     return recreated
 
 
