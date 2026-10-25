@@ -49,6 +49,27 @@ def wire(monkeypatch):
 
 
 class TestLaunch:
+    def test_emits_typed_steps_for_the_launch(self, wire):
+        frappe = FakeContainer(ps="1 0 5 0.0 1000 /sbin/init\n", cwds={})
+        wire(frappe)
+        events = []
+
+        core_start.start("proj", on_event=events.append)
+
+        phases = [(type(event).__name__, event.phase) for event in events]
+        assert phases[:6] == [
+            ("StartStepStart", "resolve"),
+            ("StartStepEnd", "resolve"),
+            ("StartStepStart", "containers"),
+            ("StartStepEnd", "containers"),
+            ("StartStepStart", "bench"),
+            ("StartStepEnd", "bench"),
+        ]
+        assert phases[-2:] == [
+            ("StartStepStart", "web_ready"),
+            ("StartStepEnd", "web_ready"),
+        ]
+
     def test_start_thaws_pid1_before_liveness_without_a_host_signal(self, wire):
         events = []
 

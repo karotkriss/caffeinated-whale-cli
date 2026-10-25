@@ -25,6 +25,7 @@ container with ``docker exec ... supervisorctl``.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from docker.errors import APIError, NotFound
@@ -72,12 +73,40 @@ class StopOutcome:
     db_clean_shutdown: bool | None = None
 
 
-def stop(project_name: str) -> Result[StopOutcome]:
+@dataclass(frozen=True, slots=True, kw_only=True)
+class StopStepStart:
+    """A stop step began."""
+
+    phase: str
+    item: str | None = None
+    message: str | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class StopStepEnd:
+    """A stop step finished."""
+
+    phase: str
+    item: str | None = None
+    status: str = "ok"
+
+
+StopEvent = StopStepStart | StopStepEnd
+OnEvent = Callable[[StopEvent], None]
+
+
+def _noop(_event: StopEvent) -> None:
+    """The drain-and-discard consumption mode."""
+
+
+def stop(project_name: str, *, on_event: OnEvent | None = None) -> Result[StopOutcome]:
     """Stop a project's running containers. See the module docstring.
 
     Raises :class:`~.errors.CwcliError` (``NOT_FOUND`` when the project has no
     containers, ``DOCKER`` when the daemon is unreachable). Prints nothing.
     """
+    emit = on_event or _noop
+    emit(StopStepStart(phase="resolve", message="Resolving the instance containers"))
     # Resolved directly rather than through `core.docker.get_frappe_container`: stop
     # is project-wide (db, redis, frappe) and does NOT require a frappe service, so
     # routing through the frappe accessor would newly fail a project that has
@@ -101,9 +130,11 @@ def stop(project_name: str) -> Result[StopOutcome]:
             "project.not_found",
             f"Project '{project_name}' not found.",
         )
+    emit(StopStepEnd(phase="resolve"))
 
     running = [c for c in containers if c.status == "running"]
     if not running:
+        emit(StopStepEnd(phase="containers", status="already-stopped"))
         return Result(
             status=Status.OK,
             data=StopOutcome(project=project_name, stopped=0, already_stopped=True, containers=[]),
@@ -116,6 +147,13 @@ def stop(project_name: str) -> Result[StopOutcome]:
     db_clean: bool | None = None
     warnings: list[Message] = []
     for container in running:
+        emit(
+            StopStepStart(
+                phase="container",
+                item=container.name,
+                message=f"Stopping {container.name}",
+            )
+        )
         if is_database(container):
             exit_code = stop_database(container)
             db_clean = exit_code == 0
@@ -132,6 +170,13 @@ def stop(project_name: str) -> Result[StopOutcome]:
         else:
             container.stop()
         stopped_names.append(container.name)
+        emit(
+            StopStepEnd(
+                phase="container",
+                item=container.name,
+                status="ok" if not is_database(container) or db_clean else "warning",
+            )
+        )
 
     return Result(
         status=Status.WARNING if warnings else Status.OK,
@@ -161,6 +206,7 @@ def stop_bench(
     *,
     bench: str | None = None,
     bench_path: str | None = None,
+    on_event: OnEvent | None = None,
 ) -> Result[BenchStopOutcome]:
     """Stop ONE bench's dev processes, leaving sibling benches and containers up.
 
@@ -176,6 +222,8 @@ def stop_bench(
     there is nothing bench-scoped to stop - the whole instance is already down).
     """
     warnings: list[Message] = []
+    emit = on_event or _noop
+    emit(StopStepStart(phase="resolve", message="Resolving the bench"))
 
     containers = get_project_containers(project_name)
     if containers is None:
@@ -233,10 +281,13 @@ def stop_bench(
         assert resolved.data is not None
         resolved_path = resolved.data
         warnings.extend(resolved.warnings)
+    emit(StopStepEnd(phase="resolve"))
 
+    emit(StopStepStart(phase="supervisor", message="Checking the bench supervisor"))
     snapshot = supervision.discover_stack(frappe_container, resolved_path)
     if not snapshot.supervisor_up:
         supervision.clear_marker(frappe_container, resolved_path)
+        emit(StopStepEnd(phase="supervisor", status="already-stopped"))
         return Result(
             status=Status.OK,
             data=BenchStopOutcome(
@@ -260,6 +311,7 @@ def stop_bench(
     # own supervisord and are never signalled.
     supervision.stop_supervisor(frappe_container, resolved_path)
     supervision.clear_marker(frappe_container, resolved_path)
+    emit(StopStepEnd(phase="supervisor"))
 
     return Result(
         status=Status.OK,

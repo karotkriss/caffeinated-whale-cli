@@ -121,7 +121,7 @@ def mint_code(port: int, token: str) -> str:
         return str(json.loads(r.read())["data"]["code"])
 
 
-def _spawn_detached(port: int, token: str) -> None:
+def _spawn_detached(port: int, token: str, session_id: str | None = None) -> None:
     """Start ``cwcli ui --foreground --no-browser`` as its own session, logging to ``ui.log``."""
     run_dir().mkdir(parents=True, exist_ok=True)
     prefix = [sys.argv[0]] if _is_frozen() else [sys.executable, "-m", "caffeinated_whale_cli"]
@@ -134,6 +134,8 @@ def _spawn_detached(port: int, token: str) -> None:
         str(port),
     ]
     env = {**os.environ, serve_cmd.TOKEN_ENV: token}
+    if session_id:
+        env[serve_cmd.SESSION_ENV] = session_id
     if sys.platform == "win32":
         creationflags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
         new_session = False
@@ -268,8 +270,15 @@ def ui(
     no_browser: bool = typer.Option(
         False, "--no-browser", help="Print the sign-in link instead of opening a browser."
     ),
+    job: str | None = typer.Option(None, "--job", hidden=True),
 ):
     """Open the cwcli web UI in your browser (starts the local daemon if needed)."""
+    if job is not None:
+        # The detached job worker's re-entry for a frozen standalone exe, which has
+        # no `python -m caffeinated_whale_cli.jobs`; a normal install never uses it.
+        from .. import jobs
+
+        raise typer.Exit(code=jobs.run_job(job))
     if stop and foreground:
         stderr_console.print("[red]--stop and --foreground are mutually exclusive.[/red]")
         raise typer.Exit(code=2)

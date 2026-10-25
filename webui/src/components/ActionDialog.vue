@@ -21,11 +21,11 @@ const inst = computed(() => instance(ctx.value.project))
 const avail = computed(() =>
   availability(dialogState.id, inst.value, inst.value?.benches?.find((b) => String(b.index) === ctx.value.bench)),
 )
-const needsTyped = computed(() => action.value?.confirm === 'typed' || dialogState.typedConfirm)
+const needsTyped = computed(() => action.value?.confirm === 'typed')
 const ready = computed(() => {
   if (!action.value || !avail.value.ok || dialogState.running) return false
   if (action.value.field && !String(dialogState.values[action.value.field.name] || '').trim()) return false
-  if (needsTyped.value) return typed.value.trim() === (dialogState.typedConfirm?.target || target.value)
+  if (needsTyped.value) return typed.value.trim() === target.value
   return true
 })
 const errorText = computed(() => {
@@ -35,7 +35,7 @@ const errorText = computed(() => {
 })
 
 function confirm() {
-  runAction(dialogState.id, ctx.value, { ...dialogState.values }, { consent: !!dialogState.typedConfirm })
+  runAction(dialogState.id, ctx.value, { ...dialogState.values })
 }
 </script>
 
@@ -54,12 +54,11 @@ function confirm() {
         <div class="text-sm text-ink-gray-5">Same as running</div>
         <CommandLine :command="action.cli(ctx, dialogState.values)" />
       </div>
-      <Alert v-if="dialogState.typedConfirm" theme="amber" title="cwcli asks you to confirm" :description="dialogState.typedConfirm.message" />
       <FormControl
         v-if="needsTyped"
         v-model="typed"
-        :label="`Type ${dialogState.typedConfirm?.target || target} to confirm`"
-        :placeholder="dialogState.typedConfirm?.target || target"
+        :label="`Type ${target} to confirm`"
+        :placeholder="target"
         autocomplete="off"
       />
       <Alert

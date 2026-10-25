@@ -8,7 +8,8 @@
 // keeps open stalls every later request: close on pagehide, reopen on pageshow.
 import { reactive, computed } from 'vue'
 import { getJson } from './api'
-import { session } from './session'
+import { session, recheckMeta } from './session'
+import { applyJob, seedJobs } from './jobs'
 
 export const fleet = reactive({
   instances: {},
@@ -41,7 +42,9 @@ function openStream() {
   source = new EventSource(url)
   source.addEventListener('snapshot', (e) => {
     const body = JSON.parse(e.data)
+    if (fleet.connection === 'reconnecting') recheckMeta()
     fleet.instances = Object.fromEntries(body.instances.map((i) => [i.project, i]))
+    seedJobs(body.jobs || [])
     fleet.connection = 'live'
     fleet.lastEventAt = Date.now()
     body.instances.forEach((i) => loadDetail(i.project))
@@ -52,6 +55,7 @@ function openStream() {
     else fleet.instances[body.project] = body.instance
     fleet.lastEventAt = Date.now()
   })
+  source.addEventListener('job', (e) => applyJob(JSON.parse(e.data)))
   // EventSource reconnects by itself; the daemon answers a reconnect with a
   // fresh snapshot, which is the resume. A 401 closes it for good.
   source.onerror = () => {
