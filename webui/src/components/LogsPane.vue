@@ -23,6 +23,7 @@ const POLL_MS = 2000
 const ANSI_SGR = /\x1b\[[0-9;]*m/g
 
 // Status labels a worker `worker:<q>`; its log is keyed by the raw program `worker_<q>`.
+const following = ref(true)
 const filter = ref(props.process ? props.process.replace(/^worker:/, 'worker_') : 'all')
 const error = ref(null)
 const loading = ref(true)
@@ -53,7 +54,7 @@ async function poll() {
       const gap = t.skipped_bytes ? [`... ${t.skipped_bytes} bytes skipped (written faster than this pane polls) ...`] : []
       const lines = t.lines.map((l) => l.replace(ANSI_SGR, ''))
       entry.lines = previous ? entry.lines.concat(gap, lines) : lines
-      if (entry.lines.length > MAX_LINES) entry.lines.splice(0, entry.lines.length - MAX_LINES)
+      if (following.value && entry.lines.length > MAX_LINES) entry.lines.splice(0, entry.lines.length - MAX_LINES)
       entry.offset = t.offset
     }
     if (filter.value !== 'all' && !logs.value[filter.value]) filter.value = 'all'
@@ -83,7 +84,7 @@ onBeforeUnmount(() => clearInterval(timer))
     <ErrorMessage :message="error" />
     <LoadingText v-if="loading && !processes.length" text="Reading logs..." />
     <div v-else-if="!processes.length && !error" class="px-3 py-10 text-center text-p-sm text-ink-gray-5">No logs written yet.</div>
-    <FollowPane v-else class="max-h-[60vh] rounded-6 border border-outline-gray-1 bg-surface-gray-1">
+    <FollowPane v-else v-model:following="following" class="max-h-[60vh] rounded-6 border border-outline-gray-1 bg-surface-gray-1">
       <div v-for="p in shown" :key="p" class="border-b border-outline-gray-1 last:border-b-0">
         <div class="sticky top-0 bg-surface-gray-2 px-3 py-1 font-mono text-xs text-ink-gray-6">{{ p }}</div>
         <pre class="whitespace-pre-wrap break-words px-3 py-2 font-mono text-xs leading-5 text-ink-gray-8">{{ logs[p].lines.join('\n') || '(empty)' }}</pre>

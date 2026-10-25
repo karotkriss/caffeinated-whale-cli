@@ -1,12 +1,12 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Alert, Badge, Breadcrumbs, Button, ErrorMessage, FormControl, PageHeader, LoadingText } from 'frappe-ui'
 import { ACTIVE_STATES, JOB_THEME, createJob, detachJob, elapsed, interruptJob, jobLabel, jobTarget, jobs, loadJob } from '../data/jobs'
 import { openJob } from '../data/job-dialog'
 import { setFocus } from '../data/fleet'
 import FollowPane from '../components/FollowPane.vue'
-import { tailLines } from '../data/follow'
+import { MAX_LINES, blockView, tailLines } from '../data/follow'
 
 const route = useRoute()
 const router = useRouter()
@@ -42,16 +42,28 @@ const rows = computed(() => {
   }
   return out
 })
-const terminal = (raw) => {
-  const { hidden, text } = tailLines(raw)
-  const shown = text
+const terminal = (text) =>
+  text
     .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
     .split('\n')
     .map((line) => line.slice(line.lastIndexOf('\r') + 1))
     .join('\n')
     .trim()
-  return hidden ? `… ${hidden.toLocaleString()} earlier lines not shown\n${shown}` : shown
-}
+const following = ref(true)
+const expanded = reactive(new Set())
+const held = new Map()
+const views = computed(() => {
+  const out = {}
+  for (const row of rows.value) {
+    if (!row.output) continue
+    if (following.value) held.delete(row.seq)
+    else if (!held.has(row.seq)) held.set(row.seq, tailLines(row.text).hidden)
+    const { hidden, text } = blockView(row.text, { all: expanded.has(row.seq), held: held.get(row.seq) })
+    out[row.seq] = { hidden, total: hidden + text.split('\n').length, text: terminal(text) }
+  }
+  return out
+})
+const toggleBlock = (seq) => (expanded.has(seq) ? expanded.delete(seq) : expanded.add(seq))
 
 async function refresh(after = 0) {
   loading.value = true
@@ -169,12 +181,15 @@ async function continueChoice(value) {
 
       <section>
         <div class="flex items-baseline justify-between gap-3"><h2 class="text-lg-semibold text-ink-gray-9">Event log</h2><Button size="sm" variant="ghost" icon-left="lucide-refresh-cw" label="Refresh" :loading="loading" @click="refresh(record.events?.at(-1)?.seq || 0)" /></div>
-        <FollowPane class="mt-3 max-h-[60vh] rounded-6 border border-outline-gray-1 bg-surface-gray-1">
+        <FollowPane v-model:following="following" class="mt-3 max-h-[60vh] rounded-6 border border-outline-gray-1 bg-surface-gray-1">
           <div v-if="!record.events?.length" class="px-4 py-8 text-center text-p-sm text-ink-gray-5">Waiting for the first event...</div>
           <div v-for="event in rows" :key="event.seq" class="grid grid-cols-[5rem_minmax(0,1fr)] gap-3 border-b border-outline-gray-1 px-3 py-2.5 last:border-b-0 sm:grid-cols-[5.5rem_9rem_minmax(0,1fr)]">
             <span class="whitespace-nowrap font-mono text-xs tabular-nums text-ink-gray-4">{{ time(event.at) }}</span>
             <span class="hidden truncate font-mono text-xs text-ink-gray-5 sm:block">{{ event.output ? 'output' : event.phase || event.action || event.type }}</span>
-            <pre v-if="event.output" class="min-w-0 whitespace-pre-wrap break-words font-mono text-xs leading-5 text-ink-gray-7">{{ terminal(event.text) }}</pre>
+            <div v-if="event.output" class="min-w-0">
+              <Button v-if="views[event.seq].hidden || expanded.has(event.seq)" class="mb-1.5" size="sm" variant="outline" :label="expanded.has(event.seq) ? `Show last ${MAX_LINES.toLocaleString()} lines` : `Show all ${views[event.seq].total.toLocaleString()} lines`" @click="toggleBlock(event.seq)" />
+              <pre class="whitespace-pre-wrap break-words font-mono text-xs leading-5 text-ink-gray-7">{{ views[event.seq].text }}</pre>
+            </div>
             <div v-else class="min-w-0"><p class="break-words font-mono text-xs leading-5 text-ink-gray-7">{{ eventTitle(event) }}</p><p v-if="event.item || event.data?.item" class="mt-0.5 truncate text-xs text-ink-gray-5">{{ event.item || event.data.item }}</p></div>
           </div>
         </FollowPane>
