@@ -351,6 +351,15 @@ def _render_preflight(event: UpdatePreflight) -> None:
     console.print()
 
 
+def _split_local_work(report: UpdateReport) -> tuple[list[str], list[str]]:
+    """``data_loss_apps`` split into apps with local work found and apps not checked."""
+    losing = {f.app for f in report.preflight if f.severity == update_preflight.DATA_LOSS and f.app}
+    return (
+        [app for app in report.data_loss_apps if app in losing],
+        [app for app in report.data_loss_apps if app not in losing],
+    )
+
+
 def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = None) -> None:
     """Print the summary of every phase.
 
@@ -379,11 +388,20 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
                 )
             )
         if report.data_loss_refused:
-            where = f" in {', '.join(report.data_loss_apps)}" if report.data_loss_apps else ""
-            if any(f.severity == update_preflight.DATA_LOSS for f in report.preflight):
-                what = f"'bench update --reset' would discard local work{where}"
-            else:
-                what = f"cwcli could not check for local work 'bench update --reset' would discard{where}"
+            losing, unchecked = _split_local_work(report)
+            parts = []
+            if losing:
+                parts.append(
+                    f"'bench update --reset' would discard local work in {', '.join(losing)}"
+                )
+            if unchecked:
+                parts.append(
+                    "cwcli could not check for local work 'bench update --reset' would discard "
+                    f"in {', '.join(unchecked)}"
+                )
+            what = "; ".join(parts) or (
+                "cwcli could not check for local work 'bench update --reset' would discard"
+            )
             console.print(
                 f"[bold red]Refusing to start: {escape(what)}, so it did not run.[/bold red]"
             )
@@ -400,10 +418,18 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
 
     if report.frappe_reset and report.data_loss_apps:
         # --force accepted it: bench hard-resets every app it reaches.
-        console.print(
-            f"[bold yellow]![/bold yellow] --force let 'bench update --reset' discard local "
-            f"work in {len(report.data_loss_apps)} app(s): {', '.join(report.data_loss_apps)}"
-        )
+        losing, unchecked = _split_local_work(report)
+        if losing:
+            console.print(
+                f"[bold yellow]![/bold yellow] --force let 'bench update --reset' discard local "
+                f"work in {len(losing)} app(s): {', '.join(losing)}"
+            )
+        if unchecked:
+            console.print(
+                f"[bold yellow]![/bold yellow] --force let 'bench update --reset' reset "
+                f"{len(unchecked)} app(s) whose local work could not be checked: "
+                f"{', '.join(unchecked)}"
+            )
 
     if report.force_reset_apps:
         # A destructive recovery worth naming even on an otherwise-clean run: these
