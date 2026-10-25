@@ -336,11 +336,12 @@ def _render_preflight(event: UpdatePreflight) -> None:
             continue
         console.print(f"\n  [bold]{heading}[/bold]")
         # A grid, so a long message or remedy wraps inside its own column instead of
-        # falling back to column 0.
+        # falling back to column 0. "fold" breaks a token wider than the column (a
+        # remedy's --path) rather than cutting it to an ellipsis.
         rows = Table.grid(padding=(0, 1))
         rows.add_column(no_wrap=True)
         rows.add_column(no_wrap=True, min_width=width + 1)
-        rows.add_column()
+        rows.add_column(overflow="fold")
         for finding in group:
             rows.add_row(
                 marker, f"[cyan]{escape(subject(finding))}[/cyan]", escape(finding.message)

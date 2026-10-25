@@ -236,6 +236,38 @@ def exec_in_frappe(project: str, script: str, workdir: str | None = None) -> tup
 
 
 @contextmanager
+def preserve_frappe_fetch_state(project: str, bench: str = DEFAULT_BENCH_PATH) -> Iterator[None]:
+    """Put back exactly the bytes a fetch of frappe's upstream branch changes.
+
+    The ``apps update <project> frappe`` preflight fetches that branch, as bench
+    does, moving the remote-tracking ref and its reflog and rewriting ``FETCH_HEAD``
+    and, on a shallow clone, ``shallow``; ``config`` and ``packed-refs`` cover a test
+    that repoints the remote. The objects a fetch adds are left: unreachable once the
+    refs are back, and deleting object files risks ones a background repack moved.
+    """
+    git = shlex.quote(f"{bench}/apps/frappe/.git")
+    code, out = exec_in_frappe(project, f"git --git-dir={git} symbolic-ref --short HEAD")
+    assert code == 0, f"could not read frappe's branch: {out}"
+    branch = out.strip()
+    paths = ["config", "shallow", "FETCH_HEAD", "packed-refs"]
+    paths += [f"{kind}/remotes/upstream/{branch}" for kind in ("refs", "logs/refs")]
+    files = shlex.join(paths)
+    code, snapshot = exec_in_frappe(
+        project,
+        f'cd {git} && for p in {files}; do [ -f "$p" ] && echo "$p"; done'
+        " | tar -cf - -T - | base64 -w0",
+    )
+    assert code == 0, f"could not snapshot frappe's fetch state: {snapshot}"
+    try:
+        yield
+    finally:
+        code, out = exec_in_frappe(
+            project, f"cd {git} && rm -f {files} && echo {snapshot} | base64 -d | tar -xf -"
+        )
+        assert code == 0, f"could not restore frappe's fetch state: {out}"
+
+
+@contextmanager
 def quiesce_v14_asset_watcher(project: str, bench: str = DEFAULT_BENCH_PATH) -> Iterator[bool]:
     """Pause Frappe v14's watcher while an E2E test runs ``bench get-app``.
 

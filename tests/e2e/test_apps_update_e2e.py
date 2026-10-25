@@ -74,14 +74,19 @@ def _remove_bench_shim(inst) -> None:
 
 @pytest.fixture()
 def bench_shim(running_instance):
-    """Install the output-emitting bench shim, and ALWAYS put the real one back."""
+    """Install the output-emitting bench shim, and ALWAYS put the real one back.
+
+    The shim replaces only the reset: the frappe preflight still runs for real and
+    fetches frappe's upstream branch, so that state is put back as well.
+    """
 
     def _install(exit_code=0):
         _install_bench_shim(running_instance, exit_code=exit_code)
         return running_instance
 
     try:
-        yield _install
+        with harness.preserve_frappe_fetch_state(running_instance.name):
+            yield _install
     finally:
         _remove_bench_shim(running_instance)
 

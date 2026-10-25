@@ -48,11 +48,13 @@ class Bench:
             d.mkdir()
         for sub in ("apps", "sites", "env", "logs"):
             (self.path / sub).mkdir(parents=True)
-        # The tools bench needs, present unless a test takes one away.
+        # The tools bench needs, present unless a test takes one away; node and the
+        # bench venv's python answer with a version, as the content tier asks them.
         for tool in ("mariadb-dump", "gzip", "yarn", "node"):
-            stub = self.bin / tool
-            stub.write_text("#!/bin/sh\nexit 0\n")
-            stub.chmod(0o755)
+            self.stub(self.bin / tool)
+        self.stub(self.bin / "node", "v22.23.4")
+        (self.path / "env" / "bin").mkdir()
+        self.stub(self.path / "env" / "bin" / "python", "3.12.13")
         (self.bin / "git").symlink_to(GIT)
         self.env = {
             "HOME": str(self.home),
@@ -68,6 +70,11 @@ class Bench:
         self.conf = {"maintenance_mode": 0, "pause_scheduler": 0, "shallow_clone": shallow_clone}
         self.write_conf()
 
+    @staticmethod
+    def stub(path, version=None):
+        path.write_text("#!/bin/sh\n" + (f"echo {version}\n" if version else "exit 0\n"))
+        path.chmod(0o755)
+
     def git(self, *args, cwd=None):
         subprocess.run(
             [GIT, *args], cwd=cwd, env=self.env, check=True, capture_output=True, text=True
@@ -77,7 +84,7 @@ class Bench:
         self.conf.update(extra)
         (self.path / "sites" / "common_site_config.json").write_text(json.dumps(self.conf))
 
-    def app(self, name, branch="main", *, version="1.0.0", depth=None):
+    def app(self, name, branch="main", *, version="1.0.0", depth=None, files=None):
         """A bare remote plus a clone of it at apps/<name>, remote named upstream."""
         src = self.remotes / f"{name}.src"
         (src / name).mkdir(parents=True)
@@ -85,6 +92,8 @@ class Bench:
         (src / name / "hooks.py").write_text(f'app_name = "{name}"\n')
         (src / name / "modules.txt").write_text("")
         (src / name / "patches.txt").write_text("")
+        for path, text in (files or {}).items():
+            (src / path).write_text(text)
         self.git("init", "-q", "-b", branch, cwd=src)
         self.git("add", "-A", cwd=src)
         self.git("commit", "-qm", "init", cwd=src)
@@ -105,6 +114,15 @@ class Bench:
         )
         return self.path / "apps" / name
 
+    def publish(self, name, files, branch="main"):
+        """A new tip on the app's remote: the code ``bench update --reset`` installs."""
+        src = self.remotes / f"{name}.src"
+        for path, text in files.items():
+            (src / path).write_text(text)
+        self.git("add", "-A", cwd=src)
+        self.git("commit", "-qm", "publish", cwd=src)
+        self.git("push", "-q", str(self.remotes / f"{name}.git"), branch, cwd=src)
+
     def site(self, name, **config):
         (self.path / "sites" / name).mkdir()
         (self.path / "sites" / name / "site_config.json").write_text(json.dumps(config))
@@ -122,7 +140,9 @@ class Bench:
         return record
 
     def findings(self, **opts):
-        return up.classify(self.run(**opts)["findings"], project="proj")
+        """The script's facts plus the content tier's, classified as run_preflight does."""
+        record = self.run(**opts)
+        return up.classify(record["findings"] + up._content_facts(record), project="proj")
 
 
 def codes(findings):
@@ -277,7 +297,7 @@ def test_an_app_the_container_user_cannot_write_is_a_blocker(bench):
 
 
 def test_a_missing_bench_env_is_a_blocker(bench):
-    (bench.path / "env").rmdir()
+    shutil.rmtree(bench.path / "env")
 
     finding = by_code(bench.findings(), "bench.not_writable")
     assert finding.message.endswith("env is missing or not writable by the container user")
@@ -763,6 +783,322 @@ def test_local_commits_on_an_untracked_branch_missing_on_its_remote_stay_data_lo
     assert ("git.branch_not_on_remote", "localonly") in found
     assert ("git.unpushed", "localonly") in found
     assert ("git.branch_not_tracked", "localonly") not in found
+
+
+# ------------------------------------------------------------------ the content tier
+# bench resets every app, then reinstalls every app: `uv pip install -e` refuses a
+# requires-python the venv does not meet and `yarn install` an engines.node the node
+# does not, both after every site was backed up and every app reset. Each problem
+# here is planted on the REMOTE's tip, which is what the reset would install.
+
+
+def pyproject(name, version="1.0.0", python=">=3.10", deps=None):
+    text = f'[project]\nname = "{name}"\nversion = "{version}"\nrequires-python = "{python}"\n'
+    if deps:
+        text += "\n[tool.bench.frappe-dependencies]\n"
+        text += "".join(f'{dep} = "{spec}"\n' for dep, spec in deps.items())
+    return text
+
+
+def package_json(name, node):
+    return json.dumps({"name": name, "engines": {"node": node}})
+
+
+@pytest.mark.parametrize("venv, refused", [("3.12.13", True), ("3.14.2", False)])
+def test_new_code_that_needs_a_newer_python_is_a_blocker(bench, venv, refused):
+    bench.stub(bench.path / "env" / "bin" / "python", venv)
+    bench.publish(
+        "frappe", {"pyproject.toml": pyproject("frappe", "16.1.0", ">=3.14,<3.15")}, "version-16"
+    )
+    head = bench.path / "apps" / "frappe" / ".git" / "HEAD"
+    before = head.read_text()
+
+    findings = bench.findings()
+
+    if refused:
+        finding = by_code(findings, "tooling.python_too_old")
+        assert (finding.severity, finding.app) == (up.BLOCKER, "frappe")
+        assert "needs Python >=3.14,<3.15" in finding.message
+        assert "runs Python 3.12.13" in finding.message
+    else:
+        assert findings == []
+    # Read from the fetched ref, never checked out: the working tree is as it was.
+    assert head.read_text() == before
+    assert not (bench.path / "apps" / "frappe" / "pyproject.toml").exists()
+
+
+@pytest.mark.parametrize("node, refused", [("v22.23.4", True), ("v24.1.0", False)])
+def test_new_code_that_needs_a_newer_node_is_a_blocker(bench, node, refused):
+    bench.stub(bench.bin / "node", node)
+    bench.publish("goodapp", {"package.json": package_json("goodapp", "^18 || >=24")})
+
+    findings = bench.findings()
+
+    if refused:
+        finding = by_code(findings, "tooling.node_too_old")
+        assert (finding.severity, finding.app) == (up.BLOCKER, "goodapp")
+        assert "needs Node ^18 || >=24" in finding.message
+        assert "runs Node v22.23.4" in finding.message
+    else:
+        assert findings == []
+
+
+@pytest.mark.parametrize("upstream, refused", [("17.0.0", True), ("16.3.0", False)])
+def test_a_frappe_major_upgrade_upstream_is_a_blocker(bench, upstream, refused):
+    # bench's version check prompts before a major upgrade, and cwcli's exec has no TTY
+    # to answer it: "Do you want to continue? [y/N]: Aborted!".
+    bench.publish("frappe", {"frappe/__init__.py": f'__version__ = "{upstream}"\n'}, "version-16")
+
+    findings = bench.findings()
+
+    if refused:
+        finding = by_code(findings, "frappe.major_upgrade")
+        assert (finding.severity, finding.app) == (up.BLOCKER, "frappe")
+        assert "from version 16 to 17" in finding.message
+        assert finding.remedy.endswith("cwcli run proj -i update --reset")
+        assert "skips cwcli's data-loss guard" in finding.remedy
+        assert "maintenance/scheduler flags" in finding.remedy
+        assert "commit and push (or back up) any local app work" in finding.remedy
+    else:
+        assert findings == []
+
+
+def test_an_unsatisfied_frappe_dependency_is_a_notice_against_the_updated_version(bench):
+    bench.publish(
+        "goodapp",
+        {"pyproject.toml": pyproject("goodapp", deps={"frappe": ">=16.5.0-dev,<17.0.0"})},
+    )
+
+    finding = by_code(bench.findings(), "app.frappe_dependency_unsatisfied")
+    assert (finding.severity, finding.app) == (up.NOTICE, "goodapp")
+    assert "requires frappe >=16.5.0-dev,<17.0.0" in finding.message
+    assert "frappe will be at 16.0.0" in finding.message
+
+    # bench checks after resetting every app, so frappe's NEW version is the one compared.
+    bench.publish("frappe", {"frappe/__init__.py": '__version__ = "16.5.0"\n'}, "version-16")
+    assert bench.findings() == []
+
+
+def test_an_app_the_reset_does_not_move_is_checked_as_it_is_on_disk(bench):
+    # bench reinstalls every app, excluded or not, so its own requirements still apply.
+    bench.app("custom", files={"package.json": package_json("custom", ">=24")})
+    (bench.path / "sites" / "excluded_apps.txt").write_text("custom\n")
+
+    finding = by_code(bench.findings(), "tooling.node_too_old")
+    assert finding.app == "custom"
+
+
+def test_the_content_fetch_is_bench_s_own_and_never_touches_the_working_tree(bench):
+    app = bench.app("shallow", depth=1)
+    for n in range(3):
+        bench.publish("shallow", {"shallow/new.py": f"x = {n}\n"})
+    tip = subprocess.run(
+        [GIT, "-C", str(bench.remotes / "shallow.git"), "rev-parse", "main"],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    head_before = (app / ".git" / "HEAD").read_text()
+
+    assert bench.findings() == []
+
+    def git_out(*args):
+        return subprocess.run(
+            [GIT, *args], cwd=app, env=bench.env, capture_output=True, text=True
+        ).stdout.strip()
+
+    # The same ref bench's fetch writes, at the tip its reset would move to ...
+    assert git_out("rev-parse", "refs/remotes/upstream/main") == tip
+    # ... fetched --depth=1, so a shallow repo never receives the full history ...
+    assert git_out("rev-list", "--count", "refs/remotes/upstream/main") == "1"
+    # ... and nothing checked out.
+    assert (app / ".git" / "HEAD").read_text() == head_before
+    assert git_out("status", "--porcelain") == ""
+    assert not (app / "shallow" / "new.py").exists()
+
+
+@pytest.mark.parametrize("shallow_clone", [False, True])
+def test_the_content_fetch_keeps_the_history_below_a_head_past_its_shallow_commit(
+    tmp_path, shallow_clone
+):
+    # A depth-1 clone moved on by full fetches (bench's `git fetch --all`, or
+    # `apps checkout`): a depth-1 content fetch would cut the tracking ref's history,
+    # and the next run would count every commit since the clone as unpushed work.
+    b = Bench(tmp_path, shallow_clone=shallow_clone)
+    app = b.app("deep", depth=1)
+    for n in range(2):
+        b.publish("deep", {"deep/new.py": f"x = {n}\n"})
+    b.git("fetch", "-q", "upstream", cwd=app)
+    b.git("reset", "-q", "--hard", "upstream/main", cwd=app)
+    b.publish("deep", {"deep/new.py": "x = 2\n"})
+
+    assert b.findings() == []
+    assert b.findings() == []
+
+
+def test_the_local_tier_fetches_nothing_and_checks_no_content(bench):
+    # --no-preflight runs only the data-loss guard's local checks.
+    bench.publish("goodapp", {"package.json": package_json("goodapp", ">=24")})
+
+    def tracking():
+        return subprocess.run(
+            [GIT, "rev-parse", "refs/remotes/upstream/main"],
+            cwd=bench.path / "apps" / "goodapp",
+            env=bench.env,
+            capture_output=True,
+            text=True,
+        ).stdout
+
+    before = tracking()
+    _, outcome = guard(bench, local_only=True)
+
+    assert outcome.findings == []
+    assert tracking() == before
+
+
+def test_a_fetch_that_fails_is_unverified_not_a_blocker(bench):
+    bench.publish("goodapp", {"package.json": package_json("goodapp", ">=24")})
+    lock = bench.path / "apps" / "goodapp" / ".git" / "refs" / "remotes" / "upstream"
+    lock.mkdir(parents=True, exist_ok=True)
+    (lock / "main.lock").write_text("")  # another git holds the ref
+
+    findings = bench.findings()
+
+    finding = by_code(findings, "content.unverified")
+    assert (finding.severity, finding.app) == (up.UNVERIFIED, "goodapp")
+    assert "could not be checked" in finding.message
+    assert not [f for f in findings if f.severity == up.BLOCKER]
+
+
+def test_a_fetch_that_does_not_answer_is_killed_and_unverified(bench):
+    # ls-remote answers; the fetch after it hangs. A counter tells the two apart.
+    app = bench.path / "apps" / "goodapp"
+    bench.publish("goodapp", {"package.json": package_json("goodapp", ">=24")})
+    calls = bench.root / "uploadpack-calls"
+    script = bench.root / "uploadpack.sh"
+    script.write_text(
+        f'#!/bin/sh\necho x >> {calls}\n[ "$(wc -l < {calls})" -gt 1 ] && sleep 30\n'
+        'exec git-upload-pack "$@"\n'
+    )
+    script.chmod(0o755)
+    bench.git("config", "remote.upstream.uploadpack", str(script), cwd=app)
+
+    started = time.monotonic()
+    findings = bench.findings(fetch_timeout=0.5)
+
+    assert time.monotonic() - started < 15
+    assert by_code(findings, "content.unverified").app == "goodapp"
+    assert not [f for f in findings if f.severity == up.BLOCKER]
+    assert not list((app / ".git").rglob("*.lock"))  # nothing stranded for bench's fetch
+
+
+def test_a_python_that_cannot_run_is_unverified(bench):
+    (bench.path / "env" / "bin" / "python").unlink()
+    bench.publish("goodapp", {"pyproject.toml": pyproject("goodapp", python=">=3.14")})
+
+    finding = by_code(bench.findings(), "content.unverified")
+    assert finding.app == "goodapp"
+    assert "the bench's python could not be run" in finding.message
+
+
+def test_a_manifest_that_does_not_parse_is_unverified(bench):
+    bench.publish("goodapp", {"pyproject.toml": "[project\nname = "})
+
+    finding = by_code(bench.findings(), "content.unverified")
+    assert "pyproject.toml could not be parsed" in finding.message
+
+
+def test_every_tooling_problem_is_reported_in_one_run(bench):
+    bench.publish(
+        "frappe",
+        {
+            "frappe/__init__.py": '__version__ = "17.0.0"\n',
+            "pyproject.toml": pyproject("frappe", "17.0.0", ">=3.14,<3.15"),
+            "package.json": package_json("frappe", ">=24"),
+        },
+        "version-16",
+    )
+    bench.publish("goodapp", {"pyproject.toml": pyproject("goodapp", deps={"frappe": "^16.0.0"})})
+
+    assert codes(bench.findings()) == {
+        ("frappe.major_upgrade", "frappe"),
+        ("tooling.python_too_old", "frappe"),
+        ("tooling.node_too_old", "frappe"),
+        ("app.frappe_dependency_unsatisfied", "goodapp"),
+    }
+
+
+@pytest.mark.parametrize(
+    "spec, version, expected",
+    [
+        (">=3.14,<3.15", "3.12.13", False),
+        (">=3.14,<3.15", "3.14.2", True),
+        (">=3.14,<3.15", "3.15.0", False),
+        ("~=3.10", "3.12.1", True),
+        ("==3.12.*", "3.12.13", True),
+        ("!=3.11.*", "3.11.4", False),
+        ("not a specifier", "3.12.0", None),
+    ],
+)
+def test_requires_python_is_read_as_pep_440(spec, version, expected):
+    assert up._pep440_contains(spec, version) is expected
+
+
+@pytest.mark.parametrize(
+    "spec, version, expected",
+    [
+        ("^18 || >=20", "18.19.0", True),
+        ("^18 || >=20", "19.9.0", False),
+        ("^18 || >=20", "v22.23.4", True),
+        (">=24", "v22.23.4", False),
+        (">= 18.0.0 <21", "20.1.0", True),
+        (">= 18.0.0 <21", "21.0.0", False),
+        ("18.x", "18.4.0", True),
+        ("18.x", "19.0.0", False),
+        ("~18.2", "18.2.9", True),
+        ("~18.2", "18.3.0", False),
+        ("18 - 20", "20.9.9", True),
+        ("18 - 20", "21.0.0", False),
+        ("18.1.2 - 20.3.4", "20.3.5", False),
+        (">18", "18.9.0", False),
+        (">18", "19.0.0", True),
+        ("<=20", "20.5.0", True),
+        ("^0.2.3", "0.2.9", True),
+        ("^0.2.3", "0.3.0", False),
+        ("^0.0.3", "0.0.4", False),
+        ("*", "1.0.0", True),
+        ("", "1.0.0", True),
+        (">=18.0.0-rc.1", "20.0.0", None),  # a prerelease bound: not read, so unverified
+        (">=18", "nightly", None),
+    ],
+)
+def test_engines_node_is_read_as_node_semver(spec, version, expected):
+    assert up._npm_satisfies(spec, version) is expected
+
+
+@pytest.mark.parametrize(
+    "spec, version, expected",
+    [
+        (">=16.0.0-dev,<17.0.0", "16.26.3", True),
+        (">=16.0.0-dev,<17.0.0", "16.0.0-dev", True),
+        (">=16.0.0-dev,<17.0.0", "17.0.0-dev", False),  # "<17.0.0" excludes 17's prereleases
+        (">=15.0.0,<16.0.0", "16.0.0-dev", False),
+        ("^15.2", "15.9.0", True),
+        ("^15.2", "16.0.0", False),
+        ("~=15.2", "15.9.1", True),
+        ("==15.*", "15.40.0", True),
+        ("==15", "16.0.0", False),
+        (">15", "15.5.0", False),  # a partial: ">15" is ">=16.0.0"
+        ("<=15", "15.5.0", True),
+        ("!=15.1.0", "15.1.0", False),
+        ("15.*.1", "15.40.4", True),  # a wildcard ends the version
+        (">=15.0.0, <16.0.0", "15.1.0", None),  # a space: semantic_version raises on it
+        ("!=15,~*.1", "16.0.0", None),  # every block parses before any matches
+        (">=*.1.2-dev", "16.0.0", None),  # a wildcard major cannot carry a prerelease
+        (">=15.0.0", "15.40", None),
+    ],
+)
+def test_frappe_dependencies_are_read_as_semantic_version_simple_spec(spec, version, expected):
+    assert up._simple_spec(spec, version) is expected
 
 
 # ------------------------------------------------------------------ fail honest
