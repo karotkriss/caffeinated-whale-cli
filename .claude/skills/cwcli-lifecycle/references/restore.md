@@ -90,6 +90,7 @@ On Frappe `version-15` bench has a "trying alternative directories" fallback tha
 Shared by the normal and receive paths.
 Interactive (a TTY): prompt for the username (default `root`, blank keeps `root`) AND the password (blank is an error).
 Non-interactive (flags / non-TTY): the username defaults to `root`; the password is a required secret, so a non-TTY WITHOUT `--mariadb-root-password` refuses with a non-zero exit rather than hanging or proceeding empty.
+In BOTH modes, a root password remembered for the instance at init (`core.db_password.remembered`) answers both prompts for the `root` user when no password flag is given, so neither mode prompts or refuses then; the destructive confirmation is unchanged.
 
 The interactive "empty password" bug and its ROOT fix (sharp edge, worth remembering for ANY questionary confirm followed by another prompt):
 `questionary.confirm(...)` with the default `auto_enter=True` submits on the `y`/`n` keypress and leaves the user's habitual trailing Enter in prompt_toolkit's INTERNAL input buffer.

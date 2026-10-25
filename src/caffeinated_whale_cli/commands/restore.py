@@ -31,6 +31,7 @@ import questionary
 import typer
 from questionary import Style
 
+from ..core import db_password
 from ..core import restore as core_restore
 from ..core.docker import get_project_containers
 from ..core.envelope import Message, Status
@@ -319,6 +320,7 @@ def _get_frappe_container(project_name: str):
 
 
 def _prompt_mariadb_credentials(
+    project_name: str,
     mariadb_root_username: str | None,
     mariadb_root_password: str | None,
 ) -> tuple[str, str]:
@@ -329,8 +331,15 @@ def _prompt_mariadb_credentials(
     ``--mariadb-root-password`` refuses non-zero rather than hanging or proceeding
     empty. Returns ``(username, password)`` both non-empty. Fired AFTER the
     confirms so a stray trailing Enter cannot leak into the password prompt.
+
+    A root password remembered for the instance at init (``core.db_password``)
+    answers both for the ``root`` user, so neither mode prompts or refuses then.
     """
     is_tty = sys.stdin.isatty()
+
+    remembered = db_password.remembered(project_name)
+    if not mariadb_root_password and remembered and mariadb_root_username in (None, "", "root"):
+        return "root", remembered
 
     if not mariadb_root_username:
         if is_tty:
@@ -776,7 +785,9 @@ def _run_normal(
 
     _render_missing_apps_gate(plan, yes=yes, isatty=isatty)
     _render_destructive_gate(plan, yes=yes, isatty=isatty)
-    username, password = _prompt_mariadb_credentials(mariadb_root_username, mariadb_root_password)
+    username, password = _prompt_mariadb_credentials(
+        project_name, mariadb_root_username, mariadb_root_password
+    )
     _apply_and_render(
         plan,
         mariadb_root_username=username,
@@ -915,7 +926,7 @@ def _run_receive(
         console.print()
 
         username, password = _prompt_mariadb_credentials(
-            mariadb_root_username, mariadb_root_password
+            project_name, mariadb_root_username, mariadb_root_password
         )
         _render_missing_apps_gate(plan, yes=yes, isatty=isatty)
         _render_destructive_gate(plan, yes=yes, isatty=isatty)
@@ -1088,7 +1099,8 @@ def restore(
     mariadb_root_password: str = typer.Option(
         None,
         "--mariadb-root-password",
-        help="MariaDB root password. If not provided, you will be prompted interactively.",
+        help="MariaDB root password. If not provided, the instance's remembered password is "
+        "used, else you will be prompted interactively.",
     ),
     admin_password: str = typer.Option(
         None,

@@ -37,6 +37,7 @@ from .commands import start as start_cmd
 from .core import apps as core_apps
 from .core import backup as core_backup
 from .core import bench_ops as core_bench_ops
+from .core import failure_causes
 from .core import init as core_init
 from .core import label as core_label
 from .core import resolvers as core_resolvers
@@ -468,6 +469,7 @@ def _create_job(
         "result": None,
         "warnings": [],
         "error": None,
+        "cause": None,
     }
     _write_json(directory / "spec.json", spec)
     _write_json(directory / "state.json", state)
@@ -760,10 +762,10 @@ def _clear_maintenance(target: dict[str, Any]) -> Result:
     return Result(status=Status.OK if off else Status.WARNING, data=outcome, warnings=warnings)
 
 
-def _db_root_password(secret_values: dict[str, str]) -> str:
-    """The MariaDB root password `bench drop-site` needs: the dedicated secret, else
-    the compose default the core itself assumes (`core.rm_site.drop_site`)."""
-    return secret_values.get("db_root_password") or "123"
+def _db_root_password(secret_values: dict[str, str]) -> str | None:
+    """The MariaDB root password a job was given, else None so the core uses the
+    instance's remembered one (`core.db_password.resolve`)."""
+    return secret_values.get("db_root_password") or None
 
 
 def _remove_instance(project: str, args: dict[str, Any], consent: bool, emit: _Recorder) -> Result:
@@ -845,6 +847,7 @@ def _run_init(
         bench_image_tag=args.get("bench_image_tag") or None,
         auto_start=auto_start,
         uid=uid,
+        db_root_password=_db_root_password(secret_values),
         stream_output=True,
         on_event=emit,
     )
@@ -865,7 +868,7 @@ def _run_init(
         bench_parent=bench_parent,
         frappe_ref=frappe_ref,
         frappe_url=args.get("frappe_url") or None,
-        db_root_password=secret_values.get("db_root_password") or "123",
+        db_root_password=_db_root_password(secret_values),
         admin_password=admin_password,
         reuse_bench=args.get("reuse_bench"),
         install_erpnext=bool(args.get("install_erpnext")),
@@ -1123,6 +1126,13 @@ def _result_ok(result: Result) -> bool:
     return True
 
 
+def _cause(*texts: Any) -> dict[str, str] | None:
+    """The failure's plain cause, read only from the failing step's own output and
+    message, when a known shape matches."""
+    cause = failure_causes.explain(*(str(text) for text in texts if text))
+    return {"code": cause.code, "title": cause.title, "text": cause.text} if cause else None
+
+
 def run_job(job_id: str) -> int:
     signals.install_unwind_handlers()
     spec = _read_json(_json_path(job_id, "spec.json"))
@@ -1199,8 +1209,11 @@ def run_job(job_id: str) -> int:
             "detail": exc.detail,
         }
         error = _scrub(_plain(error), scrub_values)
+        cause = _scrub(_cause((exc.detail or {}).get("output"), exc.message), scrub_values)
         emit.lifecycle("job_failed", error["message"], phase="job", code=error["code"])
-        _merge_state(job_id, state="failed", finished_at=_now(), exit_code=1, error=error)
+        _merge_state(
+            job_id, state="failed", finished_at=_now(), exit_code=1, error=error, cause=cause
+        )
         return 1
     except Exception as exc:  # pragma: no cover - defensive detached-process boundary
         message = _scrub(str(exc), scrub_values)

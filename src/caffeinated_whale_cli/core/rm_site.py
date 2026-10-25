@@ -61,7 +61,7 @@ from pathlib import Path, PurePosixPath
 
 from ..utils import shared_home
 from ..utils.config_utils import cwcli_home
-from . import resolvers
+from . import db_password, failure_causes, resolvers
 from . import rm as core_rm
 from .envelope import Choice, Message, Result, Status
 from .errors import CwcliError, ErrorKind
@@ -331,7 +331,7 @@ def drop_backed_up_site(
     site: str,
     drop_dir: Path,
     *,
-    db_root_password: str = "123",
+    db_root_password: str | None = None,
     on_event: OnEvent | None = None,
 ) -> Result[DropSiteOutcome]:
     """Drop a site whose verified backup :func:`backup_before_drop` put in ``drop_dir``.
@@ -364,24 +364,29 @@ def drop_backed_up_site(
 
     # Secret rides the environment, never the argv (the restore.py M5 pattern):
     # the traced command below is the $-ref, never the value.
-    env = {"CWCLI_DB_ROOT_PASSWORD": db_root_password}
+    env = {"CWCLI_DB_ROOT_PASSWORD": db_password.resolve(project_name, db_root_password)}
     cmd_str = (
         f"bench drop-site {shlex.quote(site)} "
         '--db-root-password "$CWCLI_DB_ROOT_PASSWORD" --no-backup'
     )
     emit(DropSiteCommand(command=cmd_str))
     exit_code = 1
+    tail = ""
     for event in exec_stream(container, ["sh", "-c", cmd_str], workdir=bench_path, environment=env):
         if isinstance(event, ExecChunk):
             emit(DropSiteOutput(stream=event.stream, text=event.text))
+            tail = (tail + event.text)[-8192:]
         else:
             exit_code = event.exit_code
 
     if exit_code != 0:
+        cause = failure_causes.explain(tail)
+        failed = f"Failed to drop site '{site}' (bench drop-site exited {exit_code})."
         raise CwcliError(
             ErrorKind.PRECONDITION,
             "rm_site.failed",
-            f"Failed to drop site '{site}' (bench drop-site exited {exit_code}).",
+            f"{cause.text} {failed}" if cause else failed,
+            detail={"output": tail} if tail else None,
         )
 
     archives_after = _archived_site_names(container, archive_root)
@@ -467,7 +472,7 @@ def drop_site(
     bench_path: str | None = None,
     auto_start: bool = False,
     consent: bool = False,
-    db_root_password: str = "123",
+    db_root_password: str | None = None,
     on_event: OnEvent | None = None,
 ) -> Result[DropSiteOutcome]:
     """Permanently drop ONE site: verified backup first, then ``bench drop-site --no-backup``.
@@ -481,10 +486,9 @@ def drop_site(
     core call never proceeds on an implicit yes), after resolving the container,
     bench, and site so the prompt names the real target and a missing site is a
     ``NOT_FOUND`` refusal rather than a confirmation for something that does not
-    exist. ``db_root_password`` defaults to ``"123"`` for the same reason
-    ``core.init``'s ``init_bench`` does: it mirrors the downloaded compose's
-    hardcoded ``MYSQL_ROOT_PASSWORD: 123``, shielded off the argv/echo via the
-    exec environment, not randomized.
+    exist. ``db_root_password`` defaults to the one stored for the instance at
+    init, else the compose default ``123`` (:func:`core.db_password.resolve`),
+    shielded off the argv/echo via the exec environment, not randomized.
 
     See the module docstring for the backup gate and the archive-relocation
     contract this owns.

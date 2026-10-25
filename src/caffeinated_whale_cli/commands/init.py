@@ -174,6 +174,7 @@ class _InitRenderer:
             "setuptools.pin_failed",
             "init.uid_align_failed",
             "init.uid_align_root_host",
+            "init.db_password_not_applied",
         ):
             stderr_console.print(f"[yellow]Warning: {event.text}[/yellow]")
         elif code == "instance.already_running" and self.verbose:
@@ -527,10 +528,14 @@ def init(
             "Pair with --frappe-branch to check out the fork's branch."
         ),
     ),
-    db_root_password: str = typer.Option(
-        "123",
+    db_root_password: str | None = typer.Option(
+        None,
         "--db-root-password",
-        help="MariaDB root password used for bench new-site.",
+        help=(
+            "MariaDB root password. On a new instance it becomes MariaDB's root password "
+            "and is remembered for later commands; omitted, the instance's remembered "
+            "password is used, else the default '123'."
+        ),
     ),
     admin_password: str | None = typer.Option(
         None,
@@ -693,6 +698,7 @@ def init(
                 bench_image_tag=bench_image_tag,
                 stream_output=verbose,
                 uid=uid,
+                db_root_password=db_root_password,
                 on_event=renderer,
             )
         finally:
@@ -708,6 +714,7 @@ def init(
                     auto_start=True,
                     stream_output=verbose,
                     uid=uid,
+                    db_root_password=db_root_password,
                     on_event=renderer,
                 )
             finally:

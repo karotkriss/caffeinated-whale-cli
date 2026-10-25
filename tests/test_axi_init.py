@@ -242,19 +242,23 @@ class TestAdminPasswordTransport:
         assert calls["instance"] == []
         assert calls["bench"] == []
 
-    def test_db_root_password_from_env_then_default(self, monkeypatch):
+    def test_db_root_password_from_env_then_remembered(self, monkeypatch):
         _no_admin_env(monkeypatch)
         monkeypatch.setenv("CWCLI_ADMIN_PASSWORD", "a")
         monkeypatch.setenv("CWCLI_DB_ROOT_PASSWORD", "dbsecret")
         calls = _patch_stages(monkeypatch)
 
         runner.invoke(axi_mod.app, ["init", "proj"])
+        # BOTH stages get it: stage 1 makes it MariaDB's own root password.
+        assert calls["instance"][0]["db_root_password"] == "dbsecret"
         assert calls["bench"][0]["db_root_password"] == "dbsecret"
 
+        # Omitted: None, so the core uses the instance's remembered one, else '123'.
         monkeypatch.delenv("CWCLI_DB_ROOT_PASSWORD", raising=False)
         calls2 = _patch_stages(monkeypatch)
         runner.invoke(axi_mod.app, ["init", "proj"])
-        assert calls2["bench"][0]["db_root_password"] == "123"
+        assert calls2["instance"][0]["db_root_password"] is None
+        assert calls2["bench"][0]["db_root_password"] is None
 
 
 # ------------------------------------------------------------------ frappe ref resolution

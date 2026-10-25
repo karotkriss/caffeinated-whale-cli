@@ -44,7 +44,7 @@ from pathlib import Path
 
 from ..utils import config_utils, shared_home
 from ..utils.port_utils import check_ports_in_use, format_port_list
-from . import credbridge, resolvers
+from . import credbridge, db_password, failure_causes, resolvers
 from . import docker as core_docker
 from .envelope import Choice, Message, Result, Status
 from .errors import CwcliError, ErrorKind
@@ -361,8 +361,10 @@ def _run_exec(
     consuming the chunks live so nothing is fully buffered. Either way a bounded
     tail of output is always retained so the ENOSPC disk-full hint fires whether
     or not output is streamed (disk exhaustion is *most* likely during a long
-    streaming bench build). A lost stream or unknowable exit code raises the
-    contract's typed ``DOCKER`` errors instead of the old ``exit code None``.
+    streaming bench build); that same text rides the error's ``detail`` and
+    names the cause (:func:`core.failure_causes.explain`) in its message. A lost
+    stream or unknowable exit code raises the contract's typed ``DOCKER`` errors
+    instead of the old ``exit code None``.
     """
     emit(InitTrace(text=command, code="exec.command"))
 
@@ -385,20 +387,22 @@ def _run_exec(
     if done.exit_code == 0:
         return
 
-    joined = "".join(chunks)
-    scanned = joined if collect else tail
+    scanned = "".join(chunks) if collect else tail
+    detail = {"output": scanned} if scanned else None
     if "ENOSPC" in scanned or "no space left on device" in scanned.lower():
         raise CwcliError(
             ErrorKind.PRECONDITION,
             "init.disk_full",
             "No space left on device inside the container. " "Free up disk space and try again.",
-            detail={"output": joined} if joined else None,
+            detail=detail,
         )
+    failed = f"Command failed with exit code {done.exit_code}: {command}"
+    cause = failure_causes.explain(scanned)
     raise CwcliError(
         ErrorKind.PRECONDITION,
         "init.exec_failed",
-        f"Command failed with exit code {done.exit_code}: {command}",
-        detail={"output": joined} if joined else None,
+        f"{cause.text} {failed}" if cause else failed,
+        detail=detail,
     )
 
 
@@ -630,6 +634,7 @@ def init_instance(
     auto_start: bool = False,
     stream_output: bool = False,
     uid: int | None = None,
+    db_root_password: str | None = None,
     on_event: OnEvent | None = None,
 ) -> Result[InstanceUp]:
     """Create the project's host footprint and bring its containers up.
@@ -660,6 +665,13 @@ def init_instance(
     could never write the bench workspace it provisions. A no-op on the common
     non-root path, where the dir is already owned by the id ``frappe`` is aligned
     to.
+
+    ``db_root_password`` becomes the new instance's MariaDB root password (see
+    :mod:`core.db_password`): written to the project's secret file and handed to
+    MariaDB through the compose before its data volume is first created. Blank or
+    the default ``123`` leaves the downloaded compose untouched. Once the volume
+    exists MariaDB keeps the password it was created with, so a different one
+    given then is reported as a notice rather than silently assumed to apply.
     """
     emit = on_event or _noop
     project_name = validate_project_slug(project_name)
@@ -734,6 +746,8 @@ def init_instance(
         )
     )
     content = compose_path.read_text()
+    if new_instance:
+        compose_path.unlink()
     web_mapping = f"{port}-{port + 5}:8000-8005"
     content = content.replace("8000-8005:8000-8005", web_mapping)
     socketio_start = port + 1000
@@ -783,7 +797,6 @@ def init_instance(
             )
             content = content.replace(working_dir, published_ports, 1)
         if web_mapping not in content or socketio_mapping not in content:
-            compose_path.unlink()
             raise CwcliError(
                 ErrorKind.PRECONDITION,
                 "compose.ports_missing",
@@ -791,6 +804,7 @@ def init_instance(
                 "with the required host port mappings.",
                 hint="Retry init. If the error persists, report the upstream compose change.",
             )
+    content = _apply_db_root_password(project_name, content, db_root_password, emit)
     compose_path.write_text(content)
 
     # Make the bind-mount source dir writable by the container 'frappe' user when
@@ -887,6 +901,54 @@ def init_instance(
         status=Status.OK,
         data=InstanceUp(project=project_name, conf_dir=str(conf_dir)),
     )
+
+
+def _mariadb_volume_exists(project_name: str) -> bool | None:
+    """Whether MariaDB's data volume exists; None when Docker cannot say."""
+    volumes = core_docker.get_project_volumes(project_name)
+    if volumes is None:
+        return None
+    return any(
+        (volume.attrs.get("Labels") or {}).get("com.docker.compose.volume") == "mariadb-data"
+        for volume in volumes
+    )
+
+
+def _apply_db_root_password(
+    project_name: str,
+    content: str,
+    password: str | None,
+    emit: OnEvent,
+) -> str:
+    """Make ``password`` the instance's MariaDB root password while MariaDB is still unborn."""
+    if not password or (password == db_password.DEFAULT and not db_password.uses_secret(content)):
+        return content
+    volume_exists = _mariadb_volume_exists(project_name)
+    if volume_exists is None:
+        raise CwcliError(
+            ErrorKind.DOCKER,
+            "init.db_state_unknown",
+            f"Could not read whether MariaDB for '{project_name}' already exists, so the "
+            "database root password given cannot be applied safely.",
+            hint="Check that Docker is running, then retry.",
+        )
+    if volume_exists:
+        if password != db_password.resolve(project_name, None):
+            emit(
+                InitNotice(
+                    code="init.db_password_not_applied",
+                    text=(
+                        f"MariaDB for '{project_name}' was already initialized, so it keeps the "
+                        "root password it was created with; the database root password given is "
+                        "used as-is and must match it."
+                    ),
+                )
+            )
+        return content
+    content = db_password.apply_to_compose(content)
+    path = db_password.remember(project_name, password)
+    emit(InitTrace(text=f"MariaDB root password set from the one given; stored in {path}"))
+    return content
 
 
 # ------------------------------------------------------------------ stage 2 helpers
@@ -994,7 +1056,7 @@ def init_bench(
     bench_parent: str = "/workspace",
     frappe_ref: str = DEFAULT_FRAPPE_BRANCH,
     frappe_url: str | None = None,
-    db_root_password: str = "123",
+    db_root_password: str | None = None,
     admin_password: str,
     reuse_bench: bool | None = None,
     install_erpnext: bool = False,
@@ -1020,10 +1082,9 @@ def init_bench(
     rather than colliding with the container's own root user (see that function);
     ``uid`` is the explicit escape hatch when a caller wants a specific uid.
 
-    ``db_root_password`` keeps its ``"123"`` default HERE because the coupling
-    it mirrors - the downloaded compose's hardcoded ``MYSQL_ROOT_PASSWORD:
-    123`` - lives in the compose file the core itself downloads; it is
-    shielded off the argv/echo, not randomized.
+    ``db_root_password`` defaults to the one :func:`init_instance` stored for
+    this instance, else the compose default ``123`` (:func:`core.db_password.resolve`);
+    it is shielded off the argv/echo, not randomized.
 
     ``frappe_url`` is the optional custom Frappe repository (a fork) passed
     through to ``bench init --frappe-path``; ``None`` (the default) builds from
@@ -1299,7 +1360,7 @@ def init_bench(
         # expanded value on its own argv, an unavoidable consequence of bench's
         # flag-only interface - see the cwcli-lifecycle skill.)
         new_site_env = {
-            "CWCLI_DB_ROOT_PASSWORD": db_root_password,
+            "CWCLI_DB_ROOT_PASSWORD": db_password.resolve(project_name, db_root_password),
             "CWCLI_ADMIN_PASSWORD": admin_password,
         }
         new_site_cmd = _build_cd_command(
