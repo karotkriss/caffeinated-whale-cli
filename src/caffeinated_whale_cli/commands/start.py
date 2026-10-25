@@ -327,6 +327,7 @@ def _start_project(
             "bench.default_used",
             "start.web_not_ready",
             "start.no_host_port",
+            "start.network_recreated",
         ):
             stderr_console.print(f"[yellow]Warning: {warning.text}[/yellow]")
         elif verbose:
@@ -351,6 +352,8 @@ def _handle_start_project_error(e: CwcliError, project_name: str):
         return None
     if e.kind is ErrorKind.DOCKER:
         stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
+        if e.hint:
+            stderr_console.print(f"[dim]{e.hint}[/dim]")
         raise typer.Exit(code=1) from None
     stderr_console.print(f"[bold red]Error:[/bold red] {e.message}")
     render_captured_output_tail(e)
@@ -533,6 +536,7 @@ def _run_start(
             "bench.default_used",
             "start.web_not_ready",
             "start.no_host_port",
+            "start.network_recreated",
         ):
             stderr_console.print(f"[yellow]Warning: {warning.text}[/yellow]")
         elif verbose:
