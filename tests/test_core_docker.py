@@ -872,3 +872,155 @@ class TestAlignBindMountSourceOwner:
         chowns = self._record_chown(monkeypatch)
         assert core_docker.align_bind_mount_source_owner(tmp_path / "nope") is None
         assert chowns == []
+
+
+class _FakeNet:
+    def __init__(self, name, net_id="new-id"):
+        self.name = name
+        self.id = net_id
+        self.connected = []
+
+    def connect(self, container, aliases=None):
+        self.connected.append((container.name, aliases))
+
+
+class _FakeNetworks:
+    def __init__(self):
+        self.created = []
+        self.nets = {}
+
+    def get(self, name):
+        from docker.errors import NotFound
+
+        if name not in self.nets:
+            raise NotFound("gone")
+        return self.nets[name]
+
+    def create(self, name, driver, labels):
+        self.created.append((name, driver, labels))
+        self.nets[name] = _FakeNet(name)
+        return self.nets[name]
+
+
+def _stopped(name, service, networks, mode=None, version="5.1.3", net_id="old-id"):
+    nets = {n: {"Aliases": [name, service], "NetworkID": net_id} for n in networks}
+    return SimpleNamespace(
+        name=name,
+        labels={
+            "com.docker.compose.service": service,
+            "com.docker.compose.version": version,
+        },
+        attrs={
+            "NetworkSettings": {"Networks": nets},
+            "HostConfig": {"NetworkMode": mode or next(iter(networks), "default")},
+        },
+    )
+
+
+class TestRecreateMissingProjectNetworks:
+    """A WSL/Docker crash drops ``<project>_default``; start rebuilds it like compose."""
+
+    @pytest.fixture
+    def client(self, monkeypatch):
+        fake = SimpleNamespace(networks=_FakeNetworks())
+        monkeypatch.setattr(core_docker.docker, "from_env", lambda: fake)
+        return fake
+
+    def test_a_missing_own_network_is_recreated_with_compose_labels_and_aliases(self, client):
+        db = _stopped("p-mariadb-1", "mariadb", ["p_default"])
+        app = _stopped("p-frappe-1", "frappe", ["p_default"])
+
+        assert core_docker.recreate_missing_project_networks("p", [db, app]) == ["p_default"]
+
+        assert client.networks.created == [
+            (
+                "p_default",
+                "bridge",
+                {
+                    "com.docker.compose.project": "p",
+                    "com.docker.compose.network": "default",
+                    "com.docker.compose.version": "5.1.3",
+                },
+            )
+        ]
+        # Reconnected (replacing the stale id) with the aliases each container had,
+        # not recreated: compose's service-name DNS (`mariadb`) keeps working.
+        assert client.networks.nets["p_default"].connected == [
+            ("p-mariadb-1", ["p-mariadb-1", "mariadb"]),
+            ("p-frappe-1", ["p-frappe-1", "frappe"]),
+        ]
+
+    def test_an_existing_network_is_left_alone(self, client):
+        client.networks.nets["p_default"] = _FakeNet("p_default", "live-id")
+        db = _stopped("p-mariadb-1", "mariadb", ["p_default"], net_id="live-id")
+
+        assert core_docker.recreate_missing_project_networks("p", [db]) == []
+        assert client.networks.created == []
+        assert client.networks.nets["p_default"].connected == []
+
+    def test_a_network_recreated_outside_cwcli_reconnects_the_stale_containers(self, client):
+        # The user followed a printed `docker network create` hint (or an earlier start
+        # failed after creating it): the network exists, but each stopped container
+        # still holds the crashed network's id, so its start would 404 by that id.
+        client.networks.nets["p_default"] = _FakeNet("p_default", "live-id")
+        db = _stopped("p-mariadb-1", "mariadb", ["p_default"])
+        app = _stopped("p-frappe-1", "frappe", ["p_default"], net_id="live-id")
+
+        assert core_docker.recreate_missing_project_networks("p", [db, app]) == []
+        assert client.networks.created == []
+        assert client.networks.nets["p_default"].connected == [
+            ("p-mariadb-1", ["p-mariadb-1", "mariadb"])
+        ]
+
+    def test_a_failed_reconnect_names_the_exact_remedy(self, client):
+        from docker.errors import APIError
+
+        net = client.networks.nets["p_default"] = _FakeNet("p_default", "live-id")
+
+        def boom(*a, **k):
+            raise APIError("endpoint busy")
+
+        net.connect = boom
+        c = _stopped("p-mariadb-1", "mariadb", ["p_default"])
+
+        with pytest.raises(CwcliError) as exc:
+            core_docker.recreate_missing_project_networks("p", [c])
+
+        assert exc.value.code == "network.reconnect_failed"
+        assert (
+            "docker network connect --alias p-mariadb-1 --alias mariadb p_default p-mariadb-1"
+            in (exc.value.hint or "")
+        )
+
+    def test_builtin_networks_are_never_touched(self, client):
+        c = _stopped("p-x-1", "x", ["bridge"], mode="host")
+
+        assert core_docker.recreate_missing_project_networks("p", [c]) == []
+        assert client.networks.created == []
+
+    def test_a_missing_network_the_project_does_not_own_is_refused_with_the_remedy(self, client):
+        c = _stopped("p-x-1", "x", ["shared-proxy"])
+
+        with pytest.raises(CwcliError) as exc:
+            core_docker.recreate_missing_project_networks("p", [c])
+
+        assert exc.value.code == "network.external_missing"
+        assert "docker network create shared-proxy" in (exc.value.hint or "")
+        assert client.networks.created == []  # never invents a foreign network
+
+    def test_a_failed_creation_names_the_exact_remedy(self, client, monkeypatch):
+        from docker.errors import APIError
+
+        def boom(*a, **k):
+            raise APIError("pool overlaps")
+
+        monkeypatch.setattr(client.networks, "create", boom)
+        c = _stopped("p-x-1", "x", ["p_default"])
+
+        with pytest.raises(CwcliError) as exc:
+            core_docker.recreate_missing_project_networks("p", [c])
+
+        assert exc.value.code == "network.recreate_failed"
+        assert "docker network create --label com.docker.compose.project=p" in (
+            exc.value.hint or ""
+        )

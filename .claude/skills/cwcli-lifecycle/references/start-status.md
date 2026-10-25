@@ -107,6 +107,14 @@ are now the whole point. Each note below guards a real bug.
   CLI-frontend host-side pre-step (D6); `core.start` assumes ports are clear. The human frontend skips the
   port check when the frappe container is already up, which lets an idempotent re-run reach the no-op
   instead of self-conflicting on its own ports.
+- **A missing compose network is recreated before any container starts** (`core.docker.recreate_missing_project_networks`; `fm/cwcli-start-network-selfheal`).
+  A WSL/Docker crash drops `<project>_default` while the stopped containers keep its id, and `container.start()` died with a raw `404 ... network <id> not found` traceback on both surfaces.
+  Creating the network by name is NOT enough: the recreated network has a new id and the container still holds the old one.
+  `network.connect` on the stopped container replaces that stale entry, but it also resets the container's DNS aliases, so each is reconnected with the aliases it had (`mariadb`, `frappe`, ...) - no container is recreated, so a v13/v14 runtime toolchain survives (a `docker network disconnect` first fails: nothing is attached to the new network).
+  The reconnect is keyed on the container's recorded `NetworkID` differing from the live network's, NOT on cwcli having just created it: a network recreated by hand (the pre-fix workaround, or by following either printed hint) or by an earlier start that failed between create and connect still leaves the stopped containers holding the dead id, so an existing network is checked the same way; a container whose id already matches is left alone.
+  Only a network the project OWNS (`<project>_<key>`) is rebuilt, with compose's `project`/`network`/`version` labels and the bridge driver; any other missing network (an external one) raises `network.external_missing` naming `docker network create <name>`, a failed create raises `network.recreate_failed` with the labelled command, and a failed reconnect raises `network.reconnect_failed` naming the `docker network connect --alias ...` that restores it.
+  A recreation surfaces as a `start.network_recreated` warning on both frontends; a later `docker compose up --no-deps` finds nothing to churn (dry-run verified).
+  Proven by `tests/e2e/test_start_network_selfheal_e2e.py`.
 - **A frappe container that is not running after its start is `NOT_RUNNING` `frappe.exited`.** A
   devcontainer-style compose whose PID 1 is `bench start` can exit on boot, or die mid-start when a uid remap
   takes PID 1 down; the next exec then raised Docker's raw `409 ... is not running` traceback. `_require_running`

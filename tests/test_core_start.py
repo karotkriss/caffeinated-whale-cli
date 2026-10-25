@@ -38,6 +38,7 @@ def wire(monkeypatch):
     def _wire(frappe, *, extra=None, benches=None):
         containers = [*(extra or []), frappe]
         monkeypatch.setattr(core_start, "get_project_containers", lambda name: containers)
+        monkeypatch.setattr(core_start, "recreate_missing_project_networks", lambda *a: [])
         monkeypatch.setattr(
             resolvers.db_utils,
             "get_cached_project_data",
@@ -450,3 +451,48 @@ class TestFrappeContainerExited:
         with pytest.raises(CwcliError) as exc:
             core_start.start("proj")
         assert exc.value.code != "frappe.exited"
+
+
+class TestMissingNetwork:
+    """A crash that removed the compose network is repaired before containers start."""
+
+    def test_a_recreated_network_is_reported_and_the_start_proceeds(self, wire, monkeypatch):
+        db = FakeSvc("mariadb")
+        wire(FakeContainer(ps="1 0 5 0.0 1000 /sbin/init\n", cwds={}), extra=[db])
+        seen = []
+        monkeypatch.setattr(
+            core_start,
+            "recreate_missing_project_networks",
+            lambda project, stopped: seen.append((project, stopped)) or ["proj_default"],
+        )
+
+        result = core_start.start("proj")
+
+        assert seen == [("proj", [db])]  # only the stopped container is checked
+        assert db.started
+        assert [w.code for w in result.warnings if w.code == "start.network_recreated"] == [
+            "start.network_recreated"
+        ]
+
+    def test_an_unrepairable_network_aborts_before_any_container_starts(self, wire, monkeypatch):
+        db = FakeSvc("mariadb")
+        wire(FakeContainer(ps="1 0 5 0.0 1000 /sbin/init\n", cwds={}), extra=[db])
+
+        def refuse(project, stopped):
+            raise CwcliError(ErrorKind.DOCKER, "network.external_missing", "missing")
+
+        monkeypatch.setattr(core_start, "recreate_missing_project_networks", refuse)
+
+        with pytest.raises(CwcliError) as exc:
+            core_start.start("proj")
+        assert exc.value.code == "network.external_missing"
+        assert not db.started
+
+    def test_a_running_instance_is_not_checked(self, wire, monkeypatch):
+        wire(FakeContainer(ps="1 0 5 0.0 1000 /sbin/init\n", cwds={}), extra=[])
+        monkeypatch.setattr(
+            core_start,
+            "recreate_missing_project_networks",
+            lambda *a: pytest.fail("no stopped container, nothing to check"),
+        )
+        core_start.start("proj")
