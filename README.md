@@ -1980,7 +1980,10 @@ Interrupt requests use the command's cleanup path; Detach only leaves the page, 
 On Windows a job that has not begun its cleanup five minutes after Interrupt, or has not finished it two minutes after beginning, is terminated; one that never began is marked `unknown` because its cleanup may not have run.
 Jobs keeps every active job and the 100 most recent finished ones; older finished records are pruned when a new job starts.
 The `self-update` job restarts the local daemon and the open page reloads after its protocol check sees the replacement.
-Guarded destructive verbs (`rm`, `rm-site`, `rm-bench`, `restore`, `apps uninstall`, and `apps checkout --reset`) and settings writes are not in the UI.
+The guarded destructive verbs run as jobs too, each behind a typed confirmation of the exact name of what it destroys: remove an instance (`rm`: every site backed up first, the named volumes deletable only while the instance runs, and no way to skip the backup, mirroring `cwcli axi rm`), drop a site (`rm-site`), remove a stopped bench (`rm-bench`), and check out an app ref discarding local changes (`apps checkout --reset`, typed back as the app's name).
+A failed backup drops nothing, exactly as on the command line, and the job page shows bench's own reason.
+Settings is writable: cache on/off, forget one remembered project or clear the whole cache (confirmed first), add, remove and prune bench search paths (the prune check names any stopped instance that keeps it from pruning), auto-inspect and its interval and boot hook, the persistent credential bridge and its boot unit, tips, and the agent SessionStart hooks `cwcli axi setup` installs; every control sits beside the terminal command that does the same.
+`restore`, `apps uninstall`, `run`, `open`, an in-browser terminal, access from another machine and the shared multi-user mode are not in the UI; each needs its own decision first.
 
 **Honest states:** the UI distinguishes `unknown` (not probed) from `offline`,
 labels cache-backed data as remembered versus verified, and never guesses a

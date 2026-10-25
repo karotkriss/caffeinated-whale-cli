@@ -25,6 +25,7 @@ no supported API exposes, and faking it here would test the fake.
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import re
@@ -757,3 +758,185 @@ class TestSafeActions:
             )
             assert code == 0, restored_status
             assert not restored_status.strip()
+
+
+class TestGuardedDestructiveJobs:
+    """Phase 3: ``rm-site`` as a job against the real instance, both halves of its
+    backup gate, through the shipped daemon. Each test creates its OWN throwaway
+    site on the shared bench and never touches ``inst.site``. The browser half
+    (typed confirmation dialogs) is proven by hand in ``docs/e2e/webui-phase3.md``;
+    what CI pins here is that the job reaches the SAME core path as ``cwcli
+    rm-site``: consent is the core's own ``confirm_drop_site`` until the spec
+    carries it, a succeeded job leaves the verified dump on the host and the site
+    genuinely gone, and a failed backup drops nothing."""
+
+    def test_rm_site_job_needs_consent_then_backs_up_and_drops(self, daemon, running_instance):
+        from .test_rm_site_e2e import (
+            MARKER,
+            _create_site,
+            _database_exists,
+            _db_name,
+            _drop_temporary_site,
+            _dropped_site_dirs,
+            _seed_marker,
+            _site_exists,
+        )
+
+        inst = running_instance
+        site = "cwe2ewebdropa.localhost"
+        _create_site(inst, site)
+        try:
+            _seed_marker(inst, site)
+            db_name = _db_name(inst, site)
+            target = {"project": inst.name, "site": site}
+
+            # Without consent the job ends on the CORE's choice and nothing is dropped.
+            asked = _post(
+                daemon.base + "/api/v1/jobs", {"verb": "rm-site", "target": target, "args": {}}
+            )["data"]
+            asked = _wait_for_job(daemon.base, asked["id"])
+            assert asked["state"] == "needs_choice", asked
+            assert asked["choice"]["kind"] == "confirm_drop_site"
+            assert _site_exists(inst, site)
+
+            created = _post(
+                daemon.base + "/api/v1/jobs",
+                {"verb": "rm-site", "target": target, "args": {}, "consent": True},
+            )["data"]
+            assert created["pid"] != daemon.proc.pid
+            finished = _wait_for_job(daemon.base, created["id"], timeout=600)
+            assert finished["state"] == "succeeded", finished
+            assert finished["result"]["ok"] is True
+            assert finished["result"]["site"] == site
+            assert not _site_exists(inst, site), "site directory still present"
+            assert not _database_exists(inst, db_name), "the site's database was not dropped"
+
+            dirs = _dropped_site_dirs(inst, site)
+            assert len(dirs) == 1 and finished["result"]["archived_host_path"] == str(dirs[0])
+            dumps = [
+                f for f in (dirs[0] / "backups").iterdir() if f.name.endswith("-database.sql.gz")
+            ]
+            assert len(dumps) == 1
+            assert MARKER.encode() in gzip.decompress(
+                dumps[0].read_bytes()
+            ), "record not in the dump"
+            # The job record is the same durable artefact the browser reattaches to.
+            assert "drop_site_notice" in {event["type"] for event in finished["events"]}
+        finally:
+            _drop_temporary_site(inst, site)
+
+    def test_rm_site_job_drops_nothing_when_the_backup_fails(self, daemon, running_instance):
+        from .test_rm_site_e2e import (
+            _count_marker,
+            _create_site,
+            _database_exists,
+            _db_name,
+            _drop_temporary_site,
+            _dropped_site_dirs,
+            _seed_marker,
+            _site_exists,
+        )
+
+        inst = running_instance
+        site = "cwe2ewebdropb.localhost"
+        _create_site(inst, site)
+        backups = f"{inst.bench}/sites/{site}/private/backups"
+        try:
+            _seed_marker(inst, site)
+            db_name = _db_name(inst, site)
+            code, out = harness.exec_in_frappe(
+                inst.name, f"mkdir -p {backups} && chmod 0555 {backups}"
+            )
+            assert code == 0, out
+
+            created = _post(
+                daemon.base + "/api/v1/jobs",
+                {
+                    "verb": "rm-site",
+                    "target": {"project": inst.name, "site": site},
+                    "args": {},
+                    "consent": True,
+                },
+            )["data"]
+            finished = _wait_for_job(daemon.base, created["id"], timeout=600)
+
+            assert finished["state"] == "failed", finished
+            assert finished["error"]["code"] == "rm_site.backup_failed"
+            assert "nothing was dropped" in finished["error"]["message"]
+            assert _site_exists(inst, site), "the site was dropped"
+            assert _database_exists(inst, db_name), "the database was dropped"
+            assert _count_marker(inst, site) == 1, "the site's data was lost"
+            assert _dropped_site_dirs(inst, site) == [], "a half-written host archive was left"
+        finally:
+            harness.exec_in_frappe(inst.name, f"chmod 0755 {backups}")
+            _drop_temporary_site(inst, site)
+
+
+class TestSettingsWrites:
+    """Phase 3 settings writes through the shipped daemon, against the isolated
+    ``CWCLI_HOME`` the E2E session owns: each lands in the same config the CLI
+    reads back, and every test restores what it changed."""
+
+    def _config(self, daemon) -> dict:
+        return _get(daemon.base + "/api/v1/config")["data"]
+
+    def _apply(self, daemon, payload: dict) -> dict:
+        return _post(daemon.base + "/api/v1/settings", payload)["data"]
+
+    def test_search_paths_add_prune_and_remove_round_trip(self, daemon):
+        path = "/workspace/cwe2e-unreferenced-bench"
+        before = self._config(daemon)["search_paths"]
+        assert path not in before
+        try:
+            added = self._apply(daemon, {"setting": "paths.add", "path": path})
+            assert added["outcome"]["changed"] is True
+            assert path in self._config(daemon)["search_paths"]
+
+            # A dry run names the path; it is prunable only when every instance on
+            # this Docker daemon could be checked (a stopped one keeps it, by design).
+            plan = self._apply(daemon, {"setting": "paths.prune"})["outcome"]
+            row = next(s for s in plan["statuses"] if s["path"] == path)
+            assert row["present"] is False
+            assert row["prunable"] == (not plan["unchecked_instances"])
+            assert plan["applied"] is False
+            assert path in self._config(daemon)["search_paths"], "a dry run must not remove"
+        finally:
+            removed = self._apply(daemon, {"setting": "paths.remove", "path": path})
+            assert removed["outcome"]["changed"] is True
+            assert self._config(daemon)["search_paths"] == before
+
+    def test_tips_and_cache_toggles_write_the_config_the_cli_reads(self, daemon):
+        start = self._config(daemon)
+        try:
+            self._apply(
+                daemon, {"setting": "tips.disable" if start["show_tips"] else "tips.enable"}
+            )
+            assert self._config(daemon)["show_tips"] is (not start["show_tips"])
+            shown = harness.run_cwcli("config", "show", "--json")
+            assert json.loads(shown.stdout)["show_tips"] is (not start["show_tips"])
+
+            if not start["cache_env_override"]:
+                self._apply(daemon, {"setting": "cache.disable"})
+                assert self._config(daemon)["cache_enabled"] is False
+                self._apply(daemon, {"setting": "cache.enable"})
+                assert self._config(daemon)["cache_enabled"] is True
+        finally:
+            self._apply(
+                daemon, {"setting": "tips.enable" if start["show_tips"] else "tips.disable"}
+            )
+            assert self._config(daemon)["show_tips"] is start["show_tips"]
+
+    def test_clearing_the_whole_cache_takes_the_cores_consent_first(self, daemon):
+        with pytest.raises(urllib.error.HTTPError) as error:
+            _post(daemon.base + "/api/v1/settings", {"setting": "cache.clear", "all": True})
+        assert error.value.code == 409
+        assert json.loads(error.value.read())["errors"][0]["title"] == "confirm_clear"
+
+        # One remembered project can be forgotten without consent; a name the cache
+        # never held is an honest found: false, never an error.
+        gone = self._apply(daemon, {"setting": "cache.clear", "project": "cwe2e-never-cached"})
+        assert gone["outcome"] == {
+            "scope": "project",
+            "project": "cwe2e-never-cached",
+            "found": False,
+        }

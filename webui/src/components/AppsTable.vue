@@ -1,10 +1,9 @@
 <script setup>
 import { computed } from 'vue'
-import { Badge, Button, Tooltip } from 'frappe-ui'
+import { Badge, Button, Dropdown } from 'frappe-ui'
 import { List, ListHeader, ListHeaderCell, ListRows, ListRow, ListCell } from 'frappe-ui/list'
-import { parseApp, instance } from '../data/fleet'
-import { openAction } from '../data/dialog'
-import { availability } from '../data/actions'
+import { parseApp } from '../data/fleet'
+import { menuOption, dangerGroup } from '../data/dialog'
 
 const props = defineProps({
   bench: { type: Object, required: true },
@@ -24,8 +23,9 @@ const rows = computed(() =>
     return { name, installs, versions, branches }
   }),
 )
-const checkout = computed(() => availability('app.checkout', instance(props.project)))
 const ctx = (name) => ({ project: props.project, bench: String(props.bench.index), benchName: props.bench.label, app: name })
+// Per-app menu: the plain checkout, then the reset form behind its own typed confirm.
+const menu = (name) => [menuOption('app.checkout', ctx(name)), dangerGroup(['app.checkout_reset'], ctx(name))]
 </script>
 
 <template>
@@ -50,9 +50,9 @@ const ctx = (name) => ({ project: props.project, bench: String(props.bench.index
         </ListCell>
         <ListCell class="max-md:hidden"><span class="tabular-nums text-sm text-ink-gray-6">{{ item.installs.length }} / {{ bench.sites.length }}</span></ListCell>
         <ListCell class="justify-end">
-          <Tooltip :text="checkout.ok ? 'Check out a branch, tag or commit' : checkout.reason">
-            <Button size="xs" variant="ghost" icon="lucide-git-branch" aria-label="Check out ref" :disabled="!checkout.ok" @click="openAction('app.checkout', ctx(item.name))" />
-          </Tooltip>
+          <Dropdown :options="menu(item.name)" align="end">
+            <Button size="xs" variant="ghost" icon="lucide-ellipsis" :aria-label="`Actions for ${item.name}`" />
+          </Dropdown>
         </ListCell>
       </ListRow>
     </ListRows>

@@ -5,7 +5,7 @@ import { PageHeader, Breadcrumbs, Button, Dropdown, Badge, Tooltip, LoadingText,
 import { List, ListHeader, ListHeaderCell, ListRows, ListRow, ListCell } from 'frappe-ui/list'
 import CommandLine from '../components/CommandLine.vue'
 import { instance as findInstance, loadDetail, benchName, parseApp, setFocus, getJsonUrl } from '../data/fleet'
-import { openAction, menuOption } from '../data/dialog'
+import { openAction, menuOption, dangerGroup } from '../data/dialog'
 import { openJob } from '../data/job-dialog'
 
 const route = useRoute()
@@ -27,6 +27,7 @@ const more = computed(() => [
   jobOption('Complete setup wizard', 'lucide-list-checks', 'setup-wizard'),
   menuOption('site.unlock', ctx.value),
   menuOption('site.maintenance_off', ctx.value),
+  dangerGroup(['site.remove'], ctx.value),
 ])
 
 // The address is two hops (bench port from its config, then the host port Docker

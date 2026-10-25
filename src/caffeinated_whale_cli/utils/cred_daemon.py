@@ -770,7 +770,12 @@ def _await_started(timeout: float = 2.0) -> None:
 
 def _fork_or_spawn(lock_fd: int | None) -> None:
     """Fork+setsid (POSIX) or detached spawn (no-fork) the daemon, holding the
-    startup lock until it is confirmed up."""
+    startup lock until it is confirmed up. A multithreaded caller (the ``cwcli ui``
+    daemon) always spawns: a forked child would inherit its listening socket."""
+    if not daemon_identity.fork_is_safe():
+        _spawn_detached()  # Popen(close_fds=True) never inherits the lock fd
+        _await_started()
+        return
     try:
         pid = os.fork()
     except (AttributeError, OSError):

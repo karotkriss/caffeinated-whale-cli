@@ -246,6 +246,12 @@ def start_daemon():
     # generated source, where a non-int would emit a syntax error.
     interval = int(config.get("interval", 3600))
 
+    # A multithreaded caller (the `cwcli ui` daemon's request thread) must not
+    # fork: the child would inherit the daemon's listening socket and pin its port.
+    if not daemon_identity.fork_is_safe():
+        _spawn_detached(interval)
+        return
+
     # ONLY the fork() call is guarded: os.fork is absent on Windows
     # (AttributeError) and can fail under resource limits (OSError). This try
     # used to wrap the entire child body down to _run_service_loop, so an OSError

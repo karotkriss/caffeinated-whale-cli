@@ -32,6 +32,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from .commands import rm as rm_cmd
 from .commands import start as start_cmd
 from .core import apps as core_apps
 from .core import backup as core_backup
@@ -40,13 +41,16 @@ from .core import init as core_init
 from .core import label as core_label
 from .core import resolvers as core_resolvers
 from .core import restart as core_restart
+from .core import rm as core_rm
+from .core import rm_bench as core_rm_bench
+from .core import rm_site as core_rm_site
 from .core import scale as core_scale
 from .core import start as core_start
 from .core import stop as core_stop
 from .core import unlock as core_unlock
 from .core import update as core_update
 from .core import version as core_version
-from .core.envelope import Message, Result, Status
+from .core.envelope import Choice, Message, Result, Status
 from .core.errors import CwcliError, ErrorKind
 from .core.version import _is_frozen
 from .utils import cache, daemon_identity, shared_home, signals
@@ -75,6 +79,14 @@ ALLOWED_VERBS = frozenset(
         "build",
         "setup-wizard",
         "self-update",
+        # Phase 3: the guarded destructive verbs. Each runs the SAME core path the
+        # CLI and `axi` use (verified backup gate included), takes consent as a
+        # spec field the page sets only after a typed confirmation, and never
+        # carries a bypass: there is no `--no-backup` here (`axi rm`'s rule) and
+        # no `--force`.
+        "rm",
+        "rm-site",
+        "rm-bench",
     }
 )
 
@@ -648,7 +660,9 @@ class _Recorder:
             for key in ("phase", "action", "stream", "status", "ok", "item"):
                 if key in data:
                     record[key] = data[key]
-            record["message"] = data.get("message") or data.get("text") or data.get("command")
+            record["message"] = (
+                data.get("message") or data.get("text") or data.get("command") or data.get("label")
+            )
         self._record(record, flush=False)
 
     def lifecycle(self, kind: str, message: str, **data: Any) -> None:
@@ -744,6 +758,70 @@ def _clear_maintenance(target: dict[str, Any]) -> Result:
         "ok": off,
     }
     return Result(status=Status.OK if off else Status.WARNING, data=outcome, warnings=warnings)
+
+
+def _db_root_password(secret_values: dict[str, str]) -> str:
+    """The MariaDB root password `bench drop-site` needs: the dedicated secret, else
+    the compose default the core itself assumes (`core.rm_site.drop_site`)."""
+    return secret_values.get("db_root_password") or "123"
+
+
+def _remove_instance(project: str, args: dict[str, Any], consent: bool, emit: _Recorder) -> Result:
+    """`cwcli axi rm` as a job: consent ONLY (never an auto-start), never `--no-backup`.
+
+    `core.remove` has no consent axis (rm's confirmation is a frontend concern),
+    so the job supplies the refusal the `axi` verb supplies: without `consent`
+    nothing runs and the record ends `needs_choice`/`confirm_remove`. A STOPPED
+    project on the volume-deleting path is refused BEFORE the core call, exactly
+    as `axi rm` refuses it: the verified live backup that gates volume deletion
+    needs a running frappe container, and this surface will not start one. The
+    `keep_volumes` arg is `--no-volumes`: containers, network, project directory
+    and cache entry go, the named volumes (databases, sites, files) stay.
+    """
+    remove_volumes = not bool(args.get("keep_volumes"))
+    if not consent:
+        return Result(
+            status=Status.NEEDS_CHOICE,
+            choice=Choice(
+                kind="confirm_remove",
+                param="consent",
+                prompt=(
+                    f"Permanently remove instance '{project}'? This deletes its containers, "
+                    + ("named volumes (databases, sites, files), " if remove_volumes else "")
+                    + "project network and project directory."
+                ),
+            ),
+        )
+    if remove_volumes and rm_cmd._project_run_state(project) == "stopped":
+        raise CwcliError(
+            ErrorKind.NOT_RUNNING,
+            "rm.not_running",
+            f"Refusing to remove '{project}': it is not running, so the verified database "
+            "backup that gates volume deletion cannot be taken.",
+            hint=(
+                f"Start it first (cwcli start {project}) and retry, or keep the named volumes, "
+                f"or use 'cwcli rm {project} --no-backup' in a terminal to delete without a backup."
+            ),
+        )
+    result = core_rm.remove(project, remove_volumes=remove_volumes, no_backup=False, on_event=emit)
+    outcome = result.data
+    assert outcome is not None  # remove always returns an outcome
+    warnings = list(result.warnings)
+    if not outcome.found:
+        warnings.append(
+            Message(code="rm.not_found", text=f"No instance named '{project}' was found.")
+        )
+    if outcome.failures and not outcome.backup_ok:
+        warnings.append(
+            Message(
+                code="rm.backup_gate",
+                text=(
+                    "Nothing was deleted. Fix the backup failure and retry, or use "
+                    f"'cwcli rm {project} --no-backup' in a terminal to delete without a backup."
+                ),
+            )
+        )
+    return Result(status=result.status, data=outcome, warnings=warnings)
 
 
 def _run_init(
@@ -924,15 +1002,40 @@ def _dispatch(
             on_event=emit,
         )
     if verb == "apps-checkout":
+        # `reset` (discard tracked local work, `git reset --hard FETCH_HEAD`) is the
+        # verb's one destructive element; the page sends it only behind a typed
+        # confirmation of the app's name. It deletes no site data, so the core has
+        # no consent axis for it (the `axi apps checkout --reset` ruling).
         checkout_result = core_apps.checkout_app(
             project,
             str(target.get("app") or ""),
             str(args.get("ref") or ""),
             bench=bench,
-            reset=False,
+            reset=args.get("reset") is True,
             on_event=emit,
         )
         return _refresh_after_apps(project, checkout_result, emit)
+    if verb == "rm":
+        return _remove_instance(project, args, consent, emit)
+    if verb == "rm-site":
+        if site is None:
+            raise CwcliError(ErrorKind.USAGE, "site.required", "Dropping a site requires a site.")
+        return core_rm_site.drop_site(
+            project,
+            site,
+            bench=bench,
+            consent=consent,
+            db_root_password=_db_root_password(secret_values),
+            on_event=emit,
+        )
+    if verb == "rm-bench":
+        return core_rm_bench.remove_bench(
+            project,
+            bench=bench,
+            consent=consent,
+            db_root_password=_db_root_password(secret_values),
+            on_event=emit,
+        )
     if verb == "init":
         return _run_init(target, args, secret_values, emit)
     if verb == "apps-install":
@@ -1012,6 +1115,10 @@ def _result_ok(result: Result) -> bool:
     if hasattr(data, "ok"):
         return bool(data.ok)
     if hasattr(data, "db_clean_shutdown") and data.db_clean_shutdown is False:
+        return False
+    # `RemovalOutcome` carries no `ok`: the exit code reads its `failures`, never
+    # the envelope status (a partial removal is a WARNING-shaped envelope).
+    if hasattr(data, "failures") and data.failures:
         return False
     return True
 

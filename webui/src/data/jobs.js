@@ -98,6 +98,9 @@ export const JOB_LABEL = {
   migrate: 'Migrate site',
   restart: 'Restart instance',
   'restart-process': 'Restart process',
+  rm: 'Remove instance',
+  'rm-bench': 'Remove bench',
+  'rm-site': 'Drop site',
   'run-tests': 'Run tests',
   scale: 'Scale bench',
   'self-update': 'Update cwcli',
@@ -109,6 +112,7 @@ export const JOB_LABEL = {
 }
 
 export function jobLabel(job) {
+  if (job?.verb === 'apps-checkout' && job?.args?.reset === true) return 'Check out app ref, discarding local changes'
   return JOB_LABEL[job?.verb] || String(job?.verb || 'job').replaceAll('-', ' ')
 }
 

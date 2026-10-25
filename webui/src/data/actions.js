@@ -3,12 +3,23 @@
 //
 // confirm: 'none'    runs on click, toast on completion
 //          'confirm' a dialog with the consequence and the equivalent cwcli line
-//          'typed'   the dialog's confirm stays disabled until the target's name is typed
-// field:   an input the dialog collects (label, ref, ...)
+//          'typed'   the dialog's confirm stays disabled until the exact name of the
+//                    target is typed back (confirmTarget, else site > bench > instance)
+// fields:  inputs the dialog collects: { name, label, placeholder?, type: 'text' | 'password' | 'checkbox' }
+// danger:  a destructive verb - the confirm button and the menu entry render red
 // Every entry shows its cwcli command (the design system's "show the command" rule).
+//
+// The guarded destructive verbs (instance.remove, bench.remove, site.remove,
+// app.checkout_reset) run the same core paths as the CLI with the verified
+// backup gate intact; `consent: true` is sent only after the typed confirmation,
+// and no request can express --no-backup or --force.
 
 const q = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, "'\\''")}'`)
 const benchFlag = (c) => (c.bench != null ? ` --bench ${q(c.bench)}` : '')
+// `bench drop-site` needs the MariaDB root password; blank means the compose
+// default the core assumes. It travels in the job's secrets, never its spec.
+const DB_ROOT_FIELD = { name: 'db_root_password', type: 'password', label: 'Database root password', placeholder: 'blank for the compose default' }
+const secrets = (v) => (v?.db_root_password ? { secrets: { db_root_password: v.db_root_password } } : {})
 
 export const ACTIONS = {
   // instance
@@ -53,6 +64,21 @@ export const ACTIONS = {
     says: () => 'Re-reads container state and probes every bench again.',
     request: (c) => ({ action: 'refresh_status', project: c.project }),
     done: (c) => `${c.project} health refreshed`,
+  },
+  'instance.remove': {
+    job: true,
+    danger: true,
+    label: 'Remove instance',
+    icon: 'lucide-trash-2',
+    confirm: 'typed',
+    fields: [{ name: 'keep_volumes', type: 'checkbox', label: 'Keep the named volumes (databases, sites, files)' }],
+    cli: (c, v) => `cwcli rm ${q(c.project)}${v?.keep_volumes ? ' --no-volumes' : ''}`,
+    says: (c, v) =>
+      v?.keep_volumes
+        ? `Removes ${c.project}'s containers, project network and project directory. Its named volumes (databases, sites, files) stay on Docker.`
+        : `Backs up every site on ${c.project} to the host archive, then deletes its containers, named volumes (databases, sites, files), project network and project directory. If any backup fails, nothing is deleted. The backup cannot be skipped here.`,
+    request: (c, v) => ({ verb: 'rm', target: { project: c.project }, args: { keep_volumes: !!v.keep_volumes }, consent: true }),
+    done: (c) => `${c.project} removed`,
   },
   'instance.scale': {
     job: true,
@@ -100,12 +126,26 @@ export const ACTIONS = {
     request: (c) => ({ verb: 'restart', target: { project: c.project, bench: c.bench }, args: {} }),
     done: (c) => `bench ${c.benchName} restarted`,
   },
+  'bench.remove': {
+    job: true,
+    danger: true,
+    needsRunning: true,
+    label: 'Remove bench',
+    icon: 'lucide-trash-2',
+    confirm: 'typed',
+    fields: [DB_ROOT_FIELD],
+    cli: (c) => `cwcli rm-bench ${q(c.project)}${benchFlag(c)}`,
+    says: (c) =>
+      `Backs up every site on bench ${c.benchName} to the host archive, drops each one (deleting its database and files), then deletes the bench directory. Nothing is dropped unless every backup succeeded. Other benches keep running.`,
+    request: (c, v) => ({ verb: 'rm-bench', target: { project: c.project, bench: c.bench }, args: {}, consent: true, ...secrets(v) }),
+    done: (c) => `bench ${c.benchName} removed`,
+  },
   'bench.label': {
     needsRunning: true,
     label: 'Set label',
     icon: 'lucide-tag',
     confirm: 'confirm',
-    field: { name: 'label', label: 'Label', placeholder: 'v15-main' },
+    fields: [{ name: 'label', label: 'Label', placeholder: 'v15-main' }],
     cli: (c, v) => `cwcli label ${q(c.project)} ${q(c.bench)} ${q(v?.label || '<label>')}`,
     says: () => 'A durable name usable anywhere a bench selector is. Stored in the cache and in a marker file inside the bench.',
     request: (c, v) => ({ action: 'set_label', project: c.project, bench: c.bench, label: v.label }),
@@ -133,6 +173,20 @@ export const ACTIONS = {
     request: (c) => ({ verb: 'unlock', target: { project: c.project, bench: c.bench, site: c.site }, args: {} }),
     done: (c, out) => (out?.already_unlocked ? `${c.site} had no locks` : `${c.site} unlocked`),
   },
+  'site.remove': {
+    job: true,
+    danger: true,
+    needsRunning: true,
+    label: 'Drop site',
+    icon: 'lucide-trash-2',
+    confirm: 'typed',
+    fields: [DB_ROOT_FIELD],
+    cli: (c) => `cwcli rm-site ${q(c.project)} ${q(c.site)}${benchFlag(c)}`,
+    says: (c) =>
+      `Backs up ${c.site} (database and files) to the host archive, then drops it: its database and files are deleted. If the backup fails, nothing is dropped. The instance and its other sites keep running.`,
+    request: (c, v) => ({ verb: 'rm-site', target: { project: c.project, bench: c.bench, site: c.site }, args: {}, consent: true, ...secrets(v) }),
+    done: (c) => `${c.site} dropped`,
+  },
   'site.maintenance_off': {
     job: true,
     needsRunning: true,
@@ -152,12 +206,27 @@ export const ACTIONS = {
     label: 'Check out ref',
     icon: 'lucide-git-branch',
     confirm: 'confirm',
-    field: { name: 'ref', label: 'Branch, tag or commit', placeholder: 'develop' },
+    fields: [{ name: 'ref', label: 'Branch, tag or commit', placeholder: 'develop' }],
     cli: (c, v) => `cwcli apps checkout ${q(c.project)} ${q(c.app)} ${q(v?.ref || '<ref>')}${benchFlag(c)}`,
     says: (c) =>
       `Fetches and checks out a ref into ${c.app}, then restarts the bench's processes. A dirty working tree is refused; nothing is reset.`,
     request: (c, v) => ({ verb: 'apps-checkout', target: { project: c.project, bench: c.bench, app: c.app }, args: { ref: v.ref } }),
     done: (c, out, v) => `${c.app} is on ${v.ref}`,
+  },
+  'app.checkout_reset': {
+    job: true,
+    danger: true,
+    needsRunning: true,
+    label: 'Check out ref, discarding local changes',
+    icon: 'lucide-git-branch',
+    confirm: 'typed',
+    confirmTarget: (c) => c.app,
+    fields: [{ name: 'ref', label: 'Branch, tag or commit', placeholder: 'develop' }],
+    cli: (c, v) => `cwcli apps checkout ${q(c.project)} ${q(c.app)} ${q(v?.ref || '<ref>')} --reset${benchFlag(c)}`,
+    says: (c) =>
+      `Fetches the ref, then resets ${c.app}'s working tree to it: uncommitted changes to tracked files are discarded. Untracked files are left in place (nothing runs git clean). The bench's processes restart afterwards.`,
+    request: (c, v) => ({ verb: 'apps-checkout', target: { project: c.project, bench: c.bench, app: c.app }, args: { ref: v.ref, reset: true } }),
+    done: (c, out, v) => `${c.app} reset to ${v.ref}`,
   },
 
   // process
@@ -177,10 +246,24 @@ export const ACTIONS = {
 // Whether an action can run in the instance's current state, and if not, why.
 // cwcli's own verbs refuse these on a stopped container (resolve_container_state
 // with offer_choice=False); the GUI says so up front instead of failing later.
-export function availability(id, inst, bench) {
+// `values` are the dialog's current inputs, for actions whose precondition
+// depends on them (removing an instance needs a live backup unless the volumes stay).
+export function availability(id, inst, bench, values) {
   const a = ACTIONS[id]
+  const benchUp = ['running', 'degraded'].includes(bench?.overall)
   if (id === 'instance.start' && inst?.container_running) return { ok: false, reason: 'Already running' }
-  if (id === 'bench.start' && ['running', 'degraded'].includes(bench?.overall)) return { ok: false, reason: 'Already running' }
+  if (id === 'bench.start' && benchUp) return { ok: false, reason: 'Already running' }
+  if (id === 'instance.remove') {
+    if (values?.keep_volumes || inst?.container_running) return { ok: true, reason: null }
+    return {
+      ok: false,
+      reason: `Needs ${inst?.project || 'the instance'} running for the backup`,
+      detail: `The verified backup that gates deleting the volumes needs the instance running, and cwcli will not start it behind your back. Start ${inst?.project || 'it'} first, or keep the named volumes.`,
+    }
+  }
+  if (id === 'bench.remove' && inst?.container_running && benchUp) {
+    return { ok: false, reason: 'Stop the bench first', detail: 'A bench that is still serving is never removed. Stop it, then retry.' }
+  }
   if (!a?.needsRunning || inst?.container_running) return { ok: true, reason: null }
   return { ok: false, reason: `Needs ${inst?.project || 'the instance'} running` }
 }
