@@ -533,3 +533,54 @@ class TestBackupGate:
 
         assert exc.value.code == "rm_site.backup_missing"
         assert not any("drop-site" in str(c) for c in container.calls)
+
+
+# ------------------------------------------------------------------ root password
+
+
+class TestRootPassword:
+    def _drop_env(self, container):
+        envs = []
+        api = container.client.api
+        original = api.exec_create
+
+        def exec_create(cid, cmd, workdir=None, tty=False, environment=None):
+            envs.append(environment)
+            return original(cid, cmd, workdir=workdir, tty=tty, environment=environment)
+
+        api.exec_create = exec_create
+        return envs
+
+    def test_uses_the_password_remembered_at_init(self, container, monkeypatch, tmp_path):
+        from caffeinated_whale_cli.core import db_password
+        from caffeinated_whale_cli.utils import config_utils
+
+        monkeypatch.setattr(config_utils, "PROJECTS_DIR", tmp_path / "projects")
+        db_password.remember("proj", "Ch0sen-pw")
+        envs = self._drop_env(container)
+
+        core_rm_site.drop_site("proj", SITE, consent=True)
+
+        assert envs == [{"CWCLI_DB_ROOT_PASSWORD": "Ch0sen-pw"}]
+
+    def test_an_explicit_password_wins_and_none_remembered_is_123(
+        self, container, monkeypatch, tmp_path
+    ):
+        from caffeinated_whale_cli.utils import config_utils
+
+        monkeypatch.setattr(config_utils, "PROJECTS_DIR", tmp_path / "projects")
+        envs = self._drop_env(container)
+        core_rm_site.drop_site("proj", SITE, consent=True)
+        assert envs == [{"CWCLI_DB_ROOT_PASSWORD": "123"}]
+
+    def test_a_rejected_password_is_named_in_the_error(self, container, monkeypatch):
+        def run_shell(cmd):
+            container.calls.append(cmd[-1])
+            return 1, "MySQLdb.OperationalError: (1045, \"Access denied for user 'root'@'x'\")\n"
+
+        monkeypatch.setattr(container, "_run_shell", run_shell)
+        with pytest.raises(CwcliError) as exc:
+            core_rm_site.drop_site("proj", SITE, consent=True)
+        assert exc.value.code == "rm_site.failed"
+        assert exc.value.message.startswith("MariaDB rejected the password")
+        assert "1045" in exc.value.detail["output"]

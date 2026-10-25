@@ -527,10 +527,14 @@ def init(
             "Pair with --frappe-branch to check out the fork's branch."
         ),
     ),
-    db_root_password: str = typer.Option(
-        "123",
+    db_root_password: str | None = typer.Option(
+        None,
         "--db-root-password",
-        help="MariaDB root password used for bench new-site.",
+        help=(
+            "MariaDB root password. On a new instance it becomes MariaDB's root password "
+            "and is remembered for later commands; omitted, the instance's remembered "
+            "password is used, else the default '123'."
+        ),
     ),
     admin_password: str | None = typer.Option(
         None,
@@ -693,6 +697,7 @@ def init(
                 bench_image_tag=bench_image_tag,
                 stream_output=verbose,
                 uid=uid,
+                db_root_password=db_root_password,
                 on_event=renderer,
             )
         finally:
@@ -700,7 +705,7 @@ def init(
         if result.status is Status.NEEDS_CHOICE:
             ensure_containers_running(project, require_running=True, auto_start=auto_start)
             try:
-                core_init.init_instance(
+                result = core_init.init_instance(
                     project,
                     port=port,
                     bench_parent=bench_parent,
@@ -708,12 +713,15 @@ def init(
                     auto_start=True,
                     stream_output=verbose,
                     uid=uid,
+                    db_root_password=db_root_password,
                     on_event=renderer,
                 )
             finally:
                 renderer.close()
     except CwcliError as e:
         raise _render_error_exit(e, project, verbose=verbose) from None
+    for warning in result.warnings:
+        stderr_console.print(f"[yellow]Warning:[/yellow] {warning.text}")
 
     # ---- Stage 2: the bench + site, re-invoked per resolved choice.
     renderer.bench_name = bench

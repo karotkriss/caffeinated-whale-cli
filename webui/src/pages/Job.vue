@@ -15,6 +15,17 @@ const record = computed(() => jobs.records[id])
 const active = computed(() => ACTIVE_STATES.has(record.value?.state))
 const preflight = computed(() => record.value?.events?.find((event) => event.type === 'update_preflight')?.data)
 const warnings = computed(() => record.value?.warnings || [])
+// A failed job leads with its plain cause (MariaDB rejected the password, git could
+// not authenticate, ...) when cwcli recognized one in the command's output.
+const failure = computed(() => {
+  const job = record.value
+  if (job?.state !== 'failed') return null
+  const cause = job.cause
+  const error = job.error
+  const message = error ? `${error.message}${error.hint ? ` ${error.hint}` : ''}` : ''
+  if (!cause) return { title: error?.code || 'Job failed', description: message || 'The command reported a failure. Its output is in the event log below.' }
+  return { title: cause.title, description: !message ? cause.text : message.includes(cause.text) ? message : `${cause.text} ${message}` }
+})
 const time = (value) => value ? new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' }).format(new Date(value)) : ''
 const eventTitle = (event) => {
   if (event.message) return event.message
@@ -141,7 +152,7 @@ async function continueChoice(value) {
           <Button variant="solid" label="Continue" :disabled="!consentTyped" @click="continueChoice()" />
         </div>
       </template>
-      <Alert v-else-if="record.error" theme="red" :title="record.error.code || 'Job failed'" :description="`${record.error.message}${record.error.hint ? ` ${record.error.hint}` : ''}`" />
+      <Alert v-else-if="failure" theme="red" :title="failure.title" :description="failure.description" />
       <ErrorMessage :message="actionError" />
 
       <section v-if="preflight" class="rounded-6 border border-outline-gray-1 p-4">

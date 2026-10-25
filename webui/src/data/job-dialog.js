@@ -26,7 +26,7 @@ const defaults = {
     start: true,
     reuse_bench: '',
     admin_password: '',
-    db_root_password: '123',
+    db_root_password: '',
   },
   'apps-install': { apps: '', sites: '', branch: '', fetch_only: false },
   'apps-update': {
