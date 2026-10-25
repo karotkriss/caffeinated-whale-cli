@@ -856,6 +856,9 @@ def test_a_frappe_major_upgrade_upstream_is_a_blocker(bench, upstream, refused):
         assert (finding.severity, finding.app) == (up.BLOCKER, "frappe")
         assert "from version 16 to 17" in finding.message
         assert finding.remedy.endswith("cwcli run proj -i update --reset")
+        assert "skips cwcli's data-loss guard" in finding.remedy
+        assert "maintenance/scheduler flags" in finding.remedy
+        assert "commit and push (or back up) any local app work" in finding.remedy
     else:
         assert findings == []
 

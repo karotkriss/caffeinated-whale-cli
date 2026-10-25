@@ -779,7 +779,9 @@ _RULES: dict[str, tuple[str, str, str | None]] = {
         BLOCKER,
         "the update moves frappe from version {current} to {new}; bench stops to ask "
         "before a major upgrade, and cwcli's run cannot answer it",
-        "to upgrade on purpose, answer bench's prompt yourself: "
+        "to upgrade on purpose, first commit and push (or back up) any local app work: "
+        "running bench directly skips cwcli's data-loss guard and its report of the "
+        "bench-wide maintenance/scheduler flags. Then answer bench's prompt yourself: "
         "cwcli run {q_project}{selector_flag} -i update --reset",
     ),
     "tooling.python_too_old": (

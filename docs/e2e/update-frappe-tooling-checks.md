@@ -77,7 +77,7 @@ frappe HEAD:        62062a7 init
     blocker  tooling.node_too_old    frappe  needs Node >=24 (engines.node in package.json) but the container runs Node v22.23.4; yarn would refuse it, after bench has backed up every site and reset every app
 
     blocker  frappe.major_upgrade    frappe  the update moves frappe from version 16 to 17; bench stops to ask before a major upgrade, and cwcli's run cannot answer it
-             fix: to upgrade on purpose, answer bench's prompt yourself: cwcli run repro -i update --reset
+             fix: to upgrade on purpose, first commit and push (or back up) any local app work: running bench directly skips cwcli's data-loss guard and its report of the bench-wide maintenance/scheduler flags. Then answer bench's prompt yourself: cwcli run repro -i update --reset
 ```
 
 The human CLI renders the same refusal (the bench path shown as `<bench>`):
@@ -86,8 +86,11 @@ The human CLI renders the same refusal (the bench path shown as `<bench>`):
   Blocking - bench update --reset would fail:
     ✗ frappe  the update moves frappe from version 16 to 17; bench stops to ask
               before a major upgrade, and cwcli's run cannot answer it
-              fix: to upgrade on purpose, answer bench's prompt yourself: cwcli
-              run repro --path <bench> -i update --reset
+              fix: to upgrade on purpose, first commit and push (or back up) any
+              local app work: running bench directly skips cwcli's data-loss
+              guard and its report of the bench-wide maintenance/scheduler
+              flags. Then answer bench's prompt yourself: cwcli run repro --path
+              <bench> -i update --reset
 
 Refusing to start: 1 blocking problem(s). 'bench update --reset' did not run.
 ```
