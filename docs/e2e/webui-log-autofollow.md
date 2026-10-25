@@ -18,14 +18,20 @@ The page sat at the top while events landed below the fold, and the newest lines
 ## Very long logs
 
 The same init job reached 18,108 events.
-Its longest collapsed output block was 30,378 lines (7.7 MB) in one text node, and re-rendering it cost 437 ms of string work plus 1,482 ms of DOM patch and layout per refresh.
-Capped to the block's last 2,000 lines (`MAX_LINES`, the cap the Logs tab already applied to its own buffer) the patch costs 58 ms; the block shows a `Show all 30,378 lines` control above the tail that renders the full output on demand; collapsing it again reads `Show last N lines`, where N is the line count of the view it returns to (the capped tail, or the lines held since the pause).
-`Jump to latest` collapses every expanded block back to the capped tail.
-While the follow is paused, a block stops dropping lines from its top, so the text never slides under a reader who scrolled up; trimming resumes on `Jump to latest`.
-The bench Logs tab follows the same rule: while paused it keeps every line it holds and stops polling once a process buffer reaches 20,000 lines (`PAUSED_MAX_LINES`), and its byte cursor resumes where it stopped after `Jump to latest`.
+Its longest collapsed output block was 30,378 lines (7.7 MB) in one text node, and on the pre-change build re-rendering it cost 437 ms of string work plus 1,482 ms of DOM patch and layout per refresh.
+
+The redesign removes that cost at its source instead of capping the output.
+`FollowPane` is a windowed list of fixed-height rows built on `@vueuse/core`'s `useVirtualList`, so only the rows in and near the viewport are in the DOM, however long the log grows.
+On the job page each row is either an event or one line of an output block, and the block's lines come from `feed` in `webui/src/data/follow.js`, which processes only each newly appended chunk (escape sequences stripped, a `\r` progress bar reduced to its last repaint) and keeps the lines as plain strings.
+The bench Logs tab renders the same way: one row per log line, every process's lines in arrival order, with the process named on each row under the `All` filter.
+Nothing is truncated: every line stays reachable by scrolling, and there is no cap, `Show all` control, or expand state.
+Rows are only ever appended, so a paused reader keeps reading while new lines land below them, and nothing above them moves.
+
+Timings for the virtualized build are taken in a real browser after this change and recorded in the pull request, not here.
 
 ## Auto-follow, pause, and resume
 
+Measured on the earlier build of this change, before the log views were virtualized; the follow, pause, and resume rules in `FollowPane` are unchanged since.
 A synthetic running job streaming three lines every 50 ms through the package's own job recorder (no instance needed) was watched at both widths.
 Chrome was closed between screenshots.
 `distance` is `scrollHeight - scrollTop - clientHeight` of the pane.

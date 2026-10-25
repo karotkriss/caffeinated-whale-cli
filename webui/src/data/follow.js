@@ -18,71 +18,24 @@ export function nextFollowing(following, lastTop, pane) {
   return pane.scrollTop < lastTop ? false : following
 }
 
-// A pane renders at most this many lines of one block. A single collapsed
-// output block of a real init reached 30,000 lines (7.7 MB), and replacing that
-// one text node on every refresh froze the page for 1.5 s; the last 2,000 lines
-// patch in under 60 ms. "Show all" renders the rest on demand.
-export const MAX_LINES = 2000
+const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g
+const shown = (line) => line.slice(line.lastIndexOf('\r') + 1).replace(ANSI, '')
 
-// The last `max` lines of `text`, found by scanning back from the end; counting
-// the hidden lines still walks the prefix, with native indexOf.
-export function tailLines(text, max = MAX_LINES) {
-  let cut = text.length
-  for (let kept = 0; kept < max; kept++) {
-    cut = text.lastIndexOf('\n', cut - 1)
-    if (cut < 0) return { hidden: 0, text }
+// Feeds a terminal the next piece of a command's output, touching only that
+// piece: `term.lines` gains each line it finishes, and `term.open` holds the line
+// still being written, kept raw so an escape sequence split across two pieces is
+// stripped once whole. A \r progress bar keeps only its last repaint per line.
+export function feed(term, text) {
+  const parts = text.split('\n')
+  let open = term.open + parts[0]
+  for (let i = 1; i < parts.length; i++) {
+    term.lines.push(shown(open))
+    open = parts[i]
   }
-  let hidden = 1
-  for (let i = text.indexOf('\n'); i !== -1 && i < cut; i = text.indexOf('\n', i + 1)) hidden++
-  return { hidden, text: text.slice(cut + 1) }
+  term.open = open.slice(open.lastIndexOf('\r') + 1)
+  return term
 }
 
-// `text` without its first `n` lines: a paused reader's block keeps the top it
-// had when they scrolled up, and only grows at the bottom.
-export function dropLines(text, n) {
-  let cut = -1
-  for (let dropped = 0; dropped < n; dropped++) {
-    cut = text.indexOf('\n', cut + 1)
-    if (cut < 0) return { hidden: 0, text }
-  }
-  return { hidden: n, text: text.slice(cut + 1) }
-}
-
-// What a terminal shows of `text`: escape sequences dropped and a \r progress
-// bar reduced to its last repaint per line.
-export function terminal(text) {
-  return text
-    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
-    .split('\n')
-    .map((line) => line.slice(line.lastIndexOf('\r') + 1))
-    .join('\n')
-}
-
-function leadingBlankLines(text) {
-  let blank = 0
-  for (let at = 0; ; blank++) {
-    const end = text.indexOf('\n', at)
-    if (end < 0 || terminal(text.slice(at, end)).trim()) return blank
-    at = end + 1
-  }
-}
-
-// What one output block renders: everything when the reader asked for it, the
-// lines held since the follow paused, else the capped tail. `lines` counts what
-// is rendered and `total` what "Show all" would render, both after the block's
-// leading and trailing blank lines are trimmed.
-export function blockView(raw, { all = false, held = null } = {}) {
-  const { hidden, text } = all ? { hidden: 0, text: raw } : held == null ? tailLines(raw) : dropLines(raw, held)
-  const shown = hidden ? terminal(text).trimEnd() : terminal(text).trim()
-  const lines = shown ? shown.split('\n').length : 0
-  return { hidden, text: shown, lines, total: hidden ? hidden + lines - leadingBlankLines(raw) : lines }
-}
-
-// A paused log pane keeps every line it holds, so nothing slides under the
-// reader, and stops reading more once one buffer reaches this many lines; its
-// byte cursor resumes where it stopped after "Jump to latest".
-export const PAUSED_MAX_LINES = 20000
-
-export function canAppend(buffers, following) {
-  return following || buffers.every((lines) => lines.length < PAUSED_MAX_LINES)
+export function openLine(term) {
+  return shown(term.open)
 }

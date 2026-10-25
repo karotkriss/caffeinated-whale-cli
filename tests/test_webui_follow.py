@@ -3,8 +3,9 @@
 The captain watched an instance being created and the job page never followed the
 output: the page sat at the top while new events landed below the fold, and the
 newest output lines were hidden a second time inside the block's own 20rem
-scroller. Every log view now renders through ``FollowPane``, which pins to the
-bottom while the reader is there and pauses only on a deliberate scroll up.
+scroller. Every log view now renders through ``FollowPane``, a windowed list of
+lines that pins to the bottom while the reader is there and pauses only on a
+deliberate scroll up, fed by a terminal that processes only newly appended text.
 """
 
 import json
@@ -22,6 +23,25 @@ def _call(name, *args):
     script = (
         f"import {{ {name} }} from {json.dumps(MODULE.as_uri())};\n"
         f"console.log(JSON.stringify({name}(...{json.dumps(args)})));\n"
+    )
+    out = subprocess.run(
+        ["node", "--input-type=module"], input=script, capture_output=True, text=True, check=True
+    )
+    return json.loads(out.stdout)
+
+
+def _feed(*chunks):
+    """Feed one terminal each chunk in turn; report the lines each feed finished."""
+    script = (
+        f"import {{ feed, openLine }} from {json.dumps(MODULE.as_uri())};\n"
+        "const term = { lines: [], open: '' };\n"
+        "const steps = [];\n"
+        f"for (const chunk of {json.dumps(chunks)}) {{\n"
+        "  const before = term.lines.length;\n"
+        "  feed(term, chunk);\n"
+        "  steps.push({ added: term.lines.slice(before), open: openLine(term) });\n"
+        "}\n"
+        "console.log(JSON.stringify(steps));\n"
     )
     out = subprocess.run(
         ["node", "--input-type=module"], input=script, capture_output=True, text=True, check=True
@@ -54,33 +74,6 @@ def test_the_follow_decision(scroll_top, scroll_height, client_height, expected)
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
 @pytest.mark.parametrize(
-    ("text", "max_lines", "expected"),
-    [
-        ("a\nb\nc", 2, {"hidden": 1, "text": "b\nc"}),
-        ("a\nb", 2, {"hidden": 0, "text": "a\nb"}),  # at the cap, nothing is hidden
-        ("only", 5, {"hidden": 0, "text": "only"}),
-        ("a\nb\nc\nd\n", 2, {"hidden": 3, "text": "d\n"}),  # a trailing newline is a kept line
-    ],
-)
-def test_the_rendered_tail_of_a_block(text, max_lines, expected):
-    """The job page renders only a block's last lines; the count it hides is exact."""
-    assert _call("tailLines", text, max_lines) == expected
-
-
-@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
-def test_a_real_init_sized_block_keeps_its_last_two_thousand_lines():
-    lines = [
-        f"MO file created at /workspace/frappe-bench/sites/assets/locale/{n}.mo"
-        for n in range(30000)
-    ]
-    assert _call("tailLines", "\n".join(lines)) == {
-        "hidden": 28000,
-        "text": "\n".join(lines[28000:]),
-    }
-
-
-@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
-@pytest.mark.parametrize(
     ("following", "last_top", "scroll_top", "expected"),
     [
         (True, 1200, 1200, True),  # the pin's own queued scroll, read after more output landed
@@ -102,68 +95,37 @@ def test_reaching_the_end_resumes_the_follow():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
-def test_show_all_renders_every_line_of_a_capped_block():
-    """Earlier output stays reachable: the reason a job failed may sit above the tail."""
-    text = "\n".join(f"line {n}" for n in range(2500))
-    assert _call("blockView", text, {})["hidden"] == 500
-    assert _call("blockView", text, {"all": True}) == {
-        "hidden": 0,
-        "text": text,
-        "lines": 2500,
-        "total": 2500,
-    }
+def test_appended_text_yields_only_the_new_lines():
+    assert _feed("first\nsec", "ond\nthird\n", "fourth") == [
+        {"added": ["first"], "open": "sec"},
+        {"added": ["second", "third"], "open": ""},
+        {"added": [], "open": "fourth"},
+    ]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
-@pytest.mark.parametrize("held", [None, 3])
-def test_the_counts_match_the_lines_each_view_renders(held):
-    """ "Show all N lines" and "Show last N lines" name what that view renders."""
-    raw = "\n\n\x1b[32m\x1b[0m\n" + "\n".join(f"line {n}" for n in range(2500)) + "\n\n"
-    collapsed = _call("blockView", raw, {"held": held})
-    full = _call("blockView", raw, {"all": True})
-    assert full["lines"] == len(full["text"].split("\n")) == 2500
-    assert collapsed["total"] == full["lines"]
-    assert collapsed["lines"] == len(collapsed["text"].split("\n"))
+def test_a_progress_bar_keeps_only_its_last_repaint():
+    assert _feed("10%\r", "55%\r100%", "\ndone\n") == [
+        {"added": [], "open": ""},
+        {"added": [], "open": "100%"},
+        {"added": ["100%", "done"], "open": ""},
+    ]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
-def test_terminal_keeps_the_last_repaint_of_a_progress_line():
-    assert _call("terminal", "\x1b[1mDone\x1b[0m\n10%\r55%\r100%") == "Done\n100%"
+def test_escape_sequences_are_stripped_even_when_split_across_chunks():
+    steps = _feed("\x1b[1mbold\x1b[0m plain\n\x1b[3", "2mgreen\x1b[0m\n")
+    assert [step["added"] for step in steps] == [["bold plain"], ["green"]]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
-def test_a_paused_block_keeps_its_top_while_it_grows():
-    """While the reader is scrolled up, new lines land below and none leave the top."""
-    before = "\n".join(f"line {n}" for n in range(2500))
-    held = _call("tailLines", before)["hidden"]
-    after = before + "".join(f"\nline {n}" for n in range(2500, 2600))
-    view = _call("blockView", after, {"held": held})
-    assert view["hidden"] == 500
-    assert view["text"] == "\n".join(f"line {n}" for n in range(500, 2600))
-    assert _call("blockView", after, {})["hidden"] == 600  # following again trims the top
-
-
-@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
-@pytest.mark.parametrize(
-    ("text", "n", "expected"),
-    [
-        ("a\nb\nc", 0, {"hidden": 0, "text": "a\nb\nc"}),
-        ("a\nb\nc", 2, {"hidden": 2, "text": "c"}),
-        ("a", 3, {"hidden": 0, "text": "a"}),  # never more than the block holds
-    ],
-)
-def test_dropping_a_blocks_first_lines(text, n, expected):
-    assert _call("dropLines", text, n) == expected
-
-
-@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
-@pytest.mark.parametrize(
-    ("sizes", "following", "expected"),
-    [
-        ([25000, 10], True, True),  # following trims to the cap, so it always reads on
-        ([19999, 10], False, True),  # paused under the limit keeps reading
-        ([20000, 10], False, False),  # paused at the limit stops growing, trims nothing
-    ],
-)
-def test_a_paused_logs_buffer_is_bounded(sizes, following, expected):
-    assert _call("canAppend", [["x"] * n for n in sizes], following) is expected
+def test_a_real_init_sized_block_keeps_every_line():
+    """No cap: all 30,000 lines of a real init block stay reachable."""
+    lines = [
+        f"MO file created at /workspace/frappe-bench/sites/assets/locale/{n}.mo"
+        for n in range(30000)
+    ]
+    text = "\n".join(lines) + "\n"
+    steps = _feed(text[:400_000], text[400_000:])
+    assert steps[0]["added"] + steps[1]["added"] == lines
+    assert steps[1]["open"] == ""
