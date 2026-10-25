@@ -90,20 +90,11 @@ def _backups(inst) -> set[str]:
 _FRAPPE = f"{_BENCH}/apps/frappe"
 
 
-def _frappe_fetch_state(inst) -> dict[str, str]:
-    """The bytes a fetch of frappe's upstream branch can change, to put back exactly.
-
-    The objects it adds are left: unreachable once the refs are back, and deleting
-    object files risks ones a background repack moved."""
-    branch = _sh(inst, f"git -C {_FRAPPE} symbolic-ref --short HEAD").strip()
-    paths = ["config", "shallow", "FETCH_HEAD", "packed-refs"]
-    paths += [f"{kind}/remotes/upstream/{branch}" for kind in ("refs", "logs/refs")]
-    return {path: _read(inst, f"{_FRAPPE}/.git/{path}") for path in paths}
-
-
-def _restore_frappe(inst, state: dict[str, str]) -> None:
-    for path, snapshot in state.items():
-        _restore(inst, f"{_FRAPPE}/.git/{path}", snapshot)
+@pytest.fixture(autouse=True)
+def _frappe_fetch_state(running_instance):
+    """Every leg runs a preflight or bench, and both fetch frappe's upstream branch."""
+    with harness.preserve_frappe_fetch_state(running_instance.name):
+        yield
 
 
 def _preflight_rows(stdout: str) -> list[str]:
@@ -124,7 +115,6 @@ def _preflight_rows(stdout: str) -> list[str]:
 def planted(running_instance):
     """A throwaway frappe-shaped app checked out on a branch its remote lacks."""
     inst = running_instance
-    frappe_state = _frappe_fetch_state(inst)
     teardown = f"rm -rf {_BENCH}/apps/{_APP} {_REMOTE}"
     _sh(inst, teardown)  # belt-and-suspenders: clear any prior remnant
     _sh(
@@ -154,7 +144,6 @@ def planted(running_instance):
         yield inst
     finally:
         harness.exec_in_frappe(inst.name, teardown)
-        _restore_frappe(inst, frappe_state)
 
 
 def test_preflight_refuses_in_seconds_and_changes_nothing(planted):
@@ -243,7 +232,6 @@ def _work(inst) -> tuple[str, str]:
 def dirty(running_instance):
     """A throwaway app holding an uncommitted change and an unpushed commit."""
     inst = running_instance
-    frappe_state = _frappe_fetch_state(inst)
     # chmod first: the --force leg plants an unreadable directory.
     teardown = f"chmod -R u+rwx {_DIRTY_DIR} 2>/dev/null; rm -rf {_DIRTY_DIR} {_DIRTY_REMOTE}"
     _sh(inst, teardown)
@@ -278,7 +266,6 @@ def dirty(running_instance):
         yield inst
     finally:
         harness.exec_in_frappe(inst.name, teardown)
-        _restore_frappe(inst, frappe_state)
 
 
 @pytest.mark.parametrize("flags", [(), ("--no-preflight",)], ids=["preflight", "no-preflight"])
@@ -348,7 +335,6 @@ def next_major(running_instance):
     of frappe's HEAD that only bumps ``__version__``, so nothing is copied or cloned.
     """
     inst = running_instance
-    frappe_state = _frappe_fetch_state(inst)
     teardown = f"rm -rf {_MAJOR_REMOTE}"
     _sh(inst, teardown)
     try:
@@ -383,7 +369,6 @@ def next_major(running_instance):
         )
         yield inst
     finally:
-        _restore_frappe(inst, frappe_state)
         harness.exec_in_frappe(inst.name, teardown)
 
 

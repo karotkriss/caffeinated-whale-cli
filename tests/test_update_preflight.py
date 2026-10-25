@@ -1071,6 +1071,7 @@ def test_engines_node_is_read_as_node_semver(spec, version, expected):
         ("15.*.1", "15.40.4", True),  # a wildcard ends the version
         (">=15.0.0, <16.0.0", "15.1.0", None),  # a space: semantic_version raises on it
         ("!=15,~*.1", "16.0.0", None),  # every block parses before any matches
+        (">=*.1.2-dev", "16.0.0", None),  # a wildcard major cannot carry a prerelease
         (">=15.0.0", "15.40", None),
     ],
 )
