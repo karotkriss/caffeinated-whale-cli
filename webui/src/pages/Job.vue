@@ -58,14 +58,6 @@ const lineText = ({ block, line }) => (line < block.lines.length ? block.lines[l
 const isLast = (index) => index === items.value.length - 1
 const firstLine = (item) => item.line === 0
 const lastLine = (item) => item.line === item.block.rows - 1
-// Must match the row classes below: 20px text lines, py-2.5 padding, a 1px rule
-// under every row but the last.
-const itemHeight = (index) => {
-  const item = items.value[index]
-  const rule = isLast(index) ? 0 : 1
-  if (item.event) return (eventItem(item.event) ? 58 : 40) + rule
-  return 20 + (firstLine(item) ? 10 : 0) + (lastLine(item) ? 10 + rule : 0)
-}
 
 async function refresh(after = 0) {
   loading.value = true
@@ -184,17 +176,17 @@ async function continueChoice(value) {
       <section>
         <div class="flex items-baseline justify-between gap-3"><h2 class="text-lg-semibold text-ink-gray-9">Event log</h2><Button size="sm" variant="ghost" icon-left="lucide-refresh-cw" label="Refresh" :loading="loading" @click="refresh(record.events?.at(-1)?.seq || 0)" /></div>
         <div v-if="!items.length" class="mt-3 rounded-6 border border-outline-gray-1 bg-surface-gray-1 px-4 py-8 text-center text-p-sm text-ink-gray-5">Waiting for the first event...</div>
-        <FollowPane v-else :items="items" :item-height="itemHeight" class="mt-3 max-h-[60vh] rounded-6 border border-outline-gray-1 bg-surface-gray-1">
+        <FollowPane v-else :items="items" class="mt-3 max-h-[60vh] rounded-6 border border-outline-gray-1 bg-surface-gray-1">
           <template #default="{ item, index }">
-            <div v-if="item.event" :class="['grid h-full grid-cols-[5rem_minmax(0,1fr)] gap-3 px-3 py-2.5 sm:grid-cols-[5.5rem_9rem_minmax(0,1fr)]', !isLast(index) && 'border-b border-outline-gray-1']">
+            <div v-if="item.event" :class="['grid grid-cols-[5rem_minmax(0,1fr)] gap-3 px-3 py-2.5 sm:grid-cols-[5.5rem_9rem_minmax(0,1fr)]', !isLast(index) && 'border-b border-outline-gray-1']">
               <span class="whitespace-nowrap font-mono text-xs leading-5 tabular-nums text-ink-gray-4">{{ time(item.event.at) }}</span>
               <span class="hidden truncate font-mono text-xs leading-5 text-ink-gray-5 sm:block">{{ item.event.phase || item.event.action || item.event.type }}</span>
-              <div class="min-w-0"><p class="truncate font-mono text-xs leading-5 text-ink-gray-7" :title="eventTitle(item.event)">{{ eventTitle(item.event) }}</p><p v-if="eventItem(item.event)" class="mt-0.5 truncate text-xs leading-4 text-ink-gray-5">{{ eventItem(item.event) }}</p></div>
+              <div class="min-w-0"><p class="break-words font-mono text-xs leading-5 text-ink-gray-7">{{ eventTitle(item.event) }}</p><p v-if="eventItem(item.event)" class="mt-0.5 break-words text-xs leading-4 text-ink-gray-5">{{ eventItem(item.event) }}</p></div>
             </div>
-            <div v-else :class="['grid h-full grid-cols-[5rem_minmax(0,1fr)] gap-3 px-3 sm:grid-cols-[5.5rem_9rem_minmax(0,1fr)]', firstLine(item) && 'pt-2.5', lastLine(item) && 'pb-2.5', lastLine(item) && !isLast(index) && 'border-b border-outline-gray-1']">
+            <div v-else :class="['grid grid-cols-[5rem_minmax(0,1fr)] gap-3 px-3 sm:grid-cols-[5.5rem_9rem_minmax(0,1fr)]', firstLine(item) && 'pt-2.5', lastLine(item) && 'pb-2.5', lastLine(item) && !isLast(index) && 'border-b border-outline-gray-1']">
               <span class="whitespace-nowrap font-mono text-xs leading-5 tabular-nums text-ink-gray-4">{{ firstLine(item) ? time(item.block.at) : '' }}</span>
               <span class="hidden font-mono text-xs leading-5 text-ink-gray-5 sm:block">{{ firstLine(item) ? 'output' : '' }}</span>
-              <span class="whitespace-pre font-mono text-xs leading-5 text-ink-gray-7">{{ lineText(item) }}</span>
+              <span class="min-w-0 whitespace-pre-wrap break-words font-mono text-xs leading-5 text-ink-gray-7">{{ lineText(item) }}</span>
             </div>
           </template>
         </FollowPane>

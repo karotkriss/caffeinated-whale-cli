@@ -4,38 +4,45 @@
 // offers one control to jump back. Every log view (job event log, bench Logs tab)
 // renders through this so none of them can drift back to "scroll it yourself".
 //
-// Only the rows in and near the viewport are in the DOM (@vueuse/core's
-// useVirtualList), each at the fixed height `itemHeight` gives it, so a 30,000
-// line log costs the same per refresh as a short one and every line stays
-// reachable by scrolling. Rows are only ever appended, so nothing above a paused
-// reader moves. The pin re-runs after each DOM update that changes `items` and
-// whenever the pane itself resizes, never on the window's own range shifts, which
-// a slow scroll up would otherwise snap back to the bottom.
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+// Only the rows in and near the viewport are in the DOM (@tanstack/vue-virtual),
+// and each rendered row reports its real, wrapped height through measureElement,
+// so long lines wrap instead of being cut and a 30,000-line log costs the same
+// per refresh as a short one. Rows are only ever appended, and the virtualizer
+// compensates the scroll offset when a row above the viewport is measured, so
+// nothing moves under a paused reader. The pin re-runs whenever the list's total
+// height changes: an append, or a row near the end being measured after a pin.
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Button } from 'frappe-ui'
-import { useVirtualList } from '@vueuse/core'
+import { useVirtualizer } from '@tanstack/vue-virtual'
 import { nextFollowing } from '../data/follow'
 
 const props = defineProps({
   items: { type: Array, required: true },
-  itemHeight: { type: [Number, Function], default: 20 },
+  // A one-line row; a wrapped or padded row corrects itself once measured.
+  estimateHeight: { type: Number, default: 20 },
 })
+const pane = ref(null)
+const body = ref(null)
 const following = ref(true)
-const { list, containerProps, wrapperProps } = useVirtualList(
-  computed(() => props.items),
-  { itemHeight: props.itemHeight, overscan: 20 },
-)
-const pane = containerProps.ref
-const rowHeight = (index) => (typeof props.itemHeight === 'number' ? props.itemHeight : props.itemHeight(index))
-let observer = null
 let lastTop = 0
+let observer = null
+
+const virtualizer = useVirtualizer(
+  computed(() => ({
+    count: props.items.length,
+    getScrollElement: () => pane.value,
+    estimateSize: () => props.estimateHeight,
+    overscan: 20,
+  })),
+)
+const rows = computed(() => virtualizer.value.getVirtualItems())
+const totalSize = computed(() => virtualizer.value.getTotalSize())
+const measure = (el) => el && virtualizer.value.measureElement(el)
 
 const stick = () => {
   pane.value.scrollTop = pane.value.scrollHeight
-  containerProps.onScroll()
 }
 const onScroll = () => {
-  containerProps.onScroll()
   following.value = nextFollowing(following.value, lastTop, pane.value)
   lastTop = pane.value.scrollTop
 }
@@ -44,10 +51,10 @@ const resume = () => {
   stick()
 }
 
-watch(() => props.items, () => following.value && stick(), { flush: 'post' })
 onMounted(() => {
   // Fires once on observe, so a pane that mounts with content (a finished job) opens at its end.
   observer = new ResizeObserver(() => following.value && stick())
+  observer.observe(body.value)
   observer.observe(pane.value)
 })
 onBeforeUnmount(() => observer?.disconnect())
@@ -56,9 +63,9 @@ onBeforeUnmount(() => observer?.disconnect())
 <template>
   <div class="relative flex flex-col overflow-hidden">
     <div ref="pane" class="min-h-0 flex-1 overflow-auto" @scroll.passive="onScroll">
-      <div v-bind="wrapperProps">
-        <div v-for="row in list" :key="row.index" class="overflow-y-clip" :style="{ height: `${rowHeight(row.index)}px` }">
-          <slot :item="row.data" :index="row.index" />
+      <div ref="body" class="relative w-full" :style="{ height: `${totalSize}px` }">
+        <div v-for="row in rows" :key="row.key" :ref="measure" :data-index="row.index" class="absolute left-0 top-0 w-full" :style="{ transform: `translateY(${row.start}px)` }">
+          <slot :item="items[row.index]" :index="row.index" />
         </div>
       </div>
     </div>
