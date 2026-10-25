@@ -29,6 +29,7 @@ from caffeinated_whale_cli.core import bench_ops, resolvers
 from caffeinated_whale_cli.core import docker as core_docker
 from caffeinated_whale_cli.core.envelope import Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
+from caffeinated_whale_cli.core.exec_stream import ExecChunk, ExecDone
 
 from .test_core_apps import FakeContainer
 
@@ -293,6 +294,93 @@ def test_a_failing_suite_reports_not_ok(container):
 
     assert result.data.ok is False
     assert result.status is Status.WARNING
+
+
+def _suite_prints(container, code, output):
+    """Make the fake's `run-tests` exec exit `code` having printed `output`."""
+    run = container._run
+
+    def _run(cmd):
+        if "run-tests" in (cmd if isinstance(cmd, str) else " ".join(cmd)):
+            container.calls.append(cmd)
+            return code, output
+        return run(cmd)
+
+    container._run = _run
+
+
+@pytest.mark.parametrize(
+    "summary",
+    ["FAILED (failures=2, errors=3)", "FAILED (errors=1)", "FAILED (failures=1)"],
+)
+def test_a_failed_suite_is_not_ok_even_though_bench_exited_zero(container, summary):
+    """Frappe v14/v15 exit 0 on a failed suite unless CI is set; the unittest
+    summary is then the only place the failure is stated."""
+    _suite_prints(container, 0, f"Ran 5 tests in 0.1s\n\n{summary}\n")
+    events = []
+
+    result = bench_ops.run_tests("proj", site=SITE, app="payments", on_event=events.append)
+
+    assert result.data.ok is False
+    assert result.status is Status.WARNING
+    assert summary in result.data.results[0].message
+    step_end = [e for e in events if isinstance(e, bench_ops.BenchOpStepEnd)]
+    assert [e.ok for e in step_end] == [False]
+
+
+@pytest.mark.parametrize("summary", ["OK", "OK (skipped=2)", "OK (expected failures=1)"])
+def test_a_passing_suite_stays_ok_whatever_its_summary_says_about_skips(container, summary):
+    _suite_prints(container, 0, f"Ran 5 tests in 0.1s\n\n{summary}\n")
+
+    result = bench_ops.run_tests("proj", site=SITE, app="payments")
+
+    assert result.data.ok is True
+    assert result.data.results[0].message is None
+    assert result.status is Status.OK
+
+
+def test_a_crashed_run_is_not_ok(container):
+    """A traceback before any summary: bench exits non-zero by itself."""
+    _suite_prints(container, 1, "Traceback (most recent call last):\nImportError: boom\n")
+
+    result = bench_ops.run_tests("proj", site=SITE, app="payments")
+
+    assert result.data.ok is False
+
+
+def test_a_summary_split_across_chunks_is_still_read(container, monkeypatch):
+    chunks = ["Ran 5 tests in 0.1s\n\nFAI", "LED (failures=2, er", "rors=3)\n"]
+    events = []
+    monkeypatch.setattr(
+        bench_ops,
+        "exec_stream",
+        lambda *a, **k: iter(
+            [*(ExecChunk(stream="stderr", text=c) for c in chunks)] + [ExecDone(exit_code=0)]
+        ),
+    )
+
+    result = bench_ops.run_tests("proj", site=SITE, app="payments", on_event=events.append)
+
+    assert result.data.ok is False
+
+
+def test_a_run_refused_by_the_allow_tests_guard_is_not_ok_and_names_the_fix(container):
+    """Frappe exits 0 having run nothing - a green result for zero tests."""
+    _suite_prints(container, 0, "Testing is disabled for the site!\n")
+
+    result = bench_ops.run_tests("proj", site=SITE, app="payments")
+
+    assert result.data.ok is False
+    assert f"cwcli run proj --site {SITE} set-config allow_tests true" in (
+        result.data.results[0].message
+    )
+
+
+def test_migrate_output_is_never_judged_by_the_test_summary(container):
+    """Only run-tests reads output; a migrate whose logs happen to print FAILED is
+    decided by its exit code alone."""
+    result = bench_ops.migrate_site("proj", site=SITE)
+    assert result.data.ok is True
 
 
 def test_run_tests_does_not_touch_maintenance_mode(container):

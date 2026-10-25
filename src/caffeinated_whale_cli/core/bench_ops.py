@@ -46,6 +46,7 @@ one of them stops disabling, and a site stuck in maintenance is a site that is d
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import shlex
 import time
@@ -202,15 +203,75 @@ def _run_step(
     ``environment`` rides through to the exec (``migrate`` stamps its interrupt marker
     there so cleanup can find the process cwcli started; see :func:`migrate_env`).
     """
+    return _run_judged_step(
+        container, cmd, bench_path, action=action, emit=emit, environment=environment
+    )[0]
+
+
+def _run_judged_step(
+    container,
+    cmd: str,
+    bench_path: str,
+    *,
+    action: str,
+    emit: OnEvent,
+    environment: dict[str, str] | None = None,
+    judge: Callable[[str], str | None] | None = None,
+) -> tuple[int, str | None]:
+    """:func:`_run_step`, plus a verdict on the command's own output.
+
+    ``judge`` reads the retained tail of the combined output and returns a failure
+    reason, or None. It exists for commands whose exit status cannot be trusted to
+    say they failed (see :func:`_test_run_failure`); it is consulted only after a
+    ZERO exit, because a non-zero one is already a failure with nothing to add. The
+    step is reported not-ok when either the exit code or the verdict says so.
+    """
     emit(BenchOpCommand(command=cmd))
     exit_code = 1
+    tail = ""
     for event in exec_stream(container, cmd, workdir=bench_path, environment=environment):
         if isinstance(event, ExecChunk):
             emit(BenchOpOutput(action=action, stream=event.stream, text=event.text))
+            if judge is not None:
+                # Capped by slicing, never unbounded: the summary is the last thing
+                # printed, and a long suite can emit megabytes before it.
+                tail = (tail + event.text)[-_OUTPUT_TAIL_CHARS:]
         else:
             exit_code = event.exit_code
-    emit(BenchOpStepEnd(action=action, ok=exit_code == 0))
-    return exit_code
+    reason = judge(tail) if judge is not None and exit_code == 0 else None
+    emit(BenchOpStepEnd(action=action, ok=exit_code == 0 and reason is None))
+    return exit_code, reason
+
+
+_OUTPUT_TAIL_CHARS = 8192
+
+# unittest's TextTestRunner prints exactly one of `OK` / `OK (skipped=1)` /
+# `FAILED (failures=2, errors=3)` as its final summary line. Anchored on `FAILED (`
+# so `OK (expected failures=1)` can never match.
+_UNITTEST_FAILED = re.compile(r"^FAILED \(.*\)[ \t]*$", re.MULTILINE)
+
+
+def _test_run_failure(output: str, *, project: str, site: str) -> str | None:
+    """Why a ZERO-exit ``bench run-tests`` still did not pass, or None.
+
+    Frappe v14/v15's ``run-tests`` computes the failure count and then exits only
+    ``if os.environ.get("CI")``, so without ``CI`` a run printing ``FAILED
+    (failures=2, errors=3)`` exits 0 and the exit code alone reported success for a
+    failed suite. ``CI`` is not an option: Frappe also reads it to run background
+    jobs inline and to skip the ``allow_tests`` guard, which would change the
+    conditions the suite runs under. The same command ALSO exits 0 when that guard
+    refuses ("Testing is disabled for the site!") having run nothing. v16 exits
+    non-zero on a failed suite itself, so for it this is a harmless second opinion.
+    """
+    match = _UNITTEST_FAILED.search(output)
+    if match:
+        return f"The test run reported {match.group(0).strip()}."
+    if "Testing is disabled for the site" in output:
+        return (
+            "No tests ran: allow_tests is not enabled on the site. Enable it with: "
+            f"cwcli run {project} --site {site} set-config allow_tests true"
+        )
+    return None
 
 
 # --------------------------------------------- interrupt cleanup (migrate/apps update)
@@ -652,18 +713,26 @@ def run_tests(
     command = f"bench --site {shlex.quote(target)} run-tests --app {shlex.quote(app)}"
     if module and module.strip():
         command += f" --module {shlex.quote(module.strip())}"
-    code = _run_step(container, command, path, action="run-tests", emit=emit)
-    results = [BenchOpResult(action="run-tests", ok=code == 0)]
+    code, failure = _run_judged_step(
+        container,
+        command,
+        path,
+        action="run-tests",
+        emit=emit,
+        judge=lambda output: _test_run_failure(output, project=project_name, site=target),
+    )
+    ok = code == 0 and failure is None
+    results = [BenchOpResult(action="run-tests", ok=ok, message=failure)]
 
     return Result(
-        status=Status.OK if code == 0 else Status.WARNING,
+        status=Status.OK if ok else Status.WARNING,
         data=BenchOpReport(
             project=project_name,
             bench_path=path,
             site=target,
             app=app,
             results=results,
-            ok=code == 0,
+            ok=ok,
         ),
         warnings=warnings,
     )
