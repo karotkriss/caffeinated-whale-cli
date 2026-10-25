@@ -625,16 +625,32 @@ def test_a_daemon_that_dies_at_startup_is_reported_not_started(run_dir, monkeypa
 
 
 def test_transport_failure_happens_before_readiness_is_published(run_dir, monkeypatch):
-    class BrokenSocket:
-        def bind(self, address):
-            raise OSError("bind failed")
+    """A real child whose loopback bind fails must exit before publishing its pid,
+    so start_daemon reports the failure instead of a daemon that never served."""
+    real_source = cred_daemon._bootstrap_source
 
-    monkeypatch.setattr(credbridge, "_prefer_tcp", lambda: True)
-    monkeypatch.setattr(cred_daemon.socket, "socket", lambda *args, **kwargs: BrokenSocket())
+    def broken_bind_source(module_path):
+        prefix = (
+            "import os, sys, socket, types\n"
+            f"os.environ['CWCLI_HOME'] = {str(run_dir)!r}\n"
+            f"sys.path.insert(0, {module_path!r})\n"
+            "from caffeinated_whale_cli.core import credbridge\n"
+            "from caffeinated_whale_cli.utils import cred_daemon\n"
+            "class _Broken:\n"
+            "    def __init__(self, *args, **kwargs): pass\n"
+            "    def bind(self, address): raise OSError('bind failed')\n"
+            "credbridge._prefer_tcp = lambda: True\n"
+            "cred_daemon.socket = types.SimpleNamespace(\n"
+            "    socket=_Broken, AF_INET=socket.AF_INET, SOCK_STREAM=socket.SOCK_STREAM)\n"
+        )
+        return prefix + real_source(module_path)
 
-    with pytest.raises(OSError, match="bind failed"):
-        cred_daemon._run_daemon_loop()
+    monkeypatch.setattr(cred_daemon, "_bootstrap_source", broken_bind_source)
 
+    with pytest.raises(RuntimeError, match="exited during startup"):
+        cred_daemon.start_daemon()
+
+    assert "bind failed" in cred_daemon.LOG_FILE.read_text()
     assert not cred_daemon.PID_FILE.exists()
 
 

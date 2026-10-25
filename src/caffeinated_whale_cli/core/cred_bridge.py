@@ -207,7 +207,7 @@ def enable(
 
     if at_boot is not None:
         sync_boot_hook(at_boot, actions, warnings, unit=startup.CRED_BRIDGE)
-    repair_boot_hook(actions, unit=startup.CRED_BRIDGE)
+    repair_boot_hook(actions, warnings, unit=startup.CRED_BRIDGE)
 
     return Result(
         status=Status.WARNING if warnings else Status.OK,
@@ -261,13 +261,18 @@ def start() -> Result[CredBridgeOutcome]:
     disabled; idempotent."""
     _require_enabled()
     actions: list[str] = []
+    warnings: list[Message] = []
     if daemon.is_running():
         actions.append("daemon.already_running")
     else:
         _start_daemon()
         actions.append("daemon.started")
-    repair_boot_hook(actions, unit=startup.CRED_BRIDGE)
-    return Result(status=Status.OK, data=CredBridgeOutcome(actions=actions, state=_state()))
+    repair_boot_hook(actions, warnings, unit=startup.CRED_BRIDGE)
+    return Result(
+        status=Status.WARNING if warnings else Status.OK,
+        data=CredBridgeOutcome(actions=actions, state=_state()),
+        warnings=warnings,
+    )
 
 
 def restart() -> Result[CredBridgeOutcome]:
@@ -277,8 +282,13 @@ def restart() -> Result[CredBridgeOutcome]:
         _stop_daemon()
     _start_daemon()
     actions = ["daemon.restarted"]
-    repair_boot_hook(actions, unit=startup.CRED_BRIDGE)
-    return Result(status=Status.OK, data=CredBridgeOutcome(actions=actions, state=_state()))
+    warnings: list[Message] = []
+    repair_boot_hook(actions, warnings, unit=startup.CRED_BRIDGE)
+    return Result(
+        status=Status.WARNING if warnings else Status.OK,
+        data=CredBridgeOutcome(actions=actions, state=_state()),
+        warnings=warnings,
+    )
 
 
 def stop() -> Result[CredBridgeOutcome]:

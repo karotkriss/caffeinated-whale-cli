@@ -180,9 +180,7 @@ class TestNoExecStop:
         assert startup.repair_startup(startup.CRED_BRIDGE) is False
         assert home.calls == []
 
-    def test_a_failed_reload_is_reported_even_after_the_file_is_repaired(
-        self, home, monkeypatch
-    ):
+    def test_a_failed_reload_keeps_the_old_unit_so_the_next_call_retries(self, home, monkeypatch):
         monkeypatch.setattr(startup, "get_platform", lambda: "linux")
         service = home.root / ".config" / "systemd" / "user" / "cwcli-cred-bridge.service"
         service.parent.mkdir(parents=True)
@@ -199,7 +197,9 @@ class TestNoExecStop:
 
         with pytest.raises(OSError, match="daemon-reload failed"):
             startup.repair_startup(startup.CRED_BRIDGE)
-        assert "ExecStop" not in _service(service)
+        assert "ExecStop" in _service(service)
+        with pytest.raises(OSError, match="daemon-reload failed"):
+            startup.repair_startup(startup.CRED_BRIDGE)
 
 
 class TestMacosUnits:
