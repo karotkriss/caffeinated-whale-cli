@@ -15,6 +15,7 @@ directly and connecting a real client, the way ``test_core_credbridge`` does.
 from __future__ import annotations
 
 import os
+import signal
 import socket
 import stat
 import subprocess
@@ -600,9 +601,9 @@ def test_start_daemon_is_a_noop_when_already_running(run_dir, monkeypatch):
     assert forked == []  # never forked over a live daemon
 
 
-def test_start_daemon_falls_back_to_spawn_without_fork(run_dir, monkeypatch):
+def test_start_daemon_spawns_and_never_forks(run_dir, monkeypatch):
     monkeypatch.setattr(cred_daemon, "is_running", lambda: False)
-    monkeypatch.delattr(cred_daemon.os, "fork", raising=False)
+    monkeypatch.setattr(cred_daemon.os, "fork", lambda: pytest.fail("forked"), raising=False)
     monkeypatch.setattr(cred_daemon, "_await_started", lambda timeout=2.0: None)
     spawned = []
     monkeypatch.setattr(cred_daemon, "_spawn_detached", lambda: spawned.append(True))
@@ -618,12 +619,12 @@ def test_concurrent_start_forks_at_most_one_daemon(run_dir, monkeypatch):
     monkeypatch.setattr(cred_daemon, "is_running", lambda: running["up"])
     starts = []
 
-    def fake_start(lock_fd):
+    def fake_start():
         starts.append(True)
         time.sleep(0.05)  # widen the window every rival races through
         running["up"] = True
 
-    monkeypatch.setattr(cred_daemon, "_fork_or_spawn", fake_start)
+    monkeypatch.setattr(cred_daemon, "_spawn_daemon", fake_start)
 
     threads = [threading.Thread(target=cred_daemon.start_daemon) for _ in range(5)]
     for t in threads:
@@ -641,7 +642,7 @@ def test_stale_lock_file_does_not_prevent_start(run_dir, monkeypatch):
     (run_dir / "run" / "credbridge.start.lock").write_text("")
     monkeypatch.setattr(cred_daemon, "is_running", lambda: False)
     started = []
-    monkeypatch.setattr(cred_daemon, "_fork_or_spawn", lambda lock_fd: started.append(True))
+    monkeypatch.setattr(cred_daemon, "_spawn_daemon", lambda: started.append(True))
     cred_daemon.start_daemon()
     assert started == [True]
 
@@ -728,29 +729,50 @@ class TestSharedModeForkGuard:
         monkeypatch.setattr(cred_daemon, "is_running", lambda: False)
         monkeypatch.setattr(cred_daemon, "_may_fork_daemon", lambda: False)
         forked: list = []
-        monkeypatch.setattr(cred_daemon, "_fork_or_spawn", lambda fd: forked.append(True))
+        monkeypatch.setattr(cred_daemon, "_spawn_daemon", lambda: forked.append(True))
         cred_daemon.start_daemon()
         assert forked == []
 
 
-def test_start_daemon_spawns_instead_of_forking_from_a_multithreaded_process(run_dir, monkeypatch):
-    """The `cwcli ui` daemon enables the bridge from a request thread; a fork there
-    would hand the child the daemon's listening socket (the auto_inspect lesson)."""
-    monkeypatch.setattr(cred_daemon, "is_running", lambda: False)
-    monkeypatch.setattr(cred_daemon.os, "fork", lambda: pytest.fail("forked"), raising=False)
-    monkeypatch.setattr(cred_daemon, "_await_started", lambda timeout=2.0: None)
-    spawned = []
-    monkeypatch.setattr(cred_daemon, "_spawn_detached", lambda: spawned.append(True))
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock")
+def test_daemon_outlives_the_command_without_holding_its_descriptors(tmp_path):
+    """`cwcli axi start` launches this daemon; a flock-wrapped start must leave the
+    wrapper's lock FREE once the command returns. A forked daemon inherited every
+    fd (and the command's argv), so the lock stayed held by a process that looked
+    like a hung `axi start`. The daemon must also never import a module from the
+    caller's cwd in place of the stdlib. Mock-free: a real subprocess holding a
+    flock, a real daemon (killed in cleanup)."""
+    import fcntl
 
-    import threading
-
-    release = threading.Event()
-    other = threading.Thread(target=release.wait, daemon=True)
-    other.start()
+    lock_path = tmp_path / "wrapper.lock"
+    pid_file = tmp_path / "run" / "credbridge.pid"
+    planted = tmp_path / "caller-cwd"
+    planted.mkdir()
+    hijacked = tmp_path / "hijacked"
+    (planted / "json.py").write_text(f"open({str(hijacked)!r}, 'w').close()\n")
+    script = (
+        "import fcntl, os\n"
+        f"fd = os.open({str(lock_path)!r}, os.O_CREAT | os.O_RDWR)\n"
+        "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+        "from caffeinated_whale_cli.utils import cred_daemon\n"
+        f"os.chdir({str(planted)!r})\n"
+        "cred_daemon.start_daemon()\n"
+    )
+    env = {**os.environ, "CWCLI_HOME": str(tmp_path), "CWCLI_SHARED_MARKER": str(tmp_path / "x")}
     try:
-        cred_daemon.start_daemon()
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=30, env=env
+        )
+        assert result.returncode == 0, result.stderr
+        deadline = time.monotonic() + 5
+        while not pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert pid_file.exists()
+        with open(lock_path) as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)  # BlockingIOError = leaked
+        assert not hijacked.exists()
     finally:
-        release.set()
-        other.join()
-
-    assert spawned == [True]
+        try:
+            os.kill(int(pid_file.read_text().split()[0]), signal.SIGKILL)
+        except (OSError, ValueError, IndexError):
+            pass
