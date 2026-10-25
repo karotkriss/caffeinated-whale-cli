@@ -6,7 +6,9 @@ validate/persist/fuse discipline. The exit-code-driving fields (report tokens,
 never ``Result.status``) and the opt-in start-refusal are the load-bearing pins.
 """
 
+import configparser
 from dataclasses import asdict
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +18,9 @@ from caffeinated_whale_cli.core.envelope import Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from caffeinated_whale_cli.utils import config_utils, startup
 from caffeinated_whale_cli.utils import cred_daemon as daemon
+
+_REAL_REPAIR_STARTUP = startup.repair_startup
+_REAL_IS_STARTUP_INSTALLED = startup.is_startup_installed
 
 
 def _managed(cfg, *names):
@@ -262,6 +267,47 @@ class TestStart:
         result = core_cred.start()
         assert result.data.actions == ["daemon.already_running"]
         assert cfg.calls["start"] == 0
+
+
+class TestReEnableOverALegacyBootUnit:
+    def test_enable_starts_the_daemon_and_strips_execstop_without_reinstalling(
+        self, cfg, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        monkeypatch.setattr(startup, "get_platform", lambda: "linux")
+        monkeypatch.setattr(startup, "repair_startup", _REAL_REPAIR_STARTUP)
+        monkeypatch.setattr(startup, "is_startup_installed", _REAL_IS_STARTUP_INSTALLED)
+        systemctl: list[list[str]] = []
+        monkeypatch.setattr(
+            startup.subprocess,
+            "run",
+            lambda cmd, **kwargs: systemctl.append(list(cmd))
+            or SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+        service = tmp_path / ".config" / "systemd" / "user" / startup.CRED_BRIDGE.service_name
+        service.parent.mkdir(parents=True)
+        service.write_text(
+            "[Unit]\nDescription=bridge\n\n[Service]\nType=forking\n"
+            'ExecStart="/old/cwcli" config cred-bridge start\n'
+            'ExecStop="/old/cwcli" config cred-bridge stop\n'
+            "\n[Install]\nWantedBy=default.target\n"
+        )
+        cfg.enabled = True
+
+        result = core_cred.enable(at_boot=True)
+
+        assert result.status is Status.OK
+        assert "daemon.started" in result.data.actions
+        assert "hook.repaired" in result.data.actions
+        assert cfg.calls["start"] == 1
+        assert cfg.calls["install"] == 0
+        assert result.data.state.daemon_running is True
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.optionxform = str
+        parser.read(service)
+        assert "ExecStop" not in parser["Service"]
+        assert parser["Service"]["ExecStart"] == '"/old/cwcli" config cred-bridge start'
+        assert systemctl == [["systemctl", "--user", "daemon-reload"]]
 
 
 class TestBootUnitRepairFailure:
