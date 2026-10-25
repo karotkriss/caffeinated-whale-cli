@@ -20,7 +20,7 @@ A command-line interface (CLI) for managing Frappe/ERPNext Docker instances duri
 - **Private App Repos** - `apps install`/`apps update` authenticate private GitHub/GitLab app fetches through your host's already-signed-in `gh`/`glab`, with no token ever entering the container
 - **Update Management** - App updates with automatic migrations and lock cleanup
 - **Self-Update** - Upgrade cwcli itself to the latest release with `cwcli self-update` (install-method aware)
-- **Environment Preflight** - Read-only checks for Docker, disk space, and tool dependencies with `cwcli doctor` (chainable exit code, `cwcli axi doctor` for agents; the shared cache layer may idempotently initialize cwcli's private cache directory while building the command tree)
+- **Environment Preflight** - Read-only checks for Docker, disk space, and tool dependencies with `cwcli doctor` (chainable exit code, `cwcli axi doctor` for agents)
 - **Update Notices** - A passive, once/day "a newer cwcli is available" hint on stderr, shown only to a human at a TTY
 - **Auto-Inspection** - Background process to keep project cache fresh automatically
 - **System Integration** - Auto-start on system boot with platform-specific configurations
