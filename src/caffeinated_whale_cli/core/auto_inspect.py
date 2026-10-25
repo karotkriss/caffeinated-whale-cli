@@ -219,6 +219,9 @@ def enable(interval: int | None = None, at_boot: bool | None = None) -> Result[A
     if interval_changed:
         actions.append("interval.set")
 
+    warnings: list[Message] = []
+    repair_boot_hook(actions, warnings)
+
     if daemon.is_running():
         if interval_changed:
             _stop_daemon()
@@ -230,10 +233,8 @@ def enable(interval: int | None = None, at_boot: bool | None = None) -> Result[A
         _start_daemon()
         actions.append("daemon.started")
 
-    warnings: list[Message] = []
     if at_boot is not None:
         sync_boot_hook(at_boot, actions, warnings)
-    repair_boot_hook(actions, warnings)
 
     return Result(
         status=Status.WARNING if warnings else Status.OK,
@@ -283,12 +284,12 @@ def start() -> Result[AutoInspectOutcome]:
     _require_enabled()
     actions: list[str] = []
     warnings: list[Message] = []
+    repair_boot_hook(actions, warnings)
     if daemon.is_running():
         actions.append("daemon.already_running")
     else:
         _start_daemon()
         actions.append("daemon.started")
-    repair_boot_hook(actions, warnings)
     return Result(
         status=Status.WARNING if warnings else Status.OK,
         data=AutoInspectOutcome(actions=actions, state=_state()),
@@ -299,12 +300,13 @@ def start() -> Result[AutoInspectOutcome]:
 def restart() -> Result[AutoInspectOutcome]:
     """Stop the daemon if it runs, then start it again."""
     _require_enabled()
+    actions: list[str] = []
+    warnings: list[Message] = []
+    repair_boot_hook(actions, warnings)
     if daemon.is_running():
         _stop_daemon()
     _start_daemon()
-    actions = ["daemon.restarted"]
-    warnings: list[Message] = []
-    repair_boot_hook(actions, warnings)
+    actions.append("daemon.restarted")
     return Result(
         status=Status.WARNING if warnings else Status.OK,
         data=AutoInspectOutcome(actions=actions, state=_state()),

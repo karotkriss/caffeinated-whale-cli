@@ -203,6 +203,7 @@ def enable(
         config_utils.set_cred_bridge_startup(at_boot)
 
     _harden_projects_dir(actions)
+    repair_boot_hook(actions, warnings, unit=startup.CRED_BRIDGE)
 
     if daemon.is_running():
         actions.append("daemon.already_running")
@@ -214,7 +215,6 @@ def enable(
 
     if at_boot is not None:
         sync_boot_hook(at_boot, actions, warnings, unit=startup.CRED_BRIDGE)
-    repair_boot_hook(actions, warnings, unit=startup.CRED_BRIDGE)
 
     return Result(
         status=Status.WARNING if warnings else Status.OK,
@@ -269,12 +269,12 @@ def start() -> Result[CredBridgeOutcome]:
     _require_enabled()
     actions: list[str] = []
     warnings: list[Message] = []
+    repair_boot_hook(actions, warnings, unit=startup.CRED_BRIDGE)
     if daemon.is_running():
         actions.append("daemon.already_running")
     else:
         _start_daemon()
         actions.append("daemon.started")
-    repair_boot_hook(actions, warnings, unit=startup.CRED_BRIDGE)
     return Result(
         status=Status.WARNING if warnings else Status.OK,
         data=CredBridgeOutcome(actions=actions, state=_state()),
@@ -285,12 +285,13 @@ def start() -> Result[CredBridgeOutcome]:
 def restart() -> Result[CredBridgeOutcome]:
     """Stop the daemon if it runs, then start it again (same guard as :func:`start`)."""
     _require_enabled()
+    actions: list[str] = []
+    warnings: list[Message] = []
+    repair_boot_hook(actions, warnings, unit=startup.CRED_BRIDGE)
     if daemon.is_running():
         _stop_daemon()
     _start_daemon()
-    actions = ["daemon.restarted"]
-    warnings: list[Message] = []
-    repair_boot_hook(actions, warnings, unit=startup.CRED_BRIDGE)
+    actions.append("daemon.restarted")
     return Result(
         status=Status.WARNING if warnings else Status.OK,
         data=CredBridgeOutcome(actions=actions, state=_state()),
