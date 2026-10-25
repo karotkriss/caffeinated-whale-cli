@@ -10,14 +10,22 @@ export function atBottom({ scrollTop, scrollHeight, clientHeight }, slack = SLAC
   return scrollHeight - scrollTop - clientHeight <= slack
 }
 
+// The follow state after a scroll event. Only a real upward scroll pauses it: a
+// scroll event the pane's own pin queued can be handled after more content has
+// landed, which reads as "not at the bottom" although the reader never moved.
+export function nextFollowing(following, lastTop, pane) {
+  if (atBottom(pane)) return true
+  return pane.scrollTop < lastTop ? false : following
+}
+
 // A pane renders at most this many lines of one block. A single collapsed
 // output block of a real init reached 30,000 lines (7.7 MB), and replacing that
 // one text node on every refresh froze the page for 1.5 s; the last 2,000 lines
 // patch in under 60 ms. The full output stays in the job record on disk.
 export const MAX_LINES = 2000
 
-// The last `max` lines of `text`, found by scanning back from the end so the
-// cost is the tail's size, never the block's.
+// The last `max` lines of `text`, found by scanning back from the end; counting
+// the hidden lines still walks the prefix, with native indexOf.
 export function tailLines(text, max = MAX_LINES) {
   let cut = text.length
   for (let kept = 0; kept < max; kept++) {

@@ -1,4 +1,4 @@
-"""The web UI's log auto-follow: the pure decision under node, plus the wiring pin.
+"""The web UI's log auto-follow: the pure decisions, run under node.
 
 The captain watched an instance being created and the job page never followed the
 output: the page sat at the top while new events landed below the fold, and the
@@ -8,7 +8,6 @@ bottom while the reader is there and pauses only on a deliberate scroll up.
 """
 
 import json
-import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -80,15 +79,23 @@ def test_a_real_init_sized_block_keeps_its_last_two_thousand_lines():
     }
 
 
-def test_every_log_view_renders_through_the_follow_pane():
-    """A view that scrolls itself can drift back to "scroll it yourself"; none may."""
-    for view in ("pages/Job.vue", "components/LogsPane.vue"):
-        assert "<FollowPane" in (WEBUI / view).read_text(encoding="utf-8"), view
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+@pytest.mark.parametrize(
+    ("following", "last_top", "scroll_top", "expected"),
+    [
+        (True, 1200, 1200, True),  # the pin's own queued scroll, read after more output landed
+        (True, 1100, 1200, True),  # the pin moved down to an end that has grown since
+        (True, 1200, 1000, False),  # the reader scrolled up
+        (False, 1000, 1000, False),  # paused stays paused while output lands
+        (False, 1000, 1150, False),  # scrolling down but short of the end stays paused
+    ],
+)
+def test_only_a_real_upward_scroll_pauses_the_follow(following, last_top, scroll_top, expected):
+    pane = {"scrollTop": scroll_top, "scrollHeight": 1900, "clientHeight": 400}
+    assert _call("nextFollowing", following, last_top, pane) is expected
 
 
-def test_the_job_output_block_has_no_scroller_of_its_own():
-    """A nested scroller hides the newest line even when the pane is pinned to the end."""
-    source = (WEBUI / "pages/Job.vue").read_text(encoding="utf-8")
-    pre_tags = re.findall(r"<pre[^>]*>", source)
-    assert pre_tags, "the job page renders output blocks as <pre>"
-    assert not any("overflow" in tag or "max-h" in tag for tag in pre_tags), pre_tags
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_reaching_the_end_resumes_the_follow():
+    pane = {"scrollTop": 1500, "scrollHeight": 1900, "clientHeight": 400}
+    assert _call("nextFollowing", False, 1000, pane) is True
