@@ -17,13 +17,9 @@ fix the very thing a uid/gid check reads), this module calls the read-only
 primitive instead - see the report's "read-only tripwires" (T1-T10) section for
 the full list of mutations deliberately not called here.
 
-There is one accepted, narrow exception outside the checks themselves.
-Importing cwcli to build the Typer command tree for ``cwcli doctor`` or
-``cwcli axi doctor`` imports ``utils.db_utils``, whose pre-existing module-load
-initialization creates cwcli's private cache directory and applies mode 0700.
-That cwcli-wide operation is idempotent and never touches project data.
-The structurally correct lazy initialization is tracked separately as
-``cwcli-cache-dir-lazy-init``; this exception should disappear when that lands.
+Importing cwcli to build the Typer command tree creates nothing either:
+``utils.db_utils`` makes the cache directory lazily, on the first actual cache
+open, which doctor never triggers.
 
 Severity is a closed three-tier set (pass/warn/fail) - no fourth
 "not applicable" state, per the maintainer's ruling. An optional tool that is

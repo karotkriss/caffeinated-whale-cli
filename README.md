@@ -2042,13 +2042,6 @@ cwcli doctor [OPTIONS]
 
 **Read-only checks:** doctor never starts a container, installs anything, or
 writes a config file.
-There is one accepted shared-infrastructure exception before the checks run:
-building the command tree for `cwcli doctor` or `cwcli axi doctor` imports the
-pre-existing cache layer, which may idempotently create cwcli's private cache
-directory and apply mode `0700`.
-It does not touch project data.
-Making that initialization lazy is tracked separately as
-`cwcli-cache-dir-lazy-init`; this caveat should disappear when that lands.
 When a direct remedy is available, the finding includes the command or action
 to apply yourself.
 
