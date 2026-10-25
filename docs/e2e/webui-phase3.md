@@ -23,6 +23,7 @@ Every outcome below was read back from the container, the host filesystem or the
 - **Settings writes**, each read back from `config/config.toml` under the isolated home: adding a search path, the prune check (which honestly refused to prune while the other instances on this Docker daemon were stopped, naming them), removing the path, tips off and on, auto-inspect on (its daemon ran one cycle over the running instance only) and off, with the switch, interval and boot-hook controls beside the terminal command for each.
 - **Fork safety, found by this proof.** Enabling auto-inspect from the daemon forked the background daemon from a request thread, and `ss -ltnp` showed the child holding the UI daemon's listening socket.
   `utils.daemon_identity.fork_is_safe` now sends a multithreaded host down the detached-spawn path for both auto-inspect and the credential bridge; after the fix only the daemon's pid holds the port and the child is a spawned interpreter.
+  That check was later superseded: both daemons now always start as a spawned interpreter, so `fork_is_safe` no longer exists.
 - The real-Docker regression tests for the job half live in `tests/e2e/test_serve_e2e.py::TestGuardedDestructiveJobs` (both halves of the gate through the daemon) and `::TestSettingsWrites`.
 
 ## Screenshots

@@ -187,9 +187,9 @@ def _bootstrap_source(module_path: str, interval: int) -> str:
         "import signal\n"
         "from caffeinated_whale_cli.utils.auto_inspect import "
         "_write_pid_file, _log, _run_service_loop, _handle_sigterm\n"
-        "_write_pid_file()\n"
         "signal.signal(signal.SIGTERM, _handle_sigterm)\n"
         "signal.signal(signal.SIGINT, _handle_sigterm)\n"
+        "_write_pid_file()\n"
         f'_log("Auto-inspect service started (interval: {interval}s)")\n'
         f"_run_service_loop({interval})\n"
     )

@@ -176,9 +176,6 @@ def test_bootstrap_source_is_valid_python():
 
     compile(source, "<bootstrap>", "exec")
     assert "_run_service_loop(3600)" in source
-    # The fork child used to install these; the fresh interpreter must too, or a
-    # SIGTERM kills it without removing its pid file.
-    assert "signal.signal(signal.SIGTERM, _handle_sigterm)" in source
 
 
 def test_bootstrap_source_survives_a_windows_path():
@@ -247,12 +244,16 @@ def test_daemon_outlives_the_command_without_holding_its_descriptors(tmp_path):
     """The daemon must not keep anything the enabling command had open. A shell
     capturing the command's output must see EOF when the parent exits (the daemon
     once held fd 1 open, so `$(cwcli config auto-inspect enable)` hung), and a
-    wrapper's lock file must be free once the command returns (a forked daemon
+    wrapper's lock file must be free while the daemon runs (a forked daemon
     inherited every fd, so a flock-wrapped command left the lock held by a process
-    that looked like the command still running). Mock-free: a real subprocess with a
-    captured pipe and a held flock, a real daemon (killed in cleanup). Fails as a
-    30s TimeoutExpired or a held lock against a forking implementation."""
+    that looked like the command still running). A SIGTERMed daemon must also
+    remove its own pid file. Mock-free: a real subprocess with a captured pipe and
+    a held flock, a real daemon. Fails as a 30s TimeoutExpired or a held lock
+    against a forking implementation."""
+    import fcntl
+
     lock_path = tmp_path / "wrapper.lock"
+    pid_file = tmp_path / "run" / "auto-inspect.pid"
     script = (
         "import fcntl, os\n"
         f"fd = os.open({str(lock_path)!r}, os.O_CREAT | os.O_RDWR)\n"
@@ -270,6 +271,13 @@ def test_daemon_outlives_the_command_without_holding_its_descriptors(tmp_path):
         "CWCLI_HOME": str(tmp_path),
         "DOCKER_HOST": f"unix://{tmp_path}/no-docker.sock",
     }
+
+    def wait_for(condition):
+        deadline = time.monotonic() + 5
+        while not condition() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        return condition()
+
     try:
         result = subprocess.run(
             [sys.executable, "-c", script],
@@ -278,24 +286,20 @@ def test_daemon_outlives_the_command_without_holding_its_descriptors(tmp_path):
             timeout=30,
             env=env,
         )
+        assert result.returncode == 0, result.stderr
+        assert "PARENT_DONE" in result.stdout
+        # The child writes its pid file (after installing its signal handlers)
+        # once the parent has returned; probe the lock while it is alive.
+        assert wait_for(pid_file.exists)
+        with open(lock_path) as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)  # BlockingIOError = leaked
+        os.kill(int(pid_file.read_text().split()[0]), signal.SIGTERM)
+        assert wait_for(lambda: not pid_file.exists())
     finally:
-        # The child writes its pid file after the parent has returned, and the file
-        # carries a second (creation-time) line, so wait briefly and parse only the
-        # pid - otherwise the daemon outlives the test run.
-        pid_file = tmp_path / "run" / "auto-inspect.pid"
-        deadline = time.monotonic() + 5
-        while not pid_file.exists() and time.monotonic() < deadline:
-            time.sleep(0.02)
         try:
             os.kill(int(pid_file.read_text().split()[0]), signal.SIGKILL)
         except (OSError, ValueError, IndexError):
             pass
-    assert result.returncode == 0, result.stderr
-    assert "PARENT_DONE" in result.stdout
-    import fcntl
-
-    with open(lock_path) as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)  # BlockingIOError = leaked
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX fork path")
