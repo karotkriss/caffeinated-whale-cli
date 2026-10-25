@@ -416,17 +416,26 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
     if successful_apps > 0 and not report.aborted:
         console.print(f"\n[bold green]✓ Successfully updated {successful_apps} app(s)[/bold green]")
 
+    # bench can fail before it reaches its git reset, so an unfinished run only MAY have
+    # discarded the work - never state that loss as fact.
+    reset_finished = "frappe" not in report.failed_apps + report.unknown_apps
+    reset_lead = (
+        "--force let 'bench update --reset'"
+        if reset_finished
+        else "'bench update --reset' did not finish, so it may have"
+    )
     if report.frappe_reset and report.data_loss_apps:
         # --force accepted it: bench hard-resets every app it reaches.
         losing, unchecked = _split_local_work(report)
         if losing:
             console.print(
-                f"[bold yellow]![/bold yellow] --force let 'bench update --reset' discard local "
-                f"work in {len(losing)} app(s): {', '.join(losing)}"
+                f"[bold yellow]![/bold yellow] {reset_lead} discard"
+                f"{'' if reset_finished else 'ed'} local work in {len(losing)} app(s): "
+                f"{', '.join(losing)}"
             )
         if unchecked:
             console.print(
-                f"[bold yellow]![/bold yellow] --force let 'bench update --reset' reset "
+                f"[bold yellow]![/bold yellow] {reset_lead} reset "
                 f"{len(unchecked)} app(s) whose local work could not be checked: "
                 f"{', '.join(unchecked)}"
             )
@@ -435,7 +444,7 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
         not f.app for f in update_preflight.local_work(report.preflight)
     ):
         console.print(
-            "[bold yellow]![/bold yellow] --force let 'bench update --reset' reset every app "
+            f"[bold yellow]![/bold yellow] {reset_lead} reset every app "
             "although cwcli could not check any app's local work"
         )
 
