@@ -245,7 +245,7 @@ const HOOK_THEME = { installed: 'green', updated: 'green', unchanged: 'gray', sk
       </section>
     </div>
 
-    <Dialog v-model:open="clearOpen" title="Clear the whole cache?" :icon="{ name: 'lucide-trash-2', theme: 'red' }">
+    <Dialog v-model:open="clearOpen" title="Clear the whole cache?" icon="lucide-trash-2" theme="red">
       <p class="text-p-base text-ink-gray-7">Every remembered bench, site and app is forgotten, for live and removed instances alike. Bench labels stay in their marker files and come back on the next inspect; durable bench numbers are kept.</p>
       <div class="mt-3"><CommandLine command="cwcli config cache clear --all" /></div>
       <template #actions="{ close }">
