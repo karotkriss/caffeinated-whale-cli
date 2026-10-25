@@ -5,10 +5,8 @@ glyph-checklist rendering and the ``-v`` detail toggle. Every check, its
 severity, and its suggested fix all live in the core so the human and ``axi``
 surfaces render the exact same findings.
 
-The checks do not write state.
-Building cwcli's command tree has one accepted shared-infrastructure exception:
-the pre-existing cache layer idempotently creates cwcli's private cache
-directory and applies mode 0700 at import time.
+The checks do not write state, and neither does building cwcli's command tree:
+the cache directory is created lazily, on the first actual cache open.
 
 Exit codes (the maintainer's ruled contract, identical on both surfaces): a
 WARN never blocks (exit 0), a FAIL exits non-zero - doctor is a chainable
