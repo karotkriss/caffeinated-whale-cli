@@ -47,14 +47,7 @@ def ensure_cache_dir() -> None:
     """
     if config_utils.cache_disabled():
         return
-    CACHE_DIR.mkdir(parents=True, mode=shared_home.dir_mode(0o700), exist_ok=True)
-    try:
-        CACHE_DIR.chmod(shared_home.dir_mode(0o700))
-        shared_home.apply_group(CACHE_DIR)
-    except (OSError, PermissionError):
-        # On Windows or restricted filesystems, chmod may fail
-        # Still proceed but permissions may not be as strict
-        pass
+    shared_home.ensure_private_dir(CACHE_DIR)
 
 
 db = SqliteDatabase(_MEMORY_DB if config_utils.cache_disabled() else DB_PATH)

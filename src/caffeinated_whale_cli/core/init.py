@@ -42,7 +42,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..utils import config_utils
+from ..utils import config_utils, shared_home
 from ..utils.port_utils import check_ports_in_use, format_port_list
 from . import credbridge, resolvers
 from . import docker as core_docker
@@ -448,7 +448,7 @@ def _write_bench_tag_cache(tag: str) -> None:
     """Best-effort cache write; a write failure must never break init."""
     try:
         path = _bench_tag_cache_file()
-        path.parent.mkdir(parents=True, exist_ok=True)
+        shared_home.ensure_private_dir(path.parent)
         path.write_text(json.dumps({"tag": tag, "checked_at": time.time()}))
     except Exception:
         pass

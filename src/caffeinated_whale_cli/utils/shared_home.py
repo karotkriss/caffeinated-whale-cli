@@ -174,6 +174,18 @@ def apply_group(path: Path | str) -> None:
         os.chown(path, -1, group_id)
 
 
+def ensure_private_dir(path: Path) -> None:
+    """Create ``path`` owner-only (``0700``; setgid group-writable in shared mode).
+
+    Idempotent: re-asserts the mode and group on an existing dir. Best-effort on
+    the chmod/chgrp, since Windows and restricted filesystems may refuse them.
+    """
+    path.mkdir(parents=True, mode=dir_mode(0o700), exist_ok=True)
+    with contextlib.suppress(OSError):
+        os.chmod(path, dir_mode(0o700))
+        apply_group(path)
+
+
 def secure_dir_shared_only(path: Path | str) -> None:
     """Setgid group-writable + cwcli group, in SHARED mode only.
 
