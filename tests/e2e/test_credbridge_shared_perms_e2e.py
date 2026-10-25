@@ -159,4 +159,4 @@ def test_shared_mode_shim_is_readable_and_runnable_by_the_remapped_frappe_uid(
         finally:
             os.umask(old_umask)
     finally:
-        container.remove(force=True)
+        container.remove(v=True, force=True)

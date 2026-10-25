@@ -210,6 +210,40 @@ def test_backstop_sweeps_leaked_container(_docker_gate):
         harness.sweep_cwe2e(only=leaked)
 
 
+def test_backstop_sweep_removes_a_leaked_containers_anonymous_volume(_docker_gate):
+    """`docker rm -f` without `-v` leaves a container's ANONYMOUS volumes behind
+    (a bare `mariadb` image declares VOLUME /var/lib/mysql; ~4.5 GB leaked in a day).
+    They carry no compose-project label, so the sweep's labelled volume pass can
+    never find them - removing them with their container is the only way."""
+    leaked = harness.project_name("anonvol")
+    label = f"com.docker.compose.project={leaked}"
+    subprocess.run(
+        ["docker", "run", "-d", "--label", label, "--name", f"{leaked}-c", "-v", "/anon", "busybox"]
+        + ["sleep", "600"],
+        check=True,
+        capture_output=True,
+    )
+    mounts = subprocess.run(
+        ["docker", "inspect", "-f", "{{range .Mounts}}{{.Name}}{{end}}", f"{leaked}-c"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert mounts, "precondition: the container must own an anonymous volume"
+    try:
+        harness.sweep_cwe2e(only=leaked)
+        survivors = subprocess.run(
+            ["docker", "volume", "ls", "-q", "--filter", f"name={mounts}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.split()
+        assert survivors == [], f"the sweep leaked the anonymous volume {survivors}"
+    finally:
+        harness.sweep_cwe2e(only=leaked)
+        subprocess.run(["docker", "volume", "rm", "-f", mounts], capture_output=True)
+
+
 def test_reclaim_root_owned_makes_teardown_removable(_docker_gate, tmp_path):
     """Reproduce the exact leak - the Docker daemon (root) writing a root-owned
     path into a bind-mounted host dir - and prove ``reclaim_root_owned`` lets the
