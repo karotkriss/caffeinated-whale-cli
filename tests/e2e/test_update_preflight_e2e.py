@@ -387,6 +387,7 @@ def test_a_frappe_major_upgrade_upstream_refuses_and_bench_would_stop_on_it(next
     major_row = "blocker,frappe.major_upgrade,frappe,null,"
     assert any(row.startswith(major_row) for row in rows), rows
     assert f"cwcli run {inst.name} -i update --reset" in result.stdout
+    assert "skips cwcli's data-loss guard" in result.stdout
     # The bump is the only thing wrong: no other blocker on a healthy real bench.
     blockers = [row for row in rows if row.startswith("blocker,")]
     assert all(row.startswith(major_row) for row in blockers), blockers
