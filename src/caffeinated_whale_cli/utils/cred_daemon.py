@@ -663,6 +663,7 @@ def _bootstrap_source(module_path: str) -> str:
     so Windows backslashes survive."""
     return (
         "import sys\n"
+        "sys.path[:] = [p for p in sys.path if p]\n"
         f"sys.path.insert(0, {module_path!r})\n"
         "from caffeinated_whale_cli.utils.cred_daemon import "
         "_write_pid_file, _log, _run_daemon_loop\n"

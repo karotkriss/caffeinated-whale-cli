@@ -183,6 +183,7 @@ def _bootstrap_source(module_path: str, interval: int) -> str:
     """
     return (
         "import sys\n"
+        "sys.path[:] = [p for p in sys.path if p]\n"
         f"sys.path.insert(0, {module_path!r})\n"
         "import signal\n"
         "from caffeinated_whale_cli.utils.auto_inspect import "
