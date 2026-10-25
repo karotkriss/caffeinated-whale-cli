@@ -28,7 +28,8 @@ def _docker():
 
 
 def _output(proc) -> str:
-    return harness.strip_ansi((proc.stdout or "") + (proc.stderr or ""))
+    # flattened: the human surface's Rich console wraps long lines mid-message
+    return " ".join(harness.strip_ansi((proc.stdout or "") + (proc.stderr or "")).split())
 
 
 def _remove_network_of(project: str) -> str:
