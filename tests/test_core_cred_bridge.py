@@ -264,6 +264,21 @@ class TestStart:
         assert cfg.calls["start"] == 0
 
 
+class TestBootUnitRepairFailure:
+    def test_a_failed_unit_repair_is_a_warning_over_a_started_daemon(self, cfg, monkeypatch):
+        cfg.enabled = True
+
+        def _fail(unit=None):
+            raise OSError("systemctl daemon-reload failed")
+
+        monkeypatch.setattr(startup, "repair_startup", _fail)
+        for verb in (core_cred.start, core_cred.restart, core_cred.enable):
+            result = verb()
+            assert result.status is Status.WARNING
+            assert [w.code for w in result.warnings] == ["startup.repair_failed"]
+            assert result.data.state.daemon_running is True
+
+
 class TestRestart:
     def test_restarts_a_running_daemon(self, cfg):
         cfg.enabled = True

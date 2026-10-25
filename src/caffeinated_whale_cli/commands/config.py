@@ -32,7 +32,7 @@ from ..core import auto_inspect as core_ai
 from ..core import config as core_config
 from ..core import cred_bridge as core_cred
 from ..core.auto_inspect import AutoInspectState
-from ..core.envelope import Status
+from ..core.envelope import Message, Status
 from ..core.errors import CwcliError, ErrorKind
 from ..utils import auto_inspect, config_utils, db_utils, startup
 from ..utils.console import console, stderr_console
@@ -867,9 +867,12 @@ def start_auto_inspect(
     try:
         if auto_inspect.is_running():
             actions: list[str] = []
-            core_ai.repair_boot_hook(actions)
+            warnings: list[Message] = []
+            core_ai.repair_boot_hook(actions, warnings)
             console.print("[yellow]Auto-inspect background process is already running.[/yellow]")
             console.print(f"[cyan]Process ID: {auto_inspect.get_pid()}[/cyan]")
+            for warning in warnings:
+                console.print(f"[yellow]Warning: {warning.text}[/yellow]")
             return
 
         config = config_utils.get_auto_inspect_config()
@@ -879,8 +882,10 @@ def start_auto_inspect(
             )
             raise typer.Exit(code=1)
 
-        core_ai.start()
+        result = core_ai.start()
         console.print("[green]Auto-inspect background process started.[/green]")
+        for warning in result.warnings:
+            console.print(f"[yellow]Warning: {warning.text}[/yellow]")
         console.print(
             f"[cyan]Running projects will be inspected every {config['interval']} seconds.[/cyan]"
         )
