@@ -693,15 +693,15 @@ def test_apps_checkout_forwards_reset_only_as_the_json_boolean_true(monkeypatch)
 
 def test_a_failed_job_records_its_plain_cause(fake_spawn, monkeypatch):
     record = jobs.create_job("rm-site", {"project": "p", "site": "s.localhost"}, {})
-
-    @dataclass(frozen=True)
-    class DropSiteOutput:
-        stream: str
-        text: str
+    denied = "(1045, \"Access denied for user 'root'@'x'\")"
 
     def dispatch(_verb, _target, _args, _consent, _secrets, emit):
-        emit(DropSiteOutput(stream="stderr", text="(1045, \"Access denied for user 'root'@'x'\")"))
-        raise CwcliError(jobs.ErrorKind.PRECONDITION, "rm_site.failed", "drop-site exited 1")
+        raise CwcliError(
+            jobs.ErrorKind.PRECONDITION,
+            "rm_site.failed",
+            "drop-site exited 1",
+            detail={"output": denied},
+        )
 
     monkeypatch.setattr(jobs, "_dispatch", dispatch)
 
@@ -711,15 +711,40 @@ def test_a_failed_job_records_its_plain_cause(fake_spawn, monkeypatch):
     assert failed["cause"]["title"] == "MariaDB rejected the root password"
 
 
-def test_a_failed_report_records_its_cause_and_a_success_none(fake_spawn, monkeypatch):
-    @dataclass(frozen=True)
-    class AppsOutput:
-        stream: str
-        text: str
+@dataclass(frozen=True)
+class _StepOutput:
+    stream: str
+    text: str
 
+
+_BENIGN_EARLIER_OUTPUT = (
+    "Error 111 connecting to redis-cache:6379. Retrying...\n"
+    "Temporary failure in name resolution, retrying pip download\n"
+)
+
+
+def test_an_earlier_steps_benign_output_never_becomes_a_failed_jobs_cause(fake_spawn, monkeypatch):
+    record = jobs.create_job("init", {"project": "p"}, {})
+
+    def dispatch(_verb, _target, _args, _consent, _secrets, emit):
+        emit(_StepOutput(stream="stderr", text=_BENIGN_EARLIER_OUTPUT))
+        raise CwcliError(
+            jobs.ErrorKind.PRECONDITION,
+            "init.exec_failed",
+            "Command failed with exit code 1: bench migrate",
+            detail={"output": "KeyError: 'patch_field'"},
+        )
+
+    monkeypatch.setattr(jobs, "_dispatch", dispatch)
+
+    assert jobs.run_job(record["id"]) == 1
+    assert jobs.read_job(record["id"])["cause"] is None
+
+
+def test_a_failed_report_records_no_cause_from_earlier_output(fake_spawn, monkeypatch):
     def dispatch_with(ok):
         def dispatch(_verb, _target, _args, _consent, _secrets, emit):
-            emit(AppsOutput(stream="stderr", text="fatal: could not read Username for 'x'"))
+            emit(_StepOutput(stream="stderr", text=_BENIGN_EARLIER_OUTPUT))
             return Result(status=Status.WARNING, data={"ok": ok})
 
         return dispatch
@@ -727,7 +752,7 @@ def test_a_failed_report_records_its_cause_and_a_success_none(fake_spawn, monkey
     failed = jobs.create_job("backup", {"project": "p"}, {})
     monkeypatch.setattr(jobs, "_dispatch", dispatch_with(False))
     assert jobs.run_job(failed["id"]) == 1
-    assert jobs.read_job(failed["id"])["cause"]["code"] == "git.auth_failed"
+    assert jobs.read_job(failed["id"])["cause"] is None
 
     succeeded = jobs.create_job("backup", {"project": "q"}, {})
     monkeypatch.setattr(jobs, "_dispatch", dispatch_with(True))
