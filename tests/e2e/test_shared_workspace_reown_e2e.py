@@ -169,7 +169,7 @@ def test_shared_mode_reowns_an_app_repo_symlinked_out_of_the_bench(tmp_path, mon
         code, out = _git_status_dubious(container, host_uid)
         assert code == 0, f"git still refuses the app repo after align (exit {code}):\n{out}"
     finally:
-        container.remove(force=True)
+        container.remove(v=True, force=True)
 
 
 def test_force_reown_clears_dubious_ownership_on_a_git_repo(tmp_path, monkeypatch):
@@ -196,9 +196,9 @@ def test_force_reown_clears_dubious_ownership_on_a_git_repo(tmp_path, monkeypatc
 
         # Precondition: git as frappe refuses the stranded app repo.
         code, out = _git_status_dubious(container, host_uid)
-        assert code != 0 and "dubious ownership" in out, (
-            f"precondition not reproduced (exit {code}):\n{out}"
-        )
+        assert (
+            code != 0 and "dubious ownership" in out
+        ), f"precondition not reproduced (exit {code}):\n{out}"
 
         # The exact call `apps update --force` makes, on the symlinked app path.
         reowned, err = core_docker.reown_app_repo_to_frappe(container, _APP_LINK)
@@ -214,7 +214,7 @@ def test_force_reown_clears_dubious_ownership_on_a_git_repo(tmp_path, monkeypatc
         reowned, err = core_docker.reown_app_repo_to_frappe(container, _APP_LINK)
         assert (reowned, err) == (False, None)
     finally:
-        container.remove(force=True)
+        container.remove(v=True, force=True)
 
 
 def test_shared_mode_remap_keeps_a_migrated_workspace_writable(tmp_path, monkeypatch):
@@ -275,7 +275,7 @@ def test_shared_mode_remap_keeps_a_migrated_workspace_writable(tmp_path, monkeyp
             code == 0 and "bench-start-log" in out
         ), f"remapped frappe user could not write {_LOG} (exit {code}):\n{out}"
     finally:
-        container.remove(force=True)
+        container.remove(v=True, force=True)
 
 
 def test_shared_mode_recovers_a_v3_1_0_armed_instance_in_place(tmp_path, monkeypatch):
@@ -332,4 +332,4 @@ def test_shared_mode_recovers_a_v3_1_0_armed_instance_in_place(tmp_path, monkeyp
             code == 0 and "bench-start-log" in out
         ), f"frappe user could not write {_LOG} after recovery (exit {code}):\n{out}"
     finally:
-        container.remove(force=True)
+        container.remove(v=True, force=True)
