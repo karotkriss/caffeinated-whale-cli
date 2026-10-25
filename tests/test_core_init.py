@@ -1392,13 +1392,16 @@ class TestDbRootPassword:
         notices = [e.code for e in events if isinstance(e, core_init.InitNotice)]
         assert "init.db_password_not_applied" in notices
 
-    def test_unknown_database_state_leaves_the_compose_and_secret_alone(
+    def test_unknown_database_state_refuses_rather_than_starting_mariadb_with_123(
         self, monkeypatch, tmp_path, patched
     ):
         s = _fresh_compose(monkeypatch, tmp_path, volume_exists=None)
-        core_init.init_instance(PROJECT, port=18000, db_root_password="Ch0sen-pw")
+        with pytest.raises(CwcliError) as exc:
+            core_init.init_instance(PROJECT, port=18000, db_root_password="Ch0sen-pw")
 
-        assert "MYSQL_ROOT_PASSWORD: 123" in s.compose_path.read_text()
+        assert exc.value.kind is ErrorKind.DOCKER
+        assert exc.value.code == "init.db_state_unknown"
+        assert not s.compose_path.exists()
         assert not (s.compose_path.parent / "db-root-password").exists()
 
     def test_unsupported_template_leaves_no_compose_so_the_retry_is_a_fresh_instance(
