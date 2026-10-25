@@ -323,19 +323,56 @@ class TestHookCommand:
 
         assert agent_hooks.hook_command() == f"{binary} axi"
 
-    def test_an_empty_argv_still_yields_a_usable_command(self, monkeypatch):
+    def test_an_empty_argv_still_yields_a_usable_command(self, tmp_path, monkeypatch):
         """Never write a hook command of `" axi"`; fall back to the bare name."""
         monkeypatch.setattr(agent_hooks.sys, "argv", [""])
+        monkeypatch.setattr(agent_hooks.sys, "executable", str(tmp_path / "python"))
         monkeypatch.setattr(agent_hooks.shutil, "which", lambda _: None)
 
         assert agent_hooks.hook_command() == "cwcli axi"
 
     def test_a_vanished_executable_does_not_crash_the_samefile_probe(self, tmp_path, monkeypatch):
         """`which` can name a path that is gone by the time we stat it."""
-        monkeypatch.setattr(agent_hooks.sys, "argv", [str(tmp_path / "gone")])
+        monkeypatch.setattr(agent_hooks.sys, "argv", [str(tmp_path / "cwcli")])
         monkeypatch.setattr(agent_hooks.shutil, "which", lambda _: str(tmp_path / "also-gone"))
 
-        assert agent_hooks.hook_command() == f"{tmp_path / 'gone'} axi"
+        assert agent_hooks.hook_command() == f"{tmp_path / 'cwcli'} axi"
+
+    def test_a_python_m_daemon_installs_the_console_script_not_main_py(
+        self, tmp_path, monkeypatch
+    ):
+        """`cwcli ui` runs its daemon as `python -m caffeinated_whale_cli`, so argv[0]
+        is `__main__.py`; a hook pointing there cannot run and would replace a working one."""
+        home = _home(tmp_path / "home")
+        settings = home / ".claude" / "settings.json"
+        agent_hooks.install("cwcli axi", home=home)
+        binary = tmp_path / "bin" / "cwcli"
+        binary.parent.mkdir()
+        binary.write_text("#!/bin/sh\n")
+        main_py = tmp_path / "caffeinated_whale_cli" / "__main__.py"
+        main_py.parent.mkdir()
+        main_py.write_text("")
+        monkeypatch.setattr(agent_hooks.sys, "argv", [str(main_py)])
+        monkeypatch.setattr(agent_hooks.shutil, "which", lambda _: str(binary))
+
+        outcomes = agent_hooks.install(home=home)
+
+        assert _status(outcomes, "claude-code") == "unchanged"
+        assert [h["command"] for g in _session_start(settings) for h in g["hooks"]] == [
+            "cwcli axi"
+        ]
+
+    def test_a_python_m_daemon_off_path_pins_the_venv_console_script(
+        self, tmp_path, monkeypatch
+    ):
+        venv_bin = tmp_path / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        (venv_bin / "cwcli").write_text("#!/bin/sh\n")
+        monkeypatch.setattr(agent_hooks.sys, "argv", [str(tmp_path / "__main__.py")])
+        monkeypatch.setattr(agent_hooks.sys, "executable", str(venv_bin / "python"))
+        monkeypatch.setattr(agent_hooks.shutil, "which", lambda _: None)
+
+        assert agent_hooks.hook_command() == f"{(venv_bin / 'cwcli').resolve()} axi"
 
 
 class TestIsCwcliHook:
