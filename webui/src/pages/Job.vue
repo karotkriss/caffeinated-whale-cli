@@ -186,7 +186,7 @@ async function continueChoice(value) {
             <div v-else :class="['grid grid-cols-[5rem_minmax(0,1fr)] gap-3 px-3 sm:grid-cols-[5.5rem_9rem_minmax(0,1fr)]', firstLine(item) && 'pt-2.5', lastLine(item) && 'pb-2.5', lastLine(item) && !isLast(index) && 'border-b border-outline-gray-1']">
               <span class="whitespace-nowrap font-mono text-xs leading-5 tabular-nums text-ink-gray-4">{{ firstLine(item) ? time(item.block.at) : '' }}</span>
               <span class="hidden font-mono text-xs leading-5 text-ink-gray-5 sm:block">{{ firstLine(item) ? 'output' : '' }}</span>
-              <span class="min-w-0 whitespace-pre-wrap break-words font-mono text-xs leading-5 text-ink-gray-7">{{ lineText(item) }}</span>
+              <span class="min-h-5 min-w-0 whitespace-pre-wrap break-words font-mono text-xs leading-5 text-ink-gray-7">{{ lineText(item) }}</span>
             </div>
           </template>
         </FollowPane>

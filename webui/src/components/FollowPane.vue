@@ -18,8 +18,6 @@ import { nextFollowing } from '../data/follow'
 
 const props = defineProps({
   items: { type: Array, required: true },
-  // A one-line row; a wrapped or padded row corrects itself once measured.
-  estimateHeight: { type: Number, default: 20 },
 })
 const pane = ref(null)
 const body = ref(null)
@@ -31,7 +29,8 @@ const virtualizer = useVirtualizer(
   computed(() => ({
     count: props.items.length,
     getScrollElement: () => pane.value,
-    estimateSize: () => props.estimateHeight,
+    // A one-line row; a wrapped or padded row corrects itself once measured.
+    estimateSize: () => 20,
     overscan: 20,
   })),
 )

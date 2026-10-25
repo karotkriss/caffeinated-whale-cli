@@ -92,8 +92,8 @@ onBeforeUnmount(() => clearInterval(timer))
     <FollowPane v-else-if="items.length" :items="items" class="max-h-[60vh] rounded-6 border border-outline-gray-1 bg-surface-gray-1 py-2">
       <template #default="{ item }">
         <div class="flex gap-3 px-3 font-mono text-xs leading-5">
-          <span v-if="filter === 'all'" class="w-28 shrink-0 truncate text-ink-gray-5">{{ item.p }}</span>
-          <span class="min-w-0 whitespace-pre-wrap break-words text-ink-gray-8">{{ item.text }}</span>
+          <span v-if="filter === 'all'" class="w-28 shrink-0 break-words text-ink-gray-5">{{ item.p }}</span>
+          <span class="min-h-5 min-w-0 whitespace-pre-wrap break-words text-ink-gray-8">{{ item.text }}</span>
         </div>
       </template>
     </FollowPane>
