@@ -387,7 +387,7 @@ def sweep_cwe2e(only: str | None = None) -> list[str]:
         filt = f"label=com.docker.compose.project={proj}"
         ids = _docker("ps", "-aq", "--filter", filt).stdout.split()
         if ids:
-            _docker("rm", "-f", *ids, timeout=300)
+            _docker("rm", "-f", "-v", *ids, timeout=300)
         vols = _docker("volume", "ls", "-q", "--filter", filt).stdout.split()
         if vols:
             _docker("volume", "rm", "-f", *vols, timeout=300)
@@ -397,6 +397,7 @@ def sweep_cwe2e(only: str | None = None) -> list[str]:
     return swept
 
 
+# `rm -f -v` above also drops each container's ANONYMOUS volumes (no compose label to find them by).
 # NOTE: no broad `docker system prune` lives here on purpose. This harness also
 # runs on the operator's own machine, where a system-wide prune would remove
 # THEIR stopped containers / dangling images. sweep_cwe2e is deliberately scoped
