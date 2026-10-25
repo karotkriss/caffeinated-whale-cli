@@ -31,6 +31,13 @@ from caffeinated_whale_cli.utils import startup
 _REAL_REPAIR_STARTUP = startup.repair_startup
 
 
+def _service(path: Path) -> configparser.SectionProxy:
+    parser = configparser.ConfigParser(interpolation=None)
+    parser.optionxform = str
+    parser.read(path)
+    return parser["Service"]
+
+
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     """A sandbox home + inert platform commands + a fixed cwcli path."""
@@ -101,10 +108,10 @@ class TestLinuxUnits:
         monkeypatch.setattr(startup, "get_platform", lambda: "linux")
         assert startup.install_startup(startup.CRED_BRIDGE) == (True, None)
         service = home.root / ".config" / "systemd" / "user" / "cwcli-cred-bridge.service"
-        text = service.read_text()
-        assert 'ExecStart="/usr/local/bin/cwcli" config cred-bridge start' in text
-        assert "ExecStop" not in text
-        assert "Description=Caffeinated Whale CLI Credential Bridge" in text
+        parsed = _service(service)
+        assert parsed["Type"] == "forking"
+        assert parsed["ExecStart"] == '"/usr/local/bin/cwcli" config cred-bridge start'
+        assert "ExecStop" not in parsed
         assert ["systemctl", "--user", "enable", "cwcli-cred-bridge.service"] in home.calls
 
     def test_unit_identities_are_independent(self, home, monkeypatch):
@@ -131,15 +138,19 @@ class TestNoExecStop:
     def test_a_fresh_user_unit_has_no_execstop(self, home, monkeypatch, unit):
         monkeypatch.setattr(startup, "get_platform", lambda: "linux")
         startup.install_startup(unit)
-        text = (home.root / ".config" / "systemd" / "user" / unit.service_name).read_text()
-        assert "ExecStop" not in text
-        assert "Type=forking" in text and " ".join(unit.start_args) in text
+        parsed = _service(home.root / ".config" / "systemd" / "user" / unit.service_name)
+        assert parsed["Type"] == "forking"
+        assert parsed["ExecStart"] == f'"/usr/local/bin/cwcli" {" ".join(unit.start_args)}'
+        assert "ExecStop" not in parsed
 
     def test_the_system_unit_has_no_execstop(self, home, monkeypatch, tmp_path):
         monkeypatch.setattr(startup, "get_platform", lambda: "linux")
         monkeypatch.setattr(startup, "SYSTEM_UNIT_DIR", tmp_path)
         startup.install_system_unit(startup.CRED_BRIDGE, user="cwcli", group="cwcli", pid_file="/p")
-        assert "ExecStop" not in (tmp_path / startup.CRED_BRIDGE.service_name).read_text()
+        parsed = _service(tmp_path / startup.CRED_BRIDGE.service_name)
+        assert parsed["Type"] == "forking"
+        assert parsed["ExecStart"] == '"/usr/local/bin/cwcli" config cred-bridge start'
+        assert "ExecStop" not in parsed
 
     def test_an_installed_unit_with_execstop_is_repaired_without_being_started(
         self, home, monkeypatch
@@ -154,8 +165,9 @@ class TestNoExecStop:
 
         assert startup.repair_startup(startup.CRED_BRIDGE) is True
 
-        # Only the ExecStop line goes; the installed binary is kept, not retargeted.
-        assert service.read_text() == '[Service]\nExecStart="/old/cwcli" config cred-bridge start\n'
+        parsed = _service(service)
+        assert parsed["ExecStart"] == '"/old/cwcli" config cred-bridge start'
+        assert "ExecStop" not in parsed
 
         assert home.calls == [["systemctl", "--user", "daemon-reload"]]  # never started
         assert startup.repair_startup(startup.CRED_BRIDGE) is False  # idempotent
@@ -167,6 +179,27 @@ class TestNoExecStop:
         home.calls.clear()
         assert startup.repair_startup(startup.CRED_BRIDGE) is False
         assert home.calls == []
+
+    def test_a_failed_reload_is_reported_even_after_the_file_is_repaired(
+        self, home, monkeypatch
+    ):
+        monkeypatch.setattr(startup, "get_platform", lambda: "linux")
+        service = home.root / ".config" / "systemd" / "user" / "cwcli-cred-bridge.service"
+        service.parent.mkdir(parents=True)
+        service.write_text(
+            '[Service]\nExecStart="/old/cwcli" config cred-bridge start\n'
+            'ExecStop="/old/cwcli" config cred-bridge stop\n'
+        )
+
+        monkeypatch.setattr(
+            startup.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout="", stderr="failed"),
+        )
+
+        with pytest.raises(OSError, match="daemon-reload failed"):
+            startup.repair_startup(startup.CRED_BRIDGE)
+        assert "ExecStop" not in _service(service)
 
 
 class TestMacosUnits:

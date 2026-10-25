@@ -612,6 +612,8 @@ def _run_daemon_loop() -> None:
     else:
         _log("credential-bridge daemon serving AF_UNIX sockets")
 
+    _write_pid_file()
+    _log("credential-bridge daemon started")
     last_registry: dict[str, str] | None = None
     while not stop.is_set():
         try:
@@ -666,9 +668,7 @@ def _bootstrap_source(module_path: str) -> str:
         "sys.path[:] = [p for p in sys.path if p]\n"
         f"sys.path.insert(0, {module_path!r})\n"
         "from caffeinated_whale_cli.utils.cred_daemon import "
-        "_write_pid_file, _log, _run_daemon_loop\n"
-        "_write_pid_file()\n"
-        '_log("credential-bridge daemon started")\n'
+        "_run_daemon_loop\n"
         "_run_daemon_loop()\n"
     )
 

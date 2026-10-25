@@ -866,9 +866,10 @@ def start_auto_inspect(
     _warn_deprecated("cwcli config auto-inspect start", "cwcli config auto-inspect enable")
     try:
         if auto_inspect.is_running():
+            actions: list[str] = []
+            core_ai.repair_boot_hook(actions)
             console.print("[yellow]Auto-inspect background process is already running.[/yellow]")
-            pid = auto_inspect.get_pid()
-            console.print(f"[cyan]Process ID: {pid}[/cyan]")
+            console.print(f"[cyan]Process ID: {auto_inspect.get_pid()}[/cyan]")
             return
 
         config = config_utils.get_auto_inspect_config()
@@ -878,7 +879,7 @@ def start_auto_inspect(
             )
             raise typer.Exit(code=1)
 
-        auto_inspect.start_daemon()
+        core_ai.start()
         console.print("[green]Auto-inspect background process started.[/green]")
         console.print(
             f"[cyan]Running projects will be inspected every {config['interval']} seconds.[/cyan]"

@@ -187,11 +187,9 @@ def _bootstrap_source(module_path: str, interval: int) -> str:
         f"sys.path.insert(0, {module_path!r})\n"
         "import signal\n"
         "from caffeinated_whale_cli.utils.auto_inspect import "
-        "_write_pid_file, _log, _run_service_loop, _handle_sigterm\n"
+        "_run_service_loop, _handle_sigterm\n"
         "signal.signal(signal.SIGTERM, _handle_sigterm)\n"
         "signal.signal(signal.SIGINT, _handle_sigterm)\n"
-        "_write_pid_file()\n"
-        f'_log("Auto-inspect service started (interval: {interval}s)")\n'
         f"_run_service_loop({interval})\n"
     )
 
@@ -256,6 +254,10 @@ def _write_pid_file():
 
 def _run_service_loop(interval: int):
     """Run the main service loop."""
+    if interval <= 0:
+        raise ValueError("auto-inspect interval must be positive")
+    _write_pid_file()
+    _log(f"Auto-inspect service started (interval: {interval}s)")
     while True:
         try:
             _run_inspection_cycle()

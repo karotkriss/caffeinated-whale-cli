@@ -624,6 +624,20 @@ def test_a_daemon_that_dies_at_startup_is_reported_not_started(run_dir, monkeypa
     assert not cred_daemon.is_running()
 
 
+def test_transport_failure_happens_before_readiness_is_published(run_dir, monkeypatch):
+    class BrokenSocket:
+        def bind(self, address):
+            raise OSError("bind failed")
+
+    monkeypatch.setattr(credbridge, "_prefer_tcp", lambda: True)
+    monkeypatch.setattr(cred_daemon.socket, "socket", lambda *args, **kwargs: BrokenSocket())
+
+    with pytest.raises(OSError, match="bind failed"):
+        cred_daemon._run_daemon_loop()
+
+    assert not cred_daemon.PID_FILE.exists()
+
+
 def test_a_daemon_that_never_comes_up_times_out_loudly(run_dir, monkeypatch):
     """A child that stays alive but never writes its pid file is a failure too,
     and is killed so a retry cannot race it into a rival daemon."""
