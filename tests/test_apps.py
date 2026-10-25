@@ -1160,6 +1160,35 @@ def test_update_frappe_unchecked_local_work_refuses_without_claiming_a_loss(monk
     ) in out
 
 
+def test_update_frappe_mixed_local_work_names_unchecked_apps_apart(monkeypatch, capsys):
+    container = FakeFrappeContainer(available_apps=["frappe"])
+    _wire_update(monkeypatch, container)
+    _arm_preflight(
+        monkeypatch,
+        ("data_loss", "git.unpushed", "ahead"),
+        ("unverified", "git.local_work_unverified", "timedout"),
+    )
+
+    with pytest.raises(typer.Exit):
+        update_mod.run_app_update("proj", ["frappe"], verbose=False)
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert (
+        "Refusing to start: 'bench update --reset' would discard local work in ahead; "
+        "cwcli could not check for local work 'bench update --reset' would discard in "
+        "timedout, so it did not run."
+    ) in out
+
+    update_mod.run_app_update("proj", ["frappe"], verbose=False, force=True)
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert "--force let 'bench update --reset' discard local work in 1 app(s): ahead" in out
+    assert (
+        "--force let 'bench update --reset' reset 1 app(s) whose local work could not be "
+        "checked: timedout"
+    ) in out
+
+
 def test_update_frappe_clean_local_work_check_says_so_under_no_preflight(monkeypatch, capsys):
     container = FakeFrappeContainer(available_apps=["frappe"])
     _wire_update(monkeypatch, container)
