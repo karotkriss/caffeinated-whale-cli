@@ -197,6 +197,11 @@ def test_clustered_shorts_drive_the_lifecycle_and_never_synthesise_consent(port_
         harness.wait_for_site_ready(project, site)
 
         # The attached form: -pweb is --process web, so ONE program cycles.
+        harness.wait_until(
+            lambda: _supervisord_pid(project, "web") is not None,
+            timeout=120,
+            desc="web program running",
+        )
         web_before = _supervisord_pid(project, "web")
         assert web_before, "web must be up before the attached-short restart"
         restarted = harness.run_cwcli("restart", project, "-pweb")
