@@ -44,6 +44,8 @@ envelope frappe-ui's fetch layer reads natively (``type`` is the core's
 * ``GET /api/v1/cache``                     - the cache inventory (remembered projects)
 * ``GET /api/v1/search?q=<term>``           - ``core.where``, its per-row
   ``project_state`` verified/remembered token passed through unchanged
+* ``GET /api/v1/jobs[/<id>]``               - durable detached job summaries
+  and one job's resumable event log
 * ``GET /api/v1/stream[?focus=<project>]``  - SSE: one ``snapshot`` event, then
   ``delta`` events tagged ``tier: instant|fast``; one stream per tab, every
   frame numbered with an ``id`` so ``Last-Event-ID`` reconnects are honest
@@ -52,18 +54,13 @@ envelope frappe-ui's fetch layer reads natively (``type`` is the core's
   (JSON ``{"code": ...}``) or the bearer token for the browser session cookie
 * ``POST /api/v1/session/code``             - mint a fresh one-time login code
   (bearer token ONLY; how ``cwcli ui`` signs a second browser in)
-* ``POST /api/v1/actions``                  - the synchronous safe set (the
-  captain's Tier A ruling, 2026-07-24, plus Phase 1's bench verbs): start/stop/
-  restart one instance or one bench, stop one bench, restart one supervised
-  process, refresh one instance's health, set a bench label, unlock a site,
-  take a site out of maintenance, scale the published port range (consent is
-  CORE-enforced: ``core.scale`` returns ``NEEDS_CHOICE``/``confirm_scale`` which
-  this daemon renders as ``409 needs_choice``), and ``apps checkout`` in its
-  no-reset form ONLY (the ``reset`` flag - checkout's one destructive element -
-  is never read from the request). Long-running verbs (init, backup, apps
-  install/update, migrate, run-tests, build, rm, rm-site) wait on the job
-  backend (Phase 2); restore/uninstall/run/open/config mutations are deferred
-  per-verb captain decisions. Neither group may grow an action name here.
+* ``POST /api/v1/jobs``                     - create one detached long-running
+  job; passwords travel only to the child environment and never enter its spec
+* ``POST /api/v1/jobs/<id>/interrupt``      - request a cleanup-aware interrupt
+* ``POST /api/v1/jobs/<id>/detach``         - leave the durable job running
+* ``POST /api/v1/actions``                  - the Phase 1 compatibility endpoint;
+  the Phase 2 page sends lifecycle work to jobs, while older built pages keep
+  their original guarded behavior until they reload
 
 ``?focus=<project>`` is how the browser says which instance it currently has
 open, and it is the whole mechanism behind the web-probe cadence: the SSE
@@ -167,6 +164,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import typer
 
 from .. import __version__
+from .. import jobs as core_jobs
 from ..core import apps as core_apps
 from ..core import bench_ops as core_bench_ops
 from ..core import config as core_config
@@ -185,20 +183,21 @@ from ..core import url as core_url
 from ..core import where as core_where
 from ..core.envelope import Message, Result, Status
 from ..core.errors import CwcliError, ErrorKind
-from ..utils import cache
+from ..utils import cache, daemon_identity
 from ..utils.console import console, stderr_console
-from . import start as start_cmd
 
 DEFAULT_PORT = 8765
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_INTERVAL = 2.5
 KEEPALIVE_S = 15.0
 TOKEN_ENV = "CWCLI_SERVE_TOKEN"
+SESSION_ENV = "CWCLI_SERVE_SESSION"
 SESSION_COOKIE = "cwcli_serve_session"
 # Bumped on any change a page built against an older daemon could misread, so a
 # page compares it with the number it was built for instead of parsing versions.
 # 2: the /api/v1 routes and the {data}/{errors} envelope (Phase 1).
-PROTOCOL_VERSION = 2
+# 3: durable jobs, job SSE frames, and detached lifecycle actions (Phase 2).
+PROTOCOL_VERSION = 3
 
 # Map the core's closed error kinds onto equivalent HTTP statuses.
 _HTTP_FOR_KIND = {
@@ -479,6 +478,13 @@ class _Hub:
         for q in queues:
             q.put(frame)
 
+    def publish_job(self, record: dict) -> None:
+        frame = _sse_frame("job", record, self.next_id())
+        with self._lock:
+            queues = [q for q, _f in self._clients.values()]
+        for q in queues:
+            q.put(frame)
+
     def client_count(self) -> int:
         with self._lock:
             return len(self._clients)
@@ -687,7 +693,7 @@ class _Handler(BaseHTTPRequestHandler):
         if self._refuse_foreign_host():
             return
         self.send_response(204)
-        post = urlparse(self.path).path in _POST_PATHS
+        post = _is_post_path(urlparse(self.path).path)
         self.send_header("Allow", "POST, OPTIONS" if post else "GET, OPTIONS")
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -734,6 +740,27 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_cache()
         elif path == "/api/v1/search":
             self._send_where(query)
+        elif path == "/api/v1/jobs":
+            self._send_json({"data": core_jobs.list_jobs()})
+        elif path.startswith("/api/v1/jobs/"):
+            job_id = unquote(path[len("/api/v1/jobs/") :])
+            try:
+                after = int((query.get("after") or ["0"])[0])
+                if after < 0:
+                    raise ValueError
+                record = core_jobs.read_job(job_id, include_events=True, after=after)
+            except ValueError:
+                self._send_error(
+                    400,
+                    ErrorKind.USAGE.value,
+                    "job.after_invalid",
+                    "after must be a non-negative event sequence number.",
+                )
+                return
+            except CwcliError as e:
+                self._send_core_error(e)
+                return
+            self._send_json({"data": record})
         else:
             self._send_error(404, ErrorKind.NOT_FOUND.value, "route.not_found", "not found")
 
@@ -741,7 +768,7 @@ class _Handler(BaseHTTPRequestHandler):
         if self._refuse_foreign_host():
             return
         parsed = urlparse(self.path)
-        if parsed.path not in _POST_PATHS:
+        if not _is_post_path(parsed.path):
             self._send_error(404, ErrorKind.NOT_FOUND.value, "route.not_found", "not found")
             self.close_connection = True
             return
@@ -782,7 +809,12 @@ class _Handler(BaseHTTPRequestHandler):
             return
         try:
             payload = _parse_action_body(raw)
-            status, body = self._dispatch_action(payload)
+            if parsed.path == "/api/v1/actions":
+                status, body = self._dispatch_action(payload)
+            elif parsed.path == "/api/v1/jobs":
+                status, body = self._create_job(payload)
+            else:
+                status, body = self._control_job(parsed.path)
         except CwcliError as e:
             self._send_core_error(e)
             return
@@ -790,6 +822,66 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_error(500, ErrorKind.INTERNAL.value, "action.internal_error", str(e))
             return
         self._send_json(body, status=status)
+
+    def _create_job(self, payload: dict) -> tuple[int, dict]:
+        verb = _required_str(payload, "verb")
+        target = payload.get("target") or {}
+        args = payload.get("args") or {}
+        secret_values = payload.get("secrets") or {}
+        if not isinstance(target, dict) or not isinstance(args, dict):
+            raise CwcliError(
+                ErrorKind.USAGE,
+                "job.payload_invalid",
+                "Job target and args must be JSON objects.",
+            )
+        if not isinstance(secret_values, dict) or any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in secret_values.items()
+        ):
+            raise CwcliError(
+                ErrorKind.USAGE,
+                "job.secrets_invalid",
+                "Job secrets must be a JSON object containing string values.",
+            )
+        unknown_secrets = set(secret_values) - {"admin_password", "db_root_password"}
+        if unknown_secrets:
+            raise CwcliError(
+                ErrorKind.USAGE,
+                "job.secret_unsupported",
+                "Unsupported job secret fields: " + ", ".join(sorted(unknown_secrets)) + ".",
+            )
+        pid = os.getpid()
+        if not isinstance(self.server, ThreadingHTTPServer):  # defensive type boundary
+            raise CwcliError(ErrorKind.INTERNAL, "job.server_invalid", "Invalid HTTP server.")
+        ui_context: dict[str, str | int] = {
+            "pid": pid,
+            "start": daemon_identity.process_start_time(pid) or "",
+            "port": int(self.server.server_port),
+            "token": self.token,
+            "session": self.session_id,
+        }
+        record = core_jobs.create_job(
+            verb,
+            target,
+            args,
+            consent=payload.get("consent") is True,
+            secret_values=secret_values,
+            ui_context=ui_context,
+        )
+        return 202, {"data": record}
+
+    def _control_job(self, path: str) -> tuple[int, dict]:
+        rest = path[len("/api/v1/jobs/") :]
+        job_id, separator, operation = rest.partition("/")
+        if not separator or operation not in {"interrupt", "detach"}:
+            raise CwcliError(ErrorKind.NOT_FOUND, "route.not_found", "not found")
+        job_id = unquote(job_id)
+        record = (
+            core_jobs.interrupt_job(job_id)
+            if operation == "interrupt"
+            else core_jobs.detach_job(job_id)
+        )
+        return 200, {"data": record}
 
     def _refuse_cross_origin(self) -> bool:
         """Send the 403 and return True when the request fails the same-origin check.
@@ -866,7 +958,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         with self._action_lock(project):
             if action == "start_instance":
-                _check_start_port_conflicts(project)
+                core_jobs.check_start_port_conflicts(project)
                 start_result = core_start.start(project, bench=bench)
                 self._refresh_lifecycle(project, start_result.warnings)
                 return _result_response(action, project, start_result)
@@ -919,7 +1011,7 @@ class _Handler(BaseHTTPRequestHandler):
         return self.action_locks[hash(project) % len(self.action_locks)]
 
     def _restart_instance(self, project: str, bench: str | None) -> tuple[int, dict]:
-        _check_start_port_conflicts(project)
+        core_jobs.check_start_port_conflicts(project)
         bench_result = core_resolvers.resolve_bench(project, bench, None)
         if bench_result is None:
             bench_path = core_resolvers.DEFAULT_BENCH_PATH
@@ -1234,7 +1326,11 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(
-                _sse_frame("snapshot", {"instances": self.fleet.snapshot()}, self.hub.next_id())
+                _sse_frame(
+                    "snapshot",
+                    {"instances": self.fleet.snapshot(), "jobs": core_jobs.list_jobs()},
+                    self.hub.next_id(),
+                )
             )
             self.wfile.flush()
             while True:
@@ -1250,7 +1346,16 @@ class _Handler(BaseHTTPRequestHandler):
             self.hub.unsubscribe(client_id)
 
 
-_POST_PATHS = {"/api/v1/actions", "/api/v1/session", "/api/v1/session/code"}
+_POST_PATHS = {"/api/v1/actions", "/api/v1/session", "/api/v1/session/code", "/api/v1/jobs"}
+
+
+def _is_post_path(path: str) -> bool:
+    if path in _POST_PATHS:
+        return True
+    if not path.startswith("/api/v1/jobs/"):
+        return False
+    _job_id, separator, operation = path[len("/api/v1/jobs/") :].partition("/")
+    return bool(separator and operation in {"interrupt", "detach"})
 
 
 def _parse_after(raw: str) -> dict[str, int] | None:
@@ -1425,35 +1530,6 @@ def _choice_response(action: str, project: str, result: Result) -> tuple[int, di
     )
 
 
-def _check_start_port_conflicts(project: str) -> None:
-    if start_cmd._frappe_running(project):
-        return
-    conflicting_projects, blocking_ports = start_cmd.detect_port_conflicts(project)
-    if not conflicting_projects and not blocking_ports:
-        return
-
-    parts = []
-    if conflicting_projects:
-        parts.append(
-            "Frappe instances already hold required ports: " + ", ".join(conflicting_projects) + "."
-        )
-    if blocking_ports:
-        parts.append(
-            "Host processes already hold required ports: "
-            + ", ".join(str(p) for p in blocking_ports)
-            + "."
-        )
-    raise CwcliError(
-        ErrorKind.CONFLICT,
-        "start.port_conflict",
-        " ".join(parts),
-        hint=(
-            "Free those ports first. Use the terminal `cwcli start` command if you "
-            "want interactive conflict resolution."
-        ),
-    )
-
-
 def make_server(
     host: str,
     port: int,
@@ -1461,6 +1537,7 @@ def make_server(
     hub: _Hub,
     token: str,
     login_code: str,
+    session_id: str | None = None,
 ) -> ThreadingHTTPServer:
     """Bind the HTTP server, handing the handler class its fleet, hub and credentials.
 
@@ -1476,7 +1553,7 @@ def make_server(
             "hub": hub,
             "action_locks": tuple(threading.Lock() for _ in range(_ACTION_LOCK_STRIPES)),
             "token": token,
-            "session_id": secrets.token_urlsafe(32),
+            "session_id": session_id or secrets.token_urlsafe(32),
             "login": _LoginCode(login_code),
             "remote_bind": not is_loopback(host),
         },
@@ -1573,6 +1650,12 @@ def run_daemon(
             kwargs={"on_error": _warn},
             daemon=True,
         ),
+        threading.Thread(
+            target=core_jobs.watch_loop,
+            args=(hub.publish_job, stop),
+            kwargs={"active": lambda: hub.client_count() > 0},
+            daemon=True,
+        ),
     ]
     for t in threads:
         t.start()
@@ -1580,7 +1663,13 @@ def run_daemon(
     login_code = secrets.token_urlsafe(24)
     try:
         httpd = make_server(
-            host, port, fleet, hub, env_token or secrets.token_urlsafe(32), login_code
+            host,
+            port,
+            fleet,
+            hub,
+            env_token or secrets.token_urlsafe(32),
+            login_code,
+            session_id=(os.environ.get(SESSION_ENV) or "").strip() or None,
         )
     except OSError as e:
         stderr_console.print(f"[red]Could not bind {host}:{port}: {e}[/red]")

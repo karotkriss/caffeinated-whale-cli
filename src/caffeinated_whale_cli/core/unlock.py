@@ -19,6 +19,7 @@ surface a structured list rather than an opaque byte stream.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from . import docker as core_docker
@@ -40,6 +41,30 @@ class UnlockOutcome:
     locks_path: str
     removed: list[str]
     already_unlocked: bool
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class UnlockStepStart:
+    """An unlock step began."""
+
+    phase: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class UnlockStepEnd:
+    """An unlock step finished."""
+
+    phase: str
+    status: str = "ok"
+
+
+UnlockEvent = UnlockStepStart | UnlockStepEnd
+OnEvent = Callable[[UnlockEvent], None]
+
+
+def _noop(_event: UnlockEvent) -> None:
+    """The drain-and-discard consumption mode."""
 
 
 def _decode(output) -> str:
@@ -64,11 +89,14 @@ def unlock(
     site: str | None = None,
     bench: str | None = None,
     bench_path: str | None = None,
+    on_event: OnEvent | None = None,
 ) -> Result[UnlockOutcome]:
     """Remove ``{bench_path}/sites/{site}/locks``. See the module docstring."""
     warnings: list[Message] = []
+    emit = on_event or _noop
 
     # 1. Resolve the frappe container (raises NOT_FOUND / DOCKER).
+    emit(UnlockStepStart(phase="resolve", message="Resolving the site and bench"))
     frappe_container = core_docker.get_frappe_container(project_name)
 
     # 2. Container must be running; a stopped container is a confirm_start fork.
@@ -109,6 +137,7 @@ def unlock(
     # no quoting to reason about.)
     resolvers.require_bench_dir(frappe_container, bench_path)
     site_path = resolvers.require_site_dir(frappe_container, bench_path, site)
+    emit(UnlockStepEnd(phase="resolve"))
 
     # 9. An absent locks directory is a CLEAN SUCCESS, not a NOT_FOUND: `rm -rf`
     # has always exited 0 on a missing target, and a site that is simply not
@@ -116,8 +145,10 @@ def unlock(
     # inferring "nothing was removed" from rm's output) keeps `already_unlocked`
     # independent of rm's human-readable -v format.
     locks_path = f"{site_path}/locks"
+    emit(UnlockStepStart(phase="locks", message="Checking the site's locks"))
     exit_code, _ = frappe_container.exec_run(["test", "-d", locks_path])
     if exit_code != 0:
+        emit(UnlockStepEnd(phase="locks", status="already-unlocked"))
         return Result(
             status=Status.OK,
             data=UnlockOutcome(
@@ -132,6 +163,8 @@ def unlock(
 
     # 10. Remove the locks folder. argv list (no shell); -v so the removed paths
     # can be reported, buffered in one exec rather than streamed.
+    emit(UnlockStepEnd(phase="locks"))
+    emit(UnlockStepStart(phase="remove", message="Removing the site's locks"))
     exit_code, output = frappe_container.exec_run(["rm", "-rfv", locks_path], workdir=bench_path)
     decoded = _decode(output)
     if exit_code != 0:
@@ -141,6 +174,7 @@ def unlock(
             f"Failed to unlock site '{site}'",
             detail={"output": decoded},
         )
+    emit(UnlockStepEnd(phase="remove"))
 
     return Result(
         status=Status.OK,

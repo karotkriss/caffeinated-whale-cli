@@ -4,10 +4,12 @@ import { useRoute } from 'vue-router'
 import { DesktopShell, Sidebar, SidebarHeader, SidebarItem, SidebarLabel, ScrollArea, Alert, KeyboardShortcut } from 'frappe-ui'
 import StatusDot from './StatusDot.vue'
 import ActionDialog from './ActionDialog.vue'
+import JobDialog from './JobDialog.vue'
 import Palette from './Palette.vue'
 import { fleet, instances, doctor } from '../data/fleet'
 import { session } from '../data/session'
 import { openPalette } from '../data/palette'
+import { activeJobs } from '../data/jobs'
 
 const route = useRoute()
 // Collapse to the icon rail below 640px, matching frappe-ui's own sm breakpoint.
@@ -40,6 +42,9 @@ const connectionLabel = computed(() =>
               <SidebarItem label="Instances" icon="lucide-boxes" route="/instances" :active="route.name === 'instances'">
                 <template #suffix><span class="mr-1 text-xs text-ink-gray-5">{{ instances.length }}</span></template>
               </SidebarItem>
+              <SidebarItem label="Jobs" icon="lucide-list-checks" route="/jobs" :active="route.name === 'jobs' || route.name === 'job'">
+                <template #suffix><span v-if="activeJobs.length" class="mr-1 text-xs text-ink-blue-6">{{ activeJobs.length }}</span></template>
+              </SidebarItem>
               <SidebarItem label="Health check" icon="lucide-stethoscope" route="/health" :active="route.name === 'health'">
                 <template #suffix><span v-if="warn" class="mr-1 text-xs text-ink-amber-6">{{ warn }}</span></template>
               </SidebarItem>
@@ -70,6 +75,7 @@ const connectionLabel = computed(() =>
       <router-view :key="route.fullPath" />
     </DesktopShell>
     <ActionDialog />
+    <JobDialog />
     <Palette />
   </div>
 </template>

@@ -93,6 +93,23 @@ def wire(monkeypatch):
 
 
 class TestSuccess:
+    def test_emits_typed_steps_in_execution_order(self, wire):
+        wire(FakeContainer())
+        events = []
+
+        core_backup.backup("proj", site="s.localhost", on_event=events.append)
+
+        assert [(type(event).__name__, event.phase) for event in events] == [
+            ("BackupStepStart", "resolve"),
+            ("BackupStepEnd", "resolve"),
+            ("BackupStepStart", "prepare"),
+            ("BackupStepEnd", "prepare"),
+            ("BackupStepStart", "backup"),
+            ("BackupStepEnd", "backup"),
+            ("BackupStepStart", "locate"),
+            ("BackupStepEnd", "locate"),
+        ]
+
     def test_success_returns_outcome(self, wire):
         """`backup` returns an OK BackupOutcome plus a default-bench-path warning."""
         c = FakeContainer()

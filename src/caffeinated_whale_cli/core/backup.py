@@ -12,6 +12,7 @@ and returns ``Result(OK, BackupOutcome(...))`` on success.
 from __future__ import annotations
 
 import shlex
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from . import docker as core_docker
@@ -31,6 +32,30 @@ class BackupOutcome:
     included_files: bool
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BackupStepStart:
+    """A backup step began."""
+
+    phase: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BackupStepEnd:
+    """A backup step finished."""
+
+    phase: str
+    status: str = "ok"
+
+
+BackupEvent = BackupStepStart | BackupStepEnd
+OnEvent = Callable[[BackupEvent], None]
+
+
+def _noop(_event: BackupEvent) -> None:
+    """The drain-and-discard consumption mode."""
+
+
 def _decode(output) -> str:
     if isinstance(output, (bytes, bytearray)):
         return bytes(output).decode("utf-8", errors="replace")
@@ -44,11 +69,14 @@ def backup(
     bench: str | None = None,
     bench_path: str | None = None,
     with_files: bool = False,
+    on_event: OnEvent | None = None,
 ) -> Result[BackupOutcome]:
     """Back up a site's database (and optionally files). See module docstring."""
     warnings: list[Message] = []
+    emit = on_event or _noop
 
     # 1. Resolve the frappe container (raises NOT_FOUND / DOCKER).
+    emit(BackupStepStart(phase="resolve", message="Resolving the site and bench"))
     frappe_container = core_docker.get_frappe_container(project_name)
 
     # 2. Container must be running; a stopped container is a confirm_start fork.
@@ -81,9 +109,11 @@ def backup(
     # no quoting to reason about.)
     resolvers.require_bench_dir(frappe_container, bench_path)
     site_path = resolvers.require_site_dir(frappe_container, bench_path, site)
+    emit(BackupStepEnd(phase="resolve"))
 
     # 9. Ensure the backup directory exists (create if missing).
     backup_dir = f"{site_path}/private/backups"
+    emit(BackupStepStart(phase="prepare", message="Preparing the backup directory"))
     exit_code, _ = frappe_container.exec_run(["test", "-d", backup_dir])
     if exit_code != 0:
         exit_code, output = frappe_container.exec_run(["mkdir", "-p", backup_dir])
@@ -95,8 +125,10 @@ def backup(
                 detail={"output": _decode(output)},
             )
         warnings.append(Message("backup_dir.created", f"Creating backup directory at {backup_dir}"))
+    emit(BackupStepEnd(phase="prepare"))
 
     # 10. Run the backup.
+    emit(BackupStepStart(phase="backup", message=f"Backing up {site}"))
     cmd = ["bench", "--site", site, "backup"]
     if with_files:
         cmd.append("--with-files")
@@ -108,9 +140,12 @@ def backup(
             f"Failed to create backup for site '{site}'",
             detail={"output": _decode(output)},
         )
+    emit(BackupStepEnd(phase="backup"))
 
     # 11. Locate the dump this run produced (newest *.sql.gz), for the outcome DTO.
+    emit(BackupStepStart(phase="locate", message="Locating the database dump"))
     artifact_path = _newest_dump(frappe_container, backup_dir) or f"{backup_dir}/"
+    emit(BackupStepEnd(phase="locate"))
 
     return Result(
         status=Status.OK,
