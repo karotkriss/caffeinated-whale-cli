@@ -79,6 +79,7 @@ def _json_update(**kwargs):
         build=kwargs.pop("build", False),
         skip_maintenance=kwargs.pop("skip_maintenance", False),
         no_recache=kwargs.pop("no_recache", True),
+        force=kwargs.pop("force", False),
         no_preflight=kwargs.pop("no_preflight", False),
         json_output=True,
         yes=True,
@@ -164,6 +165,7 @@ def _axi_update(**kwargs):
         build=False,
         skip_maintenance=False,
         no_recache=True,
+        force=kwargs.pop("force", False),
         no_preflight=kwargs.pop("no_preflight", False),
     )
 
@@ -463,8 +465,8 @@ def preflight_finds(monkeypatch):
     calls = []
 
     def arm(*pairs):
-        def fake(container, bench_path, *, project, bench=None, path=None):
-            calls.append(project)
+        def fake(container, bench_path, *, project, bench=None, path=None, local_only=False):
+            calls.append((project, local_only))
             findings = [
                 update_preflight.PreflightFinding(
                     severity=severity,
@@ -517,7 +519,7 @@ class TestPreflightOnTheStructuredSurfaces:
         out = capsys.readouterr().out
         assert "preflight[0]" in out and "preflight_blocked: false" in out
         assert "Updating DocType" not in out  # bench's output still never reaches stdout
-        assert calls == ["proj"]
+        assert calls == [("proj", False)]
         assert any("bench update --reset" in c for c in wired.calls)
 
     def test_axi_no_preflight_skips_it_and_runs_bench(self, wired, preflight_finds, capsys):
@@ -527,7 +529,7 @@ class TestPreflightOnTheStructuredSurfaces:
             _axi_update(apps=["frappe"], no_preflight=True)
 
         assert exc.value.exit_code == 0
-        assert calls == []
+        assert calls == [("proj", True)]  # only the data-loss guard's local tier
         assert any("bench update --reset" in c for c in wired.calls)
 
     def test_human_json_blocked_carries_the_findings_and_exits_one(
@@ -541,6 +543,8 @@ class TestPreflightOnTheStructuredSurfaces:
         assert exc.value.exit_code == 1
         doc = json.loads(capsys.readouterr().out)  # still exactly one document
         assert doc["preflight_blocked"] is True
+        assert doc["data_loss_refused"] is True  # both reasons, reported apart
+        assert doc["data_loss_apps"] == ["localbranch"]
         assert [f["code"] for f in doc["preflight"]] == [
             "git.branch_not_on_remote",
             "git.uncommitted",
@@ -552,5 +556,5 @@ class TestPreflightOnTheStructuredSurfaces:
 
         _json_update(apps=["frappe"], no_preflight=True)
 
-        assert calls == []
+        assert calls == [("proj", True)]
         assert json.loads(capsys.readouterr().out)["preflight"] == []

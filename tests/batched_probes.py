@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import shlex
 
-from caffeinated_whale_cli.core import bench_read, resolvers
+from caffeinated_whale_cli.core import bench_read, resolvers, update_preflight
 from caffeinated_whale_cli.core import inspect as core_inspect
 from caffeinated_whale_cli.utils import bench_labels, bench_sites
 
@@ -173,11 +173,25 @@ def _full_read(container, args: list[str]):
     return (0, ("\n" + "\n".join(lines) + "\n").encode())
 
 
+def _update_preflight(container, args) -> tuple[int, bytes]:
+    """The frappe-update preflight finds nothing, as on a clean bench.
+
+    A fake models anything else with ``preflight_output``: the script's raw stdout,
+    e.g. ``""`` for a preflight that printed no record at all.
+    """
+    output = getattr(container, "preflight_output", None)
+    if output is None:
+        record = {"apps": [], "sites": [], "shallow_clone": False, "elapsed": 0.0, "findings": []}
+        output = f"\n{update_preflight.SENTINEL}{json.dumps(record)}\n"
+    return (0, output.encode())
+
+
 _SCRIPTS = {
     bench_sites._LIST_SITES_SCRIPT: lambda c, args: _list_sites(c, args[0]),
     core_inspect._DISCOVER_SCRIPT: _discover,
     core_inspect._PARTIAL_REFRESH_SCRIPT: _partial_refresh,
     bench_read._READ_SH: _full_read,
+    update_preflight._RUN_SH: _update_preflight,
 }
 
 
