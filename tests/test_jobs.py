@@ -627,7 +627,8 @@ def test_rm_site_forwards_consent_and_the_root_password_from_the_secret_only(mon
     assert kwargs["consent"] is True
     assert kwargs["db_root_password"] == "s3cret"
     assert second["consent"] is False
-    assert second["db_root_password"] == "123"  # the compose default the core assumes
+    # Blank: None, so the core uses the instance's remembered password, else '123'.
+    assert second["db_root_password"] is None
 
     with pytest.raises(CwcliError) as error:
         jobs._dispatch("rm-site", {"project": "p"}, {}, True, {}, lambda e: None)
@@ -688,3 +689,47 @@ def test_apps_checkout_forwards_reset_only_as_the_json_boolean_true(monkeypatch)
         )
 
     assert calls == [True, False, False, False]
+
+
+def test_a_failed_job_records_its_plain_cause(fake_spawn, monkeypatch):
+    record = jobs.create_job("rm-site", {"project": "p", "site": "s.localhost"}, {})
+
+    @dataclass(frozen=True)
+    class DropSiteOutput:
+        stream: str
+        text: str
+
+    def dispatch(_verb, _target, _args, _consent, _secrets, emit):
+        emit(DropSiteOutput(stream="stderr", text="(1045, \"Access denied for user 'root'@'x'\")"))
+        raise CwcliError(jobs.ErrorKind.PRECONDITION, "rm_site.failed", "drop-site exited 1")
+
+    monkeypatch.setattr(jobs, "_dispatch", dispatch)
+
+    assert jobs.run_job(record["id"]) == 1
+    failed = jobs.read_job(record["id"])
+    assert failed["cause"]["code"] == "db.access_denied"
+    assert failed["cause"]["title"] == "MariaDB rejected the root password"
+
+
+def test_a_failed_report_records_its_cause_and_a_success_none(fake_spawn, monkeypatch):
+    @dataclass(frozen=True)
+    class AppsOutput:
+        stream: str
+        text: str
+
+    def dispatch_with(ok):
+        def dispatch(_verb, _target, _args, _consent, _secrets, emit):
+            emit(AppsOutput(stream="stderr", text="fatal: could not read Username for 'x'"))
+            return Result(status=Status.WARNING, data={"ok": ok})
+
+        return dispatch
+
+    failed = jobs.create_job("backup", {"project": "p"}, {})
+    monkeypatch.setattr(jobs, "_dispatch", dispatch_with(False))
+    assert jobs.run_job(failed["id"]) == 1
+    assert jobs.read_job(failed["id"])["cause"]["code"] == "git.auth_failed"
+
+    succeeded = jobs.create_job("backup", {"project": "q"}, {})
+    monkeypatch.setattr(jobs, "_dispatch", dispatch_with(True))
+    assert jobs.run_job(succeeded["id"]) == 0
+    assert jobs.read_job(succeeded["id"])["cause"] is None

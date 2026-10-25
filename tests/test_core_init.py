@@ -1319,3 +1319,103 @@ class TestCorePurity:
         }
         up = dataclasses.asdict(core_init.InstanceUp(project=PROJECT, conf_dir="/x"))
         assert up == {"project": PROJECT, "conf_dir": "/x"}
+
+
+# ------------------------------------------------------------------ database root password
+
+# The live frappe_docker template's MariaDB service, verbatim in the lines the
+# password rewrite touches: the hardcoded root password a new instance used to
+# keep no matter what password init was given.
+COMPOSE_WITH_MARIADB_ENV = """services:
+  mariadb:
+    image: docker.io/mariadb:11.8
+    environment:
+      MYSQL_ROOT_PASSWORD: 123
+      MARIADB_AUTO_UPGRADE: 1
+    volumes:
+      - mariadb-data:/var/lib/mysql
+  frappe:
+    image: docker.io/frappe/bench:latest
+    volumes:
+      - ..:/workspace:cached
+    working_dir: /workspace/development
+volumes:
+  mariadb-data:
+"""
+
+
+def _fresh_compose(monkeypatch, tmp_path, *, volume_exists=False):
+    s = instance_setup(monkeypatch, tmp_path, seed_compose=False)
+    monkeypatch.setattr(
+        urllib.request, "urlretrieve", lambda url, dest: dest.write_text(COMPOSE_WITH_MARIADB_ENV)
+    )
+    monkeypatch.setattr(core_init, "_mariadb_volume_exists", lambda _p: volume_exists)
+    return s
+
+
+class TestDbRootPassword:
+    """The password given to init is the one MariaDB is created with (the 1045 bug)."""
+
+    def test_given_password_becomes_mariadbs_root_password(self, monkeypatch, tmp_path, patched):
+        s = _fresh_compose(monkeypatch, tmp_path)
+        result = core_init.init_instance(PROJECT, port=18000, db_root_password="Ch0sen-pw")
+
+        assert result.status is Status.OK
+        content = s.compose_path.read_text()
+        assert "MYSQL_ROOT_PASSWORD" not in content
+        assert "MARIADB_ROOT_PASSWORD_FILE: /run/secrets/db_root_password" in content
+        assert "file: ./db-root-password" in content
+        # The value itself never lands in the compose file.
+        assert "Ch0sen-pw" not in content
+        secret = s.compose_path.parent / "db-root-password"
+        assert secret.read_text() == "Ch0sen-pw"
+        assert secret.stat().st_mode & 0o777 == 0o600
+
+    def test_blank_or_default_password_leaves_the_compose_as_downloaded(
+        self, monkeypatch, tmp_path, patched
+    ):
+        for given in (None, "", "123"):
+            s = _fresh_compose(monkeypatch, tmp_path)
+            core_init.init_instance(PROJECT, port=18000, db_root_password=given)
+            assert "MYSQL_ROOT_PASSWORD: 123" in s.compose_path.read_text()
+            assert not (s.compose_path.parent / "db-root-password").exists()
+            s.compose_path.unlink()
+
+    def test_existing_database_is_never_repointed_and_says_so(
+        self, monkeypatch, tmp_path, patched
+    ):
+        s = _fresh_compose(monkeypatch, tmp_path, volume_exists=True)
+        result = core_init.init_instance(PROJECT, port=18000, db_root_password="Ch0sen-pw")
+
+        assert "MYSQL_ROOT_PASSWORD: 123" in s.compose_path.read_text()
+        assert not (s.compose_path.parent / "db-root-password").exists()
+        assert [w.code for w in result.warnings] == ["init.db_password_not_applied"]
+
+    def test_new_site_uses_the_remembered_password_when_none_is_given(
+        self, monkeypatch, tmp_path, patched
+    ):
+        _fresh_compose(monkeypatch, tmp_path)
+        core_init.init_instance(PROJECT, port=18000, db_root_password="Ch0sen-pw")
+        api = FakeApi()
+        use_container(monkeypatch, FakeContainer(api=api))
+
+        core_init.init_bench(PROJECT, **bench_kwargs())
+
+        new_site = next(c for c in api.exec_calls if "bench new-site" in c["command"])
+        assert new_site["environment"]["CWCLI_DB_ROOT_PASSWORD"] == "Ch0sen-pw"
+        assert "Ch0sen-pw" not in new_site["command"]
+
+    def test_rejected_root_password_is_named_in_the_error(self, monkeypatch, patched):
+        # The captain's failure, streamed the way the web UI job streams it.
+        api = FakeApi(
+            fail_command="bench new-site",
+            fail_output=b"Traceback...\nMySQLdb.OperationalError: (1045, \"Access denied for "
+            b"user 'root'@'172.23.0.5' (using password: YES)\")\n",
+        )
+        use_container(monkeypatch, FakeContainer(api=api))
+        with pytest.raises(CwcliError) as exc:
+            core_init.init_bench(PROJECT, **bench_kwargs(stream_output=True))
+
+        assert exc.value.code == "init.exec_failed"
+        assert exc.value.message.startswith("MariaDB rejected the password for database user")
+        assert "1045" in exc.value.detail["output"]

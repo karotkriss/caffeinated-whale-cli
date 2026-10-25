@@ -228,7 +228,7 @@ def remove_bench(
     bench_path: str | None = None,
     auto_start: bool = False,
     consent: bool = False,
-    db_root_password: str = "123",
+    db_root_password: str | None = None,
     on_event: OnEvent | None = None,
 ) -> Result[BenchRemovalOutcome]:
     """Remove ONE bench: back up + drop its sites, then delete its directory.

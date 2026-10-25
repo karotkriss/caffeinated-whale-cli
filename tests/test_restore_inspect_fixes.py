@@ -260,7 +260,7 @@ class TestMariadbCredentialModes:
         monkeypatch.setattr(restore_mod.questionary, "text", fake_text)
         monkeypatch.setattr(restore_mod.questionary, "password", fake_password)
 
-        user, pw = restore_mod._prompt_mariadb_credentials(None, None)
+        user, pw = restore_mod._prompt_mariadb_credentials("p", None, None)
         assert (user, pw) == ("root", "s3cret")
         # BOTH the username AND the password prompt actually fired (the bug skipped
         # the username prompt and returned an empty password).
@@ -274,7 +274,7 @@ class TestMariadbCredentialModes:
         monkeypatch.setattr(
             restore_mod.questionary, "password", lambda *a, **k: SimpleNamespace(ask=lambda: "pw")
         )
-        user, pw = restore_mod._prompt_mariadb_credentials(None, None)
+        user, pw = restore_mod._prompt_mariadb_credentials("p", None, None)
         assert user == "root" and pw == "pw"
 
     def test_interactive_empty_password_is_error(self, monkeypatch):
@@ -286,7 +286,7 @@ class TestMariadbCredentialModes:
             restore_mod.questionary, "password", lambda *a, **k: SimpleNamespace(ask=lambda: "")
         )
         with pytest.raises(typer.Exit) as e:
-            restore_mod._prompt_mariadb_credentials(None, None)
+            restore_mod._prompt_mariadb_credentials("p", None, None)
         assert e.value.exit_code != 0
 
     def test_non_tty_without_password_refuses(self, monkeypatch):
@@ -298,7 +298,7 @@ class TestMariadbCredentialModes:
             lambda *a, **k: pytest.fail("must not prompt under a non-TTY"),
         )
         with pytest.raises(typer.Exit) as e:
-            restore_mod._prompt_mariadb_credentials(None, None)
+            restore_mod._prompt_mariadb_credentials("p", None, None)
         assert e.value.exit_code != 0
 
     def test_non_tty_with_flags_uses_them_without_prompting(self, monkeypatch):
@@ -308,12 +308,12 @@ class TestMariadbCredentialModes:
             "password",
             lambda *a, **k: pytest.fail("must not prompt when flags are given"),
         )
-        user, pw = restore_mod._prompt_mariadb_credentials("admin", "flagpw")
+        user, pw = restore_mod._prompt_mariadb_credentials("p", "admin", "flagpw")
         assert (user, pw) == ("admin", "flagpw")
 
     def test_non_tty_password_flag_defaults_username_to_root(self, monkeypatch):
         self._tty(monkeypatch, False)
-        user, pw = restore_mod._prompt_mariadb_credentials(None, "flagpw")
+        user, pw = restore_mod._prompt_mariadb_credentials("p", None, "flagpw")
         assert user == "root" and pw == "flagpw"
 
     def test_password_prompt_collects_input_with_username_flag(self, monkeypatch):
@@ -331,9 +331,29 @@ class TestMariadbCredentialModes:
             return SimpleNamespace(ask=lambda: "s3cret")
 
         monkeypatch.setattr(restore_mod.questionary, "password", fake_password)
-        user, pw = restore_mod._prompt_mariadb_credentials("root", None)
+        user, pw = restore_mod._prompt_mariadb_credentials("p", "root", None)
         assert (user, pw) == ("root", "s3cret")
         assert events == ["password"]
+
+    @pytest.mark.parametrize("is_tty", [True, False])
+    def test_the_password_remembered_at_init_answers_without_a_prompt(
+        self, monkeypatch, tmp_path, is_tty
+    ):
+        from caffeinated_whale_cli.core import db_password
+        from caffeinated_whale_cli.utils import config_utils
+
+        self._tty(monkeypatch, is_tty)
+        monkeypatch.setattr(config_utils, "PROJECTS_DIR", tmp_path)
+        db_password.remember("p", "Ch0sen-pw")
+        for prompt in ("text", "password"):
+            monkeypatch.setattr(
+                restore_mod.questionary, prompt, lambda *a, **k: pytest.fail("must not prompt")
+            )
+
+        assert restore_mod._prompt_mariadb_credentials("p", None, None) == ("root", "Ch0sen-pw")
+        # An explicit password, or another user, still wins over the remembered root one.
+        assert restore_mod._prompt_mariadb_credentials("p", "root", "flagpw") == ("root", "flagpw")
+        assert restore_mod._prompt_mariadb_credentials("p", "admin", "x") == ("admin", "x")
 
     def test_restore_confirms_disable_auto_enter(self):
         # Root fix: every questionary.confirm in the restore flow must pass

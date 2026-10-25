@@ -16,9 +16,10 @@
 
 const q = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, "'\\''")}'`)
 const benchFlag = (c) => (c.bench != null ? ` --bench ${q(c.bench)}` : '')
-// `bench drop-site` needs the MariaDB root password; blank means the compose
-// default the core assumes. It travels in the job's secrets, never its spec.
-const DB_ROOT_FIELD = { name: 'db_root_password', type: 'password', label: 'Database root password', placeholder: 'blank for the compose default' }
+// `bench drop-site` needs the MariaDB root password; blank means the one cwcli
+// remembered at init (else the compose default, 123). It travels in the job's
+// secrets, never its spec.
+const DB_ROOT_FIELD = { name: 'db_root_password', type: 'password', label: 'Database root password', placeholder: 'blank uses the instance\'s saved password' }
 const secrets = (v) => (v?.db_root_password ? { secrets: { db_root_password: v.db_root_password } } : {})
 
 export const ACTIONS = {

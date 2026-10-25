@@ -238,6 +238,7 @@ class TestInitContainerReadiness:
             auto_start=False,
             stream_output=False,
             uid=None,
+            db_root_password=None,
             on_event=None,
         ):
             instance_calls.append(auto_start)
