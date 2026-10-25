@@ -59,7 +59,8 @@ const views = computed(() => {
     if (following.value) held.delete(row.seq)
     else if (!held.has(row.seq)) held.set(row.seq, tailLines(row.text).hidden)
     const { hidden, text } = blockView(row.text, { all: expanded.has(row.seq), held: held.get(row.seq) })
-    out[row.seq] = { hidden, total: hidden + text.split('\n').length, text: terminal(text) }
+    const shown = terminal(text)
+    out[row.seq] = { hidden, total: hidden + shown.split('\n').length, text: shown }
   }
   return out
 })
@@ -187,7 +188,7 @@ async function continueChoice(value) {
             <span class="whitespace-nowrap font-mono text-xs tabular-nums text-ink-gray-4">{{ time(event.at) }}</span>
             <span class="hidden truncate font-mono text-xs text-ink-gray-5 sm:block">{{ event.output ? 'output' : event.phase || event.action || event.type }}</span>
             <div v-if="event.output" class="min-w-0">
-              <Button v-if="views[event.seq].hidden || expanded.has(event.seq)" class="mb-1.5" size="sm" variant="outline" :label="expanded.has(event.seq) ? `Show last ${MAX_LINES.toLocaleString()} lines` : `Show all ${views[event.seq].total.toLocaleString()} lines`" @click="toggleBlock(event.seq)" />
+              <Button v-if="views[event.seq].hidden || expanded.has(event.seq)" class="mb-1.5" size="sm" variant="outline" :label="expanded.has(event.seq) ? (following ? `Show last ${MAX_LINES.toLocaleString()} lines` : 'Show less') : `Show all ${views[event.seq].total.toLocaleString()} lines`" @click="toggleBlock(event.seq)" />
               <pre class="whitespace-pre-wrap break-words font-mono text-xs leading-5 text-ink-gray-7">{{ views[event.seq].text }}</pre>
             </div>
             <div v-else class="min-w-0"><p class="break-words font-mono text-xs leading-5 text-ink-gray-7">{{ eventTitle(event) }}</p><p v-if="event.item || event.data?.item" class="mt-0.5 truncate text-xs text-ink-gray-5">{{ event.item || event.data.item }}</p></div>
