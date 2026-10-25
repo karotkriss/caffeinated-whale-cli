@@ -220,25 +220,30 @@ def _run_judged_step(
 ) -> tuple[int, str | None]:
     """:func:`_run_step`, plus a verdict on the command's own output.
 
-    ``judge`` reads the retained tail of the combined output and returns a failure
-    reason, or None. It exists for commands whose exit status cannot be trusted to
-    say they failed (see :func:`_test_run_failure`); it is consulted only after a
-    ZERO exit, because a non-zero one is already a failure with nothing to add. The
-    step is reported not-ok when either the exit code or the verdict says so.
+    ``judge`` reads the retained tail of each output stream on its own and returns a
+    failure reason, or None. It exists for commands whose exit status cannot be
+    trusted to say they failed (see :func:`_test_run_failure`). It runs whatever the
+    exit code, so a non-zero exit still carries the reason the output states. The
+    streams are kept apart because a block-buffered stdout flush can land after, or
+    inside, a summary written to stderr. The step is reported not-ok when either the
+    exit code or the verdict says so.
     """
     emit(BenchOpCommand(command=cmd))
     exit_code = 1
-    tail = ""
+    tails: dict[str, str] = {}
     for event in exec_stream(container, cmd, workdir=bench_path, environment=environment):
         if isinstance(event, ExecChunk):
             emit(BenchOpOutput(action=action, stream=event.stream, text=event.text))
             if judge is not None:
                 # Capped by slicing, never unbounded: the summary is the last thing
                 # printed, and a long suite can emit megabytes before it.
-                tail = (tail + event.text)[-_OUTPUT_TAIL_CHARS:]
+                tail = tails.get(event.stream, "") + event.text
+                tails[event.stream] = tail[-_OUTPUT_TAIL_CHARS:]
         else:
             exit_code = event.exit_code
-    reason = judge(tail) if judge is not None and exit_code == 0 else None
+    reason = None
+    if judge is not None:
+        reason = next(filter(None, map(judge, tails.values())), None)
     emit(BenchOpStepEnd(action=action, ok=exit_code == 0 and reason is None))
     return exit_code, reason
 
@@ -261,7 +266,7 @@ def _test_run_failure(output: str, *, project: str, site: str) -> str | None:
     jobs inline and to skip the ``allow_tests`` guard, which would change the
     conditions the suite runs under. The same command ALSO exits 0 when that guard
     refuses ("Testing is disabled for the site!") having run nothing. v16 exits
-    non-zero on a failed suite itself, so for it this is a harmless second opinion.
+    non-zero on a failed suite itself, so there this only names why it failed.
     """
     match = _UNITTEST_FAILED.search(output)
     if match:
