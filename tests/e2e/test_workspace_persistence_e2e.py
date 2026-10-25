@@ -68,14 +68,16 @@ def _compose(name: str, *args: str, timeout: int = 600) -> subprocess.CompletedP
 
 
 def _recreate(name: str) -> None:
-    """Full stack recreation: ``compose down`` then ``up -d``, waiting for frappe.
+    """Full stack recreation: ``compose rm`` then ``up -d``, waiting for frappe.
 
-    The named ``mariadb-data`` volume and the ``{project}/data/`` bind mount both
-    outlive ``down``; this is the real container-recreation the fix must survive.
+    ``rm --volumes`` removes only the containers' anonymous volumes (redis's
+    image-declared ``/data``), which a plain ``down`` would orphan. The named
+    ``mariadb-data`` volume and the ``{project}/data/`` bind mount both outlive
+    it; this is the real container-recreation the fix must survive.
     """
-    down = _compose(name, "down")
+    down = _compose(name, "rm", "--stop", "--force", "--volumes")
     assert down.returncode == 0, down.stdout + down.stderr
-    assert harness.frappe_container_id(name) is None, "containers not gone after `compose down`"
+    assert harness.frappe_container_id(name) is None, "containers not gone after `compose rm`"
     up = _compose(name, "up", "-d")
     assert up.returncode == 0, up.stdout + up.stderr
     harness.wait_until(
