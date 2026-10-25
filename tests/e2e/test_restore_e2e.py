@@ -39,10 +39,7 @@ def _sql(inst, sql: str) -> tuple[int, str]:
     escaped for bash. `bench execute` commits after the call.
     """
     py_arg = "['" + sql.replace('"', '\\"') + "']"
-    script = (
-        f"cd {inst.bench} && bench --site {inst.site} execute frappe.db.sql "
-        f'--args "{py_arg}"'
-    )
+    script = f'cd {inst.bench} && bench --site {inst.site} execute frappe.db.sql --args "{py_arg}"'
     return harness.exec_in_frappe(inst.name, script)
 
 
@@ -190,23 +187,23 @@ def test_restore_interactive_is_genuine(running_instance):
     child = harness.spawn_cwcli(["restore", inst.name, "--site", inst.site], timeout=1200)
     try:
         # Backup selection menu.
-        child.expect("Select a backup to restore", timeout=300)
         harness.expect_prompt_ready(child)
+        child.expect("Select a backup to restore", timeout=300)
         child.sendline("")  # select the highlighted (newest) backup
 
         # Destructive confirm: press y THEN Enter (a human's keystrokes), so the
         # confirm consumes its own trailing Enter (auto_enter=False).
-        child.expect("Are you sure you want to restore", timeout=300)
         harness.expect_prompt_ready(child)
+        child.expect("Are you sure you want to restore", timeout=300)
         child.send("y")
         child.sendline("")
 
         # MariaDB username (default root) then password.
+        harness.expect_prompt_ready(child)
         child.expect("MariaDB root username", timeout=120)
-        harness.expect_prompt_ready(child)
         child.sendline("")  # blank -> root
-        child.expect("MariaDB root password", timeout=120)
         harness.expect_prompt_ready(child)
+        child.expect("MariaDB root password", timeout=120)
         child.sendline(DB_PW)
 
         child.expect("Successfully restored", timeout=1200)
@@ -251,9 +248,7 @@ def test_mutually_exclusive_flags(running_instance):
     inst = running_instance
     assert harness.run_cwcli("restore", inst.name, "--send", "--receive").returncode != 0
     assert (
-        harness.run_cwcli(
-            "restore", inst.name, "--latest", "--backup-file", "x.sql.gz"
-        ).returncode
+        harness.run_cwcli("restore", inst.name, "--latest", "--backup-file", "x.sql.gz").returncode
         != 0
     )
     assert harness.run_cwcli("restore", inst.name, "--latest", "--send").returncode != 0
