@@ -459,3 +459,32 @@ def test_pid_dir_honors_cwcli_home():
     assert auto_inspect.LOG_FILE.parent == auto_inspect.PID_DIR
     assert not str(auto_inspect.LOG_FILE).startswith("/tmp/cwcli")
     assert os.path.isabs(str(auto_inspect.LOG_FILE))
+
+
+def test_start_daemon_spawns_instead_of_forking_from_a_multithreaded_process(
+    isolated_run_dir, monkeypatch
+):
+    """The `cwcli ui` daemon enables auto-inspect from a request thread. A fork
+    there copies the daemon's listening socket into the child, which then pins
+    the port after the daemon exits; a multithreaded host must spawn instead."""
+    monkeypatch.setattr(
+        auto_inspect.config_utils,
+        "get_auto_inspect_config",
+        lambda: {"enabled": True, "interval": 900},
+    )
+    monkeypatch.setattr(auto_inspect.os, "fork", lambda: pytest.fail("forked"), raising=False)
+    spawned = []
+    monkeypatch.setattr(auto_inspect, "_spawn_detached", lambda interval: spawned.append(interval))
+
+    import threading
+
+    release = threading.Event()
+    other = threading.Thread(target=release.wait, daemon=True)
+    other.start()
+    try:
+        auto_inspect.start_daemon()
+    finally:
+        release.set()
+        other.join()
+
+    assert spawned == [900]

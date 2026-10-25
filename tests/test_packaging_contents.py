@@ -53,13 +53,15 @@ def _build(tmp_path: Path, kind: str) -> Path:
     below meaningful rather than circular.
 
     Setuptools reuses a `build/` directory left in the working tree, so a stale
-    one from an earlier local `uv build` can carry a since-deleted file into the
-    wheel and fail the sdist-covers-wheel comparison. `rm -rf build src/*.egg-info`
-    clears it. CI checks out fresh, so that is a local-only nuisance, and it
-    fails loudly rather than passing quietly.
+    one from an earlier local `uv build` carries a since-deleted file (a
+    content-hashed web UI asset from an older `npm run build`) into the wheel
+    and fails the sdist-covers-wheel comparison. It is git-ignored and purely a
+    setuptools scratch dir, so it is cleared here before each build rather than
+    left as a local-only failure to diagnose.
     """
     if shutil.which("uv") is None:  # pragma: no cover - uv is this repo's toolchain
         pytest.fail("`uv` is not on PATH; this repo builds and tests through uv")
+    shutil.rmtree(REPO_ROOT / "build", ignore_errors=True)
     out = tmp_path / kind
     subprocess.run(
         ["uv", "build", f"--{kind}", "--out-dir", str(out), str(REPO_ROOT)],

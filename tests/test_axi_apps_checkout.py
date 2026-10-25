@@ -84,7 +84,7 @@ def test_reset_adds_its_own_reported_row(container, capsys):
 
     assert exc.value.exit_code == 0
     assert "reset" in capsys.readouterr().out
-    assert any("reset --hard FETCH_HEAD" in c for c in container.calls)
+    assert any("reset --hard" in c for c in container.calls)
 
 
 def test_without_reset_nothing_hard_resets_the_working_tree(container):

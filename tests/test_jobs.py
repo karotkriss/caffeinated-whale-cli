@@ -483,3 +483,208 @@ def test_the_watcher_rereads_a_finished_job_only_when_its_state_changes(fake_spa
 
     assert reads == ["20260101000000-done"]
     assert [row["id"] for row in published] == ["20260101000000-done"]
+
+
+# ------------------------------------------------- Phase 3: the guarded destructive verbs
+
+
+def _outcome(**overrides):
+    from caffeinated_whale_cli.core.rm import RemovalOutcome
+
+    base = dict(
+        project="p",
+        found=True,
+        orphan=False,
+        containers_removed=3,
+        volumes_removed=1,
+        dir_removed=True,
+        network_removed=True,
+        backup_ok=True,
+    )
+    return RemovalOutcome(**{**base, **overrides})
+
+
+def test_the_destructive_verbs_are_admitted_as_jobs(fake_spawn):
+    for verb in ("rm", "rm-site", "rm-bench"):
+        assert verb in jobs.ALLOWED_VERBS
+    # Consent is a spec field: the page sets it only after a typed confirmation.
+    record = jobs.create_job("rm", {"project": "p"}, {}, consent=True)
+    assert record["consent"] is True
+
+
+def test_rm_without_consent_ends_as_a_choice_and_touches_nothing(monkeypatch):
+    monkeypatch.setattr(jobs.core_rm, "remove", lambda *a, **k: pytest.fail("removed"))
+    monkeypatch.setattr(
+        jobs.rm_cmd, "_project_run_state", lambda project: pytest.fail("probed before consent")
+    )
+
+    result = jobs._dispatch("rm", {"project": "p"}, {}, False, {}, lambda e: None)
+
+    assert result.status is Status.NEEDS_CHOICE
+    assert result.choice.kind == "confirm_remove"
+    assert result.choice.param == "consent"
+    assert "named volumes" in result.choice.prompt
+
+
+def test_rm_refuses_a_stopped_project_before_the_core_when_volumes_would_go(monkeypatch):
+    """`axi rm`'s rule: the verified backup needs a running container and this
+    surface never starts one, so the refusal lands BEFORE core.remove creates an
+    archive it cannot fill. Keeping the volumes needs no backup, so it proceeds."""
+    calls = []
+    monkeypatch.setattr(jobs.rm_cmd, "_project_run_state", lambda project: "stopped")
+    monkeypatch.setattr(
+        jobs.core_rm,
+        "remove",
+        lambda project, **kwargs: calls.append(kwargs)
+        or Result(status=Status.OK, data=_outcome(volumes_removed=0)),
+    )
+
+    with pytest.raises(CwcliError) as error:
+        jobs._dispatch("rm", {"project": "p"}, {}, True, {}, lambda e: None)
+    assert error.value.code == "rm.not_running"
+    assert calls == []
+
+    jobs._dispatch("rm", {"project": "p"}, {"keep_volumes": True}, True, {}, lambda e: None)
+    assert calls[0]["remove_volumes"] is False
+    assert calls[0]["no_backup"] is False
+
+
+def test_rm_runs_the_core_with_consent_and_can_never_skip_the_backup(monkeypatch):
+    calls = []
+    monkeypatch.setattr(jobs.rm_cmd, "_project_run_state", lambda project: "running")
+    monkeypatch.setattr(
+        jobs.core_rm,
+        "remove",
+        lambda project, **kwargs: calls.append(kwargs) or Result(status=Status.OK, data=_outcome()),
+    )
+
+    emit = lambda e: None  # noqa: E731 - identity matters below
+    result = jobs._dispatch("rm", {"project": "p"}, {"no_backup": True}, True, {}, emit)
+
+    assert calls == [{"remove_volumes": True, "no_backup": False, "on_event": emit}]
+    assert jobs._result_ok(result) is True
+
+
+def test_a_gate_blocked_removal_is_a_failed_job_naming_the_terminal_escape_hatch(monkeypatch):
+    monkeypatch.setattr(jobs.rm_cmd, "_project_run_state", lambda project: "running")
+    monkeypatch.setattr(
+        jobs.core_rm,
+        "remove",
+        lambda project, **kwargs: Result(
+            status=Status.WARNING,
+            data=_outcome(backup_ok=False, dir_removed=False, failures=["backup of site x failed"]),
+        ),
+    )
+
+    result = jobs._dispatch("rm", {"project": "p"}, {}, True, {}, lambda e: None)
+
+    assert jobs._result_ok(result) is False
+    assert [w.code for w in result.warnings] == ["rm.backup_gate"]
+    assert "cwcli rm p --no-backup" in result.warnings[0].text
+
+
+def test_a_not_found_project_removal_is_an_ok_no_op_with_a_warning(monkeypatch):
+    monkeypatch.setattr(jobs.rm_cmd, "_project_run_state", lambda project: "orphan")
+    monkeypatch.setattr(
+        jobs.core_rm,
+        "remove",
+        lambda project, **kwargs: Result(
+            status=Status.WARNING,
+            data=_outcome(found=False, containers_removed=0, volumes_removed=0, dir_removed=False),
+        ),
+    )
+
+    result = jobs._dispatch("rm", {"project": "p"}, {}, True, {}, lambda e: None)
+
+    assert jobs._result_ok(result) is True
+    assert [w.code for w in result.warnings] == ["rm.not_found"]
+
+
+def test_rm_site_forwards_consent_and_the_root_password_from_the_secret_only(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        jobs.core_rm_site,
+        "drop_site",
+        lambda project, site, **kwargs: calls.append((project, site, kwargs))
+        or Result(status=Status.OK),
+    )
+
+    jobs._dispatch(
+        "rm-site",
+        {"project": "p", "site": "s.localhost", "bench": "1"},
+        {"db_root_password": "in-args-is-ignored"},
+        True,
+        {"db_root_password": "s3cret"},
+        lambda e: None,
+    )
+    jobs._dispatch(
+        "rm-site", {"project": "p", "site": "t.localhost"}, {}, False, {}, lambda e: None
+    )
+
+    (project, site, kwargs), (_p2, _s2, second) = calls
+    assert (project, site) == ("p", "s.localhost")
+    assert kwargs["bench"] == "1"
+    assert kwargs["consent"] is True
+    assert kwargs["db_root_password"] == "s3cret"
+    assert second["consent"] is False
+    assert second["db_root_password"] == "123"  # the compose default the core assumes
+
+    with pytest.raises(CwcliError) as error:
+        jobs._dispatch("rm-site", {"project": "p"}, {}, True, {}, lambda e: None)
+    assert error.value.code == "site.required"
+
+
+def test_rm_bench_forwards_the_selector_consent_and_secret(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        jobs.core_rm_bench,
+        "remove_bench",
+        lambda project, **kwargs: calls.append((project, kwargs)) or Result(status=Status.OK),
+    )
+
+    emit = lambda e: None  # noqa: E731 - identity matters below
+    jobs._dispatch(
+        "rm-bench", {"project": "p", "bench": "lab"}, {}, True, {"db_root_password": "x"}, emit
+    )
+
+    assert calls == [
+        ("p", {"bench": "lab", "consent": True, "db_root_password": "x", "on_event": emit})
+    ]
+
+
+def test_the_db_root_password_rides_the_environment_never_the_spec(fake_spawn):
+    record = jobs.create_job(
+        "rm-site",
+        {"project": "p", "site": "s.localhost"},
+        {},
+        consent=True,
+        secret_values={"db_root_password": "s3cret"},
+    )
+
+    spec = json.loads((jobs.job_dir(record["id"]) / "spec.json").read_text())
+    assert "s3cret" not in json.dumps(spec)
+    _argv, kwargs = fake_spawn[0]
+    assert kwargs["env"]["CWCLI_JOB_DB_ROOT_PASSWORD"] == "s3cret"
+
+
+def test_apps_checkout_forwards_reset_only_as_the_json_boolean_true(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        jobs.core_apps,
+        "checkout_app",
+        lambda project, app, ref, **kwargs: calls.append(kwargs["reset"])
+        or Result(status=Status.OK, data=None),
+    )
+    monkeypatch.setattr(jobs, "_refresh_after_apps", lambda project, result, emit: result)
+
+    for reset in (True, "yes", 1, None):
+        jobs._dispatch(
+            "apps-checkout",
+            {"project": "p", "app": "erpnext"},
+            {"ref": "develop", "reset": reset},
+            False,
+            {},
+            lambda e: None,
+        )
+
+    assert calls == [True, False, False, False]
