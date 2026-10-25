@@ -270,7 +270,9 @@ def confirm_started(proc: subprocess.Popen, pid_file: Path, timeout: float) -> N
 
     A spawn that returned without this check reported "started" for a child that
     died in its bootstrap, so a caller had no way to learn the daemon was not up.
-    ``RuntimeError`` names the child's exit code when it already exited.
+    ``RuntimeError`` names the child's exit code when it already exited. A child
+    still alive at the deadline is killed first, so a reported failure never
+    leaves a daemon behind to race a retry.
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -280,6 +282,8 @@ def confirm_started(proc: subprocess.Popen, pid_file: Path, timeout: float) -> N
         if code is not None:
             raise RuntimeError(f"the daemon exited during startup (exit code {code})")
         time.sleep(0.02)
+    proc.kill()
+    proc.wait(timeout=5)
     raise RuntimeError(f"the daemon did not come up within {timeout:g}s")
 
 

@@ -625,7 +625,8 @@ def test_a_daemon_that_dies_at_startup_is_reported_not_started(run_dir, monkeypa
 
 
 def test_a_daemon_that_never_comes_up_times_out_loudly(run_dir, monkeypatch):
-    """A child that stays alive but never writes its pid file is a failure too."""
+    """A child that stays alive but never writes its pid file is a failure too,
+    and is killed so a retry cannot race it into a rival daemon."""
     monkeypatch.setattr(
         cred_daemon, "_bootstrap_source", lambda module_path: "import time; time.sleep(30)"
     )
@@ -637,13 +638,11 @@ def test_a_daemon_that_never_comes_up_times_out_loudly(run_dir, monkeypatch):
         real_await(proc, timeout=0.3)
 
     monkeypatch.setattr(cred_daemon, "_await_started", short_await)
-    try:
-        with pytest.raises(RuntimeError, match="did not come up within 0.3s"):
-            cred_daemon.start_daemon()
-    finally:
-        for proc in procs:
-            proc.kill()
-            proc.wait()
+    with pytest.raises(RuntimeError, match="did not come up within 0.3s"):
+        cred_daemon.start_daemon()
+
+    assert len(procs) == 1
+    assert procs[0].poll() is not None
 
 
 def test_concurrent_start_forks_at_most_one_daemon(run_dir, monkeypatch):
