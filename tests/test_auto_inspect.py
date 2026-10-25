@@ -239,6 +239,16 @@ def test_start_daemon_refuses_when_not_enabled(isolated_run_dir, monkeypatch):
         auto_inspect.start_daemon()
 
 
+def _plant_stdlib_shadow(tmp_path):
+    """A caller cwd holding a `json.py` that records being imported in place of
+    the stdlib module the daemon loads."""
+    planted = tmp_path / "caller-cwd"
+    planted.mkdir()
+    hijacked = tmp_path / "hijacked"
+    (planted / "json.py").write_text(f"open({str(hijacked)!r}, 'w').close()\n")
+    return planted, hijacked
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX flock")
 def test_daemon_outlives_the_command_without_holding_its_descriptors(tmp_path):
     """The daemon must not keep anything the enabling command had open. A shell
@@ -247,19 +257,22 @@ def test_daemon_outlives_the_command_without_holding_its_descriptors(tmp_path):
     wrapper's lock file must be free while the daemon runs (a forked daemon
     inherited every fd, so a flock-wrapped command left the lock held by a process
     that looked like the command still running). A SIGTERMed daemon must also
-    remove its own pid file. Mock-free: a real subprocess with a captured pipe and
+    remove its own pid file, and must never import a module from the caller's
+    cwd in place of the stdlib. Mock-free: a real subprocess with a captured pipe and
     a held flock, a real daemon. Fails as a 30s TimeoutExpired or a held lock
     against a forking implementation."""
     import fcntl
 
     lock_path = tmp_path / "wrapper.lock"
     pid_file = tmp_path / "run" / "auto-inspect.pid"
+    planted, hijacked = _plant_stdlib_shadow(tmp_path)
     script = (
         "import fcntl, os\n"
         f"fd = os.open({str(lock_path)!r}, os.O_CREAT | os.O_RDWR)\n"
         "fcntl.flock(fd, fcntl.LOCK_EX)\n"
         "from caffeinated_whale_cli.utils import auto_inspect, config_utils\n"
         "config_utils.set_auto_inspect_enabled(True)\n"
+        f"os.chdir({str(planted)!r})\n"
         "auto_inspect.start_daemon()\n"
         "print('PARENT_DONE')\n"
     )
@@ -293,6 +306,7 @@ def test_daemon_outlives_the_command_without_holding_its_descriptors(tmp_path):
         assert wait_for(pid_file.exists)
         with open(lock_path) as handle:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)  # BlockingIOError = leaked
+        assert not hijacked.exists()
         os.kill(int(pid_file.read_text().split()[0]), signal.SIGTERM)
         assert wait_for(lambda: not pid_file.exists())
     finally:

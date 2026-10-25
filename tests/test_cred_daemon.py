@@ -739,16 +739,23 @@ def test_daemon_outlives_the_command_without_holding_its_descriptors(tmp_path):
     """`cwcli axi start` launches this daemon; a flock-wrapped start must leave the
     wrapper's lock FREE once the command returns. A forked daemon inherited every
     fd (and the command's argv), so the lock stayed held by a process that looked
-    like a hung `axi start`. Mock-free: a real subprocess holding a flock, a real
-    daemon (killed in cleanup)."""
+    like a hung `axi start`. The daemon must also never import a module from the
+    caller's cwd in place of the stdlib. Mock-free: a real subprocess holding a
+    flock, a real daemon (killed in cleanup)."""
     import fcntl
 
     lock_path = tmp_path / "wrapper.lock"
+    pid_file = tmp_path / "run" / "credbridge.pid"
+    planted = tmp_path / "caller-cwd"
+    planted.mkdir()
+    hijacked = tmp_path / "hijacked"
+    (planted / "json.py").write_text(f"open({str(hijacked)!r}, 'w').close()\n")
     script = (
         "import fcntl, os\n"
         f"fd = os.open({str(lock_path)!r}, os.O_CREAT | os.O_RDWR)\n"
         "fcntl.flock(fd, fcntl.LOCK_EX)\n"
         "from caffeinated_whale_cli.utils import cred_daemon\n"
+        f"os.chdir({str(planted)!r})\n"
         "cred_daemon.start_daemon()\n"
     )
     env = {**os.environ, "CWCLI_HOME": str(tmp_path), "CWCLI_SHARED_MARKER": str(tmp_path / "x")}
@@ -757,10 +764,14 @@ def test_daemon_outlives_the_command_without_holding_its_descriptors(tmp_path):
             [sys.executable, "-c", script], capture_output=True, text=True, timeout=30, env=env
         )
         assert result.returncode == 0, result.stderr
+        deadline = time.monotonic() + 5
+        while not pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert pid_file.exists()
         with open(lock_path) as handle:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)  # BlockingIOError = leaked
+        assert not hijacked.exists()
     finally:
-        pid_file = tmp_path / "run" / "credbridge.pid"
         try:
             os.kill(int(pid_file.read_text().split()[0]), signal.SIGKILL)
         except (OSError, ValueError, IndexError):
