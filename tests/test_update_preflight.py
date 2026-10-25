@@ -508,6 +508,18 @@ def test_local_work_that_cannot_be_read_fails_the_guard_closed(bench):
     assert codes(at_risk) == {("git.local_work_unverified", "goodapp")}
 
 
+def test_a_repo_git_refuses_for_dubious_ownership_fails_the_guard_closed(bench):
+    # Under --no-preflight too: the guard never read that repo's work, so it may not pass.
+    bench.env["GIT_TEST_ASSUME_DIFFERENT_OWNER"] = "1"
+
+    at_risk, _ = guard(bench, local_only=True)
+
+    assert codes(at_risk) == {
+        ("git.dubious_ownership", "goodapp"),
+        ("git.dubious_ownership", "frappe"),
+    }
+
+
 # ------------------------------------------------------------------ notices
 
 

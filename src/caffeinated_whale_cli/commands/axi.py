@@ -1550,8 +1550,9 @@ def axi_apps_update(
 
     `--force` is opt-in and DESTRUCTIVE: an app whose git update hits a conflict is
     hard-reset to its remote tracking branch (discarding local changes) so the update
-    completes, reported in `force_reset_apps`. It fires ONLY on a conflict - a clean
-    update is untouched - and never on a non-conflict failure (network/auth).
+    completes, reported in `force_reset_apps`. For apps other than `frappe` it fires
+    ONLY on a conflict - a clean update is untouched - and never on a non-conflict
+    failure (network/auth).
 
     Updating `frappe` runs a preflight before `bench update --reset`: every finding
     rides `preflight` (a `severity,code,app,site,message,remedy` table; branch on
