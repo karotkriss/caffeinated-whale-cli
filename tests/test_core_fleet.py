@@ -350,6 +350,18 @@ class TestHonestUnknown:
         assert bench["web_port"] is None and bench["web_port_verified"] is False
         assert bench["web_http_code"] is None
 
+    def test_the_tcp_web_verdict_reaches_the_json(self, listing, probing):
+        listing(("p", "running", ["8000"]))
+        probing(
+            lambda project, **kw: _report(benches=[_bench(web_http_code=None, web_listening=True)])
+        )
+        f = core_fleet.Fleet()
+        f.bootstrap()
+        f.probe("p")
+
+        bench = core_fleet.as_json(f.get("p"))["benches"][0]
+        assert bench["web_listening"] is True and bench["web_http_code"] is None
+
 
 class TestWebProbeCadence:
     """Decision B: process health on the normal cadence, the web check only when
