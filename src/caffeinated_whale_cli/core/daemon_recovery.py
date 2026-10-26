@@ -38,12 +38,13 @@ def recover() -> list[Recovery]:
                 continue
             module.start()
         except CwcliError as e:
+            advice = e.hint or f"try `{start_cmd}`"
             notes.append(
                 Recovery(
                     daemon=name,
                     started=False,
                     note=f"{name} is enabled but stopped and could not be started: "
-                    f"{e.message} (try `{start_cmd}`)",
+                    f"{e.message} ({advice})",
                 )
             )
         except Exception as e:  # a recovery attempt must never break the caller
