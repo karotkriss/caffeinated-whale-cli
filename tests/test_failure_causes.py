@@ -28,6 +28,23 @@ from caffeinated_whale_cli.core.failure_causes import explain
         ),
         ("Site site1.localhost already exists", "site.exists", "site1.localhost"),
         ("error: No space left on device", "disk.full", "ran out of space"),
+        (
+            "error getting credentials - err: exit status 1, out: ``",
+            "docker.credential_helper",
+            "credential helper",
+        ),
+        (
+            'error getting credentials - err: exec: "docker-credential-desktop.exe": '
+            "executable file not found in $PATH, out: ``",
+            "docker.credential_helper_missing",
+            "docker-credential-desktop.exe is not installed",
+        ),
+        (
+            "error getting credentials - err: exit status 1, out: "
+            "`Cannot autolaunch D-Bus without X11 $DISPLAY`",
+            "docker.credential_helper_failed",
+            "failed: Cannot autolaunch D-Bus without X11 $DISPLAY.",
+        ),
         ("FATAL ERROR: JavaScript heap out of memory", "memory.exhausted", "out of memory"),
         (
             "fatal: Authentication failed for 'https://github.com/acme/app.git/'",

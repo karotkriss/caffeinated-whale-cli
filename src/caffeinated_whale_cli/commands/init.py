@@ -209,7 +209,7 @@ def _render_error_exit(e: CwcliError, project_name: str, *, verbose: bool = Fals
             "a different starting port."
         )
         stderr_console.print(f"[dim]Example: cwcli init {project_name} --port 10000[/dim]")
-    elif e.code == "compose.failed":
+    elif e.code in ("compose.failed", "compose.credential_helper"):
         # Verbose mode already streamed this stderr live via InitOutput events
         # (_InitRenderer._on_output); printing e.detail["output"] here too would
         # duplicate it. Only non-verbose mode (which drops InitOutput events)

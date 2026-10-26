@@ -711,6 +711,46 @@ def test_a_failed_job_records_its_plain_cause(fake_spawn, monkeypatch):
     assert failed["cause"]["title"] == "MariaDB rejected the root password"
 
 
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        b"error getting credentials - err: exit status 1, out: ``",
+        b'error getting credentials - err: exec: "docker-credential-x": executable file not found',
+        b"error getting credentials - err: exit status 1, out: `The keychain is locked`",
+    ],
+)
+def test_a_credential_helper_failure_states_its_cause_once(fake_spawn, monkeypatch, stderr):
+    # The job page prints cause.text before the error message unless the message
+    # already contains it, so a reworded cause would be read twice.
+    import subprocess
+    from types import SimpleNamespace
+
+    from caffeinated_whale_cli.core import init as core_init
+
+    record = jobs.create_job("init", {"project": "p"}, {})
+
+    def failing_run(cmd, cwd=None, capture_output=False, **kwargs):
+        return SimpleNamespace(returncode=1, stdout=b"", stderr=stderr)
+
+    def dispatch(_verb, _target, _args, _consent, _secrets, emit):
+        core_init._run_host_command(
+            ["docker", "compose", "pull"],
+            cwd=".",
+            phase="pull",
+            emit=lambda _e: None,
+            retry_credential_errors=True,
+        )
+
+    monkeypatch.setattr(subprocess, "run", failing_run)
+    monkeypatch.setattr(core_init.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(jobs, "_dispatch", dispatch)
+
+    assert jobs.run_job(record["id"]) == 1
+    failed = jobs.read_job(record["id"])
+    assert failed["cause"]["code"].startswith("docker.credential_helper")
+    assert failed["cause"]["text"] in failed["error"]["message"]
+
+
 @dataclass(frozen=True)
 class _StepOutput:
     stream: str
