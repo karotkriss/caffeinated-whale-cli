@@ -237,9 +237,9 @@ def status(
     one it reports exactly that bench. Either way the shape is the same and it never
     returns ``NEEDS_CHOICE`` - the multi-bench refusal is gone.
 
-    ``probe_web=False`` suppresses the in-container ``curl`` web probe entirely
-    (every bench's ``web_http_code`` comes back ``None``) so a repeated caller - the
-    ``status --watch`` loop - leaves ZERO HTTP requests in the bench's access logs.
+    ``probe_web=False`` suppresses the web probe entirely (every bench's
+    ``web_http_code`` and ``web_listening`` come back ``None``) so a repeated caller -
+    the ``status --watch`` loop - leaves ZERO HTTP requests in the bench's access logs.
     Per-program liveness + state still come from the ``ps`` read and
     ``supervisorctl`` (neither touches the web port), so ``overall`` stays honest:
     with no web signal it is driven by supervisor-up + every program healthy.
@@ -249,9 +249,11 @@ def status(
     path's five, plus the site's maintenance-flag read when the web is probed -
     for a repeating caller that cannot afford the round trips
     (the web UI daemon's FAST tier polls every RUNNING instance every
-    few seconds when driven directly; measured 758ms -> 252ms per instance). It is
-    an exec-budget choice ONLY: the
-    returned :class:`StatusReport` is the same shape with the same tokens, and an
+    few seconds when driven directly; measured 758ms -> 252ms per instance). Its web
+    check is a bare TCP connect rather than an HTTP request, so a poll writes nothing
+    to the bench's access log: ``web_listening`` carries the verdict and
+    ``web_http_code`` stays ``None``. Otherwise the returned :class:`StatusReport`
+    is the same shape with the same tokens, and an
     UNSUPERVISED bench falls back to the full read per bench, so the never-started
     vs supervisor-died distinction and the honcho fallback are never traded away.
     Defaults False, so every existing caller is byte-unchanged.
