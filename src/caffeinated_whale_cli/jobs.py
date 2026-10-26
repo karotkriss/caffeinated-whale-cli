@@ -114,7 +114,7 @@ _CREATE_LOCK = threading.Lock()
 # disk and never in a record - so Retry can reuse what the user typed. Forgotten when
 # the job succeeds, is pruned, or the daemon stops (a retry then asks for them again).
 _RETRY_SECRETS: dict[str, dict[str, str]] = {}
-RETRYABLE_STATES = frozenset({"failed", "interrupted"})
+RETRYABLE_STATES = frozenset({"failed"})
 _EXEC_OUTCOME_UNKNOWN = frozenset({"exec.stream_lost", "exec.exit_code_unknown"})
 # The workers this daemon spawned, so they are reaped: an unreaped child stays a
 # zombie that ``pid_alive`` reports alive, and a job whose worker died abnormally
@@ -314,7 +314,7 @@ def read_job(job_id: str, *, include_events: bool = False, after: int = 0) -> di
     refusal = _retry_refusal(record)
     record["retryable"] = refusal is None
     record["retry_refusal"] = (
-        refusal[1] if refusal and record.get("state") in RETRYABLE_STATES else None
+        refusal[1] if refusal and refusal[0] != "job.retry_not_failed" else None
     )
     if include_events:
         record["events"] = _events(job_id, after=after)
@@ -539,8 +539,14 @@ def _create_job(
 
 def _retry_refusal(record: dict[str, Any]) -> tuple[str, str] | None:
     """Why a job cannot be retried (code, message), or None when it can."""
+    if record.get("state") == "interrupted":
+        return (
+            "job.retry_interrupted",
+            "This job was interrupted and its command inside the instance may still be running. "
+            "Review its last event before deciding whether it is safe to run it again.",
+        )
     if record.get("state") not in RETRYABLE_STATES:
-        return "job.retry_not_failed", "Only a failed or interrupted job can be retried."
+        return "job.retry_not_failed", "Only a failed job can be retried."
     args = record.get("args") or {}
     # Both flags are set by the page only behind a typed confirmation of a name; a
     # retry must not carry that consent over to a run nobody confirmed.

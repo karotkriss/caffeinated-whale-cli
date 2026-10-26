@@ -15,7 +15,7 @@ The failed run left `projects/retrytest/conf/docker-compose.yml`, `conf/db-root-
 
 ## The fix
 
-A failed or interrupted job now has a Retry button.
+A failed job now has a Retry button.
 It posts to `POST /api/v1/jobs/<id>/retry`, which starts a NEW job with the same verb, target and args, and the page opens it.
 
 | Width | Failed job with Retry | Retried job succeeded |
