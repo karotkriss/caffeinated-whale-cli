@@ -656,7 +656,10 @@ class TestFusedFastPath:
         assert fast.overall == slow.overall == "running"
         b_fast, b_slow = _bench(fast), _bench(slow)
         assert b_fast.supervisor_up == b_slow.supervisor_up
-        assert b_fast.web_http_code == b_slow.web_http_code == "200"
+        # The fused tier never sends an HTTP request: it reports the TCP verdict.
+        assert b_slow.web_http_code == "200"
+        assert b_fast.web_http_code is None
+        assert b_fast.web_listening is True
         assert b_fast.web_port == b_slow.web_port == 8000
         assert {p.label for p in b_fast.processes} == {p.label for p in b_slow.processes}
 
@@ -669,6 +672,24 @@ class TestFusedFastPath:
         bash = [cmd for cmd in c.calls if isinstance(cmd, list) and cmd[0] == "bash"]
         assert len(bash) == 1
         assert not [cmd for cmd in c.calls if isinstance(cmd, list) and cmd[0] in ("ps", "curl")]
+
+    def test_the_fused_tier_never_sends_an_http_request(self, wire):
+        # Every tick of the web UI daemon's loop lands here; a curl would make the
+        # bench's web server log a "GET /" line each time. Covers the supervised
+        # steady state AND the honcho bench that delegates to the full read.
+        for c in (
+            FakeContainer(marker=_MARKER, web_code="200"),
+            FakeContainer(marker=None, ps=_PS_HONCHO, cwds={200: BENCH}, web_code="200"),
+        ):
+            wire(c, benches=[{"path": BENCH}])
+            core_status.status("proj", fused=True)
+            assert not [x for x in c.calls if isinstance(x, list) and x[0] == "curl"]
+
+    def test_a_port_that_refuses_degrades_a_fused_read(self, wire):
+        wire(FakeContainer(marker=_MARKER, web_ok=False), benches=[{"path": BENCH}])
+        report = core_status.status("proj", fused=True).data
+        assert _bench(report).web_listening is False
+        assert report.overall == "degraded"
 
     def test_a_fatal_program_still_degrades(self, wire):
         # supervisorctl enumerates every program it manages, so the fused read sees
