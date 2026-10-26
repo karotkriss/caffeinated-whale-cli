@@ -120,16 +120,40 @@ def test_retry_refuses_a_job_whose_page_confirmation_it_would_skip(fake_spawn, v
     assert error.value.code == "job.retry_guarded"
 
 
-@pytest.mark.parametrize("state", ["queued", "running", "succeeded", "needs_choice"])
-def test_only_a_failed_interrupted_or_vanished_job_can_be_retried(fake_spawn, state):
+@pytest.mark.parametrize("state", ["queued", "running", "succeeded", "needs_choice", "unknown"])
+def test_only_a_failed_or_interrupted_job_can_be_retried(fake_spawn, state):
     first = jobs.create_job("backup", {"project": "p"}, {})
     _finish(first["id"], state=state)
 
     assert jobs.read_job(first["id"])["retryable"] is False
+    assert jobs.read_job(first["id"])["retry_refusal"] is None
     with pytest.raises(CwcliError) as error:
         jobs.retry_job(first["id"])
 
     assert error.value.code == "job.retry_not_failed"
+
+
+@pytest.mark.parametrize("key", ["unknown_apps", "unknown_migrations", "unknown_builds"])
+def test_an_update_with_a_step_that_may_still_be_running_has_no_retry(fake_spawn, key):
+    first = jobs.create_job("apps-update", {"project": "p", "app": "erpnext"}, {})
+    _finish(first["id"], result={"failed_apps": [], key: ["erpnext"]})
+
+    record = jobs.read_job(first["id"])
+    assert record["retryable"] is False
+    assert "may still be running" in record["retry_refusal"]
+    with pytest.raises(CwcliError) as error:
+        jobs.retry_job(first["id"])
+
+    assert error.value.code == "job.retry_unknown_outcome"
+    assert len(fake_spawn) == 1
+
+
+def test_an_update_whose_steps_definitely_failed_can_be_retried(fake_spawn):
+    first = jobs.create_job("apps-update", {"project": "p", "app": "erpnext"}, {})
+    _finish(first["id"], result={"failed_apps": ["erpnext"], "unknown_apps": []})
+
+    assert jobs.read_job(first["id"])["retryable"] is True
+    assert jobs.retry_job(first["id"])["verb"] == "apps-update"
 
 
 def test_retrying_an_init_whose_passwords_are_gone_says_so(fake_spawn):

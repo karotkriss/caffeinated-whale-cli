@@ -189,7 +189,7 @@ async function continueChoice(value) {
         <div class="bg-surface-base px-4 py-3"><div class="text-sm text-ink-gray-5">Events</div><div class="mt-1.5 tabular-nums text-base text-ink-gray-8">{{ record.event_count }}</div></div>
       </div>
 
-      <Alert v-if="record.state === 'unknown'" theme="gray" title="The job process vanished" :description="record.error?.message" />
+      <Alert v-if="record.state === 'unknown'" theme="gray" title="The job process vanished" :description="[record.error?.message, record.error?.hint].filter(Boolean).join(' ')" />
       <template v-else-if="record.state === 'needs_choice'">
         <Alert v-if="benchOptions.length || consentNeeded" theme="amber" title="cwcli needs a decision" :description="record.choice.prompt" />
         <Alert v-else theme="amber" title="cwcli needs a decision" :description="record.choice?.prompt || 'Review the job and choose how to continue.'" :primary-action="{ label: record.choice?.param === 'auto_start' && record.verb !== 'init' ? 'Start instance' : 'Continue', onClick: () => continueChoice() }" />
@@ -206,6 +206,7 @@ async function continueChoice(value) {
         <Button variant="solid" icon-left="lucide-rotate-cw" label="Retry" :loading="retrying" @click="retry" />
         <p class="text-p-sm text-ink-gray-5">{{ record.verb === 'init' ? 'Starts a new job with the same settings and passwords. It continues from whatever this one left behind.' : 'Starts a new job with the same settings.' }}</p>
       </div>
+      <p v-else-if="record.retry_refusal" class="text-p-sm text-ink-gray-5">{{ record.retry_refusal }}</p>
       <ErrorMessage :message="actionError" />
 
       <section v-if="preflight" class="rounded-6 border border-outline-gray-1 p-4">

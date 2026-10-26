@@ -114,7 +114,7 @@ _CREATE_LOCK = threading.Lock()
 # disk and never in a record - so Retry can reuse what the user typed. Forgotten when
 # the job succeeds, is pruned, or the daemon stops (a retry then asks for them again).
 _RETRY_SECRETS: dict[str, dict[str, str]] = {}
-RETRYABLE_STATES = frozenset({"failed", "interrupted", "unknown"})
+RETRYABLE_STATES = frozenset({"failed", "interrupted"})
 # The workers this daemon spawned, so they are reaped: an unreaped child stays a
 # zombie that ``pid_alive`` reports alive, and a job whose worker died abnormally
 # would then never become ``unknown``.
@@ -310,7 +310,11 @@ def read_job(job_id: str, *, include_events: bool = False, after: int = 0) -> di
     if state.get("state") == "succeeded":
         _RETRY_SECRETS.pop(job_id, None)
     record = {**spec, **state}
-    record["retryable"] = _retry_refusal(record) is None
+    refusal = _retry_refusal(record)
+    record["retryable"] = refusal is None
+    record["retry_refusal"] = (
+        refusal[1] if refusal and record.get("state") in RETRYABLE_STATES else None
+    )
     if include_events:
         record["events"] = _events(job_id, after=after)
     return record
@@ -535,7 +539,7 @@ def _create_job(
 def _retry_refusal(record: dict[str, Any]) -> tuple[str, str] | None:
     """Why a job cannot be retried (code, message), or None when it can."""
     if record.get("state") not in RETRYABLE_STATES:
-        return "job.retry_not_failed", "Only a failed, interrupted or vanished job can be retried."
+        return "job.retry_not_failed", "Only a failed or interrupted job can be retried."
     args = record.get("args") or {}
     # Both flags are set by the page only behind a typed confirmation of a name; a
     # retry must not carry that consent over to a run nobody confirmed.
@@ -545,6 +549,15 @@ def _retry_refusal(record: dict[str, Any]) -> tuple[str, str] | None:
         return (
             "job.retry_guarded",
             "This job discards local work, so start it again from its page to confirm it again.",
+        )
+    result = record.get("result") or {}
+    if record.get("verb") == "apps-update" and any(
+        result.get(key) for key in ("unknown_apps", "unknown_migrations", "unknown_builds")
+    ):
+        return (
+            "job.retry_unknown_outcome",
+            "Part of this update may still be running inside the instance. "
+            "Review its last event before deciding whether it is safe to retry.",
         )
     return None
 
