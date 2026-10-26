@@ -884,7 +884,7 @@ class TestGitHostingCli:
         status, detail, fix = core_doctor._check_glab()
         assert status is CheckStatus.WARN
         assert "gitlab.com: unknown" in detail
-        assert "could not check glab sign-in state" in detail
+        assert "could not check glab sign-in state for gitlab.com" in detail
         assert "cannot be fetched" not in detail
         assert fix is None
 
@@ -904,6 +904,8 @@ class TestGitHostingCli:
         status, detail, fix = core_doctor._check_glab()
         assert status is CheckStatus.WARN
         assert "a.example: unknown" in detail
+        assert "could not check glab sign-in state for a.example" in detail
+        assert "cannot be fetched" not in detail
         assert fix == "glab auth login --hostname b.example"
 
     def test_never_calls_login(self, monkeypatch):
