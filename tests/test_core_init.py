@@ -619,15 +619,26 @@ class TestInitInstance:
         assert "retrying the job" in exc.value.message
         assert len(pulls) == 1 + len(core_init._CREDENTIAL_RETRY_DELAYS)
 
-    def test_a_missing_credential_helper_is_named_and_not_retried(
-        self, monkeypatch, tmp_path, patched
+    @pytest.mark.parametrize(
+        ("missing", "named"),
+        [
+            (
+                b'error getting credentials - err: exec: "docker-credential-desktop.exe": '
+                b"executable file not found in $PATH, out: ``",
+                "docker-credential-desktop.exe is not installed",
+            ),
+            (
+                b"error getting credentials - err: exit status 1, out: "
+                b"`Cannot autolaunch D-Bus without X11 $DISPLAY`",
+                "failed: Cannot autolaunch D-Bus without X11 $DISPLAY.",
+            ),
+        ],
+    )
+    def test_a_permanent_credential_helper_failure_is_named_and_not_retried(
+        self, monkeypatch, tmp_path, patched, missing, named
     ):
         instance_setup(monkeypatch, tmp_path)
         pulls = []
-        missing = (
-            b'error getting credentials - err: exec: "docker-credential-desktop.exe": '
-            b"executable file not found in $PATH, out: ``"
-        )
 
         def failing_run(cmd, cwd=None, capture_output=False, **kwargs):
             if "pull" in cmd:
@@ -639,7 +650,7 @@ class TestInitInstance:
         with pytest.raises(CwcliError) as exc:
             core_init.init_instance(PROJECT, port=18000)
         assert exc.value.code == "compose.credential_helper"
-        assert "docker-credential-desktop.exe is not installed" in exc.value.message
+        assert named in exc.value.message
         assert "retrying" not in exc.value.message
         assert exc.value.detail == {"output": missing.decode()}
         assert len(pulls) == 1

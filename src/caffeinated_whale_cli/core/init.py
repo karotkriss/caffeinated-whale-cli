@@ -433,8 +433,8 @@ def _run_host_command(
     ``retry_credential_errors`` retries a run whose credential helper timed out
     (``docker.credential_helper``, typically a Windows helper reached through WSL
     interop) after a short backoff. If it keeps failing, the error names the
-    helper and says the cause is temporary. A helper that is not installed is
-    never retried and is named as missing instead.
+    helper and says the cause is temporary. A helper that is not installed or
+    that fails with its own reason is never retried, and that cause is named.
     """
     delays = iter(_CREDENTIAL_RETRY_DELAYS if retry_credential_errors else ())
     while True:
@@ -468,7 +468,7 @@ def _run_host_command(
             "job normally works.",
             detail={"output": stderr},
         )
-    if cause is not None and cause.code == "docker.credential_helper_missing":
+    if cause is not None and cause.code.startswith("docker.credential_helper"):
         raise CwcliError(
             ErrorKind.DOCKER,
             "compose.credential_helper",
