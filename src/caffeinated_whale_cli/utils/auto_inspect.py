@@ -43,6 +43,11 @@ def _pid_alive(pid: int) -> bool:
     return daemon_identity.pid_alive(pid)
 
 
+def _pid_signalable(pid: int) -> bool:
+    """Whether this account may signal ``pid`` (delegated)."""
+    return daemon_identity.pid_signalable(pid)
+
+
 def _process_start_time(pid: int) -> str | None:
     """A stable per-process creation-time token, or None (delegated)."""
     return daemon_identity.process_start_time(pid)
@@ -87,6 +92,9 @@ def is_running() -> bool:
     # Pre-identity pid file (pid only): degrade to liveness rather than making an
     # already-running daemon unstoppable.
     # ponytail: this fallback retires once no pre-identity pid files can exist.
+    if not _pid_signalable(pid):
+        _clear_pid_file()
+        return False
     return True
 
 
@@ -187,16 +195,14 @@ def _bootstrap_source(module_path: str, interval: int) -> str:
         f"sys.path.insert(0, {module_path!r})\n"
         "import signal\n"
         "from caffeinated_whale_cli.utils.auto_inspect import "
-        "_write_pid_file, _log, _run_service_loop, _handle_sigterm\n"
+        "_run_service_loop, _handle_sigterm\n"
         "signal.signal(signal.SIGTERM, _handle_sigterm)\n"
         "signal.signal(signal.SIGINT, _handle_sigterm)\n"
-        "_write_pid_file()\n"
-        f'_log("Auto-inspect service started (interval: {interval}s)")\n'
         f"_run_service_loop({interval})\n"
     )
 
 
-def _spawn_detached(interval: int):
+def _spawn_detached(interval: int) -> subprocess.Popen:
     """Run the service loop in a detached child.
 
     The child's stderr goes to the LOG FILE rather than DEVNULL. That redirect is
@@ -211,30 +217,12 @@ def _spawn_detached(interval: int):
     """
     _ensure_pid_dir()
     source = _bootstrap_source(str(Path(__file__).parent.parent.parent), interval)
+    return daemon_identity.spawn_detached(source, LOG_FILE)
 
-    # Each platform ignores the other's detach knob at its default (Popen only
-    # rejects creationflags on POSIX / start_new_session on Windows when they are
-    # actually set), so both can be passed unconditionally and the call stays one
-    # copy instead of two near-identical branches.
-    if sys.platform == "win32":
-        DETACHED_PROCESS = 0x00000008  # noqa: N806
-        CREATE_NEW_PROCESS_GROUP = 0x00000200  # noqa: N806
-        creationflags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-        new_session = False
-    else:
-        creationflags = 0
-        new_session = True
 
-    with open(LOG_FILE, "a") as log:
-        subprocess.Popen(
-            [sys.executable, "-c", source],
-            close_fds=True,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=log,
-            creationflags=creationflags,
-            start_new_session=new_session,
-        )
+def _await_started(proc: subprocess.Popen, timeout: float = 10.0) -> None:
+    """Wait for the spawned daemon's pid file, or raise (ponytail: 10s ceiling)."""
+    daemon_identity.confirm_started(proc, PID_FILE, timeout)
 
 
 def start_daemon():
@@ -253,8 +241,13 @@ def start_daemon():
     # Always a fresh detached interpreter, never os.fork: a forked daemon inherits
     # every descriptor of the calling command (a wrapper's lock file, docker
     # sockets, a listening socket of a multithreaded host) and its argv, so it
-    # outlives the command holding all of them.
-    _spawn_detached(interval)
+    # outlives the command holding all of them. A daemon that does not come up is
+    # logged and raised, never reported started.
+    try:
+        _await_started(_spawn_detached(interval))
+    except (OSError, RuntimeError) as e:
+        _log(f"Auto-inspect service failed to start: {e}")
+        raise RuntimeError(f"{e}; see {LOG_FILE}") from e
 
 
 def _write_pid_file():
@@ -269,6 +262,10 @@ def _write_pid_file():
 
 def _run_service_loop(interval: int):
     """Run the main service loop."""
+    if interval <= 0:
+        raise ValueError("auto-inspect interval must be positive")
+    _write_pid_file()
+    _log(f"Auto-inspect service started (interval: {interval}s)")
     while True:
         try:
             _run_inspection_cycle()

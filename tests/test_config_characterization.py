@@ -260,14 +260,21 @@ class TestStartAliasFrozen:
         assert "cwcli config auto-inspect enable" in result.output
         assert cfg.calls["start"] == 0
 
-    def test_already_running_is_a_no_op_success(self, cfg):
+    def test_already_running_is_a_no_op_success(self, cfg, monkeypatch):
         cfg.running = True
         cfg.pid = 4242
+        repaired = []
+        monkeypatch.setattr(
+            startup,
+            "repair_startup",
+            lambda unit=startup.AUTO_INSPECT: repaired.append(unit) or True,
+        )
         result = runner.invoke(app, ["config", "auto-inspect", "start"])
         assert result.exit_code == 0
         assert "already running" in result.output
         assert "4242" in result.output
         assert cfg.calls["start"] == 0
+        assert repaired == [startup.AUTO_INSPECT]
 
     def test_starts_when_enabled(self, cfg):
         _enable_in_config(True)

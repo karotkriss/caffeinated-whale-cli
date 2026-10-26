@@ -149,6 +149,22 @@ class TestEnable:
         assert _saved()["startup_enabled"] is False
         assert result.data.state.daemon_running is True
 
+    def test_at_boot_false_restarts_a_daemon_the_hook_removal_took_down(
+        self, cfg, monkeypatch
+    ):
+        core_ai.enable(at_boot=True)
+
+        def _uninstall_kills_daemon(unit=None):
+            cfg.installed = False
+            cfg.running = False
+            return (True, None)
+
+        monkeypatch.setattr(startup, "uninstall_startup", _uninstall_kills_daemon)
+        result = core_ai.enable(at_boot=False)
+        assert "hook.removed" in result.data.actions
+        assert "daemon.started" in result.data.actions
+        assert result.data.state.daemon_running is True
+
     def test_at_boot_none_leaves_the_hook_untouched(self, cfg):
         cfg.installed = True
         result = core_ai.enable()
@@ -218,6 +234,75 @@ class TestDisable:
         with pytest.raises(CwcliError) as exc:
             core_ai.disable()
         assert exc.value.code == "daemon.stop_failed"
+
+
+class TestStart:
+    def test_refuses_when_disabled(self, cfg):
+        with pytest.raises(CwcliError) as exc:
+            core_ai.start()
+        assert exc.value.code == "auto_inspect.not_enabled"
+        assert cfg.calls["start"] == 0
+
+    def test_starts_a_stopped_daemon_of_an_enabled_feature(self, cfg):
+        core_ai.enable()
+        core_ai.stop()
+        result = core_ai.start()
+        assert result.data.actions == ["daemon.started"]
+        assert result.data.state.daemon_running is True
+
+    def test_already_running_is_a_noop(self, cfg):
+        core_ai.enable()
+        assert core_ai.start().data.actions == ["daemon.already_running"]
+        assert cfg.calls["start"] == 1  # only enable's
+
+    def test_restart_stops_then_starts(self, cfg):
+        core_ai.enable()
+        result = core_ai.restart()
+        assert result.data.actions == ["daemon.restarted"]
+        assert (cfg.calls["stop"], cfg.calls["start"]) == (1, 2)
+
+    def test_a_failed_start_is_an_error(self, cfg, monkeypatch):
+        core_ai.enable()
+        core_ai.stop()
+
+        def _fail():
+            raise RuntimeError("the daemon did not come up within 10s")
+
+        monkeypatch.setattr(auto_inspect, "start_daemon", _fail)
+        with pytest.raises(CwcliError) as exc:
+            core_ai.start()
+        assert exc.value.code == "daemon.start_failed"
+
+    def test_state_carries_the_last_log_line(self, cfg):
+        auto_inspect.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        auto_inspect.LOG_FILE.write_text("[t] Auto-inspect service failed to start: boom\n")
+        assert core_ai.status().data.last_log_line.endswith("failed to start: boom")
+
+
+class TestLegacyUnitRepairedBeforeTheDaemonIsTouched:
+    def test_repair_precedes_every_stop_and_start(self, cfg, monkeypatch):
+        events: list[str] = []
+        real_start, real_stop = auto_inspect.start_daemon, auto_inspect.stop_daemon
+        monkeypatch.setattr(
+            startup, "repair_startup", lambda unit=None: events.append("repair") or False
+        )
+        monkeypatch.setattr(
+            auto_inspect, "start_daemon", lambda: events.append("start") or real_start()
+        )
+        monkeypatch.setattr(
+            auto_inspect, "stop_daemon", lambda: events.append("stop") or real_stop()
+        )
+        core_ai.enable(interval=900)
+
+        for verb in (core_ai.restart, lambda: core_ai.enable(interval=1200)):
+            events.clear()
+            verb()
+            assert events == ["repair", "stop", "start"]
+
+        core_ai.stop()
+        events.clear()
+        core_ai.start()
+        assert events == ["repair", "start"]
 
 
 class TestStop:

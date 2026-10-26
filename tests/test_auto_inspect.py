@@ -116,6 +116,22 @@ def test_is_running_is_false_when_the_pid_file_is_garbage(isolated_run_dir):
     assert auto_inspect.is_running() is False
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX os.kill probe")
+def test_is_running_is_false_and_clears_a_pid_only_file_recycled_to_another_user(
+    isolated_run_dir, monkeypatch
+):
+    """A legacy pid-only file whose pid now belongs to another user is not our daemon."""
+
+    def _eperm(pid, sig):
+        raise PermissionError(1, "Operation not permitted")
+
+    auto_inspect.PID_FILE.write_text("4242")
+    monkeypatch.setattr(auto_inspect.os, "kill", _eperm)
+
+    assert auto_inspect.is_running() is False
+    assert not auto_inspect.PID_FILE.exists()
+
+
 def test_is_running_is_false_when_there_is_no_pid_file(isolated_run_dir):
     """No PID file means no daemon."""
     assert auto_inspect.is_running() is False
@@ -205,6 +221,7 @@ def test_start_daemon_spawns_a_detached_child_and_never_forks(isolated_run_dir, 
 
     spawned = []
     monkeypatch.setattr(auto_inspect, "_spawn_detached", lambda interval: spawned.append(interval))
+    monkeypatch.setattr(auto_inspect, "_await_started", lambda proc: None)
 
     auto_inspect.start_daemon()
 
@@ -220,6 +237,7 @@ def test_start_daemon_coerces_a_string_interval(isolated_run_dir, monkeypatch):
     )
     spawned = []
     monkeypatch.setattr(auto_inspect, "_spawn_detached", lambda interval: spawned.append(interval))
+    monkeypatch.setattr(auto_inspect, "_await_started", lambda proc: None)
 
     auto_inspect.start_daemon()
 
@@ -350,6 +368,39 @@ def test_spawn_detached_sends_child_stderr_to_the_log(isolated_run_dir, monkeypa
     logged = auto_inspect.LOG_FILE.read_text()
     assert "RuntimeError: bootstrap blew up" in logged
     assert "Traceback (most recent call last)" in logged
+
+
+def test_a_daemon_that_dies_at_startup_is_reported_not_started(isolated_run_dir, monkeypatch):
+    """start_daemon used to return as soon as Popen did, so a child that died in
+    its bootstrap still read as started. It now waits for the pid file, and a child
+    that exits first raises with its exit code and leaves a log line saying so.
+    Mock-free: a real child that exits 3."""
+    monkeypatch.setattr(
+        auto_inspect.config_utils,
+        "get_auto_inspect_config",
+        lambda: {"enabled": True, "interval": 900},
+    )
+    monkeypatch.setattr(
+        auto_inspect, "_bootstrap_source", lambda module_path, interval: "raise SystemExit(3)"
+    )
+
+    with pytest.raises(RuntimeError, match=r"exited during startup \(exit code 3\)"):
+        auto_inspect.start_daemon()
+
+    assert "Auto-inspect service failed to start" in auto_inspect.LOG_FILE.read_text()
+
+
+def test_invalid_interval_fails_before_readiness_is_published(isolated_run_dir, monkeypatch):
+    monkeypatch.setattr(
+        auto_inspect.config_utils,
+        "get_auto_inspect_config",
+        lambda: {"enabled": True, "interval": 0},
+    )
+
+    with pytest.raises(RuntimeError, match="exited during startup"):
+        auto_inspect.start_daemon()
+
+    assert not auto_inspect.PID_FILE.exists()
 
 
 def test_get_log_tail_returns_the_last_lines(isolated_run_dir):

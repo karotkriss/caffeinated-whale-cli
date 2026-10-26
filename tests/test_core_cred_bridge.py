@@ -6,7 +6,9 @@ validate/persist/fuse discipline. The exit-code-driving fields (report tokens,
 never ``Result.status``) and the opt-in start-refusal are the load-bearing pins.
 """
 
+import configparser
 from dataclasses import asdict
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +18,9 @@ from caffeinated_whale_cli.core.envelope import Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from caffeinated_whale_cli.utils import config_utils, startup
 from caffeinated_whale_cli.utils import cred_daemon as daemon
+
+_REAL_REPAIR_STARTUP = startup.repair_startup
+_REAL_IS_STARTUP_INSTALLED = startup.is_startup_installed
 
 
 def _managed(cfg, *names):
@@ -264,6 +269,166 @@ class TestStart:
         assert cfg.calls["start"] == 0
 
 
+class TestReEnableOverALegacyBootUnit:
+    def test_enable_starts_the_daemon_and_strips_execstop_without_reinstalling(
+        self, cfg, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        monkeypatch.setattr(startup, "get_platform", lambda: "linux")
+        monkeypatch.setattr(startup, "repair_startup", _REAL_REPAIR_STARTUP)
+        monkeypatch.setattr(startup, "is_startup_installed", _REAL_IS_STARTUP_INSTALLED)
+        systemctl: list[list[str]] = []
+        monkeypatch.setattr(
+            startup.subprocess,
+            "run",
+            lambda cmd, **kwargs: systemctl.append(list(cmd))
+            or SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+        service = tmp_path / ".config" / "systemd" / "user" / startup.CRED_BRIDGE.service_name
+        service.parent.mkdir(parents=True)
+        service.write_text(
+            "[Unit]\nDescription=bridge\n\n[Service]\nType=forking\n"
+            'ExecStart="/old/cwcli" config cred-bridge start\n'
+            'ExecStop="/old/cwcli" config cred-bridge stop\n'
+            "\n[Install]\nWantedBy=default.target\n"
+        )
+        cfg.enabled = True
+
+        result = core_cred.enable(at_boot=True)
+
+        assert result.status is Status.OK
+        assert "daemon.started" in result.data.actions
+        assert "hook.repaired" in result.data.actions
+        assert cfg.calls["start"] == 1
+        assert cfg.calls["install"] == 0
+        assert result.data.state.daemon_running is True
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.optionxform = str
+        parser.read(service)
+        assert "ExecStop" not in parser["Service"]
+        assert parser["Service"]["ExecStart"] == '"/old/cwcli" config cred-bridge start'
+        assert systemctl == [["systemctl", "--user", "daemon-reload"]]
+
+
+class TestLegacyUnitRepairedBeforeTheDaemonIsTouched:
+    def test_repair_precedes_every_stop_and_start(self, cfg, monkeypatch):
+        cfg.enabled = True
+        events: list[str] = []
+        real_start, real_stop = daemon.start_daemon, daemon.stop_daemon
+        monkeypatch.setattr(
+            startup, "repair_startup", lambda unit=None: events.append("repair") or False
+        )
+        monkeypatch.setattr(daemon, "start_daemon", lambda: events.append("start") or real_start())
+        monkeypatch.setattr(daemon, "stop_daemon", lambda: events.append("stop") or real_stop())
+
+        core_cred.enable()
+        assert events == ["repair", "start"]
+
+        events.clear()
+        core_cred.restart()
+        assert events == ["repair", "stop", "start"]
+
+        core_cred.stop()
+        events.clear()
+        core_cred.start()
+        assert events == ["repair", "start"]
+
+
+class TestBootUnitRepairFailure:
+    def test_a_failed_unit_repair_is_a_warning_over_a_started_daemon(self, cfg, monkeypatch):
+        cfg.enabled = True
+
+        def _fail(unit=None):
+            raise OSError("systemctl daemon-reload failed")
+
+        monkeypatch.setattr(startup, "repair_startup", _fail)
+        for verb in (core_cred.start, core_cred.restart, core_cred.enable):
+            result = verb()
+            assert result.status is Status.WARNING
+            assert [w.code for w in result.warnings] == ["startup.repair_failed"]
+            assert result.data.state.daemon_running is True
+
+
+class TestRestart:
+    def test_restarts_a_running_daemon(self, cfg):
+        cfg.enabled = True
+        cfg.running = True
+        result = core_cred.restart()
+        assert result.data.actions == ["daemon.restarted"]
+        assert (cfg.calls["stop"], cfg.calls["start"]) == (1, 1)
+        assert result.data.state.daemon_running is True
+
+    def test_starts_a_stopped_daemon(self, cfg):
+        cfg.enabled = True
+        core_cred.restart()
+        assert (cfg.calls["stop"], cfg.calls["start"]) == (0, 1)
+
+    def test_refuses_when_disabled(self, cfg):
+        cfg.running = True
+        with pytest.raises(CwcliError) as exc:
+            core_cred.restart()
+        assert exc.value.code == "cred_bridge.not_enabled"
+        assert cfg.calls["stop"] == 0  # never stopped a daemon it would not restart
+
+
+class TestDaemonStartFailure:
+    def test_a_failed_start_is_an_error_not_a_started_daemon(self, cfg, monkeypatch):
+        """The web page and the CLI must hear about a daemon that did not come up."""
+        cfg.enabled = True
+
+        def _fail():
+            raise RuntimeError("the daemon exited during startup (exit code 1)")
+
+        monkeypatch.setattr(daemon, "start_daemon", _fail)
+        for verb in (core_cred.start, core_cred.restart, core_cred.enable):
+            with pytest.raises(CwcliError) as exc:
+                verb()
+            assert exc.value.code == "daemon.start_failed"
+            assert "exit code 1" in exc.value.message
+
+    def test_a_start_that_spawned_nothing_is_refused_not_reported_started(self, cfg, monkeypatch):
+        """Shared mode: a non-service-account start_daemon is a no-op, so the
+        daemon is still down and no verb may report it started."""
+        cfg.enabled = True
+        monkeypatch.setattr(daemon, "start_daemon", lambda: None)
+        monkeypatch.setattr(daemon, "_may_fork_daemon", lambda: False)
+        for verb in (core_cred.start, core_cred.restart, core_cred.enable):
+            with pytest.raises(CwcliError) as exc:
+                verb()
+            assert exc.value.code == "daemon.system_owned"
+            assert exc.value.kind is ErrorKind.PRECONDITION
+            assert "not running" not in exc.value.message
+
+    def test_a_daemon_gone_after_start_is_a_start_failure_not_system_owned(
+        self, cfg, monkeypatch
+    ):
+        cfg.enabled = True
+        monkeypatch.setattr(daemon, "start_daemon", lambda: None)
+        monkeypatch.setattr(daemon, "_may_fork_daemon", lambda: True)
+        for verb in (core_cred.start, core_cred.restart, core_cred.enable):
+            with pytest.raises(CwcliError) as exc:
+                verb()
+            assert exc.value.code == "daemon.start_failed"
+
+    def test_a_daemon_that_would_not_stop_is_never_reported_restarted(self, cfg, monkeypatch):
+        cfg.enabled = True
+        cfg.running = True
+
+        def _refused():
+            raise RuntimeError("not permitted to stop the daemon (pid 5151)")
+
+        monkeypatch.setattr(daemon, "stop_daemon", _refused)
+        with pytest.raises(CwcliError) as exc:
+            core_cred.restart()
+        assert exc.value.code == "daemon.stop_failed"
+        assert cfg.calls["start"] == 0
+
+    def test_state_carries_the_last_log_line(self, cfg, monkeypatch):
+        daemon.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        daemon.LOG_FILE.write_text("[t] credential-bridge daemon stopped\n")
+        assert core_cred.status().data.last_log_line == "[t] credential-bridge daemon stopped"
+
+
 class TestStop:
     def test_stops_a_running_daemon_only(self, cfg):
         cfg.enabled = True
@@ -336,6 +501,22 @@ class TestBootPersistence:
         assert cfg.calls["uninstall"] == 1
         assert config_utils.load_config()["cred_bridge"]["startup_enabled"] is False
 
+    def test_enable_no_startup_restarts_a_daemon_the_hook_removal_took_down(
+        self, cfg, monkeypatch
+    ):
+        core_cred.enable(at_boot=True)
+
+        def _uninstall_kills_daemon(unit=None):
+            cfg.installed = False
+            cfg.running = False
+            return (True, None)
+
+        monkeypatch.setattr(startup, "uninstall_startup", _uninstall_kills_daemon)
+        result = core_cred.enable(at_boot=False)
+        assert "hook.removed" in result.data.actions
+        assert "daemon.started" in result.data.actions
+        assert result.data.state.daemon_running is True
+
     def test_disable_tears_the_unit_down_too(self, cfg):
         core_cred.enable(at_boot=True)
         result = core_cred.disable()
@@ -349,7 +530,6 @@ class TestBootPersistence:
         disabled guard keeps a stale unit inert after `disable` - the load-bearing
         property the auto-inspect unit established."""
         assert startup.CRED_BRIDGE.start_args == ("config", "cred-bridge", "start")
-        assert startup.CRED_BRIDGE.stop_args == ("config", "cred-bridge", "stop")
         # And the generalization did not move the auto-inspect unit's identity.
         assert startup.AUTO_INSPECT.start_args == ("config", "auto-inspect", "start")
         assert startup.AUTO_INSPECT.service_name == "cwcli-auto-inspect.service"

@@ -16,9 +16,11 @@ callers match BOTH pid and creation time before trusting or signalling it.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -70,9 +72,7 @@ def pid_alive(pid: int) -> bool:
 
         handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
         if not handle:
-            # No such process, or it belongs to another user. Both mean "not our
-            # live daemon", which matches what os.kill(pid, 0) reports on POSIX
-            # (ESRCH / EPERM both raise OSError there).
+            # No such process, or it cannot be opened from this account.
             return False
         try:
             return bool(kernel32.WaitForSingleObject(handle, 0) == WAIT_TIMEOUT)
@@ -82,8 +82,25 @@ def pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
         return True
+    except PermissionError:
+        return True
     except OSError:
         return False
+
+
+def pid_signalable(pid: int) -> bool:
+    """Whether this account may signal ``pid``.
+
+    A pre-identity pid file (pid only) was only ever written by this account's own
+    per-user daemon, so a pid it cannot signal has been recycled to another user.
+    """
+    if sys.platform == "win32":
+        return True
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
 
 
 def process_start_time(pid: int) -> str | None:
@@ -226,6 +243,9 @@ def is_running(pid_file: Path) -> bool:
 
     # Pre-identity pid file (pid only): degrade to liveness rather than making an
     # already-running daemon unstoppable.
+    if not pid_signalable(pid):
+        clear_pid_file(pid_file)
+        return False
     return True
 
 
@@ -233,3 +253,67 @@ def get_pid(pid_file: Path) -> int | None:
     """The pid recorded in ``pid_file``, or None if there is no usable record."""
     record = read_daemon_record(pid_file)
     return record[0] if record else None
+
+
+def spawn_detached(source: str, log_file: Path) -> subprocess.Popen:
+    """Run ``source`` in a fresh, detached interpreter and return its handle.
+
+    Never ``os.fork``: a forked daemon inherits every descriptor of the calling
+    command and its argv. ``close_fds=True`` hands the child only the three named
+    here. stderr goes to ``log_file`` so a child that dies in its bootstrap leaves
+    its traceback there instead of vanishing.
+    """
+    if sys.platform == "win32":
+        DETACHED_PROCESS = 0x00000008  # noqa: N806
+        CREATE_NEW_PROCESS_GROUP = 0x00000200  # noqa: N806
+        creationflags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        new_session = False
+    else:
+        creationflags = 0
+        new_session = True
+
+    with open(log_file, "a") as log:
+        return subprocess.Popen(
+            [sys.executable, "-c", source],
+            close_fds=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=log,
+            creationflags=creationflags,
+            start_new_session=new_session,
+        )
+
+
+def confirm_started(proc: subprocess.Popen, pid_file: Path, timeout: float) -> None:
+    """Wait until the spawned daemon has written ``pid_file``; raise if it never does.
+
+    A spawn that returned without this check reported "started" for a child that
+    died in its bootstrap, so a caller had no way to learn the daemon was not up.
+    ``RuntimeError`` names the child's exit code when it already exited. A child
+    still alive at the deadline is killed first, so a reported failure never
+    leaves a daemon behind to race a retry.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if is_running(pid_file):
+            return
+        code = proc.poll()
+        if code is not None:
+            raise RuntimeError(f"the daemon exited during startup (exit code {code})")
+        time.sleep(0.02)
+    proc.kill()
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.wait(timeout=5)
+    raise RuntimeError(f"the daemon did not come up within {timeout:g}s")
+
+
+def last_log_line(log_file: Path) -> str | None:
+    """The last non-empty line of ``log_file``, or None when there is none to read."""
+    try:
+        with open(log_file, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 4096))
+            lines = f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return None
+    return next((line.strip() for line in reversed(lines) if line.strip()), None)
