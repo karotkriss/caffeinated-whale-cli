@@ -581,7 +581,7 @@ class TestAutoInspect:
         monkeypatch.setattr(
             "caffeinated_whale_cli.utils.auto_inspect._read_daemon_record", lambda: None
         )
-        status, _detail, fix = core_doctor._check_auto_inspect()
+        status, _detail, fix, *_ = core_doctor._check_auto_inspect()
         assert status is CheckStatus.WARN
         assert fix
         assert called == []  # is_running() (which prunes) was never invoked
@@ -595,10 +595,10 @@ class TestAutoInspect:
             "caffeinated_whale_cli.utils.auto_inspect._read_daemon_record", lambda: (1, None)
         )
         monkeypatch.setattr("caffeinated_whale_cli.utils.auto_inspect._pid_alive", lambda _p: False)
-        status, detail, fix = core_doctor._check_auto_inspect()
+        status, detail, fix, *_ = core_doctor._check_auto_inspect()
         assert status is CheckStatus.WARN
         assert "enabled but stopped" in detail
-        assert fix == "run `cwcli config auto-inspect start`"
+        assert fix == "run `cwcli config auto-inspect enable`"
 
     def test_warn_when_existing_config_cannot_be_read(self, monkeypatch):
         monkeypatch.setattr(
@@ -657,7 +657,7 @@ class TestCredBridgeCheck:
         monkeypatch.setattr(
             "caffeinated_whale_cli.utils.daemon_identity.read_daemon_record", lambda _pf: None
         )
-        status, _detail, fix = core_doctor._check_cred_bridge()
+        status, _detail, fix, *_ = core_doctor._check_cred_bridge()
         assert status is CheckStatus.WARN
         assert fix
         assert called == []
@@ -674,7 +674,7 @@ class TestCredBridgeCheck:
         monkeypatch.setattr(
             "caffeinated_whale_cli.utils.daemon_identity.pid_alive", lambda _p: False
         )
-        status, detail, fix = core_doctor._check_cred_bridge()
+        status, detail, fix, *_ = core_doctor._check_cred_bridge()
         assert status is CheckStatus.WARN
         assert "enabled but stopped" in detail
         assert fix == "run `cwcli config cred-bridge start`"
@@ -890,6 +890,44 @@ class TestStoppedDaemonAction:
         (check,) = report.checks
         assert check.status is CheckStatus.WARN
         assert check.action == "cred_bridge.start"
+
+    def test_a_running_bridge_warning_carries_no_start_action(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.config_utils.read_cred_bridge_config",
+            lambda: {"enabled": True},
+        )
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.daemon_identity.read_daemon_record",
+            lambda _pf: (7070, "start-tok"),
+        )
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.daemon_identity.pid_alive", lambda _p: True
+        )
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.daemon_identity.process_start_time",
+            lambda _p: "start-tok",
+        )
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.cred_daemon._read_registry",
+            lambda: {"gone": str(tmp_path / "missing")},
+        )
+        by_id = {c.id: c for c in core_doctor._CHECKS}
+        monkeypatch.setattr(core_doctor, "_CHECKS", [by_id["c19"]])
+        (check,) = core_doctor.run_all().data.checks
+        assert check.status is CheckStatus.WARN
+        assert "running (pid 7070)" in check.detail
+        assert check.action is None
+
+    def test_an_unreadable_auto_inspect_config_carries_no_start_action(self, monkeypatch):
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.config_utils.read_auto_inspect_config",
+            lambda: (_ for _ in ()).throw(PermissionError("permission denied")),
+        )
+        by_id = {c.id: c for c in core_doctor._CHECKS}
+        monkeypatch.setattr(core_doctor, "_CHECKS", [by_id["c9"]])
+        (check,) = core_doctor.run_all().data.checks
+        assert check.status is CheckStatus.WARN
+        assert check.action is None
 
     def test_a_passing_check_carries_no_action(self, monkeypatch):
         monkeypatch.setattr(

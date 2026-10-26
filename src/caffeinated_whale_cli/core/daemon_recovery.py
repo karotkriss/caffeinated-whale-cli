@@ -27,7 +27,7 @@ def recover() -> list[Recovery]:
     """Start every daemon that is enabled with start-at-boot on but not running."""
     notes: list[Recovery] = []
     for name, module, start_cmd in (
-        ("auto-inspect", auto_inspect, "cwcli config auto-inspect start"),
+        ("auto-inspect", auto_inspect, "cwcli config auto-inspect enable"),
         ("credential bridge", cred_bridge, "cwcli config cred-bridge start"),
     ):
         try:
