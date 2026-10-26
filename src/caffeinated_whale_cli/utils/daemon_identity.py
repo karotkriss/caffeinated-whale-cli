@@ -16,6 +16,7 @@ callers match BOTH pid and creation time before trusting or signalling it.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 import sys
@@ -226,7 +227,14 @@ def is_running(pid_file: Path) -> bool:
         return True
 
     # Pre-identity pid file (pid only): degrade to liveness rather than making an
-    # already-running daemon unstoppable.
+    # already-running daemon unstoppable. Only this account's own per-user daemon
+    # ever wrote one, so a pid it cannot signal has been recycled to another user.
+    if sys.platform != "win32":
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            clear_pid_file(pid_file)
+            return False
     return True
 
 
@@ -283,7 +291,8 @@ def confirm_started(proc: subprocess.Popen, pid_file: Path, timeout: float) -> N
             raise RuntimeError(f"the daemon exited during startup (exit code {code})")
         time.sleep(0.02)
     proc.kill()
-    proc.wait(timeout=5)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.wait(timeout=5)
     raise RuntimeError(f"the daemon did not come up within {timeout:g}s")
 
 
