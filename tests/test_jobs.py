@@ -146,6 +146,62 @@ def test_retrying_an_init_whose_passwords_are_gone_says_so(fake_spawn):
     assert len(fake_spawn) == 1
 
 
+def test_a_retried_removal_confirmed_by_name_keeps_the_typed_password(fake_spawn):
+    first = jobs.create_job(
+        "rm-site",
+        {"project": "p", "site": "s.localhost"},
+        {},
+        consent=True,
+        secret_values={"db_root_password": "typed-root"},
+    )
+    _finish(first["id"])
+    retried = jobs.retry_job(first["id"])
+    _finish(retried["id"], state="needs_choice", choice={"param": "consent"})
+
+    confirmed = jobs.continue_job(
+        retried["id"], {"project": "p", "site": "s.localhost"}, {}, consent=True
+    )
+
+    assert confirmed["consent"] is True
+    assert fake_spawn[-1][1]["env"]["CWCLI_JOB_DB_ROOT_PASSWORD"] == "typed-root"
+    assert "typed-root" not in (jobs.job_dir(confirmed["id"]) / "spec.json").read_text()
+    assert retried["id"] not in jobs._RETRY_SECRETS
+    _finish(confirmed["id"], state="succeeded")
+    jobs.read_job(confirmed["id"])
+    assert jobs._RETRY_SECRETS == {first["id"]: {"db_root_password": "typed-root"}}
+
+
+def test_an_init_that_asks_to_reuse_its_bench_continues_with_its_passwords(fake_spawn):
+    first = jobs.create_job(
+        "init",
+        {"project": "p"},
+        {"port": 28000},
+        secret_values={"admin_password": "admin-x", "db_root_password": "root-x"},
+    )
+    _finish(first["id"], state="needs_choice", choice={"param": "reuse_bench"})
+
+    reused = jobs.continue_job(first["id"], {"project": "p"}, {"port": 28000, "reuse_bench": True})
+
+    assert (reused["verb"], reused["args"]) == ("init", {"port": 28000, "reuse_bench": True})
+    env = fake_spawn[-1][1]["env"]
+    assert env["CWCLI_JOB_ADMIN_PASSWORD"] == "admin-x"
+    assert env["CWCLI_JOB_DB_ROOT_PASSWORD"] == "root-x"
+
+
+def test_continuing_refuses_a_job_that_is_not_waiting_or_changes_instance(fake_spawn):
+    first = jobs.create_job("rm-site", {"project": "p", "site": "s"}, {})
+    _finish(first["id"])
+    with pytest.raises(CwcliError) as error:
+        jobs.continue_job(first["id"], {"project": "p", "site": "s"}, {}, consent=True)
+    assert error.value.code == "job.continue_not_pending"
+
+    _finish(first["id"], state="needs_choice")
+    with pytest.raises(CwcliError) as error:
+        jobs.continue_job(first["id"], {"project": "other", "site": "s"}, {}, consent=True)
+    assert error.value.code == "job.continue_project_changed"
+    assert len(fake_spawn) == 1
+
+
 def test_a_job_that_succeeded_no_longer_holds_its_secrets(fake_spawn):
     first = jobs.create_job("init", {"project": "p"}, {}, secret_values={"admin_password": "x"})
     assert jobs._RETRY_SECRETS[first["id"]] == {"admin_password": "x"}

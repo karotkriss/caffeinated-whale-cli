@@ -60,6 +60,8 @@ envelope frappe-ui's fetch layer reads natively (``type`` is the core's
 * ``POST /api/v1/jobs/<id>/detach``         - leave the durable job running
 * ``POST /api/v1/jobs/<id>/retry``          - start a new job from a failed one's
   verb, target, args and in-memory secrets (never its consent)
+* ``POST /api/v1/jobs/<id>/continue``       - answer a ``needs_choice`` job with a
+  new job from the posted target, args and consent plus its in-memory secrets
 * ``POST /api/v1/actions``                  - the Phase 1 compatibility endpoint;
   the Phase 2 page sends lifecycle work to jobs, while older built pages keep
   their original guarded behavior until they reload
@@ -875,7 +877,7 @@ class _Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/v1/settings":
                 status, body = self._apply_setting(payload)
             else:
-                status, body = self._control_job(parsed.path)
+                status, body = self._control_job(parsed.path, payload)
         except CwcliError as e:
             self._send_core_error(e)
             return
@@ -996,7 +998,7 @@ class _Handler(BaseHTTPRequestHandler):
                 result = Result(status=Status.OK, data=agent_hooks.install())
         return _setting_response(setting, result)
 
-    def _control_job(self, path: str) -> tuple[int, dict]:
+    def _control_job(self, path: str, payload: dict) -> tuple[int, dict]:
         rest = path[len("/api/v1/jobs/") :]
         job_id, separator, operation = rest.partition("/")
         if not separator or operation not in _JOB_OPERATIONS:
@@ -1004,6 +1006,23 @@ class _Handler(BaseHTTPRequestHandler):
         job_id = unquote(job_id)
         if operation == "retry":
             return 202, {"data": core_jobs.retry_job(job_id, ui_context=self._ui_context())}
+        if operation == "continue":
+            target = payload.get("target") or {}
+            args = payload.get("args") or {}
+            if not isinstance(target, dict) or not isinstance(args, dict):
+                raise CwcliError(
+                    ErrorKind.USAGE,
+                    "job.payload_invalid",
+                    "Job target and args must be JSON objects.",
+                )
+            record = core_jobs.continue_job(
+                job_id,
+                target,
+                args,
+                consent=payload.get("consent") is True,
+                ui_context=self._ui_context(),
+            )
+            return 202, {"data": record}
         record = (
             core_jobs.interrupt_job(job_id)
             if operation == "interrupt"
@@ -1475,7 +1494,7 @@ class _Handler(BaseHTTPRequestHandler):
             self.hub.unsubscribe(client_id)
 
 
-_JOB_OPERATIONS = {"interrupt", "detach", "retry"}
+_JOB_OPERATIONS = {"interrupt", "detach", "retry", "continue"}
 _POST_PATHS = {
     "/api/v1/actions",
     "/api/v1/session",
