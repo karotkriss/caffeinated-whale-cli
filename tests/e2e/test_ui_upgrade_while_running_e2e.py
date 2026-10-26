@@ -1,4 +1,4 @@
-"""Packaging E2E: the web UI daemon survives an upgrade of cwcli underneath it.
+"""Packaging E2E: ``cwcli ui`` replaces a web UI daemon that predates the installed code.
 
 The defect this guards: after ``uv tool install --force --reinstall .`` the detached
 ``cwcli ui`` daemon kept serving with the OLD Python code while the browser loaded the
@@ -9,12 +9,13 @@ This builds a wheel, installs it as a real ``uv tool``, starts the real detached
 daemon, then reinstalls a SAME-VERSION wheel whose code differs (the case a version
 number cannot see) and asserts:
 
-* the daemon notices by itself and re-executes onto the new code - same pid, same
-  port, same bearer token, and the browser session cookie issued BEFORE the upgrade
-  still reads (so the open page reloads instead of being signed out);
-* ``/api/v1/meta`` reports a different ``build`` afterwards;
+* the running daemon is left alone - it does not restart itself, and ``/api/v1/meta``
+  still reports the OLD ``build``;
+* the next ``cwcli ui`` sees the recorded build differs from the installed one and
+  restarts the daemon: a new pid, and ``/api/v1/meta`` and the state file now carry
+  the installed build;
 * a daemon recorded without a build (one started by a cwcli that predates the check)
-  is replaced by the next ``cwcli ui``.
+  is replaced by the next ``cwcli ui`` too.
 
 Marked ``e2e_pkg`` like the other packaging-realism legs. The daemon bootstraps its
 fleet from Docker, so it needs a reachable daemon but no instance. Run locally with::
@@ -169,40 +170,9 @@ def _wait(predicate, *, timeout: float, desc: str):
     raise AssertionError(f"timed out waiting for {desc}")
 
 
-def _cookie_reads(port: int, cookie: str) -> bool:
-    req = urllib.request.Request(
-        f"http://127.0.0.1:{port}/api/v1/instances", headers={"Cookie": cookie}
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=5) as r:
-            return r.status == 200
-    except (urllib.error.URLError, OSError):
-        return False
-
-
-def _sign_in(port: int, token: str) -> str:
-    """Mint a code with the bearer token and redeem it the way the page does."""
-    req = urllib.request.Request(
-        f"http://127.0.0.1:{port}/api/v1/session/code",
-        data=b"{}",
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=5) as r:
-        code = json.loads(r.read())["data"]["code"]
-    redeem = urllib.request.Request(
-        f"http://127.0.0.1:{port}/api/v1/session",
-        data=json.dumps({"code": code}).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(redeem, timeout=5) as r:
-        return str(r.headers["Set-Cookie"].split(";", 1)[0])
-
-
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv is required to install the tool")
-@pytest.mark.skipif(os.name != "posix", reason="the daemon re-executes itself on POSIX only")
-def test_the_ui_daemon_follows_an_upgrade_while_running(tmp_path):
+@pytest.mark.skipif(os.name != "posix", reason="the uv tool bin layout used here is POSIX")
+def test_cwcli_ui_replaces_a_daemon_that_predates_the_install(tmp_path):
     wheels_a = tmp_path / "wheels-a"
     built = subprocess.run(
         ["uv", "build", "--wheel", "-o", str(wheels_a)],
@@ -224,41 +194,41 @@ def test_the_ui_daemon_follows_an_upgrade_while_running(tmp_path):
         assert started.returncode == 0, started.stdout + started.stderr
         meta_before = _wait(lambda: _meta(port), timeout=30, desc="the daemon to answer /meta")
         assert meta_before["build"], meta_before
-        state = tool.state()
-        assert state["build"] == meta_before["build"]
+        assert tool.state()["build"] == meta_before["build"]
         daemon_pid = tool.pid()
-        cookie = _sign_in(port, state["token"])
-        assert _cookie_reads(port, cookie)
 
         # --- the upgrade: same version, different code, while the daemon runs ----
         tool.install(wheels_b)
+        time.sleep(6)
+        meta_held = _meta(port)
+        assert meta_held is not None, "the running daemon must keep serving"
+        assert meta_held["build"] == meta_before["build"], "the daemon must not restart itself"
+        assert tool.pid() == daemon_pid
 
-        def _upgraded():
-            meta = _meta(port)
-            return meta if meta and meta.get("build") != meta_before["build"] else None
-
-        meta_after = _wait(_upgraded, timeout=60, desc="the daemon to restart onto the new code")
+        # --- the user runs `cwcli ui`: it restarts the daemon onto the new code ----
+        relaunched = tool.run("ui", "--no-browser", "--port", str(port))
+        assert relaunched.returncode == 0, relaunched.stdout + relaunched.stderr
+        assert "was updated" in relaunched.stdout
+        meta_after = _wait(lambda: _meta(port), timeout=30, desc="the restarted daemon")
         assert (
             meta_after["version"] == meta_before["version"]
         ), "the point is a same-version rebuild"
-        assert meta_after["updating"] is False
-        assert tool.pid() == daemon_pid, "the daemon should re-exec in place, not be replaced"
+        assert meta_after["build"] != meta_before["build"]
+        assert tool.pid() != daemon_pid, "a stale daemon must be replaced, not reused"
         assert tool.state()["build"] == meta_after["build"]
-        assert tool.state()["token"] == state["token"]
-        # The page open before the upgrade keeps its session, so it reloads signed in.
-        assert _wait(lambda: _cookie_reads(port, cookie), timeout=30, desc="the old cookie")
+        daemon_pid = tool.pid()
 
         # --- a daemon that predates the build check is replaced by `cwcli ui` ----
         stale = tool.state()
         stale.pop("build")
         (tool.run_dir / "ui.json").write_text(json.dumps(stale))
-        relaunched = tool.run("ui", "--no-browser", "--port", str(port))
-        assert relaunched.returncode == 0, relaunched.stdout + relaunched.stderr
-        assert "was updated" in relaunched.stdout
+        replaced = tool.run("ui", "--no-browser", "--port", str(port))
+        assert replaced.returncode == 0, replaced.stdout + replaced.stderr
+        assert "was updated" in replaced.stdout
         fresh = _wait(lambda: _meta(port), timeout=30, desc="the replacement daemon")
         assert fresh["build"] == meta_after["build"]
         assert tool.pid() != daemon_pid, "a stale daemon must be replaced, not reused"
-        assert "build" in tool.state()
+        assert tool.state()["build"] == fresh["build"]
         daemon_pid = tool.pid()
     finally:
         with contextlib.suppress(Exception):

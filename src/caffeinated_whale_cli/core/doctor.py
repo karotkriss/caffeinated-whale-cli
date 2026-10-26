@@ -542,11 +542,14 @@ def _check_sendme() -> tuple:
 
 
 def _bridge_hosts(tool: str) -> list[str]:
-    """The credential-bridge allowed hosts ``tool`` serves: ``gh`` answers github.com,
+    """The hosts ``tool`` answers for through the credential bridge: the persistent
+    daemon's ``[cred_bridge] allowed_hosts`` plus github.com for ``gh``, which the
+    unrestricted per-invocation bridge always sends to it. ``gh`` answers github.com,
     ``glab`` every other host (the dispatch in ``core/credbridge.py``)."""
     from ..utils.cred_daemon import allowed_hosts
 
-    return sorted(h for h in allowed_hosts() if (h == "github.com") == (tool == "gh"))
+    hosts = set(allowed_hosts()) | ({"github.com"} if tool == "gh" else set())
+    return sorted(h for h in hosts if (h == "github.com") == (tool == "gh"))
 
 
 def _host_signed_in(tool: str, host: str) -> bool | None:
@@ -565,11 +568,12 @@ def _host_signed_in(tool: str, host: str) -> bool | None:
 
 
 def _check_git_host_cli(tool: str, install_hint: str) -> tuple:
-    """Shared C17/C18 probe, per host. Sign-in is judged only for the hosts the
-    credential bridge is allowed to answer for (``[cred_bridge] allowed_hosts``),
-    so a host the user never uses cannot warn: a bare ``<tool> auth status`` exits
-    non-zero when ANY configured host is signed out. Absence or a missing sign-in
-    is WARN, never FAIL - the bridge is inert for public repos.
+    """Shared C17/C18 probe, per host, over the hosts the credential bridge sends to
+    ``tool`` (``_bridge_hosts``). A bare ``<tool> auth status`` exits non-zero when
+    ANY configured host is signed out, so each host is asked on its own and the check
+    WARNs only when ``tool`` is signed in to none of them; a signed-out host beside a
+    signed-in one is listed with its login command, nothing more. Absence or no
+    sign-in is WARN, never FAIL - the bridge is inert for public repos.
     """
     path = shutil.which(tool)
     if not path:
@@ -578,18 +582,22 @@ def _check_git_host_cli(tool: str, install_hint: str) -> tuple:
     if not hosts:
         return _outcome(CheckStatus.PASS, f"{path} - no bridge-allowed host uses {tool}")
     states = {host: _host_signed_in(tool, host) for host in hosts}
-    detail = f"{path} - " + "; ".join(
-        f"{h}: {'signed in' if ok else 'not signed in' if ok is False else 'unknown'}"
-        for h, ok in states.items()
-    )
-    missing = [h for h, ok in states.items() if not ok]
-    if not missing:
+
+    def _state(host: str, ok: bool | None) -> str:
+        if ok:
+            return f"{host}: signed in"
+        if ok is False:
+            return f"{host}: not signed in (`{tool} auth login --hostname {host}`)"
+        return f"{host}: unknown"
+
+    detail = f"{path} - " + "; ".join(_state(h, ok) for h, ok in states.items())
+    if any(states.values()):
         return _outcome(CheckStatus.PASS, detail)
     return _outcome(
         CheckStatus.WARN,
-        f"{detail} (private repositories on {', '.join(missing)} cannot be fetched "
-        "through the credential bridge until it is signed in)",
-        "; ".join(f"{tool} auth login --hostname {h}" for h in missing),
+        f"{detail} (private repositories cannot be fetched through the credential "
+        f"bridge until {tool} is signed in)",
+        "; ".join(f"{tool} auth login --hostname {h}" for h in states),
     )
 
 

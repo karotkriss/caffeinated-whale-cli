@@ -325,7 +325,7 @@ class TestForeground:
     ):
         seen: dict = {}
 
-        def _run(host, port, interval, *, env_token, on_ready=None, restart_argv=None):
+        def _run(host, port, interval, *, env_token, on_ready=None):
             seen.update(host=host, port=port, interval=interval, token=env_token)
             assert not ui_cmd.pid_file().exists(), "nothing is recorded before the bind"
             on_ready("http://127.0.0.1:8765/#login=x")
@@ -356,9 +356,7 @@ class TestForeground:
         monkeypatch.setattr(
             ui_cmd.serve_cmd,
             "run_daemon",
-            lambda host, port, interval, *, env_token, on_ready=None, restart_argv=None: seen.update(
-                token=env_token
-            ),
+            lambda host, port, interval, *, env_token, on_ready=None: seen.update(token=env_token),
         )
 
         result = runner.invoke(root_app, ["ui", "--foreground", "--no-browser"])
