@@ -66,3 +66,21 @@ def test_a_failed_start_says_why_and_does_not_stop_the_other_daemon(modules, mon
     ]
     assert "managed by systemd" in notes[0].note
     assert "cwcli config auto-inspect enable" in notes[0].note
+
+
+def test_a_failed_start_carries_the_errors_own_hint_over_the_generic_command(modules, monkeypatch):
+    _set(monkeypatch, cred_bridge, _state())
+
+    def _fail():
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "daemon.system_owned",
+            "managed by the shared install's system unit",
+            hint="sudo systemctl start cwcli-cred-bridge.service",
+        )
+
+    monkeypatch.setattr(cred_bridge, "start", _fail)
+    (note,) = daemon_recovery.recover()
+    assert not note.started
+    assert "sudo systemctl start cwcli-cred-bridge.service" in note.note
+    assert "cwcli config cred-bridge start" not in note.note
