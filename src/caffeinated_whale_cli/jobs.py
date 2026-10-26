@@ -561,21 +561,64 @@ def retry_job(job_id: str, *, ui_context: dict[str, str | int] | None = None) ->
     refusal = _retry_refusal(record)
     if refusal is not None:
         raise CwcliError(ErrorKind.CONFLICT, *refusal)
-    secret_values = dict(_RETRY_SECRETS.get(job_id, {}))
-    if record["verb"] == "init" and not secret_values.get("admin_password"):
-        raise CwcliError(
-            ErrorKind.PRECONDITION,
-            "job.retry_secrets_missing",
-            "The passwords for this job are no longer held, so it cannot be retried as it was.",
-            hint="They are kept in memory only and are forgotten when the daemon restarts.",
-        )
     return create_job(
         record["verb"],
         record["target"],
         record["args"],
-        secret_values=secret_values,
+        secret_values=_held_secrets(record),
         ui_context=ui_context,
     )
+
+
+def continue_job(
+    job_id: str,
+    target: dict[str, Any],
+    args: dict[str, Any],
+    *,
+    consent: bool = False,
+    ui_context: dict[str, str | int] | None = None,
+) -> dict[str, Any]:
+    """Answer a ``needs_choice`` job with a NEW job that reuses the secrets it was started with.
+
+    The page sends the answered target, args and consent; the secrets stay in this
+    daemon and move to the new job, so a chain holds them until it succeeds or is pruned.
+    """
+    record = read_job(job_id)
+    if record.get("state") != "needs_choice":
+        raise CwcliError(
+            ErrorKind.CONFLICT,
+            "job.continue_not_pending",
+            "Only a job waiting for a decision can be continued.",
+        )
+    if target.get("project") != record["target"].get("project"):
+        raise CwcliError(
+            ErrorKind.USAGE,
+            "job.continue_project_changed",
+            "A continued job must keep the instance it was started for.",
+        )
+    created = create_job(
+        record["verb"],
+        target,
+        args,
+        consent=consent,
+        secret_values=_held_secrets(record),
+        ui_context=ui_context,
+    )
+    _RETRY_SECRETS.pop(job_id, None)
+    return created
+
+
+def _held_secrets(record: dict[str, Any]) -> dict[str, str]:
+    """The secrets this daemon still holds for a job, refusing an init that has lost them."""
+    secret_values = dict(_RETRY_SECRETS.get(str(record["id"]), {}))
+    if record["verb"] == "init" and not secret_values.get("admin_password"):
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "job.retry_secrets_missing",
+            "The passwords for this job are no longer held, so it cannot be run again as it was.",
+            hint="They are kept in memory only and are forgotten when the daemon restarts.",
+        )
+    return secret_values
 
 
 def interrupt_job(job_id: str) -> dict[str, Any]:
