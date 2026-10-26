@@ -40,7 +40,8 @@ from pathlib import Path
 
 import typer
 
-from ..core.version import _is_frozen
+from ..core import daemon_recovery
+from ..core.version import _is_frozen, install_fingerprint
 from ..utils import daemon_identity, shared_home
 from ..utils.config_utils import cwcli_home
 from ..utils.console import console, stderr_console
@@ -74,11 +75,13 @@ def log_file() -> Path:
 
 
 def _write_state(port: int, token: str) -> None:
+    """The ``build`` is the code this daemon runs; a later ``cwcli ui`` compares it to
+    the installed cwcli to tell a daemon that predates an upgrade."""
     run_dir().mkdir(parents=True, exist_ok=True)
     path = state_file()
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
-        json.dump({"port": port, "token": token}, f)
+        json.dump({"port": port, "token": token, "build": install_fingerprint()}, f)
     os.chmod(path, 0o600)
 
 
@@ -193,8 +196,24 @@ def _stop() -> None:
     console.print(f"cwcli ui stopped (pid {pid}).")
 
 
+def _is_stale(state: dict) -> bool:
+    """True when the installed cwcli is no longer the code the daemon was started with.
+
+    A state file with no ``build`` was written by a daemon that predates the check,
+    so it is stale by definition. An unreadable install (mid-reinstall) is not a
+    reason to restart anything.
+    """
+    installed = install_fingerprint()
+    return not installed.endswith(":?") and state.get("build") != installed
+
+
 def _foreground(port: int, *, no_browser: bool) -> None:
-    if daemon_identity.is_running(pid_file()):
+    # After an upgrade the daemon re-executes itself under the SAME pid (see
+    # serve.run_daemon), so its own pid file is not another daemon's.
+    if (
+        daemon_identity.is_running(pid_file())
+        and daemon_identity.get_pid(pid_file()) != os.getpid()
+    ):
         stderr_console.print(
             "[red]cwcli ui is already running (detached).[/red] "
             "Run 'cwcli ui --stop' first to run it in the foreground."
@@ -210,17 +229,43 @@ def _foreground(port: int, *, no_browser: bool) -> None:
                 target=_open, args=(link,), kwargs={"no_browser": False}, daemon=True
             ).start()
 
+    # A frozen build cannot re-exec itself by module path; it is restarted by the
+    # next `cwcli ui` through `_is_stale`.
+    restart_argv = (
+        None
+        if _is_frozen()
+        else [sys.executable, "-m", "caffeinated_whale_cli", "ui", "--foreground", "--no-browser"]
+        + ["--port", str(port)]
+    )
     try:
         serve_cmd.run_daemon(
-            HOST, port, serve_cmd.DEFAULT_INTERVAL, env_token=token, on_ready=_ready
+            HOST,
+            port,
+            serve_cmd.DEFAULT_INTERVAL,
+            env_token=token,
+            on_ready=_ready,
+            restart_argv=restart_argv,
         )
     finally:
         if daemon_identity.get_pid(pid_file()) == os.getpid():
             _clear_state()
 
 
+def _recover_daemons() -> None:
+    """Bring back an enabled background daemon that is not running, saying so."""
+    for note in daemon_recovery.recover():
+        (console if note.started else stderr_console).print(note.note)
+
+
 def _start_or_reuse(port: int, *, no_browser: bool) -> None:
+    _recover_daemons()
     state = _read_state() if daemon_identity.is_running(pid_file()) else None
+    if state is not None and _is_stale(state):
+        console.print("cwcli was updated since this cwcli ui daemon started; restarting it.")
+        _stop()
+        if port == serve_cmd.DEFAULT_PORT:
+            port = state["port"]
+        state = None
     if state is not None:
         if state["port"] != port and port != serve_cmd.DEFAULT_PORT:
             stderr_console.print(

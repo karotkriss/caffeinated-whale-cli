@@ -220,6 +220,32 @@ def _current_version() -> str:
         return __version__
 
 
+def install_fingerprint() -> str:
+    """Identify the installed cwcli CODE: version plus a hash of the dist's ``RECORD``.
+
+    ``RECORD`` lists every installed file with its sha256, so it changes exactly when
+    a reinstall changes the code - including a rebuild of the SAME version, which the
+    version alone cannot see. A long-lived process compares this against the value it
+    started with to learn the install changed underneath it. An editable install's
+    RECORD does not track source edits (its fingerprint is the version); a frozen
+    build has no dist-info (version only). When the dist is momentarily unreadable
+    (mid-reinstall) the result is ``version:?`` so callers can ignore the reading.
+    """
+    import hashlib
+    import importlib.metadata
+
+    version = _current_version()
+    if _is_frozen():
+        return version
+    try:
+        record = importlib.metadata.distribution(DIST).read_text("RECORD")
+    except Exception:
+        record = None
+    if not record:
+        return f"{version}:?"
+    return f"{version}:{hashlib.sha256(record.encode()).hexdigest()[:16]}"
+
+
 def build_info() -> BuildInfo:
     """Identify the tree the running cwcli was built from; see :class:`BuildInfo`.
 

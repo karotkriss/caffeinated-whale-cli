@@ -120,8 +120,16 @@ class TestStartDetached:
         path = ui_cmd.state_file()
         if os.name == "posix":
             assert stat.S_IMODE(path.stat().st_mode) == 0o600
-        assert json.loads(path.read_text()) == {"port": 8765, "token": "secret-token"}
-        assert ui_cmd._read_state() == {"port": 8765, "token": "secret-token"}
+        assert json.loads(path.read_text()) == {
+            "port": 8765,
+            "token": "secret-token",
+            "build": ui_cmd.install_fingerprint(),
+        }
+        assert ui_cmd._read_state() == {
+            "port": 8765,
+            "token": "secret-token",
+            "build": ui_cmd.install_fingerprint(),
+        }
 
     @pytest.mark.skipif(os.name != "posix", reason="shared mode is POSIX-only")
     def test_shared_mode_keeps_run_files_per_user_and_the_token_private(
@@ -192,7 +200,11 @@ class TestStartDetached:
 
         assert result.exit_code == 0, result.output
         assert minted == ["winner"]
-        assert ui_cmd._read_state() == {"port": 8765, "token": "winner"}
+        assert ui_cmd._read_state() == {
+            "port": 8765,
+            "token": "winner",
+            "build": ui_cmd.install_fingerprint(),
+        }
         assert ui_cmd.pid_file().exists()
 
     def test_a_stale_state_file_without_a_live_pid_is_not_taken_as_ready(
@@ -313,7 +325,7 @@ class TestForeground:
     ):
         seen: dict = {}
 
-        def _run(host, port, interval, *, env_token, on_ready=None):
+        def _run(host, port, interval, *, env_token, on_ready=None, restart_argv=None):
             seen.update(host=host, port=port, interval=interval, token=env_token)
             assert not ui_cmd.pid_file().exists(), "nothing is recorded before the bind"
             on_ready("http://127.0.0.1:8765/#login=x")
@@ -329,7 +341,11 @@ class TestForeground:
         assert result.exit_code == 0, result.output
         assert seen["host"] == "127.0.0.1" and seen["port"] == 8765
         assert seen["pid_file_during"] == str(os.getpid())
-        assert seen["state_during"] == {"port": 8765, "token": seen["token"]}
+        assert seen["state_during"] == {
+            "port": 8765,
+            "token": seen["token"],
+            "build": ui_cmd.install_fingerprint(),
+        }
         assert opened == [], "--no-browser"
         # Torn down on exit so a later `cwcli ui` does not reuse a dead record.
         assert not ui_cmd.pid_file().exists() and not ui_cmd.state_file().exists()
@@ -340,7 +356,9 @@ class TestForeground:
         monkeypatch.setattr(
             ui_cmd.serve_cmd,
             "run_daemon",
-            lambda host, port, interval, *, env_token, on_ready=None: seen.update(token=env_token),
+            lambda host, port, interval, *, env_token, on_ready=None, restart_argv=None: seen.update(
+                token=env_token
+            ),
         )
 
         result = runner.invoke(root_app, ["ui", "--foreground", "--no-browser"])
@@ -361,7 +379,11 @@ class TestForeground:
         assert result.exit_code == 1
         assert "--stop" in result.output
         assert ui_cmd.pid_file().read_text() == "4242"
-        assert ui_cmd._read_state() == {"port": 8765, "token": "detached-token"}
+        assert ui_cmd._read_state() == {
+            "port": 8765,
+            "token": "detached-token",
+            "build": ui_cmd.install_fingerprint(),
+        }
 
     def test_a_failed_bind_leaves_another_daemons_record_alone(self, home, monkeypatch):
         ui_cmd._write_state(8765, "other-token")
@@ -377,7 +399,11 @@ class TestForeground:
 
         assert result.exit_code == 1
         assert ui_cmd.pid_file().read_text() == "4242"
-        assert ui_cmd._read_state() == {"port": 8765, "token": "other-token"}
+        assert ui_cmd._read_state() == {
+            "port": 8765,
+            "token": "other-token",
+            "build": ui_cmd.install_fingerprint(),
+        }
 
 
 _SURVIVOR = """
@@ -464,3 +490,60 @@ def test_a_frozen_exe_reenters_the_job_worker_through_the_hidden_job_flag(home, 
     assert seen == ["20261024120000-abcdef123456"]
     assert result.exit_code == 3
     assert "--job" not in runner.invoke(root_app, ["ui", "--help"]).output
+
+
+class TestStaleDaemon:
+    """After an upgrade the running daemon predates the installed code; `cwcli ui` replaces it."""
+
+    @pytest.fixture(autouse=True)
+    def _installed(self, monkeypatch):
+        monkeypatch.setattr(ui_cmd, "install_fingerprint", lambda: "3.4.0:current")
+
+    def _running(self, monkeypatch, state):
+        monkeypatch.setattr(ui_cmd.daemon_identity, "is_running", lambda pid_file: True)
+        monkeypatch.setattr(ui_cmd, "_read_state", lambda: state)
+        monkeypatch.setattr(ui_cmd, "_recover_daemons", lambda: None)
+        monkeypatch.setattr(ui_cmd, "mint_code", lambda port, token: "code")
+
+    def test_a_daemon_from_before_the_build_check_is_stale(self, monkeypatch):
+        assert ui_cmd._is_stale({"port": 1, "token": "t"})
+
+    def test_a_daemon_on_the_installed_build_is_current(self):
+        assert not ui_cmd._is_stale(
+            {"port": 1, "token": "t", "build": ui_cmd.install_fingerprint()}
+        )
+
+    def test_a_changed_build_is_stale_but_a_mid_reinstall_reading_is_not(self, monkeypatch):
+        state = {"port": 1, "token": "t", "build": "3.4.0:aaaa"}
+        monkeypatch.setattr(ui_cmd, "install_fingerprint", lambda: "3.4.0:bbbb")
+        assert ui_cmd._is_stale(state)
+        monkeypatch.setattr(ui_cmd, "install_fingerprint", lambda: "3.4.0:?")
+        assert not ui_cmd._is_stale(state)
+
+    def test_cwcli_ui_stops_a_stale_daemon_and_starts_a_fresh_one(self, home, monkeypatch):
+        calls = []
+        self._running(monkeypatch, {"port": 8765, "token": "old"})
+        monkeypatch.setattr(ui_cmd, "_stop", lambda: calls.append("stop"))
+        monkeypatch.setattr(
+            ui_cmd, "_spawn_detached", lambda port, token, session_id=None: calls.append("spawn")
+        )
+        monkeypatch.setattr(ui_cmd, "_meta_answers", lambda port: True)
+        monkeypatch.setattr(ui_cmd.daemon_identity, "get_pid", lambda pf: 1)
+        states = iter([{"port": 8765, "token": "old"}, {"port": 8765, "token": "new"}])
+        monkeypatch.setattr(ui_cmd, "_read_state", lambda: next(states))
+        result = runner.invoke(root_app, ["ui", "--no-browser"])
+        assert result.exit_code == 0, result.output
+        assert calls == ["stop", "spawn"]
+        assert "was updated" in result.output
+
+    def test_a_current_daemon_is_reused(self, home, monkeypatch):
+        calls = []
+        self._running(
+            monkeypatch,
+            {"port": 8765, "token": "t", "build": ui_cmd.install_fingerprint()},
+        )
+        monkeypatch.setattr(ui_cmd, "_stop", lambda: calls.append("stop"))
+        monkeypatch.setattr(ui_cmd, "_spawn_detached", lambda *a, **k: calls.append("spawn"))
+        result = runner.invoke(root_app, ["ui", "--no-browser"])
+        assert result.exit_code == 0, result.output
+        assert calls == []
