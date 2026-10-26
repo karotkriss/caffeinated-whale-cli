@@ -579,7 +579,9 @@ class TestInitInstance:
                 pulls.append(cmd)
                 if len(pulls) == 1:
                     return SimpleNamespace(
-                        returncode=1, stdout=b"", stderr=b"error getting credentials - err: x"
+                        returncode=1,
+                        stdout=b"",
+                        stderr=b"error getting credentials - err: exit status 1, out: ``",
                     )
             return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
 
@@ -602,7 +604,9 @@ class TestInitInstance:
             if "pull" in cmd:
                 pulls.append(cmd)
                 return SimpleNamespace(
-                    returncode=1, stdout=b"", stderr=b"error getting credentials - err: x"
+                    returncode=1,
+                    stdout=b"",
+                    stderr=b"error getting credentials - err: exit status 1, out: ``",
                 )
             return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
 
@@ -614,6 +618,31 @@ class TestInitInstance:
         assert "desktop.exe" in exc.value.message
         assert "retrying the job" in exc.value.message
         assert len(pulls) == 1 + len(core_init._CREDENTIAL_RETRY_DELAYS)
+
+    def test_a_missing_credential_helper_is_named_and_not_retried(
+        self, monkeypatch, tmp_path, patched
+    ):
+        instance_setup(monkeypatch, tmp_path)
+        pulls = []
+        missing = (
+            b'error getting credentials - err: exec: "docker-credential-desktop.exe": '
+            b"executable file not found in $PATH, out: ``"
+        )
+
+        def failing_run(cmd, cwd=None, capture_output=False, **kwargs):
+            if "pull" in cmd:
+                pulls.append(cmd)
+                return SimpleNamespace(returncode=1, stdout=b"", stderr=missing)
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(subprocess, "run", failing_run)
+        with pytest.raises(CwcliError) as exc:
+            core_init.init_instance(PROJECT, port=18000)
+        assert exc.value.code == "compose.credential_helper"
+        assert "docker-credential-desktop.exe is not installed" in exc.value.message
+        assert "retrying" not in exc.value.message
+        assert exc.value.detail == {"output": missing.decode()}
+        assert len(pulls) == 1
 
     def test_other_pull_failures_are_not_retried(self, monkeypatch, tmp_path, patched):
         instance_setup(monkeypatch, tmp_path)

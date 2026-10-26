@@ -407,7 +407,6 @@ def _run_exec(
     )
 
 
-_CREDENTIAL_ERROR = "error getting credentials"
 # Waits between attempts of a pull that died in Docker's credential helper.
 _CREDENTIAL_RETRY_DELAYS = (2.0, 5.0)
 
@@ -431,10 +430,11 @@ def _run_host_command(
     core must not assume a terminal exists, so compose renders plain progress
     lines instead of TTY progress bars.
 
-    ``retry_credential_errors`` retries a run that failed with Docker's
-    ``error getting credentials`` (a credential helper that timed out, typically
-    a Windows helper reached through WSL interop) after a short backoff. If it
-    keeps failing, the error names the helper and says the cause is temporary.
+    ``retry_credential_errors`` retries a run whose credential helper timed out
+    (``docker.credential_helper``, typically a Windows helper reached through WSL
+    interop) after a short backoff. If it keeps failing, the error names the
+    helper and says the cause is temporary. A helper that is not installed is
+    never retried and is named as missing instead.
     """
     delays = iter(_CREDENTIAL_RETRY_DELAYS if retry_credential_errors else ())
     while True:
@@ -445,8 +445,9 @@ def _run_host_command(
         if result.returncode == 0:
             return
         stderr = _decode(result.stderr)
-        credential_failure = retry_credential_errors and _CREDENTIAL_ERROR in stderr
-        delay = next(delays, None) if credential_failure else None
+        cause = failure_causes.explain(stderr) if retry_credential_errors else None
+        helper_timed_out = cause is not None and cause.code == "docker.credential_helper"
+        delay = next(delays, None) if helper_timed_out else None
         if delay is None:
             break
         emit(
@@ -457,7 +458,7 @@ def _run_host_command(
             )
         )
         time.sleep(delay)
-    if credential_failure:
+    if helper_timed_out:
         helper = _credential_helper_name()
         raise CwcliError(
             ErrorKind.DOCKER,
@@ -465,6 +466,13 @@ def _run_host_command(
             f"Docker's credential helper ({helper}) did not respond while pulling images. "
             "This is usually a temporary Windows/WSL interop timeout, and retrying the "
             "job normally works.",
+            detail={"output": stderr},
+        )
+    if cause is not None and cause.code == "docker.credential_helper_missing":
+        raise CwcliError(
+            ErrorKind.DOCKER,
+            "compose.credential_helper",
+            f"{cause.text} Image pull failed: {' '.join(cmd)}",
             detail={"output": stderr},
         )
     raise CwcliError(
