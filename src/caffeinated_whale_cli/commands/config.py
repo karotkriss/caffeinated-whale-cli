@@ -13,8 +13,10 @@ deprecation warning and byte-identical behavior. They deliberately BYPASS the
 core and keep calling the utils the old monolith called (Decision 4: building
 core API for verbs scheduled for deletion is waste) - except
 ``add-path``/``remove-path``, which share the core's input validation with
-their new home (the one disclosed exception: storing garbage was never a
-behavior worth preserving). ``start``'s argv AND its refuse-when-disabled guard
+their new home (storing garbage was never a behavior worth preserving), and
+``auto-inspect start``, which boot units exec and so routes through
+``core.auto_inspect`` for the boot-unit repair and the honest start check.
+``start``'s argv AND its refuse-when-disabled guard
 are load-bearing: already-installed boot units exec
 ``cwcli config auto-inspect start`` verbatim, and the guard is what keeps a
 stale hook inert after a ``disable``.
