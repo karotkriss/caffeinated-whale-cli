@@ -148,6 +148,27 @@ def test_an_update_with_a_step_that_may_still_be_running_has_no_retry(fake_spawn
     assert len(fake_spawn) == 1
 
 
+@pytest.mark.parametrize("code", ["exec.stream_lost", "exec.exit_code_unknown"])
+@pytest.mark.parametrize("verb", ["migrate", "init", "apps-install"])
+def test_a_job_whose_container_command_may_still_be_running_has_no_retry(fake_spawn, verb, code):
+    first = jobs.create_job(
+        verb,
+        {"project": "p", "site": "s", "app": "erpnext"},
+        {},
+        secret_values={"admin_password": "x"},
+    )
+    _finish(first["id"], error={"type": "docker", "code": code, "message": "lost"})
+
+    record = jobs.read_job(first["id"])
+    assert record["retryable"] is False
+    assert "may still be running" in record["retry_refusal"]
+    with pytest.raises(CwcliError) as error:
+        jobs.retry_job(first["id"])
+
+    assert error.value.code == "job.retry_unknown_outcome"
+    assert len(fake_spawn) == 1
+
+
 def test_an_update_whose_steps_definitely_failed_can_be_retried(fake_spawn):
     first = jobs.create_job("apps-update", {"project": "p", "app": "erpnext"}, {})
     _finish(first["id"], result={"failed_apps": ["erpnext"], "unknown_apps": []})
