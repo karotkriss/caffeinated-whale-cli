@@ -3,10 +3,11 @@
 Three shapes:
 
 * ``cwcli ui`` - the daily one. If a daemon this user started is still alive
-  (pid file under ``cwcli_home()/run/``, identity-checked), reuse it; otherwise
-  spawn ``cwcli ui --foreground --no-browser`` detached. Then mint a one-time
-  sign-in code through ``POST /api/v1/session/code`` and open the browser on
-  ``http://127.0.0.1:<port>/#login=<code>``.
+  (pid file under ``cwcli_home()/run/``, identity-checked) and runs the installed
+  code (its state-file ``build``), reuse it; a daemon that predates a reinstall is
+  stopped and respawned. Otherwise spawn ``cwcli ui --foreground --no-browser``
+  detached. Then mint a one-time sign-in code through ``POST /api/v1/session/code``
+  and open the browser on ``http://127.0.0.1:<port>/#login=<code>``.
 * ``cwcli ui --foreground`` - run the daemon in this terminal (development, CI,
   the E2E harness). Ctrl-C stops it.
 * ``cwcli ui --stop`` - stop the detached daemon.
