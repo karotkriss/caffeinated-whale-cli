@@ -33,6 +33,7 @@ from __future__ import annotations
 import contextlib
 import ipaddress
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -406,24 +407,73 @@ def _run_exec(
     )
 
 
-def _run_host_command(cmd: list[str], *, cwd: str, phase: str, emit: OnEvent) -> None:
+# Waits between attempts of a pull that died in Docker's credential helper.
+_CREDENTIAL_RETRY_DELAYS = (2.0, 5.0)
+
+
+def _credential_helper_name() -> str:
+    """The active Docker config's ``credsStore``, or ``credsStore`` when unreadable."""
+    config_dir = Path(os.environ.get("DOCKER_CONFIG") or Path.home() / ".docker")
+    try:
+        store = json.loads((config_dir / "config.json").read_text()).get("credsStore")
+    except (OSError, ValueError, AttributeError):
+        store = None
+    return str(store) if store else "credsStore"
+
+
+def _run_host_command(
+    cmd: list[str], *, cwd: str, phase: str, emit: OnEvent, retry_credential_errors: bool = False
+) -> None:
     """Run a host command captured, streaming its output as events.
 
     Always captured (design Decision 6, the one disclosed ``-v`` drift): the
     core must not assume a terminal exists, so compose renders plain progress
     lines instead of TTY progress bars.
+
+    ``retry_credential_errors`` retries a run whose credential helper timed out
+    (``docker.credential_helper``, typically a Windows helper reached through WSL
+    interop) after a short backoff. If it keeps failing, the error names the
+    helper and says the cause is temporary. A helper that is not installed or
+    that fails with its own reason is never retried, and that cause is named.
     """
-    result = subprocess.run(cmd, cwd=cwd, capture_output=True)
-    for tag, blob in (("stdout", result.stdout), ("stderr", result.stderr)):
-        if blob:
-            emit(InitOutput(phase=phase, stream=tag, text=_decode(blob)))
-    if result.returncode != 0:
+    delays = iter(_CREDENTIAL_RETRY_DELAYS if retry_credential_errors else ())
+    while True:
+        result = subprocess.run(cmd, cwd=cwd, capture_output=True)
+        for tag, blob in (("stdout", result.stdout), ("stderr", result.stderr)):
+            if blob:
+                emit(InitOutput(phase=phase, stream=tag, text=_decode(blob)))
+        if result.returncode == 0:
+            return
+        stderr = _decode(result.stderr)
+        cause = failure_causes.explain(stderr) if retry_credential_errors else None
+        helper_timed_out = cause is not None and cause.code == "docker.credential_helper"
+        delay = next(delays, None) if helper_timed_out else None
+        if delay is None:
+            break
+        emit(
+            InitOutput(
+                phase=phase,
+                stream="stderr",
+                text=f"Docker's credential helper failed; retrying in {delay:g}s.\n",
+            )
+        )
+        time.sleep(delay)
+    if cause is not None and cause.code.startswith("docker.credential_helper"):
+        # The message embeds cause.text verbatim so the web job page, which leads
+        # with the cause, does not read the same explanation twice.
+        helper = f" The helper is {_credential_helper_name()}." if helper_timed_out else ""
         raise CwcliError(
             ErrorKind.DOCKER,
-            "compose.failed",
-            f"Host command failed: {' '.join(cmd)}",
-            detail={"output": _decode(result.stderr)},
+            "compose.credential_helper",
+            f"{cause.text}{helper} Image pull failed: {' '.join(cmd)}",
+            detail={"output": stderr},
         )
+    raise CwcliError(
+        ErrorKind.DOCKER,
+        "compose.failed",
+        f"Host command failed: {' '.join(cmd)}",
+        detail={"output": stderr},
+    )
 
 
 _BENCH_TAG_CACHE_TTL_SECONDS = 3600  # 1 hour: short enough to catch a fresh
@@ -870,7 +920,9 @@ def init_instance(
         pull_cmd = compose_base + ["pull"]
         if not stream_output:
             pull_cmd.append("--quiet")
-        _run_host_command(pull_cmd, cwd=str(conf_dir), phase="pull", emit=emit)
+        _run_host_command(
+            pull_cmd, cwd=str(conf_dir), phase="pull", emit=emit, retry_credential_errors=True
+        )
 
         emit(InitStepStart(phase="up", message="Starting Docker Compose containers"))
         _run_host_command(compose_base + ["up", "-d"], cwd=str(conf_dir), phase="up", emit=emit)
