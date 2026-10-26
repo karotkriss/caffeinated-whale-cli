@@ -28,6 +28,11 @@ from caffeinated_whale_cli.core.failure_causes import explain
         ),
         ("Site site1.localhost already exists", "site.exists", "site1.localhost"),
         ("error: No space left on device", "disk.full", "ran out of space"),
+        (
+            "error getting credentials - err: exit status 1, out: ``",
+            "docker.credential_helper",
+            "credential helper",
+        ),
         ("FATAL ERROR: JavaScript heap out of memory", "memory.exhausted", "out of memory"),
         (
             "fatal: Authentication failed for 'https://github.com/acme/app.git/'",

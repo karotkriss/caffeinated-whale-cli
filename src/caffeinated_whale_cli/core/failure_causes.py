@@ -101,6 +101,13 @@ _SHAPES: list[tuple[str, str, re.Pattern[str], str]] = [
         "The branch, tag, or commit {0} does not exist in the repository.",
     ),
     (
+        "docker.credential_helper",
+        "Docker's credential helper did not respond",
+        re.compile(r"error getting credentials"),
+        "Docker's credential helper did not respond. This is usually a temporary "
+        "Windows/WSL interop timeout, and retrying the job normally works.",
+    ),
+    (
         "network.dns",
         "No network connection",
         re.compile(r"Could not resolve host:? '?([\w.-]+)", re.IGNORECASE),
