@@ -43,6 +43,11 @@ def _pid_alive(pid: int) -> bool:
     return daemon_identity.pid_alive(pid)
 
 
+def _pid_signalable(pid: int) -> bool:
+    """Whether this account may signal ``pid`` (delegated)."""
+    return daemon_identity.pid_signalable(pid)
+
+
 def _process_start_time(pid: int) -> str | None:
     """A stable per-process creation-time token, or None (delegated)."""
     return daemon_identity.process_start_time(pid)
@@ -87,6 +92,9 @@ def is_running() -> bool:
     # Pre-identity pid file (pid only): degrade to liveness rather than making an
     # already-running daemon unstoppable.
     # ponytail: this fallback retires once no pre-identity pid files can exist.
+    if not _pid_signalable(pid):
+        _clear_pid_file()
+        return False
     return True
 
 

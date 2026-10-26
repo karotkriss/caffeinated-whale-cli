@@ -88,6 +88,21 @@ def pid_alive(pid: int) -> bool:
         return False
 
 
+def pid_signalable(pid: int) -> bool:
+    """Whether this account may signal ``pid``.
+
+    A pre-identity pid file (pid only) was only ever written by this account's own
+    per-user daemon, so a pid it cannot signal has been recycled to another user.
+    """
+    if sys.platform == "win32":
+        return True
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
 def process_start_time(pid: int) -> str | None:
     """Return a stable per-process creation-time token, or None if unreadable.
 
@@ -227,14 +242,10 @@ def is_running(pid_file: Path) -> bool:
         return True
 
     # Pre-identity pid file (pid only): degrade to liveness rather than making an
-    # already-running daemon unstoppable. Only this account's own per-user daemon
-    # ever wrote one, so a pid it cannot signal has been recycled to another user.
-    if sys.platform != "win32":
-        try:
-            os.kill(pid, 0)
-        except OSError:
-            clear_pid_file(pid_file)
-            return False
+    # already-running daemon unstoppable.
+    if not pid_signalable(pid):
+        clear_pid_file(pid_file)
+        return False
     return True
 
 

@@ -116,6 +116,22 @@ def test_is_running_is_false_when_the_pid_file_is_garbage(isolated_run_dir):
     assert auto_inspect.is_running() is False
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX os.kill probe")
+def test_is_running_is_false_and_clears_a_pid_only_file_recycled_to_another_user(
+    isolated_run_dir, monkeypatch
+):
+    """A legacy pid-only file whose pid now belongs to another user is not our daemon."""
+
+    def _eperm(pid, sig):
+        raise PermissionError(1, "Operation not permitted")
+
+    auto_inspect.PID_FILE.write_text("4242")
+    monkeypatch.setattr(auto_inspect.os, "kill", _eperm)
+
+    assert auto_inspect.is_running() is False
+    assert not auto_inspect.PID_FILE.exists()
+
+
 def test_is_running_is_false_when_there_is_no_pid_file(isolated_run_dir):
     """No PID file means no daemon."""
     assert auto_inspect.is_running() is False
