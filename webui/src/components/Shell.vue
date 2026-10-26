@@ -7,7 +7,7 @@ import ActionDialog from './ActionDialog.vue'
 import JobDialog from './JobDialog.vue'
 import Palette from './Palette.vue'
 import { fleet, instances, doctor } from '../data/fleet'
-import { session } from '../data/session'
+import { session, PROTOCOL } from '../data/session'
 import { openPalette } from '../data/palette'
 import { activeJobs } from '../data/jobs'
 
@@ -70,7 +70,8 @@ const connectionLabel = computed(() =>
         </Sidebar>
       </template>
       <div v-if="session.protocolMismatch" class="px-3 pt-3 sm:px-5">
-        <Alert theme="amber" title="This page was built for a different cwcli daemon" description="Reload to pick up the daemon that is running now." :primary-action="{ label: 'Reload', onClick: () => location.reload() }" />
+        <Alert v-if="session.meta && session.meta.protocol < PROTOCOL" theme="amber" title="cwcli was updated but this daemon is still the old version" description="Run cwcli ui in a terminal. It restarts the daemon onto the new version, then reload this page." :primary-action="{ label: 'Reload', onClick: () => location.reload() }" />
+        <Alert v-else theme="amber" title="This page was built for a different cwcli daemon" description="Reload to pick up the daemon that is running now." :primary-action="{ label: 'Reload', onClick: () => location.reload() }" />
       </div>
       <router-view :key="route.fullPath" />
     </DesktopShell>

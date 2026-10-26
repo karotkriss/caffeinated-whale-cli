@@ -1982,7 +1982,8 @@ cwcli ui [OPTIONS]
 | `--stop` | Stop the detached daemon |
 | `--no-browser` | Print the one-time sign-in link instead of opening a browser |
 
-**How it runs:** `cwcli ui` starts the daemon detached if none is running (otherwise it reuses the live one), then opens your browser on a **one-time sign-in link**.
+**How it runs:** `cwcli ui` starts the daemon detached if none is running (otherwise it reuses the live one, unless cwcli was reinstalled since that daemon started, in which case it restarts it onto the new code), then opens your browser on a **one-time sign-in link**.
+It also starts auto-inspect or the credential bridge when either is enabled with its boot unit but not running, and says so, or says why it could not.
 The daemon requires sign-in even on loopback: each launch gets its own random token, the browser trades a single-use code for a session cookie, and a used link is dead, so a link copied from scrollback signs nobody else in.
 Run `cwcli ui` again for a fresh link for a second browser on this machine.
 `cwcli ui --stop` stops it.
@@ -2052,6 +2053,12 @@ Docker, cwcli, Storage, Transfer, and Git hosting, plus a cross-instance
 port-range collision check under Instances. Each check is `pass`, `warn`, or
 `fail`; an absent *optional* tool (sendme, `gh`, `glab`) is `warn`, never
 `fail`.
+`gh`/`glab` sign-in is checked per host the credential bridge sends to that
+tool (the bridge's allowed hosts, plus `github.com` for `gh`), and warns only
+when the tool is signed in to none of them; a signed-out host beside a
+signed-in one is listed with its `auth login --hostname` command.
+An enabled but stopped auto-inspect or credential-bridge daemon is a `warn`
+naming its start command; the web UI's Doctor view offers a Start button for it.
 
 **Exit codes:** `0` when every check is pass/warn (a warning never blocks -
 doctor is a chainable preflight gate), `1` when any check fails.

@@ -188,6 +188,7 @@ from ..core import auto_inspect as core_auto_inspect
 from ..core import bench_ops as core_bench_ops
 from ..core import config as core_config
 from ..core import cred_bridge as core_cred_bridge
+from ..core import daemon_recovery
 from ..core import doctor as core_doctor
 from ..core import fleet as core_fleet
 from ..core import inspect as core_inspect
@@ -200,6 +201,7 @@ from ..core import start as core_start
 from ..core import stop as core_stop
 from ..core import unlock as core_unlock
 from ..core import url as core_url
+from ..core import version as core_version
 from ..core import where as core_where
 from ..core.envelope import Message, Result, Status
 from ..core.errors import CwcliError, ErrorKind
@@ -219,6 +221,10 @@ SESSION_COOKIE = "cwcli_serve_session"
 # 3: durable jobs, job SSE frames, and detached lifecycle actions (Phase 2).
 # 4: the settings endpoint and the guarded destructive job verbs (Phase 3).
 PROTOCOL_VERSION = 4
+
+# The running process's install fingerprint (core.version.install_fingerprint), set
+# by run_daemon, so a page can tell a daemon running different code.
+_running_build: str | None = None
 
 # Map the core's closed error kinds onto equivalent HTTP statuses.
 _HTTP_FOR_KIND = {
@@ -760,7 +766,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_spa(path)
             return
         if path == "/api/v1/meta":
-            self._send_json({"version": __version__, "protocol": PROTOCOL_VERSION})
+            meta: dict = {"version": __version__, "protocol": PROTOCOL_VERSION}
+            if _running_build is not None:
+                meta["build"] = _running_build
+            self._send_json(meta)
             return
         if self._refuse_unauthenticated():
             return
@@ -1598,6 +1607,7 @@ def _doctor_json(report) -> dict:
                 "detail": c.detail,
                 "fix": c.fix,
                 "version_verified": c.version_verified,
+                "action": c.action,
             }
             for c in report.checks
         ],
@@ -1769,6 +1779,11 @@ def login_url(host: str, port: int, code: str) -> str:
     return f"http://{_url_host(host)}:{port}/#login={code}"
 
 
+def _recover_daemons() -> None:
+    for note in daemon_recovery.recover():
+        console.print(note.note)
+
+
 def run_daemon(
     host: str,
     port: int,
@@ -1784,6 +1799,7 @@ def run_daemon(
     which is how ``ui --foreground`` opens the browser. Raises ``typer.Exit`` on
     a failed bootstrap or bind (the callers are both Typer commands).
     """
+    global _running_build
     # The two reference each other (the fleet publishes through the hub; the hub
     # reports focus back to the fleet), so the delta sink is bound after both exist.
     fleet = core_fleet.Fleet()
@@ -1823,6 +1839,7 @@ def run_daemon(
     for t in threads:
         t.start()
 
+    _running_build = core_version.install_fingerprint()
     login_code = secrets.token_urlsafe(24)
     try:
         httpd = make_server(
@@ -1860,6 +1877,10 @@ def run_daemon(
     console.print("  Ctrl-C to stop")
     if on_ready is not None:
         on_ready(link)
+
+    # An enabled background daemon that is not running (an upgrade, a reboot, a broken
+    # boot unit) comes back now, and the log says plainly when it cannot.
+    threading.Thread(target=_recover_daemons, daemon=True).start()
 
     # main.cli() resets SIGPIPE to SIG_DFL so `cwcli ls | head` exits quietly; in
     # this long-lived server that lets one closed browser tab's next stream write

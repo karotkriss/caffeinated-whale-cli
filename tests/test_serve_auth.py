@@ -847,5 +847,13 @@ class TestMeta:
         status, body, _ = _request(daemon + "/api/v1/meta")
         assert status == 200
         meta = json.loads(body)
-        assert meta == {"version": __version__, "protocol": serve_cmd.PROTOCOL_VERSION}
+        assert meta["version"] == __version__
+        assert meta["protocol"] == serve_cmd.PROTOCOL_VERSION
         assert type(meta["protocol"]) is int
+
+    def test_meta_carries_the_running_build(self, daemon, monkeypatch):
+        """The fingerprint run_daemon recorded at startup, so a page can tell the
+        daemon now answering runs different code from the one it loaded against."""
+        monkeypatch.setattr(serve_cmd, "_running_build", "3.4.0:abcd")
+        _status, body, _ = _request(daemon + "/api/v1/meta")
+        assert json.loads(body)["build"] == "3.4.0:abcd"
