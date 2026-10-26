@@ -121,7 +121,7 @@ def test_retry_refuses_a_job_whose_page_confirmation_it_would_skip(fake_spawn, v
 
 
 @pytest.mark.parametrize("state", ["queued", "running", "succeeded", "needs_choice", "unknown"])
-def test_only_a_failed_or_interrupted_job_can_be_retried(fake_spawn, state):
+def test_only_a_failed_job_can_be_retried(fake_spawn, state):
     first = jobs.create_job("backup", {"project": "p"}, {})
     _finish(first["id"], state=state)
 
@@ -131,6 +131,20 @@ def test_only_a_failed_or_interrupted_job_can_be_retried(fake_spawn, state):
         jobs.retry_job(first["id"])
 
     assert error.value.code == "job.retry_not_failed"
+
+
+def test_an_interrupted_job_has_no_retry_only_the_check_first_note(fake_spawn):
+    first = jobs.create_job("apps-install", {"project": "p", "app": "erpnext"}, {})
+    _finish(first["id"], state="interrupted")
+
+    record = jobs.read_job(first["id"])
+    assert record["retryable"] is False
+    assert "may still be running" in record["retry_refusal"]
+    with pytest.raises(CwcliError) as error:
+        jobs.retry_job(first["id"])
+
+    assert error.value.code == "job.retry_interrupted"
+    assert len(fake_spawn) == 1
 
 
 @pytest.mark.parametrize("key", ["unknown_apps", "unknown_migrations", "unknown_builds"])
