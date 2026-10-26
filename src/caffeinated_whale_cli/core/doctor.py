@@ -334,7 +334,7 @@ def _check_auto_inspect() -> tuple:
             "run `cwcli config auto-inspect enable`",
         )
     pid, recorded_start = record
-    if not daemon._pid_alive(pid):
+    if not daemon._pid_alive(pid) or (recorded_start is None and not daemon._pid_signalable(pid)):
         return _outcome(
             CheckStatus.WARN,
             f"enabled but the daemon (pid {pid}) is not running",

@@ -53,6 +53,15 @@ def test_pid_alive_false_for_a_pid_that_never_existed():
     assert daemon_identity.pid_alive(999999) is False
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX os.kill probe")
+def test_pid_alive_true_for_another_users_process(monkeypatch):
+    def _eperm(pid, sig):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(daemon_identity.os, "kill", _eperm)
+    assert daemon_identity.pid_alive(4242) is True
+
+
 def test_pid_alive_leaves_the_process_running(live_process):
     assert daemon_identity.pid_alive(live_process.pid) is True
     with pytest.raises(subprocess.TimeoutExpired):
@@ -132,6 +141,50 @@ def test_is_running_false_for_a_recycled_pid_and_clears_it(pid_file, live_proces
     assert not pid_file.exists()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX os.kill probe")
+def test_is_running_false_for_a_pid_only_file_recycled_to_another_user(pid_file, monkeypatch):
+    def _eperm(pid, sig):
+        raise PermissionError(1, "Operation not permitted")
+
+    pid_file.write_text("4242")
+    monkeypatch.setattr(daemon_identity.os, "kill", _eperm)
+    assert daemon_identity.is_running(pid_file) is False
+    assert not pid_file.exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX os.kill probe")
+def test_is_running_true_for_another_users_daemon_with_identity(pid_file, monkeypatch):
+    def _eperm(pid, sig):
+        raise PermissionError(1, "Operation not permitted")
+
+    pid_file.write_text("4242\nrecorded-identity")
+    monkeypatch.setattr(daemon_identity.os, "kill", _eperm)
+    monkeypatch.setattr(daemon_identity, "process_start_time", lambda pid: "recorded-identity")
+    assert daemon_identity.is_running(pid_file) is True
+    assert pid_file.exists()
+
+
+def test_confirm_started_raises_runtime_error_when_the_killed_child_is_not_reaped(
+    pid_file, monkeypatch
+):
+    class _StuckChild:
+        killed = False
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            self.killed = True
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired("daemon", timeout)
+
+    child = _StuckChild()
+    with pytest.raises(RuntimeError, match="did not come up"):
+        daemon_identity.confirm_started(child, pid_file, timeout=0)
+    assert child.killed
+
+
 def test_is_running_false_when_no_pid_file(pid_file):
     assert daemon_identity.is_running(pid_file) is False
 
@@ -143,3 +196,10 @@ def test_two_daemons_use_independent_pid_files(tmp_path):
     assert daemon_identity.is_running(a) is False  # clears a
     assert daemon_identity.is_running(b) is False  # b never existed; a's clearing didn't touch it
     assert not a.exists()
+
+
+def test_last_log_line_is_the_last_non_empty_line(tmp_path):
+    log = tmp_path / "d.log"
+    assert daemon_identity.last_log_line(log) is None  # no log yet
+    log.write_text("[t] started\n[t] RuntimeError: boom\n\n")
+    assert daemon_identity.last_log_line(log) == "[t] RuntimeError: boom"

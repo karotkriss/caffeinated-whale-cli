@@ -30,6 +30,11 @@ export async function applySetting(setting, payload = {}, { done, refresh = true
     return data
   } catch (e) {
     settings.error = e
+    // A toast lands where the user is looking; the page-top line may be off screen.
+    toast.error(e.message, { id: setting, description: e.hint })
+    // A failed write can still change state (a daemon that died during start
+    // logged why), so re-read rather than keep showing the pre-click state.
+    if (refresh) config.load(true)
     return null
   } finally {
     settings.busy = null

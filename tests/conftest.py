@@ -183,6 +183,22 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(pytest.mark.unit)
 
 
+@pytest.fixture(autouse=True)
+def _no_real_boot_unit_repair(request, monkeypatch):
+    """Keep the unit tier off the operator's REAL boot units.
+
+    ``startup.repair_startup`` rewrites ``~/.config/systemd/user/<unit>`` and runs
+    ``systemctl --user daemon-reload``, and every daemon enable/start reaches it.
+    ``Path.home()`` is the real home here (only ``CWCLI_HOME`` is redirected), so
+    an unstubbed call would edit the developer's own installed unit. Tests of the
+    repair itself (``test_startup_units.py``) restore it inside a sandboxed home.
+    """
+    if request.node.get_closest_marker("unit"):
+        from caffeinated_whale_cli.utils import startup
+
+        monkeypatch.setattr(startup, "repair_startup", lambda unit=startup.AUTO_INSPECT: False)
+
+
 def pytest_collection_finish(session):
     # session.items is post-deselection, so the last nodeid per file is one that
     # will actually run.

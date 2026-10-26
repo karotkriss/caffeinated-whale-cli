@@ -13,8 +13,10 @@ deprecation warning and byte-identical behavior. They deliberately BYPASS the
 core and keep calling the utils the old monolith called (Decision 4: building
 core API for verbs scheduled for deletion is waste) - except
 ``add-path``/``remove-path``, which share the core's input validation with
-their new home (the one disclosed exception: storing garbage was never a
-behavior worth preserving). ``start``'s argv AND its refuse-when-disabled guard
+their new home (storing garbage was never a behavior worth preserving), and
+``auto-inspect start``, which boot units exec and so routes through
+``core.auto_inspect`` for the boot-unit repair and the honest start check.
+``start``'s argv AND its refuse-when-disabled guard
 are load-bearing: already-installed boot units exec
 ``cwcli config auto-inspect start`` verbatim, and the guard is what keeps a
 stale hook inert after a ``disable``.
@@ -32,7 +34,7 @@ from ..core import auto_inspect as core_ai
 from ..core import config as core_config
 from ..core import cred_bridge as core_cred
 from ..core.auto_inspect import AutoInspectState
-from ..core.envelope import Status
+from ..core.envelope import Message, Status
 from ..core.errors import CwcliError, ErrorKind
 from ..utils import auto_inspect, config_utils, db_utils, startup
 from ..utils.console import console, stderr_console
@@ -454,6 +456,7 @@ _ACTION_LINES = {
         "[green]Startup enabled. Auto-inspect will start automatically on system boot.[/green]"
     ),
     "hook.removed": "[green]Startup configuration removed.[/green]",
+    "hook.repaired": "[dim]Repaired the boot unit so it no longer stops a running daemon.[/dim]",
 }
 
 
@@ -614,6 +617,8 @@ _CRED_ACTION_LINES = {
     "projects.hardened": "[dim]Tightened the projects directory to owner-only (0700).[/dim]",
     "hook.installed": "[green]Boot startup installed.[/green]",
     "hook.removed": "[green]Boot startup removed.[/green]",
+    "hook.repaired": "[dim]Repaired the boot unit so it no longer stops a running daemon.[/dim]",
+    "daemon.restarted": "[green]Credential bridge daemon restarted.[/green]",
 }
 
 
@@ -863,9 +868,13 @@ def start_auto_inspect(
     _warn_deprecated("cwcli config auto-inspect start", "cwcli config auto-inspect enable")
     try:
         if auto_inspect.is_running():
+            actions: list[str] = []
+            warnings: list[Message] = []
+            core_ai.repair_boot_hook(actions, warnings)
             console.print("[yellow]Auto-inspect background process is already running.[/yellow]")
-            pid = auto_inspect.get_pid()
-            console.print(f"[cyan]Process ID: {pid}[/cyan]")
+            console.print(f"[cyan]Process ID: {auto_inspect.get_pid()}[/cyan]")
+            for warning in warnings:
+                console.print(f"[yellow]Warning: {warning.text}[/yellow]")
             return
 
         config = config_utils.get_auto_inspect_config()
@@ -875,8 +884,10 @@ def start_auto_inspect(
             )
             raise typer.Exit(code=1)
 
-        auto_inspect.start_daemon()
+        result = core_ai.start()
         console.print("[green]Auto-inspect background process started.[/green]")
+        for warning in result.warnings:
+            console.print(f"[yellow]Warning: {warning.text}[/yellow]")
         console.print(
             f"[cyan]Running projects will be inspected every {config['interval']} seconds.[/cyan]"
         )

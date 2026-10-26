@@ -604,11 +604,75 @@ def test_start_daemon_is_a_noop_when_already_running(run_dir, monkeypatch):
 def test_start_daemon_spawns_and_never_forks(run_dir, monkeypatch):
     monkeypatch.setattr(cred_daemon, "is_running", lambda: False)
     monkeypatch.setattr(cred_daemon.os, "fork", lambda: pytest.fail("forked"), raising=False)
-    monkeypatch.setattr(cred_daemon, "_await_started", lambda timeout=2.0: None)
+    monkeypatch.setattr(cred_daemon, "_await_started", lambda proc: None)
     spawned = []
     monkeypatch.setattr(cred_daemon, "_spawn_detached", lambda: spawned.append(True))
     cred_daemon.start_daemon()
     assert spawned == [True]
+
+
+def test_a_daemon_that_dies_at_startup_is_reported_not_started(run_dir, monkeypatch):
+    """A child that exits before writing its pid file raises with its exit code
+    and logs the failure, instead of start_daemon returning as if it were up.
+    Mock-free: a real child that exits 3."""
+    monkeypatch.setattr(cred_daemon, "_bootstrap_source", lambda module_path: "raise SystemExit(3)")
+
+    with pytest.raises(RuntimeError, match=r"exited during startup \(exit code 3\)"):
+        cred_daemon.start_daemon()
+
+    assert "credential-bridge daemon failed to start" in cred_daemon.LOG_FILE.read_text()
+    assert not cred_daemon.is_running()
+
+
+def test_transport_failure_happens_before_readiness_is_published(run_dir, monkeypatch):
+    """A real child whose loopback bind fails must exit before publishing its pid,
+    so start_daemon reports the failure instead of a daemon that never served."""
+    real_source = cred_daemon._bootstrap_source
+
+    def broken_bind_source(module_path):
+        prefix = (
+            "import os, sys, socket, types\n"
+            f"os.environ['CWCLI_HOME'] = {str(run_dir)!r}\n"
+            f"sys.path.insert(0, {module_path!r})\n"
+            "from caffeinated_whale_cli.core import credbridge\n"
+            "from caffeinated_whale_cli.utils import cred_daemon\n"
+            "class _Broken:\n"
+            "    def __init__(self, *args, **kwargs): pass\n"
+            "    def bind(self, address): raise OSError('bind failed')\n"
+            "credbridge._prefer_tcp = lambda: True\n"
+            "cred_daemon.socket = types.SimpleNamespace(\n"
+            "    socket=_Broken, AF_INET=socket.AF_INET, SOCK_STREAM=socket.SOCK_STREAM)\n"
+        )
+        return prefix + real_source(module_path)
+
+    monkeypatch.setattr(cred_daemon, "_bootstrap_source", broken_bind_source)
+
+    with pytest.raises(RuntimeError, match="exited during startup"):
+        cred_daemon.start_daemon()
+
+    assert "bind failed" in cred_daemon.LOG_FILE.read_text()
+    assert not cred_daemon.PID_FILE.exists()
+
+
+def test_a_daemon_that_never_comes_up_times_out_loudly(run_dir, monkeypatch):
+    """A child that stays alive but never writes its pid file is a failure too,
+    and is killed so a retry cannot race it into a rival daemon."""
+    monkeypatch.setattr(
+        cred_daemon, "_bootstrap_source", lambda module_path: "import time; time.sleep(30)"
+    )
+    real_await = cred_daemon._await_started
+    procs = []
+
+    def short_await(proc):
+        procs.append(proc)
+        real_await(proc, timeout=0.3)
+
+    monkeypatch.setattr(cred_daemon, "_await_started", short_await)
+    with pytest.raises(RuntimeError, match="did not come up within 0.3s"):
+        cred_daemon.start_daemon()
+
+    assert len(procs) == 1
+    assert procs[0].poll() is not None
 
 
 def test_concurrent_start_forks_at_most_one_daemon(run_dir, monkeypatch):
@@ -653,6 +717,23 @@ def test_stop_daemon_is_a_noop_when_not_running(run_dir, monkeypatch):
     monkeypatch.setattr(cred_daemon.os, "kill", lambda pid, sig: killed.append((pid, sig)))
     cred_daemon.stop_daemon()
     assert killed == []
+
+
+def test_stop_daemon_keeps_the_pid_file_of_a_daemon_it_could_not_signal(run_dir, monkeypatch):
+    """A daemon owned by another uid refuses the signal (EPERM): forgetting its
+    pid file would leave it running with nothing able to reach it."""
+    cred_daemon.PID_DIR.mkdir(parents=True, exist_ok=True)
+    cred_daemon.PID_FILE.write_text("4242")
+    monkeypatch.setattr(cred_daemon, "is_running", lambda: True)
+    monkeypatch.setattr(cred_daemon, "get_pid", lambda: 4242)
+
+    def _eperm(pid, sig):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(cred_daemon.os, "kill", _eperm)
+    with pytest.raises(RuntimeError, match="not permitted"):
+        cred_daemon.stop_daemon()
+    assert cred_daemon.PID_FILE.exists()
 
 
 class TestSharedModeSocketGating:

@@ -32,9 +32,9 @@ import stat
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from ..utils import config_utils, shared_home, startup
+from ..utils import config_utils, daemon_identity, shared_home, startup
 from ..utils import cred_daemon as daemon
-from .auto_inspect import sync_boot_hook
+from .auto_inspect import repair_boot_hook, sync_boot_hook
 from .docker import get_frappe_container
 from .envelope import Message, Result, Status
 from .errors import CwcliError, ErrorKind
@@ -53,6 +53,7 @@ class CredBridgeState:
     allowed_hosts: list[str]  # config: hosts the daemon answers for (exact match)
     registered_projects: list[str]  # instances currently wired into the bridge
     log_file: str
+    last_log_line: str | None  # the daemon log's last line: why it is not running
     recent_audit: list[str]  # the last few audit lines (never a credential byte)
 
 
@@ -80,6 +81,7 @@ def _state() -> CredBridgeState:
         allowed_hosts=sorted(daemon.allowed_hosts()),
         registered_projects=daemon.registered_projects(),
         log_file=str(daemon.LOG_FILE),
+        last_log_line=daemon_identity.last_log_line(daemon.LOG_FILE),
         recent_audit=daemon.recent_audit(),
     )
 
@@ -115,6 +117,21 @@ def _start_daemon() -> None:
         raise CwcliError(
             ErrorKind.INTERNAL, "daemon.start_failed", f"Could not start credential bridge: {e}"
         ) from e
+    if daemon.is_running():
+        return
+    if not daemon._may_fork_daemon():
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "daemon.system_owned",
+            "The credential bridge daemon is managed by the shared install's system unit; "
+            "it cannot be started from this account.",
+            hint=f"sudo systemctl start {startup.CRED_BRIDGE.service_name}",
+        )
+    raise CwcliError(
+        ErrorKind.INTERNAL,
+        "daemon.start_failed",
+        "Could not start credential bridge: the daemon is not running after start.",
+    )
 
 
 def _stop_daemon() -> None:
@@ -186,6 +203,7 @@ def enable(
         config_utils.set_cred_bridge_startup(at_boot)
 
     _harden_projects_dir(actions)
+    repair_boot_hook(actions, warnings, unit=startup.CRED_BRIDGE)
 
     if daemon.is_running():
         actions.append("daemon.already_running")
@@ -197,6 +215,9 @@ def enable(
 
     if at_boot is not None:
         sync_boot_hook(at_boot, actions, warnings, unit=startup.CRED_BRIDGE)
+        if not daemon.is_running():
+            _start_daemon()
+            actions.append("daemon.started")
 
     return Result(
         status=Status.WARNING if warnings else Status.OK,
@@ -233,10 +254,9 @@ def disable() -> Result[CredBridgeOutcome]:
     )
 
 
-def start() -> Result[CredBridgeOutcome]:
-    """Start the daemon only, leaving config as-is. Refuses when the feature is
-    disabled (the ``config auto-inspect start`` guard: a start against a disabled
-    feature would run a daemon the config says should not exist)."""
+def _require_enabled() -> None:
+    """The ``config auto-inspect start`` guard: a start against a disabled feature
+    would run a daemon the config says should not exist."""
     if not daemon.is_enabled():
         raise CwcliError(
             ErrorKind.USAGE,
@@ -244,14 +264,41 @@ def start() -> Result[CredBridgeOutcome]:
             "The credential bridge is not enabled.",
             hint="run `cwcli config cred-bridge enable` first",
         )
+
+
+def start() -> Result[CredBridgeOutcome]:
+    """Start the daemon only, leaving config as-is. Refuses when the feature is
+    disabled; idempotent."""
+    _require_enabled()
+    actions: list[str] = []
+    warnings: list[Message] = []
+    repair_boot_hook(actions, warnings, unit=startup.CRED_BRIDGE)
     if daemon.is_running():
-        return Result(
-            status=Status.OK,
-            data=CredBridgeOutcome(actions=["daemon.already_running"], state=_state()),
-        )
-    _start_daemon()
+        actions.append("daemon.already_running")
+    else:
+        _start_daemon()
+        actions.append("daemon.started")
     return Result(
-        status=Status.OK, data=CredBridgeOutcome(actions=["daemon.started"], state=_state())
+        status=Status.WARNING if warnings else Status.OK,
+        data=CredBridgeOutcome(actions=actions, state=_state()),
+        warnings=warnings,
+    )
+
+
+def restart() -> Result[CredBridgeOutcome]:
+    """Stop the daemon if it runs, then start it again (same guard as :func:`start`)."""
+    _require_enabled()
+    actions: list[str] = []
+    warnings: list[Message] = []
+    repair_boot_hook(actions, warnings, unit=startup.CRED_BRIDGE)
+    if daemon.is_running():
+        _stop_daemon()
+    _start_daemon()
+    actions.append("daemon.restarted")
+    return Result(
+        status=Status.WARNING if warnings else Status.OK,
+        data=CredBridgeOutcome(actions=actions, state=_state()),
+        warnings=warnings,
     )
 
 
