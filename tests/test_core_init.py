@@ -1556,3 +1556,49 @@ class TestDbRootPassword:
         assert exc.value.code == "init.exec_failed"
         assert exc.value.message.startswith("MariaDB rejected the password for database user")
         assert "1045" in exc.value.detail["output"]
+
+
+class TestRetryAfterFailedPull:
+    """A creation whose image pull failed leaves conf/ and data/ behind; the retry continues."""
+
+    def test_same_inputs_continue_from_the_leftover_project_instead_of_refusing(
+        self, monkeypatch, tmp_path, patched
+    ):
+        s = _fresh_compose(monkeypatch, tmp_path)
+        downloads = []
+        monkeypatch.setattr(
+            urllib.request,
+            "urlretrieve",
+            lambda url, dest: downloads.append(url) or dest.write_text(COMPOSE_WITH_MARIADB_ENV),
+        )
+        healthy_run = subprocess.run
+        pulls = []
+
+        def failing_pull(cmd, cwd=None, capture_output=False, **kwargs):
+            if "pull" in cmd:
+                pulls.append(cmd)
+                return SimpleNamespace(
+                    returncode=1,
+                    stdout=b"",
+                    stderr=b"error getting credentials - err: exit status 1, out: ``",
+                )
+            return healthy_run(cmd, cwd=cwd, capture_output=capture_output, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", failing_pull)
+        monkeypatch.setattr(core_init.time, "sleep", lambda _s: None)
+        with pytest.raises(CwcliError) as failed:
+            core_init.init_instance(PROJECT, port=18000, db_root_password="Ch0sen-pw")
+        assert failed.value.code == "compose.credential_helper"
+        left_behind = s.compose_path.read_text()
+        assert (s.compose_path.parent.parent / "data").is_dir()
+
+        monkeypatch.setattr(subprocess, "run", healthy_run)
+        result = core_init.init_instance(PROJECT, port=18000, db_root_password="Ch0sen-pw")
+
+        assert result.status is Status.OK
+        assert downloads == [core_init._COMPOSE_URL]  # the leftover compose was reused
+        content = s.compose_path.read_text()
+        assert content == left_behind
+        assert "- ../data:/workspace:cached" in content
+        assert '      - "18000-18005:8000-8005"' in content
+        assert (s.compose_path.parent / "db-root-password").read_text() == "Ch0sen-pw"

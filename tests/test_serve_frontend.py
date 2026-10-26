@@ -1953,6 +1953,44 @@ class TestJobsEndpoint:
         assert _post(daemon.base + f"/api/v1/jobs/{job_id}/detach", {})[0] == 200
         assert calls == [("interrupt", job_id), ("detach", job_id)]
 
+    def test_retry_starts_a_new_job_from_the_named_one(self, daemon, monkeypatch):
+        seen = {}
+
+        def retry(job_id, *, ui_context):
+            seen.update(job_id=job_id, token=ui_context["token"])
+            return {"id": "20261024120001-abcdef123456", "state": "queued"}
+
+        monkeypatch.setattr(serve_cmd.core_jobs, "retry_job", retry)
+
+        status, body = _post(daemon.base + "/api/v1/jobs/20261024120000-abcdef123456/retry", {})
+
+        assert status == 202
+        assert body["data"]["id"] == "20261024120001-abcdef123456"
+        assert seen == {"job_id": "20261024120000-abcdef123456", "token": _TOKEN}
+
+    def test_continue_answers_a_waiting_job_without_page_secrets(self, daemon, monkeypatch):
+        seen = {}
+
+        def continue_job(job_id, target, args, *, consent, ui_context):
+            seen.update(job_id=job_id, target=target, args=args, consent=consent)
+            return {"id": "20261024120001-abcdef123456", "state": "queued"}
+
+        monkeypatch.setattr(serve_cmd.core_jobs, "continue_job", continue_job)
+
+        status, body = _post(
+            daemon.base + "/api/v1/jobs/20261024120000-abcdef123456/continue",
+            {"target": {"project": "p", "site": "s"}, "args": {}, "consent": True},
+        )
+
+        assert status == 202
+        assert body["data"]["id"] == "20261024120001-abcdef123456"
+        assert seen == {
+            "job_id": "20261024120000-abcdef123456",
+            "target": {"project": "p", "site": "s"},
+            "args": {},
+            "consent": True,
+        }
+
     def test_job_changes_reach_the_existing_event_stream(self, daemon, monkeypatch):
         monkeypatch.setattr(serve_cmd.core_jobs, "list_jobs", lambda: [])
         stream = _Stream(daemon.base + "/api/v1/stream")

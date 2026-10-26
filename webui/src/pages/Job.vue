@@ -2,8 +2,8 @@
 import { computed, onMounted, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Alert, Badge, Breadcrumbs, Button, ErrorMessage, FormControl, PageHeader, LoadingText } from 'frappe-ui'
-import { ACTIVE_STATES, JOB_THEME, createJob, detachJob, elapsed, interruptJob, jobLabel, jobTarget, jobs, loadJob } from '../data/jobs'
-import { openJob } from '../data/job-dialog'
+import { ACTIVE_STATES, JOB_THEME, continueJob, createJob, detachJob, elapsed, interruptJob, jobLabel, jobTarget, jobs, loadJob, retryJob } from '../data/jobs'
+import { jobDialog, openJob } from '../data/job-dialog'
 import { setFocus } from '../data/fleet'
 import FollowPane from '../components/FollowPane.vue'
 import { feed, openLine } from '../data/follow'
@@ -101,6 +101,25 @@ async function detach() {
   } catch (error) { actionError.value = error }
 }
 
+// Retry starts a NEW job from the same inputs; the daemon reuses the passwords it
+// still holds in memory. When it no longer holds them (it restarted), the wizard
+// reopens on its last step with everything else filled in.
+const retrying = ref(false)
+async function retry() {
+  const job = record.value
+  actionError.value = null
+  retrying.value = true
+  try {
+    const next = await retryJob(id)
+    await router.push(`/jobs/${next.id}`)
+  } catch (error) {
+    if (error.code === 'job.retry_secrets_missing' && job.verb === 'init') {
+      openJob('init', { ...job.target, args: job.args })
+      jobDialog.step = 2
+    } else actionError.value = error
+  } finally { retrying.value = false }
+}
+
 const benchOptions = computed(() => record.value?.choice?.param === 'bench' ? record.value.choice.options || [] : [])
 const consentNeeded = computed(() => record.value?.choice?.param === 'consent')
 // The name typed back is the most specific thing the job acts on: a dropped
@@ -112,26 +131,40 @@ const consentTyped = computed(() => !!consentTarget.value && typedName.value.tri
 async function continueChoice(value) {
   const job = record.value
   const param = job.choice?.param
-  if (job.verb === 'init') {
-    openJob('init', { ...job.target, args: param === 'reuse_bench' || param === 'auto_start' ? { ...job.args, [param]: true } : job.args })
-    return
-  }
+  // An answered choice continues on the daemon, which supplies the passwords it
+  // still holds for this job; the page never sees them.
   let spec = { verb: job.verb, target: job.target, args: job.args, consent: job.consent }
-  if (param === 'consent') {
+  let start = (s) => continueJob(id, s)
+  if (job.verb === 'init') {
+    if (param !== 'reuse_bench' && param !== 'auto_start') {
+      openJob('init', { ...job.target, args: job.args })
+      return
+    }
+    spec.args = { ...job.args, [param]: true }
+  }
+  else if (param === 'consent') {
     if (!consentTyped.value) return
     spec.consent = true
   }
   else if (param === 'bench') spec.target = { ...job.target, bench: String(value) }
-  else if (param === 'auto_start') spec = { verb: 'start', target: { project: job.target.project, ...(job.target.bench != null ? { bench: job.target.bench } : {}) }, args: {} }
+  else if (param === 'auto_start') {
+    spec = { verb: 'start', target: { project: job.target.project, ...(job.target.bench != null ? { bench: job.target.bench } : {}) }, args: {} }
+    start = createJob
+  }
   else {
     openJob(job.verb, { ...job.target, args: job.args })
     return
   }
   actionError.value = null
   try {
-    const next = await createJob(spec)
+    const next = await start(spec)
     await router.push(`/jobs/${next.id}`)
-  } catch (error) { actionError.value = error }
+  } catch (error) {
+    if (error.code === 'job.retry_secrets_missing' && job.verb === 'init') {
+      openJob('init', { ...job.target, args: spec.args })
+      jobDialog.step = 2
+    } else actionError.value = error
+  }
 }
 </script>
 
@@ -156,7 +189,7 @@ async function continueChoice(value) {
         <div class="bg-surface-base px-4 py-3"><div class="text-sm text-ink-gray-5">Events</div><div class="mt-1.5 tabular-nums text-base text-ink-gray-8">{{ record.event_count }}</div></div>
       </div>
 
-      <Alert v-if="record.state === 'unknown'" theme="gray" title="The job process vanished" :description="record.error?.message" />
+      <Alert v-if="record.state === 'unknown'" theme="gray" title="The job process vanished" :description="[record.error?.message, record.error?.hint].filter(Boolean).join(' ')" />
       <template v-else-if="record.state === 'needs_choice'">
         <Alert v-if="benchOptions.length || consentNeeded" theme="amber" title="cwcli needs a decision" :description="record.choice.prompt" />
         <Alert v-else theme="amber" title="cwcli needs a decision" :description="record.choice?.prompt || 'Review the job and choose how to continue.'" :primary-action="{ label: record.choice?.param === 'auto_start' && record.verb !== 'init' ? 'Start instance' : 'Continue', onClick: () => continueChoice() }" />
@@ -169,6 +202,11 @@ async function continueChoice(value) {
         </div>
       </template>
       <Alert v-else-if="failure" theme="red" :title="failure.title" :description="failure.description" />
+      <div v-if="record.retryable" class="flex flex-wrap items-center gap-3">
+        <Button variant="solid" icon-left="lucide-rotate-cw" label="Retry" :loading="retrying" @click="retry" />
+        <p class="text-p-sm text-ink-gray-5">{{ record.verb === 'init' ? 'Starts a new job with the same settings and passwords. It continues from whatever this one left behind.' : 'Starts a new job with the same settings.' }}</p>
+      </div>
+      <p v-else-if="record.retry_refusal" class="text-p-sm text-ink-gray-5">{{ record.retry_refusal }}</p>
       <ErrorMessage :message="actionError" />
 
       <section v-if="preflight" class="rounded-6 border border-outline-gray-1 p-4">
