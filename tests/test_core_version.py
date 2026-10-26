@@ -541,3 +541,33 @@ class TestBuildInfo:
         build = core_version.build_info()
         assert build.source == "standalone"
         assert build.commit is None and build.editable is False
+
+
+class TestInstallFingerprint:
+    """The fingerprint changes when a reinstall changes the code, even at one version."""
+
+    @staticmethod
+    def _dist(monkeypatch, record):
+        import importlib.metadata as md
+
+        class _Dist:
+            version = "9.9.9"
+
+            def read_text(self, name):
+                return record
+
+        monkeypatch.setattr(md, "distribution", lambda _n: _Dist())
+
+    def test_same_version_different_record_differs(self, monkeypatch):
+        from caffeinated_whale_cli.core import version
+
+        self._dist(monkeypatch, "a.py,sha256=1,10\n")
+        first = version.install_fingerprint()
+        self._dist(monkeypatch, "a.py,sha256=2,10\n")
+        assert version.install_fingerprint() != first
+
+    def test_unreadable_dist_is_marked_unknown(self, monkeypatch):
+        from caffeinated_whale_cli.core import version
+
+        self._dist(monkeypatch, None)
+        assert version.install_fingerprint().endswith(":?")

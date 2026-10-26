@@ -10,7 +10,7 @@ export const PROTOCOL = 4 // the daemon's PROTOCOL_VERSION this page was built a
 
 export const session = reactive({
   signedOut: false,
-  meta: null, // { version, protocol }
+  meta: null, // { version, protocol, build }
   protocolMismatch: false,
 })
 
@@ -40,7 +40,10 @@ export async function recheckMeta() {
     const res = await fetch('/api/v1/meta', { cache: 'no-store' })
     const meta = await res.json()
     const prior = session.meta
-    if (prior && (meta.protocol !== prior.protocol || meta.version !== prior.version)) {
+    if (
+      prior &&
+      (meta.protocol !== prior.protocol || meta.version !== prior.version || meta.build !== prior.build)
+    ) {
       location.reload()
       return
     }

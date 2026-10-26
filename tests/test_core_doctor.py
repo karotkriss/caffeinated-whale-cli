@@ -581,7 +581,7 @@ class TestAutoInspect:
         monkeypatch.setattr(
             "caffeinated_whale_cli.utils.auto_inspect._read_daemon_record", lambda: None
         )
-        status, _detail, fix = core_doctor._check_auto_inspect()
+        status, _detail, fix, *_ = core_doctor._check_auto_inspect()
         assert status is CheckStatus.WARN
         assert fix
         assert called == []  # is_running() (which prunes) was never invoked
@@ -595,9 +595,10 @@ class TestAutoInspect:
             "caffeinated_whale_cli.utils.auto_inspect._read_daemon_record", lambda: (1, None)
         )
         monkeypatch.setattr("caffeinated_whale_cli.utils.auto_inspect._pid_alive", lambda _p: False)
-        status, detail, _fix = core_doctor._check_auto_inspect()
+        status, detail, fix, *_ = core_doctor._check_auto_inspect()
         assert status is CheckStatus.WARN
-        assert "not running" in detail
+        assert "enabled but stopped" in detail
+        assert fix == "run `cwcli config auto-inspect enable`"
 
     def test_warn_when_existing_config_cannot_be_read(self, monkeypatch):
         monkeypatch.setattr(
@@ -656,7 +657,7 @@ class TestCredBridgeCheck:
         monkeypatch.setattr(
             "caffeinated_whale_cli.utils.daemon_identity.read_daemon_record", lambda _pf: None
         )
-        status, _detail, fix = core_doctor._check_cred_bridge()
+        status, _detail, fix, *_ = core_doctor._check_cred_bridge()
         assert status is CheckStatus.WARN
         assert fix
         assert called == []
@@ -673,9 +674,10 @@ class TestCredBridgeCheck:
         monkeypatch.setattr(
             "caffeinated_whale_cli.utils.daemon_identity.pid_alive", lambda _p: False
         )
-        status, detail, _fix = core_doctor._check_cred_bridge()
+        status, detail, fix, *_ = core_doctor._check_cred_bridge()
         assert status is CheckStatus.WARN
-        assert "not running" in detail
+        assert "enabled but stopped" in detail
+        assert fix == "run `cwcli config cred-bridge start`"
 
 
 class TestFreeSpace:
@@ -782,6 +784,25 @@ class TestSendme:
 
 
 class TestGitHostingCli:
+    """Sign-in is judged per host, over the hosts the credential bridge sends to the tool;
+    the check warns only when the tool is signed in to none of them."""
+
+    @staticmethod
+    def _signed_in(monkeypatch, tool_path, hosts, allowed):
+        """Fake ``<tool> auth status --hostname H``: exit 0 only for ``hosts``."""
+        calls = []
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.cred_daemon.allowed_hosts", lambda: allowed
+        )
+        monkeypatch.setattr(core_doctor.shutil, "which", lambda _n: tool_path)
+
+        def _run(cmd, **_k):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0 if cmd[-1] in hosts else 1, "", "")
+
+        monkeypatch.setattr(core_doctor.subprocess, "run", _run)
+        return calls
+
     def test_warn_when_not_installed(self, monkeypatch):
         monkeypatch.setattr(core_doctor.shutil, "which", lambda _n: None)
         status, detail, fix = core_doctor._check_gh()
@@ -789,44 +810,177 @@ class TestGitHostingCli:
         assert "not installed" in detail
         assert fix
 
-    def test_pass_when_authenticated(self, monkeypatch):
-        monkeypatch.setattr(core_doctor.shutil, "which", lambda _n: "/usr/bin/gh")
-        monkeypatch.setattr(
-            core_doctor.subprocess,
-            "run",
-            lambda *a, **k: subprocess.CompletedProcess(
-                a[0], 0, stdout="", stderr="github.com\n  Logged in to github.com account me\n"
-            ),
-        )
+    def test_pass_when_the_allowed_hosts_are_signed_in(self, monkeypatch):
+        self._signed_in(monkeypatch, "/usr/bin/gh", {"github.com"}, {"github.com", "gitlab.example.com"})
         status, detail, fix = core_doctor._check_gh()
         assert status is CheckStatus.PASS
-        assert "github.com" in detail
+        assert "github.com: signed in" in detail
         assert fix is None
 
-    def test_warn_when_not_authenticated(self, monkeypatch):
-        monkeypatch.setattr(core_doctor.shutil, "which", lambda _n: "/usr/bin/glab")
-        monkeypatch.setattr(
-            core_doctor.subprocess,
-            "run",
-            lambda *a, **k: subprocess.CompletedProcess(a[0], 1, stdout="", stderr="not logged in"),
+    def test_an_unused_signed_out_host_does_not_warn(self, monkeypatch):
+        """The reported bug: glab is signed in to the host in use, not to gitlab.com."""
+        calls = self._signed_in(
+            monkeypatch, "/usr/bin/glab", {"gitlab.example.com"}, {"github.com", "gitlab.example.com"}
         )
         status, detail, fix = core_doctor._check_glab()
+        assert status is CheckStatus.PASS
+        assert "gitlab.example.com: signed in" in detail
+        assert "gitlab.com" not in detail
+        assert fix is None
+        assert calls == [["glab", "auth", "status", "--hostname", "gitlab.example.com"]]
+
+    def test_the_reporters_state_passes_and_lists_the_signed_out_host(self, monkeypatch):
+        """The reported bug, on the reporter's own allowlist: glab is signed in to the
+        host in use, not to the default gitlab.com still listed beside it."""
+        calls = self._signed_in(
+            monkeypatch,
+            "/usr/bin/glab",
+            {"gitlab.example.com"},
+            {"github.com", "gitlab.com", "gitlab.example.com"},
+        )
+        status, detail, fix = core_doctor._check_glab()
+        assert status is CheckStatus.PASS
+        assert "gitlab.example.com: signed in" in detail
+        assert "gitlab.com: not signed in (`glab auth login --hostname gitlab.com`)" in detail
+        assert "not authenticated" not in detail
+        assert fix is None
+        assert sorted(c[-1] for c in calls) == ["gitlab.example.com", "gitlab.com"]
+
+    def test_warn_when_signed_in_to_no_judged_host(self, monkeypatch):
+        self._signed_in(monkeypatch, "/usr/bin/glab", set(), {"a.example", "b.example"})
+        status, detail, fix = core_doctor._check_glab()
         assert status is CheckStatus.WARN
-        assert "not authenticated" in detail
-        assert "glab auth login" in fix
+        assert "a.example: not signed in" in detail and "b.example: not signed in" in detail
+        assert "not authenticated" not in detail
+        assert fix == "glab auth login --hostname a.example; glab auth login --hostname b.example"
+
+    def test_gh_always_judges_github_com_for_the_per_invocation_bridge(self, monkeypatch):
+        """An allowlist without github.com must not hide a signed-out gh: the
+        per-invocation bridge (apps install/update, init) still sends github.com to it."""
+        calls = self._signed_in(monkeypatch, "/usr/bin/gh", set(), {"gitlab.example.com"})
+        status, detail, fix = core_doctor._check_gh()
+        assert status is CheckStatus.WARN
+        assert "github.com: not signed in" in detail
+        assert fix == "gh auth login --hostname github.com"
+        assert calls == [["gh", "auth", "status", "--hostname", "github.com"]]
+
+    def test_pass_when_no_allowed_host_uses_the_tool(self, monkeypatch):
+        calls = self._signed_in(monkeypatch, "/usr/bin/glab", set(), {"github.com"})
+        status, detail, _fix = core_doctor._check_glab()
+        assert status is CheckStatus.PASS
+        assert "no bridge-allowed host" in detail
+        assert calls == []
+
+    def test_a_probe_that_cannot_run_is_unknown_and_warns(self, monkeypatch):
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.cred_daemon.allowed_hosts", lambda: {"gitlab.com"}
+        )
+        monkeypatch.setattr(core_doctor.shutil, "which", lambda _n: "/usr/bin/glab")
+
+        def _boom(*_a, **_k):
+            raise OSError("exec failed")
+
+        monkeypatch.setattr(core_doctor.subprocess, "run", _boom)
+        status, detail, fix = core_doctor._check_glab()
+        assert status is CheckStatus.WARN
+        assert "gitlab.com: unknown" in detail
+        assert "could not check glab sign-in state for gitlab.com" in detail
+        assert "cannot be fetched" not in detail
+        assert fix is None
+
+    def test_only_hosts_that_answered_signed_out_get_a_login_command(self, monkeypatch):
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.cred_daemon.allowed_hosts",
+            lambda: {"a.example", "b.example"},
+        )
+        monkeypatch.setattr(core_doctor.shutil, "which", lambda _n: "/usr/bin/glab")
+
+        def _run(cmd, **_k):
+            if cmd[-1] == "a.example":
+                raise subprocess.TimeoutExpired(cmd, 5)
+            return subprocess.CompletedProcess(cmd, 1, "", "")
+
+        monkeypatch.setattr(core_doctor.subprocess, "run", _run)
+        status, detail, fix = core_doctor._check_glab()
+        assert status is CheckStatus.WARN
+        assert "a.example: unknown" in detail
+        assert "could not check glab sign-in state for a.example" in detail
+        assert "cannot be fetched" not in detail
+        assert fix == "glab auth login --hostname b.example"
 
     def test_never_calls_login(self, monkeypatch):
         """Auth checks must be read-only status reads, never a login flow."""
-        calls = []
-
-        def _run(cmd, **_k):
-            calls.append(cmd)
-            return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
-
-        monkeypatch.setattr(core_doctor.shutil, "which", lambda _n: "/usr/bin/gh")
-        monkeypatch.setattr(core_doctor.subprocess, "run", _run)
+        calls = self._signed_in(monkeypatch, "/usr/bin/gh", {"github.com"}, {"github.com"})
         core_doctor._check_gh()
-        assert calls == [["gh", "auth", "status"]]
+        assert calls == [["gh", "auth", "status", "--hostname", "github.com"]]
+
+
+class TestStoppedDaemonAction:
+    """An enabled-but-stopped daemon names the state and carries the web one-click fix."""
+
+    def test_stopped_daemon_checks_carry_the_start_action(self, monkeypatch):
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.config_utils.read_cred_bridge_config",
+            lambda: {"enabled": True},
+        )
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.daemon_identity.read_daemon_record", lambda _pf: None
+        )
+        by_id = {c.id: c for c in core_doctor._CHECKS}
+        monkeypatch.setattr(core_doctor, "_CHECKS", [by_id["c19"]])
+        report = core_doctor.run_all().data
+        (check,) = report.checks
+        assert check.status is CheckStatus.WARN
+        assert check.action == "cred_bridge.start"
+
+    def test_a_running_bridge_warning_carries_no_start_action(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.config_utils.read_cred_bridge_config",
+            lambda: {"enabled": True},
+        )
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.daemon_identity.read_daemon_record",
+            lambda _pf: (7070, "start-tok"),
+        )
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.daemon_identity.pid_alive", lambda _p: True
+        )
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.daemon_identity.process_start_time",
+            lambda _p: "start-tok",
+        )
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.cred_daemon._read_registry",
+            lambda: {"gone": str(tmp_path / "missing")},
+        )
+        by_id = {c.id: c for c in core_doctor._CHECKS}
+        monkeypatch.setattr(core_doctor, "_CHECKS", [by_id["c19"]])
+        (check,) = core_doctor.run_all().data.checks
+        assert check.status is CheckStatus.WARN
+        assert "running (pid 7070)" in check.detail
+        assert check.action is None
+
+    def test_an_unreadable_auto_inspect_config_carries_no_start_action(self, monkeypatch):
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.config_utils.read_auto_inspect_config",
+            lambda: (_ for _ in ()).throw(PermissionError("permission denied")),
+        )
+        by_id = {c.id: c for c in core_doctor._CHECKS}
+        monkeypatch.setattr(core_doctor, "_CHECKS", [by_id["c9"]])
+        (check,) = core_doctor.run_all().data.checks
+        assert check.status is CheckStatus.WARN
+        assert check.action is None
+
+    def test_a_passing_check_carries_no_action(self, monkeypatch):
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.config_utils.read_cred_bridge_config",
+            lambda: {"enabled": False},
+        )
+        by_id = {c.id: c for c in core_doctor._CHECKS}
+        monkeypatch.setattr(core_doctor, "_CHECKS", [by_id["c19"]])
+        (check,) = core_doctor.run_all().data.checks
+        assert check.status is CheckStatus.PASS
+        assert check.action is None
 
 
 class TestPortCollisions:

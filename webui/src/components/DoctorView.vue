@@ -2,6 +2,7 @@
 import { computed, onMounted } from 'vue'
 import { Button, LoadingText, ErrorMessage } from 'frappe-ui'
 import { doctor, ago } from '../data/fleet'
+import { applySetting, settings } from '../data/settings'
 
 onMounted(() => doctor.load())
 const groups = computed(() => {
@@ -9,6 +10,11 @@ const groups = computed(() => {
   for (const c of doctor.data?.checks || []) (out[c.group] ||= []).push(c)
   return out
 })
+// Start a stopped daemon from the check that found it, then re-run the checks.
+const startDaemon = async (c) => {
+  await applySetting(c.action, {}, { done: `${c.title} started` })
+  doctor.load(true)
+}
 const ICON = {
   pass: 'lucide-circle-check text-ink-green-5',
   warn: 'lucide-circle-alert text-ink-amber-6',
@@ -42,8 +48,9 @@ const ICON = {
               <span v-if="c.version_verified === false" class="text-xs text-ink-amber-6">version not verified</span>
             </div>
             <div class="mt-1 text-p-sm text-ink-gray-5">{{ c.detail }}</div>
-            <code v-if="c.fix" class="mt-1 inline-block max-w-full truncate rounded-3 bg-surface-gray-2 px-1.5 py-0.5 font-mono text-xs text-ink-gray-7" :title="c.fix">{{ c.fix }}</code>
+            <code v-if="c.fix" class="mt-1 inline-block max-w-full break-words rounded-3 bg-surface-gray-2 px-1.5 py-0.5 font-mono text-xs text-ink-gray-7" :title="c.fix">{{ c.fix }}</code>
           </div>
+          <Button v-if="c.action && c.status !== 'pass'" class="shrink-0" size="sm" variant="solid" icon-left="lucide-play" label="Start" :loading="settings.busy === c.action" @click="startDaemon(c)" />
         </div>
       </div>
     </div>
