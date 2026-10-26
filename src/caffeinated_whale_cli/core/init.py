@@ -458,21 +458,14 @@ def _run_host_command(
             )
         )
         time.sleep(delay)
-    if helper_timed_out:
-        helper = _credential_helper_name()
-        raise CwcliError(
-            ErrorKind.DOCKER,
-            "compose.credential_helper",
-            f"Docker's credential helper ({helper}) did not respond while pulling images. "
-            "This is usually a temporary Windows/WSL interop timeout, and retrying the "
-            "job normally works.",
-            detail={"output": stderr},
-        )
     if cause is not None and cause.code.startswith("docker.credential_helper"):
+        # The message embeds cause.text verbatim so the web job page, which leads
+        # with the cause, does not read the same explanation twice.
+        helper = f" The helper is {_credential_helper_name()}." if helper_timed_out else ""
         raise CwcliError(
             ErrorKind.DOCKER,
             "compose.credential_helper",
-            f"{cause.text} Image pull failed: {' '.join(cmd)}",
+            f"{cause.text}{helper} Image pull failed: {' '.join(cmd)}",
             detail={"output": stderr},
         )
     raise CwcliError(
