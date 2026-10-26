@@ -683,7 +683,8 @@ class TestFusedFastPath:
         ):
             wire(c, benches=[{"path": BENCH}])
             core_status.status("proj", fused=True)
-            assert not [x for x in c.calls if isinstance(x, list) and x[0] == "curl"]
+            argv = [" ".join(map(str, x)) if isinstance(x, list) else str(x) for x in c.calls]
+            assert not [a for a in argv if "http://" in a]
 
     def test_a_port_that_refuses_degrades_a_fused_read(self, wire):
         wire(FakeContainer(marker=_MARKER, web_ok=False), benches=[{"path": BENCH}])
