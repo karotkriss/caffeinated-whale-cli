@@ -110,6 +110,12 @@ _UI_ENV = {
     "session": "CWCLI_JOB_UI_SESSION",
 }
 _CREATE_LOCK = threading.Lock()
+# The secrets each job was started with, held in THIS daemon's memory only - never on
+# disk and never in a record - so Retry can reuse what the user typed. Forgotten when
+# the job succeeds, is pruned, or the daemon stops (a retry then asks for them again).
+_RETRY_SECRETS: dict[str, dict[str, str]] = {}
+RETRYABLE_STATES = frozenset({"failed"})
+_EXEC_OUTCOME_UNKNOWN = frozenset({"exec.stream_lost", "exec.exit_code_unknown"})
 # The workers this daemon spawned, so they are reaped: an unreaped child stays a
 # zombie that ``pid_alive`` reports alive, and a job whose worker died abnormally
 # would then never become ``unknown``.
@@ -302,7 +308,14 @@ def _refresh_unknown(job_id: str, state: dict[str, Any]) -> dict[str, Any]:
 def read_job(job_id: str, *, include_events: bool = False, after: int = 0) -> dict[str, Any]:
     spec = _read_json(_json_path(job_id, "spec.json"))
     state = _refresh_unknown(job_id, _state(job_id))
+    if state.get("state") == "succeeded":
+        _RETRY_SECRETS.pop(job_id, None)
     record = {**spec, **state}
+    refusal = _retry_refusal(record)
+    record["retryable"] = refusal is None
+    record["retry_refusal"] = (
+        refusal[1] if refusal and refusal[0] != "job.retry_not_failed" else None
+    )
     if include_events:
         record["events"] = _events(job_id, after=after)
     return record
@@ -338,6 +351,7 @@ def _prune(records: list[dict[str, Any]]) -> None:
     """Delete finished jobs past the newest ``FINISHED_RETENTION``; ``records`` is newest first."""
     finished = [row for row in records if row.get("state") not in ACTIVE_STATES]
     for row in finished[FINISHED_RETENTION:]:
+        _RETRY_SECRETS.pop(str(row["id"]), None)
         shutil.rmtree(job_dir(str(row["id"])), ignore_errors=True)
 
 
@@ -513,11 +527,117 @@ def _create_job(
             start_new_session=sys.platform != "win32",
         )
     _CHILDREN[job_id] = process
+    kept = {k: v for k, v in (secret_values or {}).items() if k in _SECRET_ENV and v}
+    if kept:
+        _RETRY_SECRETS[job_id] = kept
     started = daemon_identity.process_start_time(process.pid)
     current = _state(job_id)
     if current.get("state") not in TERMINAL_STATES:
         _merge_state(job_id, pid=process.pid, process_started=started)
     return read_job(job_id)
+
+
+def _retry_refusal(record: dict[str, Any]) -> tuple[str, str] | None:
+    """Why a job cannot be retried (code, message), or None when it can."""
+    if record.get("state") == "interrupted":
+        return (
+            "job.retry_interrupted",
+            "This job was interrupted and its command inside the instance may still be running. "
+            "Review its last event before deciding whether it is safe to run it again.",
+        )
+    if record.get("state") not in RETRYABLE_STATES:
+        return "job.retry_not_failed", "Only a failed job can be retried."
+    args = record.get("args") or {}
+    # Both flags are set by the page only behind a typed confirmation of a name; a
+    # retry must not carry that consent over to a run nobody confirmed.
+    if (record.get("verb") == "apps-checkout" and args.get("reset") is True) or (
+        record.get("verb") == "apps-update" and args.get("force") is True
+    ):
+        return (
+            "job.retry_guarded",
+            "This job discards local work, so start it again from its page to confirm it again.",
+        )
+    result = record.get("result") or {}
+    if (record.get("error") or {}).get("code") in _EXEC_OUTCOME_UNKNOWN or (
+        record.get("verb") == "apps-update"
+        and any(result.get(key) for key in ("unknown_apps", "unknown_migrations", "unknown_builds"))
+    ):
+        return (
+            "job.retry_unknown_outcome",
+            "Part of this job may still be running inside the instance. "
+            "Review its last event before deciding whether it is safe to retry.",
+        )
+    return None
+
+
+def retry_job(job_id: str, *, ui_context: dict[str, str | int] | None = None) -> dict[str, Any]:
+    """Start a NEW job with the same verb, target, args and secrets as a finished one.
+
+    Consent is never carried over: a destructive verb comes back as the same
+    typed-confirmation choice it first did. A creation retried from the partial
+    state its failure left (project dir, compose file) continues from there, since
+    ``init`` already reuses whatever it finds.
+    """
+    record = read_job(job_id)
+    refusal = _retry_refusal(record)
+    if refusal is not None:
+        raise CwcliError(ErrorKind.CONFLICT, *refusal)
+    return create_job(
+        record["verb"],
+        record["target"],
+        record["args"],
+        secret_values=_held_secrets(record),
+        ui_context=ui_context,
+    )
+
+
+def continue_job(
+    job_id: str,
+    target: dict[str, Any],
+    args: dict[str, Any],
+    *,
+    consent: bool = False,
+    ui_context: dict[str, str | int] | None = None,
+) -> dict[str, Any]:
+    """Answer a ``needs_choice`` job with a NEW job that reuses the secrets it was started with.
+
+    The page sends the answered target, args and consent; the secrets stay in this
+    daemon, held for the waiting job until it is pruned, so it can be answered again.
+    """
+    record = read_job(job_id)
+    if record.get("state") != "needs_choice":
+        raise CwcliError(
+            ErrorKind.CONFLICT,
+            "job.continue_not_pending",
+            "Only a job waiting for a decision can be continued.",
+        )
+    if target.get("project") != record["target"].get("project"):
+        raise CwcliError(
+            ErrorKind.USAGE,
+            "job.continue_project_changed",
+            "A continued job must keep the instance it was started for.",
+        )
+    return create_job(
+        record["verb"],
+        target,
+        args,
+        consent=consent,
+        secret_values=_held_secrets(record),
+        ui_context=ui_context,
+    )
+
+
+def _held_secrets(record: dict[str, Any]) -> dict[str, str]:
+    """The secrets this daemon still holds for a job, refusing an init that has lost them."""
+    secret_values = dict(_RETRY_SECRETS.get(str(record["id"]), {}))
+    if record["verb"] == "init" and not secret_values.get("admin_password"):
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "job.retry_secrets_missing",
+            "The passwords for this job are no longer held, so it cannot be run again as it was.",
+            hint="They are kept in memory only and are forgotten when the daemon restarts.",
+        )
+    return secret_values
 
 
 def interrupt_job(job_id: str) -> dict[str, Any]:

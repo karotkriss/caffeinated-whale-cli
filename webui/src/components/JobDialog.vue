@@ -72,7 +72,7 @@ function next() {
           <Checkbox v-model="v.start" label="Start the instance when ready" />
         </div>
         <div v-else class="space-y-4">
-          <Alert theme="gray" title="Passwords are never written to the job record" description="They pass directly to the detached worker environment and are removed as soon as the worker starts." />
+          <Alert theme="gray" title="Passwords are never written to the job record" description="They pass directly to the detached worker environment and are removed as soon as the worker starts. The daemon keeps them in memory only, so a failed job can be retried; stopping the daemon forgets them." />
           <div class="grid gap-4 sm:grid-cols-2">
             <FormControl v-model="v.admin_password" label="Administrator password" type="password" autocomplete="new-password" />
             <FormControl v-model="v.db_root_password" label="Database root password" type="password" autocomplete="new-password" placeholder="blank uses the instance's saved password, else 123" description="A new instance's MariaDB is created with it, and cwcli remembers it for later commands." />

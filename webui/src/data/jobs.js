@@ -68,6 +68,18 @@ export async function interruptJob(id) {
   return record
 }
 
+export async function retryJob(id) {
+  const record = await postJson(`/api/v1/jobs/${encodeURIComponent(id)}/retry`, {})
+  applyJob(record)
+  return record
+}
+
+export async function continueJob(id, { target, args, consent }) {
+  const record = await postJson(`/api/v1/jobs/${encodeURIComponent(id)}/continue`, { target, args, consent })
+  applyJob(record)
+  return record
+}
+
 export async function detachJob(id) {
   const record = await postJson(`/api/v1/jobs/${encodeURIComponent(id)}/detach`, {})
   applyJob(record)
