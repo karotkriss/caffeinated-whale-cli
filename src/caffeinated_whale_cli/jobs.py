@@ -115,6 +115,7 @@ _CREATE_LOCK = threading.Lock()
 # the job succeeds, is pruned, or the daemon stops (a retry then asks for them again).
 _RETRY_SECRETS: dict[str, dict[str, str]] = {}
 RETRYABLE_STATES = frozenset({"failed", "interrupted"})
+_EXEC_OUTCOME_UNKNOWN = frozenset({"exec.stream_lost", "exec.exit_code_unknown"})
 # The workers this daemon spawned, so they are reaped: an unreaped child stays a
 # zombie that ``pid_alive`` reports alive, and a job whose worker died abnormally
 # would then never become ``unknown``.
@@ -551,12 +552,13 @@ def _retry_refusal(record: dict[str, Any]) -> tuple[str, str] | None:
             "This job discards local work, so start it again from its page to confirm it again.",
         )
     result = record.get("result") or {}
-    if record.get("verb") == "apps-update" and any(
-        result.get(key) for key in ("unknown_apps", "unknown_migrations", "unknown_builds")
+    if (record.get("error") or {}).get("code") in _EXEC_OUTCOME_UNKNOWN or (
+        record.get("verb") == "apps-update"
+        and any(result.get(key) for key in ("unknown_apps", "unknown_migrations", "unknown_builds"))
     ):
         return (
             "job.retry_unknown_outcome",
-            "Part of this update may still be running inside the instance. "
+            "Part of this job may still be running inside the instance. "
             "Review its last event before deciding whether it is safe to retry.",
         )
     return None

@@ -1970,7 +1970,7 @@ Long work runs as detached jobs with a durable event log, so it continues when t
 A failed or interrupted job has a Retry button on its page that starts a new job with the same settings, so a creation that failed at the image pull continues from the project directory it left behind.
 The passwords entered for a job are kept in the daemon's memory only (never in the job record or on disk) so Retry, and answering a decision the job stopped on, can reuse them; if the daemon has restarted, a creation reopens the form on its password step instead.
 A retry never carries a destructive confirmation over: a removal asks for its typed name again, and a job that discards local work (`apps checkout --reset`, `apps update --force`) has no Retry and must be started again to confirm it.
-A job whose process vanished, or an `apps update` with a step whose outcome is unknown, has no Retry either, because its work may still be running inside the instance; its page says to review the last event before running it again.
+A job whose process vanished, that lost the output stream of a command inside the instance, or an `apps update` with a step whose outcome is unknown, has no Retry either, because its work may still be running inside the instance; its page says to review the last event before running it again.
 The daemon binds `127.0.0.1` only and is served by cwcli itself; nothing is installed or fetched, and no Node is needed because the UI ships prebuilt inside the package.
 
 ```bash
