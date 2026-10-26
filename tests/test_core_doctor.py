@@ -881,9 +881,30 @@ class TestGitHostingCli:
             raise OSError("exec failed")
 
         monkeypatch.setattr(core_doctor.subprocess, "run", _boom)
-        status, detail, _fix = core_doctor._check_glab()
+        status, detail, fix = core_doctor._check_glab()
         assert status is CheckStatus.WARN
         assert "gitlab.com: unknown" in detail
+        assert "could not check glab sign-in state" in detail
+        assert "cannot be fetched" not in detail
+        assert fix is None
+
+    def test_only_hosts_that_answered_signed_out_get_a_login_command(self, monkeypatch):
+        monkeypatch.setattr(
+            "caffeinated_whale_cli.utils.cred_daemon.allowed_hosts",
+            lambda: {"a.example", "b.example"},
+        )
+        monkeypatch.setattr(core_doctor.shutil, "which", lambda _n: "/usr/bin/glab")
+
+        def _run(cmd, **_k):
+            if cmd[-1] == "a.example":
+                raise subprocess.TimeoutExpired(cmd, 5)
+            return subprocess.CompletedProcess(cmd, 1, "", "")
+
+        monkeypatch.setattr(core_doctor.subprocess, "run", _run)
+        status, detail, fix = core_doctor._check_glab()
+        assert status is CheckStatus.WARN
+        assert "a.example: unknown" in detail
+        assert fix == "glab auth login --hostname b.example"
 
     def test_never_calls_login(self, monkeypatch):
         """Auth checks must be read-only status reads, never a login flow."""
