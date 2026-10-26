@@ -111,8 +111,6 @@ class Check:
     title: str
     group: str
     run: Callable[[], tuple[CheckStatus, str, str | None]]
-    # Web-UI setting that applies this check's fix in one click when it is not a PASS.
-    action: str | None = None
 
 
 def _outcome(
@@ -121,8 +119,11 @@ def _outcome(
     fix: str | None = None,
     *,
     version_verified: bool | None = None,
+    action: str | None = None,
 ) -> tuple:
     outcome = (status, detail, fix)
+    if action is not None:
+        return (*outcome, version_verified, action)
     return (*outcome, version_verified) if version_verified is not None else outcome
 
 
@@ -310,12 +311,13 @@ def _check_home_layout() -> tuple:
     return _outcome(CheckStatus.PASS, f"{home} writable")
 
 
-def _stopped_outcome(detail: str, start_cmd: str) -> tuple:
+def _stopped_outcome(detail: str, start_cmd: str, action: str) -> tuple:
     """WARN for an enabled-but-stopped daemon: name the state, offer the one-step fix."""
     return _outcome(
         CheckStatus.WARN,
         f"enabled but stopped - {detail}",
         f"run `{start_cmd}`",
+        action=action,
     )
 
 
@@ -340,16 +342,16 @@ def _check_auto_inspect() -> tuple:
     if not config.get("enabled"):
         return _outcome(CheckStatus.PASS, "disabled")
 
-    start = "cwcli config auto-inspect start"
+    stopped = ("cwcli config auto-inspect enable", "auto_inspect.start")
     record = daemon._read_daemon_record()
     if record is None:
-        return _stopped_outcome("the daemon has not started", start)
+        return _stopped_outcome("the daemon has not started", *stopped)
     pid, recorded_start = record
     if not daemon._pid_alive(pid) or (recorded_start is None and not daemon._pid_signalable(pid)):
-        return _stopped_outcome(f"the daemon (pid {pid}) is no longer running", start)
+        return _stopped_outcome(f"the daemon (pid {pid}) is no longer running", *stopped)
     current_start = daemon._process_start_time(pid)
     if recorded_start and current_start and recorded_start != current_start:
-        return _stopped_outcome(f"pid {pid} was recycled by another process", start)
+        return _stopped_outcome(f"pid {pid} was recycled by another process", *stopped)
     return _outcome(CheckStatus.PASS, f"running (pid {pid})")
 
 
@@ -368,16 +370,16 @@ def _check_cred_bridge() -> tuple:
     if not config.get("enabled"):
         return _outcome(CheckStatus.PASS, "disabled")
 
-    start = "cwcli config cred-bridge start"
+    stopped = ("cwcli config cred-bridge start", "cred_bridge.start")
     record = daemon_identity.read_daemon_record(cred_daemon.PID_FILE)
     if record is None:
-        return _stopped_outcome("the daemon has not started", start)
+        return _stopped_outcome("the daemon has not started", *stopped)
     pid, recorded_start = record
     if not daemon_identity.pid_alive(pid):
-        return _stopped_outcome(f"the daemon (pid {pid}) is no longer running", start)
+        return _stopped_outcome(f"the daemon (pid {pid}) is no longer running", *stopped)
     current_start = daemon_identity.process_start_time(pid)
     if recorded_start and current_start and recorded_start != current_start:
-        return _stopped_outcome(f"pid {pid} was recycled by another process", start)
+        return _stopped_outcome(f"pid {pid} was recycled by another process", *stopped)
 
     vanished = [p for p, ws in cred_daemon._read_registry().items() if not Path(ws).is_dir()]
     if vanished:
@@ -718,14 +720,12 @@ _CHECKS: list[Check] = [
         title="auto-inspect",
         group="cwcli",
         run=_check_auto_inspect,
-        action="auto_inspect.start",
     ),
     Check(
         id="c19",
         title="credential bridge",
         group="cwcli",
         run=_check_cred_bridge,
-        action="cred_bridge.start",
     ),
     Check(id="c20", title="shared install", group="cwcli", run=_check_shared_mode),
     Check(id="c5", title="Free space (cwcli home)", group="Storage", run=_check_home_free_space),
@@ -755,9 +755,10 @@ def run_all() -> Result[DoctorReport]:
             outcome = check.run()
             status, detail, fix = outcome[:3]
             version_verified = outcome[3] if len(outcome) > 3 else None
+            action = outcome[4] if len(outcome) > 4 else None
         except Exception as e:  # a single check must never take the whole report down
             status, detail, fix = CheckStatus.FAIL, f"check failed unexpectedly: {e}", None
-            version_verified = None
+            version_verified = action = None
         results.append(
             CheckResult(
                 id=check.id,
@@ -767,7 +768,7 @@ def run_all() -> Result[DoctorReport]:
                 detail=detail,
                 fix=fix,
                 version_verified=version_verified,
-                action=check.action if status is not CheckStatus.PASS else None,
+                action=action,
             )
         )
 

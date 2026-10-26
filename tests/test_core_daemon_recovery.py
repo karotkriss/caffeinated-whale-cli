@@ -65,4 +65,4 @@ def test_a_failed_start_says_why_and_does_not_stop_the_other_daemon(modules, mon
         ("credential bridge", True),
     ]
     assert "managed by systemd" in notes[0].note
-    assert "cwcli config auto-inspect start" in notes[0].note
+    assert "cwcli config auto-inspect enable" in notes[0].note
