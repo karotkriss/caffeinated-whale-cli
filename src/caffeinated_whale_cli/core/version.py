@@ -225,10 +225,10 @@ def install_fingerprint() -> str:
 
     ``RECORD`` lists every installed file with its sha256, so it changes exactly when
     a reinstall changes the code - including a rebuild of the SAME version, which the
-    version alone cannot see. A long-lived process compares this against the value it
-    started with to learn the install changed underneath it. An editable install's
-    RECORD does not track source edits (its fingerprint is the version); a frozen
-    build has no dist-info (version only). When the dist is momentarily unreadable
+    version alone cannot see. ``cwcli ui`` compares the value its running daemon
+    recorded at startup against this to tell a daemon that predates the install. An
+    editable install's RECORD does not track source edits (its fingerprint is the
+    version); a frozen build has no dist-info (version only). When the dist is momentarily unreadable
     (mid-reinstall) the result is ``version:?`` so callers can ignore the reading.
     """
     import hashlib

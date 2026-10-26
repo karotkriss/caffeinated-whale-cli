@@ -208,12 +208,7 @@ def _is_stale(state: dict) -> bool:
 
 
 def _foreground(port: int, *, no_browser: bool) -> None:
-    # After an upgrade the daemon re-executes itself under the SAME pid (see
-    # serve.run_daemon), so its own pid file is not another daemon's.
-    if (
-        daemon_identity.is_running(pid_file())
-        and daemon_identity.get_pid(pid_file()) != os.getpid()
-    ):
+    if daemon_identity.is_running(pid_file()):
         stderr_console.print(
             "[red]cwcli ui is already running (detached).[/red] "
             "Run 'cwcli ui --stop' first to run it in the foreground."
@@ -229,22 +224,9 @@ def _foreground(port: int, *, no_browser: bool) -> None:
                 target=_open, args=(link,), kwargs={"no_browser": False}, daemon=True
             ).start()
 
-    # A frozen build cannot re-exec itself by module path; it is restarted by the
-    # next `cwcli ui` through `_is_stale`.
-    restart_argv = (
-        None
-        if _is_frozen()
-        else [sys.executable, "-m", "caffeinated_whale_cli", "ui", "--foreground", "--no-browser"]
-        + ["--port", str(port)]
-    )
     try:
         serve_cmd.run_daemon(
-            HOST,
-            port,
-            serve_cmd.DEFAULT_INTERVAL,
-            env_token=token,
-            on_ready=_ready,
-            restart_argv=restart_argv,
+            HOST, port, serve_cmd.DEFAULT_INTERVAL, env_token=token, on_ready=_ready
         )
     finally:
         if daemon_identity.get_pid(pid_file()) == os.getpid():

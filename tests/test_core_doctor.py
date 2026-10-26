@@ -784,7 +784,8 @@ class TestSendme:
 
 
 class TestGitHostingCli:
-    """Sign-in is judged per host, over the hosts the credential bridge allows."""
+    """Sign-in is judged per host, over the hosts the credential bridge sends to the tool;
+    the check warns only when the tool is signed in to none of them."""
 
     @staticmethod
     def _signed_in(monkeypatch, tool_path, hosts, allowed):
@@ -828,26 +829,44 @@ class TestGitHostingCli:
         assert fix is None
         assert calls == [["glab", "auth", "status", "--hostname", "dev.egov.gy"]]
 
-    def test_warn_names_the_allowed_host_that_is_signed_out(self, monkeypatch):
-        self._signed_in(
-            monkeypatch, "/usr/bin/glab", {"dev.egov.gy"}, {"dev.egov.gy", "gitlab.com"}
+    def test_the_reporters_state_passes_and_lists_the_signed_out_host(self, monkeypatch):
+        """The reported bug, on the reporter's own allowlist: glab is signed in to the
+        host in use, not to the default gitlab.com still listed beside it."""
+        calls = self._signed_in(
+            monkeypatch,
+            "/usr/bin/glab",
+            {"dev.egov.gy"},
+            {"github.com", "gitlab.com", "dev.egov.gy"},
         )
         status, detail, fix = core_doctor._check_glab()
-        assert status is CheckStatus.WARN
-        assert "gitlab.com: not signed in" in detail
+        assert status is CheckStatus.PASS
         assert "dev.egov.gy: signed in" in detail
-        assert "private repositories on gitlab.com cannot be fetched" in detail
+        assert "gitlab.com: not signed in (`glab auth login --hostname gitlab.com`)" in detail
         assert "not authenticated" not in detail
-        assert fix == "glab auth login --hostname gitlab.com"
+        assert fix is None
+        assert sorted(c[-1] for c in calls) == ["dev.egov.gy", "gitlab.com"]
 
-    def test_every_signed_out_host_gets_its_login_command(self, monkeypatch):
+    def test_warn_when_signed_in_to_no_judged_host(self, monkeypatch):
         self._signed_in(monkeypatch, "/usr/bin/glab", set(), {"a.example", "b.example"})
-        _status, _detail, fix = core_doctor._check_glab()
+        status, detail, fix = core_doctor._check_glab()
+        assert status is CheckStatus.WARN
+        assert "a.example: not signed in" in detail and "b.example: not signed in" in detail
+        assert "not authenticated" not in detail
         assert fix == "glab auth login --hostname a.example; glab auth login --hostname b.example"
 
-    def test_pass_when_no_allowed_host_uses_the_tool(self, monkeypatch):
+    def test_gh_always_judges_github_com_for_the_per_invocation_bridge(self, monkeypatch):
+        """An allowlist without github.com must not hide a signed-out gh: the
+        per-invocation bridge (apps install/update, init) still sends github.com to it."""
         calls = self._signed_in(monkeypatch, "/usr/bin/gh", set(), {"dev.egov.gy"})
-        status, detail, _fix = core_doctor._check_gh()
+        status, detail, fix = core_doctor._check_gh()
+        assert status is CheckStatus.WARN
+        assert "github.com: not signed in" in detail
+        assert fix == "gh auth login --hostname github.com"
+        assert calls == [["gh", "auth", "status", "--hostname", "github.com"]]
+
+    def test_pass_when_no_allowed_host_uses_the_tool(self, monkeypatch):
+        calls = self._signed_in(monkeypatch, "/usr/bin/glab", set(), {"github.com"})
+        status, detail, _fix = core_doctor._check_glab()
         assert status is CheckStatus.PASS
         assert "no bridge-allowed host" in detail
         assert calls == []

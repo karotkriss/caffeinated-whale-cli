@@ -851,44 +851,9 @@ class TestMeta:
         assert meta["protocol"] == serve_cmd.PROTOCOL_VERSION
         assert type(meta["protocol"]) is int
 
-
-class TestWatchInstall:
-    """The daemon restarts itself only on a CHANGED, STABLE install reading."""
-
-    def _run(self, monkeypatch, readings):
-        import threading
-
-        stop = threading.Event()
-        it = iter(readings)
-
-        def _next():
-            try:
-                return next(it)
-            except StopIteration:
-                stop.set()
-                return "v:start"
-
-        monkeypatch.setattr(serve_cmd.core_version, "install_fingerprint", _next)
-        monkeypatch.setattr(serve_cmd, "_INSTALL_POLL_S", 0)
-        monkeypatch.setattr(serve_cmd.time, "sleep", lambda _s: None)
-        events = []
-
-        class _Httpd:
-            def shutdown(self):
-                events.append("shutdown")
-
-        class _Hub:
-            def publish_updating(self):
-                events.append("updating")
-
-        serve_cmd._updating.clear()
-        serve_cmd._watch_install(stop, _Httpd(), _Hub(), "v:start")
-        return events
-
-    def test_restarts_after_two_identical_changed_readings(self, monkeypatch):
-        assert self._run(monkeypatch, ["v:new", "v:new"]) == ["updating", "shutdown"]
-        assert serve_cmd._updating.is_set()
-        serve_cmd._updating.clear()
-
-    def test_a_flickering_or_unreadable_install_does_not_restart(self, monkeypatch):
-        assert self._run(monkeypatch, ["v:a", "v:b", "v:?", "v:a"]) == []
+    def test_meta_carries_the_running_build(self, daemon, monkeypatch):
+        """The fingerprint run_daemon recorded at startup, so a page can tell the
+        daemon now answering runs different code from the one it loaded against."""
+        monkeypatch.setattr(serve_cmd, "_running_build", "3.4.0:abcd")
+        _status, body, _ = _request(daemon + "/api/v1/meta")
+        assert json.loads(body)["build"] == "3.4.0:abcd"
