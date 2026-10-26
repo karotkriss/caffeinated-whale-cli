@@ -109,9 +109,16 @@ _SHAPES: list[tuple[str, str, re.Pattern[str], str]] = [
         "needs its WSL integration turned on).",
     ),
     (
+        "docker.credential_helper_failed",
+        "Docker's credential helper failed",
+        re.compile(r"error getting credentials - err: exit status \d+, out: `([^`]+)`"),
+        "Docker's configured credential helper failed: {0}. Fix the helper, or fix or remove "
+        "credsStore in ~/.docker/config.json.",
+    ),
+    (
         "docker.credential_helper",
         "Docker's credential helper did not respond",
-        re.compile(r"error getting credentials - err: exit status \d+"),
+        re.compile(r"error getting credentials - err: exit status \d+, out: ``"),
         "Docker's credential helper did not respond. This is usually a temporary "
         "Windows/WSL interop timeout, and retrying the job normally works.",
     ),
