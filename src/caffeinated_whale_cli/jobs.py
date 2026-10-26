@@ -581,7 +581,7 @@ def continue_job(
     """Answer a ``needs_choice`` job with a NEW job that reuses the secrets it was started with.
 
     The page sends the answered target, args and consent; the secrets stay in this
-    daemon and move to the new job, so a chain holds them until it succeeds or is pruned.
+    daemon, held for the waiting job until it is pruned, so it can be answered again.
     """
     record = read_job(job_id)
     if record.get("state") != "needs_choice":
@@ -596,7 +596,7 @@ def continue_job(
             "job.continue_project_changed",
             "A continued job must keep the instance it was started for.",
         )
-    created = create_job(
+    return create_job(
         record["verb"],
         target,
         args,
@@ -604,8 +604,6 @@ def continue_job(
         secret_values=_held_secrets(record),
         ui_context=ui_context,
     )
-    _RETRY_SECRETS.pop(job_id, None)
-    return created
 
 
 def _held_secrets(record: dict[str, Any]) -> dict[str, str]:
