@@ -594,13 +594,19 @@ def _check_git_host_cli(tool: str, install_hint: str) -> tuple:
     if any(states.values()):
         return _outcome(CheckStatus.PASS, detail)
     signed_out = [h for h, ok in states.items() if ok is False]
-    if not signed_out:
-        return _outcome(CheckStatus.WARN, f"{detail} (could not check {tool} sign-in state)")
+    unknown = [h for h, ok in states.items() if ok is None]
+    login = "; ".join(f"{tool} auth login --hostname {h}" for h in signed_out) or None
+    if unknown:
+        return _outcome(
+            CheckStatus.WARN,
+            f"{detail} (could not check {tool} sign-in state for {', '.join(unknown)})",
+            login,
+        )
     return _outcome(
         CheckStatus.WARN,
         f"{detail} (private repositories cannot be fetched through the credential "
         f"bridge until {tool} is signed in)",
-        "; ".join(f"{tool} auth login --hostname {h}" for h in signed_out),
+        login,
     )
 
 
