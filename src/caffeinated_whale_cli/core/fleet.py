@@ -136,6 +136,7 @@ def health_key(state: InstanceState) -> tuple:
                 b.web_port_verified,
                 b.web_site,
                 b.web_http_code,
+                b.web_listening,
                 b.maintenance_mode,
                 b.not_cwcli_supervised,
                 b.bench_present,
