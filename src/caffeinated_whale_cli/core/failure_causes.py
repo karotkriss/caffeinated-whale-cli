@@ -101,9 +101,17 @@ _SHAPES: list[tuple[str, str, re.Pattern[str], str]] = [
         "The branch, tag, or commit {0} does not exist in the repository.",
     ),
     (
+        "docker.credential_helper_missing",
+        "Docker's credential helper is not installed",
+        re.compile(r'error getting credentials - err: exec: "([^"]+)": executable file not found'),
+        "Docker's configured credential helper {0} is not installed or not reachable. "
+        "Fix or remove credsStore in ~/.docker/config.json (Docker Desktop's helper also "
+        "needs its WSL integration turned on).",
+    ),
+    (
         "docker.credential_helper",
         "Docker's credential helper did not respond",
-        re.compile(r"error getting credentials"),
+        re.compile(r"error getting credentials - err: exit status \d+"),
         "Docker's credential helper did not respond. This is usually a temporary "
         "Windows/WSL interop timeout, and retrying the job normally works.",
     ),

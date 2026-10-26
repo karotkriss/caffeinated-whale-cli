@@ -33,6 +33,12 @@ from caffeinated_whale_cli.core.failure_causes import explain
             "docker.credential_helper",
             "credential helper",
         ),
+        (
+            'error getting credentials - err: exec: "docker-credential-desktop.exe": '
+            "executable file not found in $PATH, out: ``",
+            "docker.credential_helper_missing",
+            "docker-credential-desktop.exe is not installed",
+        ),
         ("FATAL ERROR: JavaScript heap out of memory", "memory.exhausted", "out of memory"),
         (
             "fatal: Authentication failed for 'https://github.com/acme/app.git/'",

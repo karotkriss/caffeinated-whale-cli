@@ -435,6 +435,26 @@ class TestComposeFailureOutput:
         err = capsys.readouterr().err
         assert err.count(fail_text) == 1
 
+    def test_non_verbose_credential_helper_failure_prints_the_raw_cause(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        fail_text = (
+            'error getting credentials - err: exec: "docker-credential-desktop.exe": '
+            "executable file not found in $PATH"
+        )
+        with pytest.raises(typer.Exit) as exc:
+            run_init(
+                monkeypatch,
+                tmp_path,
+                host_fail_stage="pull",
+                host_fail_output=fail_text.encode(),
+                verbose=False,
+            )
+        assert exc.value.exit_code == 1
+        err = " ".join(capsys.readouterr().err.split())
+        assert "docker-credential-desktop.exe is not installed" in err
+        assert err.count("executable file not found in $PATH") == 1
+
 
 class TestAlreadyRunningNotice:
     def test_verbose_output_reports_that_frappe_is_preserved(self, monkeypatch, tmp_path, capsys):
