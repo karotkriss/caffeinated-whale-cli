@@ -165,10 +165,15 @@ def test_a_retried_removal_confirmed_by_name_keeps_the_typed_password(fake_spawn
     assert confirmed["consent"] is True
     assert fake_spawn[-1][1]["env"]["CWCLI_JOB_DB_ROOT_PASSWORD"] == "typed-root"
     assert "typed-root" not in (jobs.job_dir(confirmed["id"]) / "spec.json").read_text()
-    assert retried["id"] not in jobs._RETRY_SECRETS
-    _finish(confirmed["id"], state="succeeded")
-    jobs.read_job(confirmed["id"])
-    assert jobs._RETRY_SECRETS == {first["id"]: {"db_root_password": "typed-root"}}
+    # The confirmed run fails; answering the same waiting job again still has the password.
+    _finish(confirmed["id"])
+    again = jobs.continue_job(
+        retried["id"], {"project": "p", "site": "s.localhost"}, {}, consent=True
+    )
+    assert fake_spawn[-1][1]["env"]["CWCLI_JOB_DB_ROOT_PASSWORD"] == "typed-root"
+    _finish(again["id"], state="succeeded")
+    jobs.read_job(again["id"])
+    assert again["id"] not in jobs._RETRY_SECRETS
 
 
 def test_an_init_that_asks_to_reuse_its_bench_continues_with_its_passwords(fake_spawn):
