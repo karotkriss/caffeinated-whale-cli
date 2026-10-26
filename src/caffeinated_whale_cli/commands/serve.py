@@ -172,6 +172,7 @@ import secrets
 import signal
 import socket
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, is_dataclass
 from http.cookies import CookieError, SimpleCookie
@@ -188,6 +189,7 @@ from ..core import auto_inspect as core_auto_inspect
 from ..core import bench_ops as core_bench_ops
 from ..core import config as core_config
 from ..core import cred_bridge as core_cred_bridge
+from ..core import daemon_recovery
 from ..core import doctor as core_doctor
 from ..core import fleet as core_fleet
 from ..core import inspect as core_inspect
@@ -200,6 +202,7 @@ from ..core import start as core_start
 from ..core import stop as core_stop
 from ..core import unlock as core_unlock
 from ..core import url as core_url
+from ..core import version as core_version
 from ..core import where as core_where
 from ..core.envelope import Message, Result, Status
 from ..core.errors import CwcliError, ErrorKind
@@ -218,7 +221,16 @@ SESSION_COOKIE = "cwcli_serve_session"
 # 2: the /api/v1 routes and the {data}/{errors} envelope (Phase 1).
 # 3: durable jobs, job SSE frames, and detached lifecycle actions (Phase 2).
 # 4: the settings endpoint and the guarded destructive job verbs (Phase 3).
-PROTOCOL_VERSION = 4
+# 5: /meta carries the running code's `build` fingerprint and an `updating` flag, and
+#    the stream carries an `updating` frame (the daemon restarts itself after an
+#    upgrade). A page built for 5 seeing an older daemon knows it is stale.
+PROTOCOL_VERSION = 5
+
+# The running process's install fingerprint (core.version.install_fingerprint), set
+# by run_daemon, and whether it is mid-restart because the install changed.
+_running_build: str | None = None
+_updating = threading.Event()
+_INSTALL_POLL_S = 2.0
 
 # Map the core's closed error kinds onto equivalent HTTP statuses.
 _HTTP_FOR_KIND = {
@@ -533,6 +545,14 @@ class _Hub:
         for q in queues:
             q.put(frame)
 
+    def publish_updating(self) -> None:
+        """Tell every open page the daemon is about to restart onto upgraded code."""
+        frame = _sse_frame("updating", {}, self.next_id())
+        with self._lock:
+            queues = [q for q, _f in self._clients.values()]
+        for q in queues:
+            q.put(frame)
+
     def client_count(self) -> int:
         with self._lock:
             return len(self._clients)
@@ -760,7 +780,11 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_spa(path)
             return
         if path == "/api/v1/meta":
-            self._send_json({"version": __version__, "protocol": PROTOCOL_VERSION})
+            meta: dict = {"version": __version__, "protocol": PROTOCOL_VERSION}
+            if _running_build is not None:
+                meta["build"] = _running_build
+                meta["updating"] = _updating.is_set()
+            self._send_json(meta)
             return
         if self._refuse_unauthenticated():
             return
@@ -1598,6 +1622,7 @@ def _doctor_json(report) -> dict:
                 "detail": c.detail,
                 "fix": c.fix,
                 "version_verified": c.version_verified,
+                "action": c.action,
             }
             for c in report.checks
         ],
@@ -1769,6 +1794,33 @@ def login_url(host: str, port: int, code: str) -> str:
     return f"http://{_url_host(host)}:{port}/#login={code}"
 
 
+def _recover_daemons() -> None:
+    for note in daemon_recovery.recover():
+        console.print(note.note)
+
+
+def _watch_install(stop: threading.Event, httpd, hub: _Hub, started: str) -> None:
+    """Stop serving once the installed cwcli differs from ``started``, twice running.
+
+    Twice, because a reinstall rewrites the dist-info in steps: a reading taken
+    mid-way names a half-installed package, and ``exec``ing into that would leave no
+    daemon at all. An unreadable dist (``:?``) is ignored the same way.
+    """
+    seen: str | None = None
+    while not stop.wait(_INSTALL_POLL_S):
+        now = core_version.install_fingerprint()
+        if now.endswith(":?") or now == started:
+            seen = None
+        elif now == seen:
+            _updating.set()
+            hub.publish_updating()
+            time.sleep(0.5)  # let the frame reach open pages before their streams drop
+            httpd.shutdown()
+            return
+        else:
+            seen = now
+
+
 def run_daemon(
     host: str,
     port: int,
@@ -1776,6 +1828,7 @@ def run_daemon(
     *,
     env_token: str | None,
     on_ready: Callable[[str], None] | None = None,
+    restart_argv: list[str] | None = None,
 ) -> None:
     """Bootstrap the fleet, bind, print the banner, serve until interrupted.
 
@@ -1783,7 +1836,14 @@ def run_daemon(
     ``on_ready`` is called once with the sign-in link after the bind succeeds,
     which is how ``ui --foreground`` opens the browser. Raises ``typer.Exit`` on
     a failed bootstrap or bind (the callers are both Typer commands).
+
+    ``restart_argv`` opts into surviving an upgrade: when the installed cwcli changes
+    underneath the running process (a ``uv tool install --reinstall``), the daemon
+    stops serving and ``exec``s that command line, keeping its pid, port, bearer token
+    and browser session id - so the open page's cookie stays valid and it reloads onto
+    the new code instead of failing against a daemon that predates it. POSIX only.
     """
+    global _running_build
     # The two reference each other (the fleet publishes through the hub; the hub
     # reports focus back to the fleet), so the delta sink is bound after both exist.
     fleet = core_fleet.Fleet()
@@ -1823,6 +1883,9 @@ def run_daemon(
     for t in threads:
         t.start()
 
+    _running_build = core_version.install_fingerprint()
+    _updating.clear()
+    session_id = (os.environ.get(SESSION_ENV) or "").strip() or secrets.token_urlsafe(32)
     login_code = secrets.token_urlsafe(24)
     try:
         httpd = make_server(
@@ -1832,7 +1895,7 @@ def run_daemon(
             hub,
             env_token or secrets.token_urlsafe(32),
             login_code,
-            session_id=(os.environ.get(SESSION_ENV) or "").strip() or None,
+            session_id=session_id,
         )
     except OSError as e:
         stderr_console.print(f"[red]Could not bind {host}:{port}: {e}[/red]")
@@ -1861,6 +1924,16 @@ def run_daemon(
     if on_ready is not None:
         on_ready(link)
 
+    # An enabled background daemon that is not running (an upgrade, a reboot, a broken
+    # boot unit) comes back now, and the log says plainly when it cannot.
+    threading.Thread(target=_recover_daemons, daemon=True).start()
+    if restart_argv is not None and os.name == "posix":
+        threading.Thread(
+            target=_watch_install,
+            args=(stop, httpd, hub, _running_build),
+            daemon=True,
+        ).start()
+
     # main.cli() resets SIGPIPE to SIG_DFL so `cwcli ls | head` exits quietly; in
     # this long-lived server that lets one closed browser tab's next stream write
     # kill the whole daemon. Ignored, the write raises BrokenPipeError instead,
@@ -1875,6 +1948,14 @@ def run_daemon(
         stop.set()
         httpd.shutdown()
         httpd.server_close()
+    if _updating.is_set() and restart_argv is not None:
+        env = {
+            **os.environ,
+            TOKEN_ENV: env_token or "",
+            SESSION_ENV: session_id,
+        }
+        console.print("cwcli was updated; restarting onto the new code.")
+        os.execve(restart_argv[0], restart_argv, env)  # replaces this process, same pid
 
 
 def serve(

@@ -6,12 +6,14 @@
 // scrollback is dead the moment it has been used.
 import { reactive } from 'vue'
 
-export const PROTOCOL = 4 // the daemon's PROTOCOL_VERSION this page was built against
+export const PROTOCOL = 5 // the daemon's PROTOCOL_VERSION this page was built against
 
 export const session = reactive({
   signedOut: false,
-  meta: null, // { version, protocol }
+  meta: null, // { version, protocol, build }
   protocolMismatch: false,
+  updating: false, // the daemon is restarting onto upgraded cwcli code
+  updateStuck: false, // ...and did not come back
 })
 
 // Read and strip the code at module load: main.js imports this module before
@@ -40,13 +42,40 @@ export async function recheckMeta() {
     const res = await fetch('/api/v1/meta', { cache: 'no-store' })
     const meta = await res.json()
     const prior = session.meta
-    if (prior && (meta.protocol !== prior.protocol || meta.version !== prior.version)) {
+    if (
+      prior &&
+      (meta.protocol !== prior.protocol || meta.version !== prior.version || meta.build !== prior.build)
+    ) {
       location.reload()
       return
     }
     session.meta = meta
     session.protocolMismatch = meta.protocol !== PROTOCOL
   } catch {
-    session.meta = null
+    // Mid-update the daemon is briefly gone; keep what the page knew so the
+    // reconnect can tell the new code from the old.
+    if (!session.updating) session.meta = null
   }
+}
+
+// The daemon announces an upgrade on the stream, then restarts itself onto the new
+// code (same port, same session). Poll until it answers with a different build and
+// reload; give up after a minute and say how to recover rather than spin forever.
+export function daemonUpdating() {
+  if (session.updating) return
+  session.updating = true
+  const started = Date.now()
+  const timer = window.setInterval(async () => {
+    try {
+      const res = await fetch('/api/v1/meta', { cache: 'no-store' })
+      const meta = await res.json()
+      if (!meta.updating && meta.build !== session.meta?.build) location.reload()
+    } catch {
+      // still restarting
+    }
+    if (Date.now() - started > 60000) {
+      window.clearInterval(timer)
+      session.updateStuck = true
+    }
+  }, 1000)
 }

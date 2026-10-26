@@ -82,6 +82,9 @@ class CheckResult:
     detail: str
     fix: str | None = None
     version_verified: bool | None = None
+    # Web-UI setting token that applies ``fix`` in one click (``cred_bridge.start``);
+    # None when the fix is only a terminal command.
+    action: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -108,6 +111,8 @@ class Check:
     title: str
     group: str
     run: Callable[[], tuple[CheckStatus, str, str | None]]
+    # Web-UI setting that applies this check's fix in one click when it is not a PASS.
+    action: str | None = None
 
 
 def _outcome(
@@ -305,6 +310,15 @@ def _check_home_layout() -> tuple:
     return _outcome(CheckStatus.PASS, f"{home} writable")
 
 
+def _stopped_outcome(detail: str, start_cmd: str) -> tuple:
+    """WARN for an enabled-but-stopped daemon: name the state, offer the one-step fix."""
+    return _outcome(
+        CheckStatus.WARN,
+        f"enabled but stopped - {detail}",
+        f"run `{start_cmd}`",
+    )
+
+
 def _check_auto_inspect() -> tuple:
     """C9 - auto-inspect daemon health, via the read-only identity trio (T4): NEVER
     ``is_running()``, which prunes a stale/recycled pid file as a side effect.
@@ -326,27 +340,16 @@ def _check_auto_inspect() -> tuple:
     if not config.get("enabled"):
         return _outcome(CheckStatus.PASS, "disabled")
 
+    start = "cwcli config auto-inspect start"
     record = daemon._read_daemon_record()
     if record is None:
-        return _outcome(
-            CheckStatus.WARN,
-            "enabled but no daemon record found",
-            "run `cwcli config auto-inspect enable`",
-        )
+        return _stopped_outcome("the daemon has not started", start)
     pid, recorded_start = record
     if not daemon._pid_alive(pid) or (recorded_start is None and not daemon._pid_signalable(pid)):
-        return _outcome(
-            CheckStatus.WARN,
-            f"enabled but the daemon (pid {pid}) is not running",
-            "run `cwcli config auto-inspect enable`",
-        )
+        return _stopped_outcome(f"the daemon (pid {pid}) is no longer running", start)
     current_start = daemon._process_start_time(pid)
     if recorded_start and current_start and recorded_start != current_start:
-        return _outcome(
-            CheckStatus.WARN,
-            f"enabled but pid {pid} was recycled by another process; the daemon is not running",
-            "run `cwcli config auto-inspect enable`",
-        )
+        return _stopped_outcome(f"pid {pid} was recycled by another process", start)
     return _outcome(CheckStatus.PASS, f"running (pid {pid})")
 
 
@@ -365,27 +368,16 @@ def _check_cred_bridge() -> tuple:
     if not config.get("enabled"):
         return _outcome(CheckStatus.PASS, "disabled")
 
+    start = "cwcli config cred-bridge start"
     record = daemon_identity.read_daemon_record(cred_daemon.PID_FILE)
     if record is None:
-        return _outcome(
-            CheckStatus.WARN,
-            "enabled but no daemon record found",
-            "run `cwcli config cred-bridge enable`",
-        )
+        return _stopped_outcome("the daemon has not started", start)
     pid, recorded_start = record
     if not daemon_identity.pid_alive(pid):
-        return _outcome(
-            CheckStatus.WARN,
-            f"enabled but the daemon (pid {pid}) is not running",
-            "run `cwcli config cred-bridge enable`",
-        )
+        return _stopped_outcome(f"the daemon (pid {pid}) is no longer running", start)
     current_start = daemon_identity.process_start_time(pid)
     if recorded_start and current_start and recorded_start != current_start:
-        return _outcome(
-            CheckStatus.WARN,
-            f"enabled but pid {pid} was recycled by another process; the daemon is not running",
-            "run `cwcli config cred-bridge enable`",
-        )
+        return _stopped_outcome(f"pid {pid} was recycled by another process", start)
 
     vanished = [p for p, ws in cred_daemon._read_registry().items() if not Path(ws).is_dir()]
     if vanished:
@@ -547,32 +539,55 @@ def _check_sendme() -> tuple:
 # --------------------------------------------------------------------------- git hosting
 
 
-def _check_git_host_cli(tool: str, install_hint: str) -> tuple:
-    """Shared C17/C18 probe: ``<tool> auth status`` is itself a read-only status
-    query (it never triggers a login flow), grounded on cwcli's own credential
-    bridge (``core/credbridge.py``) which shells to exactly this for private-repo
-    app installs. Absence or missing auth is WARN, never FAIL - the bridge is
-    inert for public repos, so neither tool is required for ordinary cwcli use.
-    """
-    path = shutil.which(tool)
-    if not path:
-        return _outcome(CheckStatus.WARN, "not installed (optional)", install_hint)
+def _bridge_hosts(tool: str) -> list[str]:
+    """The credential-bridge allowed hosts ``tool`` serves: ``gh`` answers github.com,
+    ``glab`` every other host (the dispatch in ``core/credbridge.py``)."""
+    from ..utils.cred_daemon import allowed_hosts
+
+    return sorted(h for h in allowed_hosts() if (h == "github.com") == (tool == "gh"))
+
+
+def _host_signed_in(tool: str, host: str) -> bool | None:
+    """True/False from ``<tool> auth status --hostname <host>`` (a read-only status
+    query that never triggers a login flow); None when it could not be run."""
     try:
         proc = subprocess.run(
-            [tool, "auth", "status"],
+            [tool, "auth", "status", "--hostname", host],
             capture_output=True,
             text=True,
             timeout=_SUBPROCESS_TIMEOUT,
         )
-    except Exception as e:
-        return _outcome(CheckStatus.WARN, f"{path} (could not check auth status: {e})")
-    line = next((ln.strip() for ln in (proc.stdout + proc.stderr).splitlines() if ln.strip()), None)
-    if proc.returncode == 0:
-        return _outcome(CheckStatus.PASS, f"{path} - {line or 'authenticated'}")
+    except Exception:
+        return None
+    return proc.returncode == 0
+
+
+def _check_git_host_cli(tool: str, install_hint: str) -> tuple:
+    """Shared C17/C18 probe, per host. Sign-in is judged only for the hosts the
+    credential bridge is allowed to answer for (``[cred_bridge] allowed_hosts``),
+    so a host the user never uses cannot warn: a bare ``<tool> auth status`` exits
+    non-zero when ANY configured host is signed out. Absence or a missing sign-in
+    is WARN, never FAIL - the bridge is inert for public repos.
+    """
+    path = shutil.which(tool)
+    if not path:
+        return _outcome(CheckStatus.WARN, "not installed (optional)", install_hint)
+    hosts = _bridge_hosts(tool)
+    if not hosts:
+        return _outcome(CheckStatus.PASS, f"{path} - no bridge-allowed host uses {tool}")
+    states = {host: _host_signed_in(tool, host) for host in hosts}
+    detail = f"{path} - " + "; ".join(
+        f"{h}: {'signed in' if ok else 'not signed in' if ok is False else 'unknown'}"
+        for h, ok in states.items()
+    )
+    missing = [h for h, ok in states.items() if not ok]
+    if not missing:
+        return _outcome(CheckStatus.PASS, detail)
     return _outcome(
         CheckStatus.WARN,
-        f"{path} - not authenticated",
-        f"run `{tool} auth login`",
+        f"{detail} (private repositories on {', '.join(missing)} cannot be fetched "
+        "through the credential bridge until it is signed in)",
+        "; ".join(f"{tool} auth login --hostname {h}" for h in missing),
     )
 
 
@@ -698,8 +713,20 @@ _CHECKS: list[Check] = [
         run=_check_dev_install_freshness,
     ),
     Check(id="c7", title="cwcli home", group="cwcli", run=_check_home_layout),
-    Check(id="c9", title="auto-inspect", group="cwcli", run=_check_auto_inspect),
-    Check(id="c19", title="credential bridge", group="cwcli", run=_check_cred_bridge),
+    Check(
+        id="c9",
+        title="auto-inspect",
+        group="cwcli",
+        run=_check_auto_inspect,
+        action="auto_inspect.start",
+    ),
+    Check(
+        id="c19",
+        title="credential bridge",
+        group="cwcli",
+        run=_check_cred_bridge,
+        action="cred_bridge.start",
+    ),
     Check(id="c20", title="shared install", group="cwcli", run=_check_shared_mode),
     Check(id="c5", title="Free space (cwcli home)", group="Storage", run=_check_home_free_space),
     Check(
@@ -740,6 +767,7 @@ def run_all() -> Result[DoctorReport]:
                 detail=detail,
                 fix=fix,
                 version_verified=version_verified,
+                action=check.action if status is not CheckStatus.PASS else None,
             )
         )
 
