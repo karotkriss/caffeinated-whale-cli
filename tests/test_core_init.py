@@ -568,6 +568,69 @@ class TestInitInstance:
         assert "Host command failed:" in exc.value.message
         assert exc.value.detail == {"output": "pull exploded"}
 
+    def test_pull_retries_a_credential_helper_failure_then_succeeds(
+        self, monkeypatch, tmp_path, patched
+    ):
+        instance_setup(monkeypatch, tmp_path)
+        pulls = []
+
+        def flaky_run(cmd, cwd=None, capture_output=False, **kwargs):
+            if "pull" in cmd:
+                pulls.append(cmd)
+                if len(pulls) == 1:
+                    return SimpleNamespace(
+                        returncode=1, stdout=b"", stderr=b"error getting credentials - err: x"
+                    )
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(subprocess, "run", flaky_run)
+        monkeypatch.setattr(core_init.time, "sleep", lambda _s: None)
+        core_init.init_instance(PROJECT, port=18000)
+        assert len(pulls) == 2
+
+    def test_pull_names_the_credential_helper_when_retries_run_out(
+        self, monkeypatch, tmp_path, patched
+    ):
+        instance_setup(monkeypatch, tmp_path)
+        docker_config = tmp_path / "dockercfg"
+        docker_config.mkdir()
+        (docker_config / "config.json").write_text('{"credsStore": "desktop.exe"}')
+        monkeypatch.setenv("DOCKER_CONFIG", str(docker_config))
+        pulls = []
+
+        def failing_run(cmd, cwd=None, capture_output=False, **kwargs):
+            if "pull" in cmd:
+                pulls.append(cmd)
+                return SimpleNamespace(
+                    returncode=1, stdout=b"", stderr=b"error getting credentials - err: x"
+                )
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(subprocess, "run", failing_run)
+        monkeypatch.setattr(core_init.time, "sleep", lambda _s: None)
+        with pytest.raises(CwcliError) as exc:
+            core_init.init_instance(PROJECT, port=18000)
+        assert exc.value.code == "compose.credential_helper"
+        assert "desktop.exe" in exc.value.message
+        assert "retrying the job" in exc.value.message
+        assert len(pulls) == 1 + len(core_init._CREDENTIAL_RETRY_DELAYS)
+
+    def test_other_pull_failures_are_not_retried(self, monkeypatch, tmp_path, patched):
+        instance_setup(monkeypatch, tmp_path)
+        pulls = []
+
+        def failing_run(cmd, cwd=None, capture_output=False, **kwargs):
+            if "pull" in cmd:
+                pulls.append(cmd)
+                return SimpleNamespace(returncode=1, stdout=b"", stderr=b"pull exploded")
+            return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(subprocess, "run", failing_run)
+        with pytest.raises(CwcliError) as exc:
+            core_init.init_instance(PROJECT, port=18000)
+        assert exc.value.code == "compose.failed"
+        assert len(pulls) == 1
+
     def test_missing_compose_plugin_refuses_before_any_mutation(
         self, monkeypatch, tmp_path, patched
     ):
