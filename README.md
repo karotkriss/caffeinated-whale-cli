@@ -1967,6 +1967,9 @@ cwcli status -w --interval 5 frappe-one   # refresh every 5s
 
 Opens a local browser dashboard over your instances: every instance, bench, site and app in one place, live process health, a resumable log pane, the `doctor` health check, a read-only view of your settings, a command palette (Ctrl+K) that searches the cache, and the everyday lifecycle actions.
 Long work runs as detached jobs with a durable event log, so it continues when the tab closes and can be opened again from Jobs.
+A failed, interrupted or vanished job has a Retry button on its page that starts a new job with the same settings, so a creation that failed at the image pull continues from the project directory it left behind.
+The passwords entered for a job are kept in the daemon's memory only (never in the job record or on disk) so Retry can reuse them; if the daemon has restarted, Retry reopens the form on its password step instead.
+A retry never carries a destructive confirmation over: a removal asks for its typed name again, and a job that discards local work (`apps checkout --reset`, `apps update --force`) has no Retry and must be started again to confirm it.
 The daemon binds `127.0.0.1` only and is served by cwcli itself; nothing is installed or fetched, and no Node is needed because the UI ships prebuilt inside the package.
 
 ```bash

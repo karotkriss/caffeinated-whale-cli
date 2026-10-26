@@ -18,6 +18,7 @@ from caffeinated_whale_cli.core.update_preflight import DATA_LOSS, PreflightFind
 @pytest.fixture(autouse=True)
 def isolated_home(monkeypatch, tmp_path):
     monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "cwcli"))
+    jobs._RETRY_SECRETS.clear()
 
 
 @pytest.fixture
@@ -61,6 +62,98 @@ def test_create_persists_no_secrets_and_passes_them_only_to_init_worker(fake_spa
     assert fake_spawn[0][1]["env"]["CWCLI_JOB_DB_ROOT_PASSWORD"] == "db-secret"
     assert fake_spawn[0][1]["start_new_session"] is True
     assert record["state"] == "queued"
+
+
+def _finish(job_id, state="failed", **changes):
+    jobs._merge_state(job_id, state=state, finished_at=jobs._now(), **changes)
+
+
+def test_retry_starts_a_new_job_with_the_same_inputs_and_secrets(fake_spawn):
+    first = jobs.create_job(
+        "init",
+        {"project": "new-site"},
+        {"port": 28000, "install_erpnext": False},
+        secret_values={"admin_password": "top-secret", "db_root_password": "db-secret"},
+    )
+    _finish(first["id"])
+    assert jobs.read_job(first["id"])["retryable"] is True
+
+    again = jobs.retry_job(first["id"], ui_context={"token": "daemon-token"})
+
+    assert again["id"] != first["id"]
+    assert (again["verb"], again["target"], again["args"]) == (
+        "init",
+        {"project": "new-site"},
+        {"port": 28000, "install_erpnext": False},
+    )
+    env = fake_spawn[-1][1]["env"]
+    assert env["CWCLI_JOB_ADMIN_PASSWORD"] == "top-secret"
+    assert env["CWCLI_JOB_DB_ROOT_PASSWORD"] == "db-secret"
+    assert "top-secret" not in (jobs.job_dir(again["id"]) / "spec.json").read_text()
+    # The retry is itself retryable once it fails, with the same held secrets.
+    _finish(again["id"])
+    assert jobs.retry_job(again["id"])["id"] not in {first["id"], again["id"]}
+    assert fake_spawn[-1][1]["env"]["CWCLI_JOB_ADMIN_PASSWORD"] == "top-secret"
+
+
+def test_retry_never_carries_consent_over(fake_spawn):
+    first = jobs.create_job("rm-site", {"project": "p", "site": "s.localhost"}, {}, consent=True)
+    _finish(first["id"])
+
+    again = jobs.retry_job(first["id"])
+
+    assert again["consent"] is False
+
+
+@pytest.mark.parametrize(
+    "verb, args",
+    [("apps-checkout", {"ref": "main", "reset": True}), ("apps-update", {"force": True})],
+)
+def test_retry_refuses_a_job_whose_page_confirmation_it_would_skip(fake_spawn, verb, args):
+    first = jobs.create_job(verb, {"project": "p", "app": "erpnext"}, args)
+    _finish(first["id"])
+
+    assert jobs.read_job(first["id"])["retryable"] is False
+    with pytest.raises(CwcliError) as error:
+        jobs.retry_job(first["id"])
+
+    assert error.value.code == "job.retry_guarded"
+
+
+@pytest.mark.parametrize("state", ["queued", "running", "succeeded", "needs_choice"])
+def test_only_a_failed_interrupted_or_vanished_job_can_be_retried(fake_spawn, state):
+    first = jobs.create_job("backup", {"project": "p"}, {})
+    _finish(first["id"], state=state)
+
+    assert jobs.read_job(first["id"])["retryable"] is False
+    with pytest.raises(CwcliError) as error:
+        jobs.retry_job(first["id"])
+
+    assert error.value.code == "job.retry_not_failed"
+
+
+def test_retrying_an_init_whose_passwords_are_gone_says_so(fake_spawn):
+    first = jobs.create_job(
+        "init", {"project": "p"}, {}, secret_values={"admin_password": "top-secret"}
+    )
+    _finish(first["id"])
+    jobs._RETRY_SECRETS.clear()  # what a daemon restart does
+
+    with pytest.raises(CwcliError) as error:
+        jobs.retry_job(first["id"])
+
+    assert error.value.code == "job.retry_secrets_missing"
+    assert len(fake_spawn) == 1
+
+
+def test_a_job_that_succeeded_no_longer_holds_its_secrets(fake_spawn):
+    first = jobs.create_job("init", {"project": "p"}, {}, secret_values={"admin_password": "x"})
+    assert jobs._RETRY_SECRETS[first["id"]] == {"admin_password": "x"}
+    _finish(first["id"], state="succeeded")
+
+    jobs.read_job(first["id"])
+
+    assert first["id"] not in jobs._RETRY_SECRETS
 
 
 def test_a_secret_named_anywhere_in_the_spec_is_refused(fake_spawn):

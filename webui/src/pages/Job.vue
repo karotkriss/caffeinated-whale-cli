@@ -2,8 +2,8 @@
 import { computed, onMounted, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Alert, Badge, Breadcrumbs, Button, ErrorMessage, FormControl, PageHeader, LoadingText } from 'frappe-ui'
-import { ACTIVE_STATES, JOB_THEME, createJob, detachJob, elapsed, interruptJob, jobLabel, jobTarget, jobs, loadJob } from '../data/jobs'
-import { openJob } from '../data/job-dialog'
+import { ACTIVE_STATES, JOB_THEME, createJob, detachJob, elapsed, interruptJob, jobLabel, jobTarget, jobs, loadJob, retryJob } from '../data/jobs'
+import { jobDialog, openJob } from '../data/job-dialog'
 import { setFocus } from '../data/fleet'
 import FollowPane from '../components/FollowPane.vue'
 import { feed, openLine } from '../data/follow'
@@ -101,6 +101,25 @@ async function detach() {
   } catch (error) { actionError.value = error }
 }
 
+// Retry starts a NEW job from the same inputs; the daemon reuses the passwords it
+// still holds in memory. When it no longer holds them (it restarted), the wizard
+// reopens on its last step with everything else filled in.
+const retrying = ref(false)
+async function retry() {
+  const job = record.value
+  actionError.value = null
+  retrying.value = true
+  try {
+    const next = await retryJob(id)
+    await router.push(`/jobs/${next.id}`)
+  } catch (error) {
+    if (error.code === 'job.retry_secrets_missing' && job.verb === 'init') {
+      openJob('init', { ...job.target, args: job.args })
+      jobDialog.step = 2
+    } else actionError.value = error
+  } finally { retrying.value = false }
+}
+
 const benchOptions = computed(() => record.value?.choice?.param === 'bench' ? record.value.choice.options || [] : [])
 const consentNeeded = computed(() => record.value?.choice?.param === 'consent')
 // The name typed back is the most specific thing the job acts on: a dropped
@@ -169,6 +188,10 @@ async function continueChoice(value) {
         </div>
       </template>
       <Alert v-else-if="failure" theme="red" :title="failure.title" :description="failure.description" />
+      <div v-if="record.retryable" class="flex flex-wrap items-center gap-3">
+        <Button variant="solid" icon-left="lucide-rotate-cw" label="Retry" :loading="retrying" @click="retry" />
+        <p class="text-p-sm text-ink-gray-5">{{ record.verb === 'init' ? 'Starts a new job with the same settings and passwords. It continues from whatever this one left behind.' : 'Starts a new job with the same settings.' }}</p>
+      </div>
       <ErrorMessage :message="actionError" />
 
       <section v-if="preflight" class="rounded-6 border border-outline-gray-1 p-4">

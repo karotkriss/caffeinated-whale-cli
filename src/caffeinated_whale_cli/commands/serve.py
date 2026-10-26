@@ -58,6 +58,8 @@ envelope frappe-ui's fetch layer reads natively (``type`` is the core's
   job; passwords travel only to the child environment and never enter its spec
 * ``POST /api/v1/jobs/<id>/interrupt``      - request a cleanup-aware interrupt
 * ``POST /api/v1/jobs/<id>/detach``         - leave the durable job running
+* ``POST /api/v1/jobs/<id>/retry``          - start a new job from a failed one's
+  verb, target, args and in-memory secrets (never its consent)
 * ``POST /api/v1/actions``                  - the Phase 1 compatibility endpoint;
   the Phase 2 page sends lifecycle work to jobs, while older built pages keep
   their original guarded behavior until they reload
@@ -909,25 +911,28 @@ class _Handler(BaseHTTPRequestHandler):
                 "job.secret_unsupported",
                 "Unsupported job secret fields: " + ", ".join(sorted(unknown_secrets)) + ".",
             )
-        pid = os.getpid()
-        if not isinstance(self.server, ThreadingHTTPServer):  # defensive type boundary
-            raise CwcliError(ErrorKind.INTERNAL, "job.server_invalid", "Invalid HTTP server.")
-        ui_context: dict[str, str | int] = {
-            "pid": pid,
-            "start": daemon_identity.process_start_time(pid) or "",
-            "port": int(self.server.server_port),
-            "token": self.token,
-            "session": self.session_id,
-        }
         record = core_jobs.create_job(
             verb,
             target,
             args,
             consent=payload.get("consent") is True,
             secret_values=secret_values,
-            ui_context=ui_context,
+            ui_context=self._ui_context(),
         )
         return 202, {"data": record}
+
+    def _ui_context(self) -> dict[str, str | int]:
+        """What a ``self-update`` job needs to restart this daemon afterwards."""
+        pid = os.getpid()
+        if not isinstance(self.server, ThreadingHTTPServer):  # defensive type boundary
+            raise CwcliError(ErrorKind.INTERNAL, "job.server_invalid", "Invalid HTTP server.")
+        return {
+            "pid": pid,
+            "start": daemon_identity.process_start_time(pid) or "",
+            "port": int(self.server.server_port),
+            "token": self.token,
+            "session": self.session_id,
+        }
 
     def _apply_setting(self, payload: dict) -> tuple[int, dict]:
         """One settings write, over the core function the CLI renderer calls.
@@ -994,9 +999,11 @@ class _Handler(BaseHTTPRequestHandler):
     def _control_job(self, path: str) -> tuple[int, dict]:
         rest = path[len("/api/v1/jobs/") :]
         job_id, separator, operation = rest.partition("/")
-        if not separator or operation not in {"interrupt", "detach"}:
+        if not separator or operation not in _JOB_OPERATIONS:
             raise CwcliError(ErrorKind.NOT_FOUND, "route.not_found", "not found")
         job_id = unquote(job_id)
+        if operation == "retry":
+            return 202, {"data": core_jobs.retry_job(job_id, ui_context=self._ui_context())}
         record = (
             core_jobs.interrupt_job(job_id)
             if operation == "interrupt"
@@ -1468,6 +1475,7 @@ class _Handler(BaseHTTPRequestHandler):
             self.hub.unsubscribe(client_id)
 
 
+_JOB_OPERATIONS = {"interrupt", "detach", "retry"}
 _POST_PATHS = {
     "/api/v1/actions",
     "/api/v1/session",
@@ -1483,7 +1491,7 @@ def _is_post_path(path: str) -> bool:
     if not path.startswith("/api/v1/jobs/"):
         return False
     _job_id, separator, operation = path[len("/api/v1/jobs/") :].partition("/")
-    return bool(separator and operation in {"interrupt", "detach"})
+    return bool(separator and operation in _JOB_OPERATIONS)
 
 
 def _parse_after(raw: str) -> dict[str, int] | None:
