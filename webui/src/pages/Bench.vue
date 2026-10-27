@@ -21,12 +21,12 @@ const detail = loadDetail(project)
 const bench = computed(() => detail.data?.benches.find((b) => String(b.index) === String(index)))
 const health = computed(() => inst.value?.benches?.find((b) => String(b.index) === String(index)))
 const running = computed(() => inst.value?.container_running)
-const web = computed(() => webIndicator(health.value))
-// The latest probe failed: the rows below are the last successful probe's, not live.
+// The latest probe failed: every health reading on the page is the last successful probe's, not live.
 const stale = computed(() => (running.value ? inst.value?.probe_error : null))
+const web = computed(() => webIndicator(health.value, { stale: stale.value }))
 const staleNote = computed(() => {
   const why = `${String(stale.value).replace(/\.$/, '')}.`
-  return inst.value?.probed_at ? `${why} The rows below are from the last successful probe, ${ago(inst.value.probed_at * 1000)}.` : why
+  return inst.value?.probed_at ? `${why} The health readings on this page (web port check, process rows, status badge) are from the last successful probe, ${ago(inst.value.probed_at * 1000)}.` : why
 })
 const tab = ref(route.query.tab || 'processes')
 const logsProcess = ref(route.query.process || null)
@@ -77,7 +77,7 @@ function showLogs(process) {
     <dl class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm lg:grid-cols-4">
       <div><dt class="text-ink-gray-5">Identity</dt><dd class="mt-1 font-mono text-ink-gray-8">--bench {{ bench.index }}</dd></div>
       <div class="col-span-2 md:col-span-1"><dt class="text-ink-gray-5">Path</dt><dd class="mt-1 truncate font-mono text-ink-gray-8" :title="bench.path">{{ bench.path }}</dd></div>
-      <div><dt class="text-ink-gray-5">Web port</dt><dd class="mt-1 font-mono text-ink-gray-8">{{ health?.web_port ?? 'unknown' }}<span v-if="web" class="ml-2 font-sans" :class="web.ok ? 'text-ink-green-6' : 'text-ink-amber-6'">{{ web.label }}</span></dd></div>
+      <div><dt class="text-ink-gray-5">Web port</dt><dd class="mt-1 font-mono text-ink-gray-8">{{ health?.web_port ?? 'unknown' }}<span v-if="web" class="ml-2 font-sans" :class="web.ok === null ? 'text-ink-gray-5' : web.ok ? 'text-ink-green-6' : 'text-ink-amber-6'">{{ web.label }}</span></dd></div>
       <div><dt class="text-ink-gray-5">Default site</dt><dd class="mt-1 font-mono text-ink-gray-8">{{ bench.default_site || 'none set' }}</dd></div>
     </dl>
     <Alert v-if="stale" theme="gray" title="The last health probe failed" :description="staleNote" />
