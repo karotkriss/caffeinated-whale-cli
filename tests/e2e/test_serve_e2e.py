@@ -263,7 +263,7 @@ class TestSnapshot:
             lambda: _instance(daemon.base, daemon.project)["web_probed"] is False,
             desc="the post-event web-probe window to close",
         )
-        assert _instance(daemon.base, daemon.project)["benches"][0]["web_http_code"] is None
+        assert _instance(daemon.base, daemon.project)["benches"][0]["web_listening"] is None
 
         client = _Client(daemon.base + f"/api/v1/stream?focus={daemon.project}")
         try:
@@ -276,9 +276,10 @@ class TestSnapshot:
                 desc="focus to turn the web probe on",
             )
             bench = state["benches"][0]
-            assert bench["web_http_code"] is not None
-            # The probe names a site, so the code it got is attributable.
-            assert bench["web_site"] is not None
+            # The fast tier checks the port with a TCP connect, never an HTTP
+            # request, so the verdict is web_listening and no code is reported.
+            assert bench["web_listening"] is True
+            assert bench["web_http_code"] is None
         finally:
             client.close()
 

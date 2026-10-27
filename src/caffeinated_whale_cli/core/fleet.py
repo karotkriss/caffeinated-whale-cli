@@ -31,7 +31,7 @@ Three properties are load-bearing and each has a test:
 3. **Unknown is a state, not a default.** A running instance nothing has probed
    yet is :data:`UNKNOWN`, a failed probe is :data:`UNKNOWN` plus a
    ``probe_error``, and an unreadable web port stays ``web_port: null`` /
-   ``web_http_code: null`` with ``web_probed`` telling a reader whether the null
+   ``web_listening: null`` with ``web_probed`` telling a reader whether the null
    means "unreachable" or "never asked". None of these may render as 0, a dash,
    or a healthy default.
 """
@@ -56,10 +56,12 @@ from .status import BenchStatus
 # answered for this instance", never "probably fine".
 UNKNOWN = "unknown"
 
-# How long after a container lifecycle event this instance keeps its web HTTP
-# check on. The web probe writes one line into the developer's own bench access
-# log per cycle, so it is OFF by default and enabled only (a) in this window and
-# (b) while a UI client has the instance open (see :meth:`Fleet.set_focus`).
+# How long after a container lifecycle event this instance keeps its web check
+# on. The check itself is a bare TCP connect (no HTTP request, so nothing lands in
+# the bench's access log), but a probed cycle also reads each site's maintenance
+# flag, one more exec per bench, so it is OFF by default and enabled only (a) in
+# this window and (b) while a UI client has the instance open (see
+# :meth:`Fleet.set_focus`).
 WEB_PROBE_WINDOW_S = 30.0
 
 # The lifecycle actions worth reacting to. Deliberately NOT ``exec_*``: this
@@ -76,9 +78,11 @@ class InstanceState:
     ``overall`` is ``core.status``'s token (``running``/``degraded``/``online``/
     ``offline``) once a probe has answered, else :data:`UNKNOWN`.
 
-    ``web_probed`` disambiguates every ``web_http_code: null`` underneath it:
+    ``web_probed`` disambiguates every ``web_listening: null`` underneath it:
     False means the web check was not asked for on this cycle, True means it was
-    asked and got no answer. Without it a reader cannot tell "not measured" from
+    asked and got no answer. The FAST tier never sends an HTTP request, so each
+    bench's ``web_http_code`` is always null here and ``web_listening`` carries the
+    verdict. Without it a reader cannot tell "not measured" from
     "measured, dead", which is exactly the honest-unknown collapse this model
     refuses.
 
@@ -136,6 +140,7 @@ def health_key(state: InstanceState) -> tuple:
                 b.web_port_verified,
                 b.web_site,
                 b.web_http_code,
+                b.web_listening,
                 b.maintenance_mode,
                 b.not_cwcli_supervised,
                 b.bench_present,
@@ -199,9 +204,9 @@ class Fleet:
         """The instances a UI client currently has open (decision B).
 
         Process-level health polls every instance on the normal cadence; the web
-        HTTP check is the expensive-in-trace one (one access-log line per cycle
-        in a log a developer reads), so it runs only for instances a client is
-        actually looking at, plus the window after a lifecycle event.
+        check (a TCP connect plus the site maintenance-flag read) is the extra
+        exec cost, so it runs only for instances a client is actually looking at,
+        plus the window after a lifecycle event.
         """
         with self._lock:
             self._focus = set(projects)

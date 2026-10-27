@@ -1992,6 +1992,7 @@ The daemon requires sign-in even on loopback: each launch gets its own random to
 Run `cwcli ui` again for a fresh link for a second browser on this machine.
 `cwcli ui --stop` stops it.
 While the daemon runs it polls process health for every running instance; the web check only runs for an instance a page has open.
+That check is a bare TCP connect to the bench's web port, not an HTTP request, so polling writes nothing to the bench's web access log; the Bench page shows its verdict as `Listening` or `Not listening` next to the web port.
 It refuses any request whose `Host` is not this machine, so another site in your browser cannot read or drive it.
 
 **What it can do:** everything the CLI reads (`ls`, `status`, `inspect`, `where`, `doctor`, `logs`, `axi url`, `config show`) and the safe lifecycle set: start, stop and restart an instance or a bench, restart one process, set a bench label, unlock a site, take a site out of maintenance mode, widen the port range (the same core confirmation `cwcli scale` asks for, typed back as the instance name), and check out an app ref without `--reset`.

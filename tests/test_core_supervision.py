@@ -242,6 +242,9 @@ class FakeContainer:
             # fake so a caller that mixes the fused read with the ordinary config
             # /marker reads (``core.status(fused=True)``) needs only ONE container.
             return self._exec_fused(script)
+        if "/dev/tcp/" in script:
+            # The standalone TCP check (``web_is_listening``).
+            return (0, self._tcp_answer(script).encode())
         if "import supervisor" in script:
             return (0, b"") if self.supervisor_present else (1, b"")
         if "pip install supervisor" in script:
@@ -267,6 +270,12 @@ class FakeContainer:
             return (None, None) if detach else (0, b"")
         return (0, b"")
 
+    def _tcp_answer(self, script):
+        """What the TCP check prints: ``open`` iff a code is configured for that port."""
+        port = int(re.search(r"/dev/tcp/localhost/(\d+)", script).group(1))
+        code = self._per_key(self.web_code, port)
+        return "" if (not self.web_ok or code is None) else "open"
+
     def _exec_fused(self, script):
         """Stitch the fused script's marked sections exactly as a real shell would."""
         bench = (
@@ -283,9 +292,7 @@ class FakeContainer:
             ctl if ctl is not None else _CTL_SINGLE,
         ]
         if supervision._MARK_WEB in script:
-            port = int(re.search(r"http://localhost:(\d+)", script).group(1))
-            code = self._per_key(self.web_code, port)
-            out += [supervision._MARK_WEB, "" if (not self.web_ok or code is None) else code]
+            out += [supervision._MARK_WEB, self._tcp_answer(script)]
         return (0, "\n".join(out).encode())
 
 
@@ -747,7 +754,7 @@ class TestWebProbe:
 
 class FusedFakeContainer:
     """A container whose ONE ``bash -c`` exec answers the fused-probe script by
-    stitching together canned ``ps``/``supervisorctl``/``curl`` output - exactly as
+    stitching together canned ``ps``/``supervisorctl``/TCP-check output - exactly as
     a real shell running that same script would produce. This exercises the real
     marker-split + parse path, not a shortcut: a wrong marker or a wrong section
     order in ``_fused_script``/``fused_probe`` would break these tests too.
@@ -758,7 +765,6 @@ class FusedFakeContainer:
         *,
         ps=_PS_SINGLE,
         ctl=_CTL_SINGLE,
-        web_code="200",
         web_ok=True,
         exit_code=0,
         include_ps_marker=True,
@@ -769,9 +775,7 @@ class FusedFakeContainer:
     ):
         self.ps = ps
         self.ctl = ctl
-        self.web_code = web_code
         self.web_ok = web_ok
-        self.curl_output = web_code if web_ok else "000"
         self.exit_code = exit_code
         self.include_ps_marker = include_ps_marker
         self.include_ps_rc = include_ps_rc
@@ -792,8 +796,7 @@ class FusedFakeContainer:
         if self.include_supctl_marker:
             out += [supervision._MARK_SUPCTL, self.ctl]
         if supervision._MARK_WEB in script and self.include_web_marker:
-            published_code = self.curl_output if self.web_ok else ""
-            out += [supervision._MARK_WEB, published_code]
+            out += [supervision._MARK_WEB, "open" if self.web_ok else ""]
         return (self.exit_code, "\n".join(out).encode())
 
 
@@ -802,7 +805,7 @@ class TestFusedProbe:
 
     def test_one_exec_returns_processes_state_and_web(self):
         c = FusedFakeContainer()
-        probe = supervision.fused_probe(c, BENCH, web_port=8000, web_site="x.localhost")
+        probe = supervision.fused_probe(c, BENCH, web_port=8000)
 
         assert len(c.calls) == 1, "the whole probe must be exactly one docker exec"
         assert probe.supervisor_up is True
@@ -822,17 +825,18 @@ class TestFusedProbe:
         assert web.pid == 101
         assert web.uptime_s == 499
         assert web.state == "RUNNING"
-        assert probe.web_http_code == "200"
+        assert probe.web_listening is True
         assert probe.web_probed is True
 
-    def test_the_web_request_carries_the_given_port_and_site(self):
+    def test_the_web_check_is_a_bare_tcp_connect_on_the_given_port(self):
+        # An HTTP request makes the bench's web server write a "GET /" access-log
+        # line on every tick of the daemon's loop; a TCP connect writes nothing.
         c = FusedFakeContainer()
-        supervision.fused_probe(c, BENCH, web_port=8001, web_site="two.localhost")
+        supervision.fused_probe(c, BENCH, web_port=8001)
         script = c.calls[0][2]
-        assert "http://localhost:8001" in script
-        assert "Host: two.localhost" in script
-        assert "--connect-timeout 2" in script
-        assert "--max-time 5" in script
+        assert "/dev/tcp/localhost/8001" in script
+        assert "curl" not in script
+        assert "http" not in script
 
     def test_a_fatal_program_with_no_live_pid_is_reported_down_with_its_state(self):
         # worker_default crash-looped: supervisorctl still lists it (FATAL), ps has
@@ -853,22 +857,21 @@ class TestFusedProbe:
     def test_no_web_port_skips_the_web_section_and_is_honest_none(self):
         c = FusedFakeContainer()
         probe = supervision.fused_probe(c, BENCH, web_port=None)
-        assert probe.web_http_code is None
+        assert probe.web_listening is None
         assert probe.web_probed is False
         assert supervision._MARK_WEB not in c.calls[0][2]
 
     def test_probe_web_false_skips_the_web_section_even_with_a_port(self):
         c = FusedFakeContainer()
         probe = supervision.fused_probe(c, BENCH, web_port=8000, probe_web=False)
-        assert probe.web_http_code is None
+        assert probe.web_listening is None
         assert probe.web_probed is False
         assert supervision._MARK_WEB not in c.calls[0][2]
 
-    def test_curl_failure_is_honest_none_not_a_fabricated_code(self):
+    def test_a_refused_connect_is_honest_false_not_a_fabricated_answer(self):
         c = FusedFakeContainer(web_ok=False)
         probe = supervision.fused_probe(c, BENCH, web_port=8000)
-        assert c.curl_output == "000"
-        assert probe.web_http_code is None
+        assert probe.web_listening is False
         assert probe.web_probed is True  # a check WAS attempted; it just failed
 
     @pytest.mark.parametrize(
@@ -911,19 +914,19 @@ class TestFusedProbe:
         assert probe.supervisor_up is False
         assert probe.supervisor_pid is None
         assert probe.processes == []
-        assert probe.web_http_code == "200"
+        assert probe.web_listening is True
         assert probe.web_probed is True
 
     def test_the_script_carries_no_mutating_commands(self):
         # Static, structural read-only guarantee: the exact script sent to the
         # container is built entirely from read-only primitives (ps, supervisorctl
-        # status, curl) - never restart/stop/kill/rm, regardless of container state.
-        script = supervision._fused_script(BENCH, web_port=8000, web_site="x.localhost")
+        # status, /dev/tcp) - never restart/stop/kill/rm, regardless of container state.
+        script = supervision._fused_script(BENCH, web_port=8000)
         for mutating in ("restart", "stop", " kill ", "rm -f", "supervisord -c"):
             assert mutating not in script, f"unexpected mutating token: {mutating!r}"
         assert "supervisorctl" in script
         assert " status" in script
-        assert "curl" in script
+        assert "/dev/tcp/" in script
 
     def test_read_only_across_many_cycles_state_is_unchanged(self):
         # The unit-level proxy for read-only-ness: many probe cycles against the
@@ -931,10 +934,10 @@ class TestFusedProbe:
         # own state - only the real-bench E2E proof can confirm no live PID/state
         # changes, but this at least proves the probe never WRITES anything locally.
         c = FusedFakeContainer()
-        before = (c.ps, c.ctl, c.web_code)
+        before = (c.ps, c.ctl, c.web_ok)
         for _ in range(20):
-            supervision.fused_probe(c, BENCH, web_port=8000, web_site="x.localhost")
-        assert (c.ps, c.ctl, c.web_code) == before
+            supervision.fused_probe(c, BENCH, web_port=8000)
+        assert (c.ps, c.ctl, c.web_ok) == before
         assert len(c.calls) == 20
 
 

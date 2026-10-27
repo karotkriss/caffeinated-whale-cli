@@ -159,6 +159,10 @@ class BenchStatus:
     web_port_verified: bool
     web_site: str | None
     web_http_code: str | None
+    #: Whether the web port accepted a TCP connection, set ONLY by the fused tier
+    #: (``fused=True``), which never sends an HTTP request - so ``web_http_code`` is
+    #: None there and this carries the verdict instead. None on the HTTP tier.
+    web_listening: bool | None = None
     #: Whether ``web_site`` is in maintenance mode (``True``/``False``), or None when
     #: it was not checked (``--watch``, no site resolved) or could not be read. A site
     #: stuck in maintenance answers 503 to every user with no other signal - the state
@@ -233,9 +237,9 @@ def status(
     one it reports exactly that bench. Either way the shape is the same and it never
     returns ``NEEDS_CHOICE`` - the multi-bench refusal is gone.
 
-    ``probe_web=False`` suppresses the in-container ``curl`` web probe entirely
-    (every bench's ``web_http_code`` comes back ``None``) so a repeated caller - the
-    ``status --watch`` loop - leaves ZERO HTTP requests in the bench's access logs.
+    ``probe_web=False`` suppresses the web probe entirely (every bench's
+    ``web_http_code`` and ``web_listening`` come back ``None``) so a repeated caller -
+    the ``status --watch`` loop - leaves ZERO HTTP requests in the bench's access logs.
     Per-program liveness + state still come from the ``ps`` read and
     ``supervisorctl`` (neither touches the web port), so ``overall`` stays honest:
     with no web signal it is driven by supervisor-up + every program healthy.
@@ -245,9 +249,11 @@ def status(
     path's five, plus the site's maintenance-flag read when the web is probed -
     for a repeating caller that cannot afford the round trips
     (the web UI daemon's FAST tier polls every RUNNING instance every
-    few seconds when driven directly; measured 758ms -> 252ms per instance). It is
-    an exec-budget choice ONLY: the
-    returned :class:`StatusReport` is the same shape with the same tokens, and an
+    few seconds when driven directly; measured 758ms -> 252ms per instance). Its web
+    check is a bare TCP connect rather than an HTTP request, so a poll writes nothing
+    to the bench's access log: ``web_listening`` carries the verdict and
+    ``web_http_code`` stays ``None``. Otherwise the returned :class:`StatusReport`
+    is the same shape with the same tokens, and an
     UNSUPERVISED bench falls back to the full read per bench, so the never-started
     vs supervisor-died distinction and the honcho fallback are never traded away.
     Defaults False, so every existing caller is byte-unchanged.
@@ -444,8 +450,13 @@ def _bench_status(
     probe_web: bool,
     warnings: list[Message],
     bench_flag: str = "",
+    tcp_only: bool = False,
 ) -> BenchStatus:
     """One bench's live health, probed on ITS OWN port (or not probed at all).
+
+    ``tcp_only`` swaps the HTTP request for a bare TCP connect (``web_listening``,
+    ``web_http_code`` None) for a repeating caller, whose requests would otherwise
+    fill the bench's web access log.
 
     The probe is skipped both when the caller suppressed it (``--watch``) and when
     the port could not be resolved, and ``_overall``'s ``web_probed`` covers both:
@@ -519,11 +530,13 @@ def _bench_status(
     marker = supervision.read_marker(frappe_container, bench_path)
     snapshot = supervision.discover_stack(frappe_container, bench_path)
     expected = supervision.expected_labels(frappe_container, bench_path)
-    web_code = (
-        supervision.web_http_code(frappe_container, port=web_port, site=web_site)
-        if probed and web_port is not None
-        else None
-    )
+    web_code = None
+    web_listening: bool | None = None
+    if probed and web_port is not None:
+        if tcp_only:
+            web_listening = supervision.web_is_listening(frappe_container, port=web_port)
+        else:
+            web_code = supervision.web_http_code(frappe_container, port=web_port, site=web_site)
     not_cwcli_supervised = False
 
     if snapshot.supervisor_up:
@@ -540,6 +553,7 @@ def _bench_status(
             supervisor_up=True,
             all_healthy=_all_healthy(processes),
             web_code=web_code,
+            web_listening=web_listening,
             web_probed=probed,
         )
     else:
@@ -558,6 +572,7 @@ def _bench_status(
                 supervisor_up=True,
                 all_healthy=_all_healthy(processes),
                 web_code=web_code,
+                web_listening=web_listening,
                 web_probed=probed,
             )
             # One hint per report, not per bench: the text is generic, so N benches
@@ -573,6 +588,7 @@ def _bench_status(
                 supervisor_up=False,
                 all_healthy=_all_healthy(processes),
                 web_code=web_code,
+                web_listening=web_listening,
                 web_probed=probed,
             )
 
@@ -586,6 +602,7 @@ def _bench_status(
         web_port_verified=web_port is not None,
         web_site=web_site if (probed or maintenance is not None) else None,
         web_http_code=web_code,
+        web_listening=web_listening,
         maintenance_mode=maintenance,
         processes=processes,
         not_cwcli_supervised=not_cwcli_supervised,
@@ -626,7 +643,6 @@ def _bench_status_fused(
         frappe_container,
         bench_path,
         web_port=web_port,
-        web_site=web_site,
         probe_web=probe_web,
     )
     if not fused.supervisor_up:
@@ -641,6 +657,7 @@ def _bench_status_fused(
             probe_web=probe_web,
             warnings=warnings,
             bench_flag=bench_flag,
+            tcp_only=True,
         )
 
     # The site's own maintenance flag, read as the default path reads it: a site
@@ -659,14 +676,16 @@ def _bench_status_fused(
             started=True,
             supervisor_up=True,
             all_healthy=_all_healthy(fused.processes),
-            web_code=fused.web_http_code,
+            web_code=None,
+            web_listening=fused.web_listening,
             web_probed=probed,
         ),
         supervisor_up=True,
         web_port=web_port,
         web_port_verified=web_port is not None,
         web_site=web_site if (probed or maintenance is not None) else None,
-        web_http_code=fused.web_http_code,
+        web_http_code=None,
+        web_listening=fused.web_listening,
         maintenance_mode=maintenance,
         processes=fused.processes,
     )
@@ -759,6 +778,7 @@ def _overall(
     supervisor_up: bool,
     all_healthy: bool,
     web_code: str | None,
+    web_listening: bool | None = None,
     web_probed: bool = True,
 ) -> str:
     """The pre-computed lifecycle aggregate (see module docstring's table).
@@ -777,5 +797,5 @@ def _overall(
         return DEGRADED
     if not web_probed:
         return RUNNING
-    web_ok = web_code not in (None, "000")
+    web_ok = web_listening if web_listening is not None else web_code not in (None, "000")
     return RUNNING if web_ok else DEGRADED
