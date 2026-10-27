@@ -17,10 +17,10 @@ MODULE = Path(__file__).resolve().parents[1] / "webui" / "src" / "data" / "web-i
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
 
 
-def _indicator(health):
+def _indicator(health, **opts):
     script = (
         f"import {{ webIndicator }} from {json.dumps(MODULE.as_uri())};\n"
-        f"console.log(JSON.stringify(webIndicator({json.dumps(health)})));\n"
+        f"console.log(JSON.stringify(webIndicator({json.dumps(health)}, {json.dumps(opts)})));\n"
     )
     out = subprocess.run(
         ["node", "--input-type=module"], input=script, capture_output=True, text=True, check=True
@@ -44,3 +44,21 @@ def _indicator(health):
 )
 def test_the_web_chip(health, expected):
     assert _indicator(health) == expected
+
+
+UNKNOWN = {"label": "unknown", "ok": None}
+
+
+@pytest.mark.parametrize(
+    ("health", "expected"),
+    [
+        ({"web_http_code": None, "web_listening": True}, UNKNOWN),
+        ({"web_http_code": None, "web_listening": False}, UNKNOWN),
+        ({"web_http_code": "200", "web_listening": None}, UNKNOWN),
+        ({"web_http_code": "503", "web_listening": None}, UNKNOWN),
+        ({"web_http_code": None, "web_listening": None}, None),
+        (None, None),
+    ],
+)
+def test_a_stale_probe_never_shows_a_live_verdict(health, expected):
+    assert _indicator(health, stale="docker.error: Read timed out.") == expected

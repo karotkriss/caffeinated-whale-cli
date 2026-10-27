@@ -53,6 +53,8 @@ import tempfile
 import time
 from pathlib import Path
 
+import peewee
+
 try:
     import resource
 except ImportError:  # Windows has no `resource` module.
@@ -74,10 +76,24 @@ import pytest
 # HOME + CWCLI_HOME (tests/e2e/conftest.py), so this default is harmless there.
 #
 # ``Path.home()`` here is the operator's REAL home (we override CWCLI_HOME, not
-# HOME); snapshot the real cache DB so the guard below can fail loudly if any test
-# still reaches it.
+# HOME); record every open of the real cache DB from THIS process so the guard
+# below can fail loudly if any test still reaches it. Opens are tracked in-process
+# rather than by the file's mtime, because the operator's own cwcli daemons
+# (auto-inspect re-caches every few minutes) legitimately write that DB while a
+# run is in progress, which an mtime check reported as a test violation.
 _REAL_CACHE_DB = Path.home() / ".cwcli" / "cache" / "cwc-cache.db"
-_real_cache_db_before = _REAL_CACHE_DB.stat().st_mtime_ns if _REAL_CACHE_DB.exists() else None
+_real_cache_db_opens: list[str] = []
+_peewee_connect = peewee.SqliteDatabase._connect
+
+
+def _tracking_connect(self):  # type: ignore[no-untyped-def]
+    database = str(self.database)
+    if database != ":memory:" and Path(database).resolve() == _REAL_CACHE_DB.resolve():
+        _real_cache_db_opens.append(database)
+    return _peewee_connect(self)
+
+
+peewee.SqliteDatabase._connect = _tracking_connect  # type: ignore[method-assign]
 
 _created_session_home: str | None = None
 if not os.environ.get("CWCLI_HOME"):
@@ -119,12 +135,11 @@ def _rss_mb() -> float:
 
 
 def _real_home_touch_failure() -> str | None:
-    after = _REAL_CACHE_DB.stat().st_mtime_ns if _REAL_CACHE_DB.exists() else None
-    if after == _real_cache_db_before:
+    if not _real_cache_db_opens:
         return None
     return (
-        f"HERMETICITY VIOLATION: the unit tier touched the real cache DB {_REAL_CACHE_DB} "
-        f"(mtime {_real_cache_db_before} -> {after}). A test resolved cwcli_home() to the "
+        f"HERMETICITY VIOLATION: the unit tier opened the real cache DB {_REAL_CACHE_DB} "
+        f"({len(_real_cache_db_opens)} time(s)). A test resolved cwcli_home() to the "
         f"real ~/.cwcli instead of the session CWCLI_HOME; give it its own "
         f"CWCLI_HOME (monkeypatch.setenv) pointed at tmp_path."
     )
