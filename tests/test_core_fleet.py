@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import threading
 
+import docker
 import pytest
+import requests
 
 from caffeinated_whale_cli.core import fleet as core_fleet
 from caffeinated_whale_cli.core import status as core_status
@@ -228,6 +230,31 @@ class TestDeltaSuppression:
         assert len(rec.deltas) == 1, "only the first probe changes anything"
         assert rec.deltas[0][0] == "fast"
 
+    def test_an_open_instance_publishes_every_probe_so_its_live_numbers_move(
+        self, listing, probing
+    ):
+        # The Bench page shows uptime/cpu/memory: suppressed, a fresh bench read
+        # "5s" uptime three minutes after it started.
+        listing(("p", "running", ["8000"]))
+        tick = {"n": 0}
+
+        def _answer(project, **kwargs):
+            tick["n"] += 1
+            return _report(benches=[_bench(processes=[_proc(uptime_s=500 + tick["n"])])])
+
+        probing(_answer)
+        rec = _Recorder()
+        f = core_fleet.Fleet(publish=rec)
+        f.bootstrap()
+        f.set_focus({"p"})
+        rec.deltas.clear()
+
+        for _ in range(3):
+            f.probe("p")
+
+        assert rec.tiers == ["fast"] * 3
+        assert [d[2].benches[0].processes[0].uptime_s for d in rec.deltas] == [501, 502, 503]
+
     def test_a_real_change_still_publishes(self, listing, probing):
         listing(("p", "running", ["8000"]))
         overall = {"v": "running"}
@@ -270,6 +297,38 @@ class TestHonestUnknown:
         state = f.get("p")
         assert state.overall == core_fleet.UNKNOWN, "a dead read must not keep the last green token"
         assert state.probe_error == "docker.unreachable: no daemon"
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            requests.exceptions.ReadTimeout(
+                "UnixHTTPConnectionPool(host='localhost', port=None): Read timed out."
+            ),
+            docker.errors.APIError("409 Client Error: Conflict (container is not running)"),
+        ],
+        ids=["exec-read-timeout", "docker-api-error"],
+    )
+    def test_a_docker_error_mid_probe_is_unknown_not_a_frozen_last_answer(
+        self, listing, probing, error
+    ):
+        # An overloaded daemon times the exec out. Left to the loop's logger, the
+        # model kept publishing nothing and the page froze on the last good probe.
+        listing(("p", "running", ["8000"]))
+        probing(lambda project, **kw: _report())
+        rec = _Recorder()
+        f = core_fleet.Fleet(publish=rec)
+        f.bootstrap()
+        f.probe("p")
+        rec.deltas.clear()
+
+        probing(error)
+        f.probe("p")
+
+        state = f.get("p")
+        assert state.overall == core_fleet.UNKNOWN
+        assert state.probe_error.startswith("docker.error: ")
+        assert state.probe_failed_at is not None
+        assert rec.tiers == ["fast"], "the failure must reach the page"
 
     def test_a_failed_probe_keeps_success_evidence_at_its_success_time(self, listing, probing):
         listing(("p", "running", ["8000"]))

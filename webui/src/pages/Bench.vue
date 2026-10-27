@@ -8,7 +8,7 @@ import SitesTable from '../components/SitesTable.vue'
 import AppsTable from '../components/AppsTable.vue'
 import LogsPane from '../components/LogsPane.vue'
 import CommandLine from '../components/CommandLine.vue'
-import { instance as findInstance, loadDetail, benchName, setFocus } from '../data/fleet'
+import { instance as findInstance, loadDetail, benchName, setFocus, ago } from '../data/fleet'
 import { openAction, menuOption, dangerGroup } from '../data/dialog'
 import { openJob } from '../data/job-dialog'
 import { webIndicator } from '../data/web-indicator'
@@ -21,7 +21,13 @@ const detail = loadDetail(project)
 const bench = computed(() => detail.data?.benches.find((b) => String(b.index) === String(index)))
 const health = computed(() => inst.value?.benches?.find((b) => String(b.index) === String(index)))
 const running = computed(() => inst.value?.container_running)
-const web = computed(() => webIndicator(health.value))
+// The latest probe failed: every health reading on the page is the last successful probe's, not live.
+const stale = computed(() => (running.value ? inst.value?.probe_error : null))
+const web = computed(() => webIndicator(health.value, { stale: stale.value }))
+const staleNote = computed(() => {
+  const why = `${String(stale.value).replace(/\.$/, '')}.`
+  return inst.value?.probed_at ? `${why} The health readings on this page (web port check, process rows, status badge) are from the last successful probe, ${ago(inst.value.probed_at * 1000)}.` : why
+})
 const tab = ref(route.query.tab || 'processes')
 const logsProcess = ref(route.query.process || null)
 const down = computed(() => (health.value?.processes || []).filter((p) => !p.up))
@@ -55,7 +61,7 @@ function showLogs(process) {
       { label: name, route: route.path },
     ]" />
     <div class="flex items-center gap-2">
-      <StatusBadge class="max-md:hidden" :token="running ? health?.overall : 'offline'" size="md" />
+      <StatusBadge class="max-md:hidden" :token="running ? (stale ? 'unknown' : health?.overall) : 'offline'" size="md" />
       <Button v-if="benchUp" icon-left="lucide-square" label="Stop bench" @click="openAction('bench.stop', ctx)" />
       <Button v-else variant="solid" icon-left="lucide-play" label="Start bench" @click="openAction('bench.start', ctx)" />
       <Dropdown :options="more" align="end"><Button icon="lucide-ellipsis" aria-label="More actions" /></Dropdown>
@@ -71,9 +77,10 @@ function showLogs(process) {
     <dl class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm lg:grid-cols-4">
       <div><dt class="text-ink-gray-5">Identity</dt><dd class="mt-1 font-mono text-ink-gray-8">--bench {{ bench.index }}</dd></div>
       <div class="col-span-2 md:col-span-1"><dt class="text-ink-gray-5">Path</dt><dd class="mt-1 truncate font-mono text-ink-gray-8" :title="bench.path">{{ bench.path }}</dd></div>
-      <div><dt class="text-ink-gray-5">Web port</dt><dd class="mt-1 font-mono text-ink-gray-8">{{ health?.web_port ?? 'unknown' }}<span v-if="web" class="ml-2 font-sans" :class="web.ok ? 'text-ink-green-6' : 'text-ink-amber-6'">{{ web.label }}</span></dd></div>
+      <div><dt class="text-ink-gray-5">Web port</dt><dd class="mt-1 font-mono text-ink-gray-8">{{ health?.web_port ?? 'unknown' }}<span v-if="web" class="ml-2 font-sans" :class="web.ok === null ? 'text-ink-gray-5' : web.ok ? 'text-ink-green-6' : 'text-ink-amber-6'">{{ web.label }}</span></dd></div>
       <div><dt class="text-ink-gray-5">Default site</dt><dd class="mt-1 font-mono text-ink-gray-8">{{ bench.default_site || 'none set' }}</dd></div>
     </dl>
+    <Alert v-if="stale" theme="gray" title="The last health probe failed" :description="staleNote" />
     <Alert
       v-if="running && benchUp && down.length"
       theme="amber"
