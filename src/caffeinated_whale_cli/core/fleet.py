@@ -23,6 +23,10 @@ Three properties are load-bearing and each has a test:
    (a probe duration, an uptime, a cpu percentage, a timestamp) inside that
    digest turns the quiet FAST tier back into a firehose - measured in the
    design spike as 8 deltas in 8 cycles of an instance that never changed.
+   The one exception is an instance a UI client has OPEN (:meth:`Fleet.set_focus`):
+   it publishes on every successful probe, because its page shows uptime, cpu
+   and memory, and suppressing those left a freshly started bench reading
+   "5s" uptime three minutes later.
 2. **Event-stream loss re-bootstraps the whole model** (:func:`event_loop`),
    never replays with ``since=``. Docker keeps a fixed 256-event ring, and this
    daemon's own probe exec traffic flushes it in ~51 seconds, so a gap replay
@@ -289,21 +293,20 @@ class Fleet:
                 self._publish("instant", project, state, project_cause)
 
     def probe(self, project: str) -> None:
-        """The FAST tier for one instance: one fused read, published only if changed."""
+        """The FAST tier for one instance: one fused read, published if changed or open."""
         with self._lock:
             state = self._instances.get(project)
             if state is None or not state.container_running:
                 return
             generation = self._generations.get(project, 0)
-            probe_web = project in self._focus or time.monotonic() < self._web_until.get(
-                project, 0.0
-            )
+            focused = project in self._focus
+            probe_web = focused or time.monotonic() < self._web_until.get(project, 0.0)
 
         started = time.monotonic()
         try:
             report = core_status.status(project, probe_web=probe_web, fused=True).data
-        except CwcliError as e:
-            if e.kind is ErrorKind.NOT_FOUND:
+        except (CwcliError, DockerException, OSError) as e:
+            if isinstance(e, CwcliError) and e.kind is ErrorKind.NOT_FOUND:
                 # The project is gone. The health tier cannot express that (it
                 # describes an instance that exists), and Docker's own listing is
                 # the authority, so hand it to the one code path that owns the
@@ -313,10 +316,14 @@ class Fleet:
             # An honest unknown, not a health verdict: the probe could not find
             # out. Reporting the last known good token here would be the
             # crying-wolf defect inverted - a stale green pill over a dead read.
+            # A Docker API error or a read timeout on the exec (an overloaded
+            # daemon answers late) is the same unknown: left to the loop's logger,
+            # it froze the page on whatever the last good probe happened to see.
+            reason = f"{e.code}: {e.message}" if isinstance(e, CwcliError) else f"docker.error: {e}"
             new = replace(
                 state,
                 overall=UNKNOWN,
-                probe_error=f"{e.code}: {e.message}",
+                probe_error=reason,
                 probe_failed_at=time.time(),
             )
         else:
@@ -349,7 +356,8 @@ class Fleet:
                 if current is None or self._generations.get(project, 0) != generation:
                     return
                 changed = self._store(new)
-            if changed:
+            # An open instance's page shows the volatile numbers health_key ignores.
+            if changed or focused:
                 self._publish("fast", project, new, None)
 
     def apply_event(self, event: dict) -> None:

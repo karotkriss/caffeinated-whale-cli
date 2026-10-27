@@ -5,7 +5,8 @@ and opens the browser; ``cwcli ui --foreground`` runs it in the terminal. The
 ``python -m caffeinated_whale_cli.commands.serve`` module entry stays as the
 developer entry with a ``--host`` override. There is no auto-start, no boot
 unit: a dashboard nobody is looking at should not be probing anyone's Docker
-daemon, and the FAST probe loop only speaks when state changes.
+daemon, and the FAST probe loop only speaks when state changes or for an
+instance a client has open.
 
 Stdlib only (``http.server.ThreadingHTTPServer`` + ``queue`` + ``threading``) over
 ``docker``, which is already a runtime dependency - no web framework, no asyncio,
@@ -478,8 +479,9 @@ class _Hub:
     Unbounded is deliberate: a bounded queue would have to choose between
     blocking the probe thread on a stalled browser and silently dropping a delta,
     and a dropped delta is a UI that is quietly wrong. The FAST tier only speaks
-    when state actually changes, so a queue that grows without bound means the
-    client is stalled rather than ordinary steady-state traffic.
+    when state actually changes, or once per probe for an instance a client has
+    open, so a queue that grows without bound means the client is stalled rather
+    than ordinary steady-state traffic.
 
     Every published frame carries a monotonic ``id`` so a reconnecting
     ``EventSource`` sends ``Last-Event-ID``; the daemon answers any reconnect with

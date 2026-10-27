@@ -131,7 +131,7 @@ const more = computed(() => [
                 <span v-else class="truncate text-base text-ink-gray-7">{{ benchName(item) }} <span class="text-xs text-ink-gray-4">no label</span></span>
                 <span class="truncate font-mono text-xs text-ink-gray-5">{{ item.path }}</span>
               </ListCell>
-              <ListCell><StatusBadge :token="running ? health[item.index]?.overall : 'offline'" /></ListCell>
+              <ListCell><StatusBadge :token="running ? (inst?.probe_error ? 'unknown' : health[item.index]?.overall) : 'offline'" /></ListCell>
               <ListCell class="max-lg:hidden"><span class="tabular-nums text-ink-gray-7">{{ item.sites.length }}</span></ListCell>
               <ListCell class="max-lg:hidden"><span class="tabular-nums text-ink-gray-7">{{ item.available_apps.length }}</span></ListCell>
               <ListCell class="max-lg:hidden"><span class="font-mono text-sm text-ink-gray-6">{{ health[item.index]?.web_port ?? 'unknown' }}</span></ListCell>
