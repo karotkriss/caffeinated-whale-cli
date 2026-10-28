@@ -97,10 +97,11 @@ class Account:
 
 def admin_only(verb: object, args: object = None) -> bool:
     """Whether a job of ``verb`` with ``args`` needs an Admin: an ``ADMIN_VERBS`` verb,
-    or an app checkout that discards local changes."""
+    or an app checkout or update that discards local work (``reset`` / ``force``)."""
     if verb in ADMIN_VERBS:
         return True
-    return verb == "apps-checkout" and isinstance(args, dict) and args.get("reset") is True
+    flag = {"apps-checkout": "reset", "apps-update": "force"}.get(str(verb))
+    return flag is not None and isinstance(args, dict) and args.get(flag) is True
 
 
 def store_path() -> Path:
