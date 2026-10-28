@@ -4,7 +4,7 @@ import { session } from './session'
 
 // The page asked for something this daemon's code does not know: the installed
 // cwcli is newer than the UI server still running, which `cwcli ui` restarts.
-const OUTDATED = new Set(['setting.unsupported', 'action.unsupported', 'job.verb_unsupported'])
+const OUTDATED = new Set(['setting.unsupported', 'action.unsupported', 'job.verb_unsupported', 'integration.op_invalid'])
 
 export class ApiError extends Error {
   constructor(status, error) {
@@ -16,6 +16,7 @@ export class ApiError extends Error {
     this.hint = outdated ? 'Run `cwcli ui` in a terminal to restart it, then reload this page.' : error?.hint
     this.choice = error?.choice
     this.outcome = error?.outcome
+    this.detail = error?.detail
   }
 }
 

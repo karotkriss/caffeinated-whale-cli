@@ -164,7 +164,7 @@ def repair(
     force: bool = False,
 ) -> Result[list[SiteAccess]]:
     """Make every mismatched site user ``'<user>'@'%'``: the first host-scoped row is
-    renamed, any other dropped, privileges flushed. Already-ok sites are untouched
+    renamed (or, beside an existing '%' row, dropped), any other dropped, privileges flushed. Already-ok sites are untouched
     unless ``force`` (a site cwcli just created is widened even though its user can
     connect from the current address: the next IP change must not break it)."""
     emit = on_event or _noop
@@ -183,9 +183,14 @@ def repair(
             )
         )
         q = a.db_user.replace("'", "''")
-        first, rest = a.hosts[0], a.hosts[1:]
-        statements = [f"RENAME USER '{q}'@'{first}' TO '{q}'@'%'"]
-        statements += [f"DROP USER '{q}'@'{h}'" for h in rest]
+        scoped = [h for h in a.hosts if h != "%"]
+        statements = []
+        if "%" not in a.hosts:
+            statements.append(f"RENAME USER '{q}'@'{scoped[0]}' TO '{q}'@'%'")
+            scoped = scoped[1:]
+        # ``bench restore --force`` re-creates the user beside an existing '%' row, which
+        # MariaDB then refuses as a rename target (1396): only the scoped rows go.
+        statements += [f"DROP USER '{q}'@'{h}'" for h in scoped]
         statements.append("FLUSH PRIVILEGES")
         try:
             root_sql(container, bench_path, "; ".join(statements), pw)
