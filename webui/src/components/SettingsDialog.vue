@@ -387,7 +387,8 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
         <SettingsPanel value="account">
           <SettingsHeader title="Your account" :description="`Signed in as ${session.user?.name ? `${session.user.name} (${session.user.username})` : session.user?.username || ''} · ${ROLE_LABEL[session.user?.role] || 'Admin'}`" />
           <SettingsBody>
-            <SettingsRow v-if="directoryUser" title="Directory account" :description="`Your directory groups gave you the ${ROLE_LABEL[session.user?.role]} role when you signed in. Your password and groups are managed in the directory.`" />
+            <SettingsRow v-if="directoryUser && session.user?.source === 'ldap'" title="Directory account" :description="`Your directory groups gave you the ${ROLE_LABEL[session.user?.role]} role when you signed in. Your password and groups are managed in the directory.`" />
+            <SettingsRow v-else-if="directoryUser" title="Signed in through an integration" :description="`The sign-in integration that is on gave you the ${ROLE_LABEL[session.user?.role]} role when you signed in. Your password is managed there, not in cwcli.`" />
             <template v-else>
               <SettingsRow title="Change password" :description="signInOn ? 'This local account keeps working while directory sign-in is on, so keep its password somewhere safe. At least 8 characters, not the default.' : 'At least 8 characters, not the default. Other sessions stay signed in.'">
                 <Button :label="pwOpen ? 'Hide' : 'Change…'" @click="pwOpen = !pwOpen" />

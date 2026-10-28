@@ -541,6 +541,12 @@ def s3_configure_cmd(
     enable: bool = typer.Option(
         True, "--enable/--disable", help="Turn the S3 backup target on (tested first) or off."
     ),
+    switch: bool = typer.Option(
+        False,
+        "--switch",
+        help="When another integration is the backup target, switch to S3 once the bucket "
+        "answers (the other one turns off).",
+    ),
 ) -> None:
     """Set up the S3 backup target integration: one bucket for every instance's off-site
     copies. It turns on only when the bucket answers; the secret key never prints."""
@@ -561,9 +567,11 @@ def s3_configure_cmd(
     }
     try:
         check, view = core_integrations.configure(
-            "s3", values, {"secret_key": secret_key or ""}, enable=True, by="cli"
+            "s3", values, {"secret_key": secret_key or ""}, enable=True, take_over=switch, by="cli"
         )
     except CwcliError as e:
+        if e.code == "integration.hook_taken":
+            e.hint = "Turn it off first, or pass --switch to switch to S3."
         _fail(e)
     cfg = view["settings"]
     console.print(

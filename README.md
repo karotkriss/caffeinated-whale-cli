@@ -1722,7 +1722,7 @@ cwcli backups key export --to FILE | import --from FILE [--replace]
 | `prune` | Applies the instance's retention policy; `--dry-run` lists what would be removed, and removing needs `--yes` |
 | `settings` | Shows or changes the instance's retention, safety, disk floor, daily schedule, and whether new backups are copied off-site |
 | `offsite` | Encrypted off-site copies on whichever backup target integration is on (the S3 bucket or a community one): `list`, `copy`, `fetch`, `prune` |
-| `s3` | Encrypted off-site copies in an S3 bucket (AWS, MinIO, ...): `configure`, `list`, `copy`, `fetch`, `prune`. `configure` sets up the machine's S3 backup target integration, one bucket for every instance (the web UI's Settings > Integrations); it reads the secret key from `CWCLI_S3_SECRET_KEY`, tests the bucket, and turns the target on only when the bucket answers, exiting 1 otherwise. `--disable` turns it off and keeps its settings |
+| `s3` | Encrypted off-site copies in an S3 bucket (AWS, MinIO, ...): `configure`, `list`, `copy`, `fetch`, `prune`. `configure` sets up the machine's S3 backup target integration, one bucket for every instance (the web UI's Settings > Integrations); it reads the secret key from `CWCLI_S3_SECRET_KEY`, tests the bucket, and turns the target on only when the bucket answers, exiting 1 otherwise. When another integration is the backup target it refuses unless `--switch`, which turns that one off once the bucket answers. `--disable` turns it off and keeps its settings |
 | `key` | Exports or imports the key that encrypts off-site copies; restoring an off-site copy on another machine needs it |
 
 **Safety rules:**
