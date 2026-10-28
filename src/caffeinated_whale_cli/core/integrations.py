@@ -11,8 +11,12 @@ integrations use it now:
 * ``s3`` provides ``backup_target``: the bucket that receives the backup store's
   encrypted off-site copies (``core.backup_store``).
 
-Community integrations (``publisher="community"``, shown as "Community, not
-reviewed", off until an Admin installs one) are a later phase.
+Community integrations (``core.community``) are installable packages an Admin adds
+from a repository URL. Each registers one ``Integration`` under the
+``cwcli.integrations`` entry-point group, shows as "Community, not reviewed"
+(``publisher="community"``) and starts off. Only the Integrations page and a
+community integration's own id load community code; the official hook points
+(sign-in, the backup target) never do.
 
 The store is ``<cwcli home>/integrations.json`` (0600; 0660 to the cwcli group on a
 shared install). Settings are plain JSON; every ``secret`` field is sealed with
@@ -101,15 +105,23 @@ class Integration:
         return tuple(f.key for f in self.fields if f.kind == "secret")
 
 
-def registry() -> dict[str, Integration]:
-    """Every integration this install knows, in display order."""
+def official() -> dict[str, Integration]:
+    """The integrations cwcli ships, in display order."""
     from . import directory
 
     return {i.id: i for i in (directory.INTEGRATION, S3_INTEGRATION)}
 
 
+def registry() -> dict[str, Integration]:
+    """Every integration this install knows, in display order: the official ones,
+    then the installed community ones (``core.community``), which this loads."""
+    from . import community
+
+    return {**official(), **community.load_all()}
+
+
 def get(integration_id: str) -> Integration:
-    found = registry().get(integration_id)
+    found = official().get(integration_id) or registry().get(integration_id)
     if found is None:
         raise CwcliError(
             ErrorKind.NOT_FOUND, "integration.unknown", f"No integration '{integration_id}'."
@@ -275,15 +287,38 @@ def _view(integ: Integration, rec: dict) -> dict[str, Any]:
         "notices": integ.notices() if integ.notices is not None else [],
         "updated_at": rec.get("updated_at"),
         "updated_by": rec.get("updated_by"),
+        "community": None,
+    }
+
+
+def _community_view(integration_id: str, rec: dict) -> dict[str, Any]:
+    from . import community
+
+    keys = ("url", "ref", "commit", "publisher", "signed_in_with", "installed_at")
+    return {
+        **{k: rec.get(k) for k in keys},
+        "installed_by": rec.get("installed_by"),
+        "updated_at": rec.get("updated_at"),
+        "updated_by": rec.get("updated_by"),
+        "load_error": community.load_error(integration_id),
     }
 
 
 def view(integration_id: str | None = None) -> list[dict[str, Any]]:
     """What the Integrations page shows: never a secret, only whether one is set."""
+    known = registry()
     with _locked():
-        records = _load()["integrations"]
-    out = [_view(i, records.get(i.id) or {}) for i in registry().values()]
-    return [v for v in out if integration_id is None or v["id"] == integration_id]
+        data = _load()
+    records, installed = data["integrations"], data.get("community") or {}
+    out = []
+    for integ in known.values():
+        if integration_id is not None and integ.id != integration_id:
+            continue
+        card = _view(integ, records.get(integ.id) or {})
+        if integ.id in installed:
+            card["community"] = _community_view(integ.id, installed[integ.id])
+        out.append(card)
+    return out
 
 
 def active(integration_id: str) -> tuple[dict[str, Any], dict[str, str]] | None:

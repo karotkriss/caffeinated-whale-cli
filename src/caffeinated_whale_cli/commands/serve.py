@@ -70,7 +70,11 @@ envelope frappe-ui's fetch layer reads natively (``type`` is the core's
   their original guarded behavior until they reload
 * ``POST /api/v1/integrations``             - ``{op: test|configure|disable|action}``:
   test settings, save them (turning on only behind a passing test), turn off, or
-  run a named check such as LDAP's ``lookup_user`` (Admin)
+  run a named check such as LDAP's ``lookup_user``; and the community life cycle
+  (``core.community``): ``community_preview`` (the trust screen for a repository URL
+  and ref), ``community_add`` (installs the reviewed ``commit``),
+  ``community_check``, ``community_update`` (the reviewed newer ``commit``) and
+  ``community_remove`` (Admin)
 * ``POST /api/v1/settings``                 - one settings write (``{"setting":
   <name>, ...}``) over the SAME core functions ``cwcli config`` and ``cwcli axi
   setup`` call: cache clear/enable/disable, search paths add/remove/prune,
@@ -214,6 +218,7 @@ from ..core import apps as core_apps
 from ..core import auto_inspect as core_auto_inspect
 from ..core import backup_store as core_backup_store
 from ..core import bench_ops as core_bench_ops
+from ..core import community as core_community
 from ..core import config as core_config
 from ..core import cred_bridge as core_cred_bridge
 from ..core import daemon_recovery
@@ -264,7 +269,8 @@ SESSION_COOKIE = "cwcli_serve_session"
 # 4: the settings endpoint and the guarded destructive job verbs (Phase 3).
 # 5: the apps catalog (/api/v1/apps, its logo route, the `catalog` SSE event).
 # 7: roles, directory sign-in, and /api/v1/integrations (the S3 target moved there).
-PROTOCOL_VERSION = 7
+# 8: community integrations (the community_* integration ops, a card's community block).
+PROTOCOL_VERSION = 8
 
 # The running process's install fingerprint (core.version.install_fingerprint), set
 # by run_daemon, so a page can tell a daemon running different code.
@@ -334,6 +340,7 @@ _GET_ROLES = {"/api/v1/integrations": "admin", "/api/v1/backups/download": "oper
 # The lock stripe every settings write shares: the config is one TOML file read,
 # modified and written whole, so two concurrent writes would lose one.
 _SETTINGS_LOCK_KEY = "@settings"
+_COMMUNITY_LOCK_KEY = "@community"
 
 # ------------------------------------------------------------------ the web UI
 
@@ -2277,10 +2284,12 @@ class _Handler(BaseHTTPRequestHandler):
         answers the test either way.
         """
         op = str(payload.get("op") or "")
+        by = self._account_name()
+        if op.startswith("community_"):
+            return self._community_post(op, payload, by)
         integration_id = _required_str(payload, "id")
         settings = payload.get("settings")
         secret_values = payload.get("secrets")
-        by = self._account_name()
         if op == "test":
             tested = core_integrations.test(integration_id, settings, secret_values)
             return 200, {"data": {"check": asdict(tested)}}
@@ -2310,7 +2319,44 @@ class _Handler(BaseHTTPRequestHandler):
         raise CwcliError(
             ErrorKind.USAGE,
             "integration.op_invalid",
-            "op must be test, configure, disable or action.",
+            "op must be test, configure, disable, action or a community_ op.",
+        )
+
+    def _community_post(self, op: str, payload: dict, by: str) -> tuple[int, dict]:
+        """Add, update and remove community integrations. Adding and updating install
+        only the ``commit`` the Admin reviewed; every change is audited with ``by``."""
+        ref = payload.get("ref")
+        ref = ref if isinstance(ref, str) else None
+        if op == "community_preview":
+            found = core_community.preview(_required_str(payload, "url"), ref)
+            return 200, {"data": {"preview": found.as_dict()}}
+        if op == "community_check":
+            return 200, {
+                "data": {"check": core_community.check_update(_required_str(payload, "id"))}
+            }
+        with self._action_lock(_COMMUNITY_LOCK_KEY):
+            if op == "community_add":
+                rec = core_community.install(
+                    _required_str(payload, "url"),
+                    ref,
+                    commit=_required_str(payload, "commit"),
+                    by=by,
+                )
+                return 200, {"data": {"integration": core_integrations.view(rec["id"])[0]}}
+            if op == "community_update":
+                done = core_community.update(
+                    _required_str(payload, "id"), commit=_required_str(payload, "commit"), by=by
+                )
+                done["integration"] = core_integrations.view(done["id"])[0]
+                return 200, {"data": done}
+            if op == "community_remove":
+                rec = core_community.remove(_required_str(payload, "id"), by=by)
+                return 200, {"data": {"removed": rec["id"]}}
+        raise CwcliError(
+            ErrorKind.USAGE,
+            "integration.op_invalid",
+            "A community op is community_preview, community_add, community_check, "
+            "community_update or community_remove.",
         )
 
     def _check_updates(self) -> tuple[int, dict]:
