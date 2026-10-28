@@ -2,14 +2,16 @@
 import { reactive } from 'vue'
 import { createJob } from './jobs'
 import { trackJob } from './job-toasts'
+import { refuseBelow } from './session'
 
 export const transferDialog = reactive({ open: false, mode: 'clone', project: null, bench: null, sites: [], pick: false })
 export const receiveDialog = reactive({ open: false })
 
 export function openTransfer({ mode = 'clone', project, bench, sites = [], pick = false }) {
+  if (refuseBelow()) return
   Object.assign(transferDialog, { open: true, mode, project, bench: bench != null ? String(bench) : null, sites: [...sites], pick })
 }
-export function openReceive() { receiveDialog.open = true }
+export function openReceive() { if (!refuseBelow()) receiveDialog.open = true }
 
 // Serving a set is a job: the ticket lands on its page (the running toast links to it)
 // as soon as sendme prints it, and Interrupt stops serving.

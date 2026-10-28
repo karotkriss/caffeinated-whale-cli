@@ -1,10 +1,12 @@
 // The one schedule dialog: opened empty, from a template, from a row (edit) or from a
 // job's page ("Schedule this…", prefilled with that job's verb, target and args).
 import { reactive } from 'vue'
+import { refuseBelow } from './session'
 
 export const scheduleDialog = reactive({ open: false, schedule: null })
 
 export function openSchedule(schedule = null) {
+  if (refuseBelow()) return
   scheduleDialog.schedule = schedule ? JSON.parse(JSON.stringify(schedule)) : null
   scheduleDialog.open = true
 }

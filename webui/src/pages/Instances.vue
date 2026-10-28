@@ -15,6 +15,7 @@ import { fleet, instances, details, publishedRange, countSites, cacheProjects, s
 import { applySetting, settings } from '../data/settings'
 import { openAction, menuOption } from '../data/dialog'
 import { openJob } from '../data/job-dialog'
+import { can } from '../data/session'
 
 onMounted(() => {
   loadUpdates()
@@ -57,7 +58,7 @@ const menu = (i) => [
 
 <template>
   <PageHead title="Instances" :count="instances.length || null">
-    <template #actions>
+    <template v-if="can('operator')" #actions>
       <Button variant="solid" icon-left="lucide-plus" label="New instance" @click="openJob('init')" />
       <!-- Captain note 41: the updates check lives here, as a job; the card badge says the rest. -->
       <Dropdown :options="[{ label: 'Check for updates', icon: 'refresh-cw', onClick: async () => trackJob((await createJob({ verb: 'check-updates', target: {}, args: {} })).id) }]" align="end">

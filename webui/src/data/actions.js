@@ -14,6 +14,8 @@
 // backup gate intact; `consent: true` is sent only after the typed confirmation,
 // and no request can express --no-backup or --force.
 
+import { can, ROLE_LABEL, session } from './session'
+
 const q = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, "'\\''")}'`)
 const benchFlag = (c) => (c.bench != null ? ` --bench ${q(c.bench)}` : '')
 // `bench drop-site` needs the MariaDB root password; blank means the one cwcli
@@ -294,6 +296,8 @@ export const ACTIONS = {
 // depends on them (removing an instance needs a live backup unless the volumes stay).
 export function availability(id, inst, bench, values) {
   const a = ACTIONS[id]
+  const role = id.endsWith('.remove') ? 'admin' : 'operator'
+  if (!a?.read && !can(role)) return { ok: false, role, reason: `Needs the ${ROLE_LABEL[role]} role`, detail: `You are signed in as ${ROLE_LABEL[session.user?.role] === 'Admin' ? 'an' : 'a'} ${ROLE_LABEL[session.user?.role] || 'Viewer'}; ask an Admin if you need this.` }
   const benchUp = ['running', 'degraded'].includes(bench?.overall)
   if (id === 'instance.start' && inst?.container_running) return { ok: false, reason: 'Already running' }
   if (id === 'bench.start' && benchUp) return { ok: false, reason: 'Already running' }

@@ -18,6 +18,7 @@ import { openApp } from '../data/app-panel'
 import { openAction } from '../data/dialog'
 import { loadSiteIcons, refreshSiteIcons, siteIcons } from '../data/site-icons'
 import { openNewSite } from '../data/new-site-dialog'
+import { can } from '../data/session'
 
 onMounted(() => {
   setFocus(null)
@@ -80,7 +81,7 @@ const ctx = (r) => ({ project: r.project, bench: String(r.bench.index), benchNam
 
 <template>
   <PageHead title="Sites" :count="rows.length || null">
-    <template #actions><Button variant="solid" icon-left="lucide-plus" label="New site" @click="openNewSite({ project: project !== 'all' ? project : null })" /></template>
+    <template #actions><Button v-if="can('operator')" variant="solid" icon-left="lucide-plus" label="New site" @click="openNewSite({ project: project !== 'all' ? project : null })" /></template>
   </PageHead>
   <div class="space-y-4 px-3 pb-20 pt-5 sm:px-5">
     <div class="flex flex-wrap items-center gap-2">

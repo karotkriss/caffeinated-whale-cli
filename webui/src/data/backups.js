@@ -25,9 +25,6 @@ export function openBackupSettings(project = null) { backupSettingsDialog.projec
 export async function loadRetention(project) {
   return getJson(`/api/v1/backups/retention?project=${encodeURIComponent(project)}`)
 }
-export async function configureS3(project, values, secretKey) {
-  return postJson('/api/v1/backups/s3', { project, values, ...(secretKey ? { secret_key: secretKey } : {}) })
-}
 export async function loadOffsite(project) {
   return getJson(`/api/v1/backups/offsite?project=${encodeURIComponent(project)}`)
 }

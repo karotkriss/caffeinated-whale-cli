@@ -9,6 +9,7 @@ import { instances, setFocus } from '../data/fleet'
 import { openSchedule, scheduleFromTemplate } from '../data/schedule-dialog'
 import { DAYS, deleteSchedule, enableSchedule, list, loadSchedules, runSchedule, saveScheduleSettings, schedules, templates, upcoming, verbLabel, whenAbs, whenRel } from '../data/schedules'
 import { toast } from 'frappe-ui'
+import { can } from '../data/session'
 
 onMounted(() => { setFocus(null); loadSchedules() })
 const busy = ref('')
@@ -69,7 +70,7 @@ const windowText = (p) => { const w = ((schedules.data || {}).windows || {})[p];
 
 <template>
   <PageHead title="Schedules" :count="list.length || null">
-    <template #actions>
+    <template v-if="can('operator')" #actions>
       <Button variant="subtle" icon-left="lucide-sliders-horizontal" label="Windows and guards…" @click="openSettings" />
       <Dropdown :options="templateItems"><Button variant="subtle" icon-left="lucide-layout-template" label="From a template" icon-right="lucide-chevron-down" /></Dropdown>
       <Button variant="solid" icon-left="lucide-plus" label="New schedule" @click="openSchedule()" />

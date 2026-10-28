@@ -17,6 +17,7 @@ import { openAction } from '../data/dialog'
 import { copyOffsite, openReceive, sendSet } from '../data/transfer'
 import { openBackupSettings, downloadSet, uploadSet } from '../data/backups'
 import { toast } from 'frappe-ui'
+import { can } from '../data/session'
 
 const query = ref('')
 const project = ref('all')
@@ -70,7 +71,7 @@ async function onUpload(ev) {
 <template>
   <PageHead title="Backups" :count="totals.sets || null">
     <template #badge><Badge v-if="totals.failed" size="lg" theme="red" variant="subtle" :label="`${totals.failed} failed`" /></template>
-    <template #actions>
+    <template v-if="can('operator')" #actions>
       <Button variant="subtle" icon-left="lucide-settings-2" label="Retention and schedule…" @click="openBackupSettings(project !== 'all' ? project : null)" />
       <Button variant="subtle" icon-left="lucide-upload" label="Upload a set…" :loading="uploading" @click="uploadInput?.click()" />
       <input ref="uploadInput" type="file" accept=".tar,application/x-tar" class="hidden" @change="onUpload" />

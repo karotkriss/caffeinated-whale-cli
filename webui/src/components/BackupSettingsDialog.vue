@@ -3,7 +3,9 @@
 // retention preview: what the policy keeps and removes right now, with a prune button.
 import { computed, ref, watch } from 'vue'
 import { Alert, Button, Checkbox, Dialog, ErrorMessage, FormControl, Select } from 'frappe-ui'
-import { backupSettingsDialog, loadRetention, saveBackupSettings, configureS3, loadOffsite, sizeText, whenText, REASON_LABEL } from '../data/backups'
+import { backupSettingsDialog, loadRetention, saveBackupSettings, loadOffsite, sizeText, whenText, REASON_LABEL } from '../data/backups'
+import { openSettings } from '../data/settings-dialog'
+import { can } from '../data/session'
 import { instances } from '../data/fleet'
 import { createJob } from '../data/jobs'
 import { trackJob } from '../data/job-toasts'
@@ -15,12 +17,10 @@ const plan = ref(null)
 const saving = ref(false)
 const pruning = ref(false)
 const error = ref(null)
-// Off-site copies: the S3 target (the secret is sent once and stored on the daemon's
-// machine, never echoed back) and the bucket's sets with Fetch for the ones not local.
-const s3 = ref({ enabled: false, endpoint: '', bucket: '', prefix: 'cwcli-backups', region: 'us-east-1', access_key: '', copy_on_backup: true })
-const s3Secret = ref('')
-const s3Saving = ref(false)
-const s3Probe = ref(null)
+// Off-site copies: the bucket is the machine's S3 backup target integration
+// (Settings > Integrations); this instance only chooses whether new backups go there,
+// and lists the bucket's sets with Fetch for the ones not local.
+const offsiteOn = ref(false)
 const offsite = ref(null)
 const offsiteBusy = ref(false)
 const projectOptions = computed(() => instances.value.map((i) => ({ label: i.project, value: i.project })))
@@ -32,6 +32,7 @@ function fill(settings) {
     safety_days: s.safety?.days ?? 14, safety_max: s.safety?.max_per_site ?? 5,
     min_free_gb: s.min_free_gb ?? 20, stale_after_days: s.stale_after_days ?? 7, with_files: s.with_files ?? true,
     schedule_enabled: !!s.schedule?.enabled, daily_at: s.schedule?.daily_at || '02:00', last_run: s.schedule?.last_run || null,
+    copy_on_backup: s.offsite?.copy_on_backup !== false,
   }
 }
 async function refresh() {
@@ -40,27 +41,18 @@ async function refresh() {
   try {
     plan.value = await loadRetention(project.value)
     fill(plan.value.settings)
-    const t = plan.value.settings?.s3_target || {}
-    s3.value = { enabled: !!t.enabled, endpoint: t.endpoint || '', bucket: t.bucket || '', prefix: t.prefix ?? 'cwcli-backups', region: t.region || 'us-east-1', access_key: t.access_key || '', copy_on_backup: t.copy_on_backup !== false }
-    s3Secret.value = ''
-    s3Probe.value = null
+    offsiteOn.value = !!plan.value.offsite_target
     offsite.value = null
-    if (t.enabled) loadOffsiteList()
+    if (offsiteOn.value) loadOffsiteList()
   } catch (e) { error.value = e }
 }
 async function loadOffsiteList() {
   offsiteBusy.value = true
   try { offsite.value = await loadOffsite(project.value) } catch (e) { offsite.value = { error: e.message || String(e), sets: [] } } finally { offsiteBusy.value = false }
 }
-async function saveS3() {
-  s3Saving.value = true
-  error.value = null
-  try {
-    const data = await configureS3(project.value, s3.value, s3Secret.value)
-    s3Secret.value = ''
-    s3Probe.value = data.probe
-    if (data.probe?.ok) loadOffsiteList()
-  } catch (e) { error.value = e } finally { s3Saving.value = false }
+function setUpTarget() {
+  d.open = false
+  openSettings('integrations')
 }
 async function fetchOffsite(key) {
   try {
@@ -92,6 +84,7 @@ async function save() {
       safety: { days: num(f.safety_days), max_per_site: num(f.safety_max) },
       min_free_gb: Math.max(0, parseFloat(f.min_free_gb) || 0), stale_after_days: num(f.stale_after_days, 1), with_files: !!f.with_files,
       schedule: { enabled: !!f.schedule_enabled, daily_at: /^[0-2]\d:[0-5]\d$/.test(f.daily_at) ? f.daily_at : '02:00' },
+      offsite: { copy_on_backup: !!f.copy_on_backup },
     })
     await refresh()
   } catch (e) { error.value = e } finally { saving.value = false }
@@ -138,21 +131,18 @@ async function prune() {
         </div>
       </div>
       <div class="rounded-6 border border-outline-gray-1 p-3">
-        <div class="flex items-center gap-3"><h3 class="text-base font-medium text-ink-gray-8">Off-site copies (S3)</h3><Checkbox v-model="s3.enabled" label="Enabled" /><Checkbox v-model="s3.copy_on_backup" label="Copy every new backup" /></div>
-        <div class="mt-3 grid gap-3 sm:grid-cols-2">
-          <FormControl v-model="s3.endpoint" label="Endpoint" placeholder="https://s3.eu-west-1.amazonaws.com or http://minio:9000" autocomplete="off" />
-          <FormControl v-model="s3.bucket" label="Bucket" autocomplete="off" />
-          <FormControl v-model="s3.prefix" label="Prefix" autocomplete="off" />
-          <FormControl v-model="s3.region" label="Region" autocomplete="off" />
-          <FormControl v-model="s3.access_key" label="Access key" autocomplete="off" />
-          <FormControl v-model="s3Secret" type="password" label="Secret key" :placeholder="s3.access_key ? 'unchanged unless typed' : ''" autocomplete="new-password" />
+        <div class="flex flex-wrap items-center gap-3">
+          <h3 class="text-base font-medium text-ink-gray-8">Off-site copies (S3)</h3>
+          <Checkbox v-if="offsiteOn" v-model="form.copy_on_backup" label="Copy every new backup of this instance" />
+          <span v-if="offsiteOn" class="text-xs text-ink-gray-5">to {{ plan.offsite_target.bucket }} · saved with the settings above</span>
         </div>
-        <p class="mt-2 text-xs text-ink-gray-5">Copies are encrypted on this machine before upload (AES-256-GCM) under a key kept in cwcli's home; export it with <code class="font-mono">cwcli backups key export</code> to restore them elsewhere. The secret key is stored on this machine only and never shown again.</p>
-        <div class="mt-2 flex flex-wrap items-center gap-2">
-          <Button variant="solid" label="Save and test the bucket" :loading="s3Saving" @click="saveS3" />
-          <span v-if="s3Probe" class="text-xs" :class="s3Probe.ok ? 'text-ink-green-6' : 'text-ink-red-6'">{{ s3Probe.ok ? `bucket answers · ${s3Probe.objects} object(s) under the prefix` : s3Probe.error }}</span>
+        <div v-if="!offsiteOn" class="mt-2 flex flex-wrap items-center gap-2">
+          <p class="min-w-0 flex-1 text-p-sm text-ink-gray-6">The S3 backup target is off. It is one bucket for every instance, set up in Settings › Integrations.</p>
+          <Button v-if="can('admin')" label="Set up the S3 backup target" icon-left="lucide-blocks" @click="setUpTarget" />
+          <span v-else class="text-p-sm text-ink-gray-5">Ask an Admin to set it up.</span>
         </div>
-        <div v-if="s3.enabled" class="mt-3 rounded-6 border border-outline-gray-1">
+        <p class="mt-2 text-xs text-ink-gray-5">Copies are encrypted on this machine before upload (AES-256-GCM) under a key kept in cwcli's home; export it with <code class="font-mono">cwcli backups key export</code> to restore them elsewhere.</p>
+        <div v-if="offsiteOn" class="mt-3 rounded-6 border border-outline-gray-1">
           <div class="flex items-center justify-between border-b border-outline-gray-1 bg-surface-gray-1 px-3 py-1.5 text-xs text-ink-gray-5"><span>In the bucket{{ offsite?.sets ? `: ${offsite.sets.length} set${offsite.sets.length === 1 ? '' : 's'}` : '' }}</span><span class="flex gap-1"><Button size="sm" variant="ghost" label="Refresh" :loading="offsiteBusy" @click="loadOffsiteList" /><Button size="sm" variant="ghost" label="Prune off-site now" @click="pruneOffsite" /></span></div>
           <p v-if="offsite?.error" class="px-3 py-2 text-xs text-ink-red-6">{{ offsite.error }}</p>
           <div v-else class="max-h-48 divide-y divide-outline-gray-1 overflow-auto">
