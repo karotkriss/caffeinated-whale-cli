@@ -670,18 +670,6 @@ def s3_prune_cmd(
         console.print(f"  • {d['key']}  [dim]{d['why']}[/dim]", soft_wrap=True)
 
 
-# The same verbs for whichever backup target integration is on (the S3 bucket or a
-# community one); `s3` keeps them for the bucket's own configure and for scripts.
-offsite_app = typer.Typer(
-    help="Encrypted off-site copies on the backup target that is on (S3 or a community one)."
-)
-app.add_typer(offsite_app, name="offsite")
-offsite_app.command("list")(s3_list_cmd)
-offsite_app.command("copy")(s3_copy_cmd)
-offsite_app.command("fetch")(s3_fetch_cmd)
-offsite_app.command("prune")(s3_prune_cmd)
-
-
 @key_app.command("export")
 def key_export_cmd(
     to: Path = typer.Option(..., "--to", help="Write the 32-byte key here (mode 0600).")

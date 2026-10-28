@@ -76,6 +76,8 @@ ENTRY_POINT_GROUP = "cwcli.integrations"
 HOOK_POINTS = ("sign_in", "backup_target")  # the hook points cwcli calls
 _ID = re.compile(r"^[a-z][a-z0-9_-]{1,39}$")
 _RESERVED_IDS = ("local", "host", "api")  # session and schedule-owner sources
+# The test suite installs from local repositories; nothing a user runs sets this.
+_TEST_ONLY_FILE_URLS = "CWCLI_TEST_ONLY_ALLOW_FILE_REPOSITORY_URLS"
 _SIGN_IN_MISSING = "cwcli-community: no sign-in for "
 _AUTH_MARKERS = (
     "terminal prompts disabled",
@@ -133,9 +135,8 @@ def check_url(url: str) -> str:
     """The repository URL, refused when it is not one cwcli fetches."""
     url = (url or "").strip()
     parts = urlsplit(url)
-    if parts.scheme not in ("https", "http", "file") or (
-        parts.scheme != "file" and not parts.hostname
-    ):
+    schemes = ("https", "file") if os.environ.get(_TEST_ONLY_FILE_URLS) == "1" else ("https",)
+    if parts.scheme not in schemes or (parts.scheme != "file" and not parts.hostname):
         raise CwcliError(
             ErrorKind.USAGE,
             "community.url",

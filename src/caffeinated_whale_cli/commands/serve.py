@@ -619,7 +619,10 @@ def _offsite_summary() -> dict | None:
         return None
     summary = {"id": target.integration_id, "name": target.name, "location": target.location}
     for key in ("endpoint", "bucket", "prefix"):
-        value = getattr(target, key, None)
+        try:
+            value = getattr(target, key, None)
+        except CwcliError:
+            continue
         if isinstance(value, str):
             summary[key] = value
     return summary
