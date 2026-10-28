@@ -22,6 +22,7 @@ const project = ref('all')
 const reason = ref('all')
 onMounted(() => { setFocus(null); loadBackups() })
 const data = computed(() => backups.data)
+const paused = computed(() => Object.entries(data.value?.settings || {}).map(([p, s]) => [p, s?.offsite?.paused_legacy]).filter(([p, old]) => old && (project.value === 'all' || p === project.value)))
 const q = computed(() => query.value.trim().toLowerCase())
 const sets = computed(() => allSets.value.filter((s) =>
   (project.value === 'all' || s.project === project.value) &&
@@ -73,6 +74,7 @@ async function onUpload(ev) {
       <div class="bg-surface-elevation-1 px-4 py-3"><div class="text-sm text-ink-gray-5">Failed verification</div><div class="mt-1 text-2xl font-semibold tabular-nums" :class="totals.failed ? 'text-ink-red-6' : 'text-ink-gray-9'">{{ data ? totals.failed : '…' }}</div><div class="mt-0.5 text-xs text-ink-gray-5">unverified sets are never pruned; they stay until you delete them by hand</div></div>
       <div class="bg-surface-elevation-1 px-4 py-3"><div class="text-sm text-ink-gray-5">Store disk</div><div class="mt-1 text-2xl font-semibold tabular-nums" :class="data?.budget?.warn ? 'text-ink-amber-6' : 'text-ink-gray-9'">{{ data?.budget ? `${data.budget.free_gb} GB free` : '…' }}</div><div class="mt-0.5 truncate text-xs text-ink-gray-5" :title="data?.budget?.root">{{ data?.budget ? `${data.budget.store_gb} GB used · floor ${data.budget.min_free_gb} GB · ${data.budget.root}` : '' }}</div></div>
     </div>
+    <Alert v-for="[p, old] in paused" :key="p" theme="amber" :title="`Off-site copies of ${p} are paused`" :description="`Its old S3 target ${old.endpoint || '-'} (bucket ${old.bucket || '-'}) was not carried over when the S3 backup target moved into Settings > Integrations. Set the bucket up there, then turn copies back on in ${p}'s Retention and schedule.`" />
     <Alert v-if="data?.budget?.warn" theme="amber" title="The store's disk is under its floor" :description="`${data.budget.free_gb} GB free, floor ${data.budget.min_free_gb} GB. Only the newest set per site is kept locally until space returns; off-machine copies carry the rest (phase 3).`" />
 
     <div class="space-y-4">

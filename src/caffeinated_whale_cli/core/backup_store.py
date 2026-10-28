@@ -328,6 +328,8 @@ def save_settings(project: str, values: dict[str, Any]) -> dict[str, Any]:
             current[k].update(v)
         else:
             current[k] = v
+    if current["offsite"].get("copy_on_backup") is True:
+        current["offsite"].pop("paused_legacy", None)
     path = _settings_path(project)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(current, indent=2), encoding="utf-8")
@@ -819,14 +821,19 @@ def legacy_s3_target() -> tuple[dict[str, Any], str, Path] | None:
     return None
 
 
-def keep_legacy_copy_choices(adopted: dict[str, Any]) -> None:
+def keep_legacy_copy_choices(adopted: dict[str, Any], adopted_secret: Path) -> None:
     """Carry each instance's own pre-integration choice into ``offsite.copy_on_backup``
     once the ``adopted`` bucket becomes the machine's target: an instance keeps copying
-    only when its S3 target was on, copying new backups, and that same bucket."""
+    only when its S3 target was on, copying new backups, and that same bucket. An
+    instance whose target was on but named another bucket is paused, never silently:
+    ``offsite.paused_legacy`` names its old endpoint and bucket until its copies are
+    turned on again. Every other instance's plaintext secret file is removed once its
+    settings are written (credentials are re-entered through the integration)."""
     try:
         projects = sorted(p for p in PROJECTS_DIR.iterdir() if p.is_dir())
     except OSError:
         return
+    same = ("endpoint", "bucket", "prefix")
     for project_dir in projects:
         path = _settings_path(project_dir.name)
         try:
@@ -838,15 +845,34 @@ def keep_legacy_copy_choices(adopted: dict[str, Any]) -> None:
         if not isinstance(stored, dict) or "offsite" in stored:
             continue
         cfg = stored.get("s3_target")
-        copies = (
-            isinstance(cfg, dict)
-            and bool(cfg.get("enabled"))
-            and cfg.get("copy_on_backup", True) is not False
-            and all(cfg.get(k) == adopted.get(k) for k in ("endpoint", "bucket", "prefix"))
-        )
-        stored["offsite"] = {"copy_on_backup": copies}
+        cfg = cfg if isinstance(cfg, dict) else {}
+        on = bool(cfg.get("enabled"))
+        adopted_here = all(cfg.get(k) == adopted.get(k) for k in same)
+        offsite: dict[str, Any] = {
+            "copy_on_backup": on and adopted_here and cfg.get("copy_on_backup", True) is not False
+        }
+        if on and not adopted_here:
+            offsite["paused_legacy"] = {k: str(cfg.get(k) or "") for k in same}
+        stored["offsite"] = offsite
         path.write_text(json.dumps(stored, indent=2), encoding="utf-8")
         shared_home.secure_file_shared_only(path)
+        secret_file = cwcli_home() / "backups" / "keys" / f"s3-{project_dir.name}.secret"
+        if secret_file != adopted_secret:
+            secret_file.unlink(missing_ok=True)
+
+
+def paused_legacy() -> dict[str, dict[str, Any]]:
+    """Each instance whose pre-integration S3 target was not adopted -> that target."""
+    try:
+        projects = sorted(p.name for p in PROJECTS_DIR.iterdir() if p.is_dir())
+    except OSError:
+        return {}
+    out = {}
+    for project in projects:
+        old = settings(project)["offsite"].get("paused_legacy")
+        if isinstance(old, dict):
+            out[project] = old
+    return out
 
 
 def _crypto_context(bset: BackupSet, filename: str) -> bytes:

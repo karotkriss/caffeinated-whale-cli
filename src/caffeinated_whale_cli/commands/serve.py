@@ -139,8 +139,9 @@ could never sign in. ``OPTIONS`` returns no data and dispatches no action.
 
 **Roles.** Every request is held to the least role it needs (``_post_role``,
 ``_GET_ROLES``): a Viewer reads, an Operator also runs the fleet, an Admin also
-changes settings and integrations and starts the ``ADMIN_VERBS`` jobs. The bearer
-token and the local ``admin`` account are Admins; a directory session
+changes settings and integrations and starts the ``core.accounts.admin_only`` jobs
+(a schedule running one is saved, enabled or run by hand only by an Admin). The
+bearer token and the local ``admin`` account are Admins; a directory session
 (``core.directory``) carries the role its groups gave it at sign-in. A local
 account's name always signs in locally, so the local ``admin`` stays the way in
 while directory sign-in is on.
@@ -327,7 +328,6 @@ SETTINGS = frozenset(
     }
 )
 # Job verbs only an Admin may start: removals, and replacing cwcli itself.
-ADMIN_VERBS = frozenset({"rm", "rm-site", "rm-bench", "move-sites", "delete-backup", "self-update"})
 # The least role a GET needs; anything not named here is a read every role may make.
 _GET_ROLES = {"/api/v1/integrations": "admin", "/api/v1/backups/download": "operator"}
 
@@ -958,15 +958,22 @@ class _Handler(BaseHTTPRequestHandler):
         if path in ("/api/v1/settings", "/api/v1/integrations"):
             return "admin"
         if path == "/api/v1/jobs":
-            return "admin" if payload.get("verb") in ADMIN_VERBS else "operator"
+            admin = core_accounts.admin_only(payload.get("verb"), payload.get("args"))
+            return "admin" if admin else "operator"
         if path.startswith("/api/v1/jobs/") and path.rsplit("/", 1)[-1] in ("retry", "continue"):
             job_id = unquote(path[len("/api/v1/jobs/") :]).rsplit("/", 1)[0]
             try:
-                verb = core_jobs.read_job(job_id).get("verb")
+                job = core_jobs.read_job(job_id)
             except CwcliError:
-                verb = None
-            return "admin" if verb in ADMIN_VERBS else "operator"
-        # Schedules need no check of their own: no Admin-only verb is schedulable.
+                job = {}
+            admin = core_accounts.admin_only(job.get("verb"), job.get("args"))
+            return "admin" if admin else "operator"
+        if path == "/api/v1/schedules" and payload.get("op") in ("save", "enable", "run"):
+            sched = payload.get("schedule") if payload.get("op") == "save" else None
+            sid = sched.get("id") if isinstance(sched, dict) else payload.get("id")
+            touched = (sched, core_schedules.get(str(sid or "")))
+            admin = any(isinstance(s, dict) and core_schedules.needs_admin(s) for s in touched)
+            return "admin" if admin else "operator"
         return "operator"
 
     def _change_password(self, raw: bytes) -> None:
@@ -1306,10 +1313,11 @@ class _Handler(BaseHTTPRequestHandler):
             return
         try:
             payload = _parse_action_body(raw)
+            needed = self._post_role(parsed.path, payload)
         except CwcliError as e:
             self._send_core_error(e)
             return
-        if self._refuse_role(self._post_role(parsed.path, payload)):
+        if self._refuse_role(needed):
             return
         try:
             if parsed.path == "/api/v1/actions":
@@ -1415,7 +1423,9 @@ class _Handler(BaseHTTPRequestHandler):
                 raise CwcliError(
                     ErrorKind.USAGE, "schedule.payload_invalid", "schedule must be an object."
                 )
-            return 200, {"data": core_schedules.save(sched, by=by)}
+            acct = self._session_account()
+            source = acct.source if acct is not None else "api"
+            return 200, {"data": core_schedules.save(sched, by=by, by_source=source)}
         sid = str(payload.get("id") or "")
         if op == "delete":
             core_schedules.delete(sid)
@@ -2729,7 +2739,8 @@ def backups_snapshot(project: str | None = None) -> dict:
             except (ValueError, OverflowError):
                 age_days = None
             last_good[key] = {"key": b.key, "created_at": b.created_at, "age_days": age_days}
-    projects = sorted({b.project for b in sets} | ({project} if project else set()))
+    paused = {project} if project else set(core_backup_store.paused_legacy())
+    projects = sorted({b.project for b in sets} | paused)
     settings = {p: core_backup_store.settings(p) for p in projects}
     drills: dict[str, dict] = {}
     for b in sets:

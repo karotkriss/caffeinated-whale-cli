@@ -2212,7 +2212,8 @@ With LDAP / Active Directory sign-in turned on (Settings > Integrations, below),
 **Roles:** every signed-in person is an Admin, an Operator or a Viewer, and the daemon checks each request against the role it needs.
 A Viewer reads everything the UI shows except the contents of backup sets (no download).
 An Operator also runs the fleet: lifecycle actions, jobs, backups, transfers and schedules.
-An Admin also changes Settings and Integrations, removes instances, benches, sites and backup sets, and updates cwcli itself.
+An Admin also changes Settings and Integrations, updates cwcli itself, and runs everything that destroys data or code: removing or moving instances, benches, sites and backup sets, restoring a set over a site, pruning local or off-site backups, and checking out an app discarding local changes.
+A schedule that runs one of those (a prune) is created, changed, enabled or run by hand only by an Admin, and each scheduled run checks that the Admin who last saved it is still an Admin (a directory user is looked up in the directory again); otherwise the run is skipped and the schedule shows why.
 The local `admin` account and a programmatic client holding the bearer token are Admins; a directory user's role comes from their directory groups.
 The page hides what a role cannot do, and a request beyond the role is refused with `auth.role_forbidden`.
 Programmatic clients (scripts, the self-update restart) keep using the bearer token in `CWCLI_SERVE_TOKEN`; nothing about a sign-in is ever in a URL.
@@ -2250,6 +2251,9 @@ Two official integrations ship now; community integrations (installable packages
   Saving the settings or turning sign-in off signs every directory user out.
 - **S3 backup target:** one bucket (AWS, MinIO, Garage, Ceph) for every instance's encrypted off-site backup copies; the test lists the bucket and creates it when it does not exist.
   Each instance still chooses whether its new backups are copied there (Backups > Retention and schedule, or `cwcli backups settings --copy-on-backup/--no-copy-on-backup`).
+  Upgrading from a version that set an S3 bucket per instance: cwcli turns the first such bucket (by instance name) into this integration once, and only the instances that were copying to that same bucket keep copying.
+  Copies of an instance that used a different bucket are paused, never silently: the S3 card here and the Backups page name the instance and its old endpoint and bucket until its copies are turned back on.
+  Every per-instance plaintext secret file (`~/.cwcli/backups/keys/s3-<instance>.secret`) is removed; type the secret key again in this integration if you set up that bucket here.
   `cwcli backups s3 configure` sets up the same integration from a terminal.
 
 **Honest states:** the UI distinguishes `unknown` (not probed) from `offline`,

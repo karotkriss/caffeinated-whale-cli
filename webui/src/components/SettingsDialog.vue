@@ -335,6 +335,7 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
                 </div>
                 <div class="mt-1 text-base leading-5 text-ink-gray-6">{{ i.description }}</div>
                 <div v-if="i.state !== 'off'" class="mt-1 text-sm leading-5" :class="i.state === 'on' ? 'text-ink-gray-5' : 'text-ink-red-6'">{{ stateLine(i) }}</div>
+                <div v-for="n in i.notices || []" :key="n" class="mt-1 text-sm leading-5 text-ink-amber-6">{{ n }}</div>
               </div>
               <div class="flex shrink-0 items-center gap-2">
                 <Badge size="sm" variant="subtle" :theme="STATE[i.state]?.theme" :label="STATE[i.state]?.label" />

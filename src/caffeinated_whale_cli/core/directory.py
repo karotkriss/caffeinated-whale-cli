@@ -320,6 +320,17 @@ def lookup_user(settings: dict, secrets: dict, args: dict) -> dict:
     }
 
 
+def current_role(username: str) -> str | None:
+    """The role ``username`` would sign in with now, without a password, or None (not
+    found, disabled, outside the allowed groups, or directory sign-in off). Raises
+    ``CwcliError`` when the directory cannot be asked."""
+    found = integrations.active("ldap")
+    if found is None:
+        return None
+    out = lookup_user(*found, {"username": username})
+    return out["role"] if out.get("allowed") else None
+
+
 def _refused(code: str, message: str) -> CwcliError:
     return CwcliError(ErrorKind.PRECONDITION, code, message)
 

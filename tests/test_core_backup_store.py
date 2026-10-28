@@ -463,13 +463,22 @@ class TestOffsite:
             d.mkdir(parents=True)
             if cfg is not None:
                 (d / "backups.json").write_text(json.dumps({"s3_target": cfg}))
-        secret = home / ".cwcli" / "backups" / "keys" / "s3-erp.secret"
-        secret.parent.mkdir(parents=True)
-        secret.write_text("legacy-secret")
+        keys = home / ".cwcli" / "backups" / "keys"
+        keys.mkdir(parents=True)
+        for name in ("erp", "hr", "other"):
+            (keys / f"s3-{name}.secret").write_text(f"{name}-secret")
         monkeypatch.setattr(integrations, "_legacy_checked", set())
         assert store.offsite_target("erp").bucket == "old"
         assert store.copies_on_backup("erp")
         assert not any(store.copies_on_backup(p) for p in ("hr", "other", "plain"))
+        assert not list(keys.iterdir())  # no plaintext secret is left behind
+        assert store.paused_legacy() == {
+            "other": {"endpoint": "http://minio:9000", "bucket": "elsewhere", "prefix": ""}
+        }
+        (notice,) = integrations.view("s3")[0]["notices"]
+        assert "other" in notice and "elsewhere" in notice and "paused" in notice
+        store.save_settings("other", {"offsite": {"copy_on_backup": True}})
+        assert store.paused_legacy() == {} and integrations.view("s3")[0]["notices"] == []
 
     def test_a_copy_fetches_back_into_a_verified_set(self, bucket, home):
         bset = store.adopt_dir("erp", "shop.localhost", _archive_dir(home))
