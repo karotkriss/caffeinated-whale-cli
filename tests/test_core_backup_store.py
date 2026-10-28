@@ -448,6 +448,29 @@ class TestOffsite:
         assert "legacy-secret" not in (home / ".cwcli" / "integrations.json").read_text()
         assert "s3_target" not in store.settings("erp")
 
+    def test_adoption_keeps_copying_only_where_an_instance_copied_to_that_bucket(
+        self, home, monkeypatch
+    ):
+        target = {"enabled": True, "endpoint": "http://minio:9000", "bucket": "old"}
+        legacy = {
+            "erp": {**target, "access_key": "ak"},
+            "hr": {**target, "copy_on_backup": False},
+            "other": {**target, "bucket": "elsewhere"},
+            "plain": None,
+        }
+        for name, cfg in legacy.items():
+            d = home / ".cwcli" / "projects" / name
+            d.mkdir(parents=True)
+            if cfg is not None:
+                (d / "backups.json").write_text(json.dumps({"s3_target": cfg}))
+        secret = home / ".cwcli" / "backups" / "keys" / "s3-erp.secret"
+        secret.parent.mkdir(parents=True)
+        secret.write_text("legacy-secret")
+        monkeypatch.setattr(integrations, "_legacy_checked", set())
+        assert store.offsite_target("erp").bucket == "old"
+        assert store.copies_on_backup("erp")
+        assert not any(store.copies_on_backup(p) for p in ("hr", "other", "plain"))
+
     def test_a_copy_fetches_back_into_a_verified_set(self, bucket, home):
         bset = store.adopt_dir("erp", "shop.localhost", _archive_dir(home))
         store.offsite_copy(bset)

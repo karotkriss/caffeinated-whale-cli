@@ -93,6 +93,9 @@ class Integration:
     )
     # Runs after the integration is turned on, off, or changed.
     on_change: Callable[[], object] | None = None
+    # Settings naming where the secrets are sent: a change to any of them needs the
+    # secrets typed again, so a stored one never goes to a server the request names.
+    secrets_bound_to: tuple[str, ...] = ()
 
     def secret_keys(self) -> tuple[str, ...]:
         return tuple(f.key for f in self.fields if f.kind == "secret")
@@ -286,10 +289,25 @@ def _candidate(
             ErrorKind.USAGE, "integration.secrets", "secrets must be an object of strings."
         )
     known = {f.key for f in integ.fields if f.kind != "secret"}
-    merged = {**(rec.get("settings") or {}), **{k: v for k, v in (settings or {}).items()}}
+    stored = rec.get("settings") or {}
+    merged = {**stored, **{k: v for k, v in (settings or {}).items()}}
     merged = integ.normalize({k: v for k, v in merged.items() if k in known})
+    typed = {k: v for k, v in (secrets or {}).items() if k in integ.secret_keys() and v}
+    moved = [
+        f.label
+        for f in integ.fields
+        if f.key in integ.secrets_bound_to and merged.get(f.key) != stored.get(f.key)
+    ]
     plain = _secrets(integ, rec)
-    plain.update({k: v for k, v in (secrets or {}).items() if k in integ.secret_keys() and v})
+    if moved:
+        dropped = [f.label for f in integ.fields if f.key in plain and f.key not in typed]
+        if dropped:
+            raise CwcliError(
+                ErrorKind.USAGE,
+                "integration.secret_retype",
+                f"A changed {', '.join(moved)} needs {', '.join(dropped)} typed again.",
+            )
+    plain.update(typed)
     missing = [
         f.label
         for f in integ.fields
@@ -489,14 +507,16 @@ S3_INTEGRATION = Integration(
     ),
     normalize=_s3_normalize,
     test=_s3_test,
+    secrets_bound_to=("endpoint",),
 )
 
 
 def _adopt_legacy_s3() -> tuple[dict, Path] | None:
     """The bucket an instance's backup settings named before the S3 target became an
     integration: the first instance (by name) with copies on and a stored secret is
-    adopted, on, and its plaintext secret file is removed. Runs once - an ``s3``
-    record, on or off, means it has run."""
+    adopted, on, and its plaintext secret file is removed; only the instances that were
+    copying to that bucket keep copying. Runs once - an ``s3`` record, on or off, means
+    it has run."""
     from . import backup_store
 
     found = backup_store.legacy_s3_target()
@@ -515,4 +535,5 @@ def _adopt_legacy_s3() -> tuple[dict, Path] | None:
         }
     except CwcliError:
         return None
+    backup_store.keep_legacy_copy_choices(settings)
     return rec, secret_file

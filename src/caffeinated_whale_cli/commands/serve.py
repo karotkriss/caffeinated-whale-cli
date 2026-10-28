@@ -327,7 +327,7 @@ SETTINGS = frozenset(
     }
 )
 # Job verbs only an Admin may start: removals, and replacing cwcli itself.
-ADMIN_VERBS = frozenset({"rm", "rm-site", "rm-bench", "delete-backup", "self-update"})
+ADMIN_VERBS = frozenset({"rm", "rm-site", "rm-bench", "move-sites", "delete-backup", "self-update"})
 # The least role a GET needs; anything not named here is a read every role may make.
 _GET_ROLES = {"/api/v1/integrations": "admin", "/api/v1/backups/download": "operator"}
 

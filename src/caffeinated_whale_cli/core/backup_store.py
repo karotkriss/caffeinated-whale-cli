@@ -819,6 +819,36 @@ def legacy_s3_target() -> tuple[dict[str, Any], str, Path] | None:
     return None
 
 
+def keep_legacy_copy_choices(adopted: dict[str, Any]) -> None:
+    """Carry each instance's own pre-integration choice into ``offsite.copy_on_backup``
+    once the ``adopted`` bucket becomes the machine's target: an instance keeps copying
+    only when its S3 target was on, copying new backups, and that same bucket."""
+    try:
+        projects = sorted(p for p in PROJECTS_DIR.iterdir() if p.is_dir())
+    except OSError:
+        return
+    for project_dir in projects:
+        path = _settings_path(project_dir.name)
+        try:
+            stored = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            stored = {}
+        except (OSError, ValueError):
+            continue
+        if not isinstance(stored, dict) or "offsite" in stored:
+            continue
+        cfg = stored.get("s3_target")
+        copies = (
+            isinstance(cfg, dict)
+            and bool(cfg.get("enabled"))
+            and cfg.get("copy_on_backup", True) is not False
+            and all(cfg.get(k) == adopted.get(k) for k in ("endpoint", "bucket", "prefix"))
+        )
+        stored["offsite"] = {"copy_on_backup": copies}
+        path.write_text(json.dumps(stored, indent=2), encoding="utf-8")
+        shared_home.secure_file_shared_only(path)
+
+
 def _crypto_context(bset: BackupSet, filename: str) -> bytes:
     return f"{bset.project}/{bset.site}/{bset.id}/{filename}".encode()
 
