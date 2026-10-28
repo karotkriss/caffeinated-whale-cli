@@ -834,10 +834,10 @@ class TestInitInstance:
             ]
         ]
 
-    def test_pull_and_up_still_run_when_a_sibling_container_is_up_but_frappe_is_not(
+    def test_up_still_runs_when_a_sibling_container_is_up_but_frappe_is_not(
         self, monkeypatch, tmp_path, patched
     ):
-        """The skip is scoped to the frappe SERVICE, not "any container up".
+        """The running-frappe skip is scoped to the frappe SERVICE, not "any container up".
 
         A stopped frappe beside a running mariadb/redis must still go through
         compose to come back up - skipping there would leave frappe down.
@@ -850,7 +850,45 @@ class TestInitInstance:
         result = core_init.init_instance(PROJECT, port=18000)
 
         assert result.status is Status.OK
-        assert [c["cmd"][-1] for c in s.host_calls] == ["--quiet", "-d"]
+        assert [c["cmd"][-3:] for c in s.host_calls] == [["up", "-d", "--no-recreate"]]
+
+    def test_a_stopped_instance_is_started_without_pulling_or_recreating(
+        self, monkeypatch, tmp_path, patched
+    ):
+        """Re-initializing a STOPPED instance to reuse its bench must start its
+        containers as they are.
+
+        frappe/bench tags are re-pushed upstream, so `pull` can move the pinned
+        tag to an image with different pyenv patch versions, and a plain `up -d`
+        then recreates frappe on it: /home/frappe reverts and the bench venv's
+        env/bin/python dangles (the reported defect). `--no-recreate` also covers
+        a tag another instance's pull already moved.
+        """
+        events: list = []
+        stopped = [
+            SimpleNamespace(status="exited", labels={"com.docker.compose.service": service})
+            for service in core_init._EXPECTED_COMPOSE_SERVICES
+        ]
+        s = instance_setup(monkeypatch, tmp_path, project_containers=stopped)
+
+        result = core_init.init_instance(PROJECT, port=18000, on_event=events.append)
+
+        assert result.status is Status.OK
+        assert [c["cmd"] for c in s.host_calls] == [
+            [
+                "docker",
+                "compose",
+                "-p",
+                PROJECT,
+                "-f",
+                "docker-compose.yml",
+                "up",
+                "-d",
+                "--no-recreate",
+            ]
+        ]
+        notices = [e for e in events if isinstance(e, core_init.InitNotice)]
+        assert any(n.code == "instance.existing" for n in notices)
 
     def test_a_stopped_instance_still_gets_the_port_check(self, monkeypatch, tmp_path, patched):
         """The skip is scoped to a RUNNING project. A stopped one holds no ports, so

@@ -2804,7 +2804,9 @@ def axi_init(
     host on a memory-constrained machine - serialize them. Adding a bench to an
     already-running instance never disturbs it or its other benches: the frappe
     container is never pulled, recreated, or restarted, so every already-serving
-    bench keeps running throughout.
+    bench keeps running throughout. Re-running against a stopped instance starts
+    its existing containers as they are, without pulling images or recreating
+    them, so its benches keep their Python environments.
 
     After the bench+site is created, dev services start by default (reusing the
     same `core.start` behind `cwcli start`/`axi start`), so this leaves a running
