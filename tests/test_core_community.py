@@ -152,6 +152,16 @@ info.mkdir()
     "[" + g + "]\\n" + "".join(k + " = " + v + "\\n" for k, v in m.items())
     for g, m in project.get("entry-points", {}).items()
 ))
+(info / "RECORD").write_text("".join(
+    p.relative_to(target).as_posix() + ",,\\n" for p in target.rglob("*") if p.is_file()
+))
+for dep in project.get("dependencies", []):
+    (target / dep).mkdir()
+    (target / dep / "__init__.py").write_text("")
+    dep_info = target / (dep + "-1.dist-info")
+    dep_info.mkdir()
+    (dep_info / "METADATA").write_text("Metadata-Version: 2.1\\nName: " + dep + "\\nVersion: 1\\n")
+    (dep_info / "RECORD").write_text(dep + "/__init__.py,,\\n")
 """
 
 
@@ -396,6 +406,37 @@ class TestInstall:
         check, view = integrations.configure("hello", *ANA, enable=True)
         assert check is not None and check.ok and check.message == "hello from 1"
         assert view["state"] == "on"
+
+
+    def test_two_packages_that_ship_the_same_module_cannot_both_install(self, home, repo):
+        community.install(_url(repo), commit=_write(repo))
+        other = _second_repo(home, "other")
+        _write(other, iid="other")
+        (other / "src" / "cwcli_hello").mkdir()
+        (other / "src" / "cwcli_hello" / "__init__.py").write_text("")
+        _git(other, "add", "-A")
+        _git(other, "commit", "-qm", "ships cwcli_hello too")
+        found = community.preview(_url(other))
+        with pytest.raises(CwcliError) as e:
+            community.install(found.url, commit=found.commit)
+        assert e.value.code == "community.module_taken"
+        assert "cwcli_hello" in e.value.message and "'hello'" in e.value.message
+        assert sorted(community.records()) == ["hello"]
+        assert community.load_error("hello") is None
+        assert [p.name for p in community.root().iterdir() if p.name != ".pip"] == [
+            community.record("hello")["dir"]
+        ]
+
+    def test_a_dependency_both_packages_bring_is_not_a_conflict(self, home, repo):
+        for path, iid in ((repo, "hello"), (_second_repo(home, "other"), "other")):
+            _write(path, iid=iid)
+            text = (path / "pyproject.toml").read_text()
+            (path / "pyproject.toml").write_text(
+                text.replace("[project.entry-points", 'dependencies = ["shared"]\n\n[project.entry-points')
+            )
+            _git(path, "commit", "-qam", "depends on shared")
+            community.install(_url(path), commit=_git(path, "rev-parse", "HEAD"))
+        assert sorted(community.records()) == ["hello", "other"]
 
 
 class TestUpdate:
@@ -896,6 +937,46 @@ class TestHookPoints:
         summary = serve._offsite_summary()
         assert summary is not None and summary["error"]
         assert summary["name"] == "The backup target"
+
+
+class TestCliShowsWhatIsDeclared:
+    """``cwcli integrations`` prints community text and cwcli's own messages verbatim:
+    a declaration is never read as Rich markup."""
+
+    def _run(self, *args):
+        from typer.testing import CliRunner
+
+        from caffeinated_whale_cli.commands import integrations as cmd
+
+        return CliRunner().invoke(cmd.app, list(args))
+
+    def test_markup_in_a_declaration_is_shown_as_written(self, home, repo):
+        _write(repo)
+        text = (repo / "pyproject.toml").read_text()
+        text = text.replace('name = "Hello hello"', 'name = "Hello [/x] [bold green]hi"')
+        text = text.replace(
+            'publisher = "Example Org"', 'publisher = "[link=https://evil.example]Frappe[/link]"'
+        )
+        (repo / "pyproject.toml").write_text(text)
+        _git(repo, "commit", "-qam", "markup")
+        done = self._run("add", _url(repo), "--yes")
+        assert done.exit_code == 0, done.output
+        assert "Hello [/x] [bold green]hi" in done.output
+        assert "[link=https://evil.example]Frappe[/link]" in done.output
+        listed = self._run("list")
+        assert "Hello [/x] [bold green]hi" in listed.output
+        assert "[link=https://evil.example]Frappe[/link]" in listed.output
+
+    def test_an_error_naming_a_toml_table_keeps_it(self, home, repo):
+        _write(repo)
+        text = (repo / "pyproject.toml").read_text()
+        (repo / "pyproject.toml").write_text(
+            text.replace('[project.entry-points."cwcli.integrations"]', "[x]")
+        )
+        _git(repo, "commit", "-qam", "no entry points")
+        done = self._run("add", _url(repo), "--yes")
+        assert done.exit_code == 1
+        assert '[project.entry-points."cwcli.integrations"]' in done.output
 
 
 def test_the_verifier_runs_in_its_own_process(home, repo):

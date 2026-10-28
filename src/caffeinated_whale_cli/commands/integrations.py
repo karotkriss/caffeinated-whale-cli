@@ -16,6 +16,7 @@ import os
 from datetime import datetime
 
 import typer
+from rich.markup import escape
 
 from ..core import community as core_community
 from ..core import integrations as core_integrations
@@ -33,9 +34,9 @@ _WARNING = (
 
 
 def _fail(e: CwcliError) -> None:
-    stderr_console.print(f"[bold red]Error:[/bold red] {e.message}", soft_wrap=True)
+    stderr_console.print(f"[bold red]Error:[/bold red] {escape(e.message)}", soft_wrap=True)
     if e.hint:
-        stderr_console.print(e.hint, soft_wrap=True)
+        stderr_console.print(escape(e.hint), soft_wrap=True)
     raise typer.Exit(code=1)
 
 
@@ -57,14 +58,21 @@ def _require_admin() -> None:
 
 
 def _show_declaration(decl: dict, url: str, ref: str | None, commit: str) -> None:
-    console.print(f"[bold]{decl['name']}[/bold]  [yellow]Community, not reviewed[/yellow]")
-    console.print(f"  publisher:   {decl['publisher']}", soft_wrap=True)
-    console.print(f"  description: {decl['description']}", soft_wrap=True)
-    console.print(f"  provides:    {', '.join(decl['provides']) or 'no hook points'}")
-    console.print(f"  id:          {decl['id']}  (package {decl['project']})")
-    console.print(f"  repository:  {url}", soft_wrap=True)
-    console.print(f"  ref:         {ref or 'default branch'}")
-    console.print(f"  commit:      {commit}")
+    # Everything below is the repository's own text: printed as written, never markup.
+    console.print(
+        f"[bold]{escape(decl['name'])}[/bold]  [yellow]Community, not reviewed[/yellow]",
+        soft_wrap=True,
+    )
+    for label, value in (
+        ("publisher", decl["publisher"]),
+        ("description", decl["description"]),
+        ("provides", ", ".join(decl["provides"]) or "no hook points"),
+        ("id", f"{decl['id']}  (package {decl['project']})"),
+        ("repository", url),
+        ("ref", ref or "default branch"),
+        ("commit", commit),
+    ):
+        console.print(f"  {label + ':':<13}{escape(value)}", soft_wrap=True)
 
 
 def _read_with(signed_in_with: str | None, url: str) -> str:
@@ -87,19 +95,25 @@ def list_cmd(as_json: bool = typer.Option(False, "--json", help="Print JSON.")) 
         return
     for card in cards:
         badge = "Official" if card["publisher"] == "official" else "Community, not reviewed"
-        console.print(f"[bold]{card['id']}[/bold]  {card['name']}  ({badge})  {card['state']}")
+        console.print(
+            f"[bold]{escape(card['id'])}[/bold]  {escape(card['name'])}  ({badge})  "
+            f"{card['state']}",
+            soft_wrap=True,
+        )
         community = card.get("community")
         if community:
             when = datetime.fromtimestamp(community["installed_at"]).strftime("%Y-%m-%d %H:%M")
             console.print(
-                f"  {community['url']} @ {community['commit'][:12]} "
-                f"({community.get('ref') or 'default branch'}) · by {community['publisher']} "
-                f"· installed {when} by {community.get('installed_by') or '-'}",
+                escape(
+                    f"  {community['url']} @ {community['commit'][:12]} "
+                    f"({community.get('ref') or 'default branch'}) · by {community['publisher']} "
+                    f"· installed {when} by {community.get('installed_by') or '-'}"
+                ),
                 soft_wrap=True,
             )
             if community.get("load_error"):
                 stderr_console.print(
-                    f"  [red]does not load:[/red] {community['load_error']}", soft_wrap=True
+                    f"  [red]does not load:[/red] {escape(community['load_error'])}", soft_wrap=True
                 )
 
 
@@ -118,7 +132,9 @@ def add_cmd(
         _fail(e)
     decl = found.as_dict()["declaration"]
     _show_declaration(decl, found.url, found.ref, found.commit)
-    console.print(f"  sign-in:     {_read_with(found.signed_in_with, found.url)}")
+    console.print(
+        f"  sign-in:     {escape(_read_with(found.signed_in_with, found.url))}", soft_wrap=True
+    )
     console.print(f"[yellow]{_WARNING}[/yellow]", soft_wrap=True)
     confirm_or_exit(
         f"Install {decl['name']} at {found.commit[:12]}?",
@@ -130,7 +146,7 @@ def add_cmd(
     except CwcliError as e:
         _fail(e)
     console.print(
-        f"[green]✓[/green] {rec['name']} installed at {rec['commit'][:12]}. It is off; turn it "
+        f"[green]✓[/green] {escape(rec['name'])} installed at {rec['commit'][:12]}. It is off; turn it "
         "on in Settings > Integrations.",
         soft_wrap=True,
     )
@@ -189,7 +205,7 @@ def remove_cmd(
         rec = core_community.record(integration_id)
     except CwcliError as e:
         _fail(e)
-    console.print(f"{rec['name']} ({rec['url']} @ {rec['commit'][:12]})", soft_wrap=True)
+    console.print(escape(f"{rec['name']} ({rec['url']} @ {rec['commit'][:12]})"), soft_wrap=True)
     confirm_or_exit(
         f"Remove {integration_id} with its settings and secrets?",
         assume_yes=yes,

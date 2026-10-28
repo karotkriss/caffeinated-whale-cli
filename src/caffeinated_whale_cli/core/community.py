@@ -437,6 +437,7 @@ def _install_package(src: Path, decl: Declaration, commit: str) -> str:
             "community.install_failed",
             f"Installing {decl.project} failed:\n{tail}",
         )
+    _refuse_shared_modules(target, decl)
     # Loaded in a separate process, so a package that breaks on import never takes
     # this one with it; run from root() so nothing in the caller's directory shadows
     # cwcli on ``-m``'s path.
@@ -466,6 +467,40 @@ def _install_package(src: Path, decl: Declaration, commit: str) -> str:
             f"{problem}. It was removed again.",
         )
     return name
+
+
+def _modules(site: Path) -> dict[str, str]:
+    """Each top-level module installed in ``site`` -> the distribution that ships it."""
+    found: dict[str, str] = {}
+    for dist in importlib.metadata.distributions(path=[str(site)]):
+        owner = _normalize_project(dist.metadata["Name"] or "")
+        for file in dist.files or ():
+            top = file.parts[0]
+            if top in ("..", "bin", "__pycache__") or top.endswith((".dist-info", ".data")):
+                continue
+            found[top.split(".")[0]] = owner
+    return found
+
+
+def _refuse_shared_modules(target: Path, decl: Declaration) -> None:
+    """Every community package shares one ``sys.path``, so a module two of them ship
+    from different distributions would load from whichever came first and break the
+    other. The same dependency in both is fine."""
+    mine = _modules(target)
+    for other_id, other in records().items():
+        if other_id == decl.id:
+            continue
+        theirs = _modules(root() / other["dir"])
+        clash = sorted(m for m in mine.keys() & theirs.keys() if mine[m] != theirs[m])
+        if clash:
+            shutil.rmtree(target, ignore_errors=True)
+            raise CwcliError(
+                ErrorKind.CONFLICT,
+                "community.module_taken",
+                f"{decl.project} ships {', '.join(clash)}, which the installed community "
+                f"integration '{other_id}' already ships; both cannot load side by side. "
+                "Nothing was installed.",
+            )
 
 
 def preview(url: str, ref: str | None = None) -> Preview:
