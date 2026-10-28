@@ -541,6 +541,8 @@ class TestLoading:
         monkeypatch.setattr(community, "load", lambda _id: pytest.fail("community code loaded"))
         assert integrations.active("ldap") is None
         assert integrations.get("s3").id == "s3"
+        assert [c["id"] for c in integrations.view("s3")] == ["s3"]
+        integrations.disable("ldap")
 
     def test_one_community_id_loads_only_its_own_package(self, home, repo):
         community.install(_url(repo), commit=_write(repo))
@@ -550,6 +552,8 @@ class TestLoading:
         for integration_id in list(community._loaded):
             community._forget(integration_id)
         assert integrations.get("hello").id == "hello"
+        assert [c["id"] for c in integrations.view("hello")] == ["hello"]
+        assert integrations.view("nope") == []
         assert any("cwcli_hello" in m for m in sys.modules)
         assert not any("cwcli_hola" in m for m in sys.modules)
         with pytest.raises(CwcliError) as e:
@@ -859,6 +863,23 @@ class TestHookPoints:
             target.bucket
         assert e.value.code == "offsite.target_failed"
         assert serve._offsite_summary() == {"id": "hello", "name": "Hello", "location": "Hello"}
+
+    def test_a_target_that_is_on_but_fails_to_open_is_not_reported_as_none(self, monkeypatch):
+        from caffeinated_whale_cli.commands import serve
+
+        def boom(settings, secrets):
+            raise KeyError("token")
+
+        integ = dataclasses.replace(
+            integrations.S3_INTEGRATION, id="hello", name="Hello", hooks={"backup_target": boom}
+        )
+        monkeypatch.setattr(integrations, "provider", lambda hook: (integ, {}, {}))
+        summary = serve._offsite_summary()
+        assert summary is not None
+        assert (summary["id"], summary["name"]) == ("hello", "Hello")
+        assert "could not open its backup target" in summary["error"]
+        monkeypatch.setattr(integrations, "provider", lambda hook: None)
+        assert serve._offsite_summary() is None
 
 
 def test_the_verifier_runs_in_its_own_process(home, repo):

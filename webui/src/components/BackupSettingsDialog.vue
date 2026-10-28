@@ -135,8 +135,9 @@ async function prune() {
         <div class="flex flex-wrap items-center gap-3">
           <h3 class="text-base font-medium text-ink-gray-8">Off-site copies</h3>
           <Checkbox v-if="offsiteOn" v-model="form.copy_on_backup" label="Copy every new backup of this instance" />
-          <span v-if="offsiteOn" class="text-xs text-ink-gray-5">to {{ plan.offsite_target.location }} ({{ plan.offsite_target.name }}) · saved with the settings above</span>
+          <span v-if="offsiteOn && !plan.offsite_target.error" class="text-xs text-ink-gray-5">to {{ plan.offsite_target.location }} ({{ plan.offsite_target.name }}) · saved with the settings above</span>
         </div>
+        <p v-if="plan?.offsite_target?.error" class="mt-2 text-p-sm text-ink-red-6">{{ plan.offsite_target.name }} is on but cannot be opened: {{ plan.offsite_target.error }}. Copies to it fail until it is fixed in Settings › Integrations.</p>
         <div v-if="!offsiteOn" class="mt-2 flex flex-wrap items-center gap-2">
           <p class="min-w-0 flex-1 text-p-sm text-ink-gray-6">No backup target is on. It is one target for every instance (the S3 backup target, or a community one), set up in Settings › Integrations.</p>
           <Button v-if="can('admin')" label="Set up a backup target" icon-left="lucide-blocks" @click="setUpTarget" />
