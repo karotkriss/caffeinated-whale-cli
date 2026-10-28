@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { Alert, Button, Checkbox, Dialog, ErrorMessage, FormControl, Select } from 'frappe-ui'
 import { jobDialog, submitJob } from '../data/job-dialog'
 import { forceConfirmTarget, forceConfirmed } from '../data/force-confirm'
+import { can } from '../data/session'
 
 const titles = {
   init: 'Create an instance',
@@ -113,7 +114,7 @@ function next() {
             <Checkbox v-model="v.clear_cache" label="Clear cache" />
             <Checkbox v-model="v.clear_website_cache" label="Clear website cache" />
             <Checkbox v-model="v.skip_maintenance" label="Skip maintenance mode" />
-            <Checkbox v-model="v.force" label="Force: discard uncommitted and unpushed app work, re-own app repos" />
+            <Checkbox v-if="can('admin')" v-model="v.force" label="Force: discard uncommitted and unpushed app work, re-own app repos" />
             <Checkbox v-model="v.fix_branches" label="Switch apps whose dependencies do not fit this bench to the matching version branch first" />
           </div>
           <Alert theme="blue" title="Preflight runs first" description="Dirty trees, branch drift, and data-loss risks are collected and shown together. A blocker stops the update. A frappe update refuses when an app has uncommitted or unpushed work unless Force is ticked, which discards that work permanently." />

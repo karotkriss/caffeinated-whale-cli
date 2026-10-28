@@ -175,6 +175,11 @@ class TestRoles:
         checkout["args"]["reset"] = True
         status, body, _ = _req(daemon, "/api/v1/jobs", checkout, cookie)
         assert status == 403 and _code(body) == "auth.role_forbidden"
+        update = {"verb": "apps-update", "target": {"project": "p"}, "args": {"apps": ["x"]}}
+        assert _req(daemon, "/api/v1/jobs", update, cookie)[0] == 202
+        update["args"]["force"] = True
+        status, body, _ = _req(daemon, "/api/v1/jobs", update, cookie)
+        assert status == 403 and _code(body) == "auth.role_forbidden"
         assert _req(daemon, "/api/v1/settings", {"setting": "tips.enable"}, cookie)[0] == 403
         assert _req(daemon, "/api/v1/integrations", cookie=cookie)[0] == 403
         assert (
