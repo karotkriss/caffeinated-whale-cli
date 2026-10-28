@@ -53,12 +53,16 @@ any more.
 
 from __future__ import annotations
 
+import dataclasses
+import re
 import shlex
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
-from ..utils import bench_sites, cache, db_utils
+from ..utils import cache, db_utils
+from . import apps as core_apps
 from . import bench_ops, bench_read, credbridge, resolvers, supervision, update_preflight
 from . import docker as core_docker
 from .envelope import Message, Result, Status
@@ -71,6 +75,10 @@ _POST_MIGRATE_SETTLE = 0.5
 
 
 # ------------------------------------------------------------------------------ DTOs
+
+
+# The apps a core update resets to their remote branch; every other app is left alone.
+CORE_APPS = ("frappe", "erpnext")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -86,8 +94,10 @@ class UpdateReport:
     project: str
     bench_path: str
     apps: list[str]
-    # The frappe bench-wide path was taken; the per-site fields are empty. The reset
-    # itself ran only when `preflight_blocked` is false.
+    # A core update (frappe / erpnext): those apps were RESET to their remote branch
+    # (fetch + reset --hard, those apps only) after the preflight and the data-loss
+    # guard, every site's locks were cleared first and the bench's requirements
+    # reinstalled; then the ordinary per-site migrate. Nothing bench-wide.
     frappe_reset: bool
     affected_sites: list[str]
     migrated_sites: list[str]  # the load-bearing gate: only what entered maintenance
@@ -102,6 +112,9 @@ class UpdateReport:
     failed_cache_clears: list[str]
     failed_website_cache_clears: list[str]
     failed_maintenance_disable: list[str]  # STUCK: the site is DOWN, needs manual action
+    # Sites discovery could not open (a rejected database login, a broken config):
+    # the code moved under them and they were NOT migrated, so the run is not ok.
+    unreadable_sites: list[str]
     # The post-update resynchronisation (core.supervision.resync_after_code_change):
     # `git pull` moved the code under processes that were already running, so they
     # are cycled and the migrated sites must genuinely serve afterwards.
@@ -112,11 +125,8 @@ class UpdateReport:
     # from. An app flagged `diverged` was pulled into a copy the running site does
     # not load, so `ok` is False even though the git pull "succeeded".
     app_imports: list[resolvers.AppImport]
-    # A failed `bench update --reset` leaves maintenance_mode/pause_scheduler set in
-    # sites/common_site_config.json: EVERY site that does not override them answers
-    # 503 with its scheduler paused. True when that is what the failure left; None
-    # when it cannot be told (the reset failed and that file could not be read, or
-    # the reset's outcome is unknown and it may still be running); False otherwise.
+    # Always False now: cwcli never runs bench's bench-wide update, so nothing can
+    # set maintenance_mode/pause_scheduler bench-wide. Kept so documents keep their shape.
     bench_left_in_maintenance: bool | None
     # The frappe path's checks before `bench update --reset` (core.update_preflight).
     # Empty for another app; under --no-preflight, only the data-loss guard's
@@ -402,13 +412,20 @@ def _restore_pre_maintenance_on_abort(
 
 
 def _sites_with_app(
-    project_name: str, bench_path: str, app: str, container, warnings: list[Message]
+    project_name: str,
+    bench_path: str,
+    app: str,
+    container,
+    warnings: list[Message],
+    unreadable: list[str] | None = None,
 ) -> list[str]:
     """Sites with ``app`` installed: the cache when it knows, else a live query.
 
     The live query is one exec and one Frappe process for the whole bench
-    (``core.bench_read``). A site it could not read is left out and reported in
-    ``warnings`` with its cause.
+    (``core.bench_read``). A site it could not read is left out, reported in
+    ``warnings`` with its cause and, when ``unreadable`` is given, named there: the
+    app's code has moved under a site that will not be migrated, which is a failure
+    of the run, not a footnote (captain, staging16 2026-10-28).
     """
     cached = db_utils.get_cached_project_data(project_name)
     if cached:
@@ -440,11 +457,21 @@ def _sites_with_app(
     found = []
     for site in read.sites:
         if site.list_apps is None:
+            if unreadable is not None and site.name not in unreadable:
+                unreadable.append(site.name)
+            err = str(site.error or "")
+            refused = "Access denied" in err or "1045" in err
             warnings.append(
                 Message(
-                    "discover.site_unreadable",
-                    f"Could not read the installed apps on site '{site.name}', so it was "
-                    f"not checked for '{app}' ({bench_path}: {site.error}).",
+                    "db.login_refused" if refused else "discover.site_unreadable",
+                    (
+                        f"database login refused for site {site.name}: {err}. Its database "
+                        "user is probably host-scoped to an address the frappe container no "
+                        f"longer has; repair with: cwcli db-access repair {shlex.quote(project_name)} --yes"
+                        if refused
+                        else f"Could not read the installed apps on site '{site.name}', so it was "
+                        f"not checked for '{app}' ({bench_path}: {site.error})."
+                    ),
                 )
             )
         elif app in [line.strip().split()[0] for line in site.list_apps if line.strip()]:
@@ -540,6 +567,7 @@ def _build_report(
     failed_cache_clears: list[str],
     failed_website_cache_clears: list[str],
     failed_maintenance_disable: list[str],
+    unreadable_sites: list[str] | None = None,
     app_imports: list[resolvers.AppImport] | None = None,
     resync: supervision.ResyncOutcome | None = None,
     bench_left_in_maintenance: bool | None = False,
@@ -574,6 +602,7 @@ def _build_report(
         or unknown_migrations
         or failed_builds
         or unknown_builds
+        or unreadable_sites
         or failed_cache_clears
         or failed_website_cache_clears
         or failed_maintenance_disable
@@ -595,6 +624,7 @@ def _build_report(
         unknown_migrations=list(unknown_migrations),
         failed_builds=list(failed_builds),
         unknown_builds=list(unknown_builds),
+        unreadable_sites=list(unreadable_sites or []),
         failed_cache_clears=list(failed_cache_clears),
         failed_website_cache_clears=list(failed_website_cache_clears),
         failed_maintenance_disable=list(failed_maintenance_disable),
@@ -626,228 +656,160 @@ def _recache(project_name: str, bench_path: str, warnings: list[Message], emit: 
         )
 
 
-# What each bench-wide flag `bench update` leaves behind does to the bench's sites.
-_BENCH_FLAG_EFFECTS = {
-    "maintenance_mode": "answers HTTP 503",
-    "pause_scheduler": "runs no scheduled jobs",
-}
+_UNLOCK_ALL = (
+    'for d in sites/*/locks; do [ -d "$d" ] || continue; '
+    'for f in "$d"/* "$d"/.[!.]*; do [ -e "$f" ] || continue; echo "$f"; rm -rf "$f"; done; done'
+)
 
 
-def _frappe_reset(
-    frappe_container,
-    *,
-    project_name: str,
-    bench_path: str,
-    apps: list[str],
-    no_recache: bool,
-    ignored: list[str],
-    preflight: list[PreflightFinding] | None = None,
-    discarding: list[str] | None = None,
-    emit: OnEvent,
-    warnings: list[Message],
-) -> Result[UpdateReport]:
-    """The bench-wide ``bench update --reset`` path (the ``frappe`` app special-case).
-
-    The framework is not updated with a per-app ``git pull``; the correct path is
-    bench's own reset, which resets every app's repo, pulls, migrates every site,
-    and rebuilds. It therefore ignores the per-app/per-site options, and it returns
-    BEFORE the maintenance-mode state machine is ever entered - it enables no
-    maintenance and has no ``finally``; ``bench update --reset`` manages its own.
-
-    bench's own handling has no ``finally`` either: it sets ``maintenance_mode`` and
-    ``pause_scheduler`` bench-wide before backing up the first site and clears them
-    only when everything succeeds. So after a failed reset this reads them back and
-    REPORTS what was left, with the commands that clear them. It deliberately does
-    not clear them itself: a reset that failed part-way can leave some apps on new
-    code against unmigrated databases, and whether the sites come back up in that
-    state is the operator's call, not cwcli's.
-    """
-    notes = []
-    if ignored:
-        notes.append(
-            "updating 'frappe' runs a bench-wide 'bench update --reset'; ignoring "
-            f"{', '.join(ignored)} (not applicable)."
-        )
-        warnings.append(
-            Message("frappe_reset.options_ignored", notes[-1], detail={"ignored": list(ignored)})
-        )
-    unchecked_bench = any(not f.app for f in update_preflight.local_work(preflight or []))
-    if discarding or unchecked_bench:
-        where = (
-            "every app, none of whose local work could be checked"
-            if unchecked_bench
-            else ", ".join(discarding or [])
-        )
-        notes.append(
-            "--force: 'bench update --reset' will discard any uncommitted or unpushed "
-            f"work in {where}."
-        )
+def _unlock_every_site(
+    container, bench_path: str, *, emit: OnEvent, warnings: list[Message]
+) -> None:
+    """Clear the locks folder of EVERY site on the bench (what ``cwcli unlock`` does per
+    site) before a core update, and list what was cleared. A migrate that is actually
+    running was refused by the preflight's lock probe already, so what is left here
+    is stale by definition."""
+    emit(UpdateStepStart(phase="unlock_all", message="Clearing stale locks on every site"))
+    exit_code, output = container.exec_run(["sh", "-c", _UNLOCK_ALL], workdir=bench_path)
+    text = _decode(output)
+    cleared = [line.strip() for line in text.splitlines() if line.strip()]
+    if exit_code != 0:
         warnings.append(
             Message(
-                "frappe_reset.discarding_local_work",
-                notes[-1],
-                detail={"apps": list(discarding or []), "all_apps_unchecked": unchecked_bench},
+                "unlock_all.failed",
+                "Could not clear every site's locks before the core update; a stale "
+                "document lock can still stop a migrate.",
             )
         )
-    note = " ".join(notes) or None
-
-    failed: list[str] = []
-    unknown: list[str] = []
-    # The note rides the START event so a frontend shows "ignoring X" BEFORE the
-    # reset runs, where it is actionable, rather than after it from the envelope.
-    emit(UpdateStepStart(phase="frappe_reset", item="frappe", message=note))
-    code, lost = _stream_step(
-        frappe_container,
-        "bench update --reset",
-        workdir=bench_path,
-        phase="frappe_reset",
-        item="frappe",
-        emit=emit,
-        warnings=warnings,
+        emit(UpdateStepEnd(phase="unlock_all", status="failed", message=text[-400:]))
+        return
+    emit(
+        UpdateStepEnd(
+            phase="unlock_all",
+            status="ok",
+            message=(
+                f"cleared {len(cleared)} lock{'s' if len(cleared) != 1 else ''}: "
+                + ", ".join(cleared)
+                if cleared
+                else "no locks to clear"
+            ),
+        )
     )
-    if code is None:
-        unknown.append("frappe")
-        status = "unknown"
-    elif code != 0:
-        failed.append("frappe")
-        status = "failed"
-    else:
-        status = "ok"
-    emit(UpdateStepEnd(phase="frappe_reset", item="frappe", status=status, message=lost))
 
-    # The flags are read only after a definite failure: an unknown outcome may still
-    # be running, and a run in flight has them set legitimately.
-    left_in_maintenance: bool | None = False
-    if status == "unknown":
-        left_in_maintenance = None
-        remedy = supervision.clear_bench_wide_flags_hint(
-            project_name,
-            list(supervision.BENCH_WIDE_FLAGS),
-            resolvers.bench_cli_flag(project_name, bench_path),
-        )
-        warnings.append(
-            Message(
-                "frappe_reset.maintenance_unknown",
-                "The outcome of bench update --reset is unknown, so whether it left "
-                f"{bench_path} in maintenance mode is unknown too: it may still be running, "
-                "and a running bench update keeps maintenance_mode and pause_scheduler set "
-                "bench-wide. If the bench is still in maintenance once it has stopped, "
-                f"clear them with: {remedy}",
-                detail={"bench_path": bench_path},
-            )
-        )
-    elif status == "failed":
-        flags = supervision.bench_wide_flags(
-            supervision.common_site_config(frappe_container, bench_path)
-        )
-        left_in_maintenance = None if flags is None else bool(flags)
-        if flags:
-            them = "them" if len(flags) > 1 else "it"
-            effects = " and ".join(_BENCH_FLAG_EFFECTS[flag] for flag in flags)
-            remedy = supervision.clear_bench_wide_flags_hint(
-                project_name, flags, resolvers.bench_cli_flag(project_name, bench_path)
-            )
-            warnings.append(
-                Message(
-                    "frappe_reset.left_in_maintenance",
-                    f"bench update --reset failed and left {' and '.join(flags)} set "
-                    f"bench-wide in {bench_path}/sites/common_site_config.json, so every "
-                    f"site on the bench that does not override {them} {effects}. Once the "
-                    f"bench is fixed, clear {them} with: {remedy}",
-                    detail={"bench_path": bench_path, "flags": flags},
-                )
-            )
-        elif flags is None:
-            warnings.append(
-                Message(
-                    "frappe_reset.maintenance_unknown",
-                    f"bench update --reset failed, and {bench_path}/sites/"
-                    "common_site_config.json could not be read to check whether it left "
-                    "the bench in maintenance mode.",
-                    detail={"bench_path": bench_path},
-                )
-            )
 
-    # Recache BEFORE the exit code is consulted, exactly as this path always has: a
-    # partially-applied reset genuinely changes the cache, so a failed reset still
-    # warrants a refresh. Defensible and untested either way; preserved deliberately
-    # rather than "fixed" inside a migration.
-    if not no_recache:
-        _recache(project_name, bench_path, warnings, emit)
+def _tracked_branch(container, app_path: str, app: str) -> tuple[str, str]:
+    """The remote and branch the core reset targets: the app's own remote (``upstream``
+    first, as bench clones it) and its checked-out branch, resolved explicitly rather
+    than through ``@{u}``, which a ``checkout -B ... FETCH_HEAD`` branch does not have."""
+    remote = core_apps._resolve_remote(container, app_path, app)
+    code, out = container.exec_run("git rev-parse --abbrev-ref HEAD", workdir=app_path)
+    branch = _decode(out).strip() if code == 0 else ""
+    if not branch or branch == "HEAD":
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "app.detached_head",
+            f"'{app}' is not on a branch, so there is no remote branch to reset it to.",
+            hint=f"Check out a release branch first: cwcli apps checkout <project> {app} version-N",
+        )
+    return remote, branch
 
-    # Same resync every other code-changing path takes. This one resets and pulls
-    # EVERY app in the bench, so its affected set is every site on it - and bench's
-    # own `bench restart` at the tail of `bench update` targets a
-    # supervisor/systemd setup cwcli's per-bench supervisord is not, so nothing has
-    # cycled these processes. Only on the success path: a reset that failed may have
-    # left the tree anywhere, and a bounded site wait is not what that run needs.
-    resync: supervision.ResyncOutcome | None = None
-    if code == 0:
-        try:
-            bench_site_names = bench_sites.list_sites(frappe_container, bench_path)
-        except Exception as error:  # noqa: BLE001
-            detail = error.message if isinstance(error, CwcliError) else str(error)
-            resync = supervision.ResyncOutcome(
-                attempted=False,
-                restarted=[],
-                unserved_sites=[],
-                error=(
-                    "cwcli could not list every site on the bench to verify the update "
-                    f"({detail or type(error).__name__})."
+
+def _widen_untracked_refspecs(
+    container, bench_path: str, facts: list[dict], emit: OnEvent, warnings: list[Message]
+) -> bool:
+    """(B) ``git remote set-branches --add <remote> <branch>`` + a fetch of it for every
+    app whose remote fetch refspec does not cover its checked-out branch, logged."""
+    fixed = False
+    for app, remote, branch, shallow in update_preflight.untracked_branches(facts):
+        refspec = shlex.quote(f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}")
+        q = (
+            f"{{ git config --get-all remote.{remote}.fetch | grep -qxF {refspec} || "
+            f"git remote set-branches --add {shlex.quote(remote)} {shlex.quote(branch)}; }} && "
+            f"git fetch {'--depth=1 ' if shallow else ''}{shlex.quote(remote)} {shlex.quote(branch)}"
+        )
+        emit(
+            UpdateStepStart(
+                phase="fix_refspec",
+                item=app,
+                message=f"'{app}': remote '{remote}' did not fetch '{branch}'; adding it to the fetch refspec",
+            )
+        )
+        code, out = container.exec_run(["sh", "-c", q], workdir=f"{bench_path}/apps/{app}")
+        ok = code == 0
+        emit(
+            UpdateStepEnd(
+                phase="fix_refspec",
+                item=app,
+                status="ok" if ok else "failed",
+                message=(
+                    f"remote.{remote}.fetch now covers {branch}; {remote}/{branch} fetched"
+                    if ok
+                    else _decode(out)[-400:]
                 ),
             )
-        else:
-            if bench_site_names is None:
-                resync = supervision.ResyncOutcome(
-                    attempted=False,
-                    restarted=[],
-                    unserved_sites=[],
-                    error="cwcli could not list every site on the bench to verify the update.",
-                )
-            else:
-                resync = supervision.resync_after_code_change(
-                    frappe_container,
-                    bench_path,
-                    sites=bench_site_names,
-                    on_restart=lambda program: emit(UpdateStepStart(phase="resync", item=program)),
-                )
-        if resync.error:
-            warnings.append(
-                Message("resync.failed", f"The frappe update completed, but {resync.error}")
+        )
+        warnings.append(
+            Message(
+                "preflight.refspec_widened" if ok else "preflight.refspec_widen_failed",
+                (
+                    f"'{app}': added '{branch}' to remote '{remote}''s fetch refspec "
+                    f"(git remote set-branches --add {remote} {branch}) so {remote}/{branch} exists."
+                    if ok
+                    else f"'{app}': could not add '{branch}' to remote '{remote}''s fetch refspec."
+                ),
             )
-        if resync.attempted:
-            emit(
-                UpdateStepEnd(
-                    phase="resync",
-                    status="ok" if resync.ok else "failed",
-                    message=resync.error,
-                )
-            )
+        )
+        fixed = fixed or ok
+    return fixed
 
-    report = _build_report(
-        project_name=project_name,
-        bench_path=bench_path,
-        apps=apps,
-        frappe_reset=True,
-        affected=set(),
-        migrated=[],
-        failed_apps=failed,
-        unknown_apps=unknown,
-        failed_maintenance_enable=[],
-        failed_migrations=[],
-        unknown_migrations=[],
-        failed_builds=[],
-        unknown_builds=[],
-        failed_cache_clears=[],
-        failed_website_cache_clears=[],
-        failed_maintenance_disable=[],
-        resync=resync,
-        bench_left_in_maintenance=left_in_maintenance,
-        preflight=preflight,
-        data_loss_apps=discarding,
-        aborted=False,
-    )
-    return Result(status=Status.OK if report.ok else Status.WARNING, data=report, warnings=warnings)
+
+def _switch_mismatched_apps(
+    project_name: str,
+    bench_path: str,
+    facts: list[dict],
+    emit: Callable[[Any], None],
+    warnings: list[Message],
+) -> bool:
+    """(A) ``--fix-branches``: check out the matching ``version-N`` branch in every app
+    whose declared frappe-dependencies the bench cannot satisfy, through the same
+    ``cwcli apps checkout`` core (dirty-tree guarded; it also tracks the branch)."""
+    switched = False
+    for app, branch in update_preflight.fixable_branches(facts):
+        emit(
+            UpdateStepStart(
+                phase="fix_branch",
+                item=app,
+                message=f"--fix-branches: switching '{app}' to {branch} (its declared dependencies do not fit this bench)",
+            )
+        )
+        try:
+            result = core_apps.checkout_app(
+                project_name, app, branch, bench_path=bench_path, on_event=emit
+            )
+            ok = result.data is not None and bool(getattr(result.data, "ok", False))
+            detail = "; ".join(w.text for w in result.warnings) if not ok else ""
+        except CwcliError as exc:
+            ok, detail = False, exc.message
+        emit(
+            UpdateStepEnd(
+                phase="fix_branch",
+                item=app,
+                status="ok" if ok else "failed",
+                message=f"'{app}' is now on {branch}" if ok else detail,
+            )
+        )
+        warnings.append(
+            Message(
+                "preflight.branch_switched" if ok else "preflight.branch_switch_failed",
+                (
+                    f"--fix-branches: switched '{app}' to {branch}."
+                    if ok
+                    else f"--fix-branches: could not switch '{app}' to {branch}: {detail}"
+                ),
+            )
+        )
+        switched = switched or ok
+    return switched
 
 
 def _reown_dubious_apps(
@@ -868,7 +830,7 @@ def _reown_dubious_apps(
                 Message(
                     "app.force_reown",
                     f"--force: re-owned '{app}' repository to the container user to clear "
-                    "a git ownership refusal before 'bench update --reset'.",
+                    "a git ownership refusal before the core reset.",
                 )
             )
         elif error:
@@ -886,6 +848,7 @@ def _frappe_checks(
     apps: list[str],
     preflight: bool,
     force: bool,
+    fix_branches: bool = False,
     emit: OnEvent,
     warnings: list[Message],
 ) -> tuple[list[PreflightFinding], list[str], Result[UpdateReport] | None]:
@@ -919,8 +882,45 @@ def _frappe_checks(
     outcome = check()
     if force and _reown_dubious_apps(frappe_container, bench_path, outcome.findings, warnings):
         outcome = check()
-    at_risk = update_preflight.local_work(outcome.findings)
-    findings = outcome.findings if preflight else at_risk
+    # staging16 (2026-10-28), two more failures the preflight now prevents:
+    # (B) a branch the remote's fetch refspec does not cover (a narrow clone switched
+    #     with `checkout -B ... FETCH_HEAD`): widened in place and logged, always - a
+    #     refspec that also covers the checked-out branch is never wrong;
+    # (A) an app whose declared frappe-dependencies the bench cannot satisfy: a
+    #     refusal naming the switch, performed only when --fix-branches confirms it.
+    fixed = _widen_untracked_refspecs(frappe_container, bench_path, outcome.facts, emit, warnings)
+    if fix_branches:
+        fixed = (
+            _switch_mismatched_apps(project_name, bench_path, outcome.facts, emit, warnings)
+            or fixed
+        )
+    if fixed:
+        outcome = check()
+        # A switch can land on a branch the refspec did not cover until now: widen
+        # once more, then the final check.
+        if _widen_untracked_refspecs(frappe_container, bench_path, outcome.facts, emit, warnings):
+            outcome = check()
+    wanted = {a.lower() for a in apps}
+    # Only the core apps are reset now, so only THEIR local work is at risk (an
+    # unchecked bench - no app named - still refuses: it could be any of them).
+    # Another app's local work is a fact worth showing, never a loss: it is
+    # re-labelled a notice so the data-loss group lists only what the reset touches.
+    relabelled = []
+    for f in outcome.findings:
+        if f in update_preflight.local_work([f]) and f.app and f.app not in wanted:
+            kept = re.split(
+                r" would be DISCARDED| that exist on no remote|;", f.message, maxsplit=1
+            )[0]
+            f = dataclasses.replace(
+                f,
+                severity=update_preflight.NOTICE,
+                message=f"{kept} - not touched by a core update "
+                f"(only {', '.join(sorted(wanted))} {'is' if len(wanted) == 1 else 'are'} reset)",
+                remedy=None,
+            )
+        relabelled.append(f)
+    at_risk = [f for f in update_preflight.local_work(relabelled) if not f.app or f.app in wanted]
+    findings = relabelled if preflight else at_risk
     blocked = preflight and outcome.blocked
     refused = bool(at_risk) and not force
     at_risk_apps = list(dict.fromkeys(f.app for f in at_risk if f.app))
@@ -978,10 +978,18 @@ def update(
     no_recache: bool = False,
     force: bool = False,
     preflight: bool = True,
+    fix_branches: bool = False,
     auto_start: bool = False,
     on_event: OnEvent | None = None,
 ) -> Result[UpdateReport]:
     """Update ``apps`` and migrate every affected site. See the module docstring.
+
+    ``fix_branches`` (the core path) lets the preflight SWITCH an app whose declared
+    frappe-dependencies the bench cannot satisfy to the matching ``version-N`` branch
+    (``cwcli apps checkout``, dirty-tree guarded) before the update; without it such
+    a mismatch refuses with the switch named. A branch the remote's fetch refspec
+    does not cover is always widened in place and logged, since bench's and cwcli's
+    reset both need ``<remote>/<branch>`` to exist.
 
     ``preflight`` (the frappe path only) checks, before ``bench update --reset``
     starts, everything that would make it fail late - see
@@ -1043,22 +1051,19 @@ def update(
     # calls a credential helper on 401), so every update is wrapped; see
     # core.credbridge.
     with credbridge.credential_bridge(frappe_container, bench_path):
-        # 5. The frappe framework special-case: bench-wide, and it returns BEFORE the
-        # maintenance-mode state machine is entered.
-        if any(app.lower() == "frappe" for app in apps):
-            ignored = [
-                name
-                for name, active in (
-                    ("--site", bool(sites)),
-                    ("--clear-cache", clear_cache),
-                    ("--clear-website-cache", clear_website_cache),
-                    ("--build", build),
-                    ("--skip-maintenance", skip_maintenance),
-                )
-                if active
-            ]
-            # Inside the credential bridge on purpose: a private remote is probed
-            # with exactly the credentials bench's own fetch will get.
+        # 5. The core special-case (frappe, and erpnext when named): the SAME per-site
+        # state machine as any app, with these differences - each core app is reset to
+        # its remote branch (fetch + reset --hard, the core apps ONLY; never bench's
+        # bench-wide `bench update --reset`, which hard-reset every app on the bench,
+        # the captain's staging16 defect) after the preflight and the data-loss guard,
+        # every site's stale locks are cleared first, and the bench's requirements
+        # are reinstalled before the sites migrate. Every site then migrates under
+        # cwcli's own per-site maintenance with its `finally`, so a failed migrate
+        # names its site and leaves nothing bench-wide behind.
+        core_reset = any(app.lower() in CORE_APPS for app in apps)
+        findings: list[PreflightFinding] | None = None
+        discarding: list[str] | None = None
+        if core_reset:
             findings, discarding, refusal = _frappe_checks(
                 frappe_container,
                 project_name=project_name,
@@ -1068,23 +1073,13 @@ def update(
                 apps=apps,
                 preflight=preflight,
                 force=force,
+                fix_branches=fix_branches,
                 emit=emit,
                 warnings=warnings,
             )
             if refusal is not None:
                 return refusal
-            return _frappe_reset(
-                frappe_container,
-                project_name=project_name,
-                bench_path=bench_path,
-                apps=apps,
-                no_recache=no_recache,
-                ignored=ignored,
-                preflight=findings,
-                discarding=discarding,
-                emit=emit,
-                warnings=warnings,
-            )
+            build = True  # a core update rebuilds assets, as bench's own update does
 
         return _update_apps(
             frappe_container,
@@ -1098,6 +1093,9 @@ def update(
             skip_maintenance=skip_maintenance,
             no_recache=no_recache,
             force=force,
+            core_reset=core_reset,
+            preflight_findings=findings,
+            discarding=discarding,
             emit=emit,
             warnings=warnings,
         )
@@ -1116,6 +1114,9 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
     skip_maintenance: bool,
     no_recache: bool,
     force: bool,
+    core_reset: bool = False,
+    preflight_findings: list[PreflightFinding] | None = None,
+    discarding: list[str] | None = None,
     emit: OnEvent,
     warnings: list[Message],
 ) -> Result[UpdateReport]:
@@ -1136,6 +1137,7 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
     maintenance_sites: set[str] = set()  # sites we actually turned maintenance ON for
     sites_to_migrate: list[str] = []  # the fan-out set; empty until we get that far
     app_imports: list[resolvers.AppImport] = []  # BUG-10 wrong-copy detection
+    unreadable_sites: list[str] = []  # could not be opened, so never discovered or migrated
     resync: supervision.ResyncOutcome | None = None
     aborted = False
     # Marker stamped on every migrate exec so an interrupt can end EXACTLY the process
@@ -1148,6 +1150,35 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
     pre_maintenance: dict[str, bool | None] = {}
 
     try:
+        if core_reset:
+            unchecked_bench = any(
+                not f.app for f in update_preflight.local_work(preflight_findings or [])
+            )
+            if discarding or unchecked_bench:
+                where = (
+                    "the core apps, none of whose local work could be checked"
+                    if unchecked_bench
+                    else ", ".join(discarding or [])
+                )
+                note = (
+                    "--force: the core reset will discard any uncommitted or unpushed work "
+                    f"in {where}."
+                )
+                warnings.append(
+                    Message(
+                        "frappe_reset.discarding_local_work",
+                        note,
+                        detail={
+                            "apps": list(discarding or []),
+                            "all_apps_unchecked": unchecked_bench,
+                        },
+                    )
+                )
+                # On the START event so a frontend shows it BEFORE the reset runs.
+                emit(UpdateStepStart(phase="core_reset", message=note))
+            # Captain 2026-10-28: a stale document lock on one site killed a core
+            # update mid-migrate; clear every site's locks folder first, listing them.
+            _unlock_every_site(frappe_container, bench_path, emit=emit, warnings=warnings)
         # --- ONE pull pass and ONE discovery pass. The presentation fork that used
         # to duplicate both is gone: rendering is the frontend's business now, so
         # the data path cannot be mis-bound to a data condition again. ---
@@ -1186,19 +1217,47 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
                     warnings.append(
                         Message("app.force_reown_failed", f"--force: '{app}': {reown_err}")
                     )
-            status = _run_step(
-                frappe_container,
-                "git pull",
-                workdir=app_path,
-                phase="pull",
-                item=app,
-                index=i,
-                total=len(apps),
-                emit=emit,
-                warnings=warnings,
-                failed=failed_apps,
-                unknown=unknown_apps,
-            )
+            if core_reset and app.lower() in CORE_APPS:
+                # The core app is RESET to its remote branch (what bench's reset does
+                # per app), but only this app: fetch, then reset --hard to the SAME
+                # remote-tracking branch git pull would merge. Other apps on the
+                # bench are not touched.
+                status = "ok"
+                remote, branch = _tracked_branch(frappe_container, app_path, app)
+                q_remote, q_branch = shlex.quote(remote), shlex.quote(branch)
+                for cmd in (
+                    f"git fetch {q_remote} {q_branch}",
+                    f"git reset --hard {q_remote}/{q_branch}",
+                ):
+                    status = _run_step(
+                        frappe_container,
+                        cmd,
+                        workdir=app_path,
+                        phase="reset",
+                        item=app,
+                        index=i,
+                        total=len(apps),
+                        emit=emit,
+                        warnings=warnings,
+                        failed=failed_apps,
+                        unknown=unknown_apps,
+                    )
+                    if status != "ok":
+                        break
+            else:
+                status = _run_step(
+                    frappe_container,
+                    "git pull",
+                    workdir=app_path,
+                    phase="pull",
+                    item=app,
+                    index=i,
+                    total=len(apps),
+                    emit=emit,
+                    warnings=warnings,
+                    failed=failed_apps,
+                    unknown=unknown_apps,
+                )
             # --force ONLY on a real conflict: a failed pull whose tree is dirty is a
             # local-changes conflict a hard-reset to upstream can force through; a
             # clean tree means the pull failed for another reason (network/auth) that
@@ -1212,6 +1271,39 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
                 ):
                     failed_apps.remove(app)
                     force_reset_apps.append(app)
+
+        if core_reset and any(a not in failed_apps and a not in unknown_apps for a in apps):
+            # New core code wants its new pins before any site migrates on it
+            # (bench's own update reinstalls requirements at this point too). A
+            # failure here fails every app not yet failed: migrating against
+            # half-installed dependencies is the one thing worse than not migrating.
+            req_failed: list[str] = []
+            req_unknown: list[str] = []
+            _run_step(
+                frappe_container,
+                "bench setup requirements",
+                workdir=bench_path,
+                phase="requirements",
+                item="bench",
+                index=1,
+                total=1,
+                emit=emit,
+                warnings=warnings,
+                failed=req_failed,
+                unknown=req_unknown,
+            )
+            if req_failed or req_unknown:
+                bucket = failed_apps if req_failed else unknown_apps
+                for a in apps:
+                    if a not in failed_apps and a not in unknown_apps:
+                        bucket.append(a)
+                warnings.append(
+                    Message(
+                        "requirements.failed",
+                        "bench setup requirements did not finish, so no site was migrated "
+                        "onto the new core code; its own output names the cause.",
+                    )
+                )
 
         # An app whose outcome is unknown is not known to have updated, so it is not
         # discovered against - the same treatment a failed pull gets.
@@ -1237,7 +1329,9 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
             if app in skipped:
                 continue
             emit(UpdateStepStart(phase="discover", item=app))
-            sites = _sites_with_app(project_name, bench_path, app, frappe_container, warnings)
+            sites = _sites_with_app(
+                project_name, bench_path, app, frappe_container, warnings, unreadable_sites
+            )
             affected.update(sites)
             emit(
                 UpdateStepEnd(
@@ -1481,6 +1575,22 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
                         )
                     )
 
+        # Steering 041: the core-update postflight - a site whose database user is
+        # scoped to an address the container no longer has reads as a migrate
+        # failure or a 500; name it as a login refusal with the repair.
+        if core_reset and sites_to_migrate and not aborted:
+            from . import db_access
+
+            refused = db_access.postflight(
+                frappe_container,
+                bench_path,
+                project=project_name,
+                sites=sites_to_migrate,
+                bench_flag=resolvers.bench_cli_flag(project_name, bench_path),
+            )
+            if refused is not None:
+                warnings.append(refused)
+
         # THE RESYNC, and its position is the whole subtlety. `git pull` moved the
         # code under processes that were already running, so they hold the pre-pull
         # interpreter exactly as an install does. It has to come AFTER the
@@ -1519,7 +1629,9 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
             project_name=project_name,
             bench_path=bench_path,
             apps=apps,
-            frappe_reset=False,
+            frappe_reset=core_reset,
+            preflight=preflight_findings,
+            data_loss_apps=discarding,
             affected=affected,
             migrated=sites_to_migrate,
             failed_apps=failed_apps,
@@ -1533,6 +1645,7 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
             failed_cache_clears=failed_cache_clears,
             failed_website_cache_clears=failed_website_cache_clears,
             failed_maintenance_disable=failed_maintenance_disable,
+            unreadable_sites=unreadable_sites,
             app_imports=app_imports,
             resync=resync,
             aborted=aborted and bool(sites_to_migrate),

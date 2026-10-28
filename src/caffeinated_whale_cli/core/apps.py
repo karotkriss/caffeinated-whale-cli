@@ -1003,6 +1003,18 @@ def checkout_app(
         # `git clean`, no `checkout -f`), and one in the target's way still refuses.
         steps.append(("reset", "git reset --hard"))
     steps.append(("checkout", f"git checkout -B {q_ref} FETCH_HEAD"))
+    # staging16 (2026-10-28): a narrow clone's fetch refspec covers only the branch it
+    # was cloned with, so after this checkout `<remote>/<ref>` never exists and the
+    # next reset ("unknown revision") fails. When <ref> is a branch on the remote, add
+    # it to the refspec, fetch it so the remote-tracking ref exists, and track it.
+    track = (
+        f"if git ls-remote --exit-code --heads {q_remote} {q_ref} >/dev/null 2>&1; then "
+        f"{{ git config --get-all remote.{remote}.fetch | grep -qxF {shlex.quote(f'+refs/heads/{ref}:refs/remotes/{remote}/{ref}')} "
+        f"|| git remote set-branches --add {q_remote} {q_ref}; }} && git fetch {q_remote} {q_ref} "
+        f"&& git branch --set-upstream-to={q_remote}/{q_ref} {q_ref}; fi"
+    )
+    # Through `sh -c`: the exec is an argv, not a shell, so the conditional needs one.
+    steps.append(("track", f"sh -c {shlex.quote(track)}"))
 
     results: list[AppResult] = []
     with credbridge.credential_bridge(frappe_container, path):

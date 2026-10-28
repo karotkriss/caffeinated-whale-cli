@@ -166,6 +166,7 @@ someone has to remember to update.
 
 from __future__ import annotations
 
+import dataclasses
 import hmac
 import ipaddress
 import json
@@ -174,42 +175,62 @@ import os
 import platform
 import queue
 import secrets
+import shutil
 import signal
 import socket
+import tempfile
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, is_dataclass
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
+from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 import typer
 
 from .. import __version__
 from .. import jobs as core_jobs
+from ..core import accounts as core_accounts
+from ..core import advisories as core_advisories
+from ..core import app_catalog as core_app_catalog
 from ..core import apps as core_apps
 from ..core import auto_inspect as core_auto_inspect
+from ..core import backup_store as core_backup_store
 from ..core import bench_ops as core_bench_ops
 from ..core import config as core_config
 from ..core import cred_bridge as core_cred_bridge
 from ..core import daemon_recovery
+from ..core import dev_mode as core_dev_mode
 from ..core import doctor as core_doctor
+from ..core import editors as core_editors
 from ..core import fleet as core_fleet
+from ..core import git_refs as core_git_refs
 from ..core import inspect as core_inspect
 from ..core import label as core_label
+from ..core import list as core_list
 from ..core import logs as core_logs
+from ..core import metrics as core_metrics
+from ..core import open as core_open
 from ..core import resolvers as core_resolvers
 from ..core import restart as core_restart
 from ..core import scale as core_scale
+from ..core import schedules as core_schedules
+from ..core import site_icons as core_site_icons
+from ..core import site_logs as core_site_logs
 from ..core import start as core_start
 from ..core import stop as core_stop
+from ..core import transfer as core_transfer
 from ..core import unlock as core_unlock
+from ..core import updates as core_updates
 from ..core import url as core_url
 from ..core import version as core_version
 from ..core import where as core_where
 from ..core.envelope import Message, Result, Status
 from ..core.errors import CwcliError, ErrorKind
+from ..core.rm import is_valid_project_name
 from ..utils import agent_hooks, cache, daemon_identity
 from ..utils.console import console, stderr_console
 
@@ -218,14 +239,14 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_INTERVAL = 2.5
 KEEPALIVE_S = 15.0
 TOKEN_ENV = "CWCLI_SERVE_TOKEN"
-SESSION_ENV = "CWCLI_SERVE_SESSION"
 SESSION_COOKIE = "cwcli_serve_session"
 # Bumped on any change a page built against an older daemon could misread, so a
 # page compares it with the number it was built for instead of parsing versions.
 # 2: the /api/v1 routes and the {data}/{errors} envelope (Phase 1).
 # 3: durable jobs, job SSE frames, and detached lifecycle actions (Phase 2).
 # 4: the settings endpoint and the guarded destructive job verbs (Phase 3).
-PROTOCOL_VERSION = 4
+# 5: the apps catalog (/api/v1/apps, its logo route, the `catalog` SSE event).
+PROTOCOL_VERSION = 6
 
 # The running process's install fingerprint (core.version.install_fingerprint), set
 # by run_daemon, so a page can tell a daemon running different code.
@@ -241,6 +262,7 @@ _HTTP_FOR_KIND = {
     ErrorKind.DOCKER: 503,
 }
 _MAX_ACTION_BODY = 64 * 1024
+_MAX_UPLOAD_BODY = 50 * 1024 * 1024 * 1024  # a set's tar, streamed to disk
 _ACTION_LOCK_STRIPES = 64
 
 # The synchronous safe action set. See the module docstring for what may NOT be
@@ -258,6 +280,7 @@ ACTIONS = frozenset(
         "clear_maintenance",
         "scale_instance",
         "checkout_app",
+        "open_editor",
     }
 )
 
@@ -282,6 +305,8 @@ SETTINGS = frozenset(
         "tips.enable",
         "tips.disable",
         "agent_hooks.install",
+        "catalog.source_add",
+        "catalog.source_remove",
     }
 )
 # The lock stripe every settings write shares: the config is one TOML file read,
@@ -292,6 +317,16 @@ _SETTINGS_LOCK_KEY = "@settings"
 
 # Package data written by `cd webui && npm run build`; git-ignored in the tree.
 WEBUI_DIST = files("caffeinated_whale_cli.webui").joinpath("dist")
+# CWCLI_WEBUI_DIST points a daemon at a different BUILT page (a prototype dist
+# built from another branch) while the Python code stays the installed one.
+WEBUI_DIST_ENV = "CWCLI_WEBUI_DIST"
+
+
+def _webui_dist():
+    override = (os.environ.get(WEBUI_DIST_ENV) or "").strip()
+    return Path(override) if override else WEBUI_DIST
+
+
 _SPA_CSP_BASE: dict[str, list[str]] = {
     "default-src": ["'none'"],
     "script-src": ["'self'"],
@@ -329,7 +364,7 @@ UNBUILT_PAGE = """<!doctype html>
 def webui_available() -> bool:
     """Whether a built UI is installed (the ``index.html`` package-data file exists)."""
     try:
-        return WEBUI_DIST.joinpath("index.html").is_file()
+        return bool(_webui_dist().joinpath("index.html").is_file())
     except (OSError, ValueError):
         return False
 
@@ -338,7 +373,7 @@ def spa_csp() -> str:
     """The SPA's policy, with the build's extra hashes (``dist/csp.json``) merged in."""
     policy = {k: list(v) for k, v in _SPA_CSP_BASE.items()}
     try:
-        extra = json.loads(WEBUI_DIST.joinpath("csp.json").read_text(encoding="utf-8"))
+        extra = json.loads(_webui_dist().joinpath("csp.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         extra = {}
     for directive, sources in extra.items():
@@ -357,7 +392,7 @@ def _spa_file(path: str):
     segments = [unquote(s) for s in path.strip("/").split("/") if s]
     if not segments:
         return None
-    node = WEBUI_DIST
+    node = _webui_dist()
     for segment in segments:
         if segment in {".", ".."} or "/" in segment or "\\" in segment or "\0" in segment:
             return None
@@ -426,32 +461,6 @@ def host_allowed(host_header: str | None, *, remote_bind: bool) -> bool:
 def _secret_matches(presented: str, expected: str) -> bool:
     """Timing-safe secret comparison, over bytes so a non-ASCII token cannot raise."""
     return hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8"))
-
-
-class _LoginCode:
-    """The browser's single-use way in: one outstanding code, redeemable exactly once.
-
-    A redeemed code is dead, so the link that carried it - in browser history, a
-    terminal's scrollback, a pasted bug report - signs nobody else in. ``mint``
-    replaces the outstanding code (a second browser, a second ``cwcli ui``), so
-    at most ONE unredeemed code exists at any time.
-    """
-
-    def __init__(self, code: str) -> None:
-        self._code: str | None = code
-        self._lock = threading.Lock()
-
-    def redeem(self, presented: str) -> bool:
-        with self._lock:
-            if self._code is None or not _secret_matches(presented, self._code):
-                return False
-            self._code = None
-            return True
-
-    def mint(self) -> str:
-        with self._lock:
-            self._code = secrets.token_urlsafe(24)
-            return self._code
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -539,7 +548,10 @@ class _Hub:
             q.put(frame)
 
     def publish_job(self, record: dict) -> None:
-        frame = _sse_frame("job", record, self.next_id())
+        self.publish_event("job", record)
+
+    def publish_event(self, event: str, data: dict) -> None:
+        frame = _sse_frame(event, data, self.next_id())
         with self._lock:
             queues = [q for q, _f in self._clients.values()]
         for q in queues:
@@ -569,10 +581,14 @@ class _Handler(BaseHTTPRequestHandler):
 
     fleet: core_fleet.Fleet
     hub: _Hub
+    catalog: core_app_catalog.CatalogStore
+    metrics: core_metrics.MetricsStore
+    site_icons: core_site_icons.SiteIconStore
+    updates: core_updates.UpdatesStore
+    advisories: core_advisories.AdvisoriesStore
     action_locks: tuple[threading.Lock, ...]
     token: str
-    session_id: str
-    login: _LoginCode
+    lockout: core_accounts.Lockout
     remote_bind: bool
 
     def log_message(self, fmt, *args):  # noqa: A003 - stdlib hook name
@@ -619,7 +635,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         node = _spa_file(path)
         if node is None:
-            raw = WEBUI_DIST.joinpath("index.html").read_bytes()
+            raw = _webui_dist().joinpath("index.html").read_bytes()
             self._send_bytes(raw, _MIME[".html"], csp=spa_csp(), cache="no-cache")
             return
         suffix = os.path.splitext(node.name)[1].lower()
@@ -673,9 +689,39 @@ class _Handler(BaseHTTPRequestHandler):
         ``EventSource`` cannot set request headers, so a header-only scheme would
         leave the stream unreachable from the page.
         """
-        return self._bearer_authenticated() or _secret_matches(
-            self._session_cookie(), self.session_id
+        return self._bearer_authenticated() or self._session_account() is not None
+
+    def _session_account(self) -> core_accounts.Account | None:
+        """The account behind this request's session cookie, or None."""
+        return core_accounts.session_account(self._session_cookie())
+
+    def _account_name(self) -> str:
+        """Who is acting: the signed-in account, else ``api`` for a bearer client."""
+        acct = self._session_account()
+        return acct.username if acct is not None else "api"
+
+    _CHANGE_PENDING_PATHS = frozenset(
+        {
+            "/api/v1/session",
+            "/api/v1/session/password",
+            "/api/v1/session/signout",
+            "/api/v1/session/sessions",
+        }
+    )
+
+    def _refuse_change_pending(self, path: str) -> bool:
+        """The forced first change: an account still on the default password reaches
+        nothing but its own session until it has picked a real one."""
+        acct = self._session_account()
+        if acct is None or not acct.must_change or path in self._CHANGE_PENDING_PATHS:
+            return False
+        self._send_error(
+            403,
+            ErrorKind.PRECONDITION.value,
+            "auth.password_change_required",
+            "Choose a new password before using the web UI.",
         )
+        return True
 
     @property
     def _cookie_name(self) -> str:
@@ -709,7 +755,7 @@ class _Handler(BaseHTTPRequestHandler):
                 ErrorKind.PRECONDITION.value,
                 "auth.required",
                 "This cwcli serve daemon requires you to sign in.",
-                hint="Run 'cwcli ui' for a fresh one-time sign-in link, or send "
+                hint="Sign in on the page (the first sign-in is admin / admin), or send "
                 f"'Authorization: Bearer <token>' matching {TOKEN_ENV}.",
             )
         ).encode()
@@ -720,33 +766,127 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _redeem_login_code(self, raw: bytes) -> bool:
-        """Whether the body is ``{"code": <the outstanding login code>}``, consuming it."""
-        try:
-            code = _parse_action_body(raw).get("code")
-        except CwcliError:
-            return False
-        return isinstance(code, str) and self.login.redeem(code)
+    def _cookie_attrs(self) -> str:
+        return "SameSite=Strict"
 
-    def _open_session(self) -> None:
-        """Hand an authenticated caller the browser session cookie.
+    def _sign_in(self, raw: bytes) -> None:
+        """``POST /api/v1/session``: username + password for the session cookie.
 
-        Reached only once the login code or the bearer token has been verified.
-        The cookie carries a per-launch random id rather than either. It remains a
-        bearer credential that can be replayed if captured until the daemon
-        restarts. ``HttpOnly`` keeps page scripts from reading it back and
-        ``SameSite=Strict`` keeps a cross-site request from carrying it.
+        Failures are counted per username and per address (``core.accounts.Lockout``);
+        a locked key answers 429 with ``retry_after`` and never runs the hash. The
+        cookie carries a random session id whose hash the store keeps; ``remember``
+        makes it a 30-day persistent cookie, otherwise it dies with the browser.
         """
-        body = json.dumps({"data": {"signed_in": True}}).encode()
+        try:
+            body = _parse_action_body(raw)
+        except CwcliError as e:
+            self._send_core_error(e)
+            return
+        username = str(body.get("username") or "").strip()
+        password = str(body.get("password") or "")
+        remember = bool(body.get("remember"))
+        keys = (f"user:{username.lower()}", f"addr:{self.client_address[0]}")
+        wait = self.lockout.retry_after(*keys)
+        if wait:
+            self._send_error(
+                429,
+                ErrorKind.PRECONDITION.value,
+                "auth.locked",
+                f"Too many failed sign-ins; try again in {wait} seconds.",
+                retry_after=wait,
+            )
+            return
+        acct = core_accounts.verify(username, password) if username and password else None
+        if acct is None:
+            self.lockout.failed(*keys)
+            self._send_error(
+                401,
+                ErrorKind.PRECONDITION.value,
+                "auth.invalid",
+                "That username and password do not match.",
+            )
+            return
+        self.lockout.succeeded(*keys)
+        session_id = core_accounts.open_session(
+            acct.username, remember=remember, agent=(self.headers.get("User-Agent") or "")
+        )
+        body_out = json.dumps(
+            {
+                "data": {
+                    "signed_in": True,
+                    "username": acct.username,
+                    "must_change_password": acct.must_change,
+                }
+            }
+        ).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        max_age = f"; Max-Age={core_accounts.REMEMBER_S}" if remember else ""
+        self.send_header(
+            "Set-Cookie",
+            f"{self._cookie_name}={session_id}; Path=/; HttpOnly; {self._cookie_attrs()}{max_age}",
+        )
+        self.send_header("Content-Length", str(len(body_out)))
+        self.end_headers()
+        self.wfile.write(body_out)
+
+    def _session_info(self) -> dict:
+        acct = self._session_account()
+        if acct is None:
+            return {"username": "api", "must_change_password": False, "account": False}
+        return {
+            "username": acct.username,
+            "must_change_password": acct.must_change,
+            "account": True,
+        }
+
+    def _change_password(self, raw: bytes) -> None:
+        acct = self._session_account()
+        if acct is None:
+            self._send_error(
+                403,
+                ErrorKind.PRECONDITION.value,
+                "auth.account_required",
+                "Only a signed-in account can change its password.",
+            )
+            return
+        try:
+            body = _parse_action_body(raw)
+            new = str(body.get("new") or "")
+            current = body.get("current")
+            core_accounts.change_password(
+                acct.username,
+                new,
+                current=None if acct.must_change else str(current or ""),
+            )
+        except CwcliError as e:
+            self._send_core_error(e)
+            return
+        self._send_json({"data": {"changed": True}})
+
+    def _sign_out(self, raw: bytes) -> None:
+        acct = self._session_account()
+        try:
+            others = bool(_parse_action_body(raw).get("others"))
+        except CwcliError:
+            others = False
+        sid = self._session_cookie()
+        if acct is not None and others:
+            closed = core_accounts.close_other_sessions(acct.username, keep=sid)
+            self._send_json({"data": {"signed_out": False, "closed": closed}})
+            return
+        if sid:
+            core_accounts.close_session(sid)
+        body_out = json.dumps({"data": {"signed_out": True}}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header(
             "Set-Cookie",
-            f"{self._cookie_name}={self.session_id}; Path=/; HttpOnly; SameSite=Strict",
+            f"{self._cookie_name}=; Path=/; HttpOnly; Max-Age=0; {self._cookie_attrs()}",
         )
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(len(body_out)))
         self.end_headers()
-        self.wfile.write(body)
+        self.wfile.write(body_out)
 
     def do_OPTIONS(self):  # noqa: N802 - stdlib hook name
         """No data, no action, and no ``Access-Control-*`` header, so no preflight passes."""
@@ -779,6 +919,21 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if self._refuse_unauthenticated():
             return
+        if path == "/api/v1/session":
+            self._send_json({"data": self._session_info()})
+            return
+        if self._refuse_change_pending(path):
+            return
+        if path == "/api/v1/session/sessions":
+            acct = self._session_account()
+            sid = self._session_cookie()
+            rows = (
+                [asdict(x) for x in core_accounts.list_sessions(acct.username, current=sid)]
+                if acct is not None
+                else []
+            )
+            self._send_json({"data": rows})
+            return
         if path == "/api/v1/instances":
             self._send_json({"data": self.fleet.snapshot()})
         elif path == "/api/v1/stream":
@@ -793,8 +948,120 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_logs(project, query)
             elif verb == "url":
                 self._send_url(project, query)
+            elif verb == "site-logs":
+                self._send_site_logs(project, query)
+            elif verb == "dev-mode":
+                self._send_dev_mode(project, query)
+            elif verb == "error-log":
+                self._send_error_log(project, query)
             else:
                 self._send_error(404, ErrorKind.NOT_FOUND.value, "route.not_found", "not found")
+        elif path == "/api/v1/apps":
+            self._send_catalog(query)
+        elif path == "/api/v1/apps/refs":
+            url = _optional_str((query.get("url") or [None])[0]) or ""
+            refs = core_git_refs.list_remote_refs(url) if url else None
+            self._send_json(
+                {
+                    "data": (
+                        dataclasses.asdict(refs)
+                        if refs is not None
+                        else {
+                            "url": "",
+                            "branches": [],
+                            "tags": [],
+                            "ok": False,
+                            "error": "url required",
+                        }
+                    )
+                }
+            )
+        elif path == "/api/v1/metrics":
+            self._send_metrics(query)
+        elif path == "/api/v1/sites/icons":
+            self._send_json({"data": {"icons": self.site_icons.all()}})
+        elif path == "/api/v1/updates":
+            self._send_updates()
+        elif path == "/api/v1/schedules":
+            self._send_json(
+                {
+                    "data": {
+                        **core_schedules.list_schedules(),
+                        "templates": core_schedules.templates(),
+                    }
+                }
+            )
+        elif path == "/api/v1/backups":
+            self._send_backups(query)
+        elif path == "/api/v1/backups/download":
+            key = _optional_str((query.get("key") or [None])[0])
+            if not key:
+                self._send_error(400, ErrorKind.USAGE.value, "backups.key", "key is required")
+                return
+            try:
+                tar_path = core_transfer.export_tar(key, core_backup_store.store_root() / ".outbox")
+            except CwcliError as e:
+                self._send_core_error(e)
+                return
+            try:
+                size = tar_path.stat().st_size
+                self.send_response(200)
+                self.send_header("Content-Type", "application/x-tar")
+                self.send_header("Content-Length", str(size))
+                self.send_header("Content-Disposition", f'attachment; filename="{tar_path.name}"')
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                with open(tar_path, "rb") as f:
+                    shutil.copyfileobj(f, self.wfile, 1 << 20)
+            finally:
+                tar_path.unlink(missing_ok=True)
+        elif path == "/api/v1/backups/offsite":
+            project = _optional_str((query.get("project") or [None])[0])
+            if not project:
+                self._send_error(
+                    400, ErrorKind.USAGE.value, "backups.project", "project is required"
+                )
+                return
+            try:
+                rows = core_backup_store.offsite_list(project)
+            except CwcliError as e:
+                self._send_core_error(e)
+                return
+            self._send_json({"data": {"project": project, "sets": rows}})
+        elif path == "/api/v1/backups/retention":
+            project = _optional_str((query.get("project") or [None])[0])
+            if not project:
+                self._send_error(
+                    400, ErrorKind.USAGE.value, "backups.project", "project is required"
+                )
+                return
+            plan = core_backup_store.retention_plan(project)
+            self._send_json(
+                {
+                    "data": {
+                        "project": project,
+                        "decisions": [asdict(d) for d in plan],
+                        "remove": sum(1 for d in plan if not d.keep),
+                        "keep": sum(1 for d in plan if d.keep),
+                        "settings": core_backup_store.settings(project),
+                    }
+                }
+            )
+        elif path == "/api/v1/advisories":
+            self._send_advisories()
+        elif path == "/api/v1/advisories.rss":
+            snap = self.advisories.snapshot()
+            self._send_bytes(
+                core_advisories.rss(
+                    snap, f"http://{self.headers.get('Host', '127.0.0.1')}/advisories"
+                ).encode("utf-8"),
+                "application/rss+xml; charset=utf-8",
+                csp=None,
+                cache="no-cache",
+            )
+        elif path.startswith("/api/v1/apps/logo/"):
+            self._send_logo(unquote(path[len("/api/v1/apps/logo/") :]))
         elif path == "/api/v1/doctor":
             self._send_doctor()
         elif path == "/api/v1/config":
@@ -811,7 +1078,11 @@ class _Handler(BaseHTTPRequestHandler):
                 after = int((query.get("after") or ["0"])[0])
                 if after < 0:
                     raise ValueError
-                record = core_jobs.read_job(job_id, include_events=True, after=after)
+                raw_limit = (query.get("limit") or [None])[0]
+                limit = int(raw_limit) if raw_limit is not None else None
+                if limit is not None and not 0 <= limit <= 20000:
+                    raise ValueError
+                record = core_jobs.read_job(job_id, include_events=True, after=after, limit=limit)
             except ValueError:
                 self._send_error(
                     400,
@@ -835,6 +1106,20 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_error(404, ErrorKind.NOT_FOUND.value, "route.not_found", "not found")
             self.close_connection = True
             return
+        if parsed.path == "/api/v1/backups/upload":
+            # A set's tar, streamed to disk: too big for the bounded action body. An
+            # unauthenticated upload is refused without reading it (the connection
+            # closes instead of draining gigabytes).
+            if not self._authenticated() or self._refuse_cross_origin():
+                self.close_connection = True
+                if not self._authenticated():
+                    self._send_unauthenticated()
+                return
+            if self._refuse_change_pending(parsed.path):
+                self.close_connection = True
+                return
+            self._receive_upload(parsed)
+            return
         # Drain the body BEFORE any guard. This is HTTP/1.1 with keep-alive, so a
         # guard that answers 401/403/415 without consuming the request body leaves
         # those bytes in the socket, and the NEXT request on that connection is
@@ -848,19 +1133,17 @@ class _Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/v1/session":
             if self._refuse_cross_origin():
                 return
-            if self._authenticated() or self._redeem_login_code(raw):
-                self._open_session()
-            else:
-                self._send_unauthenticated()
-            return
-        if parsed.path == "/api/v1/session/code":
-            # Bearer ONLY: a signed-in page must not be able to mint sign-in links.
-            if not self._bearer_authenticated():
-                self._send_unauthenticated()
-                return
-            self._send_json({"data": {"code": self.login.mint()}})
+            self._sign_in(raw)
             return
         if self._refuse_unauthenticated() or self._refuse_cross_origin():
+            return
+        if self._refuse_change_pending(parsed.path):
+            return
+        if parsed.path == "/api/v1/session/password":
+            self._change_password(raw)
+            return
+        if parsed.path == "/api/v1/session/signout":
+            self._sign_out(raw)
             return
         if not self._action_json_content_type():
             self._send_error(
@@ -878,6 +1161,24 @@ class _Handler(BaseHTTPRequestHandler):
                 status, body = self._create_job(payload)
             elif parsed.path == "/api/v1/settings":
                 status, body = self._apply_setting(payload)
+            elif parsed.path == "/api/v1/apps/scan":
+                status, body = self._scan_catalog()
+            elif parsed.path == "/api/v1/sites/icons":
+                status, body = self._refresh_site_icons(payload)
+            elif parsed.path == "/api/v1/updates/check":
+                status, body = self._check_updates()
+            elif parsed.path == "/api/v1/backups/settings":
+                status, body = self._save_backup_settings(payload)
+            elif parsed.path == "/api/v1/schedules":
+                status, body = self._schedules_post(payload)
+            elif parsed.path == "/api/v1/backups/s3":
+                status, body = self._configure_s3(payload)
+            elif parsed.path == "/api/v1/advisories/check":
+                status, body = self._check_advisories(
+                    rematch_only=bool(payload.get("rematch_only"))
+                )
+            elif parsed.path == "/api/v1/advisories/state":
+                status, body = self._set_advisory_state(payload)
             else:
                 status, body = self._control_job(parsed.path, payload)
         except CwcliError as e:
@@ -887,6 +1188,24 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_error(500, ErrorKind.INTERNAL.value, "action.internal_error", str(e))
             return
         self._send_json(body, status=status)
+
+    def _job_origin(self) -> dict:
+        """Which UI made this job: the daemon's port, the page it was on and the client,
+        written into the job spec so a start can be attributed after the fact."""
+        referer = self.headers.get("Referer") or ""
+        try:
+            page = urlparse(referer).path if referer else None
+        except ValueError:
+            page = None
+        addr = getattr(self.server, "server_address", None)
+        ui_port = addr[1] if isinstance(addr, tuple) and len(addr) > 1 else None
+        return {
+            "via": "web",
+            "account": self._account_name(),
+            "ui_port": ui_port,
+            "page": page,
+            "agent": (self.headers.get("User-Agent") or "")[:80],
+        }
 
     def _create_job(self, payload: dict) -> tuple[int, dict]:
         verb = _required_str(payload, "verb")
@@ -922,8 +1241,58 @@ class _Handler(BaseHTTPRequestHandler):
             consent=payload.get("consent") is True,
             secret_values=secret_values,
             ui_context=self._ui_context(),
+            origin=self._job_origin(),
         )
         return 202, {"data": record}
+
+    def _schedules_post(self, payload: dict) -> tuple[int, dict]:
+        """``{op: save|delete|enable|run|settings, ...}`` over ``core.schedules``; every
+        change records the signed-in account."""
+        op = str(payload.get("op") or "")
+        by = self._account_name()
+        if op == "save":
+            sched = payload.get("schedule")
+            if not isinstance(sched, dict):
+                raise CwcliError(
+                    ErrorKind.USAGE, "schedule.payload_invalid", "schedule must be an object."
+                )
+            return 200, {"data": core_schedules.save(sched, by=by)}
+        sid = str(payload.get("id") or "")
+        if op == "delete":
+            core_schedules.delete(sid)
+            return 200, {"data": {"deleted": sid}}
+        if op == "enable":
+            core_schedules.set_enabled(sid, bool(payload.get("enabled", True)), by=by)
+            return 200, {"data": {"id": sid, "enabled": bool(payload.get("enabled", True))}}
+        if op == "run":
+
+            def _create(verb, target, args, **kw):
+                origin = {
+                    **(kw.get("origin") or {}),
+                    **self._job_origin(),
+                    "account": by,
+                    "schedule": sid,
+                }
+                return core_jobs.create_job(
+                    verb, target, args, consent=bool(kw.get("consent")), origin=origin
+                )
+
+            return 202, {"data": core_schedules.run_now(sid, _create)}
+        if op == "settings":
+            core_schedules.save_settings(
+                windows=(
+                    payload.get("windows") if isinstance(payload.get("windows"), dict) else None
+                ),
+                quiet_hours=(payload.get("quiet_hours") if "quiet_hours" in payload else False),
+                guards=payload.get("guards") if isinstance(payload.get("guards"), dict) else None,
+                digest=payload.get("digest") if isinstance(payload.get("digest"), str) else None,
+            )
+            return 200, {"data": core_schedules.list_schedules()}
+        raise CwcliError(
+            ErrorKind.USAGE,
+            "schedule.op_invalid",
+            "op must be save, delete, enable, run or settings.",
+        )
 
     def _ui_context(self) -> dict[str, str | int]:
         """What a ``self-update`` job needs to restart this daemon afterwards."""
@@ -935,7 +1304,6 @@ class _Handler(BaseHTTPRequestHandler):
             "start": daemon_identity.process_start_time(pid) or "",
             "port": int(self.server.server_port),
             "token": self.token,
-            "session": self.session_id,
         }
 
     def _apply_setting(self, payload: dict) -> tuple[int, dict]:
@@ -995,6 +1363,24 @@ class _Handler(BaseHTTPRequestHandler):
                 result = core_cred_bridge.restart()
             elif setting in {"tips.enable", "tips.disable"}:
                 result = core_config.set_tips(setting == "tips.enable")
+            elif setting == "catalog.source_add":
+                result = Result(
+                    status=Status.OK,
+                    data={
+                        "extra_sources": core_app_catalog.add_extra_source(
+                            _required_str(payload, "source")
+                        )
+                    },
+                )
+            elif setting == "catalog.source_remove":
+                result = Result(
+                    status=Status.OK,
+                    data={
+                        "extra_sources": core_app_catalog.remove_extra_source(
+                            _required_str(payload, "source")
+                        )
+                    },
+                )
             else:
                 assert setting == "agent_hooks.install"
                 result = Result(status=Status.OK, data=agent_hooks.install())
@@ -1150,6 +1536,13 @@ class _Handler(BaseHTTPRequestHandler):
                 ref = _required_str(payload, "ref")
                 core_apps.validate_checkout_app_name(app)
                 return self._checkout_app(project, bench, app, ref)
+            if action == "open_editor":
+                return self._open_editor(
+                    project,
+                    bench,
+                    _optional_str(payload.get("app")),
+                    _required_str(payload, "editor"),
+                )
 
             assert process is not None
             process_result = core_restart.restart_process(project, process, bench=bench)
@@ -1298,6 +1691,32 @@ class _Handler(BaseHTTPRequestHandler):
             ),
         )
 
+    def _open_editor(
+        self, project: str, bench: str | None, app: str | None, editor: str
+    ) -> tuple[int, dict]:
+        """``cwcli open --app <app> --<editor>`` from the page: the same ``core.open_plan``
+        (container, bench, app dir, editor detection) and the same host handover the
+        CLI performs (``vscode_utils.open_in_vscode``). A stopped instance comes back as
+        the core's ``confirm_start`` choice, never auto-started; an editor that is not
+        installed is the core's ``editor.not_installed`` error."""
+        if editor == "docker":
+            raise CwcliError(
+                ErrorKind.USAGE,
+                "editor.unsupported",
+                "The page opens editors only; a shell is `cwcli open`.",
+            )
+        result = core_open.open_plan(project, bench=bench, app=app, editor=editor)
+        if result.status is Status.NEEDS_CHOICE:
+            return _choice_response("open_editor", project, result)
+        target = result.data
+        assert target is not None
+        notes: list[str] = []
+        core_editors.launch(
+            target.editor, target.container_name, target.working_dir, log=notes.append
+        )
+        warnings = [*result.warnings, *(Message(code="editor.note", text=n) for n in notes)]
+        return _ok_response("open_editor", project, result.status, target, warnings)
+
     def _refresh_lifecycle(self, project: str, warnings: list) -> None:
         try:
             self.fleet.bootstrap()
@@ -1334,7 +1753,13 @@ class _Handler(BaseHTTPRequestHandler):
         assert report is not None
         rows = core_config.cached_projects().data or []
         cached_at = next((r.last_updated for r in rows if r.name == project), None)
-        self._send_json({"data": {**asdict(report), "cached_at": cached_at}})
+        try:
+            dev_modes = core_dev_mode.read_dev_modes(project)
+        except Exception:  # a cache read must never break the detail page
+            dev_modes = {}
+        self._send_json(
+            {"data": {**asdict(report), "cached_at": cached_at, "dev_modes": dev_modes}}
+        )
 
     def _send_logs(self, project: str, query: dict) -> None:
         """Resumable ``core.read_logs_since`` tail. A PURE READ - launches nothing.
@@ -1377,6 +1802,112 @@ class _Handler(BaseHTTPRequestHandler):
         status, body = _result_response("read_logs", project, result)
         self._send_json(body, status=status)
 
+    def _send_dev_mode(self, project: str, query: dict) -> None:
+        """One site's developer-mode state, read live (``core.dev_mode.read_dev_mode``)."""
+        bench_path = _optional_str((query.get("bench_path") or [None])[0])
+        site = _optional_str((query.get("site") or [None])[0])
+        if not project or not bench_path or not site:
+            self._send_error(
+                400,
+                ErrorKind.USAGE.value,
+                "site.required",
+                "project, bench_path and site are required",
+            )
+            return
+        try:
+            state = core_dev_mode.read_dev_mode(project, bench_path, site)
+        except CwcliError as e:
+            self._send_core_error(e)
+            return
+        self._send_json({"data": asdict(state)})
+
+    def _send_site_logs(self, project: str, query: dict) -> None:
+        """A site's own log files (``core.site_logs``): the file list, plus a resumable
+        tail of ``file`` when one is named. Read-only; same-origin and under the
+        project's action lock like ``read_logs``."""
+        if self._refuse_cross_origin():
+            return
+        bench_path = _optional_str((query.get("bench_path") or [None])[0])
+        site = _optional_str((query.get("site") or [None])[0])
+        file = _optional_str((query.get("file") or [None])[0])
+        if not project or not bench_path or not site:
+            self._send_error(
+                400,
+                ErrorKind.USAGE.value,
+                "site.required",
+                "project, bench_path and site are required",
+            )
+            return
+        try:
+            lines = int((query.get("lines") or ["200"])[0])
+        except ValueError:
+            lines = -1
+        if not 1 <= lines <= 1000:
+            self._send_error(
+                400,
+                ErrorKind.USAGE.value,
+                "logs.lines_invalid",
+                "lines must be a whole number between 1 and 1000.",
+            )
+            return
+        raw_after = (query.get("after") or [""])[0]
+        try:
+            with self._action_lock(project):
+                if file == "*":
+                    # Every live file at once, each with its own cursor (JSON name -> offset).
+                    cursors: dict[str, int] = {}
+                    if raw_after.startswith("{"):
+                        try:
+                            parsed = json.loads(raw_after)
+                        except ValueError:
+                            parsed = {}
+                        if isinstance(parsed, dict):
+                            cursors = {
+                                str(k): int(v) for k, v in parsed.items() if isinstance(v, int)
+                            }
+                    payload = core_site_logs.read_site_logs(
+                        project, bench_path, site, lines=min(lines, 200), after=cursors
+                    )
+                    self._send_json({"data": {**payload, "tail": None}})
+                    return
+                after = int(raw_after) if raw_after.isdigit() else None
+                listing = core_site_logs.list_site_logs(project, bench_path, site)
+                tail = (
+                    core_site_logs.read_site_log(
+                        project, bench_path, site, file, lines=lines, after=after
+                    )
+                    if file
+                    else None
+                )
+        except CwcliError as e:
+            self._send_core_error(e)
+            return
+        self._send_json({"data": {**listing, "tail": tail}})
+
+    def _send_error_log(self, project: str, query: dict) -> None:
+        """The site's Error Log entries, newest first (``core.site_logs.read_error_log``)."""
+        if self._refuse_cross_origin():
+            return
+        bench_path = _optional_str((query.get("bench_path") or [None])[0])
+        site = _optional_str((query.get("site") or [None])[0])
+        if not project or not bench_path or not site:
+            self._send_error(
+                400,
+                ErrorKind.USAGE.value,
+                "site.required",
+                "project, bench_path and site are required",
+            )
+            return
+        raw_limit = (query.get("limit") or ["50"])[0]
+        limit = int(raw_limit) if raw_limit.isdigit() else 50
+        try:
+            with self._action_lock(project):
+                data = core_site_logs.read_error_log(project, bench_path, site, limit=limit)
+        except CwcliError as e:
+            self._send_core_error(e)
+            return
+        self._send_json({"data": data})
+
     def _send_url(self, project: str, query: dict) -> None:
         """Fresh host-URL + reachability probe for one bench (``core.url.probe_url``).
 
@@ -1401,6 +1932,266 @@ class _Handler(BaseHTTPRequestHandler):
             return
         status, body = _result_response("probe_url", project, result)
         self._send_json(body, status=status)
+
+    # ------------------------------------------------------------ apps catalog
+
+    def _send_metrics(self, query: dict) -> None:
+        """The rolling performance window (``core.metrics``): one instance's points
+        when ``?project=`` names one (empty for a stopped or unknown instance -
+        never a flat fake line), plus the host series either way."""
+        project = (query.get("project") or [None])[0]
+        since = time.time() - float((query.get("window") or ["3600"])[0])
+        body: dict = {"host": self.metrics.host_series(since), "window": {"since": since}}
+        if project:
+            body["project"] = project
+            body["points"] = self.metrics.series(project, since)
+            state = self.fleet.get(project)
+            body["running"] = bool(state and state.container_running)
+        else:
+            body["projects"] = {
+                p: self.metrics.series(p, since) for p in self.fleet.running_projects()
+            }
+        self._send_json({"data": body})
+
+    def _send_catalog(self, query: dict) -> None:
+        """The apps catalog (``core.app_catalog``): installed + remote, logos same-origin.
+
+        Same-origin only (it names every repo the host's forge sign-ins reach).
+        ``?installed=fresh`` forces the installed half to be re-read now instead
+        of within its 30s memo; the remote half never blocks on the network -
+        ``POST /api/v1/apps/scan`` refreshes it in the background and a
+        ``catalog`` SSE frame announces when it landed.
+        """
+        if self._refuse_cross_origin():
+            return
+        force = (query.get("installed") or [""])[0] == "fresh"
+        try:
+            catalog = self.catalog.get(force_installed=force)
+        except CwcliError as e:
+            self._send_core_error(e)
+            return
+        self._send_json({"data": core_app_catalog.as_json(catalog)})
+
+    def _send_advisories(self) -> None:
+        """Advisories matched against what runs here (``core.advisories``); a stale
+        (older than an hour) result starts a background check first."""
+        snap = self.advisories.snapshot()
+        if self.advisories.stale() and not snap["checking"]:
+            self._check_advisories()
+            snap = self.advisories.snapshot()
+        self._send_json({"data": snap})
+
+    def _check_advisories(self, *, rematch_only: bool = False) -> tuple[int, dict]:
+        catalog = self.catalog.get()
+        started = self.advisories.refresh(
+            catalog.apps,
+            lambda data: self.hub.publish_event("advisories", data),
+            rematch_only=rematch_only,
+        )
+        return 202, {"data": {"started": started, "checking": True, "rematch_only": rematch_only}}
+
+    def _set_advisory_state(self, payload: dict) -> tuple[int, dict]:
+        adv_id = payload.get("id")
+        state = payload.get("state")
+        if not isinstance(adv_id, str) or not isinstance(state, str):
+            raise CwcliError(
+                ErrorKind.USAGE, "advisory.state_invalid", "Body needs an advisory id and a state."
+            )
+        try:
+            snap = self.advisories.set_state(
+                adv_id, state, payload.get("note") if isinstance(payload.get("note"), str) else None
+            )
+        except ValueError as e:
+            raise CwcliError(ErrorKind.USAGE, "advisory.state_invalid", str(e)) from e
+        self.hub.publish_event("advisories", snap)
+        return 200, {"data": snap}
+
+    def _send_updates(self) -> None:
+        """Updates available for installed apps (``core.updates``): the last check,
+        refreshed in the background when older than an hour."""
+        snap = self.updates.snapshot()
+        if self.updates.stale() and not snap["checking"]:
+            self._check_updates()
+            snap = self.updates.snapshot()
+        self._send_json({"data": snap})
+
+    def _send_backups(self, query: dict) -> None:
+        """The backup store (``core.backup_store``): every set (or one project's), the
+        last good set per site with its age, the disk budget and the settings."""
+        if self._refuse_cross_origin():
+            return
+        project = _optional_str((query.get("project") or [None])[0])
+        self._send_json({"data": backups_snapshot(project)})
+
+    def _save_backup_settings(self, payload: dict) -> tuple[int, dict]:
+        project = payload.get("project")
+        values = payload.get("values")
+        if not isinstance(project, str) or not project or not isinstance(values, dict):
+            return 400, _error_body(
+                ErrorKind.USAGE.value, "backups.settings", "project and values are required"
+            )
+        try:
+            saved = core_backup_store.save_settings(project, values)
+        except CwcliError as e:
+            return 400, _error_body(e.kind.value, e.code, e.message, hint=e.hint)
+        return 200, {"data": {"project": project, "settings": saved}}
+
+    def _receive_upload(self, parsed) -> None:
+        query = parse_qs(parsed.query)
+        project = _optional_str((query.get("project") or [None])[0])
+        site = _optional_str((query.get("site") or [None])[0])
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+        except ValueError:
+            length = 0
+        if length <= 0 or length > _MAX_UPLOAD_BODY:
+            self.close_connection = True
+            self._send_error(
+                413,
+                ErrorKind.USAGE.value,
+                "upload.size",
+                "Upload needs a Content-Length under 50 GB.",
+            )
+            return
+        inbox = core_backup_store.store_root() / ".inbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(prefix="upload-", suffix=".tar", dir=inbox)
+        tmp = Path(tmp_name)
+        try:
+            remaining = length
+            with os.fdopen(fd, "wb") as out:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(1 << 20, remaining))
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    remaining -= len(chunk)
+            if remaining:
+                self.close_connection = True
+                self._send_error(
+                    400, ErrorKind.USAGE.value, "upload.short", "The upload ended early."
+                )
+                return
+            result = core_transfer.import_tar(tmp, project=project, site=site)
+        except CwcliError as e:
+            self._send_core_error(e)
+            return
+        finally:
+            tmp.unlink(missing_ok=True)
+        try:
+            self.hub.publish_event("backups", backups_snapshot())
+        except Exception:  # pragma: no cover - a refresh must never break the upload
+            pass
+        self._send_json({"data": result.data})
+
+    def _configure_s3(self, payload: dict) -> tuple[int, dict]:
+        """The S3 target for one instance. The secret key rides in ``secret_key`` and is
+        stored on this machine only (0600); it is never echoed back or logged. A probe
+        (list + create the bucket when absent) answers in the response."""
+        from ..core import s3 as core_s3
+
+        project = payload.get("project")
+        values = payload.get("values") or {}
+        if not isinstance(project, str) or not project or not isinstance(values, dict):
+            return 400, _error_body(
+                ErrorKind.USAGE.value, "backups.s3", "project and values are required"
+            )
+        secret = payload.get("secret_key")
+        try:
+            if isinstance(secret, str) and secret:
+                core_backup_store.set_s3_secret(secret)
+            allowed = {
+                k: values[k]
+                for k in (
+                    "enabled",
+                    "endpoint",
+                    "bucket",
+                    "prefix",
+                    "region",
+                    "access_key",
+                    "copy_on_backup",
+                )
+                if k in values
+            }
+            saved = core_backup_store.save_settings(project, {"s3_target": allowed})
+            verdict = None
+            if saved["s3_target"].get("enabled"):
+                verdict = core_s3.probe(core_backup_store.offsite_target(project))
+        except CwcliError as e:
+            return 400, _error_body(e.kind.value, e.code, e.message, hint=e.hint)
+        return 200, {
+            "data": {"project": project, "s3_target": saved["s3_target"], "probe": verdict}
+        }
+
+    def _check_updates(self) -> tuple[int, dict]:
+        catalog = self.catalog.get()
+        started = self.updates.refresh(
+            catalog.apps, lambda data: self.hub.publish_event("updates", data)
+        )
+        return 202, {"data": {"started": started, "checking": True}}
+
+    def _refresh_site_icons(self, payload: dict) -> tuple[int, dict]:
+        """Read the favicons of the listed sites in the background (``core.site_icons``):
+        live through the bench for a running instance, from the bench files on disk
+        for a stopped one. The ``site_icons`` SSE frame carries the result."""
+        sites = payload.get("sites") if isinstance(payload, dict) else None
+        if not isinstance(sites, list):
+            raise CwcliError(ErrorKind.USAGE, "sites.required", "Body must carry a 'sites' list.")
+        clean = []
+        for s in sites[:500]:
+            if not isinstance(s, dict):
+                continue
+            project, site, bench_path = s.get("project"), s.get("site"), s.get("bench_path")
+            if not (
+                isinstance(project, str) and isinstance(site, str) and isinstance(bench_path, str)
+            ):
+                continue
+            if not is_valid_project_name(project):
+                continue
+            core_resolvers.validate_site_name(site)
+            clean.append(
+                {
+                    "project": project,
+                    "site": site,
+                    "bench_path": bench_path,
+                    "running": bool(s.get("running")),
+                }
+            )
+        started = self.site_icons.refresh(
+            clean,
+            lambda data: self.hub.publish_event("site_icons", data),
+            force=bool(payload.get("force")),
+        )
+        return 202, {"data": {"started": started, "icons": self.site_icons.all()}}
+
+    def _scan_catalog(self) -> tuple[int, dict]:
+        def _landed(data: dict) -> None:
+            self.hub.publish_event("catalog", data)
+            if "scanned_at" in data:  # the scan finished: re-check updates on the fresh catalog
+                try:
+                    self._check_updates()
+                except Exception:
+                    pass
+
+        started = self.catalog.refresh(_landed)
+        return 202, {"data": {"scanning": True, "started": started}}
+
+    def _send_logo(self, name: str) -> None:
+        """One cached logo by its content-addressed name; anything else is 404.
+
+        Served with ``nosniff`` and the type sniffed from the bytes at store time;
+        the page renders SVG only through ``<img>``, where it cannot run script.
+        """
+        path = core_app_catalog.logo_path(name)
+        if path is None:
+            self._send_error(404, ErrorKind.NOT_FOUND.value, "logo.not_found", "not found")
+            return
+        self._send_bytes(
+            path.read_bytes(),
+            core_app_catalog.content_type_for(name),
+            csp="default-src 'none'; style-src 'unsafe-inline'; sandbox",
+            cache="public, max-age=31536000, immutable",
+        )
 
     def _send_doctor(self) -> None:
         """System-wide, read-only environment preflight (``core.doctor.run_all``).
@@ -1500,9 +2291,19 @@ _JOB_OPERATIONS = {"interrupt", "detach", "retry", "continue"}
 _POST_PATHS = {
     "/api/v1/actions",
     "/api/v1/session",
-    "/api/v1/session/code",
+    "/api/v1/session/password",
+    "/api/v1/session/signout",
     "/api/v1/jobs",
     "/api/v1/settings",
+    "/api/v1/apps/scan",
+    "/api/v1/sites/icons",
+    "/api/v1/updates/check",
+    "/api/v1/backups/settings",
+    "/api/v1/schedules",
+    "/api/v1/backups/s3",
+    "/api/v1/backups/upload",
+    "/api/v1/advisories/check",
+    "/api/v1/advisories/state",
 }
 
 
@@ -1732,31 +2533,76 @@ def _choice_response(action: str, project: str, result: Result) -> tuple[int, di
     )
 
 
+def backups_snapshot(project: str | None = None) -> dict:
+    """What the Backups page and a site's Backups tab read: sets newest first, the last
+    good set per (project, site) with its age in days, the store's disk budget, and each
+    instance's settings (per-instance values over the captain's defaults)."""
+    sets = core_backup_store.list_sets(project)
+    rows = [b.to_dict() for b in sets]
+    last_good: dict[str, dict] = {}
+    for b in sets:
+        key = f"{b.project}/{b.site}"
+        if b.verified and key not in last_good:
+            try:
+                age_days = (
+                    time.time()
+                    - time.mktime(time.strptime(b.created_at, "%Y-%m-%dT%H:%M:%SZ"))
+                    + time.timezone
+                ) / 86400
+            except (ValueError, OverflowError):
+                age_days = None
+            last_good[key] = {"key": b.key, "created_at": b.created_at, "age_days": age_days}
+    projects = sorted({b.project for b in sets} | ({project} if project else set()))
+    settings = {p: core_backup_store.settings(p) for p in projects}
+    drills: dict[str, dict] = {}
+    for b in sets:
+        if b.drill and f"{b.project}/{b.site}" not in drills:
+            drills[f"{b.project}/{b.site}"] = {**b.drill, "set_key": b.key}
+    budget = core_backup_store.disk_budget()
+    return {
+        "sets": rows,
+        "last_good": last_good,
+        "budget": budget,
+        "settings": settings,
+        "drills": drills,
+        "reasons": list(core_backup_store.REASONS),
+    }
+
+
 def make_server(
     host: str,
     port: int,
     fleet: core_fleet.Fleet,
     hub: _Hub,
     token: str,
-    login_code: str,
-    session_id: str | None = None,
+    catalog: core_app_catalog.CatalogStore | None = None,
+    metrics: core_metrics.MetricsStore | None = None,
+    site_icons: core_site_icons.SiteIconStore | None = None,
+    updates: core_updates.UpdatesStore | None = None,
+    advisories: core_advisories.AdvisoriesStore | None = None,
 ) -> ThreadingHTTPServer:
     """Bind the HTTP server, handing the handler class its fleet, hub and credentials.
 
-    There is no unauthenticated mode, so both credentials are required: the
-    bearer ``token`` and the single-use browser ``login_code``. The browser
-    session id is fresh per launch and never persisted.
+    There is no unauthenticated mode: a programmatic client sends the bearer
+    ``token``; a browser signs in with the administrator account
+    (``core.accounts``), whose sessions live in the account store, so they
+    survive a daemon restart.
     """
+    core_accounts.ensure_default()
     handler = type(
         "Handler",
         (_Handler,),
         {
             "fleet": fleet,
             "hub": hub,
+            "catalog": catalog or core_app_catalog.CatalogStore(),
+            "metrics": metrics or core_metrics.MetricsStore(),
+            "site_icons": site_icons or core_site_icons.SiteIconStore(),
+            "updates": updates or core_updates.UpdatesStore(),
+            "advisories": advisories or core_advisories.AdvisoriesStore(),
             "action_locks": tuple(threading.Lock() for _ in range(_ACTION_LOCK_STRIPES)),
             "token": token,
-            "session_id": session_id or secrets.token_urlsafe(32),
-            "login": _LoginCode(login_code),
+            "lockout": core_accounts.Lockout(),
             "remote_bind": not is_loopback(host),
         },
     )
@@ -1803,9 +2649,9 @@ def _outbound_address() -> str | None:
     return None if addr.startswith("127.") else addr
 
 
-def login_url(host: str, port: int, code: str) -> str:
-    """The one-time sign-in link for a daemon bound at ``host:port``."""
-    return f"http://{_url_host(host)}:{port}/#login={code}"
+def page_url(host: str, port: int) -> str:
+    """The plain address of the page for a daemon bound at ``host:port``."""
+    return f"http://{_url_host(host)}:{port}/"
 
 
 def _recover_daemons() -> None:
@@ -1824,7 +2670,7 @@ def run_daemon(
     """Bootstrap the fleet, bind, print the banner, serve until interrupted.
 
     The body shared by the ``serve`` module entry and ``cwcli ui --foreground``.
-    ``on_ready`` is called once with the sign-in link after the bind succeeds,
+    ``on_ready`` is called once with the page address after the bind succeeds,
     which is how ``ui --foreground`` opens the browser. Raises ``typer.Exit`` on
     a failed bootstrap or bind (the callers are both Typer commands).
     """
@@ -1845,7 +2691,122 @@ def run_daemon(
         stderr_console.print(f"[red]{e.message}[/red]")
         raise typer.Exit(code=1) from e
 
+    metrics_store = core_metrics.MetricsStore()
+    advisories_store = core_advisories.AdvisoriesStore()
+    updates_store = core_updates.UpdatesStore()
+    catalog = core_app_catalog.CatalogStore()
+    # Anything that changes what is installed re-matches the advisories (no fetch):
+    # a cheap pass on the fresh inventory, as the locked spec asks.
+    recheck_verbs = {
+        "apps-install",
+        "apps-update",
+        "apps-checkout",
+        "new-site",
+        "new-bench",
+        "init",
+        "rm",
+        "rm-bench",
+        "rm-site",
+        "clone-sites",
+        "move-sites",
+    }
+
+    backup_verbs = {
+        "clone-sites",
+        "move-sites",
+        "receive-backup",
+        "prune-backups",
+        "backup-sites",
+        "s3-copy",
+        "s3-fetch",
+        "s3-prune",
+        "restore-drill",
+        "backup",
+        "restore-set",
+        "verify-backup",
+        "delete-backup",
+        "rm",
+        "rm-site",
+        "rm-bench",
+        "apps-update",
+        "migrate",
+        "apps-install",
+    }
+
+    finished_since: list[dict] = []
+    finished_lock = threading.Lock()
+
+    def _on_job(record: dict) -> None:
+        hub.publish_job(record)
+        if record.get("state") in core_jobs.TERMINAL_STATES:
+            with finished_lock:
+                finished_since.append(record)
+            if (record.get("origin") or {}).get("schedule"):
+                try:
+                    core_schedules.record_outcome(record)
+                except Exception as e:  # pragma: no cover - bookkeeping never breaks delivery
+                    _warn(e)
+        if record.get("state") in ("succeeded", "failed") and record.get("verb") in backup_verbs:
+            try:
+                hub.publish_event("backups", backups_snapshot())
+            except Exception as e:  # pragma: no cover - a refresh must never break job delivery
+                _warn(e)
+        if record.get("state") == "succeeded" and record.get("verb") == "check-updates":
+            # The job wrote the snapshot in its own process; serve it and tell every tab.
+            updates_store.reload()
+            hub.publish_event("updates", updates_store.snapshot())
+        if record.get("state") == "succeeded" and record.get("verb") in recheck_verbs:
+            try:
+                advisories_store.refresh(
+                    catalog.get().apps,
+                    lambda d: hub.publish_event("advisories", d),
+                    rematch_only=True,
+                )
+            except Exception as e:  # pragma: no cover - a re-match must never break job delivery
+                _warn(e)
+
+    def _schedule_loop() -> None:
+        """Once a minute: the backup settings' daily run (phase 3), then every schedule
+        (``core.schedules.tick``: due slots, guards, recipes and event triggers). A busy
+        instance is retried on the next tick; the tick never takes the daemon down."""
+        was_running: set[str] = set(fleet.running_projects())
+        while not stop.wait(60):
+            try:
+                for project in [d.project_name for d in (core_list.list_instances().data or [])]:
+                    if not core_backup_store.schedule_due(project):
+                        continue
+                    try:
+                        core_jobs.create_job(
+                            "backup-sites",
+                            {"project": project},
+                            {"reason": "scheduled"},
+                            consent=True,
+                            origin={"schedule": "backups", "account": "schedule"},
+                        )
+                    except CwcliError as e:
+                        if e.code != "job.project_busy":
+                            _warn(e)
+                running = set(fleet.running_projects())
+                started, was_running = running - was_running, running
+                with finished_lock:
+                    batch, finished_since[:] = list(finished_since), []
+                known = {s.project for s in [fleet.get(p) for p in running] if s} | running
+
+                def _status(
+                    project: str, running: set[str] = running, known: set[str] = known
+                ) -> str | None:
+                    if project in running:
+                        return "running"
+                    return "stopped" if fleet.get(project) is not None or project in known else None
+
+                core_schedules.tick(
+                    core_jobs.create_job, _status, finished_jobs=batch, started_projects=started
+                )
+            except Exception as e:  # the tick must never take the daemon down
+                _warn(e)
+
     threads = [
+        threading.Thread(target=_schedule_loop, daemon=True),
         threading.Thread(
             target=core_fleet.event_loop,
             args=(fleet, stop),
@@ -1860,8 +2821,20 @@ def run_daemon(
         ),
         threading.Thread(
             target=core_jobs.watch_loop,
-            args=(hub.publish_job, stop),
+            args=(_on_job, stop),
             kwargs={"active": lambda: hub.client_count() > 0},
+            daemon=True,
+        ),
+        threading.Thread(
+            target=core_metrics.metrics_loop,
+            args=(
+                fleet,
+                metrics_store,
+                lambda frame: hub.publish_event("metrics", frame),
+                stop,
+                interval,
+            ),
+            kwargs={"on_error": _warn},
             daemon=True,
         ),
     ]
@@ -1869,7 +2842,6 @@ def run_daemon(
         t.start()
 
     _running_build = core_version.install_fingerprint()
-    login_code = secrets.token_urlsafe(24)
     try:
         httpd = make_server(
             host,
@@ -1877,8 +2849,10 @@ def run_daemon(
             fleet,
             hub,
             env_token or secrets.token_urlsafe(32),
-            login_code,
-            session_id=(os.environ.get(SESSION_ENV) or "").strip() or None,
+            catalog=catalog,
+            metrics=metrics_store,
+            updates=updates_store,
+            advisories=advisories_store,
         )
     except OSError as e:
         stderr_console.print(f"[red]Could not bind {host}:{port}: {e}[/red]")
@@ -1890,19 +2864,15 @@ def run_daemon(
     console.print(f"  instances: {len(fleet.snapshot())}   probe interval: {interval}s")
     if not webui_available():
         console.print("  [yellow]web UI not built[/yellow] (cd webui && npm ci && npm run build)")
-    # Neither token is EVER printed - only which one is in force. The login code
-    # is printed because it is single-use: once a browser redeems it, it is dead.
+    # The token is NEVER printed - only which one is in force. The page signs in
+    # with the administrator account (admin / admin the first time).
     in_force = f"${TOKEN_ENV}" if env_token else "per-launch token"
     console.print(f"  auth: [green]required[/green] ({in_force})")
     sign_in = _url_host((_outbound_address() or bound) if _binds_everywhere(bound) else bound)
-    link = login_url(sign_in, port, login_code)
-    console.print(f"  sign in (works once): [cyan]{link}[/cyan]", soft_wrap=True)
+    link = page_url(sign_in, port)
+    console.print(f"  sign in: [cyan]{link}[/cyan] (admin / admin the first time)", soft_wrap=True)
     if "microsoft" in platform.uname().release.lower():
-        console.print(
-            f"  from Windows: [cyan]http://localhost:{port}/#login={login_code}[/cyan] "
-            "(WSL forwarding)",
-            soft_wrap=True,
-        )
+        console.print(f"  from Windows: [cyan]http://localhost:{port}/[/cyan] (WSL forwarding)")
     console.print("  Ctrl-C to stop")
     if on_ready is not None:
         on_ready(link)
@@ -1910,6 +2880,11 @@ def run_daemon(
     # An enabled background daemon that is not running (an upgrade, a reboot, a broken
     # boot unit) comes back now, and the log says plainly when it cannot.
     threading.Thread(target=_recover_daemons, daemon=True).start()
+    # The remote half of the apps catalog: refresh it in the background when the
+    # on-disk copy is missing or older than an hour; the page can ask for more.
+    scanned = catalog.scanned_at()
+    if scanned is None or time.time() - scanned > 3600:
+        catalog.refresh(lambda data: hub.publish_event("catalog", data))
 
     # main.cli() resets SIGPIPE to SIG_DFL so `cwcli ls | head` exits quietly; in
     # this long-lived server that lets one closed browser tab's next stream write

@@ -10,6 +10,12 @@ import { reactive, computed } from 'vue'
 import { getJson } from './api'
 import { session, recheckMeta } from './session'
 import { applyJob, seedJobs } from './jobs'
+import { catalogLanded } from './catalog'
+import { applyMetricsFrame } from './metrics'
+import { siteIconsLanded } from './site-icons'
+import { updatesLanded } from './updates'
+import { advisoriesLanded } from './advisories'
+import { backupsLanded } from './backups'
 
 export const fleet = reactive({
   instances: {},
@@ -56,6 +62,12 @@ function openStream() {
     fleet.lastEventAt = Date.now()
   })
   source.addEventListener('job', (e) => applyJob(JSON.parse(e.data)))
+  source.addEventListener('catalog', (e) => catalogLanded(JSON.parse(e.data)))
+  source.addEventListener('metrics', (e) => applyMetricsFrame(JSON.parse(e.data)))
+  source.addEventListener('site_icons', (e) => siteIconsLanded(JSON.parse(e.data)))
+  source.addEventListener('updates', (e) => updatesLanded(JSON.parse(e.data)))
+  source.addEventListener('advisories', (e) => advisoriesLanded(JSON.parse(e.data)))
+  source.addEventListener('backups', (e) => backupsLanded(JSON.parse(e.data)))
   // EventSource reconnects by itself; the daemon answers a reconnect with a
   // fresh snapshot, which is the resume. A 401 closes it for good.
   source.onerror = () => {

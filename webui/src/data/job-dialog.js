@@ -1,7 +1,9 @@
 import { reactive } from 'vue'
 import { toast } from 'frappe-ui'
-import { router } from '../router'
 import { createJob } from './jobs'
+import { trackJob } from './job-toasts'
+import { ensureRunning } from './start-gate'
+import { JOB_LABEL } from './jobs'
 
 export const jobDialog = reactive({
   open: false,
@@ -28,7 +30,7 @@ const defaults = {
     admin_password: '',
     db_root_password: '',
   },
-  'apps-install': { apps: '', sites: '', branch: '', fetch_only: false },
+  'apps-install': { apps: '', sites: '', branch: '', fetch_only: false , backup_first: false },
   'apps-update': {
     apps: '',
     sites: '',
@@ -37,9 +39,10 @@ const defaults = {
     clear_website_cache: false,
     skip_maintenance: false,
     force: false,
+    fix_branches: false,
   },
-  backup: { with_files: false },
-  migrate: {},
+  backup: { with_files: true, store: true, reason: 'manual', note: '' },
+  migrate: { backup_first: false },
   'run-tests': { app: '', module: '' },
   build: { app: '' },
   'setup-wizard': { country: 'United States', currency: 'USD', timezone: 'UTC', language: 'English' },
@@ -101,13 +104,14 @@ function spec() {
 }
 
 export async function submitJob() {
+  const verb = jobDialog.verb
+  if (!['init', 'self-update'].includes(verb) && !(await ensureRunning(jobDialog.context.project, JOB_LABEL[verb]))) return null
   jobDialog.running = true
   jobDialog.error = null
   try {
     const record = await createJob(spec())
     jobDialog.open = false
-    toast.success(`${record.verb} queued`, { description: 'The job keeps running if this tab closes.' })
-    await router.push(`/jobs/${record.id}`)
+    trackJob(record.id)
     return record
   } catch (error) {
     jobDialog.error = error

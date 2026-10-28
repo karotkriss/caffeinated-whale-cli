@@ -9,7 +9,9 @@ import frappeui from 'frappe-ui/vite'
 const here = dirname(fileURLToPath(import.meta.url))
 // The build lands inside the Python package as package data (git-ignored);
 // `cwcli ui` serves it from there. See src/caffeinated_whale_cli/commands/serve.py.
-const outDir = resolve(here, '../src/caffeinated_whale_cli/webui/dist')
+// CWCLI_WEBUI_OUTDIR builds the page somewhere else (a dist per checkout, served by
+// `cwcli ui` through CWCLI_WEBUI_DIST) without touching the package data.
+const outDir = process.env.CWCLI_WEBUI_OUTDIR ? resolve(process.env.CWCLI_WEBUI_OUTDIR) : resolve(here, '../src/caffeinated_whale_cli/webui/dist')
 
 // reka-ui (frappe-ui's headless layer) injects one `<style>` text node per
 // scrolling viewport (ScrollArea, Select, Combobox, Viewport) at runtime. The
@@ -57,7 +59,9 @@ export default defineConfig({
   },
   build: {
     outDir,
-    emptyOutDir: true,
+    // Keep earlier builds' chunks: a tab opened before a rebuild still lazy-loads
+    // the route chunks it was built with (its Job page, say) instead of a 404.
+    emptyOutDir: false,
     chunkSizeWarningLimit: 2000,
     // Never inline assets as data: URIs - the CSP has no data: in font-src/script-src.
     assetsInlineLimit: 0,

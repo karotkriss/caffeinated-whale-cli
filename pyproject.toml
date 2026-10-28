@@ -41,6 +41,7 @@ dependencies = [
     "toml>=0.10.2",
     "peewee>=3.17.0",
     "packaging>=24.0",
+    "cryptography>=42",
 ]
 
 [project.optional-dependencies]

@@ -21,7 +21,7 @@ from caffeinated_whale_cli.core import bench_ops, resolvers, update_preflight
 from caffeinated_whale_cli.core import docker as core_docker
 from caffeinated_whale_cli.core import exec_stream as exec_stream_mod
 from caffeinated_whale_cli.core import update as core_update
-from caffeinated_whale_cli.core.envelope import Status
+from caffeinated_whale_cli.core.envelope import Result, Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 from caffeinated_whale_cli.core.update import (
     UpdateAborted,
@@ -442,187 +442,128 @@ class TestSiteFilter:
 
 
 class TestFrappeFork:
-    def test_frappe_runs_the_bench_wide_reset_and_no_git_pull(self, wired):
+    """The core update (frappe, erpnext) is scoped to those apps: a fetch and a reset
+    to the remote branch for EACH named core app, never bench's bench-wide
+    `bench update --reset` (captain, staging16 2026-10-28: it hard-reset every app on
+    the bench), with every site's locks cleared first, the requirements reinstalled,
+    then the ordinary per-site migrate under cwcli's own maintenance lifecycle."""
+
+    def test_frappe_is_reset_to_its_remote_branch_and_no_other_app_is_touched(self, wired):
         report = _update(apps=["frappe"]).data
 
-        assert any("bench update --reset" in c for c in wired.calls)
-        assert not any("git pull" in c for c in wired.calls)
+        calls = [c if isinstance(c, str) else " ".join(c) for c in wired.calls]
+        assert not any("bench update" in c for c in calls)
+        assert "git fetch upstream version-16" in calls
+        assert "git reset --hard upstream/version-16" in calls
+        assert not any("git pull" in c for c in calls)
+        assert "bench setup requirements" in calls
+        # payments is on the bench, and nothing ran against it
+        assert not any("apps/payments" in str(wd) for wd in wired.workdirs)
         assert report.frappe_reset is True
         assert report.ok is True
 
-    def test_the_frappe_path_enters_no_maintenance_mode(self, wired):
-        # It returns BEFORE the state machine: bench update --reset manages its own.
-        _update(apps=["frappe"])
+    def test_every_site_s_locks_are_cleared_first_and_listed(self, wired):
+        events = []
+        wired.unlock_output = f"{BENCH}/sites/a.localhost/locks/Module Profile-x.lock\n"
 
-        assert not any("set-maintenance-mode" in c for c in wired.calls)
+        _update(apps=["frappe"], on_event=events.append)
 
-    def test_a_failed_reset_rides_failed_apps_as_frappe(self, wired):
-        wired.fail_on = ["bench update --reset"]
+        ends = [e for e in events if isinstance(e, UpdateStepEnd) and e.phase == "unlock_all"]
+        assert ends and ends[0].status == "ok"
+        assert "cleared 1 lock" in ends[0].message and "Module Profile" in ends[0].message
+        order = [e.phase for e in events if isinstance(e, UpdateStepStart)]
+        assert order.index("unlock_all") < order.index("reset")
+
+    def test_the_core_path_migrates_every_affected_site_under_maintenance(self, wired):
+        report = _update(apps=["frappe"]).data
+
+        calls = [c if isinstance(c, str) else " ".join(c) for c in wired.calls]
+        assert any("set-maintenance-mode on" in c for c in calls)
+        assert any("set-maintenance-mode off" in c for c in calls)
+        assert report.migrated_sites == ["a.localhost"]
+
+    def test_a_failed_reset_rides_failed_apps_as_frappe_and_migrates_nothing(self, wired):
+        wired.fail_on = ["git reset --hard"]
 
         report = _update(apps=["frappe"]).data
 
         assert report.failed_apps == ["frappe"]
-        assert report.frappe_reset is True
+        assert report.migrated_sites == [] and report.frappe_reset is True
         assert report.ok is False
+        assert report.bench_left_in_maintenance is False
 
-    def test_an_unreadable_site_set_fails_the_successful_reset(self, monkeypatch, wired):
-        monkeypatch.setattr(core_update.bench_sites, "list_sites", lambda *a, **k: None)
-
-        result = _update(apps=["frappe"])
-
-        assert result.data.failed_apps == []
-        assert result.data.resync_error is not None
-        assert result.data.ok is False
-        assert any(w.code == "resync.failed" for w in result.warnings)
-
-    def test_site_enumeration_exception_fails_the_successful_reset(self, monkeypatch, wired):
-        monkeypatch.setattr(
-            core_update.bench_sites,
-            "list_sites",
-            lambda *a, **k: (_ for _ in ()).throw(
-                CwcliError(ErrorKind.DOCKER, "sites.unreadable", "the site list was lost")
-            ),
-        )
-
-        result = _update(apps=["frappe"])
-
-        assert result.data.failed_apps == []
-        assert result.data.resync_error is not None
-        assert result.data.ok is False
-        assert any(w.code == "resync.failed" for w in result.warnings)
-
-    def test_the_reset_recaches_before_checking_the_exit_code(self, monkeypatch, wired):
-        # Preserved deliberately, not "fixed" in a migration: a partially-applied
-        # reset genuinely changes the cache, so a FAILED reset still warrants a
-        # refresh. Defensible and previously untested either way.
-        wired.fail_on = ["bench update --reset"]
-        recaches = []
-        monkeypatch.setattr(
-            core_update.cache,
-            "recache_project",
-            lambda name, verbose=False, bench_path=None, warnings=None: (
-                recaches.append((name, bench_path)),
-                True,
-            )[1],
-        )
+    def test_a_failed_migrate_names_the_site_and_clears_its_maintenance(self, wired):
+        wired.fail_on = ["migrate"]
 
         report = _update(apps=["frappe"]).data
 
-        assert recaches == [("proj", BENCH)]  # scoped to the reset bench
+        assert report.failed_migrations == ["a.localhost"]
+        assert report.failed_apps == []  # the reset itself worked; the stage is named
+        assert report.failed_maintenance_disable == []
         assert report.ok is False
 
-    def test_a_failed_reset_whose_bench_config_is_unreadable_says_it_could_not_tell(self, wired):
-        # The base fake answers `cat` with nothing, which does not parse: unknown is
-        # None plus a warning naming the check, never "the bench is fine".
-        wired.fail_on = ["bench update --reset"]
+    def test_failed_requirements_fail_the_core_apps_before_any_migrate(self, wired):
+        wired.fail_on = ["bench setup requirements"]
 
         result = _update(apps=["frappe"])
+        report = result.data
 
-        assert result.data.bench_left_in_maintenance is None
-        unknown = next(w for w in result.warnings if w.code == "frappe_reset.maintenance_unknown")
-        assert f"{BENCH}/sites/common_site_config.json" in unknown.text
-        assert not any(w.code == "frappe_reset.left_in_maintenance" for w in result.warnings)
+        assert report.failed_apps == ["frappe"] and report.migrated_sites == []
+        assert any(w.code == "requirements.failed" for w in result.warnings)
 
-    def test_a_lost_reset_stream_reports_the_state_unknown_and_reads_no_flags(
-        self, monkeypatch, wired
-    ):
-        # A reset whose outcome is unknown may still be running, and a running
-        # `bench update` has the flags set legitimately: reading them would be a
-        # confident wrong answer either way, so the state is unknown, never clear.
-        monkeypatch.setattr(exec_stream_mod, "_EXIT_CODE_POLL_TIMEOUT", 0.01)
-        _lose_stream_on(wired, "bench update --reset")
+    def test_erpnext_is_a_core_app_too_and_payments_rides_the_plain_pull(self, wired):
+        _update(apps=["erpnext", "payments"])
 
-        result = _update(apps=["frappe"])
+        calls = [c if isinstance(c, str) else " ".join(c) for c in wired.calls]
+        assert "git reset --hard upstream/version-16" in calls and "git pull" in calls
 
-        assert result.data.unknown_apps == ["frappe"]
-        assert result.data.bench_left_in_maintenance is None
-        assert "cat sites/common_site_config.json" not in wired.calls
-        unknown = next(w for w in result.warnings if w.code == "frappe_reset.maintenance_unknown")
-        assert "If the bench is still in maintenance" in unknown.text
-        assert (
-            "cwcli run proj set-config --global --parse maintenance_mode 0 && "
-            "cwcli run proj set-config --global --parse pause_scheduler 0"
-        ) in unknown.text
+    def test_a_site_that_cannot_be_opened_fails_the_run_and_is_named(self, monkeypatch, wired):
+        # The staging16 shape with the preflight off: the only site's database login is
+        # rejected, discovery cannot read it, the core code has already moved. That is
+        # a failed update naming the site, never "successfully updated, 0 sites".
+        def unreadable(project, bench_path, app, container, warnings, unreadable=None):
+            if unreadable is not None:
+                unreadable.append("a.localhost")
+            return []
 
-    def test_the_remedy_names_the_failed_bench_on_a_multi_bench_instance(self, monkeypatch, wired):
-        # Derived from the resolved path, so a caller that passed only bench_path
-        # (the human frontend) still gets a remedy that clears THIS bench.
+        monkeypatch.setattr(core_update, "_sites_with_app", unreadable)
+
+        report = _update(apps=["frappe"]).data
+
+        assert report.unreadable_sites == ["a.localhost"]
+        assert report.migrated_sites == [] and report.ok is False
+
+    def test_discovery_names_the_site_it_could_not_read(self, monkeypatch):
+        # No `wired` here: that fixture fakes _sites_with_app itself, and this test
+        # drives the real one.
+        container = FakeFrappeContainer(available_apps=["frappe"])
+        monkeypatch.setattr(core_update.db_utils, "get_cached_project_data", lambda p: {})
+        site = types.SimpleNamespace(
+            name="broken.localhost", list_apps=None, error="OperationalError"
+        )
+        bench = types.SimpleNamespace(sites=[site])
         monkeypatch.setattr(
-            core_update.supervision,
-            "bench_wide_flags",
-            lambda *a, **k: ["maintenance_mode", "pause_scheduler"],
+            core_update.bench_read,
+            "read_benches",
+            lambda c, paths, list_apps=True: types.SimpleNamespace(
+                benches={BENCH: bench}, errors={}
+            ),
         )
-        monkeypatch.setattr(
-            core_update.resolvers,
-            "cached_benches",
-            lambda _p: [
-                {"path": "/workspace/other", "index": 0, "label": None},
-                {"path": BENCH, "index": 1, "label": "staging"},
-            ],
-        )
-        wired.fail_on = ["bench update --reset"]
-        warnings: list = []
+        warnings, unreadable = [], []
 
-        result = core_update._frappe_reset(
-            wired,
-            project_name="proj",
-            bench_path=BENCH,
-            apps=["frappe"],
-            no_recache=True,
-            ignored=[],
-            emit=lambda _e: None,
-            warnings=warnings,
+        found = core_update._sites_with_app(
+            "proj", BENCH, "frappe", container, warnings, unreadable
         )
 
-        assert result.data.bench_left_in_maintenance is True
-        left = next(w for w in result.warnings if w.code == "frappe_reset.left_in_maintenance")
-        assert left.detail == {
-            "bench_path": BENCH,
-            "flags": ["maintenance_mode", "pause_scheduler"],
-        }
-        assert "cwcli run proj --bench staging set-config --global --parse maintenance_mode 0" in (
-            left.text
-        )
+        assert found == [] and unreadable == ["broken.localhost"]
+        assert any(w.code == "discover.site_unreadable" for w in warnings)
 
-    def test_an_uncached_path_gets_a_path_remedy_never_the_sole_cached_bench(
-        self, monkeypatch, wired
-    ):
-        # `cwcli run proj` with no selector would resolve the ONE cached bench and
-        # clear the flags on a bench that is not the one left down.
-        monkeypatch.setattr(
-            core_update.supervision, "bench_wide_flags", lambda *a, **k: ["maintenance_mode"]
-        )
-        monkeypatch.setattr(
-            core_update.resolvers,
-            "cached_benches",
-            lambda _p: [{"path": "/workspace/frappe-bench", "index": 0, "label": None}],
-        )
-        wired.fail_on = ["bench update --reset"]
-
-        result = core_update._frappe_reset(
-            wired,
-            project_name="proj",
-            bench_path="/workspace/other-bench",
-            apps=["frappe"],
-            no_recache=True,
-            ignored=[],
-            emit=lambda _e: None,
-            warnings=[],
-        )
-
-        left = next(w for w in result.warnings if w.code == "frappe_reset.left_in_maintenance")
-        assert (
-            "cwcli run proj --path /workspace/other-bench set-config --global --parse "
-            "maintenance_mode 0"
-        ) in left.text
-
-    def test_ignored_options_are_announced_not_silently_dropped(self, wired):
+    def test_site_and_cache_options_apply_to_a_core_update(self, wired):
         result = _update(apps=["frappe"], clear_cache=True, sites=["a.localhost"])
 
-        note = [w for w in result.warnings if w.code == "frappe_reset.options_ignored"]
-        assert note
-        assert "--clear-cache" in note[0].text
-        assert "--site" in note[0].text
+        assert not any(w.code == "frappe_reset.options_ignored" for w in result.warnings)
+        calls = [c if isinstance(c, str) else " ".join(c) for c in wired.calls]
+        assert any("clear-cache" in c for c in calls)
 
 
 # ------------------------------------------------------------- the frappe preflight
@@ -667,7 +608,7 @@ class TestFrappePreflight:
 
         report = _update(apps=["frappe"]).data
 
-        assert not any("bench update --reset" in c for c in wired.calls)
+        assert not any("git reset --hard" in str(c) for c in wired.calls)
         assert recaches == []  # nothing changed, so nothing to refresh
         assert report.preflight_blocked is True
         assert report.ok is False
@@ -683,7 +624,7 @@ class TestFrappePreflight:
 
         report = _update(apps=["frappe"]).data
 
-        assert any("bench update --reset" in c for c in wired.calls)
+        assert any("git reset --hard" in str(c) for c in wired.calls)
         assert report.preflight_blocked is False and report.data_loss_refused is False
         assert report.ok is True
         assert len(report.preflight) == 2
@@ -734,7 +675,7 @@ class TestFrappePreflight:
         report = _update(apps=["frappe"], preflight=False).data
 
         assert calls == [(BENCH, "proj", None, None), "local_only"]
-        assert any("bench update --reset" in c for c in wired.calls)
+        assert any("git reset --hard" in str(c) for c in wired.calls)
         assert report.preflight == [] and report.preflight_blocked is False
         assert report.ok is True
 
@@ -760,7 +701,7 @@ class TestFrappePreflight:
         assert phases[:3] == [
             ("UpdateStepStart", "preflight"),
             ("UpdatePreflight", None),
-            ("UpdateStepStart", "frappe_reset"),
+            ("UpdateStepStart", "unlock_all"),
         ]
         preflight_event = next(e for e in events if isinstance(e, UpdatePreflight))
         assert preflight_event.blocked is False
@@ -775,20 +716,21 @@ class TestFrappePreflight:
         assert [f.code for f in refused.preflight] == ["preflight.unverified"]
         assert refused.preflight_blocked is False  # not a blocker: a prediction failed
         assert refused.data_loss_refused is True and refused.ok is False
-        assert not any("bench update --reset" in c for c in wired.calls)
+        assert not any("git reset --hard" in str(c) for c in wired.calls)
 
         forced = _update(apps=["frappe"], force=True).data
 
         assert forced.ok is True
-        assert any("bench update --reset" in c for c in wired.calls)
+        assert any("git reset --hard" in str(c) for c in wired.calls)
 
 
 # --------------------------------------------------- the frappe data-loss guard
 
 
 class TestFrappeDataLossGuard:
-    """``bench update --reset`` hard-resets every app, discarding uncommitted changes
-    and unpushed commits. Without ``--force`` that refuses with nothing run - under
+    """The core reset hard-resets the named core apps, discarding their uncommitted
+    changes and unpushed commits (other apps are not touched, so their local work is
+    not at risk). Without ``--force`` that refuses with nothing run - under
     ``--no-preflight`` too, since the guard is not a prediction - and ``--force``
     accepts it, re-owning any app repo git refuses for dubious ownership first.
     """
@@ -808,17 +750,17 @@ class TestFrappeDataLossGuard:
             update_preflight.UNVERIFIED if "unverified" in code else update_preflight.DATA_LOSS
         )
         preflight_finds(
-            _finding(severity, code, "dirty"),
+            _finding(severity, code, "frappe"),
             _finding(update_preflight.NOTICE, "git.no_remote", "noremote"),
         )
         events = []
 
         report = _update(apps=["frappe"], preflight=preflight, on_event=events.append).data
 
-        assert not any("bench update --reset" in c for c in wired.calls)
+        assert not any("git reset --hard" in str(c) for c in wired.calls)
         assert recaches == []
         assert report.data_loss_refused is True and report.preflight_blocked is False
-        assert report.data_loss_apps == ["dirty"]
+        assert report.data_loss_apps == ["frappe"]
         assert report.ok is False and report.failed_apps == []
         # Without --no-preflight every finding rides along; with it, only the guard's.
         assert [f.code for f in report.preflight] == (
@@ -831,22 +773,22 @@ class TestFrappeDataLossGuard:
     def test_force_accepts_the_loss_and_the_report_names_the_app(
         self, wired, preflight_finds, preflight
     ):
-        preflight_finds(_finding(update_preflight.DATA_LOSS, "git.unpushed", "dirty"))
+        preflight_finds(_finding(update_preflight.DATA_LOSS, "git.unpushed", "frappe"))
         events = []
 
         result = _update(apps=["frappe"], preflight=preflight, force=True, on_event=events.append)
 
-        assert any("bench update --reset" in c for c in wired.calls)
+        assert any("git reset --hard" in str(c) for c in wired.calls)
         report = result.data
         assert report.ok is True and report.data_loss_refused is False
-        assert report.data_loss_apps == ["dirty"]
+        assert report.data_loss_apps == ["frappe"]
         warning = next(w for w in result.warnings if w.code == "frappe_reset.discarding_local_work")
-        assert warning.detail == {"apps": ["dirty"], "all_apps_unchecked": False}
+        assert warning.detail == {"apps": ["frappe"], "all_apps_unchecked": False}
         # Said before the reset runs, where it can still be acted on.
         start = next(
-            e for e in events if isinstance(e, UpdateStepStart) and e.phase == "frappe_reset"
+            e for e in events if isinstance(e, UpdateStepStart) and e.phase == "core_reset"
         )
-        assert "will discard any uncommitted or unpushed work in dirty" in start.message
+        assert "will discard any uncommitted or unpushed work in frappe" in start.message
         # --force is no longer an option the frappe path ignores.
         assert not any(w.code == "frappe_reset.options_ignored" for w in result.warnings)
 
@@ -858,15 +800,29 @@ class TestFrappeDataLossGuard:
 
         refused = _update(apps=["frappe"], preflight=preflight).data
         assert refused.data_loss_refused is True
-        assert not any("bench update --reset" in c for c in wired.calls)
+        assert not any("git reset --hard" in str(c) for c in wired.calls)
 
         result = _update(apps=["frappe"], preflight=preflight, force=True)
 
-        assert any("bench update --reset" in c for c in wired.calls)
+        assert any("git reset --hard" in str(c) for c in wired.calls)
         assert result.data.data_loss_apps == []
         warning = next(w for w in result.warnings if w.code == "frappe_reset.discarding_local_work")
         assert warning.detail == {"apps": [], "all_apps_unchecked": True}
-        assert "every app, none of whose local work could be checked" in warning.text
+        assert "the core apps, none of whose local work could be checked" in warning.text
+
+    def test_another_app_s_local_work_is_not_at_risk_so_it_does_not_refuse(
+        self, wired, preflight_finds
+    ):
+        preflight_finds(_finding(update_preflight.DATA_LOSS, "git.uncommitted", "payments"))
+
+        report = _update(apps=["frappe"]).data
+
+        assert report.data_loss_refused is False and report.ok is True
+        assert any("git reset --hard" in str(c) for c in wired.calls)
+        # The fact is still shown, as a notice that says it is not touched.
+        finding = next(f for f in report.preflight if f.app == "payments")
+        assert finding.severity == update_preflight.NOTICE
+        assert "not touched by a core update" in finding.message
 
     def test_force_never_passes_a_blocker(self, wired, preflight_finds):
         preflight_finds(
@@ -876,27 +832,27 @@ class TestFrappeDataLossGuard:
 
         report = _update(apps=["frappe"], force=True).data
 
-        assert not any("bench update --reset" in c for c in wired.calls)
+        assert not any("git reset --hard" in str(c) for c in wired.calls)
         assert report.preflight_blocked is True and report.data_loss_refused is False
         assert report.ok is False
 
     def test_a_blocker_and_local_work_are_both_reported(self, wired, preflight_finds):
         preflight_finds(
             _finding(update_preflight.BLOCKER, "git.branch_not_on_remote", "feature"),
-            _finding(update_preflight.DATA_LOSS, "git.uncommitted", "dirty"),
+            _finding(update_preflight.DATA_LOSS, "git.uncommitted", "frappe"),
         )
 
         report = _update(apps=["frappe"]).data
 
         assert report.preflight_blocked is True and report.data_loss_refused is True
-        assert report.data_loss_apps == ["dirty"]
+        assert report.data_loss_apps == ["frappe"]
 
     def test_a_clean_bench_runs_without_force(self, wired, preflight_finds):
         preflight_finds()
 
         report = _update(apps=["frappe"]).data
 
-        assert any("bench update --reset" in c for c in wired.calls)
+        assert any("git reset --hard" in str(c) for c in wired.calls)
         assert report.ok is True and report.data_loss_apps == []
 
     def test_the_per_app_path_has_no_such_guard(self, wired, preflight_finds):
@@ -905,6 +861,109 @@ class TestFrappeDataLossGuard:
         report = _update(apps=["payments"]).data
 
         assert calls == [] and report.ok is True and report.data_loss_refused is False
+
+
+class TestStaging16PreflightFixes:
+    """040: an app on a branch its remote does not fetch is widened in place and logged;
+    an app whose declared frappe-dependencies the bench cannot satisfy refuses with the
+    switch named, and --fix-branches performs it through `cwcli apps checkout`."""
+
+    def _arm(self, monkeypatch, *rounds):
+        calls = []
+
+        def fake(container, bench_path, *, project, bench=None, path=None, local_only=False):
+            calls.append(local_only)
+            facts = list(rounds[min(len(calls), len(rounds)) - 1])
+            return update_preflight.PreflightOutcome(
+                findings=update_preflight.classify(facts, project=project, bench=bench, path=path),
+                apps=2,
+                sites=1,
+                elapsed=0.1,
+                bench_path=bench_path,
+                facts=facts,
+            )
+
+        monkeypatch.setattr(core_update.update_preflight, "run_preflight", fake)
+        return calls
+
+    _MISMATCH = {
+        "code": "app.frappe_dependency_unsatisfied",
+        "app": "payments",
+        "dep": "frappe",
+        "spec": ">=17.0.0-dev,<18.0.0",
+        "version": "16.54.0",
+        "fix_app": "payments",
+        "fix_branch": "version-16",
+    }
+
+    def test_an_untracked_branch_is_widened_and_the_update_proceeds(self, monkeypatch, wired):
+        untracked = {
+            "code": "git.branch_not_tracked",
+            "app": "frappe",
+            "remote": "upstream",
+            "branch": "version-16",
+            "shallow_repo": True,
+        }
+        calls = self._arm(monkeypatch, [untracked], [])
+        events = []
+
+        result = _update(apps=["frappe"], on_event=events.append)
+
+        fix = [
+            c for c in wired.calls if "git remote set-branches --add upstream version-16" in str(c)
+        ]
+        assert fix and "git fetch --depth=1 upstream version-16" in fix[0]
+        assert calls == [False, False]  # checked again after the fix
+        assert any(w.code == "preflight.refspec_widened" for w in result.warnings)
+        assert any(
+            isinstance(e, UpdateStepEnd) and e.phase == "fix_refspec" and e.status == "ok"
+            for e in events
+        )
+        assert result.data.preflight_blocked is False and result.data.ok is True
+
+    def test_a_dependency_mismatch_refuses_and_names_the_switch(self, monkeypatch, wired):
+        self._arm(monkeypatch, [self._MISMATCH])
+
+        report = _update(apps=["frappe"]).data
+
+        assert report.preflight_blocked is True and report.ok is False
+        finding = report.preflight[0]
+        assert finding.severity == update_preflight.BLOCKER
+        assert "switch payments to version-16" in finding.message
+        assert "cwcli apps checkout proj payments version-16" in finding.remedy
+        assert "--fix-branches" in finding.remedy
+        assert not any("git reset --hard" in str(c) for c in wired.calls)
+
+    def test_fix_branches_switches_the_app_then_checks_again_and_updates(self, monkeypatch, wired):
+        calls = self._arm(monkeypatch, [self._MISMATCH], [])
+        switched = []
+
+        def checkout(project, app, ref, *, bench_path=None, on_event=None, **kw):
+            switched.append((project, app, ref, bench_path))
+            return Result(status=Status.OK, data=types.SimpleNamespace(ok=True), warnings=[])
+
+        monkeypatch.setattr(core_update.core_apps, "checkout_app", checkout)
+
+        result = _update(apps=["frappe"], fix_branches=True)
+
+        assert switched == [("proj", "payments", "version-16", BENCH)]
+        assert calls == [False, False]
+        assert any(w.code == "preflight.branch_switched" for w in result.warnings)
+        assert result.data.preflight_blocked is False and result.data.ok is True
+
+    def test_a_failed_switch_keeps_the_refusal(self, monkeypatch, wired):
+        calls = self._arm(monkeypatch, [self._MISMATCH])
+
+        def refuse(*a, **k):
+            raise CwcliError(ErrorKind.CONFLICT, "app.dirty_tree", "dirty")
+
+        monkeypatch.setattr(core_update.core_apps, "checkout_app", refuse)
+
+        result = _update(apps=["frappe"], fix_branches=True)
+
+        assert calls == [False]  # nothing changed, nothing to re-check
+        assert any(w.code == "preflight.branch_switch_failed" for w in result.warnings)
+        assert result.data.preflight_blocked is True
 
 
 class TestFrappeForceReownsDubiousRepos:
@@ -941,21 +1000,23 @@ class TestFrappeForceReownsDubiousRepos:
     def test_force_reowns_the_mismatched_repo_then_checks_again(
         self, monkeypatch, wired, preflight
     ):
-        dubious = _finding(update_preflight.BLOCKER, "git.dubious_ownership", "shared")
+        dubious = _finding(update_preflight.BLOCKER, "git.dubious_ownership", "frappe")
         calls = self._arm(
-            monkeypatch, [dubious], [_finding(update_preflight.DATA_LOSS, "git.unpushed", "shared")]
+            monkeypatch, [dubious], [_finding(update_preflight.DATA_LOSS, "git.unpushed", "frappe")]
         )
         seen = self._record_reown(monkeypatch)
 
         result = _update(apps=["frappe"], preflight=preflight, force=True)
 
-        assert seen == [f"{BENCH}/apps/shared"]
+        # Once for the preflight's finding, once more before the reset (the per-app
+        # --force re-own every pulled app gets).
+        assert seen == [f"{BENCH}/apps/frappe", f"{BENCH}/apps/frappe"]
         assert calls == [not preflight, not preflight]  # checked again, same tier
         # The re-owned repo's work is now visible, and --force accepted it.
-        assert result.data.data_loss_apps == ["shared"]
+        assert result.data.data_loss_apps == ["frappe"]
         assert result.data.ok is True
         assert any(w.code == "app.force_reown" for w in result.warnings)
-        assert any("bench update --reset" in c for c in wired.calls)
+        assert any("git reset --hard" in str(c) for c in wired.calls)
 
     def test_no_mismatch_means_no_reown_and_one_check(self, monkeypatch, wired):
         calls = self._arm(monkeypatch, [_finding(update_preflight.NOTICE, "git.no_remote")])
@@ -963,7 +1024,9 @@ class TestFrappeForceReownsDubiousRepos:
 
         _update(apps=["frappe"], force=True)
 
-        assert seen == [] and calls == [False]
+        # No dubious finding, so the preflight re-owns nothing; the pull pass's own
+        # --force re-own of the app being reset is the one call left.
+        assert seen == [f"{BENCH}/apps/frappe"] and calls == [False]
 
     def test_without_force_nothing_is_reowned(self, monkeypatch, wired):
         dubious = _finding(update_preflight.BLOCKER, "git.dubious_ownership", "shared")
@@ -984,7 +1047,7 @@ class TestFrappeForceReownsDubiousRepos:
         assert calls == [False]  # nothing changed, so nothing to check again
         assert any(w.code == "app.force_reown_failed" for w in result.warnings)
         assert result.data.preflight_blocked is True
-        assert not any("bench update --reset" in c for c in wired.calls)
+        assert not any("git reset --hard" in str(c) for c in wired.calls)
 
 
 # ----------------------------------------------------------------- the callback

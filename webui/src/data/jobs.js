@@ -45,8 +45,8 @@ export async function loadJobs({ force = false } = {}) {
   }
 }
 
-export async function loadJob(id, after = 0) {
-  const record = await getJson(`/api/v1/jobs/${encodeURIComponent(id)}?after=${after}`)
+export async function loadJob(id, after = 0, limit = null) {
+  const record = await getJson(`/api/v1/jobs/${encodeURIComponent(id)}?after=${after}${limit != null ? `&limit=${limit}` : ''}`)
   const prior = jobs.records[id]
   // Refreshes can overlap with the same cursor, so append only events newer than the last one held.
   const held = after && prior?.events ? prior.events : []
@@ -97,6 +97,7 @@ export const JOB_THEME = {
   interrupted: 'amber',
   unknown: 'gray',
   needs_choice: 'amber',
+  answered: 'gray',
 }
 
 export const JOB_LABEL = {
@@ -105,7 +106,11 @@ export const JOB_LABEL = {
   'apps-checkout': 'Check out app ref',
   'apps-install': 'Install apps',
   'apps-update': 'Update apps',
+  'check-updates': 'Check for updates',
   'clear-maintenance': 'Clear maintenance mode',
+  'dev-mode': 'Developer mode',
+  'new-site': 'New site',
+  'new-bench': 'New bench',
   init: 'Create instance',
   migrate: 'Migrate site',
   restart: 'Restart instance',
@@ -116,6 +121,20 @@ export const JOB_LABEL = {
   'run-tests': 'Run tests',
   scale: 'Scale bench',
   'self-update': 'Update cwcli',
+  'restore-set': 'Restore backup',
+  'verify-backup': 'Verify backup',
+  'delete-backup': 'Delete backup',
+  'clone-sites': 'Clone sites',
+  'move-sites': 'Move sites',
+  'send-backup': 'Send backup',
+  'receive-backup': 'Receive backup',
+  'prune-backups': 'Prune backups',
+  'backup-sites': 'Scheduled backup',
+  's3-copy': 'Copy backup off-site',
+  's3-fetch': 'Fetch backup from S3',
+  's3-prune': 'Prune off-site copies',
+  'restore-drill': 'Restore drill',
+  'repair-db-access': 'Repair database access',
   'setup-wizard': 'Complete setup wizard',
   start: 'Start instance',
   stop: 'Stop instance',
@@ -147,4 +166,14 @@ export function elapsed(job) {
   if (seconds < 60) return `${seconds}s`
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
   return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`
+}
+
+// Who started a job: the signed-in account, "schedule" for the daemon's own
+// scheduled runs, "api" for a bearer-token client, "cli" for the terminal.
+export function jobAccount(job) {
+  const o = job?.origin || {}
+  if (o.account) return o.account
+  if (o.schedule) return 'schedule'
+  if (o.via === 'web') return 'api'
+  return o.via || 'cli'
 }

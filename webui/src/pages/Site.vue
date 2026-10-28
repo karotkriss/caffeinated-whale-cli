@@ -1,12 +1,22 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { PageHeader, Breadcrumbs, Button, Dropdown, Badge, Tooltip, LoadingText, Alert } from 'frappe-ui'
+import { Button, Dropdown, Badge, Tooltip, LoadingText, Alert } from 'frappe-ui'
 import { List, ListHeader, ListHeaderCell, ListRows, ListRow, ListCell } from 'frappe-ui/list'
 import CommandLine from '../components/CommandLine.vue'
+import PageHero from '../components/PageHero.vue'
+import AppIcon from '../components/AppIcon.vue'
+import SiteLogsPane from '../components/SiteLogsPane.vue'
+import SiteBackupsPane from '../components/SiteBackupsPane.vue'
+import DevModeBadge from '../components/DevModeBadge.vue'
+import { getJson } from '../data/api'
+import { jobList } from '../data/jobs'
+import { catalogApp, catalogAppFor, sourceLabel, sourceIcon, hostIcon } from '../data/catalog'
+import { openApp } from '../data/app-panel'
 import { instance as findInstance, loadDetail, benchName, parseApp, setFocus, getJsonUrl } from '../data/fleet'
 import { openAction, menuOption, dangerGroup } from '../data/dialog'
 import { openJob } from '../data/job-dialog'
+import { openTransfer } from '../data/transfer'
 
 const route = useRoute()
 const { project, bench: index, site: siteName } = route.params
@@ -19,9 +29,11 @@ const apps = computed(() => (site.value?.installed_apps || []).map(parseApp))
 const health = computed(() => inst.value?.benches?.find((b) => String(b.index) === String(index)))
 const running = computed(() => inst.value?.container_running)
 const ctx = computed(() => ({ project, bench: String(index), benchName: bench.value ? benchName(bench.value) : index, site: siteName }))
-const jobOption = (label, icon, verb) => ({ label: running.value ? label : `${label} (needs the instance running)`, icon, disabled: !running.value, onClick: () => openJob(verb, ctx.value) })
+const jobOption = (label, icon, verb) => ({ label, icon, onClick: () => openJob(verb, ctx.value) })
 const more = computed(() => [
   jobOption('Back up site', 'lucide-database-backup', 'backup'),
+  { label: 'Clone site…', icon: 'lucide-copy', onClick: () => openTransfer({ mode: 'clone', project, bench: String(index), sites: [siteName] }) },
+  { label: 'Move site…', icon: 'lucide-move', onClick: () => openTransfer({ mode: 'move', project, bench: String(index), sites: [siteName] }) },
   jobOption('Migrate site', 'lucide-database-zap', 'migrate'),
   jobOption('Run tests', 'lucide-flask-conical', 'run-tests'),
   jobOption('Complete setup wizard', 'lucide-list-checks', 'setup-wizard'),
@@ -47,31 +59,59 @@ async function checkUrl() {
   }
 }
 // This site's own maintenance flag is only known when it is the probed site.
+// Developer mode: the cache's answer at once (detail.dev_modes), then a live read
+// of the two config files; re-read when a dev-mode job for this site finishes.
+const devLive = ref(null)
+const devMode = computed(() => devLive.value || detail.data?.dev_modes?.[`${bench.value?.path}/${siteName}`] || null)
+async function readDevMode() {
+  if (!bench.value) return
+  try { devLive.value = await getJson(`/api/v1/instances/${encodeURIComponent(project)}/dev-mode?bench_path=${encodeURIComponent(bench.value.path)}&site=${encodeURIComponent(siteName)}`) } catch { devLive.value = null }
+}
+watch(bench, (b) => b && readDevMode(), { immediate: true })
+const seenDevJobs = new Set()
+watch(jobList, (list) => {
+  for (const j of list) {
+    if (j.verb === 'dev-mode' && j.target?.project === project && j.target?.site === siteName && j.state === 'succeeded' && !seenDevJobs.has(j.id)) {
+      seenDevJobs.add(j.id)
+      readDevMode()
+      loadDetail(project, { force: true })
+    }
+  }
+})
 const maintenance = computed(() => (health.value?.web_site === siteName ? health.value.maintenance_mode : null))
+const heroFacts = computed(() => [
+  { label: 'Instance', value: project },
+  { label: 'Bench', value: bench.value ? `${benchName(bench.value)} (--bench ${bench.value.index})` : `#${index}` },
+  { label: 'Installed apps', value: String(apps.value.length) },
+  { label: 'Maintenance mode', value: maintenance.value == null ? 'unknown' : maintenance.value ? 'on' : 'off' },
+])
 </script>
 
 <template>
-  <PageHeader>
-    <Breadcrumbs :items="[
+  <PageHero icon="lucide-globe" :title="siteName" :facts="heroFacts" :crumbs="[
       { label: 'Instances', route: '/instances' },
       { label: project, route: `/instances/${project}` },
       { label: bench ? benchName(bench) : `#${index}`, route: `/instances/${project}/benches/${index}` },
       { label: siteName, route: route.path },
-    ]" />
-    <div class="flex items-center gap-2">
+    ]">
+    <template #badge><StatusBadge v-if="running && health?.web_site === siteName" :token="health.overall" size="lg" /><Badge v-if="site?.name === bench?.default_site" size="lg" theme="gray" variant="outline" label="default site" /><DevModeBadge :state="devMode" size="lg" /></template>
+    <template #actions>
+      <Tooltip v-if="devMode" :text="devMode.source === 'common' ? 'Set bench-wide in common_site_config.json; the dialog can change it there' : 'Changes developer_mode for this site, then clears its cache'">
+        <Button variant="subtle" :icon-left="devMode.effective ? 'lucide-code-xml' : 'lucide-code'" :label="devMode.effective ? 'Turn developer mode off' : 'Turn developer mode on'" @click="openAction(devMode.effective ? 'site.dev_mode_off' : 'site.dev_mode_on', ctx)" />
+      </Tooltip>
       <Tooltip :text="running ? 'Probe the host URL and open it' : 'Start the instance to open the site'">
-        <Button variant="solid" icon-left="lucide-external-link" label="Open site" :disabled="!running" @click="openAction('site.open', ctx)" />
+        <Button variant="solid" icon-left="lucide-external-link" label="Open site" @click="openAction('site.open', ctx)" />
       </Tooltip>
       <Dropdown :options="more" align="end"><Button icon="lucide-ellipsis" aria-label="More actions" /></Dropdown>
-    </div>
-  </PageHeader>
+    </template>
+  </PageHero>
 
   <LoadingText v-if="detail.loading && !detail.data" class="px-3 pt-5 sm:px-5" text="Reading the cache..." />
   <div v-else-if="!site" class="px-3 pt-5 sm:px-5">
     <Alert theme="gray" :title="`${siteName} is not in the cache for bench #${index}`" :description="detail.error ? detail.error.message : 'A full inspect re-reads the sites from the container.'" />
     <div class="mt-4 max-w-sm"><CommandLine :command="`cwcli inspect ${project} --update`" /></div>
   </div>
-  <div v-else class="mx-auto max-w-4xl space-y-8 px-3 pb-20 pt-5 sm:px-5">
+  <div v-else class="space-y-8 px-3 pb-20 pt-5 sm:px-5">
     <section class="grid gap-4 md:grid-cols-3">
       <div class="rounded-6 border border-outline-gray-1 p-4">
         <div class="flex items-center justify-between text-sm text-ink-gray-5">
@@ -112,20 +152,39 @@ const maintenance = computed(() => (health.value?.web_site === siteName ? health
         <Badge size="sm" :theme="site.installed_apps_verified ? 'green' : 'gray'" variant="outline" :label="site.installed_apps_verified ? 'verified' : 'remembered'" />
       </div>
       <p class="mt-1 text-p-sm text-ink-gray-5">{{ site.installed_apps_verified ? 'Read live by a full inspect.' : 'From the cache. A full inspect re-reads them from the running container.' }}</p>
-      <List class="-mx-3 list-row-px-3 mt-3" :columns="{ base: ['minmax(0,1fr)', '6rem'], md: ['minmax(10rem,1fr)', '7rem', 'minmax(0,1.4fr)'] }" :row-height="44">
+      <List class="-mx-3 list-row-px-3 mt-3" :columns="{ base: ['minmax(0,1fr)', '6rem'], md: ['minmax(10rem,1fr)', '7rem', 'minmax(0,1.4fr)', '8rem'] }" :row-height="44">
         <ListHeader>
           <ListHeaderCell>App</ListHeaderCell>
           <ListHeaderCell>Version</ListHeaderCell>
           <ListHeaderCell class="max-md:hidden">Branch at install</ListHeaderCell>
+          <ListHeaderCell class="max-md:hidden">Source</ListHeaderCell>
         </ListHeader>
         <ListRows :items="apps" row-key="name" v-slot="{ item }">
-          <ListRow>
-            <ListCell><span class="font-mono text-sm text-ink-gray-8">{{ item.name }}</span></ListCell>
+          <ListRow @click="openApp(catalogApp(item.name))">
+            <ListCell class="gap-2"><AppIcon :app="catalogApp(item.name)" size="sm" /><span class="text-base text-ink-gray-8">{{ catalogApp(item.name).title }}</span><span class="font-mono text-xs text-ink-gray-4">{{ item.name }}</span></ListCell>
             <ListCell><span class="tabular-nums text-sm text-ink-gray-6">{{ item.version || 'unknown' }}</span></ListCell>
             <ListCell class="max-md:hidden"><span class="truncate font-mono text-sm text-ink-gray-6">{{ item.branch || 'unknown' }}</span></ListCell>
+                      <!-- Captain note 53: where the app comes from, with the source's icon. -->
+            <ListCell class="gap-1.5 overflow-hidden max-md:hidden"><img v-if="hostIcon(catalogAppFor(item.name, project, index).source?.host)" :src="hostIcon(catalogAppFor(item.name, project, index).source?.host)" class="size-3.5 rounded-sm" alt="" /><span v-else :class="sourceIcon(catalogAppFor(item.name, project, index))" class="size-3.5 text-ink-gray-5" aria-hidden="true" /><span class="truncate text-sm text-ink-gray-6">{{ sourceLabel(catalogAppFor(item.name, project, index)) }}</span></ListCell>
           </ListRow>
         </ListRows>
       </List>
+    </section>
+
+    <section id="backups">
+      <div class="flex items-baseline gap-2">
+        <h2 class="text-lg-semibold text-ink-gray-9">Backups</h2>
+        <span class="text-xs text-ink-gray-5">this site's sets in the store outside the instance; they survive a removal</span>
+      </div>
+      <div class="mt-3"><SiteBackupsPane :project="project" :bench="String(index)" :bench-path="bench.path" :site="siteName" :running="!!running" /></div>
+    </section>
+
+    <section>
+      <div class="flex items-baseline gap-2">
+        <h2 class="text-lg-semibold text-ink-gray-9">Logs</h2>
+        <span class="text-xs text-ink-gray-5">this site's own: its Frappe log files, its Error Log</span>
+      </div>
+      <div class="mt-3"><SiteLogsPane :project="project" :bench="String(index)" :bench-path="bench.path" :site="siteName" :running="!!running" /></div>
     </section>
   </div>
 </template>

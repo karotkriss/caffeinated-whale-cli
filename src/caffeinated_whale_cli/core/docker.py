@@ -16,10 +16,13 @@ core makes the UI-purity ban transitively true, not just directly true.
 from __future__ import annotations
 
 import codecs
+import io
 import os
 import shlex
 import subprocess
-from collections.abc import Sequence
+import tarfile
+from collections.abc import Iterator, Sequence
+from pathlib import Path
 
 import docker
 from docker.errors import APIError, DockerException, NotFound
@@ -263,6 +266,78 @@ def recreate_missing_project_networks(project_name: str, containers) -> list[str
                     ),
                 ) from e
     return recreated
+
+
+class ChunkStreamReader(io.RawIOBase):
+    """Adapt docker-py's ``get_archive`` byte-chunk iterator to a readable stream.
+
+    ``get_archive`` yields the artifact's tar wrapper in chunks; wrapping those
+    chunks in this reader lets :mod:`tarfile` consume the tar incrementally
+    (streaming mode) so a multi-GB backup artifact is never buffered whole in
+    host RAM.
+    """
+
+    def __init__(self, chunks: Iterator[bytes]) -> None:
+        super().__init__()
+        self._chunks = iter(chunks)
+        self._buf = b""
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b) -> int:
+        if not self._buf:
+            try:
+                self._buf = next(self._chunks)
+            except StopIteration:
+                return 0
+        n = min(len(b), len(self._buf))
+        b[:n] = self._buf[:n]
+        self._buf = self._buf[n:]
+        return n
+
+
+def stream_container_file(
+    container,
+    source_path: str,
+    dest_file: Path,
+    chunk_size: int = 1024 * 1024,
+) -> bool:
+    """Copy a single file out of ``container`` to the host, streaming in chunks.
+
+    Uses ``get_archive`` (a tar stream) and extracts the single member
+    incrementally, so a multi-GB ``bench backup --with-files`` artifact is never
+    materialised in host RAM as one blob. Returns True only on a fully-written
+    copy. Any failure - a missing/unreadable file (``get_archive`` raises), a
+    tar/read error, or a truncated stream (bytes written do not match the member
+    size) - returns False, so the caller keeps the "a backup missing any part is
+    not trusted" fail-closed semantics.
+    """
+    try:
+        stream, _stat = container.get_archive(source_path)
+        reader = io.BufferedReader(ChunkStreamReader(stream))
+        with tarfile.open(fileobj=reader, mode="r|") as tar:
+            for member in tar:
+                if not member.isfile():
+                    continue
+                extracted = tar.extractfile(member)
+                if extracted is None:
+                    return False
+                written = 0
+                with open(dest_file, "wb") as out:
+                    while True:
+                        chunk = extracted.read(chunk_size)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                        written += len(chunk)
+                # A truncated stream yields fewer bytes than the header promised:
+                # fail closed rather than trust a short copy.
+                return written == member.size
+    except Exception:
+        return False
+    # No regular-file member in the archive - nothing was copied.
+    return False
 
 
 def get_container(container_id: str):
