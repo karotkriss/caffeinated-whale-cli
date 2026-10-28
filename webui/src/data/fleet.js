@@ -6,7 +6,7 @@
 // One stream per tab. HTTP/1.1 browsers allow 6 connections per host and an
 // open SSE stream holds one for as long as it lives, so a stream a hidden page
 // keeps open stalls every later request: close on pagehide, reopen on pageshow.
-import { reactive, computed } from 'vue'
+import { reactive, computed, watch } from 'vue'
 import { getJson } from './api'
 import { session, recheckMeta } from './session'
 import { applyJob, seedJobs } from './jobs'
@@ -26,11 +26,20 @@ export const fleet = reactive({
 
 let source = null
 
+// The stream needs a usable session: signed in and past the forced first
+// password change (the daemon refuses everything else with 401/403). Called once
+// at boot; the watch opens it on a later sign-in or change and closes it on sign-out.
+const usable = () => !session.signedOut && !!session.user && !session.user.mustChange
+
 export function startFleet() {
-  if (session.signedOut) return
-  openStream()
   window.addEventListener('pagehide', () => source?.close())
-  window.addEventListener('pageshow', (e) => e.persisted && openStream())
+  window.addEventListener('pageshow', (e) => e.persisted && usable() && openStream())
+  watch(usable, (ok) => (ok ? openStream() : closeStream()), { immediate: true })
+}
+
+function closeStream() {
+  source?.close()
+  source = null
 }
 
 // Which instance the open page is looking at: the daemon turns that instance's
