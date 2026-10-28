@@ -318,6 +318,19 @@ class TestRecipesAndTriggers:
         finished = [{"id": "y", "verb": "apps-update", "state": "failed", "target": {"project": "p"}, "origin": {}}]
         assert run_tick(fleet, now=T0, finished_jobs=finished) == []
 
+    def test_an_event_that_meets_a_busy_instance_fires_once_it_is_free(self):
+        fleet = Fleet()
+        sch.save({"name": "after", "verb": "restart", "target": {"project": "p"}, "kind": "event", "trigger": {"type": "after_job", "verb": "apps-update"}}, now=T0)
+        sch.save({"name": "boot", "verb": "backup-sites", "target": {"project": "q"}, "kind": "event", "trigger": {"type": "on_start"}}, now=T0)
+        assert run_tick(fleet, now=T0, running_projects=set()) == []
+        finished = [{"id": "x", "verb": "apps-update", "state": "succeeded", "target": {"project": "p"}, "origin": {}}]
+        fleet.busy = True
+        assert run_tick(fleet, now=T0, finished_jobs=finished, running_projects={"q"}) == []
+        fleet.busy = False
+        made = run_tick(fleet, now=T0 + timedelta(minutes=1), running_projects={"q"})
+        assert sorted(j["verb"] for j in made) == ["backup-sites", "restart"]
+        assert run_tick(fleet, now=T0 + timedelta(minutes=2), running_projects={"q"}) == []
+
     def test_templates_are_valid_once_a_target_is_added(self):
         for t in sch.templates():
             body = {k: v for k, v in t.items() if k not in {"key", "note", "process"}}

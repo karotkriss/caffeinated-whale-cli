@@ -14,7 +14,6 @@ export const router = createRouter({
     { path: '/instances/:project/benches/:bench/sites/:site', name: 'site', component: page('Site') },
     { path: '/jobs', name: 'jobs', component: page('Jobs') },
     { path: '/jobs/:id', name: 'job', component: page('Job') },
-    { path: '/health', name: 'health', component: page('Health') },
     { path: '/advisories', name: 'advisories', component: page('Advisories') },
     { path: '/backups', name: 'backups', component: page('Backups') },
     { path: '/schedules', name: 'schedules', component: page('Schedules') },

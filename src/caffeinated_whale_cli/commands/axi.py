@@ -1705,28 +1705,6 @@ def axi_schedule_rm(schedule: str = typer.Argument(..., help="The schedule id.")
     emit_result({"removed": schedule})
 
 
-admin_app = AxiTyper(help="The web UI's administrator account.")
-app.add_typer(admin_app, name="admin")
-
-
-@admin_app.command("reset-password")
-def axi_admin_reset_password(
-    username: str = typer.Option("admin", "--username", help="The account to reset."),
-) -> None:
-    """Reset the web UI account to admin / admin; the next sign-in must choose a new password.
-
-    Every signed-in browser is signed out. On a shared install this needs root.
-    """
-    from ..core import accounts as core_accounts
-
-    try:
-        core_accounts.reset_password(username)
-    except CwcliError as e:
-        emit_axi_error(e)
-        raise typer.Exit(exit_for(e.kind)) from e
-    emit_result({"username": username, "reset": True, "must_change_password": True})
-
-
 @db_access_app.command("check")
 def axi_db_access_check(
     project: str = typer.Argument(..., help="The instance to check."),

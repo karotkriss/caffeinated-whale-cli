@@ -3,7 +3,7 @@
 // in the store for this site with date, contents, size, reason and verdict, Back up
 // now, and per set Restore / Verify / Delete. Restore opens the wizard.
 import { computed, onMounted } from 'vue'
-import { Button, Dropdown, Tooltip } from 'frappe-ui'
+import { Badge, Button, Dropdown, Tooltip } from 'frappe-ui'
 import { backups, loadBackups, setsFor, freshness, FRESH_DOT, FRESH_TEXT, REASON_LABEL, PART_LABEL, sizeText, whenText } from '../data/backups'
 import { createJob } from '../data/jobs'
 import { trackJob } from '../data/job-toasts'
@@ -12,10 +12,8 @@ import { openRestoreWizard } from '../data/restore-wizard'
 import { copyOffsite, sendSet } from '../data/transfer'
 import { downloadSet, lastDrill } from '../data/backups'
 import { toast } from 'frappe-ui'
-import { useRouter } from 'vue-router'
 import { openAction } from '../data/dialog'
 
-const router = useRouter()
 const props = defineProps({
   project: { type: String, required: true },
   bench: { type: String, required: true },
@@ -31,7 +29,6 @@ const drill = computed(() => lastDrill(props.project, props.site))
 async function runDrill() {
   const record = await createJob({ verb: 'restore-drill', target: { project: props.project, bench: props.bench, site: props.site }, args: {} })
   trackJob(record.id)
-  router.push(`/jobs/${record.id}`)
 }
 function backupNow() {
   openJob('backup', { project: props.project, bench: props.bench, site: props.site, args: { store: true, with_files: true, reason: 'manual' } })
@@ -46,8 +43,8 @@ function menu(s) {
   return [{ group: 'Set', options: [
     { label: 'Restore…', icon: 'rotate-ccw', onClick: () => openRestoreWizard(s) },
     { label: 'Verify again', icon: 'shield-check', onClick: () => verify(s) },
-    { label: 'Send to another machine…', icon: 'send', onClick: () => sendSet(s, router) },
-    { label: s.offsite ? 'Copy off-site again' : 'Copy off-site (S3)', icon: 'cloud-upload', onClick: () => copyOffsite(s, router) },
+    { label: 'Send to another machine…', icon: 'send', onClick: () => sendSet(s) },
+    { label: s.offsite ? 'Copy off-site again' : 'Copy off-site (S3)', icon: 'cloud-upload', onClick: () => copyOffsite(s) },
     { label: 'Download (.tar)', icon: 'download', onClick: () => downloadSet(s).catch((e) => toast.error(e.message)) },
     { label: 'Delete', icon: 'trash-2', theme: 'red', onClick: () => remove(s) },
   ] }]
@@ -74,7 +71,7 @@ function menu(s) {
         <span class="truncate text-xs text-ink-gray-6 max-md:hidden">{{ s.parts.map((p) => PART_LABEL[p.kind] || p.kind).join(' · ') }}</span>
         <span class="tabular-nums text-ink-gray-7 max-md:hidden">{{ sizeText(s.size) }}</span>
         <span class="truncate text-ink-gray-7 max-md:hidden" :title="s.note || ''">{{ REASON_LABEL[s.reason] || s.reason }}<span v-if="s.note" class="text-ink-gray-4"> · {{ s.note }}</span></span>
-        <span class="max-md:hidden"><Tooltip :text="s.checks.map((c) => `${c.name}: ${c.ok ? 'ok' : 'FAILED'} (${c.detail})`).join('\n')"><span class="inline-flex items-center gap-1 text-xs" :class="s.verified ? 'text-ink-green-6' : 'text-ink-red-6'"><span :class="s.verified ? 'lucide-shield-check' : 'lucide-shield-x'" class="size-3.5" aria-hidden="true" />{{ s.verified ? 'pass' : 'FAIL' }}</span></Tooltip></span>
+        <span class="max-md:hidden"><Tooltip :text="s.checks.map((c) => `${c.name}: ${c.ok ? 'ok' : 'FAILED'} (${c.detail})`).join('\n') + (s.verified ? '' : '\nKept until you delete it by hand; retention never removes it.')"><span v-if="s.verified" class="inline-flex items-center gap-1 text-xs text-ink-green-6"><span class="lucide-shield-check size-3.5" aria-hidden="true" />pass</span><Badge v-else theme="red" variant="subtle" label="Unverified" /></Tooltip></span>
         <Dropdown :options="menu(s)" align="end"><Button size="sm" variant="ghost" icon="lucide-ellipsis" aria-label="Set actions" /></Dropdown>
       </div>
     </div>

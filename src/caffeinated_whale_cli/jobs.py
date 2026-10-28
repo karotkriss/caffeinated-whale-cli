@@ -114,9 +114,9 @@ ALLOWED_VERBS = frozenset(
         "check-updates",
         # Phase 3: the guarded destructive verbs. Each runs the SAME core path the
         # CLI and `axi` use (verified backup gate included), takes consent as a
-        # spec field the page sets only after a typed confirmation, and never
-        # carries a bypass: there is no `--no-backup` here (`axi rm`'s rule) and
-        # no `--force`.
+        # spec field the page sets only after a typed confirmation. The one bypass
+        # is rm's `no_backup` (the page's Force checkbox, behind its own typed
+        # confirmation and warning); there is no `--force`.
         "rm",
         "rm-site",
         "rm-bench",
@@ -1036,7 +1036,8 @@ def _db_root_password(secret_values: dict[str, str]) -> str | None:
 
 
 def _remove_instance(project: str, args: dict[str, Any], consent: bool, emit: _Recorder) -> Result:
-    """`cwcli axi rm` as a job: consent ONLY (never an auto-start), never `--no-backup`.
+    """`cwcli axi rm` as a job: consent ONLY (never an auto-start); `no_backup` is the page's
+    Force checkbox and skips the verified backup gate.
 
     `core.remove` has no consent axis (rm's confirmation is a frontend concern),
     so the job supplies the refusal the `axi` verb supplies: without `consent`

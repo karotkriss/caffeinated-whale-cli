@@ -297,11 +297,34 @@ def test_an_unverified_set_never_takes_a_retention_slot(retention_home):
     _manifest(home, "p", "s.localhost", "20260102_000000-b0", _days_ago(1))
     _manifest(home, "p", "s.localhost", "20260101_000000-b0", _days_ago(2))
     plan = {d.key.split("/")[-1]: d for d in store.retention_plan("p")}
-    assert sorted(k for k, d in plan.items() if d.keep) == [
-        "20260101_000000-b0",
-        "20260102_000000-b0",
-    ]
-    assert plan["20260103_000000-b0"].why == "it did not verify"
+    assert plan["20260102_000000-b0"].why == "the site's last good backup"
+    assert plan["20260101_000000-b0"].why.startswith("daily slot")
+    assert plan["20260103_000000-b0"].keep
+    assert "did not verify" in plan["20260103_000000-b0"].why
+
+
+def test_prune_never_removes_an_unverified_set_or_the_only_set_of_a_site(
+    retention_home, monkeypatch
+):
+    home = retention_home
+    monkeypatch.setattr(store, "disk_budget", lambda min_free_gb=None: {"warn": True})
+    store.save_settings("p", {"local": {"daily": 1, "weekly": 0, "monthly": 0}})
+    _manifest(home, "p", "s.localhost", "20260102_000000-b0", _days_ago(0))
+    _manifest(home, "p", "s.localhost", "20260101_000000-b0", _days_ago(5), verified=False)
+    _manifest(
+        home,
+        "p",
+        "gone.localhost",
+        "20260103_000000-b0",
+        _days_ago(9),
+        verified=False,
+        reason="before-removal",
+        offsite={"bucket": "b"},
+    )
+    done = store.prune("p", consent=True)
+    assert done.data["removed"] == []
+    assert (home / "backups" / "p" / "s.localhost" / "20260101_000000-b0").exists()
+    assert (home / "backups" / "p" / "gone.localhost" / "20260103_000000-b0").exists()
 
 
 def test_the_store_is_private_to_its_owner(home):
@@ -362,7 +385,7 @@ def bucket(home, monkeypatch):
     return FakeBucket.objects
 
 
-def _remote_manifest(objects, project, site, sid, created_at):
+def _remote_manifest(objects, project, site, sid, created_at, verified=True):
     objects[f"cwcli-backups/{project}/{site}/{sid}/{sid}-database.sql.gz.cwenc"] = b"x"
     objects[f"cwcli-backups/{project}/{site}/{sid}/set.json"] = json.dumps(
         {
@@ -370,7 +393,7 @@ def _remote_manifest(objects, project, site, sid, created_at):
             "project": project,
             "site": site,
             "created_at": created_at,
-            "verified": True,
+            "verified": verified,
             "parts": [{"kind": "database", "filename": f"{sid}-database.sql.gz", "size": 1}],
         }
     ).encode()
@@ -405,6 +428,20 @@ class TestOffsite:
         assert not any("-b1/" in k for k in bucket)
         assert any("-b10/" in k for k in bucket)
         assert any(k.startswith("cwcli-backups/erp-staging/") for k in bucket)
+
+    def test_the_offsite_prune_never_removes_an_unverified_copy(self, bucket):
+        _remote_manifest(bucket, "erp", "s.localhost", "20260102_000000-b0", _days_ago(0))
+        _remote_manifest(
+            bucket, "erp", "s.localhost", "20260101_000000-b0", _days_ago(3), verified=False
+        )
+        _remote_manifest(
+            bucket, "erp", "gone.localhost", "20260103_000000-b0", _days_ago(9), verified=False
+        )
+        store.save_settings("erp", {"s3": {"daily": 1, "weekly": 0, "monthly": 0}})
+        done = store.offsite_prune("erp", consent=True)
+        assert done.data["removed"] == []
+        assert any("20260101_000000-b0/" in k for k in bucket)
+        assert any("gone.localhost/20260103_000000-b0/" in k for k in bucket)
 
     def test_a_fetch_refuses_a_manifest_naming_a_path_outside_the_set(self, bucket, home):
         from caffeinated_whale_cli.core import backup_crypto

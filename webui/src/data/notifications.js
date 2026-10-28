@@ -38,7 +38,7 @@ export const notifications = computed(() => {
     }
   }
   for (const c of doctor.data?.checks || []) {
-    if (c.status !== 'pass') out.push({ id: `health:${c.id}:${c.status}`, kind: 'health', theme: c.status === 'fail' ? 'red' : 'amber', title: c.title, detail: c.detail, to: '/health', at: null })
+    if (c.status !== 'pass') out.push({ id: `health:${c.id}:${c.status}`, kind: 'health', theme: c.status === 'fail' ? 'red' : 'amber', title: c.title, detail: c.detail, to: '/settings/health', at: null })
   }
   return out
 })

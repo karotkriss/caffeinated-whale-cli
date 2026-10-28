@@ -174,11 +174,70 @@ def test_a_batch_stops_at_the_first_failure_and_touches_nothing_after_it(compose
     assert not any(c[0] == "capture" and c[1] == "three" for c in composed.log)
 
 
-def test_an_existing_target_site_is_restored_into_not_recreated(composed):
-    transfer.transfer_sites(
+def test_an_existing_target_site_needs_consent_before_anything_runs(composed):
+    r = transfer.transfer_sites(
         "p", [("a.localhost", "exists.localhost")], admin_password="x", mariadb_root_password="root"
     )
-    assert [c[0] for c in composed.log] == ["capture", "restore"]
+    assert r.status is Status.NEEDS_CHOICE and r.data is None
+    assert r.choice.kind == "confirm_overwrite" and r.choice.param == "consent"
+    assert "exists.localhost" in r.choice.prompt
+    assert composed.log == []
+
+
+def test_an_existing_target_is_backed_up_before_overwrite_then_restored_into(composed):
+    r = transfer.transfer_sites(
+        "p",
+        [("a.localhost", "exists.localhost")],
+        admin_password="x",
+        mariadb_root_password="root",
+        consent=True,
+    )
+    assert r.data.ok and not r.data.items[0].created and r.data.items[0].safety_set_key
+    assert [c[:3] for c in composed.log[:2]] == [
+        ("capture", "a.localhost", "clone"),
+        ("capture", "exists.localhost", "before-overwrite"),
+    ]
+    assert [c[0] for c in composed.log] == ["capture", "capture", "restore"]
+    assert "before-overwrite" in store.REASONS
+
+
+def test_a_safety_backup_that_does_not_verify_leaves_the_target_untouched(
+    composed, monkeypatch, home
+):
+    def capture(project, *, site, bench, with_files, reason, note, on_event):
+        composed.log.append(("capture", site, reason))
+        return Result(
+            status=Status.OK,
+            data=_set(
+                home,
+                project,
+                site,
+                sid=f"20260101_0000{len(composed.log):02d}-b0",
+                verified=reason != "before-overwrite",
+            ),
+        )
+
+    monkeypatch.setattr(transfer.backup_store, "capture", capture)
+    r = transfer.transfer_sites(
+        "p",
+        [("a.localhost", "exists.localhost")],
+        mode="move",
+        admin_password="x",
+        mariadb_root_password="root",
+        consent=True,
+    )
+    item = r.data.items[0]
+    assert not r.data.ok and not item.restored and not item.dropped
+    assert "exists.localhost is left untouched" in item.error
+    assert not any(c[0] in ("restore", "drop") for c in composed.log)
+
+
+def test_a_new_target_site_needs_no_consent_and_no_safety_backup(composed):
+    r = transfer.transfer_sites(
+        "p", [("a.localhost", "fresh.localhost")], admin_password="x", mariadb_root_password="root"
+    )
+    assert r.data.ok and r.data.items[0].safety_set_key is None
+    assert [c[0] for c in composed.log] == ["capture", "new_site", "restore"]
 
 
 def test_the_transfer_reasons_are_store_reasons():

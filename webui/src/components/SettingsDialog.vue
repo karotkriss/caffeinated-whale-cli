@@ -8,6 +8,7 @@ import { computed, ref, watch } from 'vue'
 import { Badge, Button, Checkbox, Dialog, FormControl, Switch, LoadingText, ErrorMessage, SettingsDialog, SettingsSidebar, SettingsNavGroup, SettingsNavItem, SettingsContent, SettingsPanel, SettingsHeader, SettingsBody, SettingsRow } from 'frappe-ui'
 import CommandLine from '../components/CommandLine.vue'
 import CommandCopy from '../components/CommandCopy.vue'
+import DoctorView from '../components/DoctorView.vue'
 import { config, cacheProjects } from '../data/fleet'
 import { settingsDialog } from '../data/settings-dialog'
 import { session, signOut, listSessions } from '../data/session'
@@ -149,6 +150,7 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
       </SettingsNavGroup>
       <SettingsNavGroup label="General">
         <SettingsNavItem value="account"><template #prefix><span class="lucide-user-round size-4" aria-hidden="true" /></template>Your account</SettingsNavItem>
+        <SettingsNavItem value="health"><template #prefix><span class="lucide-stethoscope size-4" aria-hidden="true" /></template>Health check</SettingsNavItem>
         <SettingsNavItem value="about"><template #prefix><span class="lucide-info size-4" aria-hidden="true" /></template>About cwcli</SettingsNavItem>
       </SettingsNavGroup>
     </SettingsSidebar>
@@ -303,6 +305,13 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
             <SettingsRow title="Sign out" description="Ends this browser's session.">
               <div class="flex items-center gap-1"><CommandCopy command="cwcli admin reset-password" /><Button icon-left="lucide-log-out" label="Sign out" @click="doSignOut" /></div>
             </SettingsRow>
+          </SettingsBody>
+        </SettingsPanel>
+        <SettingsPanel value="health">
+          <SettingsHeader title="Health check" description="Can cwcli operate on this machine: Docker, its own files, disk space, and the tools the credential bridge and transfers rely on. Instance health lives on each instance's page." />
+          <SettingsBody>
+            <DoctorView />
+            <div class="mt-4 max-w-sm"><CommandLine command="cwcli doctor" /></div>
           </SettingsBody>
         </SettingsPanel>
         <SettingsPanel value="about">

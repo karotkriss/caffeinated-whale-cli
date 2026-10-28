@@ -631,6 +631,7 @@ def _rearm(s: dict[str, Any], now: datetime) -> None:
     """Wait for the first slot after ``now``, not one that passed while the schedule
     was off or before it was edited."""
     s["due_from"] = _iso(now)
+    s.pop("event_pending", None)
     if s.get("last_run"):
         s["last_run"] = {k: v for k, v in s["last_run"].items() if k != "due"}
 
@@ -708,6 +709,8 @@ def _fire(
                 "reason": "the instance has a job running; retried next minute",
             }
             return None
+        if not (origin_extra or {}).get("for"):
+            s.pop("event_pending", None)
         s["last_run"] = {
             "due": due,
             "at": _iso(now),
@@ -718,6 +721,8 @@ def _fire(
         if s.get("kind") != "event" and not (origin_extra or {}).get("manual"):
             s["last_run"]["due"] = _advance(s, now)
         return None
+    if not (origin_extra or {}).get("for"):
+        s.pop("event_pending", None)
     s["last_run"] = {
         "due": due,
         "at": _iso(now),
@@ -769,9 +774,11 @@ def tick(
             target = dict(s.get("target") or {})
             project = str(target.get("project") or "")
             if s.get("kind") == "event":
-                if not _event_fires(sid, s, finished_jobs or [], started, project):
+                if _event_fires(sid, s, finished_jobs or [], started, project):
+                    s["event_pending"] = True
+                    changed = True
+                if not s.get("event_pending"):
                     continue
-                changed = True
             else:
                 nxt = _next_due(s, now)
                 if nxt is None or nxt > now:
@@ -803,6 +810,8 @@ def tick(
                     s.pop("await_start", None)
             if skip:
                 s["last_skip"] = {"at": _iso(now), "reason": skip}
+                if not _waits(skip):
+                    s.pop("event_pending", None)
                 if not _waits(skip) and s.get("kind") != "event":
                     s["last_run"] = {
                         **(s.get("last_run") or {}),

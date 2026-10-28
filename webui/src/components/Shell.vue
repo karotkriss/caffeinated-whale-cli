@@ -80,7 +80,8 @@ const shownNotifications = computed(() => (showRead.value ? notifications.value 
 function goTo(n) {
   markRead(n)
   notifOpen.value = false
-  router.push(n.to)
+  if (n.to.startsWith('/settings/')) openSettings(n.to.split('/')[2])
+  else router.push(n.to)
 }
 // /settings/<section> is a deep link: open the modal over the instances page.
 watch(() => route.name, (name) => {
@@ -147,9 +148,6 @@ watch(() => route.name, (name) => {
               <SidebarItem label="Advisories" icon="lucide-shield-alert" route="/advisories" :active="route.name === 'advisories'">
                 <template #suffix><span v-if="affectsCount" class="mr-1 rounded-full px-1.5 text-[10px] font-medium" :class="affectsNew ? 'bg-surface-red-2 text-ink-red-6' : 'bg-surface-gray-2 text-ink-gray-6'" :title="`${affectsCount} advisories affect this machine${affectsNew ? ', ' + affectsNew + ' new' : ''}`">{{ affectsCount }}</span></template>
               </SidebarItem>
-              <SidebarItem label="Health check" icon="lucide-stethoscope" route="/health" :active="route.name === 'health'">
-                <template #suffix><span v-if="doctor.data && (doctor.data.warned + doctor.data.failed)" class="mr-1 text-xs text-ink-amber-6">{{ doctor.data.warned + doctor.data.failed }}</span></template>
-              </SidebarItem>
             </div>
             <template v-if="instances.length">
               <SidebarLabel class="mt-4">Instances</SidebarLabel>
@@ -162,7 +160,7 @@ watch(() => route.name, (name) => {
           </ScrollArea>
           <div class="border-t border-outline-gray-1 px-2 pb-2.5 pt-2">
             <SidebarItem label="Settings" icon="lucide-settings" :active="settingsDialog.open" @click="openSettings()">
-              <template #suffix><KeyboardShortcut combo="Mod+," class="mr-1" /></template>
+              <template #suffix><span v-if="doctor.data && (doctor.data.warned + doctor.data.failed)" class="mr-1 text-xs text-ink-amber-6" :title="`${doctor.data.warned + doctor.data.failed} health check items need attention`" @click.stop="openSettings('health')">{{ doctor.data.warned + doctor.data.failed }}</span><KeyboardShortcut combo="Mod+," class="mr-1" /></template>
             </SidebarItem>
           </div>
         </Sidebar>

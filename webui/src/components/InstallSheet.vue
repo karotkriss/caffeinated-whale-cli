@@ -5,7 +5,7 @@
 // starts the existing detached `apps-install` job, so private repositories ride
 // the credential bridge exactly as `cwcli apps install` does.
 import { computed, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { trackJob } from '../data/job-toasts'
 import { Alert, Button, Checkbox, Combobox, Dialog, ErrorMessage, MultiSelect, Select } from 'frappe-ui'
 import { benchRunning, ensureRunning } from '../data/start-gate'
 import { getJson } from '../data/api'
@@ -14,7 +14,6 @@ import { installSheet } from '../data/app-panel'
 import { instances, details, loadDetail, parseApp, benchName } from '../data/fleet'
 import { createJob } from '../data/jobs'
 
-const router = useRouter()
 const app = computed(() => installSheet.app)
 const project = ref(null)
 const bench = ref(null)
@@ -105,8 +104,8 @@ async function start() {
       target: { project: project.value, bench: String(bench.value) },
       args: { apps: [spec.value], sites: fetchOnly.value ? [] : sites.value, branch: onBench.value ? null : branch.value.trim() || null, fetch_only: fetchOnly.value },
     })
+    trackJob(record.id)
     installSheet.open = false
-    await router.push(`/jobs/${record.id}`)
   } catch (e) {
     error.value = e.hint ? `${e.message} ${e.hint}` : e.message
   } finally {

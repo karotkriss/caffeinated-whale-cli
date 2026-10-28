@@ -11,17 +11,15 @@ export function openTransfer({ mode = 'clone', project, bench, sites = [], pick 
 }
 export function openReceive() { receiveDialog.open = true }
 
-// Serving a set is a job: the ticket lands on its page as soon as sendme prints it,
-// and Interrupt stops serving.
-export async function sendSet(set, router) {
+// Serving a set is a job: the ticket lands on its page (the running toast links to it)
+// as soon as sendme prints it, and Interrupt stops serving.
+export async function sendSet(set) {
   const record = await createJob({ verb: 'send-backup', target: {}, args: { set_keys: [set.key] } })
   trackJob(record.id)
-  router?.push(`/jobs/${record.id}`)
   return record
 }
-export async function copyOffsite(set, router) {
+export async function copyOffsite(set) {
   const record = await createJob({ verb: 's3-copy', target: { project: set.project }, args: { set_keys: [set.key] } })
   trackJob(record.id)
-  router?.push(`/jobs/${record.id}`)
   return record
 }

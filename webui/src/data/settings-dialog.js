@@ -3,7 +3,7 @@
 // /settings/<section> deep link; the page underneath stays where it is.
 import { reactive } from 'vue'
 
-export const SECTIONS = ['account', 'paths', 'cache', 'daemons', 'sources', 'agents', 'about']
+export const SECTIONS = ['account', 'paths', 'cache', 'daemons', 'sources', 'agents', 'health', 'about']
 export const settingsDialog = reactive({ open: false, tab: 'paths' })
 
 export function openSettings(section = null) {

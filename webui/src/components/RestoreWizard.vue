@@ -11,9 +11,7 @@ import { instances, details, loadDetail, instance } from '../data/fleet'
 import { createJob, loadJob, jobs, ACTIVE_STATES } from '../data/jobs'
 import { trackJob } from '../data/job-toasts'
 import { backups, REASON_LABEL, PART_LABEL, sizeText, whenText } from '../data/backups'
-import { useRouter } from 'vue-router'
 
-const router = useRouter()
 const step = ref(1)
 const project = ref(null)
 const bench = ref(null)
@@ -89,7 +87,6 @@ async function start() {
     const record = await createJob({ verb: 'restore-set', target, args, consent: true, secrets })
     trackJob(record.id)
     restoreWizard.open = false
-    router.push(`/jobs/${record.id}`)
   } catch (e) {
     error.value = e
   } finally {

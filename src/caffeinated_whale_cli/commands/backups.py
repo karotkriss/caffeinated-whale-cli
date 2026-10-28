@@ -304,7 +304,10 @@ def transfer_cmd(
     keep_config: bool = typer.Option(False, "--keep-config"),
     no_files: bool = typer.Option(False, "--no-files"),
     yes: bool = typer.Option(
-        False, "--yes", "-y", help="A move drops each source; this is its consent."
+        False,
+        "--yes",
+        "-y",
+        help="Consent to drop each source (a move) and to replace a target site that exists.",
     ),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
@@ -317,8 +320,9 @@ def transfer_cmd(
             "[bold red]Error:[/bold red] a move drops each source site; pass --yes."
         )
         raise typer.Exit(code=1)
-    try:
-        result = core_transfer.transfer_sites(
+
+    def run(consent: bool):
+        return core_transfer.transfer_sites(
             project,
             pairs,
             mode=mode,
@@ -332,9 +336,21 @@ def transfer_cmd(
             ),
             config_mode="keep" if keep_config else "carry",
             with_files=not no_files,
-            consent=yes,
+            consent=consent,
             on_event=None if as_json else _narrate_transfer,
         )
+
+    try:
+        result = run(yes)
+        if result.status is Status.NEEDS_CHOICE and result.choice is not None:
+            if not sys.stdin.isatty():
+                stderr_console.print(
+                    f"[bold red]Error:[/bold red] {result.choice.prompt} Pass --yes to replace."
+                )
+                raise typer.Exit(code=1)
+            if not typer.confirm(result.choice.prompt, default=False):
+                raise typer.Exit(code=0)
+            result = run(True)
     except CwcliError as e:
         _fail(e)
     report = result.data
