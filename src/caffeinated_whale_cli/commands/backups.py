@@ -132,7 +132,8 @@ def capture_cmd(
         console.print_json(json.dumps(bset.to_dict()))
     else:
         console.print(
-            f"{'[green]Verified[/green]' if bset.verified else '[red]NOT verified[/red]'} {bset.key} ({bset.size / 1048576:.1f} MB)"
+            f"{'[green]Verified[/green]' if bset.verified else '[red]NOT verified[/red]'} {bset.key} ({bset.size / 1048576:.1f} MB)",
+            soft_wrap=True,
         )
         for c in bset.checks:
             console.print(
@@ -184,7 +185,7 @@ def delete_cmd(
         core_backup_store.delete_set(bset, consent=True)
     except CwcliError as e:
         _fail(e)
-    console.print(f"Deleted {key}")
+    console.print(f"Deleted {key}", soft_wrap=True)
 
 
 @app.command("restore")
@@ -248,7 +249,7 @@ def restore_cmd(
     if as_json:
         console.print_json(json.dumps(asdict(report)))
     else:
-        console.print(f"Restored {key} into {report.site} on {report.project}")
+        console.print(f"Restored {key} into {report.site} on {report.project}", soft_wrap=True)
         for c in report.post_checks:
             console.print(
                 f"  {'[green]ok[/green]' if c.ok else '[red]failed[/red]'} {c.name}: {c.detail}"
@@ -437,7 +438,7 @@ def prune_cmd(
     verb = "would remove" if dry_run else "removed"
     console.print(f"{len(rows)} set(s) {verb}; {data.get('kept', 0)} kept")
     for d in rows:
-        console.print(f"  • {d['key']}  [dim]{d['why']}[/dim]")
+        console.print(f"  • {d['key']}  [dim]{d['why']}[/dim]", soft_wrap=True)
 
 
 @app.command("settings")
@@ -594,7 +595,8 @@ def s3_list_cmd(
         console.print("[dim]No off-site copies yet.[/dim]")
     for d in rows:
         console.print(
-            f"{d['key']}  {d.get('created_at')}  {d.get('reason')}  {'local' if d['local'] else 'off-site only'}"
+            f"{d['key']}  {d.get('created_at')}  {d.get('reason')}  {'local' if d['local'] else 'off-site only'}",
+            soft_wrap=True,
         )
 
 
@@ -624,7 +626,9 @@ def s3_fetch_cmd(
             got = core_backup_store.offsite_fetch(project, k, on_event=_narrate)
         except CwcliError as e:
             _fail(e)
-        console.print(f"{got.key}  {'verified' if got.verified else 'NOT verified'}")
+        console.print(
+            f"{got.key}  {'verified' if got.verified else 'NOT verified'}", soft_wrap=True
+        )
 
 
 @s3_app.command("prune")
@@ -655,7 +659,7 @@ def s3_prune_cmd(
         f"{len(rows)} off-site copy(ies) {'would be' if dry_run else ''} removed; {data.get('kept', 0)} kept"
     )
     for d in rows:
-        console.print(f"  • {d['key']}  [dim]{d['why']}[/dim]")
+        console.print(f"  • {d['key']}  [dim]{d['why']}[/dim]", soft_wrap=True)
 
 
 @key_app.command("export")
