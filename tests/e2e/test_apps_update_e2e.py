@@ -2,19 +2,19 @@
 
 There was NO E2E for `apps` or `update` at all, which is a standing gap against
 the captain standard: `apps update` prompts (the auto-start confirm, gated by
-`--yes`), and `apps update <proj> frappe` runs `bench update --reset` - which
-resets every app repo, pulls, migrates every site and rebuilds - gated by
-NOTHING. No `--yes`, no confirmation. That is the path that most needs real
-coverage, and it is the one this batch changed most.
+`--yes`), and `apps update <proj> frappe` is the core update - frappe is reset to
+its remote branch (fetch + reset --hard, frappe only), the bench's requirements
+are reinstalled, every site migrates - gated by NOTHING. No `--yes`, no
+confirmation. That is the path that most needs real coverage.
 
-`bench` is shimmed for the legs that need deterministic output, exactly as
-`test_run_e2e.py` does and for the same reasons: a real `bench update --reset`
-clones every app from GitHub and takes many minutes, and what this batch changed
-is cwcli's OUTPUT ROUTING and exit code, not bench's reset. The shim also lets
-these legs prove the property that matters - stdout purity - which an empty
-bench output cannot: with no bytes to stream, streaming and not streaming look
-identical. That is precisely why the pre-existing unit tests could not see the
-hardcoded `verbose=True` this batch removed.
+Two things make the core legs deterministic on the SHARED instance without
+touching its real code: frappe's ``upstream`` remote is repointed at a local bare
+mirror of its own HEAD (so the fetch + reset is a byte-exact no-op, and the state
+is put back afterwards), and ``bench setup requirements`` is shimmed to print
+output and exit as asked (a real reinstall takes minutes and what is under test
+is cwcli's output routing and exit code). The shim lets these legs prove the
+property that matters - stdout purity - which an empty bench output cannot:
+with no bytes to stream, streaming and not streaming look identical.
 
 The unshimmed legs (a real missing app, the real prompts) run against the
 genuine bench.
@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import io
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 import pytest
 
@@ -42,7 +44,7 @@ _NOISE = "Updating apps… ✓ frappe updated ─────│└ ⚠"
 
 
 def _install_bench_shim(inst, *, exit_code: int) -> None:
-    """Shim only ``bench update --reset`` and delegate every other bench command.
+    """Shim only ``bench setup requirements`` and delegate every other bench command.
 
     App updates now resynchronise the running Procfile programs before returning.
     Those programs launch through this same executable, so a catch-all shim makes
@@ -54,7 +56,7 @@ def _install_bench_shim(inst, *, exit_code: int) -> None:
         "#!/usr/bin/env python3\n"
         "import os\n"
         "import sys\n"
-        'if sys.argv[1:] == ["update", "--reset"]:\n'
+        'if sys.argv[1:] == ["setup", "requirements"]:\n'
         f'    print("{_NOISE}")\n'
         f"    sys.exit({exit_code})\n"
         f'os.execv("{_REAL_BENCH}", ["{_REAL_BENCH}", *sys.argv[1:]])\n'
@@ -72,12 +74,31 @@ def _remove_bench_shim(inst) -> None:
     harness.exec_in_frappe(inst.name, f"[ -f {_REAL_BENCH} ] && mv {_REAL_BENCH} {_BENCH_SHIM}")
 
 
+@contextmanager
+def _frappe_remote_mirrored(inst) -> Iterator[None]:
+    """Point frappe's ``upstream`` at a bare mirror of its own HEAD for the test, so the
+    core reset (fetch + reset --hard @{u}) cannot move the shared bench's code; the
+    remote URL is put back by ``preserve_frappe_fetch_state`` (it snapshots config)."""
+    mirror = "/tmp/cwe2e-frappe-mirror.git"
+    code, out = harness.exec_in_frappe(
+        inst.name,
+        f"rm -rf {mirror} && git clone -q --bare apps/frappe {mirror} && "
+        f"git -C apps/frappe remote set-url upstream {mirror}",
+        workdir=inst.bench,
+    )
+    assert code == 0, f"could not mirror frappe: {out}"
+    try:
+        yield
+    finally:
+        harness.exec_in_frappe(inst.name, f"rm -rf {mirror}")
+
+
 @pytest.fixture()
 def bench_shim(running_instance):
     """Install the output-emitting bench shim, and ALWAYS put the real one back.
 
-    The shim replaces only the reset: the frappe preflight still runs for real and
-    fetches frappe's upstream branch, so that state is put back as well.
+    The shim replaces only the requirements step; the preflight and the reset run
+    for real against a local mirror of frappe, so that state is put back as well.
     """
 
     def _install(exit_code=0):
@@ -86,7 +107,8 @@ def bench_shim(running_instance):
 
     try:
         with harness.preserve_frappe_fetch_state(running_instance.name):
-            yield _install
+            with _frappe_remote_mirrored(running_instance):
+                yield _install
     finally:
         _remove_bench_shim(running_instance)
 
@@ -158,7 +180,7 @@ def test_apps_update_quiet_does_not_stream_bench_output(bench_shim):
 
 
 def test_apps_update_reports_a_failing_reset_nonzero(bench_shim):
-    """A real non-zero `bench update --reset` must never report success."""
+    """A real non-zero requirements step must never report success."""
     inst = bench_shim(exit_code=1)
 
     result = harness.run_cwcli("apps", "update", inst.name, "frappe", "--no-recache", "--yes")
@@ -176,7 +198,10 @@ def test_apps_update_json_reports_a_failing_reset_in_the_document(bench_shim):
     assert result.returncode == 1
     doc = json.loads(result.stdout)
     assert doc["ok"] is False
-    assert doc["failed_apps"] == ["frappe"]
+    # The reset itself succeeded; the shimmed requirements step failed, so no site
+    # was migrated onto the new code.
+    assert doc["requirements"] == "failed"
+    assert doc["migrated_sites"] == []
 
 
 def test_apps_update_missing_app_is_reported_nonzero(running_instance):

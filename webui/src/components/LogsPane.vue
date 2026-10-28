@@ -7,7 +7,7 @@
 // holding an exec stream: core/logs.py documents that a streamed `tail -F`
 // leaks an orphan per stop because Docker has no kill-exec API.
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import { TabButtons, ErrorMessage, LoadingText } from 'frappe-ui'
+import { TabButtons, ErrorMessage, LoadingText, TextInput, Button } from 'frappe-ui'
 import CommandLine from './CommandLine.vue'
 import FollowPane from './FollowPane.vue'
 import { getJson } from '../data/api'
@@ -32,6 +32,19 @@ const logs = {} // process -> { rows: [], offset }
 const all = []
 const processes = ref([])
 const items = shallowRef([])
+const search = ref('')
+const shown = computed(() => {
+  const q = search.value.trim().toLowerCase()
+  return q ? items.value.filter((r) => r.text.toLowerCase().includes(q)) : items.value
+})
+function download() {
+  const blob = new Blob([shown.value.map((r) => (filter.value === 'all' ? `${r.p}\t${r.text}` : r.text)).join('\n') + '\n'], { type: 'text/plain' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = `${props.project}-bench${props.bench}-${filter.value}.log`
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
 let timer = null
 let inflight = false
 
@@ -83,13 +96,19 @@ onBeforeUnmount(() => clearInterval(timer))
   <div class="space-y-3">
     <div class="flex flex-wrap items-center gap-3">
       <TabButtons v-if="processes.length" v-model="filter" :options="options" />
+      <TextInput v-model="search" class="w-56" type="search" placeholder="Search these lines">
+        <template #prefix><span class="lucide-search size-3.5 text-ink-gray-5" aria-hidden="true" /></template>
+      </TextInput>
+      <span v-if="search.trim()" class="text-xs tabular-nums text-ink-gray-5">{{ shown.length }} {{ shown.length === 1 ? 'match' : 'matches' }}</span>
+      <Button size="sm" variant="ghost" icon-left="lucide-download" label="Download" :disabled="!shown.length" @click="download" />
       <span class="ml-auto text-xs text-ink-gray-5">polled every {{ POLL_MS / 1000 }}s · last 200 lines, then only what is new</span>
     </div>
     <p v-if="notSupervised" class="text-p-sm text-ink-amber-6">Raw bench logs: this bench runs outside cwcli's supervisor.</p>
     <ErrorMessage :message="error" />
     <LoadingText v-if="loading && !processes.length" text="Reading logs..." />
     <div v-else-if="!items.length && !error" class="px-3 py-10 text-center text-p-sm text-ink-gray-5">No logs written yet.</div>
-    <FollowPane v-else-if="items.length" :items="items" class="max-h-[60vh] rounded-6 border border-outline-gray-1 bg-surface-gray-1 py-2">
+    <div v-else-if="items.length && !shown.length" class="px-3 py-10 text-center text-p-sm text-ink-gray-5">No line matches "{{ search }}".</div>
+    <FollowPane v-else-if="items.length" :items="shown" class="max-h-[60vh] rounded-6 border border-outline-gray-1 bg-surface-gray-1 py-2">
       <template #default="{ item }">
         <div class="flex gap-3 px-3 font-mono text-xs leading-5">
           <span v-if="filter === 'all'" class="w-28 shrink-0 break-words text-ink-gray-5">{{ item.p }}</span>

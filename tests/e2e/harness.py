@@ -30,6 +30,7 @@ lives in functions the fixtures/tests call, so collecting these modules under
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -325,6 +326,21 @@ def docker_cp_out(project: str, container_path: str, host_path: Path) -> bool:
         return False
     r = _docker("cp", f"{cid}:{container_path}", str(host_path), timeout=300)
     return r.returncode == 0
+
+
+def removal_backup_files(project: str, site: str) -> list[Path]:
+    """The backup parts a removal (rm, rm-site, rm-bench) kept for ``site``.
+
+    A removal moves its verified backup into the backup store as a ``before-removal``
+    set (README "Backups"), so this reads the newest set's persisted manifest
+    (``$CWCLI_HOME/backups/<project>/<site>/<set id>/set.json``) and returns its parts.
+    """
+    site_dir = Path(os.environ["CWCLI_HOME"]) / "backups" / project / site
+    sets = sorted(d for d in site_dir.glob("*") if (d / "set.json").is_file())
+    assert sets, f"no backup-store set for {site!r} of {project!r} under {site_dir}"
+    manifest = json.loads((sets[-1] / "set.json").read_text(encoding="utf-8"))
+    assert manifest["reason"] == "before-removal", manifest
+    return [sets[-1] / part["filename"] for part in manifest["parts"]]
 
 
 # --------------------------------------------------------------------------- #

@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { Alert, Button, Checkbox, Dialog, ErrorMessage, FormControl } from 'frappe-ui'
+import { Alert, Button, Checkbox, Dialog, ErrorMessage, FormControl, Select } from 'frappe-ui'
 import { jobDialog, submitJob } from '../data/job-dialog'
 import { forceConfirmTarget, forceConfirmed } from '../data/force-confirm'
 
@@ -19,7 +19,7 @@ const titles = {
 const descriptions = {
   'apps-install': 'Fetches each app, installs it on the selected sites, then verifies the serving bench.',
   'apps-update': 'Runs the same preflight and update path as the CLI. Findings appear in the job before any reset.',
-  backup: 'Creates a database backup inside the bench. Include public and private files when you need a complete site archive.',
+  backup: 'Backs the site up into cwcli\'s store outside the instance: database, files and config, verified at creation.',
   migrate: 'Applies pending schema patches under maintenance mode. A failed patch is not transactional.',
   'run-tests': 'Runs app test code against the named site. Tests can create, change, and delete data.',
   build: 'Compiles the bench assets, optionally for one app.',
@@ -34,6 +34,7 @@ const typed = ref('')
 watch(() => jobDialog.open, () => (typed.value = ''))
 const forceTarget = computed(() => (jobDialog.verb === 'apps-update' ? forceConfirmTarget(v.value, jobDialog.context) : ''))
 const canContinue = computed(() => {
+  if (['apps-update', 'apps-install'].includes(jobDialog.verb) && !String(v.value.apps || '').trim()) return false
   if (!isInit.value) return jobDialog.verb !== 'apps-update' || forceConfirmed(v.value, jobDialog.context, typed.value)
   if (jobDialog.step === 0) return !!v.value.project?.trim() && !!v.value.bench_name?.trim() && !!v.value.site_name?.trim() && Number(v.value.port) > 0
   if (jobDialog.step === 1) return !!v.value.version?.trim() && !!v.value.bench_parent?.trim()
@@ -99,6 +100,7 @@ function next() {
           <FormControl v-model="v.sites" label="Sites (optional)" placeholder="site.localhost" />
           <FormControl v-model="v.branch" label="Branch (optional)" placeholder="develop" />
           <Checkbox v-model="v.fetch_only" label="Fetch only; do not install on sites" />
+          <Checkbox v-model="v.backup_first" label="Back up the sites first (a verified set per site; a failed one stops the install)" />
         </div>
 
         <div v-else-if="jobDialog.verb === 'apps-update'" class="space-y-4">
@@ -112,13 +114,22 @@ function next() {
             <Checkbox v-model="v.clear_website_cache" label="Clear website cache" />
             <Checkbox v-model="v.skip_maintenance" label="Skip maintenance mode" />
             <Checkbox v-model="v.force" label="Force: discard uncommitted and unpushed app work, re-own app repos" />
+            <Checkbox v-model="v.fix_branches" label="Switch apps whose dependencies do not fit this bench to the matching version branch first" />
           </div>
           <Alert theme="blue" title="Preflight runs first" description="Dirty trees, branch drift, and data-loss risks are collected and shown together. A blocker stops the update. A frappe update refuses when an app has uncommitted or unpushed work unless Force is ticked, which discards that work permanently." />
           <FormControl v-if="forceTarget" v-model="typed" :label="`Type ${forceTarget} to confirm`" autocomplete="off" />
         </div>
 
-        <Checkbox v-else-if="jobDialog.verb === 'backup'" v-model="v.with_files" label="Include public and private files" />
+        <div v-else-if="jobDialog.verb === 'backup'" class="space-y-3">
+          <div class="grid gap-3 sm:grid-cols-2">
+            <Select v-model="v.reason" label="Reason" :options="[{ label: 'Manual', value: 'manual' }, { label: 'Restore drill', value: 'drill' }]" />
+            <FormControl v-model="v.note" label="Note (optional)" placeholder="e.g. before the pricing change" />
+          </div>
+          <Checkbox v-model="v.with_files" label="Include public and private files" />
+          <p class="text-xs text-ink-gray-5">The set is copied out of the instance into cwcli's store, verified (dump complete, archives list, config parses), and the in-bench copies are removed once it verifies.</p>
+        </div>
 
+        <Checkbox v-else-if="jobDialog.verb === 'migrate'" v-model="v.backup_first" label="Back up the site first (a verified set; a failed one stops the migrate)" />
         <div v-else-if="jobDialog.verb === 'run-tests'" class="grid gap-4 sm:grid-cols-2">
           <FormControl v-model="v.app" label="App" placeholder="my_app" />
           <FormControl v-model="v.module" label="Test module (optional)" placeholder="my_app.tests.test_example" />
@@ -146,8 +157,8 @@ function next() {
         <span v-else />
         <div class="flex gap-2">
           <Button label="Cancel" @click="close" />
-          <Button v-if="isInit && jobDialog.step < 2" variant="solid" label="Continue" :disabled="!canContinue" @click="next" />
-          <Button v-else variant="solid" label="Start job" :loading="jobDialog.running" :disabled="!canContinue" @click="submitJob" />
+          <Button v-if="isInit && jobDialog.step < 2" variant="solid" data-primary label="Continue" :disabled="!canContinue" @click="next" />
+          <Button v-else variant="solid" data-primary label="Start job" :loading="jobDialog.running" :disabled="!canContinue" @click="submitJob" />
         </div>
       </div>
     </template>

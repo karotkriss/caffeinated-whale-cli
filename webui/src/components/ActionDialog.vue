@@ -7,7 +7,6 @@ import { instance } from '../data/fleet'
 import { dialogState, runAction } from '../data/dialog'
 
 const typed = ref('')
-watch(() => dialogState.open, () => (typed.value = ''))
 
 const action = computed(() => (dialogState.id ? ACTIONS[dialogState.id] : null))
 const ctx = computed(() => dialogState.ctx)
@@ -34,6 +33,7 @@ const avail = computed(() =>
 const needsTyped = computed(() => action.value?.confirm === 'typed')
 const textFields = computed(() => (action.value?.fields || []).filter((f) => f.type !== 'checkbox'))
 const checkboxes = computed(() => (action.value?.fields || []).filter((f) => f.type === 'checkbox'))
+watch(() => [dialogState.open, ...checkboxes.value.map((f) => !!dialogState.values[f.name])], () => (typed.value = ''))
 // Every non-password text field is required; a password field left blank means its default.
 const fieldsFilled = computed(() =>
   textFields.value.every((f) => f.type === 'password' || String(dialogState.values[f.name] || '').trim()),
@@ -69,6 +69,12 @@ function confirm() {
         :autocomplete="f.type === 'password' ? 'new-password' : 'off'"
       />
       <Checkbox v-for="f in checkboxes" :key="f.name" v-model="dialogState.values[f.name]" :label="f.label" />
+      <Alert
+        v-if="action.danger_when && action.danger_when(dialogState.values)"
+        theme="red"
+        title="No backup will be taken. This cannot be undone."
+        :description="`Every database, site and file of ${ctx.project} is deleted the moment you confirm. Nothing is archived, so there is no restore. Untick Force to keep the verified backup, or tick Keep the named volumes to leave the data on Docker.`"
+      />
       <div class="space-y-1.5">
         <div class="text-sm text-ink-gray-5">Same as running</div>
         <CommandLine :command="action.cli(ctx, dialogState.values)" />
@@ -80,12 +86,8 @@ function confirm() {
         :placeholder="target"
         autocomplete="off"
       />
-      <Alert
-        v-if="!avail.ok"
-        theme="gray"
-        :title="avail.reason"
-        :description="avail.detail || `cwcli refuses this on a stopped instance rather than starting it behind your back. Start ${ctx.project} first.`"
-      />
+      <Alert v-if="!avail.ok" theme="gray" :title="avail.reason" :description="avail.detail" />
+      <Alert v-else-if="avail.startFirst" theme="gray" :title="`${ctx.project} is stopped`" :description="`cwcli will ask to start ${ctx.project} first, then run this, the same as in a terminal.`" />
       <ErrorMessage :message="errorText" />
     </div>
     <template #actions="{ close }">
@@ -93,6 +95,7 @@ function confirm() {
         <Button label="Cancel" @click="close" />
         <Button
           variant="solid"
+          data-primary
           :theme="action?.danger ? 'red' : 'gray'"
           :disabled="!ready"
           :loading="dialogState.running"

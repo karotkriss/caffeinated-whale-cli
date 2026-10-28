@@ -34,12 +34,20 @@ from typing import Any
 
 from .commands import rm as rm_cmd
 from .commands import start as start_cmd
+from .core import app_catalog as core_app_catalog
 from .core import apps as core_apps
 from .core import backup as core_backup
+from .core import backup_drill as core_backup_drill
+from .core import backup_store as core_backup_store
 from .core import bench_ops as core_bench_ops
+from .core import db_password as core_db_password
+from .core import dev_mode as core_dev_mode
+from .core import docker as core_docker
 from .core import failure_causes
 from .core import init as core_init
 from .core import label as core_label
+from .core import new_bench as core_new_bench
+from .core import new_site as core_new_site
 from .core import resolvers as core_resolvers
 from .core import restart as core_restart
 from .core import rm as core_rm
@@ -48,8 +56,10 @@ from .core import rm_site as core_rm_site
 from .core import scale as core_scale
 from .core import start as core_start
 from .core import stop as core_stop
+from .core import transfer as core_transfer
 from .core import unlock as core_unlock
 from .core import update as core_update
+from .core import updates as core_updates
 from .core import version as core_version
 from .core.envelope import Choice, Message, Result, Status
 from .core.errors import CwcliError, ErrorKind
@@ -58,6 +68,8 @@ from .utils import cache, daemon_identity, shared_home, signals
 from .utils.config_utils import cwcli_home
 
 ACTIVE_STATES = frozenset({"queued", "running", "interrupting"})
+# Verbs that act on the machine, not on one instance: no target.project is required.
+_PROJECTLESS_VERBS = frozenset({"self-update", "check-updates", "send-backup", "receive-backup"})
 TERMINAL_STATES = frozenset({"succeeded", "failed", "interrupted", "unknown", "needs_choice"})
 ALLOWED_VERBS = frozenset(
     {
@@ -68,6 +80,25 @@ ALLOWED_VERBS = frozenset(
         "restart-process",
         "set-label",
         "unlock",
+        "dev-mode",
+        "new-site",
+        "new-bench",
+        "restore-set",
+        "verify-backup",
+        "delete-backup",
+        # Phase 2: clone and move (single or batch) and the sendme leg between machines.
+        "clone-sites",
+        "move-sites",
+        "send-backup",
+        "receive-backup",
+        # Phase 3: retention as a visible job, and the scheduled run (every site, then prune).
+        "prune-backups",
+        "backup-sites",
+        "s3-copy",
+        "s3-fetch",
+        "s3-prune",
+        "restore-drill",
+        "repair-db-access",
         "clear-maintenance",
         "scale",
         "apps-checkout",
@@ -80,11 +111,12 @@ ALLOWED_VERBS = frozenset(
         "build",
         "setup-wizard",
         "self-update",
+        "check-updates",
         # Phase 3: the guarded destructive verbs. Each runs the SAME core path the
         # CLI and `axi` use (verified backup gate included), takes consent as a
-        # spec field the page sets only after a typed confirmation, and never
-        # carries a bypass: there is no `--no-backup` here (`axi rm`'s rule) and
-        # no `--force`.
+        # spec field the page sets only after a typed confirmation. The one bypass
+        # is rm's `no_backup` (the page's Force checkbox, behind its own typed
+        # confirmation and warning); there is no `--force`.
         "rm",
         "rm-site",
         "rm-bench",
@@ -107,7 +139,6 @@ _UI_ENV = {
     "start": "CWCLI_JOB_UI_START",
     "port": "CWCLI_JOB_UI_PORT",
     "token": "CWCLI_JOB_UI_TOKEN",
-    "session": "CWCLI_JOB_UI_SESSION",
 }
 _CREATE_LOCK = threading.Lock()
 # The secrets each job was started with, held in THIS daemon's memory only - never on
@@ -251,12 +282,18 @@ def _append_event(job_id: str, seq: int, event: dict[str, Any]) -> None:
     shared_home.apply_group(path)
 
 
-def _events(job_id: str, *, after: int = 0) -> list[dict[str, Any]]:
+def _events(
+    job_id: str, *, after: int = 0, limit: int | None = None
+) -> tuple[list[dict[str, Any]], int]:
+    """The events after ``after``; with ``limit``, only the LAST ``limit`` of them, the
+    count of earlier ones left out reported alongside. A long job (an init writes
+    thousands of output events, 20 MB as JSON) must open in a page at once: the
+    page asks for the tail first and the rest on demand."""
     path = _json_path(job_id, "events.jsonl")
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return []
+        return [], 0
     rows: list[dict[str, Any]] = []
     for line in lines[after:]:
         try:
@@ -265,7 +302,11 @@ def _events(job_id: str, *, after: int = 0) -> list[dict[str, Any]]:
             continue
         if isinstance(row, dict) and int(row.get("seq") or 0) > after:
             rows.append(row)
-    return rows
+    skipped = 0
+    if limit is not None and limit >= 0 and len(rows) > limit:
+        skipped = len(rows) - limit
+        rows = rows[len(rows) - limit :]
+    return rows, skipped
 
 
 def _process_is_job(state: dict[str, Any]) -> bool:
@@ -305,7 +346,9 @@ def _refresh_unknown(job_id: str, state: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
-def read_job(job_id: str, *, include_events: bool = False, after: int = 0) -> dict[str, Any]:
+def read_job(
+    job_id: str, *, include_events: bool = False, after: int = 0, limit: int | None = None
+) -> dict[str, Any]:
     spec = _read_json(_json_path(job_id, "spec.json"))
     state = _refresh_unknown(job_id, _state(job_id))
     if state.get("state") == "succeeded":
@@ -317,7 +360,7 @@ def read_job(job_id: str, *, include_events: bool = False, after: int = 0) -> di
         refusal[1] if refusal and refusal[0] != "job.retry_not_failed" else None
     )
     if include_events:
-        record["events"] = _events(job_id, after=after)
+        record["events"], record["events_skipped"] = _events(job_id, after=after, limit=limit)
     return record
 
 
@@ -399,7 +442,7 @@ def _validate_spec(verb: str, target: dict[str, Any], args: dict[str, Any]) -> N
                 f"Job {container_name} cannot contain the secret field '{secret_key}'.",
                 hint="Send passwords through the dedicated secrets object.",
             )
-    if verb != "self-update":
+    if verb not in _PROJECTLESS_VERBS:
         project = target.get("project")
         if not isinstance(project, str) or not project.strip():
             raise CwcliError(
@@ -417,8 +460,11 @@ def create_job(
     consent: bool = False,
     secret_values: dict[str, str] | None = None,
     ui_context: dict[str, str | int] | None = None,
+    origin: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Atomically admit and start one job within this user's UI daemon."""
+    """Atomically admit and start one job within this user's UI daemon. ``origin``
+    (which daemon port, page and client made it) is written into the spec so a job
+    is attributable after the fact."""
     with _CREATE_LOCK:
         return _create_job(
             verb,
@@ -426,6 +472,7 @@ def create_job(
             args,
             consent=consent,
             secret_values=secret_values,
+            origin=origin,
             ui_context=ui_context,
         )
 
@@ -438,6 +485,7 @@ def _create_job(
     consent: bool = False,
     secret_values: dict[str, str] | None = None,
     ui_context: dict[str, str | int] | None = None,
+    origin: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Persist a secret-free spec and spawn its worker in a new process session."""
     _validate_spec(verb, target, args)
@@ -466,6 +514,7 @@ def _create_job(
         "target": _plain(target),
         "args": _plain(args),
         "consent": bool(consent),
+        "origin": origin,
         "project_key": project_key,
         "created_at": created.isoformat().replace("+00:00", "Z"),
     }
@@ -605,7 +654,9 @@ def continue_job(
     daemon, held for the waiting job until it is pruned, so it can be answered again.
     """
     record = read_job(job_id)
-    if record.get("state") != "needs_choice":
+    # A continued job is marked ``answered`` (captain note 30); if the follow-up fails it
+    # can be answered again from the same waiting job, with the same held secrets.
+    if record.get("state") not in ("needs_choice", "answered"):
         raise CwcliError(
             ErrorKind.CONFLICT,
             "job.continue_not_pending",
@@ -617,7 +668,7 @@ def continue_job(
             "job.continue_project_changed",
             "A continued job must keep the instance it was started for.",
         )
-    return create_job(
+    created = create_job(
         record["verb"],
         target,
         args,
@@ -625,6 +676,10 @@ def continue_job(
         secret_values=_held_secrets(record),
         ui_context=ui_context,
     )
+    # The decision is taken: the waiting job is ANSWERED (and names its follow-up),
+    # so a list never offers the same choice twice (captain note 06:39Z).
+    _merge_state(job_id, state="answered", answered_by=created["id"], finished_at=_now())
+    return created
 
 
 def _held_secrets(record: dict[str, Any]) -> dict[str, str]:
@@ -882,6 +937,98 @@ def _clear_maintenance(target: dict[str, Any]) -> Result:
     return Result(status=Status.OK if off else Status.WARNING, data=outcome, warnings=warnings)
 
 
+def _copy_offsite_if_configured(project: str, captured: Result, emit: _Recorder) -> Result:
+    """After a VERIFIED capture, the encrypted off-site copy when the instance has an S3
+    target with copy_on_backup; a failed upload is a warning on the capture (the local
+    set stands), never a failed backup."""
+    bset = captured.data
+    if bset is None or not getattr(bset, "verified", False):
+        return captured
+    cfg = core_backup_store.settings(project).get("s3_target") or {}
+    if not cfg.get("enabled") or not cfg.get("copy_on_backup", True):
+        return captured
+    try:
+        updated = core_backup_store.offsite_copy(bset, on_event=emit)
+    except CwcliError as exc:
+        emit.lifecycle("offsite_failed", f"off-site copy failed: {exc.message}", code=exc.code)
+        return Result(
+            status=Status.WARNING,
+            data=bset,
+            warnings=[*captured.warnings, Message("offsite.copy_failed", exc.message)],
+        )
+    return Result(status=captured.status, data=updated, warnings=captured.warnings)
+
+
+def _bench_sites_from_cache(project: str, bench: str | None) -> tuple[str, list[str]]:
+    """The resolved bench path and its cached site names (the fan-out a core update hits)."""
+    from .core import inspect as core_inspect
+    from .utils import db_utils
+
+    bench_result = core_inspect.resolve_bench_with_fallback(project, bench, None)
+    bench_path = bench_result.data or ""
+    sites: list[str] = []
+    try:
+        data = db_utils.get_cached_project_data(project) or {}
+    except Exception:
+        data = {}
+    for row in data.get("bench_instances") or []:
+        if row.get("path") == bench_path:
+            sites = [str(s.get("name")) for s in row.get("sites") or [] if s.get("name")]
+    return bench_path, sites
+
+
+def _capture_or_stop(
+    project: str, bench: str | None, site: str, reason: str, emit: _Recorder
+) -> str:
+    result = core_backup_store.capture(
+        project, site=site, bench=bench, with_files=True, reason=reason, on_event=emit
+    )
+    bset = result.data
+    if bset is None or not bset.verified:
+        detail = "; ".join(
+            f"{c.name}: {c.detail}" for c in (bset.checks if bset else []) if not c.ok
+        )
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "backups.safety_failed",
+            f"The backup of {site} did not verify ({detail or 'no set'}); nothing was changed.",
+            hint="Fix the backup first (see Backups), then run this again.",
+        )
+    return bset.key
+
+
+def _safety_backups(project: str, bench: str | None, emit: _Recorder) -> None:
+    """One verified set per site of the bench before a core (frappe/erpnext) update."""
+    bench_path, sites = _bench_sites_from_cache(project, bench)
+    if not sites:
+        emit.lifecycle("safety_backup", "No cached sites on this bench; no safety backup taken.")
+        return
+    emit.lifecycle(
+        "safety_backup",
+        f"Core update: backing up {len(sites)} site{'s' if len(sites) != 1 else ''} first "
+        f"({', '.join(sites)}); bench update itself runs with --no-backup.",
+    )
+    keys = [_capture_or_stop(project, bench, site, "before-core-update", emit) for site in sites]
+    emit.lifecycle(
+        "safety_backup_done",
+        f"{len(keys)} verified set{'s' if len(keys) != 1 else ''} in the store; "
+        "'Roll back to before this' on this job restores them.",
+        sets=keys,
+    )
+
+
+def _backup_first(
+    project: str, bench: str | None, sites: list[str], reason: str, emit: _Recorder
+) -> None:
+    """The optional 'Back up first' of migrate / app install (captain decision 5)."""
+    if not sites:
+        emit.lifecycle("backup_first", "Back up first: no site named; nothing to back up.")
+        return
+    emit.lifecycle("backup_first", f"Backing up {', '.join(sites)} first (as asked).")
+    keys = [_capture_or_stop(project, bench, site, reason, emit) for site in sites]
+    emit.lifecycle("backup_first_done", f"{len(keys)} verified set(s) in the store.", sets=keys)
+
+
 def _db_root_password(secret_values: dict[str, str]) -> str | None:
     """The MariaDB root password a job was given, else None so the core uses the
     instance's remembered one (`core.db_password.resolve`)."""
@@ -889,7 +1036,8 @@ def _db_root_password(secret_values: dict[str, str]) -> str | None:
 
 
 def _remove_instance(project: str, args: dict[str, Any], consent: bool, emit: _Recorder) -> Result:
-    """`cwcli axi rm` as a job: consent ONLY (never an auto-start), never `--no-backup`.
+    """`cwcli axi rm` as a job: consent ONLY (never an auto-start); `no_backup` is the page's
+    Force checkbox and skips the verified backup gate.
 
     `core.remove` has no consent axis (rm's confirmation is a frontend concern),
     so the job supplies the refusal the `axi` verb supplies: without `consent`
@@ -901,6 +1049,10 @@ def _remove_instance(project: str, args: dict[str, Any], consent: bool, emit: _R
     and cache entry go, the named volumes (databases, sites, files) stay.
     """
     remove_volumes = not bool(args.get("keep_volumes"))
+    # `no_backup` (the page's Force checkbox, captain's rule 2026-10-27): skip the
+    # verified backup gate. The page sends it only after a typed confirmation and
+    # a red warning naming what is lost for good.
+    no_backup = bool(args.get("no_backup"))
     if not consent:
         return Result(
             status=Status.NEEDS_CHOICE,
@@ -914,7 +1066,7 @@ def _remove_instance(project: str, args: dict[str, Any], consent: bool, emit: _R
                 ),
             ),
         )
-    if remove_volumes and rm_cmd._project_run_state(project) == "stopped":
+    if remove_volumes and not no_backup and rm_cmd._project_run_state(project) == "stopped":
         raise CwcliError(
             ErrorKind.NOT_RUNNING,
             "rm.not_running",
@@ -925,7 +1077,9 @@ def _remove_instance(project: str, args: dict[str, Any], consent: bool, emit: _R
                 f"or use 'cwcli rm {project} --no-backup' in a terminal to delete without a backup."
             ),
         )
-    result = core_rm.remove(project, remove_volumes=remove_volumes, no_backup=False, on_event=emit)
+    result = core_rm.remove(
+        project, remove_volumes=remove_volumes, no_backup=no_backup, on_event=emit
+    )
     outcome = result.data
     assert outcome is not None  # remove always returns an outcome
     warnings = list(result.warnings)
@@ -1028,6 +1182,40 @@ def _refresh_after_apps(project: str, result: Result, emit: _Recorder) -> Result
     return Result(status=result.status, data=report, warnings=warnings, choice=result.choice)
 
 
+def _run_check_updates(emit: Any) -> Result[Any]:
+    """The updates check as a job (captain note 41): every running instance's installed
+    apps against their remotes, the result stored where the daemon reads it."""
+    catalog = core_app_catalog.CatalogStore().get()
+    installs = sum(len(getattr(a, "installs", None) or []) for a in catalog.apps)
+    emit.lifecycle(
+        "updates_check",
+        f"Checking {installs} installed app{'s' if installs != 1 else ''} on the running "
+        "instances against their remotes (git ls-remote through each bench, then the forge).",
+    )
+    items = core_updates.check_updates(catalog.apps)
+    core_updates.UpdatesStore().record(items)
+    behind = [it for it in items if it.get("update_available")]
+    projects = sorted({str(it.get("project")) for it in behind})
+    core_count = sum(1 for it in behind if it.get("core"))
+    if behind:
+        emit.lifecycle(
+            "updates_check",
+            f"{len(behind)} app{'s' if len(behind) != 1 else ''} behind on "
+            f"{', '.join(projects)}" + (f", {core_count} core" if core_count else "") + ".",
+        )
+    else:
+        emit.lifecycle("updates_check", "Every checked app is at the tip of the branch it tracks.")
+    return Result(
+        status=Status.OK,
+        data={
+            "checked": len(items),
+            "behind": len(behind),
+            "core": core_count,
+            "projects": projects,
+        },
+    )
+
+
 def _run_self_update(args: dict[str, Any], emit: _Recorder) -> Result:
     info_result = core_version.check(use_cache=not bool(args.get("no_cache")))
     info = info_result.data
@@ -1091,7 +1279,7 @@ def _dispatch(
     secret_values: dict[str, str],
     emit: _Recorder,
 ) -> Result:
-    project = _project(target) if verb != "self-update" else ""
+    project = _project(target) if verb not in _PROJECTLESS_VERBS else ""
     bench = _bench(target)
     site = _site(target)
     if verb == "start":
@@ -1106,7 +1294,7 @@ def _dispatch(
         return core_stop.stop_bench(project, bench=bench, on_event=emit)
     if verb == "restart-process":
         emit.lifecycle("step_start", "Restarting the process", phase="restart-process")
-        result = core_restart.restart_process(
+        result: Result[Any] = core_restart.restart_process(
             project, str(target.get("process") or ""), bench=bench
         )
         emit.lifecycle("step_end", "Process restart finished", phase="restart-process")
@@ -1115,6 +1303,110 @@ def _dispatch(
         return core_label.set_label(project, bench=bench, label=str(args.get("label") or ""))
     if verb == "unlock":
         return core_unlock.unlock(project, site=site, bench=bench, on_event=emit)
+    if verb == "new-bench":
+        admin_password = secret_values.get("admin_password") or ""
+        if not admin_password:
+            raise CwcliError(
+                ErrorKind.USAGE,
+                "new_bench.admin_password_required",
+                "New bench requires an Administrator password from the dialog.",
+            )
+        bench_name = str(args.get("bench_name") or "").strip()
+        if not bench_name:
+            raise CwcliError(
+                ErrorKind.USAGE, "new_bench.name_required", "New bench needs a bench_name."
+            )
+        version = str(args.get("version") or "16")
+        result = core_new_bench.new_bench(
+            project,
+            bench_name=bench_name,
+            site_name=str(args.get("site_name") or f"{bench_name}.localhost"),
+            admin_password=admin_password,
+            frappe_ref=str(args["frappe_ref"]) if args.get("frappe_ref") else None,
+            version=version,
+            frappe_url=str(args["frappe_url"]) if args.get("frappe_url") else None,
+            install_erpnext=bool(args.get("install_erpnext")),
+            apps=[str(a) for a in (args.get("apps") or []) if a],
+            db_root_password=_db_root_password(secret_values),
+            after_init=lambda path: cache.recache_project(project, bench_path=path, warnings=[]),
+            on_event=emit,
+        )
+        if result.data is not None:
+            warnings = list(result.warnings)
+            if not cache.recache_project(
+                project, bench_path=result.data.bench_path, warnings=warnings
+            ):
+                emit.lifecycle("cache_warning", f"Could not refresh the cache for {project}.")
+            return Result(status=result.status, data=result.data, warnings=warnings)
+        return result
+    if verb == "new-site":
+        if not site:
+            raise CwcliError(
+                ErrorKind.USAGE,
+                "site.required",
+                "new-site needs a target.site (the new site's name).",
+            )
+        admin_password = secret_values.get("admin_password") or ""
+        if not admin_password:
+            raise CwcliError(
+                ErrorKind.USAGE,
+                "new_site.admin_password_required",
+                "New site requires an Administrator password from the dialog.",
+            )
+        fetch = [str(u) for u in (args.get("fetch") or []) if u]
+        if fetch:
+            # Captain note 49: a remote pick is fetched onto the bench FIRST (no site
+            # install yet); a failed fetch stops the job before any site exists.
+            fetched = core_apps.install_apps(
+                project, fetch, bench=bench, fetch_only=True, on_event=emit
+            )
+            if fetched.data is None or not getattr(fetched.data, "ok", True):
+                raise CwcliError(
+                    ErrorKind.PRECONDITION,
+                    "new_site.fetch_failed",
+                    "Fetching the remote apps failed; the site was not created.",
+                )
+        result = core_new_site.new_site(
+            project,
+            site=site,
+            admin_password=admin_password,
+            bench=bench,
+            apps=[str(a) for a in (args.get("apps") or []) if a],
+            default=bool(args.get("default")),
+            developer_mode=bool(args.get("developer_mode")),
+            db_root_password=_db_root_password(secret_values),
+            on_event=emit,
+        )
+        if result.data is not None:
+            warnings = list(result.warnings)
+            if not cache.recache_project(
+                project, bench_path=result.data.bench_path, warnings=warnings
+            ):
+                emit.lifecycle("cache_warning", f"Could not refresh the cache for {project}.")
+            return Result(status=result.status, data=result.data, warnings=warnings)
+        return result
+    if verb == "dev-mode":
+        if not site:
+            raise CwcliError(
+                ErrorKind.USAGE, "dev_mode.site_required", "dev-mode needs a target.site."
+            )
+        result = core_dev_mode.set_dev_mode(
+            project,
+            site=site,
+            bench=bench,
+            on=bool(args.get("on")),
+            scope=str(args.get("scope") or "site"),
+            consent=consent,
+            on_event=emit,
+        )
+        if result.data is not None:
+            warnings = list(result.warnings)
+            if not cache.recache_project(
+                project, bench_path=result.data.after.bench_path, warnings=warnings
+            ):
+                emit.lifecycle("cache_warning", f"Could not refresh the cache for {project}.")
+            return Result(status=result.status, data=result.data, warnings=warnings)
+        return result
     if verb == "clear-maintenance":
         return _clear_maintenance(target)
     if verb == "scale":
@@ -1162,6 +1454,10 @@ def _dispatch(
     if verb == "init":
         return _run_init(target, args, secret_values, emit)
     if verb == "apps-install":
+        if args.get("backup_first"):
+            _backup_first(
+                project, bench, [str(v) for v in args.get("sites") or []], "before-install", emit
+            )
         install_result = core_apps.install_apps(
             project,
             [str(app) for app in args.get("apps") or []],
@@ -1174,9 +1470,15 @@ def _dispatch(
         )
         return _refresh_after_apps(project, install_result, emit)
     if verb == "apps-update":
+        update_apps = [str(app) for app in args.get("apps") or []]
+        if any(a in ("frappe", "erpnext") for a in update_apps) and args.get("safety_backup", True):
+            # Captain decision 5: an automatic backup ONLY before a core update, and the
+            # only one (bench update runs with --no-backup). A site whose set does not
+            # verify stops the update before anything moves.
+            _safety_backups(project, bench, emit)
         return core_update.update(
             project,
-            [str(app) for app in args.get("apps") or []],
+            update_apps,
             bench=bench,
             sites=[str(value) for value in args.get("sites") or []] or None,
             clear_cache=bool(args.get("clear_cache")),
@@ -1186,9 +1488,23 @@ def _dispatch(
             no_recache=False,
             force=bool(args.get("force")),
             preflight=not bool(args.get("no_preflight")),
+            fix_branches=bool(args.get("fix_branches")),
             on_event=emit,
         )
     if verb == "backup":
+        if args.get("store", True):
+            # The cwcli-owned store outside the instance (captain decision 1): verified
+            # copy-out, manifest, in-bench copies removed once the set verifies.
+            captured = core_backup_store.capture(
+                project,
+                site=site,
+                bench=bench,
+                with_files=bool(args.get("with_files", True)),
+                reason=str(args.get("reason") or "manual"),
+                note=(str(args.get("note")) if args.get("note") else None),
+                on_event=emit,
+            )
+            return _copy_offsite_if_configured(project, captured, emit)
         return core_backup.backup(
             project,
             site=site,
@@ -1196,7 +1512,225 @@ def _dispatch(
             with_files=bool(args.get("with_files")),
             on_event=emit,
         )
+    if verb == "restore-set":
+        key = str(args.get("set_key") or "")
+        if not key or not site:
+            raise CwcliError(
+                ErrorKind.USAGE,
+                "restore.set_required",
+                "restore-set needs args.set_key and target.site.",
+            )
+        return core_backup_store.restore_set(
+            key,
+            project=project,
+            site=site,
+            bench=bench,
+            mariadb_root_username=str(args.get("mariadb_root_username") or "root"),
+            mariadb_root_password=core_db_password.resolve(
+                project, _db_root_password(secret_values)
+            ),
+            admin_password=secret_values.get("admin_password") or None,
+            consent=consent,
+            no_migrate=bool(args.get("no_migrate")),
+            config_mode=str(args.get("config_mode") or "carry"),
+            on_event=emit,
+        )
+    if verb in ("clone-sites", "move-sites"):
+        pairs = [
+            (str(p.get("site")), str(p.get("target_site") or p.get("site")))
+            for p in (args.get("sites") or [])
+            if isinstance(p, dict) and p.get("site")
+        ]
+        if not pairs:
+            raise CwcliError(
+                ErrorKind.USAGE, "transfer.sites", "args.sites needs [{site, target_site}] entries."
+            )
+        tproject = str(args.get("target_project") or project)
+        admin_password = secret_values.get("admin_password") or ""
+        return core_transfer.transfer_sites(
+            project,
+            pairs,
+            mode="move" if verb == "move-sites" else "clone",
+            bench=bench,
+            target_project=tproject,
+            target_bench=(
+                str(args["target_bench"]) if args.get("target_bench") is not None else None
+            ),
+            admin_password=admin_password or secrets_module.token_urlsafe(18),
+            mariadb_root_password=core_db_password.resolve(
+                project, _db_root_password(secret_values)
+            ),
+            target_mariadb_root_password=(
+                core_db_password.resolve(tproject, _db_root_password(secret_values))
+                if tproject != project
+                else None
+            ),
+            config_mode=str(args.get("config_mode") or "carry"),
+            with_files=bool(args.get("with_files", True)),
+            consent=consent,
+            on_event=emit,
+        )
+    if verb == "send-backup":
+        keys = [str(k) for k in (args.get("set_keys") or []) if k]
+        if not keys:
+            raise CwcliError(ErrorKind.USAGE, "transfer.keys", "send-backup needs args.set_keys.")
+        return core_transfer.send_sets(keys, on_event=emit)
+    if verb == "receive-backup":
+        return core_transfer.receive_sets(
+            str(args.get("ticket") or ""),
+            project=(str(args["project"]) if args.get("project") else None),
+            site=(str(args["site"]) if args.get("site") else None),
+            on_event=emit,
+        )
+    if verb == "prune-backups":
+        return core_backup_store.prune(
+            project, consent=consent, dry_run=bool(args.get("dry_run")), on_event=emit
+        )
+    if verb == "backup-sites":
+        # Every site of the instance (or of one bench), in order, into the store, then
+        # the retention prune with the schedule's standing consent. One site's failure
+        # does not stop the next; the report names each.
+        reason = str(args.get("reason") or "scheduled")
+        outcomes: list[dict[str, Any]] = []
+        targets: list[tuple[str, str]] = []
+        for b in core_resolvers.cached_benches(project):
+            if bench is not None and str(b.get("index")) != str(bench) and b.get("label") != bench:
+                continue
+            for s in b.get("sites") or []:
+                name = s.get("name") if isinstance(s, dict) else str(s)
+                if name:
+                    targets.append((str(b.get("index")), str(name)))
+        for n, (bi, site_name) in enumerate(targets, 1):
+            emit.lifecycle(
+                "transfer_progress",
+                f"{n} of {len(targets)}: {site_name}",
+                done=n - 1,
+                total=len(targets),
+                site=site_name,
+                target="store",
+            )
+            try:
+                got = _copy_offsite_if_configured(
+                    project,
+                    core_backup_store.capture(
+                        project,
+                        site=site_name,
+                        bench=bi,
+                        with_files=bool(args.get("with_files", True)),
+                        reason=reason,
+                        on_event=emit,
+                    ),
+                    emit,
+                )
+                ok = got.data is not None and got.data.verified
+                outcomes.append(
+                    {"site": site_name, "ok": ok, "set": got.data.key if got.data else None}
+                )
+            except CwcliError as exc:
+                outcomes.append({"site": site_name, "ok": False, "error": exc.message})
+                emit.lifecycle("backup_failed", f"{site_name}: {exc.message}", site=site_name)
+        emit.lifecycle(
+            "transfer_progress",
+            f"{len(targets)} of {len(targets)} backed up",
+            done=len(targets),
+            total=len(targets),
+            site="",
+            target="store",
+        )
+        pruned = core_backup_store.prune(project, consent=True, on_event=emit)
+        if core_backup_store.offsite_target(project, require=False) is not None:
+            try:
+                core_backup_store.offsite_prune(project, consent=True, on_event=emit)
+            except CwcliError as exc:
+                emit.lifecycle("offsite_failed", f"off-site prune: {exc.message}")
+        if reason == "scheduled":
+            core_backup_store.mark_schedule_run(project)
+        all_ok = bool(targets) and all(o["ok"] for o in outcomes)
+        return Result(
+            status=Status.OK if all_ok else Status.WARNING,
+            data={
+                "ok": all_ok,
+                "sites": outcomes,
+                "pruned": (pruned.data or {}).get("removed", []),
+            },
+        )
+    if verb == "s3-copy":
+        keys = [str(k) for k in (args.get("set_keys") or []) if k]
+        copied = []
+        for key in keys:
+            found = core_backup_store.find_set(key)
+            if found is None:
+                raise CwcliError(
+                    ErrorKind.NOT_FOUND, "backups.set_not_found", f"No such set {key}."
+                )
+            copied.append(core_backup_store.offsite_copy(found, on_event=emit).key)
+        return Result(status=Status.OK, data={"copied": copied})
+    if verb == "s3-fetch":
+        pulled = [
+            core_backup_store.offsite_fetch(project, str(k), on_event=emit).key
+            for k in (args.get("set_keys") or [])
+            if k
+        ]
+        emit.lifecycle("received", "Sets are in the store", sets=pulled)
+        return Result(status=Status.OK, data={"fetched": pulled})
+    if verb == "s3-prune":
+        return core_backup_store.offsite_prune(
+            project, consent=consent, dry_run=bool(args.get("dry_run")), on_event=emit
+        )
+    if verb == "restore-drill":
+        if not site:
+            raise CwcliError(ErrorKind.USAGE, "site.required", "A restore drill needs target.site.")
+        return core_backup_drill.run_drill(
+            project,
+            site=site,
+            bench=bench,
+            mariadb_root_password=core_db_password.resolve(
+                project, _db_root_password(secret_values)
+            ),
+            set_key=(str(args["set_key"]) if args.get("set_key") else None),
+            on_event=emit,
+        )
+    if verb == "repair-db-access":
+        from .core import db_access as core_db_access
+
+        container = core_docker.get_frappe_container(project)
+        resolved = core_resolvers.resolve_bench(project, bench, None)
+        if resolved is not None and resolved.status is Status.NEEDS_CHOICE:
+            return resolved
+        bench_path = (
+            resolved.data
+            if resolved is not None and resolved.data
+            else core_resolvers.DEFAULT_BENCH_PATH
+        )
+        return core_db_access.repair(
+            container,
+            bench_path,
+            project=project,
+            root_password=_db_root_password(secret_values),
+            sites=[str(v) for v in (args.get("sites") or [])] or None,
+            on_event=emit,
+        )
+    if verb == "verify-backup":
+        found = core_backup_store.find_set(str(args.get("set_key") or ""))
+        if found is None:
+            raise CwcliError(ErrorKind.NOT_FOUND, "backups.set_not_found", "No such backup set.")
+        verified = core_backup_store.verify_set(found)
+        emit.lifecycle(
+            "backup_verified",
+            f"{verified.id}: {'verified' if verified.verified else 'FAILED'} - "
+            + "; ".join(
+                f"{c.name} {'ok' if c.ok else 'failed'} ({c.detail})" for c in verified.checks
+            ),
+        )
+        return Result(status=Status.OK if verified.verified else Status.WARNING, data=verified)
+    if verb == "delete-backup":
+        found = core_backup_store.find_set(str(args.get("set_key") or ""))
+        if found is None:
+            raise CwcliError(ErrorKind.NOT_FOUND, "backups.set_not_found", "No such backup set.")
+        return core_backup_store.delete_set(found, consent=consent)
     if verb == "migrate":
+        if args.get("backup_first") and site:
+            _backup_first(project, bench, [site], "before-migrate", emit)
         return core_bench_ops.migrate_site(project, site=site, bench=bench, on_event=emit)
     if verb == "run-tests":
         if site is None:
@@ -1226,6 +1760,8 @@ def _dispatch(
         )
     if verb == "self-update":
         return _run_self_update(args, emit)
+    if verb == "check-updates":
+        return _run_check_updates(emit)
     raise AssertionError(f"unhandled job verb {verb}")
 
 
@@ -1357,7 +1893,7 @@ def run_job(job_id: str) -> int:
 
 
 def _schedule_ui_restart() -> None:
-    required = [_UI_ENV[key] for key in ("pid", "start", "port", "token", "session")]
+    required = [_UI_ENV[key] for key in ("pid", "start", "port", "token")]
     if not all(os.environ.get(name) for name in required):
         return
     creationflags = 0x00000008 | 0x00000200 if sys.platform == "win32" else 0
@@ -1374,7 +1910,7 @@ def _schedule_ui_restart() -> None:
 
 
 def restart_ui() -> int:
-    """Replace the daemon after self-update, preserving its token and browser session."""
+    """Replace the daemon after self-update, preserving its token."""
     from .commands import serve as serve_cmd
     from .commands import ui as ui_cmd
 
@@ -1383,7 +1919,6 @@ def restart_ui() -> int:
         port = int(os.environ[_UI_ENV["port"]])
         recorded_start = os.environ[_UI_ENV["start"]]
         token = os.environ[_UI_ENV["token"]]
-        session_id = os.environ[_UI_ENV["session"]]
     except (KeyError, ValueError):
         return 2
     if daemon_identity.pid_alive(pid) and daemon_identity.process_start_time(pid) == recorded_start:
@@ -1395,8 +1930,7 @@ def restart_ui() -> int:
         return 1
     ui_cmd._clear_state()
     os.environ[serve_cmd.TOKEN_ENV] = token
-    os.environ[serve_cmd.SESSION_ENV] = session_id
-    ui_cmd._spawn_detached(port, token, session_id)
+    ui_cmd._spawn_detached(port, token)
     return 0
 
 

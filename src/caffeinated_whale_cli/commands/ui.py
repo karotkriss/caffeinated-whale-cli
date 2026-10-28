@@ -6,8 +6,9 @@ Three shapes:
   (pid file under ``cwcli_home()/run/``, identity-checked) and runs the installed
   code (its state-file ``build``), reuse it; a daemon that predates a reinstall is
   stopped and respawned. Otherwise spawn ``cwcli ui --foreground --no-browser``
-  detached. Then mint a one-time sign-in code through ``POST /api/v1/session/code``
-  and open the browser on ``http://127.0.0.1:<port>/#login=<code>``.
+  detached. Then open the browser on ``http://127.0.0.1:<port>/``, where the page
+  asks for the administrator account (``admin`` / ``admin`` the first time, with
+  a forced password change; ``cwcli admin reset-password`` recovers it).
 * ``cwcli ui --foreground`` - run the daemon in this terminal (development, CI,
   the E2E harness). Ctrl-C stops it.
 * ``cwcli ui --stop`` - stop the detached daemon.
@@ -15,9 +16,9 @@ Three shapes:
 The daemon ALWAYS binds loopback. The bearer token the detached daemon runs
 under is generated here, handed to the child through ``CWCLI_SERVE_TOKEN`` (the
 environment, never argv), and kept in a 0600 state file beside the pid file so a
-later ``cwcli ui`` can mint another code: the token file's trust boundary is
-the same as the pid file's (this user's home). The browser never sees the
-token - only single-use codes, each dead the moment it is redeemed.
+later ``cwcli ui`` (and the self-update restart) can talk to the daemon: the
+token file's trust boundary is the same as the pid file's (this user's home).
+The browser never sees the token - it signs in with the account.
 
 Why spawn ``cwcli ui --foreground`` rather than the serve module: the console
 script installs the SIGTERM/SIGHUP unwind handlers (``utils/signals.py``), so
@@ -113,19 +114,7 @@ def _meta_answers(port: int) -> bool:
         return False
 
 
-def mint_code(port: int, token: str) -> str:
-    """Ask the live daemon for a fresh one-time sign-in code (bearer-only endpoint)."""
-    req = urllib.request.Request(
-        _base(port) + "/api/v1/session/code",
-        data=b"{}",
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=5) as r:  # noqa: S310
-        return str(json.loads(r.read())["data"]["code"])
-
-
-def _spawn_detached(port: int, token: str, session_id: str | None = None) -> None:
+def _spawn_detached(port: int, token: str) -> None:
     """Start ``cwcli ui --foreground --no-browser`` as its own session, logging to ``ui.log``."""
     run_dir().mkdir(parents=True, exist_ok=True)
     prefix = [sys.argv[0]] if _is_frozen() else [sys.executable, "-m", "caffeinated_whale_cli"]
@@ -138,8 +127,6 @@ def _spawn_detached(port: int, token: str, session_id: str | None = None) -> Non
         str(port),
     ]
     env = {**os.environ, serve_cmd.TOKEN_ENV: token}
-    if session_id:
-        env[serve_cmd.SESSION_ENV] = session_id
     if sys.platform == "win32":
         creationflags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
         new_session = False
@@ -162,7 +149,7 @@ def _spawn_detached(port: int, token: str, session_id: str | None = None) -> Non
 
 
 def _open(url: str, *, no_browser: bool) -> None:
-    console.print(f"  sign in (works once): [cyan]{url}[/cyan]", soft_wrap=True)
+    console.print(f"  open: [cyan]{url}[/cyan]", soft_wrap=True)
     if no_browser:
         return
     try:
@@ -278,15 +265,8 @@ def _start_or_reuse(port: int, *, no_browser: bool) -> None:
             raise typer.Exit(code=1)
         console.print(f"[bold]cwcli ui[/bold] started on [cyan]{_base(port)}[/cyan] (detached)")
         console.print("  stop it with: cwcli ui --stop")
-    try:
-        code = mint_code(port, token)
-    except (urllib.error.URLError, OSError, ValueError, KeyError) as e:
-        stderr_console.print(
-            f"[red]cwcli ui is up but refused to mint a sign-in code: {e}[/red]\n"
-            "  Run 'cwcli ui --stop' and then 'cwcli ui' again."
-        )
-        raise typer.Exit(code=1) from e
-    _open(serve_cmd.login_url(HOST, port, code), no_browser=no_browser)
+    console.print("  sign in with the administrator account (admin / admin the first time)")
+    _open(serve_cmd.page_url(HOST, port), no_browser=no_browser)
 
 
 def ui(

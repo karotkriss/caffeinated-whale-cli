@@ -4,6 +4,8 @@ import subprocess
 import typer
 from rich.console import Console
 
+from ..core import editors
+from ..core.errors import CwcliError
 from . import config_utils
 from .tips import TipSpinner
 
@@ -112,105 +114,43 @@ def install_docker_extension(vscode_command: str, verbose: bool = False) -> bool
 
 def container_name_to_hex(container_name: str) -> str:
     """Convert container name to hexadecimal (like xxd -p)."""
-    return container_name.encode().hex()
+    return editors.container_name_to_hex(container_name)
 
 
 def open_in_vscode(
     vscode_command: str, container_name: str, bench_path: str, verbose: bool = False
 ) -> None:
     """
-    Open a dev container in VS Code or Cursor.
+    Open a dev container in VS Code, VS Code Insiders or Cursor: the CLI's spinner
+    and exit-code wrapper over ``core.editors.launch``, which owns detection (WSL
+    and macOS included), the extension preflight and the attach-URI handover.
 
     Args:
-        vscode_command: Editor command ('code', 'code-insiders', or 'cursor')
+        vscode_command: Editor id ('code', 'code-insiders', or 'cursor')
         container_name: Docker container name
         bench_path: Path inside the container to open
         verbose: Enable verbose output
     """
     show_tips = config_utils.get_show_tips()
-    editor_name = "Cursor" if vscode_command == "cursor" else "VS Code"
+    editor_name = editors.EDITOR_NAMES.get(vscode_command, "VS Code")
+
+    def log(line: str) -> None:
+        console_err.print(("✓ " if "installed" in line and "Failed" not in line else "") + line)
 
     with TipSpinner(
         f"Preparing to open '{container_name}' in {editor_name}",
         console=console_err,
         enabled=show_tips,
     ) as status:
-        # Verify container exists
-        status.update("Verifying container exists")
-        try:
-            cmd = ["docker", "inspect", container_name]
-            if verbose:
-                console_err.print(f"[dim]$ {' '.join(cmd)}[/dim]")
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode != 0:
-                console_err.print(
-                    f"[bold red]✗ Container '{container_name}' does not exist.[/bold red]"
-                )
-                raise typer.Exit(code=1)
-            if verbose:
-                console_err.print(f"[dim]VERBOSE: Container '{container_name}' verified[/dim]")
-        except subprocess.TimeoutExpired:
-            console_err.print("[bold red]✗ Docker inspect timed out.[/bold red]")
-            raise typer.Exit(code=1) from None
-        except FileNotFoundError:
-            console_err.print("[bold red]✗ Docker command not found.[/bold red]")
-            raise typer.Exit(code=1) from None
-
-        # Check for Docker extension
-        status.update("Checking Docker extension")
-        if not is_docker_extension_installed(vscode_command, verbose):
-            if verbose:
-                console_err.print("[dim]VERBOSE: Docker extension not found, installing...[/dim]")
-            if not install_docker_extension(vscode_command, verbose):
-                console_err.print("[bold red]✗ Cannot open without Docker extension.[/bold red]")
-                raise typer.Exit(code=1)
-        elif verbose:
-            console_err.print("[dim]VERBOSE: Docker extension already installed[/dim]")
-
-        # Check for Dev Containers extension
-        status.update("Checking Dev Containers extension")
-        if not is_dev_containers_installed(vscode_command, verbose):
-            if verbose:
-                console_err.print(
-                    "[dim]VERBOSE: Dev Containers extension not found, installing...[/dim]"
-                )
-            install_ok = install_dev_containers_extension(vscode_command, verbose)
-            if not install_ok and is_dev_containers_installed(vscode_command, verbose):
-                # Install call failed (e.g. a transient marketplace error) but
-                # the extension is actually present locally - don't block the open.
-                if verbose:
-                    console_err.print(
-                        "[dim]VERBOSE: Extension present locally despite install failure, continuing[/dim]"
-                    )
-            elif not install_ok:
-                console_err.print(
-                    "[bold red]✗ Cannot open without Dev Containers extension.[/bold red]"
-                )
-                raise typer.Exit(code=1)
-        elif verbose:
-            console_err.print("[dim]VERBOSE: Dev Containers extension already installed[/dim]")
-
-        # Build the VS Code remote URI
-        container_hex = container_name_to_hex(container_name)
-        uri = f"vscode-remote://attached-container+{container_hex}{bench_path}"
-
-        if verbose:
-            console_err.print(f"[dim]VERBOSE: Opening URI: {uri}[/dim]")
-
-        # Open editor
         status.update(f"Opening {editor_name}")
         try:
-            cmd = [vscode_command, "--folder-uri", uri]
-            if verbose:
-                console_err.print(f"[dim]$ {' '.join(cmd)}[/dim]")
-            subprocess.run(cmd, check=True, shell=IS_WINDOWS)
-        except subprocess.CalledProcessError as e:
-            console_err.print(f"[bold red]✗ Failed to open {editor_name}: {e}[/bold red]")
+            uri = editors.launch(vscode_command, container_name, bench_path, log=log)
+        except CwcliError as e:
+            console_err.print(f"[bold red]✗ {e.message}[/bold red]")
+            if e.hint:
+                console_err.print(f"[dim]{e.hint}[/dim]")
             raise typer.Exit(code=1) from e
+        if verbose:
+            console_err.print(f"[dim]VERBOSE: Opened URI: {uri}[/dim]")
 
     console_err.print(f"[bold green]✓ Opened {container_name} in {editor_name}[/bold green]")

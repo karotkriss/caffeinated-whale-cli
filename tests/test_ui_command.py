@@ -58,13 +58,6 @@ class TestStartDetached:
 
         monkeypatch.setattr(ui_cmd.subprocess, "Popen", _popen)
         monkeypatch.setattr(ui_cmd, "_meta_answers", lambda port: True)
-        minted: dict = {}
-
-        def _mint(port, token):
-            minted.update({"port": port, "token": token})
-            return "one-time-code"
-
-        monkeypatch.setattr(ui_cmd, "mint_code", _mint)
         opened: list = []
         monkeypatch.setattr(ui_cmd.webbrowser, "open", lambda url: opened.append(url) or True)
 
@@ -84,15 +77,13 @@ class TestStartDetached:
         assert spawned["stdin"] is ui_cmd.subprocess.DEVNULL
         if sys.platform != "win32":
             assert spawned["session"] is True
-        assert minted == {"port": 8765, "token": token}
-        assert opened == ["http://127.0.0.1:8765/#login=one-time-code"]
+        assert opened == ["http://127.0.0.1:8765/"]
         assert token not in result.output, "the token is never printed"
-        assert "#login=one-time-code" in result.output
+        assert "http://127.0.0.1:8765/" in result.output and "#login" not in result.output
 
     def test_no_browser_prints_the_link_only(self, home, no_daemon, monkeypatch):
         monkeypatch.setattr(ui_cmd.subprocess, "Popen", lambda argv, **kw: _child_up(9000, "t"))
         monkeypatch.setattr(ui_cmd, "_meta_answers", lambda port: True)
-        monkeypatch.setattr(ui_cmd, "mint_code", lambda port, token: "code")
         monkeypatch.setattr(
             ui_cmd.webbrowser, "open", lambda url: pytest.fail("--no-browser must not open")
         )
@@ -100,7 +91,7 @@ class TestStartDetached:
         result = runner.invoke(root_app, ["ui", "--no-browser", "--port", "9000"])
 
         assert result.exit_code == 0, result.output
-        assert "http://127.0.0.1:9000/#login=code" in result.output
+        assert "http://127.0.0.1:9000/" in result.output
 
     def test_a_daemon_that_never_answers_is_reported_with_the_log_path(
         self, home, no_daemon, monkeypatch
@@ -158,7 +149,6 @@ class TestStartDetached:
         monkeypatch.setattr(ui_cmd.sys, "argv", ["C:/tools/cwcli.exe", "ui"])
         monkeypatch.setattr(ui_cmd.subprocess, "Popen", _popen)
         monkeypatch.setattr(ui_cmd, "_meta_answers", lambda port: True)
-        monkeypatch.setattr(ui_cmd, "mint_code", lambda port, token: "code")
 
         result = runner.invoke(root_app, ["ui", "--no-browser"])
 
@@ -172,20 +162,18 @@ class TestStartDetached:
             "8765",
         ]
 
-    def test_a_concurrent_launch_mints_with_the_token_of_the_daemon_that_won(
+    def test_a_concurrent_launch_keeps_the_token_of_the_daemon_that_won(
         self, home, no_daemon, monkeypatch
     ):
         monkeypatch.setattr(
             ui_cmd.subprocess, "Popen", lambda argv, **kw: _child_up(8765, "winner")
         )
         monkeypatch.setattr(ui_cmd, "_meta_answers", lambda port: True)
-        minted: list = []
-        monkeypatch.setattr(ui_cmd, "mint_code", lambda port, token: minted.append(token) or "c")
 
         result = runner.invoke(root_app, ["ui", "--no-browser"])
 
         assert result.exit_code == 0, result.output
-        assert minted == ["winner"]
+        assert ui_cmd._read_state()["token"] == "winner"
 
     def test_a_launch_that_loses_the_bind_reuses_the_winners_state_instead_of_erasing_it(
         self, home, no_daemon, monkeypatch
@@ -193,13 +181,11 @@ class TestStartDetached:
         _child_up(8765, "winner")
         monkeypatch.setattr(ui_cmd.subprocess, "Popen", lambda argv, **kw: None)
         monkeypatch.setattr(ui_cmd, "_meta_answers", lambda port: True)
-        minted: list = []
-        monkeypatch.setattr(ui_cmd, "mint_code", lambda port, token: minted.append(token) or "c")
 
         result = runner.invoke(root_app, ["ui", "--no-browser"])
 
         assert result.exit_code == 0, result.output
-        assert minted == ["winner"]
+        assert ui_cmd._read_state()["token"] == "winner"
         assert ui_cmd._read_state() == {
             "port": 8765,
             "token": "winner",
@@ -213,7 +199,6 @@ class TestStartDetached:
         ui_cmd._write_state(8765, "stale")
         monkeypatch.setattr(ui_cmd.subprocess, "Popen", lambda argv, **kw: None)
         monkeypatch.setattr(ui_cmd, "_meta_answers", lambda port: True)
-        monkeypatch.setattr(ui_cmd, "mint_code", lambda port, token: pytest.fail("not ready"))
         monkeypatch.setattr(ui_cmd, "_READY_TIMEOUT_S", 0.3)
 
         result = runner.invoke(root_app, ["ui", "--no-browser"])
@@ -228,7 +213,6 @@ class TestStartDetached:
         ui_cmd.log_file().chmod(0o644)
         monkeypatch.setattr(ui_cmd.subprocess, "Popen", lambda argv, **kw: _child_up(8765, "t"))
         monkeypatch.setattr(ui_cmd, "_meta_answers", lambda port: True)
-        monkeypatch.setattr(ui_cmd, "mint_code", lambda port, token: "c")
 
         result = runner.invoke(root_app, ["ui", "--no-browser"])
 
@@ -246,21 +230,15 @@ class TestReuse:
             ui_cmd.subprocess, "Popen", lambda *a, **kw: pytest.fail("must reuse, not spawn")
         )
 
-    def test_a_live_daemon_is_reused_and_a_fresh_code_minted(self, live, monkeypatch):
-        minted: dict = {}
-        monkeypatch.setattr(
-            ui_cmd, "mint_code", lambda port, token: minted.update(port=port, token=token) or "c2"
-        )
-
+    def test_a_live_daemon_is_reused_and_its_page_opened(self, live, monkeypatch):
         result = runner.invoke(root_app, ["ui", "--no-browser"])
 
         assert result.exit_code == 0, result.output
         assert "already running" in result.output
-        assert minted == {"port": 8766, "token": "live-token"}
-        assert "http://127.0.0.1:8766/#login=c2" in result.output
+        assert "http://127.0.0.1:8766/" in result.output
+        assert "live-token" not in result.output
 
     def test_a_different_explicit_port_is_refused_while_one_runs(self, live, monkeypatch):
-        monkeypatch.setattr(ui_cmd, "mint_code", lambda port, token: pytest.fail("no mint"))
 
         result = runner.invoke(root_app, ["ui", "--no-browser", "--port", "9999"])
 
@@ -278,7 +256,6 @@ class TestReuse:
             lambda argv, **kw: spawned.append(argv) or _child_up(8765, "fresh"),
         )
         monkeypatch.setattr(ui_cmd, "_meta_answers", lambda port: True)
-        monkeypatch.setattr(ui_cmd, "mint_code", lambda port, token: "c3")
 
         result = runner.invoke(root_app, ["ui", "--no-browser"])
 
@@ -464,7 +441,7 @@ def test_a_browser_dropping_its_stream_does_not_kill_the_foreground_daemon(home)
         client.settimeout(0.2)
         try:
             client.recv(65536)  # take a keepalive, then hang up like a closed tab
-        except socket.timeout:
+        except TimeoutError:
             pass
         client.close()
         time.sleep(1.0)  # ten keepalives: the second write after the RST raised SIGPIPE
@@ -501,7 +478,6 @@ class TestStaleDaemon:
         monkeypatch.setattr(ui_cmd.daemon_identity, "is_running", lambda pid_file: True)
         monkeypatch.setattr(ui_cmd, "_read_state", lambda: state)
         monkeypatch.setattr(ui_cmd, "_recover_daemons", lambda: None)
-        monkeypatch.setattr(ui_cmd, "mint_code", lambda port, token: "code")
 
     def test_a_daemon_from_before_the_build_check_is_stale(self, monkeypatch):
         assert ui_cmd._is_stale({"port": 1, "token": "t"})
@@ -522,9 +498,7 @@ class TestStaleDaemon:
         calls = []
         self._running(monkeypatch, {"port": 8765, "token": "old"})
         monkeypatch.setattr(ui_cmd, "_stop", lambda: calls.append("stop"))
-        monkeypatch.setattr(
-            ui_cmd, "_spawn_detached", lambda port, token, session_id=None: calls.append("spawn")
-        )
+        monkeypatch.setattr(ui_cmd, "_spawn_detached", lambda port, token: calls.append("spawn"))
         monkeypatch.setattr(ui_cmd, "_meta_answers", lambda port: True)
         monkeypatch.setattr(ui_cmd.daemon_identity, "get_pid", lambda pf: 1)
         states = iter([{"port": 8765, "token": "old"}, {"port": 8765, "token": "new"}])
