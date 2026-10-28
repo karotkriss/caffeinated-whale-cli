@@ -60,7 +60,7 @@ from packaging.version import InvalidVersion, Version
 from ..utils.config_utils import cwcli_home
 from . import docker as core_docker
 from . import git_refs
-from .app_catalog import _OPENER, _safe_remote_url, credential, remote_key
+from .app_catalog import _OPENER, credential, remote_key
 from .list import list_instances
 
 UA = "cwcli-advisories/1.0 (+https://github.com/karotkriss/caffeinated-whale-cli)"
@@ -429,7 +429,7 @@ def collect_inventory(catalog_apps: list) -> dict[str, Any]:
                             "version": cols[1] or None,
                             "head": cols[2] or None,
                             "branch": cols[3] or None,
-                            "remote": _safe_remote_url(cols[4]),
+                            "remote": _without_credentials(cols[4]),
                             "version_source": "source __version__" if cols[1] else None,
                         }
             except Exception:
@@ -1655,6 +1655,16 @@ _SHA = re.compile(r"^[0-9a-f]{7,40}$")
 _GH_REPO = re.compile(r"github\.com[:/]([^/\s]+)/([^/\s]+?)(?:\.git)?/?$")
 _DEP_BLOCK = re.compile(r"^dependencies\s*=\s*\[(.*?)^\]", re.M | re.S)
 _DEP_ITEM = re.compile(r"""["']([^"']+)["']""")
+
+
+def _without_credentials(url: str | None) -> str | None:
+    """The remote as git reaches it, minus any ``user:token@`` on an http(s) URL."""
+    if not url:
+        return None
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme in ("http", "https") and "@" in parts.netloc:
+        return urllib.parse.urlunsplit(parts._replace(netloc=parts.netloc.rpartition("@")[2]))
+    return url
 
 
 def _is_fork(name: str, remote: str | None) -> bool:
