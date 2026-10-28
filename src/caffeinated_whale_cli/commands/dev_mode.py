@@ -105,3 +105,5 @@ def dev_mode(
     console.print(
         f"developer mode for {site}: [bold]{'on' if outcome.after.effective else 'off'}[/bold] (source: {outcome.after.source}{'' if outcome.cache_cleared else '; cache NOT cleared'})"
     )
+    if not outcome.cache_cleared:
+        raise typer.Exit(code=1)

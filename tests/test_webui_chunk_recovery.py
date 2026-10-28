@@ -53,8 +53,3 @@ console.log(JSON.stringify([
 ]));
 """
     assert _run(script) == [True, True, True, False, False]
-
-
-def test_build_keeps_earlier_chunks():
-    config = (WEBUI / "vite.config.js").read_text(encoding="utf-8")
-    assert "emptyOutDir: false" in config

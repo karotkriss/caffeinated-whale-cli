@@ -19,3 +19,9 @@ export async function sendSet(set, router) {
   router?.push(`/jobs/${record.id}`)
   return record
 }
+export async function copyOffsite(set, router) {
+  const record = await createJob({ verb: 's3-copy', target: { project: set.project }, args: { set_keys: [set.key] } })
+  trackJob(record.id)
+  router?.push(`/jobs/${record.id}`)
+  return record
+}

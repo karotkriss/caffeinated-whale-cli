@@ -123,3 +123,26 @@ class TestWidenAfterCreate:
         assert widened is False
         assert warning is not None and warning.code == "db.widen_failed"
         assert "shop.localhost" in warning.text and "mariadb down" in warning.text
+
+
+def test_a_rename_that_fails_after_creation_is_reported_not_silent():
+    class RenameFails(FakeDb):
+        def exec_run(self, cmd, workdir=None, environment=None, **_kw):
+            if "RENAME USER" in cmd[2]:
+                return 1, b"ERROR 1396 (HY000): Operation RENAME USER failed"
+            return super().exec_run(cmd, workdir, environment)
+
+    widened, warning = db_access.widen_after_create(
+        RenameFails({"_a1": ["172.21.0.5"]}), "/b", project="p", site="shop.localhost"
+    )
+    assert widened is False
+    assert warning is not None and warning.code == "db.widen_failed"
+    assert "RENAME USER failed" in warning.text
+
+
+def test_a_named_site_with_no_database_user_is_not_found_rather_than_ok():
+    db = FakeDb({"_a1": ["172.25.0.5"]})
+    with pytest.raises(CwcliError) as exc:
+        db_access.repair(db, "/b", project="p", sites=["shop.localhst"])
+    assert exc.value.kind is ErrorKind.NOT_FOUND and "shop.localhst" in exc.value.message
+    assert not any("RENAME" in s for s in db.sql)

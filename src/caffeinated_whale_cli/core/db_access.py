@@ -123,6 +123,13 @@ def check(
     pw = db_password.resolve(project, root_password)
     users = site_db_users(container, bench_path)
     if sites:
+        missing = sorted(set(sites) - set(users))
+        if missing:
+            raise CwcliError(
+                ErrorKind.NOT_FOUND,
+                "site.not_found",
+                f"No site config with a database user for: {', '.join(missing)}",
+            )
         users = {s: u for s, u in users.items() if s in sites}
     if not users:
         return []
@@ -233,6 +240,8 @@ def ensure_wildcard(
         on_event=on_event,
         force=True,
     )
+    if result.warnings:
+        raise CwcliError(ErrorKind.PRECONDITION, "db.widen_failed", result.warnings[0].text)
     return next((a for a in (result.data or []) if a.site == site), None)
 
 

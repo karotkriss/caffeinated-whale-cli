@@ -4,6 +4,7 @@ import { computed } from 'vue'
 import { Button, Dialog, ErrorMessage } from 'frappe-ui'
 import CommandLine from './CommandLine.vue'
 import { answerStart, startGate } from '../data/start-gate'
+import { instance } from '../data/fleet'
 
 const errorText = computed(() => (startGate.error ? (startGate.error.hint ? `${startGate.error.message} ${startGate.error.hint}` : startGate.error.message) : null))
 function onOpen(open) {

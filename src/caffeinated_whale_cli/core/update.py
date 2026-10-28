@@ -112,6 +112,9 @@ class UpdateReport:
     failed_cache_clears: list[str]
     failed_website_cache_clears: list[str]
     failed_maintenance_disable: list[str]  # STUCK: the site is DOWN, needs manual action
+    # The core update's `bench setup requirements`: "ok" | "failed" | "unknown", None
+    # when it did not run. Not ok means no site was migrated onto the new code.
+    requirements: str | None
     # Sites discovery could not open (a rejected database login, a broken config):
     # the code moved under them and they were NOT migrated, so the run is not ok.
     unreadable_sites: list[str]
@@ -568,6 +571,7 @@ def _build_report(
     failed_website_cache_clears: list[str],
     failed_maintenance_disable: list[str],
     unreadable_sites: list[str] | None = None,
+    requirements: str | None = None,
     app_imports: list[resolvers.AppImport] | None = None,
     resync: supervision.ResyncOutcome | None = None,
     bench_left_in_maintenance: bool | None = False,
@@ -603,6 +607,7 @@ def _build_report(
         or failed_builds
         or unknown_builds
         or unreadable_sites
+        or requirements not in (None, "ok")
         or failed_cache_clears
         or failed_website_cache_clears
         or failed_maintenance_disable
@@ -625,6 +630,7 @@ def _build_report(
         failed_builds=list(failed_builds),
         unknown_builds=list(unknown_builds),
         unreadable_sites=list(unreadable_sites or []),
+        requirements=requirements,
         failed_cache_clears=list(failed_cache_clears),
         failed_website_cache_clears=list(failed_website_cache_clears),
         failed_maintenance_disable=list(failed_maintenance_disable),
@@ -656,23 +662,68 @@ def _recache(project_name: str, bench_path: str, warnings: list[Message], emit: 
         )
 
 
-_UNLOCK_ALL = (
-    'for d in sites/*/locks; do [ -d "$d" ] || continue; '
-    'for f in "$d"/* "$d"/.[!.]*; do [ -e "$f" ] || continue; echo "$f"; rm -rf "$f"; done; done'
+_SITES_WITH_LOCKS = (
+    'for d in sites/*/locks; do [ -d "$d" ] || continue; s=${d#sites/}; echo "${s%/locks}"; done'
+)
+_CLEAR_LOCKS = (
+    'for d in "$@"; do for f in "$d"/* "$d"/.[!.]*; do [ -e "$f" ] || continue; '
+    'echo "$f"; rm -rf "$f"; done; done'
 )
 
 
 def _unlock_every_site(
-    container, bench_path: str, *, emit: OnEvent, warnings: list[Message]
+    container, bench_path: str, *, project_name: str, emit: OnEvent, warnings: list[Message]
 ) -> None:
     """Clear the locks folder of EVERY site on the bench (what ``cwcli unlock`` does per
-    site) before a core update, and list what was cleared. A migrate that is actually
-    running was refused by the preflight's lock probe already, so what is left here
-    is stale by definition."""
+    site) before a core update, and list what was cleared.
+
+    Each site's migrate lock is probed first, whatever the preflight setting: a held
+    lock refuses the update before anything runs, and a lock that cannot be checked
+    keeps that site's locks folder, so frappe's own lock still guards its migrate."""
     emit(UpdateStepStart(phase="unlock_all", message="Clearing stale locks on every site"))
-    exit_code, output = container.exec_run(["sh", "-c", _UNLOCK_ALL], workdir=bench_path)
+    exit_code, output = container.exec_run(["sh", "-c", _SITES_WITH_LOCKS], workdir=bench_path)
     text = _decode(output)
-    cleared = [line.strip() for line in text.splitlines() if line.strip()]
+    clearable: list[str] = []
+    if exit_code == 0:
+        for site in (line.strip() for line in text.splitlines()):
+            if not site:
+                continue
+            try:
+                held = bench_ops.migrate_lock_held(container, bench_path, site)
+            except CwcliError as error:
+                warnings.append(
+                    Message(
+                        "unlock_all.lock_unverified",
+                        f"Kept the locks of site '{site}': {error.message}",
+                    )
+                )
+                continue
+            if held:
+                emit(
+                    UpdateStepEnd(
+                        phase="unlock_all",
+                        status="failed",
+                        message=f"site '{site}' holds an active migrate lock",
+                    )
+                )
+                raise CwcliError(
+                    ErrorKind.CONFLICT,
+                    "site.migrate_locked",
+                    f"Site '{site}' holds an active migrate lock, so the core update did "
+                    "not start.",
+                    hint=(
+                        "Wait for the running migrate to finish, then retry. To check: "
+                        f"cwcli status {shlex.quote(project_name)}"
+                    ),
+                )
+            clearable.append(site)
+        if clearable:
+            exit_code, output = container.exec_run(
+                ["sh", "-c", _CLEAR_LOCKS, "sh", *(f"sites/{s}/locks" for s in clearable)],
+                workdir=bench_path,
+            )
+            text = _decode(output)
+    cleared = [line.strip() for line in text.splitlines() if line.strip()] if clearable else []
     if exit_code != 0:
         warnings.append(
             Message(
@@ -1138,6 +1189,7 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
     sites_to_migrate: list[str] = []  # the fan-out set; empty until we get that far
     app_imports: list[resolvers.AppImport] = []  # BUG-10 wrong-copy detection
     unreadable_sites: list[str] = []  # could not be opened, so never discovered or migrated
+    requirements: str | None = None  # the core update's requirements step, when it ran
     resync: supervision.ResyncOutcome | None = None
     aborted = False
     # Marker stamped on every migrate exec so an interrupt can end EXACTLY the process
@@ -1148,6 +1200,17 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
     # clearing (see _restore_pre_maintenance_on_abort). Empty until recorded below, so
     # an abort before the migrate loop finds nothing to restore.
     pre_maintenance: dict[str, bool | None] = {}
+
+    if core_reset:
+        # Captain 2026-10-28: a stale document lock on one site killed a core
+        # update mid-migrate; clear every site's locks folder first, listing them.
+        _unlock_every_site(
+            frappe_container,
+            bench_path,
+            project_name=project_name,
+            emit=emit,
+            warnings=warnings,
+        )
 
     try:
         if core_reset:
@@ -1176,9 +1239,6 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
                 )
                 # On the START event so a frontend shows it BEFORE the reset runs.
                 emit(UpdateStepStart(phase="core_reset", message=note))
-            # Captain 2026-10-28: a stale document lock on one site killed a core
-            # update mid-migrate; clear every site's locks folder first, listing them.
-            _unlock_every_site(frappe_container, bench_path, emit=emit, warnings=warnings)
         # --- ONE pull pass and ONE discovery pass. The presentation fork that used
         # to duplicate both is gone: rendering is the frontend's business now, so
         # the data path cannot be mis-bound to a data condition again. ---
@@ -1275,11 +1335,9 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
         if core_reset and any(a not in failed_apps and a not in unknown_apps for a in apps):
             # New core code wants its new pins before any site migrates on it
             # (bench's own update reinstalls requirements at this point too). A
-            # failure here fails every app not yet failed: migrating against
-            # half-installed dependencies is the one thing worse than not migrating.
-            req_failed: list[str] = []
-            req_unknown: list[str] = []
-            _run_step(
+            # failure here migrates no site: migrating against half-installed
+            # dependencies is the one thing worse than not migrating.
+            requirements = _run_step(
                 frappe_container,
                 "bench setup requirements",
                 workdir=bench_path,
@@ -1289,14 +1347,10 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
                 total=1,
                 emit=emit,
                 warnings=warnings,
-                failed=req_failed,
-                unknown=req_unknown,
+                failed=[],
+                unknown=[],
             )
-            if req_failed or req_unknown:
-                bucket = failed_apps if req_failed else unknown_apps
-                for a in apps:
-                    if a not in failed_apps and a not in unknown_apps:
-                        bucket.append(a)
+            if requirements != "ok":
                 warnings.append(
                     Message(
                         "requirements.failed",
@@ -1308,6 +1362,8 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
         # An app whose outcome is unknown is not known to have updated, so it is not
         # discovered against - the same treatment a failed pull gets.
         skipped = set(failed_apps) | set(unknown_apps)
+        if requirements not in (None, "ok"):
+            skipped = set(apps)
 
         # BUG-10: the pull landed on whatever `apps/<app>` physically resolves to;
         # verify the bench actually imports THAT copy. A diverged app was updated in a
@@ -1350,10 +1406,11 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
         if sites_filter:
             allowed = set(sites_filter)
             affected = {s for s in affected if s in allowed}
+            unreadable_sites = [s for s in unreadable_sites if s in allowed]
         # Refuse when --site narrows an actually-affected set to empty: that is a
         # typo/mismatch, distinct from "no site has the app at all" (which exits 0).
         # It cannot live in a resolve phase - it needs the discovered sites.
-        if sites_filter and unfiltered and not affected:
+        if sites_filter and unfiltered and not affected and not unreadable_sites:
             raise CwcliError(
                 ErrorKind.USAGE,
                 "site_filter.matched_nothing",
@@ -1646,6 +1703,7 @@ def _update_apps(  # noqa: C901 - the state machine's phases are the function
             failed_website_cache_clears=failed_website_cache_clears,
             failed_maintenance_disable=failed_maintenance_disable,
             unreadable_sites=unreadable_sites,
+            requirements=requirements,
             app_imports=app_imports,
             resync=resync,
             aborted=aborted and bool(sites_to_migrate),

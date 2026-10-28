@@ -14,7 +14,7 @@ import { createJob } from '../data/jobs'
 import { openJob } from '../data/job-dialog'
 import { openRestoreWizard } from '../data/restore-wizard'
 import { openAction } from '../data/dialog'
-import { openReceive, sendSet } from '../data/transfer'
+import { copyOffsite, openReceive, sendSet } from '../data/transfer'
 import { openBackupSettings, downloadSet, uploadSet } from '../data/backups'
 import { toast } from 'frappe-ui'
 
@@ -50,7 +50,7 @@ function menu(s) {
     { label: 'Restore…', icon: 'rotate-ccw', onClick: () => openRestoreWizard(s) },
     { label: 'Verify again', icon: 'shield-check', onClick: () => verify(s) },
     { label: 'Send to another machine…', icon: 'send', onClick: () => sendSet(s, router) },
-    { label: s.offsite ? 'Copy off-site again' : 'Copy off-site (S3)', icon: 'cloud-upload', onClick: () => copyOffsite(s) },
+    { label: s.offsite ? 'Copy off-site again' : 'Copy off-site (S3)', icon: 'cloud-upload', onClick: () => copyOffsite(s, router) },
     { label: 'Download (.tar)', icon: 'download', onClick: () => downloadSet(s).catch((e) => toast.error(e.message)) },
     { label: 'Delete', icon: 'trash-2', theme: 'red', onClick: () => remove(s) },
   ] }]
@@ -65,11 +65,6 @@ async function onUpload(ev) {
     const data = await uploadSet(file)
     toast.success(`Filed ${(data?.sets || []).join(', ')}`)
   } catch (e) { toast.error(e.message) } finally { uploading.value = false; ev.target.value = '' }
-}
-async function copyOffsite(s) {
-  const record = await createJob({ verb: 's3-copy', target: { project: s.project }, args: { set_keys: [s.key] } })
-  trackJob(record.id)
-  router.push(`/jobs/${record.id}`)
 }
 </script>
 

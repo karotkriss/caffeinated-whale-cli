@@ -535,7 +535,7 @@ def s3_configure_cmd(
         if v is not None:
             values[k] = v
     if secret_key:
-        core_backup_store.set_s3_secret(secret_key)
+        core_backup_store.set_s3_secret(secret_key, project=project)
     if values:
         core_backup_store.save_settings(project, {"s3_target": values})
     cfg = core_backup_store.settings(project)["s3_target"]

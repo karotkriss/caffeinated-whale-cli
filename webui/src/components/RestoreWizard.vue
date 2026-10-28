@@ -8,7 +8,7 @@ import { computed, ref, watch } from 'vue'
 import { Alert, Button, Checkbox, Dialog, ErrorMessage, FormControl, Select } from 'frappe-ui'
 import { restoreWizard } from '../data/restore-wizard'
 import { instances, details, loadDetail, instance } from '../data/fleet'
-import { createJob } from '../data/jobs'
+import { createJob, loadJob, jobs, ACTIVE_STATES } from '../data/jobs'
 import { trackJob } from '../data/job-toasts'
 import { backups, REASON_LABEL, PART_LABEL, sizeText, whenText } from '../data/backups'
 import { useRouter } from 'vue-router'
@@ -77,9 +77,14 @@ async function start() {
     const secrets = resetAdmin.value && adminPassword.value ? { admin_password: adminPassword.value } : {}
     if (mode.value === 'new') {
       // A new site first (bench new-site with the set's apps), then the restore into it.
-      const made = await createJob({ verb: 'new-site', target: { project: project.value, bench: bench.value }, args: { site: targetSite.value, apps: (set.value.apps || []).filter((a) => a !== 'frappe' && benchApps.value.has(a)), default: false, developer_mode: false }, secrets: { admin_password: adminPassword.value || crypto.randomUUID() } })
+      const made = await createJob({ verb: 'new-site', target, args: { apps: (set.value.apps || []).filter((a) => a !== 'frappe' && benchApps.value.has(a)), default: false, developer_mode: false }, secrets: { admin_password: adminPassword.value || crypto.randomUUID() } })
       trackJob(made.id)
-      args.after_job = made.id
+      let job = made
+      while (ACTIVE_STATES.has(job.state)) {
+        await new Promise((resolve) => setTimeout(resolve, 1500))
+        job = await loadJob(made.id, jobs.records[made.id]?.events?.at(-1)?.seq || 0)
+      }
+      if (job.state !== 'succeeded') throw { message: `Creating ${targetSite.value} ${job.state}; nothing was restored.`, hint: job.error?.message || '' }
     }
     const record = await createJob({ verb: 'restore-set', target, args, consent: true, secrets })
     trackJob(record.id)
