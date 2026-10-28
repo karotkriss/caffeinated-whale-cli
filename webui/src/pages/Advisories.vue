@@ -13,6 +13,7 @@ import EmptyState from '../components/EmptyState.vue'
 import AdvisoryDetail from '../components/AdvisoryDetail.vue'
 import { advisories, checkAdvisories, loadAdvisories, SEV_THEME, idsOf, whenText } from '../data/advisories'
 import { ago } from '../data/catalog'
+import { can } from '../data/session'
 
 const section = ref('affects') // affects | possible | global | others
 const query = ref('')
@@ -86,7 +87,7 @@ function metaOf(a) {
   <PageHead title="Advisories" :count="data?.counts?.affects ?? null">
     <template #badge><Badge v-if="data?.counts?.affects_new" size="lg" theme="red" variant="subtle" :label="`${data.counts.affects_new} new`" /></template>
     <template #actions>
-      <Button variant="subtle" icon-left="lucide-refresh-cw" label="Check now" :disabled="data?.checking" :loading="data?.checking" @click="checkAdvisories()" />
+      <Button v-if="can('operator')" variant="subtle" icon-left="lucide-refresh-cw" label="Check now" :disabled="data?.checking" :loading="data?.checking" @click="checkAdvisories()" />
     </template>
   </PageHead>
 

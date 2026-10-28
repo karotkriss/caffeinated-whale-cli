@@ -16,6 +16,7 @@ import { openJob } from '../data/job-dialog'
 import { openNewSite } from '../data/new-site-dialog'
 import { openTransfer } from '../data/transfer'
 import { useTabQuery } from '../data/tabs'
+import { can } from '../data/session'
 
 const route = useRoute()
 const { project, bench: index } = route.params
@@ -72,8 +73,10 @@ const heroFacts = computed(() => bench.value ? [
     ]">
     <template #badge><StatusBadge :token="running ? (stale ? 'unknown' : health?.overall) : 'offline'" size="lg" /></template>
     <template #actions>
-      <Button v-if="benchUp" icon-left="lucide-square" label="Stop bench" @click="openAction('bench.stop', ctx)" />
-      <Button v-else variant="solid" icon-left="lucide-play" label="Start bench" @click="openAction('bench.start', ctx)" />
+      <template v-if="can('operator')">
+        <Button v-if="benchUp" icon-left="lucide-square" label="Stop bench" @click="openAction('bench.stop', ctx)" />
+        <Button v-else variant="solid" icon-left="lucide-play" label="Start bench" @click="openAction('bench.start', ctx)" />
+      </template>
       <Dropdown :options="more" align="end"><Button icon="lucide-ellipsis" aria-label="More actions" /></Dropdown>
     </template>
   </PageHero>
@@ -118,7 +121,7 @@ const heroFacts = computed(() => bench.value ? [
         </div>
       </TabPanel>
       <TabPanel value="sites" class="pt-4">
-        <div class="mb-3 flex justify-end gap-2"><Button variant="subtle" icon-left="lucide-copy" label="Clone or move sites…" @click="openTransfer({ mode: 'clone', project, bench: bench.index, pick: true })" /><Button variant="subtle" icon-left="lucide-plus" label="New site" @click="openNewSite({ project, bench: bench.index })" /></div>
+        <div v-if="can('operator')" class="mb-3 flex justify-end gap-2"><Button variant="subtle" icon-left="lucide-copy" label="Clone or move sites…" @click="openTransfer({ mode: 'clone', project, bench: bench.index, pick: true })" /><Button variant="subtle" icon-left="lucide-plus" label="New site" @click="openNewSite({ project, bench: bench.index })" /></div>
         <SitesTable :bench="bench" :dev-modes="detail.data?.dev_modes || {}" :route="(s) => `/instances/${project}/benches/${bench.index}/sites/${s.name}`" />
       </TabPanel>
       <TabPanel value="apps" class="pt-4">

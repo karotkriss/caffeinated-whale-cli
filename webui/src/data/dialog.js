@@ -27,6 +27,11 @@ export function openAction(id, ctx = {}) {
   const a = ACTIONS[id]
   if (!a) throw new Error(`unknown action ${id}`)
   const full = { benchName: ctx.bench, ...ctx }
+  const allowed = availability(id, null, null, {})
+  if (allowed.role) {
+    toast.error(allowed.reason, { description: allowed.detail })
+    return null
+  }
   if (a.confirm === 'none' && !a.fields) return runAction(id, full, {})
   dialogState.id = id
   dialogState.ctx = full

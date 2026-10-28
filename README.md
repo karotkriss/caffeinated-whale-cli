@@ -1702,8 +1702,9 @@ cwcli backups download KEY [--to DIR]
 cwcli backups upload TAR [--project NAME --site NAME] [--json]
 cwcli backups drill PROJECT --site NAME [--bench SEL] [--set KEY] [--json]
 cwcli backups prune PROJECT [--dry-run] [--yes] [--json]
-cwcli backups settings PROJECT [--daily N] [--weekly N] [--monthly N] [--safety-days N] [--safety-max N] [--min-free-gb N] [--stale-after-days N] [--schedule on|off] [--daily-at HH:MM] [--json]
-cwcli backups s3 configure|list|copy|fetch|prune ...
+cwcli backups settings PROJECT [--daily N] [--weekly N] [--monthly N] [--safety-days N] [--safety-max N] [--min-free-gb N] [--stale-after-days N] [--schedule on|off] [--daily-at HH:MM] [--copy-on-backup/--no-copy-on-backup] [--json]
+cwcli backups s3 configure [--endpoint URL] [--bucket NAME] [--access-key KEY] [--prefix P] [--region R] [--enable/--disable]
+cwcli backups s3 list|copy|fetch|prune ...
 cwcli backups key export --to FILE | import --from FILE [--replace]
 ```
 
@@ -1719,8 +1720,8 @@ cwcli backups key export --to FILE | import --from FILE [--replace]
 | `download` / `upload` | Writes one set as a plain (unencrypted) tar, and files such a tar into a store |
 | `drill` | Restores the site's latest verified set into a throwaway site, checks that it answers, drops it, and records the result |
 | `prune` | Applies the instance's retention policy; `--dry-run` lists what would be removed, and removing needs `--yes` |
-| `settings` | Shows or changes the instance's retention, safety, disk floor, and daily schedule |
-| `s3` | Encrypted off-site copies in an S3 bucket (AWS, MinIO, ...): `configure`, `list`, `copy`, `fetch`, `prune` |
+| `settings` | Shows or changes the instance's retention, safety, disk floor, daily schedule, and whether new backups are copied off-site |
+| `s3` | Encrypted off-site copies in an S3 bucket (AWS, MinIO, ...): `configure`, `list`, `copy`, `fetch`, `prune`. `configure` sets up the machine's S3 backup target integration, one bucket for every instance (the web UI's Settings > Integrations); it reads the secret key from `CWCLI_S3_SECRET_KEY`, tests the bucket, and turns the target on only when the bucket answers, exiting 1 otherwise. `--disable` turns it off and keeps its settings |
 | `key` | Exports or imports the key that encrypts off-site copies; restoring an off-site copy on another machine needs it |
 
 **Safety rules:**
@@ -2206,6 +2207,15 @@ Sessions last 8 hours idle and 7 days at most; "Keep me signed in" makes both 30
 Five failed sign-ins within ten minutes lock the address for a minute and refuse further wrong passwords for the username, while the username's correct password still signs in, so nobody can lock the owner out.
 Your account (in Settings) changes the password, lists the other signed-in browsers, signs them out, and signs out.
 If the password is lost, `cwcli admin reset-password` on the host puts the account back to `admin` / `admin` with the change forced again (see below).
+With LDAP / Active Directory sign-in turned on (Settings > Integrations, below), directory users sign in on the same page with their own directory password, and the local `admin` account keeps working beside them as the way in when the directory is unreachable or misconfigured.
+
+**Roles:** every signed-in person is an Admin, an Operator or a Viewer, and the daemon checks each request against the role it needs.
+A Viewer reads everything the UI shows except the contents of backup sets (no download).
+An Operator also runs the fleet: lifecycle actions, jobs, backups, transfers and schedules.
+An Admin also changes Settings, Integrations and each instance's backup settings (retention, the daily schedule and off-site copies), updates cwcli itself, and runs everything that destroys data or code: removing or moving instances, benches, sites and backup sets, restoring a set over a site, pruning local or off-site backups, checking out an app discarding local changes, and forcing an app update past its data-loss guard.
+A schedule that runs one of those (a prune) is created, changed, enabled or run by hand only by an Admin, and each scheduled run checks that the Admin who last saved it is still an Admin (a directory user is looked up in the directory again); otherwise the run is skipped and the schedule shows why.
+The local `admin` account and a programmatic client holding the bearer token are Admins; a directory user's role comes from their directory groups.
+The page hides what a role cannot do, and a request beyond the role is refused with `auth.role_forbidden`.
 Programmatic clients (scripts, the self-update restart) keep using the bearer token in `CWCLI_SERVE_TOKEN`; nothing about a sign-in is ever in a URL.
 `cwcli ui --stop` stops it.
 While the daemon runs it polls process health for every running instance; the web check only runs for an instance a page has open.
@@ -2223,9 +2233,29 @@ Jobs keeps every active job and the 100 most recent finished ones; older finishe
 The `self-update` job restarts the local daemon and the open page reloads after its protocol check sees the replacement.
 The guarded destructive verbs run as jobs too, each behind a typed confirmation of the exact name of what it destroys: remove an instance (`rm`: every site backed up first and the named volumes deletable only while the instance runs, mirroring `cwcli axi rm`, unless Force is ticked, which skips the verified backup like `cwcli rm --no-backup` after a red warning naming what is lost for good), drop a site (`rm-site`), remove a stopped bench (`rm-bench`), check out an app ref discarding local changes (`apps checkout --reset`, typed back as the app's name), and force a `frappe` update past the data-loss guard (`apps update` with Force ticked, typed back as the bench's name).
 A failed backup drops nothing, exactly as on the command line, and the job page shows bench's own reason.
-Settings is writable: cache on/off, forget one remembered project or clear the whole cache (confirmed first), add, remove and prune bench search paths (the prune check names any stopped instance that keeps it from pruning), auto-inspect and its interval and boot hook, the persistent credential bridge and its boot unit, a Start (or Restart) button for either daemon while its feature is enabled, with the daemon log's last line shown while it is down, tips, and the agent SessionStart hooks `cwcli axi setup` installs; every control sits beside the terminal command that does the same.
+Settings is writable for an Admin: cache on/off, forget one remembered project or clear the whole cache (confirmed first), add, remove and prune bench search paths (the prune check names any stopped instance that keeps it from pruning), auto-inspect and its interval and boot hook, the persistent credential bridge and its boot unit, a Start (or Restart) button for either daemon while its feature is enabled, with the daemon log's last line shown while it is down, tips, and the agent SessionStart hooks `cwcli axi setup` installs; every control sits beside the terminal command that does the same.
 Schedules puts any of those jobs on a timetable (templates, a friendly recurrence picker with the cron underneath, one-off runs, recipes of chained steps, "after a successful job" and "when the instance starts" triggers, a week's timeline, and "Schedule this…" on every job's page); see `schedule` below.
 `cwcli restore` (the UI restores sets from the backup store instead), `apps uninstall`, `run`, `cwcli open`'s Docker shell (the UI opens VS Code, VS Code Insiders or Cursor only), an in-browser terminal, access from another machine and the shared multi-user mode are not in the UI; each needs its own decision first.
+
+**Integrations (Settings > Integrations):** connections to systems outside cwcli, each off until an Admin turns it on.
+Turning one on opens its setup, tests the connection, and turns it on only when the test passes; a change to an integration that is already on is applied only when the changed settings pass the test, so a typo never takes a working one down.
+Each integration shows one of four states: Off, Needs setup (the last attempt to turn it on failed its test), On, or Error (it is on, and its last use failed).
+Secrets are stored encrypted (AES-256-GCM) in `~/.cwcli/integrations.json` under a key in `~/.cwcli/keys/integrations.key`, both 0600; after a save the page shows only that a secret is set, and a new value replaces it.
+A change to where a secret is sent (the LDAP server URL, StartTLS, CA certificate or service account, or the S3 endpoint) is refused with `integration.secret_retype` unless the secret is typed again, so a stored secret never goes to a server it was not saved for.
+Two official integrations ship now; community integrations (installable packages marked "Community, not reviewed", off by default, installed only by an Admin) come later.
+
+- **LDAP / Active Directory sign-in:** the server URL (`ldaps://` preferred, or `ldap://` with StartTLS; cwcli refuses to send passwords in clear text), the CA certificate that signed the directory's certificate (empty uses this machine's trusted CAs), Active Directory or OpenLDAP, a read-only service account and its password, the base DN, the user search filter (`{username}` is the typed name, escaped), the username, email and display-name attributes, and the allowed groups, each mapped to a role.
+  At every sign-in cwcli finds the user with the service account, reads their groups (Active Directory: nested groups too; OpenLDAP: `groupOfNames`, `groupOfUniqueNames` and `posixGroup`), checks the password by binding as the user, and refuses an account the directory reports as disabled and anyone outside the allowed groups.
+  Someone in several allowed groups gets the highest role, and a directory user can never take the local account's name.
+  Directory users have no password change in cwcli and are never asked to pick one; the usual rate limiting and lockout apply, and their jobs record their directory username.
+  The setup has a **Test connection** button and a **Look up a user** check that shows what sign-in would decide for a name (found, groups, disabled, role) without asking for a password.
+  Saving the settings or turning sign-in off signs every directory user out.
+- **S3 backup target:** one bucket (AWS, MinIO, Garage, Ceph) for every instance's encrypted off-site backup copies; the test lists the bucket and creates it when it does not exist.
+  Each instance still chooses whether its new backups are copied there (Backups > Retention and schedule, or `cwcli backups settings --copy-on-backup/--no-copy-on-backup`).
+  Upgrading from a version that set an S3 bucket per instance: cwcli turns the first such bucket (by instance name) into this integration once, and only the instances that were copying to that same bucket keep copying.
+  Copies of an instance that used a different bucket are paused, never silently: the S3 card here and the Backups page name the instance and its old endpoint and bucket until its copies are turned back on.
+  Every per-instance plaintext secret file (`~/.cwcli/backups/keys/s3-<instance>.secret`) is removed; type the secret key again in this integration if you set up that bucket here.
+  `cwcli backups s3 configure` sets up the same integration from a terminal.
 
 **Honest states:** the UI distinguishes `unknown` (not probed) from `offline`,
 labels cache-backed data as remembered versus verified, and never guesses a
@@ -2255,6 +2285,7 @@ cwcli admin reset-password [--username admin]
 ```
 
 Recovery from the host when the web UI password is lost: the account goes back to `admin` / `admin`, the next sign-in has to choose a new password, and every signed-in browser is signed out.
+This local account always stays an Admin and always signs in with its own password, including while LDAP / Active Directory sign-in is on.
 The account store is `~/.cwcli/accounts.json` (0600; passwords are scrypt hashes, sessions are stored as hashes of their ids), or the shared state tree on a shared install, where the reset needs root like the rest of `cwcli setup`.
 There is deliberately no `cwcli axi` spelling: an agent must not reset a person's web UI credential.
 

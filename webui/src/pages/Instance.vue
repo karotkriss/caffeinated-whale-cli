@@ -19,6 +19,7 @@ import CommandLine from '../components/CommandLine.vue'
 import { fleet, instance as findInstance, loadDetail, benchName, publishedRange, countSites, parseApp, setFocus, ago } from '../data/fleet'
 import { openAction, menuOption, dangerGroup } from '../data/dialog'
 import { useTabQuery } from '../data/tabs'
+import { can } from '../data/session'
 
 const route = useRoute()
 const project = route.params.project
@@ -88,9 +89,11 @@ const heroFacts = computed(() => [
     <template #badge><StatusBadge :token="inst?.overall" size="lg" /></template>
     <template #actions>
       <template v-if="!gone">
-        <Button variant="subtle" icon-left="lucide-plus" label="New bench" @click="openNewBench({ project })" />
-        <Button v-if="!running" variant="solid" icon-left="lucide-play" label="Start" @click="openAction('instance.start', ctx)" />
-        <Button v-else icon-left="lucide-square" label="Stop" @click="openAction('instance.stop', ctx)" />
+        <template v-if="can('operator')">
+          <Button variant="subtle" icon-left="lucide-plus" label="New bench" @click="openNewBench({ project })" />
+          <Button v-if="!running" variant="solid" icon-left="lucide-play" label="Start" @click="openAction('instance.start', ctx)" />
+          <Button v-else icon-left="lucide-square" label="Stop" @click="openAction('instance.stop', ctx)" />
+        </template>
         <Dropdown :options="more" align="end"><Button icon="lucide-ellipsis" aria-label="More actions" /></Dropdown>
       </template>
     </template>
@@ -121,7 +124,7 @@ const heroFacts = computed(() => [
 
       <TabPanel value="benches" class="pt-4">
         <div class="mb-3 flex items-center gap-2">
-          <Button variant="subtle" size="sm" icon-left="lucide-plus" label="New bench" @click="openNewBench({ project })" />
+          <Button v-if="can('operator')" variant="subtle" size="sm" icon-left="lucide-plus" label="New bench" @click="openNewBench({ project })" />
           <TextInput v-model="filter" class="w-72 max-w-full" placeholder="Filter benches or sites" type="search">
             <template #prefix><span class="lucide-search size-3.5 text-ink-gray-5" aria-hidden="true" /></template>
           </TextInput>

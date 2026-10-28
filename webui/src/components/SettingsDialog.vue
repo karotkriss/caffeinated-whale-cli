@@ -10,9 +10,11 @@ import CommandLine from '../components/CommandLine.vue'
 import CommandCopy from '../components/CommandCopy.vue'
 import DoctorView from '../components/DoctorView.vue'
 import { config, cacheProjects } from '../data/fleet'
-import { settingsDialog } from '../data/settings-dialog'
-import { session, signOut, listSessions } from '../data/session'
+import { settingsDialog, ADMIN_SECTIONS } from '../data/settings-dialog'
+import { session, signOut, listSessions, can, ROLE_LABEL } from '../data/session'
 import PasswordForm from './PasswordForm.vue'
+import IntegrationDialog from './IntegrationDialog.vue'
+import { integrations, loadIntegrations, disableIntegration, openIntegration, STATE, PUBLISHER } from '../data/integrations'
 import { openJob } from '../data/job-dialog'
 import { applySetting, settings } from '../data/settings'
 import { catalog, loadCatalog, scanCatalog, sources, hostLabel } from '../data/catalog'
@@ -22,10 +24,14 @@ const tab = computed({ get: () => settingsDialog.tab, set: (v) => (settingsDialo
 // Load the config the first time the modal opens, and refresh on every later open.
 // immediate: a /settings/<section> deep link opens the dialog before this component
 // mounts, and a watcher armed afterwards would miss that transition (blank panels).
+const isAdmin = computed(() => can('admin'))
+// Ctrl+, opens the dialog on its last tab; a non-Admin lands on their account instead.
+watch([open, tab], ([o, t]) => { if (o && !isAdmin.value && ADMIN_SECTIONS.has(t)) tab.value = 'account' }, { immediate: true })
 watch(open, (v) => {
-  if (!v) return
+  if (!v || !isAdmin.value) return
   config.load(true)
   cacheProjects.load(true)
+  loadIntegrations()
 }, { immediate: true })
 const c = computed(() => config.data)
 // Your account
@@ -39,6 +45,27 @@ watch(tab, (t) => { if (t === 'account') loadSessions() }, { immediate: true })
 watch(open, (v) => { if (v && tab.value === 'account') loadSessions() })
 async function signOutOthers() { signingOutOthers.value = true; try { await signOut({ others: true }); await loadSessions() } finally { signingOutOthers.value = false } }
 async function doSignOut() { open.value = false; await signOut() }
+const directoryUser = computed(() => session.user?.source === 'ldap')
+const signInOn = computed(() => integrations.list.some((i) => i.id === 'ldap' && i.enabled))
+
+// --- integrations -----------------------------------------------------------
+const turningOff = ref(null)
+const offBusy = ref(false)
+async function turnOff() {
+  offBusy.value = true
+  try {
+    await disableIntegration(turningOff.value.id)
+    turningOff.value = null
+    await loadIntegrations()
+  } catch (e) { settings.error = e } finally { offBusy.value = false }
+}
+function when(epoch) { return epoch ? new Date(epoch * 1000).toLocaleString() : '' }
+function stateLine(i) {
+  if (i.state === 'error') return i.last_error?.message || 'The last use failed.'
+  if (i.state === 'needs_setup') return i.last_test?.message || 'The last test failed; finish the setup to turn it on.'
+  if (i.state === 'on') return `On since ${when(i.updated_at)}${i.updated_by ? ` · by ${i.updated_by}` : ''}`
+  return ''
+}
 const busy = (setting) => settings.busy === setting
 const errorText = computed(() => {
   const e = settings.error
@@ -137,6 +164,7 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
         <span class="lucide-settings size-4 text-ink-gray-6" aria-hidden="true" />
         <span class="text-lg font-semibold text-ink-gray-9">Settings</span>
       </div>
+      <template v-if="isAdmin">
       <SettingsNavGroup label="Workspace">
         <SettingsNavItem value="paths"><template #prefix><span class="lucide-folder-search size-4" aria-hidden="true" /></template>Search paths</SettingsNavItem>
         <SettingsNavItem value="cache"><template #prefix><span class="lucide-database size-4" aria-hidden="true" /></template>Cache</SettingsNavItem>
@@ -148,6 +176,10 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
       <SettingsNavGroup label="Agents">
         <SettingsNavItem value="agents"><template #prefix><span class="lucide-bot size-4" aria-hidden="true" /></template>Agent hooks</SettingsNavItem>
       </SettingsNavGroup>
+      <SettingsNavGroup label="Connections">
+        <SettingsNavItem value="integrations"><template #prefix><span class="lucide-blocks size-4" aria-hidden="true" /></template>Integrations</SettingsNavItem>
+      </SettingsNavGroup>
+      </template>
       <SettingsNavGroup label="General">
         <SettingsNavItem value="account"><template #prefix><span class="lucide-user-round size-4" aria-hidden="true" /></template>Your account</SettingsNavItem>
         <SettingsNavItem value="health"><template #prefix><span class="lucide-stethoscope size-4" aria-hidden="true" /></template>Health check</SettingsNavItem>
@@ -155,9 +187,9 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
       </SettingsNavGroup>
     </SettingsSidebar>
     <SettingsContent>
-      <LoadingText v-if="!c && config.loading" class="p-6" />
-      <ErrorMessage v-if="config.error" class="p-6" :message="config.error" />
-      <template v-if="c">
+      <LoadingText v-if="isAdmin && !c && config.loading" class="p-6" />
+      <ErrorMessage v-if="isAdmin && config.error" class="p-6" :message="config.error" />
+      <template v-if="c && isAdmin">
         <SettingsPanel value="paths">
           <SettingsHeader title="Bench search paths" :description="`Where inspect looks for benches inside each container. ${c.search_paths.length} ${c.search_paths.length === 1 ? 'path' : 'paths'}.`">
             <template #actions><CommandCopy command="cwcli config paths" /></template>
@@ -289,13 +321,43 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
           </SettingsBody>
         </SettingsPanel>
 
-        <SettingsPanel value="account">
-          <SettingsHeader title="Your account" :description="`Signed in as ${session.user?.username || ''}`" />
+        <SettingsPanel value="integrations">
+          <SettingsHeader title="Integrations" description="Connect cwcli to systems outside it. Each starts off; turning one on tests it first and turns it on only when the test passes. Secrets are stored encrypted on this machine and never shown again." />
           <SettingsBody>
-            <SettingsRow title="Change password" description="At least 8 characters, not the default. Other sessions stay signed in.">
-              <Button :label="pwOpen ? 'Hide' : 'Change…'" @click="pwOpen = !pwOpen" />
-            </SettingsRow>
-            <div v-if="pwOpen" class="max-w-sm px-1 pb-4"><PasswordForm @done="pwOpen = false; pwChanged = true" /><p v-if="pwChanged" class="mt-2 text-p-sm text-ink-green-6">Password changed.</p></div>
+            <ErrorMessage :message="integrations.error?.message || errorText" />
+            <LoadingText v-if="integrations.loading && !integrations.list.length" class="py-3" />
+            <div class="pt-3 text-sm font-medium text-ink-gray-5">Official</div>
+            <div v-for="i in integrations.list" :key="i.id" class="flex items-center gap-8 py-3.5">
+              <div class="min-w-0 flex-1">
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class="text-base-medium leading-tighter text-ink-gray-8">{{ i.name }}</span>
+                  <Badge size="sm" variant="subtle" :theme="PUBLISHER[i.publisher]?.theme" :label="PUBLISHER[i.publisher]?.label" />
+                </div>
+                <div class="mt-1 text-base leading-5 text-ink-gray-6">{{ i.description }}</div>
+                <div v-if="i.state !== 'off'" class="mt-1 text-sm leading-5" :class="i.state === 'on' ? 'text-ink-gray-5' : 'text-ink-red-6'">{{ stateLine(i) }}</div>
+                <div v-for="n in i.notices || []" :key="n" class="mt-1 text-sm leading-5 text-ink-amber-6">{{ n }}</div>
+              </div>
+              <div class="flex shrink-0 items-center gap-2">
+                <Badge size="sm" variant="subtle" :theme="STATE[i.state]?.theme" :label="STATE[i.state]?.label" />
+                <Button :label="i.enabled ? 'Settings…' : i.state === 'needs_setup' ? 'Finish setup…' : 'Turn on…'" @click="openIntegration(i.id)" />
+                <Button v-if="i.enabled" label="Turn off" @click="turningOff = i" />
+              </div>
+            </div>
+            <div class="pt-5 text-sm font-medium text-ink-gray-5">Community</div>
+            <SettingsRow title="Community integrations" description="Integrations from other publishers will be installable packages, marked Community, not reviewed. Each will start off, and only an Admin will be able to install one. Not available yet." />
+          </SettingsBody>
+        </SettingsPanel>
+      </template>
+        <SettingsPanel value="account">
+          <SettingsHeader title="Your account" :description="`Signed in as ${session.user?.name ? `${session.user.name} (${session.user.username})` : session.user?.username || ''} · ${ROLE_LABEL[session.user?.role] || 'Admin'}`" />
+          <SettingsBody>
+            <SettingsRow v-if="directoryUser" title="Directory account" :description="`Your directory groups gave you the ${ROLE_LABEL[session.user?.role]} role when you signed in. Your password and groups are managed in the directory.`" />
+            <template v-else>
+              <SettingsRow title="Change password" :description="signInOn ? 'This local account keeps working while directory sign-in is on, so keep its password somewhere safe. At least 8 characters, not the default.' : 'At least 8 characters, not the default. Other sessions stay signed in.'">
+                <Button :label="pwOpen ? 'Hide' : 'Change…'" @click="pwOpen = !pwOpen" />
+              </SettingsRow>
+              <div v-if="pwOpen" class="max-w-sm px-1 pb-4"><PasswordForm @done="pwOpen = false; pwChanged = true" /><p v-if="pwChanged" class="mt-2 text-p-sm text-ink-green-6">Password changed.</p></div>
+            </template>
             <SettingsRow title="Other sessions" :description="otherSessions.length ? `${otherSessions.length} other ${otherSessions.length === 1 ? 'browser is' : 'browsers are'} signed in as ${session.user?.username}.` : 'No other browser is signed in.'">
               <Button label="Sign out everywhere else" :disabled="!otherSessions.length" :loading="signingOutOthers" @click="signOutOthers" />
             </SettingsRow>
@@ -303,7 +365,7 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
               <li v-for="s in otherSessions" :key="s.created + s.agent" class="truncate">{{ s.agent || 'unknown browser' }} · last seen {{ new Date(s.last_seen * 1000).toLocaleString() }}{{ s.remember ? ' · kept signed in' : '' }}</li>
             </ul>
             <SettingsRow title="Sign out" description="Ends this browser's session.">
-              <div class="flex items-center gap-1"><CommandCopy command="cwcli admin reset-password" /><Button icon-left="lucide-log-out" label="Sign out" @click="doSignOut" /></div>
+              <div class="flex items-center gap-1"><CommandCopy v-if="!directoryUser" command="cwcli admin reset-password" /><Button icon-left="lucide-log-out" label="Sign out" @click="doSignOut" /></div>
             </SettingsRow>
           </SettingsBody>
         </SettingsPanel>
@@ -317,19 +379,31 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
         <SettingsPanel value="about">
           <SettingsHeader title="About cwcli" :description="`Version ${session.meta?.version || 'unknown'} · web UI protocol ${session.meta?.protocol ?? 'unknown'}`" />
           <SettingsBody>
-            <SettingsRow title="Config file" :description="c.config_file"><CommandCopy command="cwcli config show" /></SettingsRow>
-            <SettingsRow title="Update cwcli" description="Checks the package index and updates this install; the daemon restarts and this tab reloads.">
-              <div class="flex items-center gap-1"><CommandCopy command="cwcli self-update" /><Button icon-left="lucide-arrow-up-circle" label="Update" @click="openJob('self-update')" /></div>
-            </SettingsRow>
-            <SettingsRow title="Show tips after commands" :description="`Currently ${c.show_tips ? 'on' : 'off'}`">
-              <div class="flex items-center gap-1"><CommandCopy :command="c.show_tips ? 'cwcli config tips disable' : 'cwcli config tips enable'" /><Switch v-model="tipsOn" :disabled="busy('tips.enable') || busy('tips.disable')" /></div>
-            </SettingsRow>
+            <template v-if="isAdmin && c">
+              <SettingsRow title="Config file" :description="c.config_file"><CommandCopy command="cwcli config show" /></SettingsRow>
+              <SettingsRow title="Update cwcli" description="Checks the package index and updates this install; the daemon restarts and this tab reloads.">
+                <div class="flex items-center gap-1"><CommandCopy command="cwcli self-update" /><Button icon-left="lucide-arrow-up-circle" label="Update" @click="openJob('self-update')" /></div>
+              </SettingsRow>
+              <SettingsRow title="Show tips after commands" :description="`Currently ${c.show_tips ? 'on' : 'off'}`">
+                <div class="flex items-center gap-1"><CommandCopy :command="c.show_tips ? 'cwcli config tips disable' : 'cwcli config tips enable'" /><Switch v-model="tipsOn" :disabled="busy('tips.enable') || busy('tips.disable')" /></div>
+              </SettingsRow>
+            </template>
+            <SettingsRow v-else title="Settings" description="Only an Admin can change cwcli's settings, integrations and version." />
           </SettingsBody>
         </SettingsPanel>
-      </template>
     </SettingsContent>
   </SettingsDialog>
 
+  <IntegrationDialog />
+  <Dialog :open="!!turningOff" :title="`Turn off ${turningOff?.name || ''}?`" icon="lucide-power" @update:open="(v) => { if (!v) turningOff = null }">
+    <p class="text-p-base text-ink-gray-7">{{ turningOff?.id === 'ldap' ? 'Directory users can no longer sign in, and every directory user signed in now is signed out. The local admin account keeps working.' : 'New backups are no longer copied off-site; the copies already in the bucket stay there.' }} Its settings are kept for the next time it is turned on.</p>
+    <template #actions="{ close }">
+      <div class="flex justify-end gap-2">
+        <Button label="Cancel" @click="close" />
+        <Button variant="solid" theme="red" data-primary label="Turn off" :loading="offBusy" @click="turnOff" />
+      </div>
+    </template>
+  </Dialog>
   <Dialog v-model:open="clearOpen" title="Clear the whole cache?" icon="lucide-trash-2" theme="red">
     <p class="text-p-base text-ink-gray-7">Every remembered bench, site and app is forgotten, for live and removed instances alike. Bench labels stay in their marker files and come back on the next inspect; durable bench numbers are kept.</p>
     <div class="mt-3"><CommandLine command="cwcli config cache clear --all" /></div>

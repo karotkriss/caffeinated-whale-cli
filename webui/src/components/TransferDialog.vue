@@ -10,6 +10,7 @@ import { instances, details, loadDetail } from '../data/fleet'
 import { createJob } from '../data/jobs'
 import { trackJob } from '../data/job-toasts'
 import { ensureRunning } from '../data/start-gate'
+import { can } from '../data/session'
 
 const d = transferDialog
 const mode = ref('clone')
@@ -25,7 +26,7 @@ const error = ref(null)
 
 watch(() => d.open, (open) => {
   if (!open) return
-  mode.value = d.mode
+  mode.value = can('admin') ? d.mode : 'clone'
   chosen.value = d.pick ? [] : [...d.sites]
   targetProject.value = d.project
   targetBench.value = d.bench
@@ -94,7 +95,7 @@ async function start() {
     <div class="space-y-4">
       <div class="flex gap-2 text-sm">
         <label class="flex items-center gap-2"><input v-model="mode" type="radio" value="clone" /><span>Clone <span class="text-ink-gray-5">(the source stays)</span></span></label>
-        <label class="flex items-center gap-2"><input v-model="mode" type="radio" value="move" /><span>Move <span class="text-ink-gray-5">(the source is dropped once its copy answers)</span></span></label>
+        <label class="flex items-center gap-2"><input v-model="mode" type="radio" value="move" :disabled="!can('admin')" /><span>Move <span class="text-ink-gray-5">(the source is dropped once its copy answers)</span></span></label>
       </div>
       <div v-if="d.pick" class="space-y-1">
         <div class="text-xs text-ink-gray-5">Sites on {{ d.project }} · bench {{ d.bench }}</div>
