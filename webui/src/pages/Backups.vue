@@ -9,15 +9,13 @@ import PageHead from '../components/PageHead.vue'
 import EmptyState from '../components/EmptyState.vue'
 import { backups, loadBackups, allSets, freshness, FRESH_DOT, FRESH_TEXT, REASON_LABEL, PART_LABEL, sizeText, whenText } from '../data/backups'
 import { instances, setFocus } from '../data/fleet'
-import { createJob } from '../data/jobs'
-import { trackJob } from '../data/job-toasts'
 import { openJob } from '../data/job-dialog'
 import { openRestoreWizard } from '../data/restore-wizard'
-import { openAction } from '../data/dialog'
-import { copyOffsite, openReceive, sendSet } from '../data/transfer'
-import { openBackupSettings, downloadSet, uploadSet } from '../data/backups'
+import { openReceive } from '../data/transfer'
+import { openBackupSettings, uploadSet } from '../data/backups'
 import { toast } from 'frappe-ui'
 import { can } from '../data/session'
+import { setMenu } from '../data/set-menu'
 
 const query = ref('')
 const project = ref('all')
@@ -43,18 +41,6 @@ const siteRows = computed(() => {
 })
 const totals = computed(() => ({ sets: allSets.value.length, size: allSets.value.reduce((n, s) => n + s.size, 0), sites: new Set(allSets.value.map((s) => `${s.project}/${s.site}`)).size, failed: allSets.value.filter((s) => !s.verified).length }))
 function backupNow(row) { openJob('backup', { project: row.project, bench: String(row.sets[0]?.bench_index ?? 0), site: row.site, args: { store: true, with_files: true, reason: 'manual' } }) }
-async function verify(s) { trackJob((await createJob({ verb: 'verify-backup', target: { project: s.project, site: s.site }, args: { set_key: s.key } })).id) }
-function remove(s) { openAction('delete_backup', { project: s.project, site: s.site, set: s }) }
-function menu(s) {
-  return [{ group: 'Set', options: [
-    { label: 'Restore…', icon: 'rotate-ccw', onClick: () => openRestoreWizard(s) },
-    { label: 'Verify again', icon: 'shield-check', onClick: () => verify(s) },
-    { label: 'Send to another machine…', icon: 'send', onClick: () => sendSet(s) },
-    { label: s.offsite ? 'Copy off-site again' : 'Copy off-site (S3)', icon: 'cloud-upload', onClick: () => copyOffsite(s) },
-    { label: 'Download (.tar)', icon: 'download', onClick: () => downloadSet(s).catch((e) => toast.error(e.message)) },
-    { label: 'Delete', icon: 'trash-2', theme: 'red', onClick: () => remove(s) },
-  ] }]
-}
 const uploadInput = ref(null)
 const uploading = ref(false)
 async function onUpload(ev) {
@@ -108,7 +94,7 @@ async function onUpload(ev) {
           <span class="inline-flex items-center gap-1.5 tabular-nums text-ink-gray-7 max-lg:hidden">{{ r.sets.length }}<Badge v-if="r.sets.some((s) => !s.verified)" theme="red" variant="subtle" :label="`${r.sets.filter((s) => !s.verified).length} unverified`" title="Kept until you delete them by hand; retention never removes them" /></span>
           <span class="tabular-nums text-ink-gray-7 max-lg:hidden">{{ sizeText(r.size) }}</span>
           <span class="flex min-w-0 flex-wrap items-center gap-1 max-lg:hidden"><template v-for="s in r.sets.slice(0, 3)" :key="s.key"><button type="button" class="inline-flex items-center gap-1 rounded-4 border border-outline-gray-1 px-1.5 py-0.5 text-xs hover:bg-surface-gray-1" :class="s.verified ? 'text-ink-gray-7' : 'text-ink-red-6'" :title="`${s.verified ? '' : 'Unverified, kept until deleted by hand · '}${REASON_LABEL[s.reason] || s.reason} · ${s.parts.map((p) => PART_LABEL[p.kind]).join(', ')} · ${sizeText(s.size)}`" @click="openRestoreWizard(s)"><span :class="s.verified ? 'lucide-shield-check' : 'lucide-shield-x'" class="size-3" aria-hidden="true" />{{ whenText(s.created_at) }}<span v-if="s.offsite" class="lucide-cloud size-3 text-ink-gray-4" aria-hidden="true" title="copied off-site" /></button></template><span v-if="r.sets.length > 3" class="text-xs text-ink-gray-4">+{{ r.sets.length - 3 }}</span></span>
-          <span class="flex items-center justify-end gap-1"><Button size="sm" variant="subtle" label="Back up" @click="backupNow(r)" /><Dropdown :options="menu(r.sets[0])" align="end"><Button size="sm" variant="ghost" icon="lucide-ellipsis" aria-label="Newest set actions" /></Dropdown></span>
+          <span v-if="can('operator')" class="flex items-center justify-end gap-1"><Button size="sm" variant="subtle" label="Back up" @click="backupNow(r)" /><Dropdown :options="setMenu(r.sets[0])" align="end"><Button size="sm" variant="ghost" icon="lucide-ellipsis" aria-label="Newest set actions" /></Dropdown></span>
         </div>
       </div>
     </div>

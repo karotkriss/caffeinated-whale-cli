@@ -26,6 +26,8 @@ const LDAP_DEFAULTS = {
   OpenLDAP: { user_filter: '(uid={username})', username_attribute: 'uid', email_attribute: 'mail', display_name_attribute: 'cn' },
 }
 const ADVANCED = new Set(['user_filter', 'username_attribute', 'email_attribute', 'display_name_attribute'])
+// Long values (URLs, DNs, filters) take the whole row.
+const WIDE = new Set(['server_url', 'bind_dn', 'user_filter', 'endpoint'])
 
 watch(() => d.open, (open) => {
   if (!open || !integ.value) return
@@ -115,7 +117,7 @@ const ROLE_LABEL = { admin: 'Admin', operator: 'Operator', viewer: 'Viewer' }
           <FormControl v-else-if="f.kind === 'select'" v-model="form[f.key]" type="select" :label="f.label" :options="f.options" />
           <FormControl v-else-if="f.kind === 'pem'" v-model="form[f.key]" class="sm:col-span-2" type="textarea" :rows="3" :label="f.label" :description="f.help" placeholder="-----BEGIN CERTIFICATE-----" spellcheck="false" />
           <FormControl v-else-if="f.kind === 'secret'" v-model="secrets[f.key]" type="password" :label="f.label" :placeholder="secretPlaceholder(f)" autocomplete="new-password" />
-          <FormControl v-else v-model="form[f.key]" :class="f.key === 'server_url' || f.key === 'bind_dn' || f.key === 'user_filter' ? 'sm:col-span-2' : ''" :label="f.label" :placeholder="placeholder(f)" :description="f.help" spellcheck="false" />
+          <FormControl v-else v-model="form[f.key]" :class="WIDE.has(f.key) && 'sm:col-span-2'" :label="f.label" :placeholder="placeholder(f)" :description="f.help" spellcheck="false" />
         </template>
         <button v-if="hasAdvanced" type="button" class="flex items-center gap-1 text-sm text-ink-gray-6 hover:text-ink-gray-8 sm:col-span-2" :aria-expanded="advanced" @click="advanced = !advanced">
           <span class="size-4" :class="advanced ? 'lucide-chevron-down' : 'lucide-chevron-right'" aria-hidden="true" />Search filter and attributes
