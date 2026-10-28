@@ -16,6 +16,7 @@ export class ApiError extends Error {
     this.hint = outdated ? 'Run `cwcli ui` in a terminal to restart it, then reload this page.' : error?.hint
     this.choice = error?.choice
     this.outcome = error?.outcome
+    this.detail = error?.detail
   }
 }
 

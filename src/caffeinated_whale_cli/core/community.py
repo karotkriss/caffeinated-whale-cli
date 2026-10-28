@@ -224,13 +224,15 @@ def _fetch(url: str, ref: str | None, dest: Path) -> tuple[str, str | None]:
         signed_in_with = _tool(host)
         done = _git(fetch, helper=_helper())
         if done.returncode != 0 and _SIGN_IN_MISSING in done.stderr:
+            fix = sign_in_fix(host)
             installed = shutil.which(signed_in_with) is not None
             raise CwcliError(
                 ErrorKind.PRECONDITION,
                 "community.sign_in_missing",
                 f"{url} needs a sign-in and this machine has no {signed_in_with} sign-in "
-                f"for {host}. Run: {sign_in_fix(host)}"
-                + ("" if installed else f" (install {signed_in_with} first)"),
+                f"for {host}.",
+                hint=f"Run: {fix}" + ("" if installed else f" (install {signed_in_with} first)"),
+                detail={"command": fix, "host": host, "tool": signed_in_with},
             )
         if done.returncode != 0:
             raise CwcliError(
@@ -428,25 +430,33 @@ def _install_package(src: Path, decl: Declaration, commit: str) -> str:
             "community.install_failed",
             f"Installing {decl.project} failed:\n{tail}",
         )
-    verdict = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "caffeinated_whale_cli.core.community",
-            "verify",
-            json.dumps({"dir": str(target), **dataclasses.asdict(decl)}),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    if verdict.returncode != 0:
+    # Loaded in a separate process, so a package that breaks on import never takes
+    # this one with it; run from root() so nothing in the caller's directory shadows
+    # cwcli on ``-m``'s path.
+    try:
+        verdict = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "caffeinated_whale_cli.core.community",
+                "verify",
+                json.dumps({"dir": str(target), **dataclasses.asdict(decl)}),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=root(),
+        )
+        problem = None if verdict.returncode == 0 else _last_line(verdict.stderr or verdict.stdout)
+    except subprocess.TimeoutExpired:
+        problem = "importing it took longer than 120s"
+    if problem is not None:
         shutil.rmtree(target, ignore_errors=True)
         raise CwcliError(
             ErrorKind.PRECONDITION,
             "community.invalid_package",
             f"{decl.project} installed but does not provide the integration it declares: "
-            f"{_last_line(verdict.stderr or verdict.stdout)}. It was removed again.",
+            f"{problem}. It was removed again.",
         )
     return name
 
