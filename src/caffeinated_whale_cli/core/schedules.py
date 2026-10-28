@@ -735,20 +735,31 @@ def tick(
     *,
     now: datetime | None = None,
     finished_jobs: list[dict[str, Any]] | None = None,
-    started_projects: set[str] | None = None,
+    running_projects: set[str] | None = None,
     read_job: ReadJob | None = None,
 ) -> list[dict[str, Any]]:
     """One scheduler pass: fire what is due (and allowed), advance, record. Returns
     the job records it created. ``finished_jobs`` (terminal records since the last
-    tick) and ``started_projects`` (instances seen going stopped -> running) feed the
-    event triggers; the last run's outcome and a recipe's next step come from the
-    job records themselves (``read_job``), so they move on with no page open."""
+    tick) and ``running_projects`` (the instances running now) feed the event
+    triggers. What a trigger already consumed (the jobs an after_job fired on, the
+    instances already seen running) lives in the store, so two schedulers on one
+    store never fire the same event twice. The last run's outcome and a recipe's
+    next step come from the job records themselves (``read_job``), so they move on
+    with no page open."""
     now = now or _now()
     read_job = read_job or _read_job
     created: list[dict[str, Any]] = []
     with _lock, _StoreLock():
         data = _load()
         changed = False
+        started: set[str] = set()
+        if running_projects is not None:
+            seen_running = data.get("running")
+            if seen_running is not None:
+                started = running_projects - set(seen_running)
+            if seen_running is None or set(seen_running) != running_projects:
+                data["running"] = sorted(running_projects)
+                changed = True
         for sid, s in data["schedules"].items():
             if not s.get("enabled", True):
                 continue
@@ -758,10 +769,9 @@ def tick(
             target = dict(s.get("target") or {})
             project = str(target.get("project") or "")
             if s.get("kind") == "event":
-                if not _event_fires(
-                    sid, s, finished_jobs or [], started_projects or set(), project
-                ):
+                if not _event_fires(sid, s, finished_jobs or [], started, project):
                     continue
+                changed = True
             else:
                 nxt = _next_due(s, now)
                 if nxt is None or nxt > now:
@@ -910,13 +920,19 @@ def _event_fires(
         return project in started
     if trig.get("type") == "after_job":
         want_project = trig.get("project") or project
-        for j in finished:
-            if j.get("state") != "succeeded" or j.get("verb") != trig.get("verb"):
-                continue
-            if (j.get("origin") or {}).get("schedule") == sid:
-                continue
-            if (j.get("target") or {}).get("project") == want_project:
-                return True
+        consumed = list(s.get("consumed_jobs") or [])
+        hits = [
+            j.get("id")
+            for j in finished
+            if j.get("id") not in consumed
+            and j.get("state") == "succeeded"
+            and j.get("verb") == trig.get("verb")
+            and (j.get("origin") or {}).get("schedule") != sid
+            and (j.get("target") or {}).get("project") == want_project
+        ]
+        if hits:
+            s["consumed_jobs"] = (consumed + hits)[-20:]
+        return bool(hits)
     return False
 
 

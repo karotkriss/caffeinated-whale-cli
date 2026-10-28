@@ -822,8 +822,8 @@ class _Handler(BaseHTTPRequestHandler):
                 "auth.default_password_remote",
                 "The account still has the default password, so it cannot sign in "
                 "from the network.",
-                hint="Sign in on this machine's loopback address and change it first, "
-                f"or send 'Authorization: Bearer <token>' matching {TOKEN_ENV}.",
+                hint="Start the web UI on loopback with 'cwcli ui', sign in there and change "
+                f"it first, or send 'Authorization: Bearer <token>' matching {TOKEN_ENV}.",
             )
             return
         session_id = core_accounts.open_session(
