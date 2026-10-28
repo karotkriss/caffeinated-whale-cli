@@ -17,6 +17,7 @@ import { instance as findInstance, loadDetail, benchName, parseApp, setFocus, ge
 import { openAction, menuOption, dangerGroup } from '../data/dialog'
 import { openJob } from '../data/job-dialog'
 import { openTransfer } from '../data/transfer'
+import { can } from '../data/session'
 
 const route = useRoute()
 const { project, bench: index, site: siteName } = route.params
@@ -33,7 +34,7 @@ const jobOption = (label, icon, verb) => ({ label, icon, onClick: () => openJob(
 const more = computed(() => [
   jobOption('Back up site', 'lucide-database-backup', 'backup'),
   { label: 'Clone site…', icon: 'lucide-copy', onClick: () => openTransfer({ mode: 'clone', project, bench: String(index), sites: [siteName] }) },
-  { label: 'Move site…', icon: 'lucide-move', onClick: () => openTransfer({ mode: 'move', project, bench: String(index), sites: [siteName] }) },
+  ...(can('admin') ? [{ label: 'Move site…', icon: 'lucide-move', onClick: () => openTransfer({ mode: 'move', project, bench: String(index), sites: [siteName] }) }] : []),
   jobOption('Migrate site', 'lucide-database-zap', 'migrate'),
   jobOption('Run tests', 'lucide-flask-conical', 'run-tests'),
   jobOption('Complete setup wizard', 'lucide-list-checks', 'setup-wizard'),
@@ -96,7 +97,7 @@ const heroFacts = computed(() => [
     ]">
     <template #badge><StatusBadge v-if="running && health?.web_site === siteName" :token="health.overall" size="lg" /><Badge v-if="site?.name === bench?.default_site" size="lg" theme="gray" variant="outline" label="default site" /><DevModeBadge :state="devMode" size="lg" /></template>
     <template #actions>
-      <Tooltip v-if="devMode" :text="devMode.source === 'common' ? 'Set bench-wide in common_site_config.json; the dialog can change it there' : 'Changes developer_mode for this site, then clears its cache'">
+      <Tooltip v-if="devMode && can('operator')" :text="devMode.source === 'common' ? 'Set bench-wide in common_site_config.json; the dialog can change it there' : 'Changes developer_mode for this site, then clears its cache'">
         <Button variant="subtle" :icon-left="devMode.effective ? 'lucide-code-xml' : 'lucide-code'" :label="devMode.effective ? 'Turn developer mode off' : 'Turn developer mode on'" @click="openAction(devMode.effective ? 'site.dev_mode_off' : 'site.dev_mode_on', ctx)" />
       </Tooltip>
       <Tooltip :text="running ? 'Probe the host URL and open it' : 'Start the instance to open the site'">

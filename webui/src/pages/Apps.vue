@@ -9,6 +9,7 @@ import AppsGrid from '../components/AppsGrid.vue'
 import HostIcon from '../components/HostIcon.vue'
 import { setFocus, instances } from '../data/fleet'
 import { apps, catalog, scanCatalog, activeSources, ago, hostLabel } from '../data/catalog'
+import { can } from '../data/session'
 
 onMounted(() => setFocus(null))
 const counts = computed(() => ({
@@ -23,7 +24,7 @@ const running = computed(() => instances.value.filter((i) => i.container_running
 <template>
   <PageHead title="Apps" :count="apps.length || null">
     <template #actions>
-      <Button icon-left="lucide-refresh-cw" label="Rescan sources" :loading="catalog.scanning" @click="scanCatalog()" />
+      <Button v-if="can('operator')" icon-left="lucide-refresh-cw" label="Rescan sources" :loading="catalog.scanning" @click="scanCatalog()" />
     </template>
   </PageHead>
   <div class="space-y-6 px-3 pb-20 pt-5 sm:px-5">

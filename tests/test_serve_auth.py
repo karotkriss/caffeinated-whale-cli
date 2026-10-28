@@ -168,6 +168,11 @@ def _stub_server(monkeypatch, resolves_to: str | None = None) -> list:
         return _Stub(args[0])
 
     monkeypatch.setattr(serve_cmd, "make_server", _make)
+    # serve() starts the app catalog's forge scan; a unit test must not reach the
+    # network, and the scan's thread would outlive the test's temp home.
+    monkeypatch.setattr(
+        serve_cmd.core_app_catalog.CatalogStore, "refresh", lambda self, publish=None: False
+    )
     return calls
 
 

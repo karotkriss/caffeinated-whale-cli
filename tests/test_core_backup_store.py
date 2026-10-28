@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from caffeinated_whale_cli.core import backup_store as store
+from caffeinated_whale_cli.core import integrations
 from caffeinated_whale_cli.core.envelope import Status
 from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 
@@ -344,7 +345,7 @@ def test_verify_notices_a_part_that_no_longer_matches_its_sha256(home):
 class FakeBucket:
     objects: dict[str, bytes] = {}
 
-    def __init__(self, target):
+    def __init__(self, target, **_kw):
         self.target = target
 
     def ensure_bucket(self):
@@ -377,11 +378,13 @@ def bucket(home, monkeypatch):
     monkeypatch.setattr(backup_crypto, "cwcli_home", lambda: home / ".cwcli")
     monkeypatch.setattr(s3, "S3Client", FakeBucket)
     monkeypatch.setattr(FakeBucket, "objects", {})
-    for project in ("erp", "erp-staging"):
-        store.save_settings(
-            project, {"s3_target": {"enabled": True, "endpoint": "http://x", "bucket": "b"}}
-        )
-        store.set_s3_secret(f"secret-{project}", project=project)
+    check, view = integrations.configure(
+        "s3",
+        {"endpoint": "http://x", "bucket": "b", "access_key": "ak"},
+        {"secret_key": "the-secret"},
+        enable=True,
+    )
+    assert check is not None and check.ok and view["state"] == "on"
     return FakeBucket.objects
 
 
@@ -400,9 +403,102 @@ def _remote_manifest(objects, project, site, sid, created_at, verified=True):
 
 
 class TestOffsite:
-    def test_each_instance_keeps_its_own_s3_secret(self, bucket):
-        assert store.offsite_target("erp").secret_key == "secret-erp"
-        assert store.offsite_target("erp-staging").secret_key == "secret-erp-staging"
+    def test_every_instance_copies_to_the_one_s3_backup_target(self, bucket):
+        assert store.offsite_target("erp").secret_key == "the-secret"
+        assert store.offsite_target("erp-staging").bucket == "b"
+
+    def test_an_off_target_answers_none_or_names_where_to_turn_it_on(self, bucket):
+        integrations.disable("s3")
+        assert store.offsite_target("erp", require=False) is None
+        with pytest.raises(CwcliError) as e:
+            store.offsite_target("erp")
+        assert e.value.code == "offsite.disabled" and "Integrations" in (e.value.hint or "")
+
+    def test_each_instance_still_chooses_whether_new_backups_are_copied(self, bucket):
+        assert store.copies_on_backup("erp")
+        store.save_settings("erp", {"offsite": {"copy_on_backup": False}})
+        assert not store.copies_on_backup("erp") and store.copies_on_backup("erp-staging")
+
+    def test_a_pre_integration_per_instance_target_is_adopted_once(self, home, monkeypatch):
+        """A bucket named in an instance's backup settings before the S3 target was an
+        integration keeps working: it becomes the integration, on, and its plaintext
+        secret file is removed."""
+        projects = home / ".cwcli" / "projects" / "erp"
+        projects.mkdir(parents=True)
+        (projects / "backups.json").write_text(
+            json.dumps(
+                {
+                    "s3_target": {
+                        "enabled": True,
+                        "endpoint": "http://minio:9000",
+                        "bucket": "old",
+                        "access_key": "ak",
+                        "copy_on_backup": True,
+                    }
+                }
+            )
+        )
+        secret = home / ".cwcli" / "backups" / "keys" / "s3-erp.secret"
+        secret.parent.mkdir(parents=True)
+        secret.write_text("legacy-secret")
+        monkeypatch.setattr(integrations, "_legacy_checked", set())
+        target = store.offsite_target("erp")
+        assert (target.bucket, target.secret_key) == ("old", "legacy-secret")
+        assert not secret.exists()
+        assert "legacy-secret" not in (home / ".cwcli" / "integrations.json").read_text()
+        assert "s3_target" not in store.settings("erp")
+
+    def test_adoption_keeps_copying_only_where_an_instance_copied_to_that_bucket(
+        self, home, monkeypatch
+    ):
+        target = {"enabled": True, "endpoint": "http://minio:9000", "bucket": "old"}
+        legacy = {
+            "erp": {**target, "access_key": "ak"},
+            "hr": {**target, "copy_on_backup": False},
+            "other": {**target, "bucket": "elsewhere"},
+            "plain": None,
+        }
+        for name, cfg in legacy.items():
+            d = home / ".cwcli" / "projects" / name
+            d.mkdir(parents=True)
+            if cfg is not None:
+                (d / "backups.json").write_text(json.dumps({"s3_target": cfg}))
+        keys = home / ".cwcli" / "backups" / "keys"
+        keys.mkdir(parents=True)
+        for name in ("erp", "hr", "other"):
+            (keys / f"s3-{name}.secret").write_text(f"{name}-secret")
+        monkeypatch.setattr(integrations, "_legacy_checked", set())
+        assert store.offsite_target("erp").bucket == "old"
+        assert store.copies_on_backup("erp")
+        assert not any(store.copies_on_backup(p) for p in ("hr", "other", "plain"))
+        assert not list(keys.iterdir())  # no plaintext secret is left behind
+        assert store.paused_legacy() == {
+            "other": {"endpoint": "http://minio:9000", "bucket": "elsewhere", "prefix": ""}
+        }
+        (notice,) = integrations.view("s3")[0]["notices"]
+        assert "other" in notice and "elsewhere" in notice and "paused" in notice
+        store.save_settings("other", {"offsite": {"copy_on_backup": True}})
+        assert store.paused_legacy() == {} and integrations.view("s3")[0]["notices"] == []
+
+    def test_a_settings_save_first_after_the_upgrade_still_pauses_another_bucket(
+        self, home, monkeypatch
+    ):
+        target = {"enabled": True, "endpoint": "http://minio:9000", "bucket": "old"}
+        for name, cfg in (("a", target), ("b", {**target, "bucket": "elsewhere"})):
+            d = home / ".cwcli" / "projects" / name
+            d.mkdir(parents=True)
+            (d / "backups.json").write_text(json.dumps({"s3_target": cfg}))
+        keys = home / ".cwcli" / "backups" / "keys"
+        keys.mkdir(parents=True)
+        for name in ("a", "b"):
+            (keys / f"s3-{name}.secret").write_text(f"{name}-secret")
+        monkeypatch.setattr(integrations, "_legacy_checked", set())
+        store.save_settings("b", {"local": {"daily": 5}})
+        assert store.settings("b")["local"]["daily"] == 5
+        assert not store.copies_on_backup("b")
+        assert store.paused_legacy()["b"]["bucket"] == "elsewhere"
+        assert store.offsite_target("a").bucket == "old"
+        assert not list(keys.iterdir())
 
     def test_a_copy_fetches_back_into_a_verified_set(self, bucket, home):
         bset = store.adopt_dir("erp", "shop.localhost", _archive_dir(home))

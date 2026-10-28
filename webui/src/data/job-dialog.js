@@ -4,6 +4,7 @@ import { createJob } from './jobs'
 import { trackJob } from './job-toasts'
 import { ensureRunning } from './start-gate'
 import { JOB_LABEL } from './jobs'
+import { refuseBelow } from './session'
 
 export const jobDialog = reactive({
   open: false,
@@ -50,6 +51,7 @@ const defaults = {
 }
 
 export function openJob(verb, context = {}) {
+  if (refuseBelow()) return
   jobDialog.verb = verb
   jobDialog.context = { ...context }
   jobDialog.values = { ...(defaults[verb] || {}), ...(context.args || {}) }

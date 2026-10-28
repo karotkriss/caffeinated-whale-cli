@@ -11,6 +11,7 @@ import { instances, details, loadDetail, instance } from '../data/fleet'
 import { createJob, loadJob, jobs, ACTIVE_STATES } from '../data/jobs'
 import { trackJob } from '../data/job-toasts'
 import { backups, REASON_LABEL, PART_LABEL, sizeText, whenText } from '../data/backups'
+import { can } from '../data/session'
 
 const step = ref(1)
 const project = ref(null)
@@ -144,6 +145,7 @@ async function start() {
           <FormControl v-model="typed" :label="`Type the site name to confirm: ${targetSite}`" autocomplete="off" spellcheck="false" />
         </div>
       </template>
+      <p v-if="!can('admin')" class="text-p-sm text-ink-gray-6">Restoring a set over a site needs the Admin role; ask an Admin.</p>
       <ErrorMessage :message="error?.hint ? `${error.message} ${error.hint}` : error?.message" />
     </div>
     <template #actions="{ close }">
@@ -152,7 +154,7 @@ async function start() {
         <span class="ml-auto flex items-center gap-2">
           <Button label="Cancel" @click="close" />
           <Button v-if="step < 3" variant="solid" label="Next" :disabled="step === 1 && !canGo2" @click="step += 1" />
-          <Button v-else variant="solid" theme="red" data-primary :label="`Restore into ${targetSite}`" :disabled="!confirmOk || (resetAdmin && !adminPassword)" :loading="running" @click="start" />
+          <Button v-else variant="solid" theme="red" data-primary :label="`Restore into ${targetSite}`" :disabled="!can('admin') || !confirmOk || (resetAdmin && !adminPassword)" :loading="running" @click="start" />
         </span>
       </div>
     </template>

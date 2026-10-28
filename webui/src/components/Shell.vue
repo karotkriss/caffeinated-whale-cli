@@ -31,7 +31,7 @@ import HostIcon from './HostIcon.vue'
 import SettingsDialog from './SettingsDialog.vue'
 import StartGateDialog from './StartGateDialog.vue'
 import { fleet, instances, doctor, details, countSites } from '../data/fleet'
-import { session, PROTOCOL } from '../data/session'
+import { session, PROTOCOL, ROLE_LABEL } from '../data/session'
 import { openPalette } from '../data/palette'
 import { activeJobs, jobList } from '../data/jobs'
 import { notifications, unread, isRead, markRead, markAllRead } from '../data/notifications'
@@ -158,7 +158,10 @@ watch(() => route.name, (name) => {
               </div>
             </template>
           </ScrollArea>
-          <div class="border-t border-outline-gray-1 px-2 pb-2.5 pt-2">
+          <div class="space-y-0.5 border-t border-outline-gray-1 px-2 pb-2.5 pt-2">
+            <SidebarItem v-if="session.user" :label="session.user.name || session.user.username" icon="lucide-circle-user-round" :active="false" @click="openSettings('account')">
+              <template #suffix><span class="mr-1 text-xs text-ink-gray-5" :title="session.user.source === 'ldap' ? 'Directory account' : 'Local account'">{{ ROLE_LABEL[session.user.role] }}</span></template>
+            </SidebarItem>
             <SidebarItem label="Settings" icon="lucide-settings" :active="settingsDialog.open" @click="openSettings()">
               <template #suffix><span v-if="doctor.data && (doctor.data.warned + doctor.data.failed)" class="mr-1 text-xs text-ink-amber-6" :title="`${doctor.data.warned + doctor.data.failed} health check items need attention`" @click.stop="openSettings('health')">{{ doctor.data.warned + doctor.data.failed }}</span><KeyboardShortcut combo="Mod+," class="mr-1" /></template>
             </SidebarItem>

@@ -45,6 +45,7 @@ from .core import dev_mode as core_dev_mode
 from .core import docker as core_docker
 from .core import failure_causes
 from .core import init as core_init
+from .core import integrations as core_integrations
 from .core import label as core_label
 from .core import new_bench as core_new_bench
 from .core import new_site as core_new_site
@@ -938,24 +939,35 @@ def _clear_maintenance(target: dict[str, Any]) -> Result:
 
 
 def _copy_offsite_if_configured(project: str, captured: Result, emit: _Recorder) -> Result:
-    """After a VERIFIED capture, the encrypted off-site copy when the instance has an S3
-    target with copy_on_backup; a failed upload is a warning on the capture (the local
-    set stands), never a failed backup."""
+    """After a VERIFIED capture, the encrypted off-site copy when the S3 backup target
+    integration is on and the instance copies on backup; a failed upload is a warning on
+    the capture (the local set stands), never a failed backup, and it shows the
+    integration's Error state until the next upload succeeds."""
     bset = captured.data
     if bset is None or not getattr(bset, "verified", False):
         return captured
-    cfg = core_backup_store.settings(project).get("s3_target") or {}
-    if not cfg.get("enabled") or not cfg.get("copy_on_backup", True):
-        return captured
     try:
-        updated = core_backup_store.offsite_copy(bset, on_event=emit)
+        target_on = core_backup_store.offsite_target(project, require=False) is not None
     except CwcliError as exc:
-        emit.lifecycle("offsite_failed", f"off-site copy failed: {exc.message}", code=exc.code)
+        emit.lifecycle("offsite_failed", f"off-site copy skipped: {exc.message}", code=exc.code)
         return Result(
             status=Status.WARNING,
             data=bset,
             warnings=[*captured.warnings, Message("offsite.copy_failed", exc.message)],
         )
+    if not target_on or not core_backup_store.copies_on_backup(project):
+        return captured
+    try:
+        updated = core_backup_store.offsite_copy(bset, on_event=emit)
+    except CwcliError as exc:
+        emit.lifecycle("offsite_failed", f"off-site copy failed: {exc.message}", code=exc.code)
+        core_integrations.record_outcome("s3", f"An off-site copy failed: {exc.message}")
+        return Result(
+            status=Status.WARNING,
+            data=bset,
+            warnings=[*captured.warnings, Message("offsite.copy_failed", exc.message)],
+        )
+    core_integrations.record_outcome("s3", None)
     return Result(status=captured.status, data=updated, warnings=captured.warnings)
 
 
@@ -1486,7 +1498,7 @@ def _dispatch(
             build=bool(args.get("build")),
             skip_maintenance=bool(args.get("skip_maintenance")),
             no_recache=False,
-            force=bool(args.get("force")),
+            force=args.get("force") is True,
             preflight=not bool(args.get("no_preflight")),
             fix_branches=bool(args.get("fix_branches")),
             on_event=emit,

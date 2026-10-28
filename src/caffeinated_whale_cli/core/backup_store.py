@@ -71,15 +71,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "min_free_gb": 20,
     "stale_after_days": 7,
     "with_files": True,
-    "s3_target": {
-        "enabled": False,
-        "endpoint": "",
-        "bucket": "",
-        "prefix": "cwcli-backups",
-        "region": "us-east-1",
-        "access_key": "",
-        "copy_on_backup": True,
-    },
+    # The bucket itself is the machine's S3 backup target integration
+    # (core.integrations); each instance only says whether new backups go there.
+    "offsite": {"copy_on_backup": True},
     # Phase 3: one daily backup of every site at this local time, pruned after.
     "schedule": {"enabled": False, "daily_at": "02:00", "last_run": None},
 }
@@ -316,6 +310,8 @@ def settings(project: str) -> dict[str, Any]:
         stored = {}
     if isinstance(stored, dict):
         for k, v in stored.items():
+            if k not in DEFAULT_SETTINGS:
+                continue  # a retired key (the per-instance s3_target before integrations)
             if isinstance(v, dict) and isinstance(merged.get(k), dict):
                 merged[k].update(v)
             else:
@@ -324,6 +320,12 @@ def settings(project: str) -> dict[str, Any]:
 
 
 def save_settings(project: str, values: dict[str, Any]) -> dict[str, Any]:
+    from . import integrations
+
+    try:
+        integrations.ensure_adopted()
+    except CwcliError:
+        pass
     current = settings(project)
     for k, v in values.items():
         if k not in DEFAULT_SETTINGS:
@@ -332,6 +334,8 @@ def save_settings(project: str, values: dict[str, Any]) -> dict[str, Any]:
             current[k].update(v)
         else:
             current[k] = v
+    if current["offsite"].get("copy_on_backup") is True:
+        current["offsite"].pop("paused_legacy", None)
     path = _settings_path(project)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(current, indent=2), encoding="utf-8")
@@ -776,53 +780,105 @@ def delete_set(bset: BackupSet, *, consent: bool = False) -> Result[dict[str, An
 # ---------------------------------------------------------------------------- off-site
 
 
-def _s3_secret_path(project: str) -> Path:
-    _check_project(project)
-    return cwcli_home() / "backups" / "keys" / f"s3-{project}.secret"
-
-
-def set_s3_secret(secret: str, *, project: str) -> None:
-    """Store an instance's S3 secret key on this machine only (mode 0600); never in settings."""
-    p = _s3_secret_path(project)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    shared_home.secure_dir_shared_only(p.parent)
-    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(secret)
-    shared_home.secure_file_shared_only(p)
-
-
 def offsite_target(project: str, *, require: bool = True):
-    """The instance's S3 target with its secret, or None when off-site copies are off."""
-    from . import s3 as core_s3
+    """The S3 backup target integration's bucket (with its secret), or None when it is
+    off. ``project`` only names the instance in the error."""
+    from . import integrations
 
-    cfg = settings(project).get("s3_target") or {}
-    if not cfg.get("enabled"):
+    found = integrations.active("s3")
+    if found is None:
         if require:
             raise CwcliError(
                 ErrorKind.PRECONDITION,
                 "offsite.disabled",
-                f"Off-site copies are not configured for {project}.",
-                hint="cwcli backups s3 configure <project> --endpoint ... --bucket ... --access-key ...",
+                f"Off-site copies of {project} need the S3 backup target, which is off.",
+                hint="Turn it on in Settings > Integrations, or run: cwcli backups s3 "
+                "configure --endpoint ... --bucket ... --access-key ... (the secret key "
+                "from CWCLI_S3_SECRET_KEY)",
             )
         return None
+    return integrations.s3_target(*found)
+
+
+def copies_on_backup(project: str) -> bool:
+    """Whether a new verified backup of ``project`` is copied off-site right away."""
+    return bool(settings(project)["offsite"].get("copy_on_backup", True))
+
+
+def legacy_s3_target() -> tuple[dict[str, Any], str, Path] | None:
+    """The bucket an instance's backup settings named before the S3 target was an
+    integration - (settings, secret, secret file) of the first instance by name with
+    copies on and its secret stored - or None. ``core.integrations`` adopts it once."""
     try:
-        secret = _s3_secret_path(project).read_text(encoding="utf-8").strip()
+        projects = sorted(p for p in PROJECTS_DIR.iterdir() if p.is_dir())
     except OSError:
-        raise CwcliError(
-            ErrorKind.PRECONDITION,
-            "offsite.secret_missing",
-            "The S3 secret key is not stored on this machine.",
-            hint="cwcli backups s3 configure <project> (reads CWCLI_S3_SECRET_KEY)",
-        ) from None
-    return core_s3.S3Target(
-        endpoint=str(cfg.get("endpoint") or ""),
-        bucket=str(cfg.get("bucket") or ""),
-        region=str(cfg.get("region") or "us-east-1"),
-        access_key=str(cfg.get("access_key") or ""),
-        secret_key=secret,
-        prefix=str(cfg.get("prefix") or ""),
-    )
+        return None
+    for project_dir in projects:
+        try:
+            stored = json.loads((project_dir / "backups.json").read_text(encoding="utf-8"))
+            secret_file = cwcli_home() / "backups" / "keys" / f"s3-{project_dir.name}.secret"
+            secret = secret_file.read_text(encoding="utf-8").strip()
+        except (OSError, ValueError):
+            continue
+        cfg = stored.get("s3_target") if isinstance(stored, dict) else None
+        if isinstance(cfg, dict) and cfg.get("enabled") and cfg.get("bucket") and secret:
+            keys = ("endpoint", "bucket", "region", "prefix", "access_key")
+            return {k: cfg[k] for k in keys if k in cfg}, secret, secret_file
+    return None
+
+
+def keep_legacy_copy_choices(adopted: dict[str, Any], adopted_secret: Path) -> None:
+    """Carry each instance's own pre-integration choice into ``offsite.copy_on_backup``
+    once the ``adopted`` bucket becomes the machine's target: an instance keeps copying
+    only when its S3 target was on, copying new backups, and that same bucket. An
+    instance whose target was on but named another bucket is paused, never silently:
+    ``offsite.paused_legacy`` names its old endpoint and bucket until its copies are
+    turned on again. Every other instance's plaintext secret file is removed once its
+    settings are written (credentials are re-entered through the integration)."""
+    try:
+        projects = sorted(p for p in PROJECTS_DIR.iterdir() if p.is_dir())
+    except OSError:
+        return
+    same = ("endpoint", "bucket", "prefix")
+    for project_dir in projects:
+        path = _settings_path(project_dir.name)
+        try:
+            stored = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            stored = {}
+        except (OSError, ValueError):
+            continue
+        if not isinstance(stored, dict) or "offsite" in stored:
+            continue
+        cfg = stored.get("s3_target")
+        cfg = cfg if isinstance(cfg, dict) else {}
+        on = bool(cfg.get("enabled"))
+        adopted_here = all(cfg.get(k) == adopted.get(k) for k in same)
+        offsite: dict[str, Any] = {
+            "copy_on_backup": on and adopted_here and cfg.get("copy_on_backup", True) is not False
+        }
+        if on and not adopted_here:
+            offsite["paused_legacy"] = {k: str(cfg.get(k) or "") for k in same}
+        stored["offsite"] = offsite
+        path.write_text(json.dumps(stored, indent=2), encoding="utf-8")
+        shared_home.secure_file_shared_only(path)
+        secret_file = cwcli_home() / "backups" / "keys" / f"s3-{project_dir.name}.secret"
+        if secret_file != adopted_secret:
+            secret_file.unlink(missing_ok=True)
+
+
+def paused_legacy() -> dict[str, dict[str, Any]]:
+    """Each instance whose pre-integration S3 target was not adopted -> that target."""
+    try:
+        projects = sorted(p.name for p in PROJECTS_DIR.iterdir() if p.is_dir())
+    except OSError:
+        return {}
+    out = {}
+    for project in projects:
+        old = settings(project)["offsite"].get("paused_legacy")
+        if isinstance(old, dict):
+            out[project] = old
+    return out
 
 
 def _crypto_context(bset: BackupSet, filename: str) -> bytes:

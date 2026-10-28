@@ -34,13 +34,14 @@ export const list = computed(() => schedules.data?.schedules || [])
 export const upcoming = computed(() => schedules.data?.upcoming || [])
 export const templates = computed(() => schedules.data?.templates || [])
 
-// The verbs a schedule may run, with what each needs (mirrors core.schedules.SCHEDULABLE).
+// The verbs a schedule may run, with what each needs (mirrors core.schedules.SCHEDULABLE);
+// `admin` ones (core.accounts.admin_only) only an Admin may schedule.
 export const VERBS = [
   { value: 'backup-sites', label: 'Back up every site', need: 'project' },
   { value: 'backup', label: 'Back up a site', need: 'site' },
-  { value: 'prune-backups', label: 'Prune backups (retention)', need: 'project' },
+  { value: 'prune-backups', label: 'Prune backups (retention)', need: 'project', admin: true },
   { value: 's3-copy', label: 'Copy backups off-site', need: 'project' },
-  { value: 's3-prune', label: 'Prune off-site backups', need: 'project' },
+  { value: 's3-prune', label: 'Prune off-site backups', need: 'project', admin: true },
   { value: 'restore-drill', label: 'Restore drill', need: 'site' },
   { value: 'apps-update', label: 'Update apps (core or app)', need: 'bench', flag: true },
   { value: 'migrate', label: 'Migrate a site', need: 'site', flag: true },

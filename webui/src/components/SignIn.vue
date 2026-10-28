@@ -1,11 +1,14 @@
 <script setup>
 // Username and password, nothing in the URL. A wrong pair and a locked account
 // are the two errors a person can act on; both are said in plain words.
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { Button, Checkbox, ErrorMessage, FormControl } from 'frappe-ui'
-import { signIn } from '../data/session'
+import { session, signIn } from '../data/session'
 
-const username = ref('admin')
+// With directory sign-in on, most people type their directory name; the local
+// admin account still signs in with its own password.
+const directory = computed(() => !!session.meta?.directory_sign_in)
+const username = ref(session.meta?.directory_sign_in ? '' : 'admin')
 const password = ref('')
 const remember = ref(false)
 const busy = ref(false)
@@ -20,7 +23,7 @@ async function submit() {
   } catch (e) {
     if (e.code === 'auth.locked') error.value = `Too many failed sign-ins. Try again in ${e.retryAfter || 60} seconds.`
     else if (e.code === 'auth.invalid') error.value = 'That username and password do not match.'
-    else error.value = e.message || 'Could not sign in.'
+    else error.value = [e.message || 'Could not sign in.', e.hint].filter(Boolean).join(' ')
     password.value = ''
   } finally {
     busy.value = false
@@ -35,7 +38,7 @@ async function submit() {
         <img src="/logo-whale.png" alt="" class="size-10 rounded-4" />
         <div>
           <h1 class="text-lg-semibold text-ink-gray-9">Sign in to cwcli</h1>
-          <p class="text-p-sm text-ink-gray-6">The web UI for your Frappe instances.</p>
+          <p class="text-p-sm text-ink-gray-6">{{ directory ? 'Use your directory account, or the local admin account.' : 'The web UI for your Frappe instances.' }}</p>
         </div>
       </div>
       <div class="mt-6 space-y-4">
