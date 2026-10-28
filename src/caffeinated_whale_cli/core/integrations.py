@@ -157,7 +157,9 @@ def registry() -> dict[str, Integration]:
 
 
 def get(integration_id: str) -> Integration:
-    found = official().get(integration_id) or registry().get(integration_id)
+    from . import community
+
+    found = official().get(integration_id) or community.load(integration_id)
     if found is None:
         raise CwcliError(
             ErrorKind.NOT_FOUND, "integration.unknown", f"No integration '{integration_id}'."
