@@ -36,11 +36,14 @@ class FakeDb:
             rows = [f"{u}\t{h}" for u, hs in self.users.items() for h in hs]
             return 0, ("\n".join(rows) + "\n").encode()
         for stmt in sql.split("; "):
+            parts = stmt.split("'")
             if stmt.startswith("RENAME USER"):
-                u = stmt.split("'")[1]
-                self.users[u] = ["%"]
+                u, src, dst = parts[1], parts[3], parts[7]
+                if dst in self.users[u]:  # MariaDB refuses an existing account as the target
+                    return 1, b"ERROR 1396 (HY000): Operation RENAME USER failed"
+                self.users[u] = [dst if h == src else h for h in self.users[u]]
             elif stmt.startswith("DROP USER"):
-                pass
+                self.users[parts[1]].remove(parts[3])
         return 0, b""
 
 
@@ -103,6 +106,16 @@ def test_ensure_wildcard_after_creation_and_an_unreachable_root_is_a_warning_not
 
 class TestWidenAfterCreate:
     """The one post-creation hook init, the UI new-site and restore all call."""
+
+    def test_a_restore_that_adds_a_scoped_row_beside_wildcard_drops_it(self):
+        # ``bench restore --force`` drops and re-creates the user only on the container's
+        # address, so the '%' row cwcli made at creation survives beside the new one.
+        db = FakeDb({"_a1": ["%", "172.21.0.5"]})
+        widened, warning = db_access.widen_after_create(
+            db, "/b", project="p", site="shop.localhost", root_password="x"
+        )
+        assert warning is None and widened is True
+        assert db.users["_a1"] == ["%"]
 
     def test_a_freshly_scoped_user_is_widened_and_reported(self):
         db = FakeDb({"_a1": ["172.21.0.5"], "_b2": ["%"]})
