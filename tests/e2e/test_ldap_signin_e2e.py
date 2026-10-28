@@ -373,16 +373,15 @@ def test_directory_sign_in_end_to_end(directory, daemon):
     status, body, _ = _sign_in(base, "admin", ADMIN_PW)
     assert status == 200 and body["data"]["source"] == "local"
 
+    # Moving the server needs the service password typed again, so a stored one never
+    # goes to a server the request names.
+    starttls = {"op": "configure", "id": "ldap", "enable": True}
+    starttls["settings"] = _settings(directory, starttls=True)
+    status, body, _ = _call(base, "/api/v1/integrations", starttls, bearer=True)
+    assert status == 400 and _code(body) == "integration.secret_retype", body
+
     # StartTLS on ldap:// works the same.
-    out = _integrations(
-        base,
-        {
-            "op": "configure",
-            "id": "ldap",
-            "enable": True,
-            "settings": _settings(directory, starttls=True),
-        },
-    )
+    out = _integrations(base, {**starttls, "secrets": {"bind_password": SVC_PW}})
     assert out["check"]["ok"] and "StartTLS" in out["check"]["message"], out
     assert _sign_in(base, "bob", "bob-pw-123")[0] == 200
 
