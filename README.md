@@ -11,7 +11,7 @@ A command-line interface (CLI) for managing Frappe/ERPNext Docker instances duri
 - **Container Lifecycle** - Start, stop, and restart projects with ease
 - **Scale Beyond Six Benches** - Widen an instance's published port range on demand with `cwcli scale` so more than six benches are reachable from the host - database-safe (only the frappe service is recreated)
 - **Development Tools** - VS Code integration, log viewing, and command execution
-- **Web UI** - A local browser dashboard over every instance, bench, site and app with `cwcli ui`: live health, logs, the health check, and the everyday lifecycle actions
+- **Web UI** - A local browser dashboard over every instance, bench, site and app with `cwcli ui`: live health, logs, the `doctor` health check in Settings, and the everyday lifecycle actions
 - **Cache System** - Fast project inspection with SQLite-based caching and configuration storage
 - **Multi-Bench Support** - Address individual benches in a multi-bench instance by numeric index or a durable label with `--bench`
 - **Default Site Support** - Optional `--site` flag when default site is configured
@@ -2006,7 +2006,7 @@ cwcli status -w --interval 5 frappe-one   # refresh every 5s
 
 ### `ui` - Open the Web UI
 
-Opens a local browser dashboard over your instances: every instance, bench, site and app in one place, live process health, a resumable log pane, the `doctor` health check, a read-only view of your settings, a command palette (Ctrl+K) that searches the cache, and the everyday lifecycle actions.
+Opens a local browser dashboard over your instances: every instance, bench, site and app in one place, live process health, a resumable log pane, Settings (with the `doctor` health check inside it), a command palette (Ctrl+K) that searches the cache, and the everyday lifecycle actions.
 Long work runs as detached jobs with a durable event log, so it continues when the tab closes and can be opened again from Jobs.
 A failed job has a Retry button on its page that starts a new job with the same settings, so a creation that failed at the image pull continues from the project directory it left behind.
 The passwords entered for a job are kept in the daemon's memory only (never in the job record or on disk) so Retry, and answering a decision the job stopped on, can reuse them; if the daemon has restarted, a creation reopens the form on its password step instead.
@@ -2031,7 +2031,7 @@ cwcli ui [OPTIONS]
 It also starts auto-inspect or the credential bridge when either is enabled with its boot unit but not running, and says so, or says why it could not.
 The page asks for the **administrator account**: the username is `admin` and the first password is `admin`, and that first sign-in (and every sign-in after a reset) has to choose a new password - at least 8 characters, not the default - before anything else in the UI answers.
 Sessions last 8 hours idle and 7 days at most; "Keep me signed in" makes both 30 days.
-Five failed sign-ins lock the username and the address for a minute.
+Five failed sign-ins within ten minutes lock the address for a minute and refuse further wrong passwords for the username, while the username's correct password still signs in, so nobody can lock the owner out.
 Your account (in Settings) changes the password, lists the other signed-in browsers, signs them out, and signs out.
 If the password is lost, `cwcli admin reset-password` on the host puts the account back to `admin` / `admin` with the change forced again (see below).
 Programmatic clients (scripts, the self-update restart) keep using the bearer token in `CWCLI_SERVE_TOKEN`; nothing about a sign-in is ever in a URL.
@@ -2049,11 +2049,11 @@ Interrupt requests use the command's cleanup path; Detach only leaves the page, 
 On Windows a job that has not begun its cleanup five minutes after Interrupt, or has not finished it two minutes after beginning, is terminated; one that never began is marked `unknown` because its cleanup may not have run.
 Jobs keeps every active job and the 100 most recent finished ones; older finished records are pruned when a new job starts.
 The `self-update` job restarts the local daemon and the open page reloads after its protocol check sees the replacement.
-The guarded destructive verbs run as jobs too, each behind a typed confirmation of the exact name of what it destroys: remove an instance (`rm`: every site backed up first, the named volumes deletable only while the instance runs, and no way to skip the backup, mirroring `cwcli axi rm`), drop a site (`rm-site`), remove a stopped bench (`rm-bench`), check out an app ref discarding local changes (`apps checkout --reset`, typed back as the app's name), and force a `frappe` update past the data-loss guard (`apps update` with Force ticked, typed back as the bench's name).
+The guarded destructive verbs run as jobs too, each behind a typed confirmation of the exact name of what it destroys: remove an instance (`rm`: every site backed up first and the named volumes deletable only while the instance runs, mirroring `cwcli axi rm`, unless Force is ticked, which skips the verified backup like `cwcli rm --no-backup` after a red warning naming what is lost for good), drop a site (`rm-site`), remove a stopped bench (`rm-bench`), check out an app ref discarding local changes (`apps checkout --reset`, typed back as the app's name), and force a `frappe` update past the data-loss guard (`apps update` with Force ticked, typed back as the bench's name).
 A failed backup drops nothing, exactly as on the command line, and the job page shows bench's own reason.
 Settings is writable: cache on/off, forget one remembered project or clear the whole cache (confirmed first), add, remove and prune bench search paths (the prune check names any stopped instance that keeps it from pruning), auto-inspect and its interval and boot hook, the persistent credential bridge and its boot unit, a Start (or Restart) button for either daemon while its feature is enabled, with the daemon log's last line shown while it is down, tips, and the agent SessionStart hooks `cwcli axi setup` installs; every control sits beside the terminal command that does the same.
 Schedules puts any of those jobs on a timetable (templates, a friendly recurrence picker with the cron underneath, one-off runs, recipes of chained steps, "after a successful job" and "when the instance starts" triggers, a week's timeline, and "Schedule this…" on every job's page); see `schedule` below.
-`restore`, `apps uninstall`, `run`, `open`, an in-browser terminal, access from another machine and the shared multi-user mode are not in the UI; each needs its own decision first.
+`cwcli restore` (the UI restores sets from the backup store instead), `apps uninstall`, `run`, `cwcli open`'s Docker shell (the UI opens VS Code, VS Code Insiders or Cursor only), an in-browser terminal, access from another machine and the shared multi-user mode are not in the UI; each needs its own decision first.
 
 **Honest states:** the UI distinguishes `unknown` (not probed) from `offline`,
 labels cache-backed data as remembered versus verified, and never guesses a
