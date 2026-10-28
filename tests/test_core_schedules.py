@@ -308,10 +308,12 @@ class TestRecipesAndTriggers:
         fleet = Fleet()
         sch.save({"name": "after", "verb": "restart", "target": {"project": "p"}, "kind": "event", "trigger": {"type": "after_job", "verb": "apps-update"}}, now=T0)
         sch.save({"name": "boot", "verb": "backup-sites", "target": {"project": "q"}, "kind": "event", "trigger": {"type": "on_start"}}, now=T0)
-        assert run_tick(fleet, now=T0) == []
+        assert run_tick(fleet, now=T0, running_projects=set()) == []
         finished = [{"id": "x", "verb": "apps-update", "state": "succeeded", "target": {"project": "p"}, "origin": {}}]
-        made = run_tick(fleet, now=T0, finished_jobs=finished, started_projects={"q"})
+        made = run_tick(fleet, now=T0, finished_jobs=finished, running_projects={"q"})
         assert sorted(j["verb"] for j in made) == ["backup-sites", "restart"]
+        # a second scheduler offered the same job and the same start fires nothing
+        assert run_tick(fleet, now=T0, finished_jobs=finished, running_projects={"q"}) == []
         # a failed update or another instance's update does not fire it
         finished = [{"id": "y", "verb": "apps-update", "state": "failed", "target": {"project": "p"}, "origin": {}}]
         assert run_tick(fleet, now=T0, finished_jobs=finished) == []

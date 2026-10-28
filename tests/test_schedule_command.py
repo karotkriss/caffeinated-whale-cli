@@ -98,3 +98,33 @@ def test_the_service_fires_after_job_once_per_job_and_on_start_on_a_start(monkey
     instances[1] = SimpleNamespace(project_name="q", status="running")
     assert [r["verb"] for r in schedule_cmd.tick_once(state)] == ["backup-sites"]
     assert schedule_cmd.tick_once(state) == []
+
+
+def test_two_schedulers_on_one_store_fire_each_event_once(monkeypatch):
+    from types import SimpleNamespace
+
+    from caffeinated_whale_cli import jobs as core_jobs
+    from caffeinated_whale_cli.commands import schedule as schedule_cmd
+    from caffeinated_whale_cli.core import list as core_list
+
+    instances = [
+        SimpleNamespace(project_name="p", status="running"),
+        SimpleNamespace(project_name="q", status="exited"),
+        SimpleNamespace(project_name="r", status="running"),
+    ]
+    history: list = []
+    made: list = []
+    monkeypatch.setattr(core_list, "list_instances", lambda: SimpleNamespace(data=instances))
+    monkeypatch.setattr(core_jobs, "list_jobs", lambda: list(history))
+    monkeypatch.setattr(core_jobs, "create_job", lambda verb, target, args, **kw: made.append(verb) or {"id": f"j{len(made)}", "verb": verb, "state": "queued"})
+    monkeypatch.setattr(core_jobs, "read_job", lambda job_id: {"id": job_id, "state": "succeeded"})
+    monkeypatch.setattr(sch, "_free_disk_gb", lambda: 100.0)
+    monkeypatch.setattr(sch, "_free_mem_mb", lambda: 4096.0)
+    sch.save({"name": "after", "verb": "restart", "target": {"project": "r"}, "kind": "event", "trigger": {"type": "after_job", "verb": "apps-update", "project": "p"}})
+    sch.save({"name": "boot", "verb": "backup-sites", "target": {"project": "q"}, "kind": "event", "trigger": {"type": "on_start"}})
+    ui, service = {}, {}
+    assert schedule_cmd.tick_once(ui) == [] and schedule_cmd.tick_once(service) == []
+    history.append({"id": "u1", "verb": "apps-update", "state": "succeeded", "target": {"project": "p"}, "origin": {}, "finished_at": "2000-01-01T00:00:00+00:00"})
+    instances[1] = SimpleNamespace(project_name="q", status="running")
+    assert sorted(r["verb"] for r in schedule_cmd.tick_once(ui)) == ["backup-sites", "restart"]
+    assert schedule_cmd.tick_once(service) == []

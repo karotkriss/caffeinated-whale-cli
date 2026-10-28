@@ -185,11 +185,11 @@ def disable(schedule_id: str = typer.Argument(...)) -> None:
 
 
 def tick_once(state: dict | None = None) -> list[dict]:
-    """One scheduler pass outside the UI daemon (the service, or a test). ``state``
-    carries what the previous pass saw (finished job ids, running instances) so an
-    after_job trigger fires once per job and on_start fires on a stopped -> running
-    change; the first pass, with nothing seen yet, takes the jobs that finished in
-    the last minute and a half."""
+    """One scheduler pass (the UI daemon, the service, or a test). ``state`` carries
+    the finished job ids the previous pass saw, so only newly finished jobs are
+    offered to after_job triggers; the first pass, with nothing seen yet, takes the
+    jobs that finished in the last minute and a half. on_start transitions and the
+    jobs a trigger consumed are tracked in the store (``core.schedules.tick``)."""
     from .. import jobs as core_jobs
 
     state = {} if state is None else state
@@ -199,16 +199,14 @@ def tick_once(state: dict | None = None) -> list[dict]:
     finished = [j for j in core_jobs.list_jobs() if j.get("state") in core_jobs.TERMINAL_STATES]
     seen = state.get("seen")
     fresh = [j for j in finished if (j.get("id") not in seen if seen is not None else _recent(j))]
-    started = running - state["running"] if "running" in state else set()
     created = core_schedules.tick(
         core_jobs.create_job,
         lambda p: "running" if p in running else ("stopped" if p in known else None),
         finished_jobs=fresh,
-        started_projects=started,
+        running_projects=running,
         read_job=core_jobs.read_job,
     )
     state["seen"] = {j.get("id") for j in finished}
-    state["running"] = running
     return created
 
 
