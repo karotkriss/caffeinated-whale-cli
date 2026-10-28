@@ -296,7 +296,7 @@ export const ACTIONS = {
 // depends on them (removing an instance needs a live backup unless the volumes stay).
 export function availability(id, inst, bench, values) {
   const a = ACTIONS[id]
-  const role = id.endsWith('.remove') ? 'admin' : 'operator'
+  const role = id.endsWith('.remove') || id === 'delete_backup' ? 'admin' : 'operator'
   if (!a?.read && !can(role)) return { ok: false, role, reason: `Needs the ${ROLE_LABEL[role]} role`, detail: `You are signed in as ${ROLE_LABEL[session.user?.role] === 'Admin' ? 'an' : 'a'} ${ROLE_LABEL[session.user?.role] || 'Viewer'}; ask an Admin if you need this.` }
   const benchUp = ['running', 'degraded'].includes(bench?.overall)
   if (id === 'instance.start' && inst?.container_running) return { ok: false, reason: 'Already running' }

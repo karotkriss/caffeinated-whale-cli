@@ -8,11 +8,9 @@ import { backups, loadBackups, setsFor, freshness, FRESH_DOT, FRESH_TEXT, REASON
 import { createJob } from '../data/jobs'
 import { trackJob } from '../data/job-toasts'
 import { openJob } from '../data/job-dialog'
-import { openRestoreWizard } from '../data/restore-wizard'
-import { copyOffsite, sendSet } from '../data/transfer'
-import { downloadSet, lastDrill } from '../data/backups'
-import { toast } from 'frappe-ui'
-import { openAction } from '../data/dialog'
+import { lastDrill } from '../data/backups'
+import { setMenu } from '../data/set-menu'
+import { can } from '../data/session'
 
 const props = defineProps({
   project: { type: String, required: true },
@@ -33,23 +31,6 @@ async function runDrill() {
 function backupNow() {
   openJob('backup', { project: props.project, bench: props.bench, site: props.site, args: { store: true, with_files: true, reason: 'manual' } })
 }
-async function verify(s) {
-  const record = await createJob({ verb: 'verify-backup', target: { project: s.project, site: s.site }, args: { set_key: s.key } })
-  trackJob(record.id)
-}
-function remove(s) {
-  openAction('delete_backup', { project: s.project, site: s.site, set: s })
-}
-function menu(s) {
-  return [{ group: 'Set', options: [
-    { label: 'Restore…', icon: 'rotate-ccw', onClick: () => openRestoreWizard(s) },
-    { label: 'Verify again', icon: 'shield-check', onClick: () => verify(s) },
-    { label: 'Send to another machine…', icon: 'send', onClick: () => sendSet(s) },
-    { label: s.offsite ? 'Copy off-site again' : 'Copy off-site (S3)', icon: 'cloud-upload', onClick: () => copyOffsite(s) },
-    { label: 'Download (.tar)', icon: 'download', onClick: () => downloadSet(s).catch((e) => toast.error(e.message)) },
-    { label: 'Delete', icon: 'trash-2', theme: 'red', onClick: () => remove(s) },
-  ] }]
-}
 </script>
 
 <template>
@@ -60,8 +41,10 @@ function menu(s) {
       <span v-if="sets.length" class="text-xs text-ink-gray-5">{{ sets.length }} {{ sets.length === 1 ? 'set' : 'sets' }} in the store · {{ sizeText(sets.reduce((n, s) => n + s.size, 0)) }}</span>
       <span v-else class="text-xs text-ink-gray-5">no set in the store yet</span>
       <span class="ml-auto flex items-center gap-2">
-        <Button size="sm" variant="solid" icon-left="lucide-database-backup" label="Back up now" @click="backupNow" />
-      <Button variant="subtle" icon-left="lucide-flask-conical" label="Restore drill" @click="runDrill" />
+        <template v-if="can('operator')">
+          <Button size="sm" variant="solid" icon-left="lucide-database-backup" label="Back up now" @click="backupNow" />
+          <Button variant="subtle" icon-left="lucide-flask-conical" label="Restore drill" @click="runDrill" />
+        </template>
       </span>
     </div>
     <div v-if="sets.length" class="overflow-hidden rounded-6 border border-outline-gray-1 bg-surface-elevation-1">
@@ -73,7 +56,7 @@ function menu(s) {
         <span class="tabular-nums text-ink-gray-7 max-md:hidden">{{ sizeText(s.size) }}</span>
         <span class="truncate text-ink-gray-7 max-md:hidden" :title="s.note || ''">{{ REASON_LABEL[s.reason] || s.reason }}<span v-if="s.note" class="text-ink-gray-4"> · {{ s.note }}</span></span>
         <span class="max-md:hidden"><Tooltip :text="s.checks.map((c) => `${c.name}: ${c.ok ? 'ok' : 'FAILED'} (${c.detail})`).join('\n') + (s.verified ? '' : '\nKept until you delete it by hand; retention never removes it.')"><span v-if="s.verified" class="inline-flex items-center gap-1 text-xs text-ink-green-6"><span class="lucide-shield-check size-3.5" aria-hidden="true" />pass</span><Badge v-else theme="red" variant="subtle" label="Unverified" /></Tooltip></span>
-        <Dropdown :options="menu(s)" align="end"><Button size="sm" variant="ghost" icon="lucide-ellipsis" aria-label="Set actions" /></Dropdown>
+        <Dropdown v-if="can('operator')" :options="setMenu(s)" align="end"><Button size="sm" variant="ghost" icon="lucide-ellipsis" aria-label="Set actions" /></Dropdown>
       </div>
     </div>
   </div>

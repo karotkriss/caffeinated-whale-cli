@@ -45,6 +45,8 @@ envelope frappe-ui's fetch layer reads natively (``type`` is the core's
 * ``GET /api/v1/cache``                     - the cache inventory (remembered projects)
 * ``GET /api/v1/search?q=<term>``           - ``core.where``, its per-row
   ``project_state`` verified/remembered token passed through unchanged
+* ``GET /api/v1/integrations``              - every integration (``core.integrations``):
+  its state and non-secret settings, and only WHETHER each secret is set (Admin)
 * ``GET /api/v1/jobs[/<id>]``               - durable detached job summaries
   and one job's resumable event log
 * ``GET /api/v1/stream[?focus=<project>]``  - SSE: one ``snapshot`` event, then
@@ -66,6 +68,9 @@ envelope frappe-ui's fetch layer reads natively (``type`` is the core's
 * ``POST /api/v1/actions``                  - the Phase 1 compatibility endpoint;
   the Phase 2 page sends lifecycle work to jobs, while older built pages keep
   their original guarded behavior until they reload
+* ``POST /api/v1/integrations``             - ``{op: test|configure|disable|action}``:
+  test settings, save them (turning on only behind a passing test), turn off, or
+  run a named check such as LDAP's ``lookup_user`` (Admin)
 * ``POST /api/v1/settings``                 - one settings write (``{"setting":
   <name>, ...}``) over the SAME core functions ``cwcli config`` and ``cwcli axi
   setup`` call: cache clear/enable/disable, search paths add/remove/prune,
@@ -131,6 +136,14 @@ every browser it opens through ``POST /api/v1/session/code`` with the bearer
 token it holds in a 0600 file. ``GET /`` and ``GET /api/v1/meta`` stay open
 because they carry no fleet data, and a browser that could not load the page
 could never sign in. ``OPTIONS`` returns no data and dispatches no action.
+
+**Roles.** Every request is held to the least role it needs (``_post_role``,
+``_GET_ROLES``): a Viewer reads, an Operator also runs the fleet, an Admin also
+changes settings and integrations and starts the ``ADMIN_VERBS`` jobs. The bearer
+token and the local ``admin`` account are Admins; a directory session
+(``core.directory``) carries the role its groups gave it at sign-in. A local
+account's name always signs in locally, so the local ``admin`` stays the way in
+while directory sign-in is on.
 
 **A non-loopback bind REFUSES TO START without a token.** An explicit
 ``--host 0.0.0.0`` used to be silently unauthenticated: the same-origin guard
@@ -2730,6 +2743,7 @@ def backups_snapshot(project: str | None = None) -> dict:
         "settings": settings,
         "drills": drills,
         "reasons": list(core_backup_store.REASONS),
+        "offsite_target": _offsite_summary(),
     }
 
 
