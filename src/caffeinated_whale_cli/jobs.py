@@ -939,7 +939,7 @@ def _clear_maintenance(target: dict[str, Any]) -> Result:
 
 
 def _copy_offsite_if_configured(project: str, captured: Result, emit: _Recorder) -> Result:
-    """After a VERIFIED capture, the encrypted off-site copy when the S3 backup target
+    """After a VERIFIED capture, the encrypted off-site copy when a backup target
     integration is on and the instance copies on backup; a failed upload is a warning on
     the capture (the local set stands), never a failed backup, and it shows the
     integration's Error state until the next upload succeeds."""
@@ -947,7 +947,7 @@ def _copy_offsite_if_configured(project: str, captured: Result, emit: _Recorder)
     if bset is None or not getattr(bset, "verified", False):
         return captured
     try:
-        target_on = core_backup_store.offsite_target(project, require=False) is not None
+        target = core_backup_store.offsite_target(project, require=False)
     except CwcliError as exc:
         emit.lifecycle("offsite_failed", f"off-site copy skipped: {exc.message}", code=exc.code)
         return Result(
@@ -955,19 +955,21 @@ def _copy_offsite_if_configured(project: str, captured: Result, emit: _Recorder)
             data=bset,
             warnings=[*captured.warnings, Message("offsite.copy_failed", exc.message)],
         )
-    if not target_on or not core_backup_store.copies_on_backup(project):
+    if target is None or not core_backup_store.copies_on_backup(project):
         return captured
     try:
         updated = core_backup_store.offsite_copy(bset, on_event=emit)
     except CwcliError as exc:
         emit.lifecycle("offsite_failed", f"off-site copy failed: {exc.message}", code=exc.code)
-        core_integrations.record_outcome("s3", f"An off-site copy failed: {exc.message}")
+        core_integrations.record_outcome(
+            target.integration_id, f"An off-site copy failed: {exc.message}"
+        )
         return Result(
             status=Status.WARNING,
             data=bset,
             warnings=[*captured.warnings, Message("offsite.copy_failed", exc.message)],
         )
-    core_integrations.record_outcome("s3", None)
+    core_integrations.record_outcome(target.integration_id, None)
     return Result(status=captured.status, data=updated, warnings=captured.warnings)
 
 

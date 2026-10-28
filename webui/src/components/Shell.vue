@@ -9,6 +9,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useIntervalFn, useMediaQuery } from '@vueuse/core'
 import { DesktopShell, Sidebar, SidebarItem, SidebarLabel, ScrollArea, Alert, Dialog, KeyboardShortcut, Badge, Button, useKeyboardShortcut } from 'frappe-ui'
 import StatusDot from './StatusDot.vue'
+import { isDirectorySource } from '../data/integrations'
 import { loadUpdates, updateCount } from '../data/updates'
 import { affectsCount, affectsNew, loadAdvisories } from '../data/advisories'
 loadUpdates()
@@ -160,7 +161,7 @@ watch(() => route.name, (name) => {
           </ScrollArea>
           <div class="space-y-0.5 border-t border-outline-gray-1 px-2 pb-2.5 pt-2">
             <SidebarItem v-if="session.user" :label="session.user.name || session.user.username" icon="lucide-circle-user-round" :active="false" @click="openSettings('account')">
-              <template #suffix><span class="mr-1 text-xs text-ink-gray-5" :title="session.user.source === 'ldap' ? 'Directory account' : 'Local account'">{{ ROLE_LABEL[session.user.role] }}</span></template>
+              <template #suffix><span class="mr-1 text-xs text-ink-gray-5" :title="isDirectorySource(session.user.source) ? 'Directory account' : 'Local account'">{{ ROLE_LABEL[session.user.role] }}</span></template>
             </SidebarItem>
             <SidebarItem label="Settings" icon="lucide-settings" :active="settingsDialog.open" @click="openSettings()">
               <template #suffix><span v-if="doctor.data && (doctor.data.warned + doctor.data.failed)" class="mr-1 text-xs text-ink-amber-6" :title="`${doctor.data.warned + doctor.data.failed} health check items need attention`" @click.stop="openSettings('health')">{{ doctor.data.warned + doctor.data.failed }}</span><KeyboardShortcut combo="Mod+," class="mr-1" /></template>

@@ -1721,6 +1721,7 @@ cwcli backups key export --to FILE | import --from FILE [--replace]
 | `drill` | Restores the site's latest verified set into a throwaway site, checks that it answers, drops it, and records the result |
 | `prune` | Applies the instance's retention policy; `--dry-run` lists what would be removed, and removing needs `--yes` |
 | `settings` | Shows or changes the instance's retention, safety, disk floor, daily schedule, and whether new backups are copied off-site |
+| `offsite` | Encrypted off-site copies on whichever backup target integration is on (the S3 bucket or a community one): `list`, `copy`, `fetch`, `prune` |
 | `s3` | Encrypted off-site copies in an S3 bucket (AWS, MinIO, ...): `configure`, `list`, `copy`, `fetch`, `prune`. `configure` sets up the machine's S3 backup target integration, one bucket for every instance (the web UI's Settings > Integrations); it reads the secret key from `CWCLI_S3_SECRET_KEY`, tests the bucket, and turns the target on only when the bucket answers, exiting 1 otherwise. `--disable` turns it off and keeps its settings |
 | `key` | Exports or imports the key that encrypts off-site copies; restoring an off-site copy on another machine needs it |
 
@@ -2243,6 +2244,9 @@ Each integration shows one of four states: Off, Needs setup (the last attempt to
 Secrets are stored encrypted (AES-256-GCM) in `~/.cwcli/integrations.json` under a key in `~/.cwcli/keys/integrations.key`, both 0600; after a save the page shows only that a secret is set, and a new value replaces it.
 A change to where a secret is sent (the LDAP server URL, StartTLS, CA certificate or service account, or the S3 endpoint) is refused with `integration.secret_retype` unless the secret is typed again, so a stored secret never goes to a server it was not saved for.
 Two official integrations ship with cwcli, and an Admin can add community integrations from a repository (below).
+Each integration provides hook points that cwcli calls: **sign-in** (who may sign in to the web UI, and with which role) and **the backup target** (where encrypted off-site copies go).
+Only one integration serves a hook point at a time.
+Turning on a second one that provides it asks the Admin to choose: **Test and switch** runs the new one's test and, only if it passes, turns it on and turns the other off, keeping its settings; nothing switches silently.
 
 - **LDAP / Active Directory sign-in:** the server URL (`ldaps://` preferred, or `ldap://` with StartTLS; cwcli refuses to send passwords in clear text), the CA certificate that signed the directory's certificate (empty uses this machine's trusted CAs), Active Directory or OpenLDAP, a read-only service account and its password, the base DN, the user search filter (`{username}` is the typed name, escaped), the username, email and display-name attributes, and the allowed groups, each mapped to a role.
   At every sign-in cwcli finds the user with the service account, reads their groups (Active Directory: nested groups too; OpenLDAP: `groupOfNames`, `groupOfUniqueNames` and `posixGroup`), checks the password by binding as the user, and refuses an account the directory reports as disabled and anyone outside the allowed groups.
@@ -2325,22 +2329,30 @@ A community integration is a Python package whose repository declares it in `pyp
 
 ```toml
 [project]
-name = "cwcli-integration-hello"
+name = "cwcli-integration-localdir"
 version = "0.1.0"
 dependencies = []          # only your own; cwcli provides itself
 
 [project.entry-points."cwcli.integrations"]
-hello = "cwcli_hello:INTEGRATION"   # one per repository; the name is the integration's id
+localdir = "cwcli_localdir:INTEGRATION"   # one per repository; the name is the integration's id
 
 [tool.cwcli.integration]
-name = "Hello webhook"
+name = "Local directory backup target"
 publisher = "Example Org"
-description = "Posts to a webhook."
-provides = ["notifications"]        # any of sign_in, backup_target, notifications
+description = "Keeps off-site copies in a directory on this machine."
+provides = ["backup_target"]       # sign_in and/or backup_target
 ```
 
-The entry point names a `caffeinated_whale_cli.core.integrations.Integration` (its settings fields, connection test, optional actions); cwcli refuses one whose id or hook points differ from the declaration, and shows the declared name and description.
-The hook points are shown on the card and the trust screen; cwcli's own sign-in and off-site backups keep using the official integrations.
+The entry point names a `caffeinated_whale_cli.core.integrations.Integration` (its settings fields, connection test, optional actions) whose `hooks` maps each hook point it provides to the function cwcli calls; cwcli refuses one whose id or hook points differ from the declaration or that lacks a hook's function, and shows the declared name and description.
+Once an Admin turns it on (its test runs first), cwcli calls it exactly where it calls the official integrations:
+
+- `sign_in(settings, secrets, username, password)` returns the user (a dict with `username`, `role` - `admin`, `operator` or `viewer` - and optionally `name` and `email`) or `None` for a wrong name or password.
+  It is asked for every name except the local `admin` account's, which always signs in locally; turning it off or changing it signs its users out.
+  An optional `current_role(settings, secrets, username)` lets a schedule confirm its owner is still an Admin; without it, an Admin-only schedule saved by one of its users is skipped with that reason.
+- `backup_target(settings, secrets)` returns the store off-site copies go to: an object with `location` (shown to people), `key(*parts)`, `ensure()`, `put_file(key, path)`, `put_bytes(key, data)`, `get_to_file(key, path)`, `get_bytes(key)`, `delete(key)` and `list(prefix)` (a list of `{"key": ...}`).
+  cwcli encrypts every part before it reaches the target, exactly as for the S3 bucket, and `cwcli backups offsite list/copy/fetch/prune` work with whichever target is on.
+
+A failure inside a hook reads as that integration's Error state, never as a crash: a sign-in that fails is "the directory could not check your sign-in", and a failing target is an off-site copy that failed.
 cwcli installs each package with pip into its own directory under `~/.cwcli/integrations/community/`, never into cwcli's environment or the system, using a private venv there for pip; cwcli's own packages take precedence over any copy a package brings along.
 The standalone Windows build cannot install packages.
 

@@ -13,7 +13,7 @@ its code::
     name = "Hello webhook"
     publisher = "Example Org"
     description = "Posts a hello to a webhook."
-    provides = ["notifications"]            # sign_in | backup_target | notifications
+    provides = ["backup_target"]            # sign_in and/or backup_target
 
 The life cycle, each step an explicit Admin act:
 
@@ -67,12 +67,12 @@ from urllib.parse import urlsplit
 import toml
 
 from ..utils import config_utils, shared_home
-from . import credbridge
+from . import accounts, credbridge
 from . import integrations as core_integrations
 from .errors import CwcliError, ErrorKind
 
 ENTRY_POINT_GROUP = "cwcli.integrations"
-HOOK_POINTS = ("sign_in", "backup_target", "notifications")
+HOOK_POINTS = ("sign_in", "backup_target")  # the hook points cwcli calls
 _ID = re.compile(r"^[a-z][a-z0-9_-]{1,39}$")
 _SIGN_IN_MISSING = "cwcli-community: no sign-in for "
 _AUTH_MARKERS = (
@@ -298,6 +298,8 @@ def read_declaration(src: Path) -> Declaration:
     provides = decl.get("provides")
     if not isinstance(provides, list) or not all(isinstance(p, str) for p in provides):
         raise _refuse("[tool.cwcli.integration] provides must be a list of hook points")
+    if not provides:
+        raise _refuse(f"it provides no hook point (any of: {', '.join(HOOK_POINTS)})")
     unknown = sorted(set(provides) - set(HOOK_POINTS))
     if unknown:
         raise _refuse(
@@ -676,6 +678,9 @@ def _import(site: str, decl: dict[str, Any]) -> core_integrations.Integration:
         raise ValueError(
             f"it provides {sorted(obj.provides)}, not the declared {sorted(decl['provides'])}"
         )
+    missing = [hook for hook in obj.provides if not callable(obj.hooks.get(hook))]
+    if missing:
+        raise ValueError(f"it has no function for {', '.join(missing)} in its hooks")
     return _guarded(
         dataclasses.replace(
             obj,
@@ -709,6 +714,9 @@ def _guarded(integ: core_integrations.Integration) -> core_integrations.Integrat
             raise CwcliError(ErrorKind.USAGE, "community.settings", f"{integ.name}: {e}") from e
 
     def on_change():
+        if "sign_in" in integ.provides:
+            # Like LDAP: turning sign-in off or changing it signs its users out.
+            accounts.close_directory_sessions()
         try:
             if integ.on_change is not None:
                 integ.on_change()

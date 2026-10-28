@@ -583,7 +583,7 @@ def s3_list_cmd(
     project: str = typer.Argument(..., autocompletion=complete_project_names),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
-    """The sets the bucket holds for the instance, and whether each is still local."""
+    """The sets the off-site target holds for the instance, and whether each is still local."""
     try:
         rows = core_backup_store.offsite_list(project)
     except CwcliError as e:
@@ -603,7 +603,7 @@ def s3_list_cmd(
 @s3_app.command("copy")
 @handle_docker_errors
 def s3_copy_cmd(key: list[str] = typer.Argument(..., help="Set key(s): project/site/id")) -> None:
-    """Encrypt and upload the set(s) to the instance's bucket."""
+    """Encrypt and upload the set(s) to the off-site target (S3 or a community one)."""
     for k in key:
         found = core_backup_store.find_set(k)
         if found is None:
@@ -620,7 +620,7 @@ def s3_fetch_cmd(
     project: str = typer.Argument(..., autocompletion=complete_project_names),
     key: list[str] = typer.Argument(..., help="Set key(s) to download into the local store."),
 ) -> None:
-    """Download and decrypt set(s) from the bucket into this machine's store."""
+    """Download and decrypt set(s) from the off-site target into this machine's store."""
     for k in key:
         try:
             got = core_backup_store.offsite_fetch(project, k, on_event=_narrate)
@@ -638,7 +638,7 @@ def s3_prune_cmd(
     yes: bool = typer.Option(False, "--yes", "-y"),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Apply the S3 retention (7 daily / 4 weekly / 12 monthly by default) to the bucket."""
+    """Apply the off-site retention (7 daily / 4 weekly / 12 monthly by default) to the target."""
     try:
         result = core_backup_store.offsite_prune(
             project, consent=yes, dry_run=dry_run, on_event=None if as_json else _narrate
@@ -660,6 +660,18 @@ def s3_prune_cmd(
     )
     for d in rows:
         console.print(f"  • {d['key']}  [dim]{d['why']}[/dim]", soft_wrap=True)
+
+
+# The same verbs for whichever backup target integration is on (the S3 bucket or a
+# community one); `s3` keeps them for the bucket's own configure and for scripts.
+offsite_app = typer.Typer(
+    help="Encrypted off-site copies on the backup target that is on (S3 or a community one)."
+)
+app.add_typer(offsite_app, name="offsite")
+offsite_app.command("list")(s3_list_cmd)
+offsite_app.command("copy")(s3_copy_cmd)
+offsite_app.command("fetch")(s3_fetch_cmd)
+offsite_app.command("prune")(s3_prune_cmd)
 
 
 @key_app.command("export")
