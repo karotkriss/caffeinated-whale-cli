@@ -59,6 +59,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -695,6 +696,14 @@ def _import(site: str, decl: dict[str, Any]) -> core_integrations.Integration:
     missing = [hook for hook in obj.provides if not callable(obj.hooks.get(hook))]
     if missing:
         raise ValueError(f"it has no function for {', '.join(missing)} in its hooks")
+    if not isinstance(obj.fields, (tuple, list)) or not all(
+        isinstance(f, core_integrations.Field) for f in obj.fields
+    ):
+        raise ValueError("its fields are not a list of cwcli Field")
+    if not isinstance(obj.actions, Mapping) or not all(
+        isinstance(name, str) and callable(fn) for name, fn in obj.actions.items()
+    ):
+        raise ValueError("its actions are not a mapping of names to functions")
     return _guarded(
         dataclasses.replace(
             obj,
@@ -743,8 +752,25 @@ def _guarded(integ: core_integrations.Integration) -> core_integrations.Integrat
         except Exception as e:  # noqa: BLE001 - community code
             return [f"{integ.name} could not list its notices: {e}"]
 
+    def action(fn):
+        def run(settings, secret_values, args):
+            try:
+                return fn(settings, secret_values, args)
+            except CwcliError:
+                raise
+            except Exception as e:  # noqa: BLE001 - community code
+                raise CwcliError(ErrorKind.USAGE, "community.action", f"{integ.name}: {e}") from e
+
+        return run
+
     return dataclasses.replace(
-        integ, test=test, normalize=normalize, on_change=on_change, notices=notices
+        integ,
+        fields=tuple(integ.fields),
+        test=test,
+        normalize=normalize,
+        on_change=on_change,
+        notices=notices,
+        actions={name: action(fn) for name, fn in integ.actions.items()},
     )
 
 
