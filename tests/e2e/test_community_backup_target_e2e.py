@@ -137,6 +137,13 @@ def _repo(root: Path) -> str:
     return root.as_uri()
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _file_repositories():
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("CWCLI_TEST_ONLY_ALLOW_FILE_REPOSITORY_URLS", "1")
+        yield
+
+
 def _cwcli(*args):
     return subprocess.run(
         [harness.CWCLI, *args],
@@ -190,7 +197,7 @@ def test_a_site_goes_off_site_and_back_through_a_community_backup_target(
     try:
         with harness.ui_daemon(TOKEN) as base:
             # Installed, it is off: off-site copies still have nowhere to go.
-            off = _cwcli("backups", "offsite", "list", inst.name)
+            off = _cwcli("backups", "s3", "list", inst.name)
             assert off.returncode != 0 and "Integrations" in off.stdout + off.stderr
             # Its own connection test gates turning it on.
             bad = {"op": "configure", "id": "localdir", "settings": {"path": "rel"}}
@@ -208,7 +215,7 @@ def test_a_site_goes_off_site_and_back_through_a_community_backup_target(
             {"doc": {"doctype": "ToDo", "description": marker}},
         )
         first = _capture(inst)
-        copied = _cwcli("backups", "offsite", "copy", first)
+        copied = _cwcli("backups", "s3", "copy", first)
         assert copied.returncode == 0, copied.stdout + copied.stderr
         assert str(offsite) in copied.stdout + copied.stderr
         stored = [p for p in offsite.rglob("*") if p.is_file()]
@@ -220,12 +227,12 @@ def test_a_site_goes_off_site_and_back_through_a_community_backup_target(
 
         deleted = _cwcli("backups", "delete", first, "--yes")
         assert deleted.returncode == 0, deleted.stdout + deleted.stderr
-        listed = _cwcli("backups", "offsite", "list", inst.name, "--json")
+        listed = _cwcli("backups", "s3", "list", inst.name, "--json")
         assert listed.returncode == 0, listed.stdout + listed.stderr
         row = next(r for r in json.loads(listed.stdout) if r["key"] == first)
         assert row["local"] is False and row["offsite"]["target"] == "localdir"
 
-        fetched = _cwcli("backups", "offsite", "fetch", inst.name, first)
+        fetched = _cwcli("backups", "s3", "fetch", inst.name, first)
         assert fetched.returncode == 0, fetched.stdout + fetched.stderr
         assert f"{first}  verified" in fetched.stdout
         restored = _cwcli(
@@ -236,7 +243,7 @@ def test_a_site_goes_off_site_and_back_through_a_community_backup_target(
 
         with harness.ui_daemon(TOKEN) as base:
             assert _integration(base, {"op": "disable", "id": "localdir"})[0] == 200
-        after = _cwcli("backups", "offsite", "list", inst.name)
+        after = _cwcli("backups", "s3", "list", inst.name)
         assert after.returncode != 0  # off: nothing goes off-site any more
     finally:
         harness.exec_in_frappe(

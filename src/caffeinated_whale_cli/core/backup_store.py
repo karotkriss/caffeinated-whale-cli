@@ -787,12 +787,24 @@ class OffsiteTarget:
 
     def __init__(self, integration_id: str, name: str, store: Any) -> None:
         self.integration_id, self.name, self._store = integration_id, name, store
-        self.location = str(getattr(store, "location", "") or name)
+        try:
+            self.location = str(getattr(store, "location", "") or name)
+        except Exception:  # noqa: BLE001 - the target may be community code
+            self.location = name
 
     def __getattr__(self, attr: str) -> Any:
         if attr.startswith("_"):
             raise AttributeError(attr)
-        value = getattr(self._store, attr)
+        try:
+            value = getattr(self._store, attr)
+        except AttributeError:
+            raise
+        except Exception as e:  # noqa: BLE001 - the target may be community code
+            raise CwcliError(
+                ErrorKind.PRECONDITION,
+                "offsite.target_failed",
+                f"{self.name} failed ({attr}): {e or type(e).__name__}",
+            ) from e
         if not callable(value):
             return value
 
@@ -830,7 +842,7 @@ def offsite_target(project: str, *, require: bool = True) -> OffsiteTarget | Non
         return None
     integ, settings_, secrets = found
     try:
-        store = integ.hooks["backup_target"](settings_, secrets)
+        return OffsiteTarget(integ.id, integ.name, integ.hooks["backup_target"](settings_, secrets))
     except CwcliError:
         raise
     except Exception as e:  # noqa: BLE001 - the target may be community code
@@ -839,7 +851,6 @@ def offsite_target(project: str, *, require: bool = True) -> OffsiteTarget | Non
             "offsite.target_failed",
             f"{integ.name} could not open its backup target: {e or type(e).__name__}",
         ) from e
-    return OffsiteTarget(integ.id, integ.name, store)
 
 
 def copies_on_backup(project: str) -> bool:

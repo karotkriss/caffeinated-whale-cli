@@ -199,6 +199,7 @@ def _write(
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("CWCLI_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv(community._TEST_ONLY_FILE_URLS, "1")
     fake = tmp_path / "fake_pip.py"
     fake.write_text(FAKE_PIP)
     monkeypatch.setattr(community, "_pip", lambda: [sys.executable, str(fake)])
@@ -290,12 +291,21 @@ class TestDeclaration:
 class TestUrl:
     @pytest.mark.parametrize(
         "url",
-        ["git@github.com:o/r.git", "ssh://git@github.com/o/r", "github.com/o/r", "-oProxy=x"],
+        [
+            "git@github.com:o/r.git",
+            "ssh://git@github.com/o/r",
+            "github.com/o/r",
+            "-oProxy=x",
+            "http://github.com/o/r",
+            "file:///srv/repo",
+        ],
     )
-    def test_only_http_and_file_urls_are_fetched(self, url):
+    def test_only_https_urls_are_fetched(self, url, monkeypatch):
+        monkeypatch.delenv(community._TEST_ONLY_FILE_URLS, raising=False)
         with pytest.raises(CwcliError) as e:
             community.check_url(url)
         assert e.value.code == "community.url"
+        assert community.check_url("https://github.com/o/r") == "https://github.com/o/r"
 
     def test_a_url_carrying_a_token_is_refused(self):
         with pytest.raises(CwcliError) as e:
@@ -630,13 +640,6 @@ class TestSignIn:
         assert e.value.code == "community.unreadable"
         assert "The gh sign-in for github.com cannot read" in e.value.message
 
-    def test_plain_http_never_reaches_a_sign_in(self, calls, tmp_path):
-        self.answers = ["fatal: Authentication failed for 'http://h/r'"]
-        with pytest.raises(CwcliError) as e:
-            self._fetch("http://h/r", tmp_path)
-        assert e.value.code == "community.fetch_failed"
-        assert calls == [None]
-
     def test_a_missing_ref_is_not_a_sign_in_problem(self, calls, tmp_path):
         self.answers = ["fatal: couldn't find remote ref nope"]
         with pytest.raises(CwcliError) as e:
@@ -821,6 +824,33 @@ class TestHookPoints:
         with pytest.raises(CwcliError) as e:
             store.offsite_target("erp").get_bytes("missing/set.json")
         assert e.value.code == "offsite.target_failed" and "Hello hello" in e.value.message
+
+    def test_a_target_whose_attributes_raise_never_breaks_a_caller(self, monkeypatch):
+        from caffeinated_whale_cli.commands import serve
+        from caffeinated_whale_cli.core import backup_store as store
+
+        class Store:
+            @property
+            def location(self):
+                raise KeyError("path")
+
+            @property
+            def bucket(self):
+                raise KeyError("bucket")
+
+        integ = dataclasses.replace(
+            integrations.S3_INTEGRATION,
+            id="hello",
+            name="Hello",
+            hooks={"backup_target": lambda settings, secrets: Store()},
+        )
+        monkeypatch.setattr(integrations, "provider", lambda hook: (integ, {}, {}))
+        target = store.offsite_target("erp")
+        assert target.location == "Hello"
+        with pytest.raises(CwcliError) as e:
+            target.bucket
+        assert e.value.code == "offsite.target_failed"
+        assert serve._offsite_summary() == {"id": "hello", "name": "Hello", "location": "Hello"}
 
 
 def test_the_verifier_runs_in_its_own_process(home, repo):

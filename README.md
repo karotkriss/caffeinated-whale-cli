@@ -1721,8 +1721,7 @@ cwcli backups key export --to FILE | import --from FILE [--replace]
 | `drill` | Restores the site's latest verified set into a throwaway site, checks that it answers, drops it, and records the result |
 | `prune` | Applies the instance's retention policy; `--dry-run` lists what would be removed, and removing needs `--yes` |
 | `settings` | Shows or changes the instance's retention, safety, disk floor, daily schedule, and whether new backups are copied off-site |
-| `offsite` | Encrypted off-site copies on whichever backup target integration is on (the S3 bucket or a community one): `list`, `copy`, `fetch`, `prune` |
-| `s3` | Encrypted off-site copies in an S3 bucket (AWS, MinIO, ...): `configure`, `list`, `copy`, `fetch`, `prune`. `configure` sets up the machine's S3 backup target integration, one bucket for every instance (the web UI's Settings > Integrations); it reads the secret key from `CWCLI_S3_SECRET_KEY`, tests the bucket, and turns the target on only when the bucket answers, exiting 1 otherwise. When another integration is the backup target it refuses unless `--switch`, which turns that one off once the bucket answers. `--disable` turns it off and keeps its settings |
+| `s3` | Encrypted off-site copies in an S3 bucket (AWS, MinIO, ...): `configure`, `list`, `copy`, `fetch`, `prune`. `list`, `copy`, `fetch` and `prune` work with whichever backup target integration is on, the S3 bucket or a community one. `configure` sets up the machine's S3 backup target integration, one bucket for every instance (the web UI's Settings > Integrations); it reads the secret key from `CWCLI_S3_SECRET_KEY`, tests the bucket, and turns the target on only when the bucket answers, exiting 1 otherwise. When another integration is the backup target it refuses unless `--switch`, which turns that one off once the bucket answers. `--disable` turns it off and keeps its settings |
 | `key` | Exports or imports the key that encrypts off-site copies; restoring an off-site copy on another machine needs it |
 
 **Safety rules:**
@@ -2350,7 +2349,7 @@ Once an Admin turns it on (its test runs first), cwcli calls it exactly where it
   It is asked for every name except the local `admin` account's, which always signs in locally; turning it off or changing it signs its users out.
   An optional `current_role(settings, secrets, username)` lets a schedule confirm its owner is still an Admin; without it, an Admin-only schedule saved by one of its users is skipped with that reason.
 - `backup_target(settings, secrets)` returns the store off-site copies go to: an object with `location` (shown to people), `key(*parts)`, `ensure()`, `put_file(key, path)`, `put_bytes(key, data)`, `get_to_file(key, path)`, `get_bytes(key)`, `delete(key)` and `list(prefix)` (a list of `{"key": ...}`).
-  cwcli encrypts every part before it reaches the target, exactly as for the S3 bucket, and `cwcli backups offsite list/copy/fetch/prune` work with whichever target is on.
+  cwcli encrypts every part before it reaches the target, exactly as for the S3 bucket, and `cwcli backups s3 list/copy/fetch/prune` work with whichever target is on.
 
 A failure inside a hook reads as that integration's Error state, never as a crash: a sign-in that fails is "the directory could not check your sign-in", and a failing target is an off-site copy that failed.
 cwcli installs each package with pip into its own directory under `~/.cwcli/integrations/community/`, never into cwcli's environment or the system, using a private venv there for pip; cwcli's own packages take precedence over any copy a package brings along.

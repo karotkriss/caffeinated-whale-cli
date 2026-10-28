@@ -140,7 +140,12 @@ def _signs_in_through_the_hook(env: dict) -> None:
 
 def test_add_update_and_remove_a_community_integration(tmp_path):
     home = tmp_path / "home"
-    env = {**os.environ, "CWCLI_HOME": str(home), "CWCLI_NO_UPDATE_CHECK": "1"}
+    env = {
+        **os.environ,
+        "CWCLI_HOME": str(home),
+        "CWCLI_NO_UPDATE_CHECK": "1",
+        "CWCLI_TEST_ONLY_ALLOW_FILE_REPOSITORY_URLS": "1",
+    }
 
     def cwcli(*args: str) -> subprocess.CompletedProcess:
         return subprocess.run(
