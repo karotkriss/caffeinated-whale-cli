@@ -1,9 +1,16 @@
-"""The web UI's administrator account and its sign-in sessions (UI-pure).
+"""The web UI's administrator account, its sign-in sessions and their roles (UI-pure).
 
 One account store, ``<cwcli home>/accounts.json`` (0600; in shared mode the shared
 state tree, so one account serves the machine), holds the account's scrypt hash and
 the server-side sessions, keyed by the SHA-256 of the session id the browser holds
 in its cookie - the file never contains a password or a usable session id.
+
+* Roles: ``admin`` (everything), ``operator`` (runs the fleet: lifecycle, jobs,
+  backups, schedules; not settings, integrations, removals or self-update) and
+  ``viewer`` (reads only). The local ``admin`` account is always an Admin and stays
+  the break-glass way in while directory sign-in is on. A directory user
+  (``core.directory``) has no record here, only sessions carrying ``source:
+  ldap`` and the role their groups gave them at sign-in.
 
 * The default account is ``admin`` / ``admin`` with ``must_change`` set: the first
   sign-in (and every sign-in after ``reset_password``) has to pick a new password
@@ -43,6 +50,9 @@ IDLE_S = 8 * 3600
 ABSOLUTE_S = 7 * 24 * 3600
 REMEMBER_S = 30 * 24 * 3600
 
+ROLES = ("admin", "operator", "viewer")
+ROLE_RANK = {"viewer": 0, "operator": 1, "admin": 2}
+
 LOCKOUT_AFTER = 5
 LOCKOUT_WINDOW_S = 10 * 60
 LOCKOUT_S = 60
@@ -65,6 +75,9 @@ class Session:
 class Account:
     username: str
     must_change: bool
+    role: str = "admin"
+    source: str = "local"  # local | ldap
+    name: str = ""
 
 
 def store_path() -> Path:
@@ -157,6 +170,14 @@ def ensure_default(*, now: float | None = None) -> bool:
         return True
 
 
+def is_local(username: str) -> bool:
+    """Whether ``username`` names a local account (case-insensitively: a directory
+    user can never take a local account's name)."""
+    with _lock:
+        names = _load()["accounts"]
+    return username.strip().lower() in {n.lower() for n in names}
+
+
 def account(username: str) -> Account | None:
     with _lock:
         rec = _load()["accounts"].get(username)
@@ -168,7 +189,9 @@ def verify(username: str, password: str) -> Account | None:
     unknown username, after the same hash work, so timing tells the two apart no
     more than it must)."""
     with _lock:
-        rec = _load()["accounts"].get(username)
+        accounts = _load()["accounts"]
+    username = next((n for n in accounts if n.lower() == username.strip().lower()), username)
+    rec = accounts.get(username)
     if rec is None:
         _hash(password, b"\0" * 16)  # burn the same time for an unknown name
         return None
@@ -251,21 +274,34 @@ def _alive(rec: dict, now: float) -> bool:
 
 
 def open_session(
-    username: str, *, remember: bool, agent: str = "", now: float | None = None
+    username: str,
+    *,
+    remember: bool,
+    agent: str = "",
+    now: float | None = None,
+    source: str = "local",
+    role: str = "admin",
+    name: str = "",
 ) -> str:
-    """Record a session and return the id the browser's cookie carries (never stored)."""
+    """Record a session and return the id the browser's cookie carries (never stored).
+    A directory session (``source="ldap"``) carries the role sign-in decided."""
     now = time.time() if now is None else now
     session_id = secrets.token_urlsafe(32)
+    rec = {
+        "username": username,
+        "created": now,
+        "last_seen": now,
+        "remember": remember,
+        "agent": agent[:80],
+    }
+    if source != "local":
+        if role not in ROLES:
+            raise CwcliError(ErrorKind.USAGE, "account.role", f"Unknown role '{role}'.")
+        rec.update(source=source, role=role, name=name[:120])
     with _lock:
         data = _load()
         data["sessions"] = {k: v for k, v in data["sessions"].items() if _alive(v, now)}
-        data["sessions"][_key(session_id)] = {
-            "username": username,
-            "created": now,
-            "last_seen": now,
-            "remember": remember,
-            "agent": agent[:80],
-        }
+        data["sessions"][_key(session_id)] = rec
         _save(data)
     return session_id
 
@@ -281,12 +317,21 @@ def session_account(session_id: str, *, now: float | None = None) -> Account | N
         rec = data["sessions"].get(_key(session_id))
         if rec is None or not _alive(rec, now):
             return None
-        acct = data["accounts"].get(rec["username"])
+        local = rec.get("source", "local") == "local"
+        acct = data["accounts"].get(rec["username"]) if local else {}
         if acct is None:
             return None
         if now - rec["last_seen"] >= 60:
             rec["last_seen"] = now
             _save(data)
+    if not local:
+        return Account(
+            rec["username"],
+            False,
+            role=rec.get("role", "viewer"),
+            source=rec["source"],
+            name=rec.get("name", ""),
+        )
     return Account(rec["username"], bool(acct.get("must_change")))
 
 
@@ -295,6 +340,21 @@ def close_session(session_id: str) -> None:
         data = _load()
         if data["sessions"].pop(_key(session_id), None) is not None:
             _save(data)
+
+
+def close_directory_sessions() -> int:
+    """Sign every directory user out (their sign-in settings changed or were turned
+    off); returns how many sessions were closed."""
+    with _lock:
+        data = _load()
+        before = len(data["sessions"])
+        data["sessions"] = {
+            k: v for k, v in data["sessions"].items() if v.get("source", "local") == "local"
+        }
+        closed = before - len(data["sessions"])
+        if closed:
+            _save(data)
+    return closed
 
 
 def close_other_sessions(username: str, keep: str) -> int:

@@ -169,3 +169,42 @@ class TestLockout:
             lo.attempt(f"10.0.0.{i}", "admin", now=T0)
         assert lo.retry_after("admin", now=T0) > 0
         assert lo.attempt("192.0.2.1", "admin", now=T0) == 0
+
+
+class TestRolesAndDirectorySessions:
+    """Directory users have no account record, only sessions carrying their role."""
+
+    def test_local_names_match_case_insensitively(self):
+        accounts.ensure_default()
+        assert accounts.is_local("ADMIN") and not accounts.is_local("bob")
+        assert accounts.verify("Admin", "admin").username == "admin"
+
+    def test_a_directory_session_carries_its_role_and_never_a_password_change(self):
+        sid = accounts.open_session(
+            "bob", remember=False, source="ldap", role="operator", name="Bob B"
+        )
+        acct = accounts.session_account(sid)
+        assert (acct.username, acct.role, acct.source, acct.name) == (
+            "bob",
+            "operator",
+            "ldap",
+            "Bob B",
+        )
+        assert acct.must_change is False
+
+    def test_a_local_session_is_an_admin(self):
+        accounts.ensure_default()
+        acct = accounts.session_account(accounts.open_session("admin", remember=False))
+        assert (acct.role, acct.source) == ("admin", "local")
+
+    def test_an_unknown_role_is_refused(self):
+        with pytest.raises(CwcliError):
+            accounts.open_session("bob", remember=False, source="ldap", role="root")
+
+    def test_closing_directory_sessions_leaves_the_local_admin_signed_in(self):
+        accounts.ensure_default()
+        local = accounts.open_session("admin", remember=False)
+        ldap_sid = accounts.open_session("bob", remember=False, source="ldap", role="viewer")
+        assert accounts.close_directory_sessions() == 1
+        assert accounts.session_account(local) is not None
+        assert accounts.session_account(ldap_sid) is None

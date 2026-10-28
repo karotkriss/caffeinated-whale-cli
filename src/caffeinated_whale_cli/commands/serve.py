@@ -204,11 +204,13 @@ from ..core import config as core_config
 from ..core import cred_bridge as core_cred_bridge
 from ..core import daemon_recovery
 from ..core import dev_mode as core_dev_mode
+from ..core import directory as core_directory
 from ..core import doctor as core_doctor
 from ..core import editors as core_editors
 from ..core import fleet as core_fleet
 from ..core import git_refs as core_git_refs
 from ..core import inspect as core_inspect
+from ..core import integrations as core_integrations
 from ..core import label as core_label
 from ..core import list as core_list
 from ..core import logs as core_logs
@@ -247,7 +249,8 @@ SESSION_COOKIE = "cwcli_serve_session"
 # 3: durable jobs, job SSE frames, and detached lifecycle actions (Phase 2).
 # 4: the settings endpoint and the guarded destructive job verbs (Phase 3).
 # 5: the apps catalog (/api/v1/apps, its logo route, the `catalog` SSE event).
-PROTOCOL_VERSION = 6
+# 7: roles, directory sign-in, and /api/v1/integrations (the S3 target moved there).
+PROTOCOL_VERSION = 7
 
 # The running process's install fingerprint (core.version.install_fingerprint), set
 # by run_daemon, so a page can tell a daemon running different code.
@@ -310,6 +313,11 @@ SETTINGS = frozenset(
         "catalog.source_remove",
     }
 )
+# Job verbs only an Admin may start: removals, and replacing cwcli itself.
+ADMIN_VERBS = frozenset({"rm", "rm-site", "rm-bench", "delete-backup", "self-update"})
+# The least role a GET needs; anything not named here is a read every role may make.
+_GET_ROLES = {"/api/v1/integrations": "admin", "/api/v1/backups/download": "operator"}
+
 # The lock stripe every settings write shares: the config is one TOML file read,
 # modified and written whole, so two concurrent writes would lose one.
 _SETTINGS_LOCK_KEY = "@settings"
@@ -568,6 +576,36 @@ def _sse_frame(event: str, data: dict, event_id: int | None = None) -> bytes:
     return f"{head}event: {event}\ndata: {json.dumps(data)}\n\n".encode()
 
 
+def _directory_on() -> bool:
+    """Whether directory sign-in is on. An unreadable integrations store reads as off,
+    so it can never stand between the local admin and the sign-in."""
+    try:
+        return core_integrations.active("ldap") is not None
+    except CwcliError:
+        return False
+
+
+def _offsite_summary() -> dict | None:
+    """Where off-site copies go (the S3 backup target integration), without its keys."""
+    try:
+        found = core_integrations.active("s3")
+    except CwcliError:
+        return None
+    if found is None:
+        return None
+    return {k: found[0].get(k) for k in ("endpoint", "bucket", "prefix")}
+
+
+def _account_info(acct: core_accounts.Account) -> dict:
+    return {
+        "username": acct.username,
+        "must_change_password": acct.must_change,
+        "role": acct.role,
+        "source": acct.source,
+        "name": acct.name,
+    }
+
+
 def _error_body(kind: str, code: str, message: str, hint: str | None = None, **extra) -> dict:
     """The frappe-ui error envelope: ``errors[0]`` is what its fetch layer reads."""
     error: dict = {"type": kind, "title": code, "message": message, "hint": hint}
@@ -792,11 +830,23 @@ class _Handler(BaseHTTPRequestHandler):
         address, user = f"addr:{self.client_address[0]}", f"user:{username.lower()}"
         user_wait = self.lockout.retry_after(user)
         wait = self.lockout.attempt(address, user)
-        acct = None
-        if not wait:
-            acct = core_accounts.verify(username, password) if username and password else None
-            if acct is None:
-                wait = user_wait
+        acct: core_accounts.Account | None = None
+        refusal: CwcliError | None = None
+        if not wait and username and password:
+            # A local account's name always signs in locally - the break-glass way in
+            # while directory sign-in is on; every other name asks the directory.
+            if core_accounts.is_local(username) or not _directory_on():
+                acct = core_accounts.verify(username, password)
+            else:
+                try:
+                    found = core_directory.authenticate(username, password)
+                    acct = core_accounts.Account(
+                        found.username, False, role=found.role, source="ldap", name=found.name
+                    )
+                except CwcliError as e:
+                    refusal = e
+        if not wait and acct is None and (refusal is None or refusal.code == "auth.invalid"):
+            wait = user_wait
         if wait:
             self._send_error(
                 429,
@@ -804,6 +854,15 @@ class _Handler(BaseHTTPRequestHandler):
                 "auth.locked",
                 f"Too many failed sign-ins; try again in {wait} seconds.",
                 retry_after=wait,
+            )
+            return
+        if refusal is not None and refusal.code != "auth.invalid":
+            self._send_error(
+                503 if refusal.code == "auth.directory_unreachable" else 403,
+                ErrorKind.PRECONDITION.value,
+                refusal.code,
+                refusal.message,
+                hint=refusal.hint,
             )
             return
         if acct is None:
@@ -827,17 +886,14 @@ class _Handler(BaseHTTPRequestHandler):
             )
             return
         session_id = core_accounts.open_session(
-            acct.username, remember=remember, agent=(self.headers.get("User-Agent") or "")
+            acct.username,
+            remember=remember,
+            agent=(self.headers.get("User-Agent") or ""),
+            source=acct.source,
+            role=acct.role,
+            name=acct.name,
         )
-        body_out = json.dumps(
-            {
-                "data": {
-                    "signed_in": True,
-                    "username": acct.username,
-                    "must_change_password": acct.must_change,
-                }
-            }
-        ).encode()
+        body_out = json.dumps({"data": {"signed_in": True, **_account_info(acct)}}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         max_age = f"; Max-Age={core_accounts.REMEMBER_S}" if remember else ""
@@ -852,15 +908,64 @@ class _Handler(BaseHTTPRequestHandler):
     def _session_info(self) -> dict:
         acct = self._session_account()
         if acct is None:
-            return {"username": "api", "must_change_password": False, "account": False}
-        return {
-            "username": acct.username,
-            "must_change_password": acct.must_change,
-            "account": True,
-        }
+            return {
+                "username": "api",
+                "must_change_password": False,
+                "account": False,
+                "role": "admin",
+                "source": "api",
+                "name": "",
+            }
+        return {**_account_info(acct), "account": True}
+
+    def _role(self) -> str:
+        """The caller's role: the bearer token is the machine owner's, so Admin."""
+        acct = self._session_account()
+        return acct.role if acct is not None else "admin"
+
+    def _refuse_role(self, needed: str) -> bool:
+        """Send the 403 and return True when the caller's role is below ``needed``."""
+        role = self._role()
+        if core_accounts.ROLE_RANK[role] >= core_accounts.ROLE_RANK[needed]:
+            return False
+        self._send_error(
+            403,
+            ErrorKind.PRECONDITION.value,
+            "auth.role_forbidden",
+            f"Your role ({role.title()}) cannot do this; it needs {needed.title()}.",
+            role=role,
+            needs=needed,
+        )
+        return True
+
+    def _post_role(self, path: str, payload: dict) -> str:
+        """The least role a POST needs. Viewers only read; Operators run the fleet;
+        Admins also change settings and integrations, remove instances, sites, benches
+        and backups, and update cwcli itself."""
+        if path in ("/api/v1/settings", "/api/v1/integrations"):
+            return "admin"
+        if path == "/api/v1/jobs":
+            return "admin" if payload.get("verb") in ADMIN_VERBS else "operator"
+        if path.startswith("/api/v1/jobs/") and path.rsplit("/", 1)[-1] in ("retry", "continue"):
+            job_id = unquote(path[len("/api/v1/jobs/") :]).rsplit("/", 1)[0]
+            try:
+                verb = core_jobs.read_job(job_id).get("verb")
+            except CwcliError:
+                verb = None
+            return "admin" if verb in ADMIN_VERBS else "operator"
+        # Schedules need no check of their own: no Admin-only verb is schedulable.
+        return "operator"
 
     def _change_password(self, raw: bytes) -> None:
         acct = self._session_account()
+        if acct is not None and acct.source != "local":
+            self._send_error(
+                403,
+                ErrorKind.PRECONDITION.value,
+                "auth.directory_password",
+                "Your password belongs to the directory; change it there.",
+            )
+            return
         if acct is None:
             self._send_error(
                 403,
@@ -932,7 +1037,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_spa(path)
             return
         if path == "/api/v1/meta":
-            meta: dict = {"version": __version__, "protocol": PROTOCOL_VERSION}
+            # directory_sign_in only tells the sign-in page which hint to show.
+            meta: dict = {
+                "version": __version__,
+                "protocol": PROTOCOL_VERSION,
+                "directory_sign_in": _directory_on(),
+            }
             if _running_build is not None:
                 meta["build"] = _running_build
             self._send_json(meta)
@@ -943,6 +1053,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json({"data": self._session_info()})
             return
         if self._refuse_change_pending(path):
+            return
+        if self._refuse_role(_GET_ROLES.get(path, "viewer")):
             return
         if path == "/api/v1/session/sessions":
             acct = self._session_account()
@@ -1068,6 +1180,7 @@ class _Handler(BaseHTTPRequestHandler):
                         "remove": sum(1 for d in plan if not d.keep),
                         "keep": sum(1 for d in plan if d.keep),
                         "settings": core_backup_store.settings(project),
+                        "offsite_target": _offsite_summary(),
                     }
                 }
             )
@@ -1085,6 +1198,8 @@ class _Handler(BaseHTTPRequestHandler):
             )
         elif path.startswith("/api/v1/apps/logo/"):
             self._send_logo(unquote(path[len("/api/v1/apps/logo/") :]))
+        elif path == "/api/v1/integrations":
+            self._send_json({"data": {"integrations": core_integrations.view()}})
         elif path == "/api/v1/doctor":
             self._send_doctor()
         elif path == "/api/v1/config":
@@ -1138,7 +1253,7 @@ class _Handler(BaseHTTPRequestHandler):
                 if not self._authenticated():
                     self._send_unauthenticated()
                 return
-            if self._refuse_change_pending(parsed.path):
+            if self._refuse_change_pending(parsed.path) or self._refuse_role("operator"):
                 self.close_connection = True
                 return
             self._receive_upload(parsed)
@@ -1178,6 +1293,12 @@ class _Handler(BaseHTTPRequestHandler):
             return
         try:
             payload = _parse_action_body(raw)
+        except CwcliError as e:
+            self._send_core_error(e)
+            return
+        if self._refuse_role(self._post_role(parsed.path, payload)):
+            return
+        try:
             if parsed.path == "/api/v1/actions":
                 status, body = self._dispatch_action(payload)
             elif parsed.path == "/api/v1/jobs":
@@ -1194,8 +1315,8 @@ class _Handler(BaseHTTPRequestHandler):
                 status, body = self._save_backup_settings(payload)
             elif parsed.path == "/api/v1/schedules":
                 status, body = self._schedules_post(payload)
-            elif parsed.path == "/api/v1/backups/s3":
-                status, body = self._configure_s3(payload)
+            elif parsed.path == "/api/v1/integrations":
+                status, body = self._integrations_post(payload)
             elif parsed.path == "/api/v1/advisories/check":
                 status, body = self._check_advisories(
                     rematch_only=bool(payload.get("rematch_only"))
@@ -1222,9 +1343,11 @@ class _Handler(BaseHTTPRequestHandler):
             page = None
         addr = getattr(self.server, "server_address", None)
         ui_port = addr[1] if isinstance(addr, tuple) and len(addr) > 1 else None
+        acct = self._session_account()
         return {
             "via": "web",
             "account": self._account_name(),
+            "account_source": acct.source if acct is not None else "api",
             "ui_port": ui_port,
             "page": page,
             "agent": (self.headers.get("User-Agent") or "")[:80],
@@ -2119,44 +2242,50 @@ class _Handler(BaseHTTPRequestHandler):
             pass
         self._send_json({"data": result.data})
 
-    def _configure_s3(self, payload: dict) -> tuple[int, dict]:
-        """The S3 target for one instance. The secret key rides in ``secret_key`` and is
-        stored on this machine only (0600); it is never echoed back or logged. A probe
-        (list + create the bucket when absent) answers in the response."""
-        from ..core import s3 as core_s3
+    def _integrations_post(self, payload: dict) -> tuple[int, dict]:
+        """``{op: test|configure|disable|action, id, ...}`` over ``core.integrations``.
 
-        project = payload.get("project")
-        values = payload.get("values") or {}
-        if not isinstance(project, str) or not project or not isinstance(values, dict):
-            return 400, _error_body(
-                ErrorKind.USAGE.value, "backups.s3", "project and values are required"
-            )
-        secret = payload.get("secret_key")
-        try:
-            if isinstance(secret, str) and secret:
-                core_backup_store.set_s3_secret(secret, project=project)
-            allowed = {
-                k: values[k]
-                for k in (
-                    "enabled",
-                    "endpoint",
-                    "bucket",
-                    "prefix",
-                    "region",
-                    "access_key",
-                    "copy_on_backup",
+        ``settings`` and ``secrets`` are laid over the stored values (an empty secret
+        keeps the stored one); no answer ever carries a secret. ``configure`` with
+        ``enable: true`` turns the integration on only when its test passes, and
+        answers the test either way.
+        """
+        op = str(payload.get("op") or "")
+        integration_id = _required_str(payload, "id")
+        settings = payload.get("settings")
+        secret_values = payload.get("secrets")
+        by = self._account_name()
+        if op == "test":
+            tested = core_integrations.test(integration_id, settings, secret_values)
+            return 200, {"data": {"check": asdict(tested)}}
+        if op == "configure":
+            enable = payload.get("enable")
+            with self._action_lock(_SETTINGS_LOCK_KEY):
+                check, view = core_integrations.configure(
+                    integration_id,
+                    settings,
+                    secret_values,
+                    enable=enable if isinstance(enable, bool) else None,
+                    by=by,
                 )
-                if k in values
-            }
-            saved = core_backup_store.save_settings(project, {"s3_target": allowed})
-            verdict = None
-            if saved["s3_target"].get("enabled"):
-                verdict = core_s3.probe(core_backup_store.offsite_target(project))
-        except CwcliError as e:
-            return 400, _error_body(e.kind.value, e.code, e.message, hint=e.hint)
-        return 200, {
-            "data": {"project": project, "s3_target": saved["s3_target"], "probe": verdict}
-        }
+            return 200, {"data": {"check": asdict(check) if check else None, "integration": view}}
+        if op == "disable":
+            with self._action_lock(_SETTINGS_LOCK_KEY):
+                view = core_integrations.disable(integration_id, by=by)
+            return 200, {"data": {"integration": view}}
+        if op == "action":
+            args = payload.get("args") or {}
+            if not isinstance(args, dict):
+                raise CwcliError(ErrorKind.USAGE, "integration.args", "args must be an object.")
+            result = core_integrations.run_action(
+                integration_id, _required_str(payload, "action"), args, settings, secret_values
+            )
+            return 200, {"data": {"result": result}}
+        raise CwcliError(
+            ErrorKind.USAGE,
+            "integration.op_invalid",
+            "op must be test, configure, disable or action.",
+        )
 
     def _check_updates(self) -> tuple[int, dict]:
         catalog = self.catalog.get()
@@ -2335,7 +2464,7 @@ _POST_PATHS = {
     "/api/v1/updates/check",
     "/api/v1/backups/settings",
     "/api/v1/schedules",
-    "/api/v1/backups/s3",
+    "/api/v1/integrations",
     "/api/v1/backups/upload",
     "/api/v1/advisories/check",
     "/api/v1/advisories/state",

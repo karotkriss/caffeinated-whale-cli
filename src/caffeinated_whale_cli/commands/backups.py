@@ -14,6 +14,7 @@ import typer
 
 from ..core import backup_store as core_backup_store
 from ..core import db_password as core_db_password
+from ..core import integrations as core_integrations
 from ..core.envelope import Status
 from ..core.errors import CwcliError
 from ..utils.completion_utils import complete_project_names
@@ -455,9 +456,15 @@ def settings_cmd(
     daily_at: str | None = typer.Option(
         None, "--daily-at", help="Local time of the daily backup, HH:MM."
     ),
+    copy_on_backup: bool | None = typer.Option(
+        None,
+        "--copy-on-backup/--no-copy-on-backup",
+        help="Copy each new backup to the S3 backup target when it is on.",
+    ),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Show or change the instance's backup settings (retention, safety, disk floor, schedule)."""
+    """Show or change the instance's backup settings (retention, safety, disk floor,
+    schedule, off-site copies)."""
     values: dict = {}
     local = {
         k: v
@@ -488,6 +495,8 @@ def settings_cmd(
         sched["daily_at"] = daily_at
     if sched:
         values["schedule"] = sched
+    if copy_on_backup is not None:
+        values["offsite"] = {"copy_on_backup": copy_on_backup}
     try:
         current = (
             core_backup_store.save_settings(project, values)
@@ -515,7 +524,6 @@ app.add_typer(key_app, name="key")
 
 @s3_app.command("configure")
 def s3_configure_cmd(
-    project: str = typer.Argument(..., autocompletion=complete_project_names),
     endpoint: str | None = typer.Option(
         None, "--endpoint", help="https://s3.<region>.amazonaws.com or http://host:9000"
     ),
@@ -527,50 +535,46 @@ def s3_configure_cmd(
         None,
         "--secret-key",
         envvar="CWCLI_S3_SECRET_KEY",
-        help="Stored on this machine only (0600); prefer the env var.",
+        help="Stored encrypted on this machine; prefer the env var.",
     ),
-    copy_on_backup: bool | None = typer.Option(None, "--copy-on-backup/--no-copy-on-backup"),
-    enable: bool | None = typer.Option(None, "--enable/--disable"),
-    probe: bool = typer.Option(
-        True, "--probe/--no-probe", help="Check the bucket answers (creating it when absent)."
+    enable: bool = typer.Option(
+        True, "--enable/--disable", help="Turn the S3 backup target on (tested first) or off."
     ),
 ) -> None:
-    """Point the instance's off-site copies at a bucket; the secret never prints."""
-    from ..core import s3 as core_s3
-
-    values: dict[str, Any] = {}
-    for k, v in (
-        ("endpoint", endpoint),
-        ("bucket", bucket),
-        ("prefix", prefix),
-        ("region", region),
-        ("access_key", access_key),
-        ("copy_on_backup", copy_on_backup),
-        ("enabled", enable),
-    ):
-        if v is not None:
-            values[k] = v
-    if secret_key:
-        core_backup_store.set_s3_secret(secret_key, project=project)
-    if values:
-        core_backup_store.save_settings(project, {"s3_target": values})
-    cfg = core_backup_store.settings(project)["s3_target"]
+    """Set up the S3 backup target integration: one bucket for every instance's off-site
+    copies. It turns on only when the bucket answers; the secret key never prints."""
+    if not enable:
+        core_integrations.disable("s3", by="cli")
+        console.print("S3 backup target is off; its settings are kept.")
+        return
+    values = {
+        k: v
+        for k, v in (
+            ("endpoint", endpoint),
+            ("bucket", bucket),
+            ("prefix", prefix),
+            ("region", region),
+            ("access_key", access_key),
+        )
+        if v is not None
+    }
+    try:
+        check, view = core_integrations.configure(
+            "s3", values, {"secret_key": secret_key or ""}, enable=True, by="cli"
+        )
+    except CwcliError as e:
+        _fail(e)
+    cfg = view["settings"]
     console.print(
-        f"endpoint: {cfg['endpoint']}  bucket: {cfg['bucket']}  prefix: {cfg['prefix']}  region: {cfg['region']}  access key: {cfg['access_key'] or '-'}  enabled: {cfg['enabled']}  copy on backup: {cfg['copy_on_backup']}"
+        f"endpoint: {cfg['endpoint']}  bucket: {cfg['bucket']}  prefix: {cfg['prefix']}  "
+        f"region: {cfg['region']}  access key: {cfg['access_key'] or '-'}  "
+        f"state: {view['state']}"
     )
-    if probe and cfg.get("enabled"):
-        try:
-            target = core_backup_store.offsite_target(project)
-        except CwcliError as e:
-            _fail(e)
-        verdict = core_s3.probe(target)
-        if verdict["ok"]:
-            console.print(
-                f"[bold green]✓[/bold green] bucket answers ({verdict['objects']} object(s) under the prefix)"
-            )
-        else:
-            stderr_console.print(f"[bold red]✗[/bold red] {verdict['error']}")
-            raise typer.Exit(code=1)
+    if check is not None and check.ok:
+        console.print(f"[bold green]✓[/bold green] {check.message}")
+    elif check is not None:
+        stderr_console.print(f"[bold red]✗[/bold red] {check.message}")
+        raise typer.Exit(code=1)
 
 
 @s3_app.command("list")
