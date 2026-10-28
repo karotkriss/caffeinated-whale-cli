@@ -10,6 +10,7 @@ import EmptyState from '../components/EmptyState.vue'
 import FleetPerformance from '../components/FleetPerformance.vue'
 import { loadUpdates, updatesFor } from '../data/updates'
 import { createJob } from '../data/jobs'
+import { trackJob } from '../data/job-toasts'
 import { fleet, instances, details, publishedRange, countSites, cacheProjects, setFocus } from '../data/fleet'
 import { applySetting, settings } from '../data/settings'
 import { openAction, menuOption } from '../data/dialog'
@@ -59,7 +60,7 @@ const menu = (i) => [
     <template #actions>
       <Button variant="solid" icon-left="lucide-plus" label="New instance" @click="openJob('init')" />
       <!-- Captain note 41: the updates check lives here, as a job; the card badge says the rest. -->
-      <Dropdown :options="[{ label: 'Check for updates', icon: 'refresh-cw', onClick: () => createJob({ verb: 'check-updates', target: {}, args: {} }) }]" align="end">
+      <Dropdown :options="[{ label: 'Check for updates', icon: 'refresh-cw', onClick: async () => trackJob((await createJob({ verb: 'check-updates', target: {}, args: {} })).id) }]" align="end">
         <Button variant="ghost" icon="lucide-ellipsis" aria-label="More" />
       </Dropdown>
     </template>

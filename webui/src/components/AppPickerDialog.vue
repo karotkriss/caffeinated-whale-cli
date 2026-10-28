@@ -71,7 +71,7 @@ function done(close) {
     <template #actions="{ close }">
       <div class="flex justify-end gap-2">
         <Button label="Cancel" @click="close" />
-        <Button variant="solid" :label="draft.length ? `Use ${draft.length} ${draft.length === 1 ? 'app' : 'apps'}` : 'Use none'" @click="done(close)" />
+        <Button variant="solid" data-primary :label="draft.length ? `Use ${draft.length} ${draft.length === 1 ? 'app' : 'apps'}` : 'Use none'" @click="done(close)" />
       </div>
     </template>
   </Dialog>

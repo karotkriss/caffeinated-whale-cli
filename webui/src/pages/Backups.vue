@@ -10,6 +10,7 @@ import EmptyState from '../components/EmptyState.vue'
 import { backups, loadBackups, allSets, freshness, FRESH_DOT, FRESH_TEXT, REASON_LABEL, PART_LABEL, sizeText, whenText } from '../data/backups'
 import { instances, setFocus } from '../data/fleet'
 import { createJob } from '../data/jobs'
+import { trackJob } from '../data/job-toasts'
 import { openJob } from '../data/job-dialog'
 import { openRestoreWizard } from '../data/restore-wizard'
 import { openAction } from '../data/dialog'
@@ -41,7 +42,7 @@ const siteRows = computed(() => {
 })
 const totals = computed(() => ({ sets: allSets.value.length, size: allSets.value.reduce((n, s) => n + s.size, 0), sites: new Set(allSets.value.map((s) => `${s.project}/${s.site}`)).size, failed: allSets.value.filter((s) => !s.verified).length }))
 function backupNow(row) { openJob('backup', { project: row.project, bench: String(row.sets[0]?.bench_index ?? 0), site: row.site, args: { store: true, with_files: true, reason: 'manual' } }) }
-function verify(s) { createJob({ verb: 'verify-backup', target: { project: s.project, site: s.site }, args: { set_key: s.key } }) }
+async function verify(s) { trackJob((await createJob({ verb: 'verify-backup', target: { project: s.project, site: s.site }, args: { set_key: s.key } })).id) }
 function remove(s) { openAction('delete_backup', { project: s.project, site: s.site, set: s }) }
 function menu(s) {
   return [{ group: 'Set', options: [

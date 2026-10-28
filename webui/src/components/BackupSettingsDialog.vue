@@ -129,7 +129,7 @@ async function prune() {
         <span v-if="form.last_run" class="text-xs text-ink-gray-5">last run {{ form.last_run.slice(0, 16).replace('T', ' ') }}</span>
       </div>
       <p class="text-xs text-ink-gray-5">A site's last good backup is never deleted. Safety backups (before a core update, migrate, install or removal) follow their own window. Under the disk floor only the newest copy of a set that is also off-site stays local.</p>
-      <div class="flex justify-end"><Button variant="solid" label="Save settings" :loading="saving" @click="save" /></div>
+      <div class="flex justify-end"><Button variant="solid" data-primary label="Save settings" :loading="saving" @click="save" /></div>
       <div v-if="plan" class="rounded-6 border border-outline-gray-1">
         <div class="flex items-center justify-between border-b border-outline-gray-1 bg-surface-gray-1 px-3 py-1.5 text-xs text-ink-gray-5"><span>Right now the policy keeps {{ keeping.length }} and would remove {{ removing.length }} ({{ sizeText(removing.reduce((n, x) => n + x.size, 0)) }})</span><Button v-if="removing.length" size="sm" theme="red" variant="subtle" :label="`Prune ${removing.length} now`" :loading="pruning" @click="prune" /></div>
         <div class="max-h-60 overflow-auto divide-y divide-outline-gray-1">

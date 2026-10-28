@@ -117,7 +117,7 @@ async function start() {
         <p v-if="clashes.length" class="text-xs text-ink-red-5">{{ clashes.join(', ') }} cannot be copied onto itself; give the copy another name.</p>
         <p v-else-if="pairs.some((p) => !nameOk(p.target_site))" class="text-xs text-ink-red-5">lowercase letters, digits, dots and dashes</p>
       </div>
-      <Alert v-if="overwrites.length" theme="amber" title="Existing sites will be replaced" :description="`${overwrites.join(', ')} already exist on the target bench; each is backed up into the store first (a verified before-overwrite set), then the copy replaces every byte of it (the target keeps its own database name and credentials).`" />
+      <Alert v-if="overwrites.length" theme="amber" title="Existing sites will be replaced" :description="`${overwrites.join(', ')} ${overwrites.length === 1 ? 'exists' : 'already exist'} on the target bench; each is backed up into the store first (a verified before-overwrite set), then the copy replaces every byte of it (the target keeps its own database name and credentials).`" />
       <div class="space-y-2">
         <Checkbox v-model="withFiles" label="Include public and private files" />
         <Checkbox v-model="keepConfig" label="Keep the target's site config as is (default: carry the source's app settings, keep the target's db_* keys)" />
@@ -131,7 +131,7 @@ async function start() {
     <template #actions="{ close }">
       <div class="flex justify-end gap-2">
         <Button variant="ghost" label="Cancel" @click="close" />
-        <Button variant="solid" :theme="needsConsent ? 'red' : 'gray'" :label="mode === 'move' ? `Move ${pairs.length || ''}`.trim() : `Clone ${pairs.length || ''}`.trim()" :disabled="!valid || !confirmed" :loading="running" @click="start" />
+        <Button variant="solid" data-primary :theme="needsConsent ? 'red' : 'gray'" :label="mode === 'move' ? `Move ${pairs.length || ''}`.trim() : `Clone ${pairs.length || ''}`.trim()" :disabled="!valid || !confirmed" :loading="running" @click="start" />
       </div>
     </template>
   </Dialog>
