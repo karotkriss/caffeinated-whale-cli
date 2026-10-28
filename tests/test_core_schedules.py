@@ -305,14 +305,34 @@ class TestAdminOnlySchedules:
         assert row["last_run"]["state"] == "skipped" and why in row["last_run"]["reason"]
         assert "ana" in row["last_skip"]["reason"]
 
-    def test_an_owner_from_before_roles_is_not_trusted(self):
+    def test_an_owner_saved_before_roles_keeps_running(self):
+        """No ``owner_source``: the local account of that name, else this host's CLI."""
+        from caffeinated_whale_cli.core import accounts
+
+        accounts.ensure_default()
         fleet = Fleet()
-        sch.save(nightly(verb="s3-prune"), by="someone", now=T0)
+        for i, owner in enumerate(("admin", "cmckay")):
+            self._prune(owner, "local", target={"project": f"p{i}"})
         data = sch._load()
         for rec in data["schedules"].values():
             rec.pop("owner_source")
         sch._save(data)
+        made = run_tick(fleet, now=T0.replace(hour=2))
+        assert sorted(j["target"]["project"] for j in made) == ["p0", "p1"]
+
+    def test_a_schedule_with_no_owner_says_so(self):
+        fleet = Fleet()
+        self._prune("", "local")
         assert run_tick(fleet, now=T0.replace(hour=2)) == []
+        row = sch.list_schedules(now=T0.replace(hour=2))["schedules"][0]
+        assert row["last_run"]["reason"].startswith("it has no recorded owner")
+
+    def test_a_deleted_local_owner_is_no_longer_an_admin(self):
+        fleet = Fleet()
+        self._prune("gone", "local")
+        assert run_tick(fleet, now=T0.replace(hour=2)) == []
+        row = sch.list_schedules(now=T0.replace(hour=2))["schedules"][0]
+        assert "its owner gone is no longer an Admin" in row["last_run"]["reason"]
 
     def test_an_admin_saving_it_takes_it_over_and_others_keep_their_owner(self):
         first = self._prune("ana", "ldap")

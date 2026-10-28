@@ -14,7 +14,8 @@ job (``origin.schedule = <id>``), so history, logs and Retry work unchanged.
   Removals are never schedulable (``SCHEDULABLE`` is the whole list). A schedule
   running an Admin-only verb (``accounts.admin_only``: the prunes) is owned by the
   Admin who last saved it, and each run is skipped, with the reason, unless that
-  owner is still an Admin (a directory owner is looked up in the directory again).
+  owner is still an Admin (a directory owner is looked up in the directory again; an
+  owner saved before roles is the local account of that name, else this host).
 * Missed runs: ``missed = "run"`` (default) runs once on wake, ``"skip"`` waits
   for the next occurrence.
 * Guards at fire time: the instance's maintenance window (when the schedule
@@ -446,7 +447,7 @@ def save(
     ``api`` (the bearer token) or ``host`` (the CLI on this machine)."""
     now = now or _now()
     validate(sched)
-    with _lock, _StoreLock():
+    with _lock, StoreLock(store_path()):
         data = _load()
         sid = str(sched.get("id") or "")
         existing = data["schedules"].get(sid) if sid else None
@@ -487,7 +488,7 @@ def save(
 
 
 def delete(sid: str) -> None:
-    with _lock, _StoreLock():
+    with _lock, StoreLock(store_path()):
         data = _load()
         if sid not in data["schedules"]:
             raise CwcliError(ErrorKind.NOT_FOUND, "schedule.unknown", f"No schedule '{sid}'.")
@@ -497,7 +498,7 @@ def delete(sid: str) -> None:
 
 def set_enabled(sid: str, enabled: bool, *, by: str = "", now: datetime | None = None) -> None:
     now = now or _now()
-    with _lock, _StoreLock():
+    with _lock, StoreLock(store_path()):
         data = _load()
         s = data["schedules"].get(sid)
         if s is None:
@@ -520,7 +521,7 @@ def save_settings(
 ) -> None:
     """Maintenance windows (``{project: {start, end, days}}``), quiet hours
     (``{start, end}``; pass ``None`` to clear), guards and the digest choice."""
-    with _lock, _StoreLock():
+    with _lock, StoreLock(store_path()):
         data = _load()
         if windows is not None:
             for w in windows.values():
@@ -710,6 +711,10 @@ def _owner_refusal(s: dict[str, Any]) -> str | None:
     if not needs_admin(s):
         return None
     owner, source = str(s.get("owner") or ""), s.get("owner_source")
+    if not owner:
+        return "it has no recorded owner; an Admin must save it again to run it"
+    if source is None:
+        source = "local" if accounts.account(owner) else "host"
     if source in ("host", "api") or (source == "local" and accounts.account(owner)):
         return None
     if source == "ldap":
@@ -812,7 +817,7 @@ def tick(
     now = now or _now()
     read_job = read_job or _read_job
     created: list[dict[str, Any]] = []
-    with _lock, _StoreLock():
+    with _lock, StoreLock(store_path()):
         data = _load()
         changed = False
         started: set[str] = set()
@@ -1007,7 +1012,7 @@ def run_now(sid: str, create_job: CreateJob, *, now: datetime | None = None) -> 
     """Start the schedule's job this minute, guards aside (a person asked); the
     timetable is untouched."""
     now = now or _now()
-    with _lock, _StoreLock():
+    with _lock, StoreLock(store_path()):
         data = _load()
         s = data["schedules"].get(sid)
         if s is None:
@@ -1050,11 +1055,16 @@ def run_now(sid: str, create_job: CreateJob, *, now: datetime | None = None) -> 
     return rec
 
 
-class _StoreLock:
-    """``flock`` on the store, held by every write, so two schedulers (the UI daemon
-    and the machine-wide service) never fire the same slot twice and an edit from the
-    CLI never races a tick. A platform without flock runs unlocked; a lock that cannot
-    be taken refuses the write."""
+class StoreLock:
+    """``flock`` on a JSON store (``<store>.lock``), held by every write, so two
+    processes never interleave a read-modify-write: two schedulers (the UI daemon and
+    the machine-wide service) never fire the same slot twice, an edit from the CLI
+    never races a tick, and a job's integration outcome never undoes an Admin's change.
+    A platform without flock runs unlocked; a lock that cannot be taken refuses the
+    write. Not reentrant: one holder per process at a time."""
+
+    def __init__(self, store: Path):
+        self._store = store
 
     def __enter__(self):
         self._fd = None
@@ -1062,7 +1072,7 @@ class _StoreLock:
             import fcntl
         except ImportError:
             return self
-        path = store_path().with_suffix(".lock")
+        path = self._store.with_suffix(".lock")
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             self._fd = os.open(path, os.O_RDWR | os.O_CREAT, shared_home.file_mode(0o600))
@@ -1073,7 +1083,7 @@ class _StoreLock:
                 os.close(self._fd)
                 self._fd = None
             raise CwcliError(
-                ErrorKind.PRECONDITION, "schedules.lock_unavailable", f"Cannot lock {path}: {e}"
+                ErrorKind.PRECONDITION, f"{path.stem}.lock_unavailable", f"Cannot lock {path}: {e}"
             ) from e
         return self
 

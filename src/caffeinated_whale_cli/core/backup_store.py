@@ -320,6 +320,12 @@ def settings(project: str) -> dict[str, Any]:
 
 
 def save_settings(project: str, values: dict[str, Any]) -> dict[str, Any]:
+    from . import integrations
+
+    try:
+        integrations.ensure_adopted()
+    except CwcliError:
+        pass
     current = settings(project)
     for k, v in values.items():
         if k not in DEFAULT_SETTINGS:

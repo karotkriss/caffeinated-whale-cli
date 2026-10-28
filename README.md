@@ -2212,7 +2212,7 @@ With LDAP / Active Directory sign-in turned on (Settings > Integrations, below),
 **Roles:** every signed-in person is an Admin, an Operator or a Viewer, and the daemon checks each request against the role it needs.
 A Viewer reads everything the UI shows except the contents of backup sets (no download).
 An Operator also runs the fleet: lifecycle actions, jobs, backups, transfers and schedules.
-An Admin also changes Settings and Integrations, updates cwcli itself, and runs everything that destroys data or code: removing or moving instances, benches, sites and backup sets, restoring a set over a site, pruning local or off-site backups, checking out an app discarding local changes, and forcing an app update past its data-loss guard.
+An Admin also changes Settings, Integrations and each instance's backup settings (retention, the daily schedule and off-site copies), updates cwcli itself, and runs everything that destroys data or code: removing or moving instances, benches, sites and backup sets, restoring a set over a site, pruning local or off-site backups, checking out an app discarding local changes, and forcing an app update past its data-loss guard.
 A schedule that runs one of those (a prune) is created, changed, enabled or run by hand only by an Admin, and each scheduled run checks that the Admin who last saved it is still an Admin (a directory user is looked up in the directory again); otherwise the run is skipped and the schedule shows why.
 The local `admin` account and a programmatic client holding the bearer token are Admins; a directory user's role comes from their directory groups.
 The page hides what a role cannot do, and a request beyond the role is refused with `auth.role_forbidden`.
