@@ -19,6 +19,6 @@ router.onError((error, to) => {
   if (isChunkLoadError(error)) recover(to?.fullPath || window.location.pathname)
 })
 
-// Sign in first (the one-time #login= code), then open the fleet stream.
+// Ask who is signed in first; startFleet then opens the stream whenever the session is usable.
 boot().then(() => startFleet())
 createApp(App).use(router).mount('#app')
