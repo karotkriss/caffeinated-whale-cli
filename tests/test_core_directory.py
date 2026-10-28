@@ -4,6 +4,7 @@ with which role, and every refusal. The same flow against a real OpenLDAP server
 
 from __future__ import annotations
 
+import json
 import re
 
 import pytest
@@ -191,6 +192,18 @@ class TestLookUp:
         }
         out = integrations.run_action("ldap", "lookup_user", {"username": "dave"})
         assert out["found"] and out["role"] is None and not out["allowed"]
+
+
+    def test_a_look_up_never_carries_the_service_account_password(self, ldap_on):
+        out = integrations.run_action("ldap", "lookup_user", {"username": "alice"})
+        assert out["found"] and SVC[1] not in json.dumps(out)
+
+    def test_the_current_role_is_what_sign_in_would_give_now(self, ldap_on):
+        assert directory.current_role("alice") == "admin"
+        assert directory.current_role("eve") is None  # disabled
+        assert directory.current_role("zed") is None
+        integrations.disable("ldap")
+        assert directory.current_role("alice") is None
 
 
 class TestSettings:

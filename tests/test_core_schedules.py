@@ -262,6 +262,67 @@ class TestTick:
         assert run_tick(fleet, now=T0.replace(hour=3)) == []
 
 
+class TestAdminOnlySchedules:
+    """A prune deletes backups, so a schedule of one runs only on a current Admin's rights."""
+
+    def _prune(self, by, source, **over):
+        return sch.save(
+            nightly(name="prune", verb="prune-backups", **over), by=by, by_source=source, now=T0
+        )
+
+    def test_it_runs_while_its_owner_is_still_an_admin(self, monkeypatch):
+        from caffeinated_whale_cli.core import accounts, directory
+
+        accounts.ensure_default()
+        monkeypatch.setattr(directory, "current_role", lambda u: "admin")
+        fleet = Fleet()
+        for i, (by, source) in enumerate([("admin", "local"), ("ana", "ldap"), ("me", "host")]):
+            self._prune(by, source, target={"project": f"p{i}"})
+        made = run_tick(fleet, now=T0.replace(hour=2))
+        assert sorted(j["target"]["project"] for j in made) == ["p0", "p1", "p2"]
+
+    @pytest.mark.parametrize(
+        "lookup,why",
+        [
+            (lambda u: "operator", "no longer an Admin"),
+            (lambda u: None, "no longer an Admin"),
+            (
+                lambda u: (_ for _ in ()).throw(
+                    CwcliError(sch.ErrorKind.PRECONDITION, "ldap.lookup", "unreachable")
+                ),
+                "could not be confirmed",
+            ),
+        ],
+    )
+    def test_a_run_on_lost_rights_is_skipped_and_reported(self, monkeypatch, lookup, why):
+        from caffeinated_whale_cli.core import directory
+
+        monkeypatch.setattr(directory, "current_role", lookup)
+        fleet = Fleet()
+        row = self._prune("ana", "ldap")
+        assert run_tick(fleet, now=T0.replace(hour=2)) == []
+        row = sch.list_schedules(now=T0.replace(hour=2))["schedules"][0]
+        assert row["last_run"]["state"] == "skipped" and why in row["last_run"]["reason"]
+        assert "ana" in row["last_skip"]["reason"]
+
+    def test_an_owner_from_before_roles_is_not_trusted(self):
+        fleet = Fleet()
+        sch.save(nightly(verb="s3-prune"), by="someone", now=T0)
+        data = sch._load()
+        for rec in data["schedules"].values():
+            rec.pop("owner_source")
+        sch._save(data)
+        assert run_tick(fleet, now=T0.replace(hour=2)) == []
+
+    def test_an_admin_saving_it_takes_it_over_and_others_keep_their_owner(self):
+        first = self._prune("ana", "ldap")
+        again = sch.save({**first, "cron": "0 3 * * *"}, by="admin", by_source="local", now=T0)
+        assert (again["owner"], again["owner_source"]) == ("admin", "local")
+        plain = sch.save(nightly(), by="otto", by_source="ldap", now=T0)
+        plain = sch.save({**plain, "cron": "0 4 * * *"}, by="ana", by_source="ldap", now=T0)
+        assert plain["owner"] == "otto"
+
+
 class TestRecipesAndTriggers:
     def test_a_recipe_runs_its_steps_one_after_another_and_stops_on_failure(self):
         fleet = Fleet()

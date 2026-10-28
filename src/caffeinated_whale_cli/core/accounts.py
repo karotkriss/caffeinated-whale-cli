@@ -6,7 +6,7 @@ the server-side sessions, keyed by the SHA-256 of the session id the browser hol
 in its cookie - the file never contains a password or a usable session id.
 
 * Roles: ``admin`` (everything), ``operator`` (runs the fleet: lifecycle, jobs,
-  backups, schedules; not settings, integrations, removals or self-update) and
+  backups, schedules; not settings, integrations, ``ADMIN_VERBS`` or self-update) and
   ``viewer`` (reads only). The local ``admin`` account is always an Admin and stays
   the break-glass way in while directory sign-in is on. A directory user
   (``core.directory``) has no record here, only sessions carrying ``source:
@@ -52,6 +52,21 @@ REMEMBER_S = 30 * 24 * 3600
 
 ROLES = ("admin", "operator", "viewer")
 ROLE_RANK = {"viewer": 0, "operator": 1, "admin": 2}
+# The job verbs that destroy data or code: an Admin's alone, started by hand or by a
+# schedule. An Operator runs and maintains the fleet but never destroys.
+ADMIN_VERBS = frozenset(
+    {
+        "rm",
+        "rm-site",
+        "rm-bench",
+        "move-sites",
+        "restore-set",
+        "delete-backup",
+        "prune-backups",
+        "s3-prune",
+        "self-update",
+    }
+)
 
 LOCKOUT_AFTER = 5
 LOCKOUT_WINDOW_S = 10 * 60
@@ -78,6 +93,14 @@ class Account:
     role: str = "admin"
     source: str = "local"  # local | ldap
     name: str = ""
+
+
+def admin_only(verb: object, args: object = None) -> bool:
+    """Whether a job of ``verb`` with ``args`` needs an Admin: an ``ADMIN_VERBS`` verb,
+    or an app checkout that discards local changes."""
+    if verb in ADMIN_VERBS:
+        return True
+    return verb == "apps-checkout" and isinstance(args, dict) and args.get("reset") is True
 
 
 def store_path() -> Path:

@@ -163,11 +163,18 @@ class TestRoles:
             _req(daemon, "/api/v1/jobs", {"verb": "start", "target": {"project": "p"}}, cookie)[0]
             == 202
         )
-        for verb in sorted(serve_cmd.ADMIN_VERBS):
+        for verb in sorted(accounts.ADMIN_VERBS):
             status, body, _ = _req(
                 daemon, "/api/v1/jobs", {"verb": verb, "target": {"project": "p"}}, cookie
             )
             assert status == 403 and _code(body) == "auth.role_forbidden", verb
+        for verb in ("restore-set", "prune-backups", "s3-prune", "move-sites"):
+            assert verb in accounts.ADMIN_VERBS
+        checkout = {"verb": "apps-checkout", "target": {"project": "p"}, "args": {"ref": "x"}}
+        assert _req(daemon, "/api/v1/jobs", checkout, cookie)[0] == 202
+        checkout["args"]["reset"] = True
+        status, body, _ = _req(daemon, "/api/v1/jobs", checkout, cookie)
+        assert status == 403 and _code(body) == "auth.role_forbidden"
         assert _req(daemon, "/api/v1/settings", {"setting": "tips.enable"}, cookie)[0] == 403
         assert _req(daemon, "/api/v1/integrations", cookie=cookie)[0] == 403
         assert (
@@ -179,6 +186,44 @@ class TestRoles:
         monkeypatch.setattr(core_jobs, "read_job", lambda job_id, **kw: {"verb": "rm"})
         status, body, _ = _req(daemon, "/api/v1/jobs/abcdefgh1/retry", {}, cookie)
         assert status == 403 and _code(body) == "auth.role_forbidden"
+
+    def test_an_operator_cannot_retry_a_reset_checkout(self, daemon, monkeypatch):
+        cookie = self._as(daemon, "otto")
+        job = {"verb": "apps-checkout", "args": {"reset": True}}
+        monkeypatch.setattr(core_jobs, "read_job", lambda job_id, **kw: job)
+        status, body, _ = _req(daemon, "/api/v1/jobs/abcdefgh1/retry", {}, cookie)
+        assert status == 403 and _code(body) == "auth.role_forbidden"
+
+    def test_only_an_admin_schedules_a_prune(self, daemon):
+        otto, ana = self._as(daemon, "otto"), self._as(daemon, "ana")
+        prune = {
+            "name": "p",
+            "verb": "prune-backups",
+            "target": {"project": "p"},
+            "cron": "0 2 * * *",
+        }
+        status, body, _ = _req(daemon, "/api/v1/schedules", {"op": "save", "schedule": prune}, otto)
+        assert status == 403 and _code(body) == "auth.role_forbidden"
+        status, body, _ = _req(daemon, "/api/v1/schedules", {"op": "save", "schedule": prune}, ana)
+        assert status == 200
+        row = body["data"]
+        assert (row["owner"], row["owner_source"]) == ("ana", "ldap")
+        for payload in (
+            {"op": "save", "schedule": {**prune, "id": row["id"], "verb": "backup-sites"}},
+            {"op": "enable", "id": row["id"], "enabled": True},
+            {"op": "run", "id": row["id"]},
+        ):
+            status, body, _ = _req(daemon, "/api/v1/schedules", payload, otto)
+            assert status == 403 and _code(body) == "auth.role_forbidden", payload["op"]
+        backup = {**prune, "verb": "backup-sites"}
+        status, _b, _ = _req(daemon, "/api/v1/schedules", {"op": "save", "schedule": backup}, otto)
+        assert status == 200
+
+    def test_looking_up_a_directory_user_is_admin_only(self, daemon):
+        payload = {"op": "action", "id": "ldap", "action": "lookup_user", "args": {"username": "x"}}
+        for who in ("otto", "vic"):
+            status, body, _ = _req(daemon, "/api/v1/integrations", payload, self._as(daemon, who))
+            assert status == 403 and _code(body) == "auth.role_forbidden", who
 
     def test_an_admin_from_the_directory_may_remove(self, daemon):
         cookie = self._as(daemon, "ana")

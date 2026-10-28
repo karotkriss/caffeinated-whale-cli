@@ -7,6 +7,7 @@ import { Button, Checkbox, Dialog, ErrorMessage, FormControl, Select } from 'fra
 import { scheduleDialog } from '../data/schedule-dialog'
 import { DAYS, VERBS, fromCron, saveSchedule, toCron, verbNeed, verbNeedsFlag } from '../data/schedules'
 import { details, instances, loadDetail } from '../data/fleet'
+import { can } from '../data/session'
 
 const open = computed({ get: () => scheduleDialog.open, set: (v) => (scheduleDialog.open = v) })
 const f = ref({})
@@ -54,7 +55,7 @@ const sites = computed(() => {
   return (b?.sites || []).map((s) => ({ value: s.name || s, label: s.name || s }))
 })
 const cron = computed(() => toCron(picker.value))
-const verbOptions = [...VERBS.map((v) => ({ value: v.value, label: v.label })), { value: 'recipe', label: 'Recipe (several steps, one after another)' }]
+const verbOptions = [...VERBS.filter((v) => !v.admin || can('admin')).map((v) => ({ value: v.value, label: v.label })), { value: 'recipe', label: 'Recipe (several steps, one after another)' }]
 const isRecipe = computed(() => f.value.verb === 'recipe')
 const addStep = () => f.value.steps.push({ verb: 'backup-sites', site: '' })
 const removeStep = (i) => f.value.steps.splice(i, 1)

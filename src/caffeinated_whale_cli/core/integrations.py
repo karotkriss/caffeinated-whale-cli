@@ -11,11 +11,8 @@ integrations use it now:
 * ``s3`` provides ``backup_target``: the bucket that receives the backup store's
   encrypted off-site copies (``core.backup_store``).
 
-Community integrations will be installable Python packages registered under the
-``cwcli.integrations`` entry-point group, each exposing an ``Integration`` with
-``publisher="community"``; they will show as "Community, not reviewed", start off,
-and only an Admin will install them. The loader is a later phase - nothing reads the
-entry-point group yet.
+Community integrations (``publisher="community"``, shown as "Community, not
+reviewed", off until an Admin installs one) are a later phase.
 
 The store is ``<cwcli home>/integrations.json`` (0600; 0660 to the cwcli group on a
 shared install). Settings are plain JSON; every ``secret`` field is sealed with
@@ -49,7 +46,6 @@ from .errors import CwcliError, ErrorKind
 
 OFFICIAL = "official"
 COMMUNITY = "community"
-ENTRY_POINT_GROUP = "cwcli.integrations"
 
 _lock = threading.RLock()
 # Stores already checked for a pre-integration S3 target (one scan per store per process).
@@ -93,6 +89,8 @@ class Integration:
     )
     # Runs after the integration is turned on, off, or changed.
     on_change: Callable[[], object] | None = None
+    # Lines the Integrations page shows on the integration's card.
+    notices: Callable[[], list[str]] | None = None
     # Settings naming where the secrets are sent: a change to any of them needs the
     # secrets typed again, so a stored one never goes to a server the request names.
     secrets_bound_to: tuple[str, ...] = ()
@@ -242,6 +240,7 @@ def _view(integ: Integration, rec: dict) -> dict[str, Any]:
         "secrets_set": {k: bool(stored.get(k)) for k in integ.secret_keys()},
         "last_test": rec.get("last_test"),
         "last_error": rec.get("last_error"),
+        "notices": integ.notices() if integ.notices is not None else [],
         "updated_at": rec.get("updated_at"),
         "updated_by": rec.get("updated_by"),
     }
@@ -485,6 +484,18 @@ def _s3_test(settings: dict[str, Any], secrets: dict[str, str]) -> Check:
     return Check(False, str(verdict["error"]))
 
 
+def _s3_notices() -> list[str]:
+    from . import backup_store
+
+    return [
+        f"Off-site copies of {project} are paused: its old target "
+        f"{old.get('endpoint') or '-'} (bucket {old.get('bucket') or '-'}) was not carried "
+        "over. Set the bucket up here, then turn copies back on in "
+        f"{project}'s backup settings."
+        for project, old in backup_store.paused_legacy().items()
+    ]
+
+
 S3_INTEGRATION = Integration(
     id="s3",
     name="S3 backup target",
@@ -508,6 +519,7 @@ S3_INTEGRATION = Integration(
     normalize=_s3_normalize,
     test=_s3_test,
     secrets_bound_to=("endpoint",),
+    notices=_s3_notices,
 )
 
 
@@ -515,7 +527,8 @@ def _adopt_legacy_s3() -> tuple[dict, Path] | None:
     """The bucket an instance's backup settings named before the S3 target became an
     integration: the first instance (by name) with copies on and a stored secret is
     adopted, on, and its plaintext secret file is removed; only the instances that were
-    copying to that bucket keep copying. Runs once - an ``s3`` record, on or off, means
+    copying to that bucket keep copying, and one that copied elsewhere is paused with a
+    notice (``backup_store.keep_legacy_copy_choices``). Runs once - an ``s3`` record, on or off, means
     it has run."""
     from . import backup_store
 
@@ -535,5 +548,5 @@ def _adopt_legacy_s3() -> tuple[dict, Path] | None:
         }
     except CwcliError:
         return None
-    backup_store.keep_legacy_copy_choices(settings)
+    backup_store.keep_legacy_copy_choices(settings, secret_file)
     return rec, secret_file

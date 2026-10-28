@@ -11,7 +11,10 @@ job (``origin.schedule = <id>``), so history, logs and Retry work unchanged.
   or a one-off ``at``; ``next_run`` is computed in the machine's local time.
 * Consent: backup, restart, start/stop and cache clears run unattended freely;
   ``apps-update`` and ``migrate`` only when the schedule says ``unattended``.
-  Removals are never schedulable (``SCHEDULABLE`` is the whole list).
+  Removals are never schedulable (``SCHEDULABLE`` is the whole list). A schedule
+  running an Admin-only verb (``accounts.admin_only``: the prunes) is owned by the
+  Admin who last saved it, and each run is skipped, with the reason, unless that
+  owner is still an Admin (a directory owner is looked up in the directory again).
 * Missed runs: ``missed = "run"`` (default) runs once on wake, ``"skip"`` waits
   for the next occurrence.
 * Guards at fire time: the instance's maintenance window (when the schedule
@@ -38,6 +41,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ..utils import config_utils, shared_home
+from . import accounts
 from .errors import CwcliError, ErrorKind
 
 SCHEDULABLE: dict[str, str] = {
@@ -419,8 +423,27 @@ def upcoming(
     return out[:limit]
 
 
-def save(sched: dict[str, Any], *, by: str = "", now: datetime | None = None) -> dict[str, Any]:
-    """Create (no ``id``) or update a schedule; validated first. Returns the public row."""
+def get(sid: str) -> dict[str, Any] | None:
+    with _lock:
+        return _load()["schedules"].get(sid) if sid else None
+
+
+def needs_admin(sched: dict[str, Any]) -> bool:
+    """Whether the schedule runs a verb only an Admin may start."""
+    steps = [x for x in sched.get("steps") or [] if isinstance(x, dict)]
+    return any(accounts.admin_only(x.get("verb"), x.get("args")) for x in [sched, *steps])
+
+
+def save(
+    sched: dict[str, Any],
+    *,
+    by: str = "",
+    by_source: str = "host",
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Create (no ``id``) or update a schedule; validated first. Returns the public row.
+    ``by_source`` is where ``by`` signed in: ``local`` or ``ldap`` (a web UI account),
+    ``api`` (the bearer token) or ``host`` (the CLI on this machine)."""
     now = now or _now()
     validate(sched)
     with _lock, _StoreLock():
@@ -432,7 +455,16 @@ def save(sched: dict[str, Any], *, by: str = "", now: datetime | None = None) ->
         if not sid:
             sid = "sch-" + secrets.token_hex(4)
         rec = dict(existing or {})
-        keep = {"last_run", "history", "owner", "created_at", "await_start", "recipe", "due_from"}
+        keep = {
+            "last_run",
+            "history",
+            "owner",
+            "owner_source",
+            "created_at",
+            "await_start",
+            "recipe",
+            "due_from",
+        }
         rec.update({k: v for k, v in sched.items() if k not in keep and k != "id"})
         rec.setdefault("enabled", True)
         rec.setdefault("kind", "cron")
@@ -442,7 +474,8 @@ def save(sched: dict[str, Any], *, by: str = "", now: datetime | None = None) ->
         ):
             _rearm(rec, now)
         rec.setdefault("created_at", _iso(now))
-        rec.setdefault("owner", by or "")
+        if needs_admin(rec) or "owner" not in rec:
+            rec["owner"], rec["owner_source"] = by or "", by_source
         hist = list(rec.get("history") or [])
         hist.append(
             {"at": _iso(now), "by": by or "", "action": "updated" if existing else "created"}
@@ -663,9 +696,34 @@ def _skip_reason(
             return f"less than {guards['min_free_disk_gb']} GB free on disk"
         if _free_mem_mb() < float(guards["min_free_mem_mb"]):
             return f"less than {int(guards['min_free_mem_mb'])} MB of memory available"
+    refusal = _owner_refusal(s)
+    if refusal:
+        return refusal
     if verb not in _START_STOP and status == "stopped":
         return _STOPPED
     return None
+
+
+def _owner_refusal(s: dict[str, Any]) -> str | None:
+    """Why a schedule running an Admin-only verb may not run on its owner's rights
+    now, or None: the owner must still be an Admin."""
+    if not needs_admin(s):
+        return None
+    owner, source = str(s.get("owner") or ""), s.get("owner_source")
+    if source in ("host", "api") or (source == "local" and accounts.account(owner)):
+        return None
+    if source == "ldap":
+        from . import directory
+
+        try:
+            if directory.current_role(owner) == "admin":
+                return None
+        except CwcliError as e:
+            return f"its owner {owner}'s Admin role could not be confirmed: {e.message}"
+    return (
+        f"its owner {owner or '(unknown)'} is no longer an Admin; an Admin must save it "
+        "again to run it"
+    )
 
 
 def _waits(reason: str) -> bool:
