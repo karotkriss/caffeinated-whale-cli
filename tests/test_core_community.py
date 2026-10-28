@@ -481,6 +481,34 @@ class TestLoading:
         integrations.disable("hello")
         assert accounts.session_account(session) is None
 
+    @pytest.mark.parametrize(
+        "bad",
+        ['fields=({"key": "users", "label": "Users"},)', 'actions={"check": "not a function"}'],
+    )
+    def test_a_malformed_integration_is_a_card_and_never_breaks_the_page(self, home, repo, bad):
+        rec = community.install(_url(repo), commit=_write(repo))
+        community._forget("hello")
+        init = community.root() / rec["dir"] / "cwcli_hello" / "__init__.py"
+        init.write_text(
+            init.read_text() + f"\nimport dataclasses\n"
+            f"INTEGRATION = dataclasses.replace(INTEGRATION, {bad})\n"
+        )
+        cards = {c["id"]: c for c in integrations.view()}
+        assert {"ldap", "s3", "hello"} <= set(cards)
+        assert cards["hello"]["community"]["load_error"].startswith("its ")
+
+        repo2 = _second_repo(home, "hola")
+        _write(repo2, iid="hola")
+        init2 = repo2 / "src" / "cwcli_hola" / "__init__.py"
+        init2.write_text(
+            init2.read_text() + f"\nimport dataclasses\n"
+            f"INTEGRATION = dataclasses.replace(INTEGRATION, {bad})\n"
+        )
+        _git(repo2, "commit", "-qam", "bad")
+        with pytest.raises(CwcliError) as e:
+            community.install(_url(repo2), commit=_git(repo2, "rev-parse", "HEAD"))
+        assert e.value.code == "community.invalid_package"
+
     def test_cwclis_own_packages_win_over_a_bundled_copy(self, home, repo):
         rec = community.install(_url(repo), commit=_write(repo))
         integrations.view()
@@ -516,9 +544,17 @@ class TestLoading:
 
         guarded = community._guarded(
             dataclasses.replace(
-                integrations.S3_INTEGRATION, test=boom, normalize=boom, on_change=boom, notices=boom
+                integrations.S3_INTEGRATION,
+                test=boom,
+                normalize=boom,
+                on_change=boom,
+                notices=boom,
+                actions={"check": boom},
             )
         )
+        with pytest.raises(CwcliError) as action:
+            guarded.actions["check"]({}, {}, {})
+        assert action.value.kind is ErrorKind.USAGE and "boom" in action.value.message
         assert guarded.test({}, {}).ok is False
         with pytest.raises(CwcliError) as e:
             guarded.normalize({})
