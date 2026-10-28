@@ -33,8 +33,9 @@ async function runDrill() {
 function backupNow() {
   openJob('backup', { project: props.project, bench: props.bench, site: props.site, args: { store: true, with_files: true, reason: 'manual' } })
 }
-function verify(s) {
-  createJob({ verb: 'verify-backup', target: { project: s.project, site: s.site }, args: { set_key: s.key } })
+async function verify(s) {
+  const record = await createJob({ verb: 'verify-backup', target: { project: s.project, site: s.site }, args: { set_key: s.key } })
+  trackJob(record.id)
 }
 function remove(s) {
   openAction('delete_backup', { project: s.project, site: s.site, set: s })

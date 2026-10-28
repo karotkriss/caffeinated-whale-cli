@@ -46,7 +46,7 @@ async function start() {
     <template #actions="{ close }">
       <div class="flex justify-end gap-2">
         <Button variant="ghost" label="Cancel" @click="close" />
-        <Button variant="solid" label="Receive" :disabled="!ok" :loading="running" @click="start" />
+        <Button variant="solid" data-primary label="Receive" :disabled="!ok" :loading="running" @click="start" />
       </div>
     </template>
   </Dialog>
