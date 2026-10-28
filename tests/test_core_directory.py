@@ -212,11 +212,20 @@ class TestSettings:
         assert e.value.code == code
 
     def test_defaults_follow_the_directory_type(self):
-        ad = directory._normalize({**SETTINGS, "directory_type": "Active Directory"})
+        ad = directory._with_defaults(
+            directory._normalize({**SETTINGS, "directory_type": "Active Directory"})
+        )
         assert ad["user_filter"] == "(sAMAccountName={username})"
         assert ad["username_attribute"] == "sAMAccountName"
-        ol = directory._normalize(SETTINGS)
+        ol = directory._with_defaults(directory._normalize(SETTINGS))
         assert (ol["user_filter"], ol["display_name_attribute"]) == ("(uid={username})", "cn")
+
+    def test_switching_the_directory_type_drops_the_old_types_search(self, ldap_on):
+        integrations.configure("ldap", {"directory_type": "Active Directory"})
+        stored = integrations.view("ldap")[0]["settings"]
+        integrations.configure("ldap", {**stored, "directory_type": "OpenLDAP"})
+        out = integrations.run_action("ldap", "lookup_user", {"username": "bob"})
+        assert out["found"] and out["role"] == "operator"
 
     def test_a_filter_without_parentheses_is_wrapped_and_starttls_is_kept(self):
         out = directory._normalize(

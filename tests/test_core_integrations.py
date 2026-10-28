@@ -49,6 +49,7 @@ def fake(monkeypatch, tmp_path):
         test=_test,
         actions={"echo": lambda s, sec, args: {"host": s["host"], "args": args}},
         on_change=_changed,
+        secrets_bound_to=("port",),
     )
     monkeypatch.setattr(integrations, "registry", lambda: {"fake": integ})
     return calls
@@ -69,7 +70,7 @@ class TestSecrets:
 
     def test_an_empty_secret_keeps_the_stored_one_and_a_new_one_replaces_it(self, fake):
         integrations.configure("fake", {"host": "good"}, {"token": SECRET}, enable=True)
-        integrations.configure("fake", {"port": 2}, {"token": ""})
+        integrations.configure("fake", {"host": "good"}, {"token": ""})
         assert integrations.active("fake")[1] == {"token": SECRET}
         check, _view = integrations.configure("fake", None, {"token": "replaced"})
         assert check is not None and not check.ok  # on, so the new secret is tested first
@@ -87,6 +88,22 @@ class TestSecrets:
         integrations.configure("fake", {"host": "good"}, {"token": SECRET}, enable=True)
         assert integrations.store_path().stat().st_mode & 0o777 == 0o600
         assert integrations.key_path().stat().st_mode & 0o777 == 0o600
+
+
+    def test_a_stored_secret_is_never_sent_where_the_request_points_it(self, fake):
+        integrations.configure("fake", {"host": "good"}, {"token": SECRET}, enable=True)
+        tested = len(fake["tested"])
+        for call in (
+            lambda: integrations.test("fake", {"port": 9}),
+            lambda: integrations.run_action("fake", "echo", {}, {"port": 9}),
+            lambda: integrations.configure("fake", {"port": 9}),
+        ):
+            with pytest.raises(CwcliError) as e:
+                call()
+            assert e.value.code == "integration.secret_retype" and "Token" in e.value.message
+        assert len(fake["tested"]) == tested
+        assert integrations.test("fake", {"port": 9}, {"token": SECRET}).ok
+        assert integrations.test("fake", {"host": "good"}).ok  # the port kept: stored secret
 
 
 class TestTurningOn:

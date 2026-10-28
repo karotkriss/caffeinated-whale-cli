@@ -20,7 +20,7 @@ const advanced = ref(false)
 
 const ROLES = [{ label: 'Admin', value: 'admin' }, { label: 'Operator', value: 'operator' }, { label: 'Viewer', value: 'viewer' }]
 // The directory's own defaults, shown as placeholders until a value is typed
-// (core/directory.py fills the same ones on save).
+// (core/directory.py uses the same ones for a field left empty).
 const LDAP_DEFAULTS = {
   'Active Directory': { user_filter: '(sAMAccountName={username})', username_attribute: 'sAMAccountName', email_attribute: 'mail', display_name_attribute: 'displayName' },
   OpenLDAP: { user_filter: '(uid={username})', username_attribute: 'uid', email_attribute: 'mail', display_name_attribute: 'cn' },

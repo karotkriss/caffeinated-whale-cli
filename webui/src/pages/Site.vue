@@ -34,7 +34,7 @@ const jobOption = (label, icon, verb) => ({ label, icon, onClick: () => openJob(
 const more = computed(() => [
   jobOption('Back up site', 'lucide-database-backup', 'backup'),
   { label: 'Clone site…', icon: 'lucide-copy', onClick: () => openTransfer({ mode: 'clone', project, bench: String(index), sites: [siteName] }) },
-  { label: 'Move site…', icon: 'lucide-move', onClick: () => openTransfer({ mode: 'move', project, bench: String(index), sites: [siteName] }) },
+  ...(can('admin') ? [{ label: 'Move site…', icon: 'lucide-move', onClick: () => openTransfer({ mode: 'move', project, bench: String(index), sites: [siteName] }) }] : []),
   jobOption('Migrate site', 'lucide-database-zap', 'migrate'),
   jobOption('Run tests', 'lucide-flask-conical', 'run-tests'),
   jobOption('Complete setup wizard', 'lucide-list-checks', 'setup-wizard'),

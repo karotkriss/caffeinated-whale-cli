@@ -78,8 +78,10 @@ def _normalize(settings: dict) -> dict:
     for key in ("server_url", "bind_dn", "base_dn", "ca_certificate"):
         out[key] = str(settings.get(key) or "").strip()
     out["starttls"] = settings.get("starttls") is True
-    for key, default in _DEFAULTS[kind].items():
-        out[key] = str(settings.get(key) or "").strip() or default
+    for key in _DEFAULTS[kind]:
+        out[key] = str(settings.get(key) or "").strip()
+    if out["user_filter"] and not out["user_filter"].startswith("("):
+        out["user_filter"] = f"({out['user_filter']})"
     if out["server_url"]:
         try:
             scheme, _host, _port = ldap.parse_url(out["server_url"])
@@ -103,20 +105,26 @@ def _normalize(settings: dict) -> dict:
                 "ldap.ca_certificate",
                 "The CA certificate is not a PEM certificate (-----BEGIN CERTIFICATE-----).",
             ) from None
-    if "{username}" not in out["user_filter"]:
+    user_filter = _with_defaults(out)["user_filter"]
+    if "{username}" not in user_filter:
         raise CwcliError(
             ErrorKind.USAGE,
             "ldap.user_filter",
             "The user search filter must contain {username}, e.g. (sAMAccountName={username}).",
         )
-    if not out["user_filter"].startswith("("):
-        out["user_filter"] = f"({out['user_filter']})"
     try:
-        ldap.parse_filter(out["user_filter"].replace("{username}", "x"))
+        ldap.parse_filter(user_filter.replace("{username}", "x"))
     except ldap.LdapError as e:
         raise CwcliError(ErrorKind.USAGE, "ldap.user_filter", e.message) from None
     out["group_roles"] = _group_roles(settings.get("group_roles"))
     return out
+
+
+def _with_defaults(settings: dict) -> dict:
+    """The settings with the directory type's own value for each search field left
+    empty, so a change of type never keeps the other type's filter and attributes."""
+    defaults = _DEFAULTS[settings["directory_type"]]
+    return {**settings, **{k: settings.get(k) or v for k, v in defaults.items()}}
 
 
 def _group_roles(raw) -> list[dict]:
@@ -277,6 +285,7 @@ def lookup_user(settings: dict, secrets: dict, args: dict) -> dict:
     username = str(args.get("username") or "").strip()
     if not username:
         raise CwcliError(ErrorKind.USAGE, "ldap.username", "Type a username to look up.")
+    settings = _with_defaults(settings)
     try:
         with _service(settings, secrets) as conn:
             entry = _find(conn, settings, username)
@@ -323,7 +332,7 @@ def authenticate(username: str, password: str) -> DirectoryUser:
     found = integrations.active("ldap")
     if found is None:
         raise _refused("auth.invalid", "That username and password do not match.")
-    settings, secrets = found
+    settings, secrets = _with_defaults(found[0]), found[1]
     if not username or not password:
         raise _refused("auth.invalid", "That username and password do not match.")
     try:
@@ -435,4 +444,5 @@ INTEGRATION = integrations.Integration(
     test=_test,
     actions={"lookup_user": lookup_user},
     on_change=accounts.close_directory_sessions,
+    secrets_bound_to=("server_url", "starttls", "ca_certificate", "bind_dn"),
 )
