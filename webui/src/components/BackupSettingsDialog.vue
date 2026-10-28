@@ -3,13 +3,11 @@
 // retention preview: what the policy keeps and removes right now, with a prune button.
 import { computed, ref, watch } from 'vue'
 import { Alert, Button, Checkbox, Dialog, ErrorMessage, FormControl, Select } from 'frappe-ui'
-import { useRouter } from 'vue-router'
 import { backupSettingsDialog, loadRetention, saveBackupSettings, configureS3, loadOffsite, sizeText, whenText, REASON_LABEL } from '../data/backups'
 import { instances } from '../data/fleet'
 import { createJob } from '../data/jobs'
 import { trackJob } from '../data/job-toasts'
 
-const router = useRouter()
 const d = backupSettingsDialog
 const project = ref(null)
 const form = ref({})
@@ -69,7 +67,6 @@ async function fetchOffsite(key) {
     const record = await createJob({ verb: 's3-fetch', target: { project: project.value }, args: { set_keys: [key] } })
     trackJob(record.id)
     d.open = false
-    router.push(`/jobs/${record.id}`)
   } catch (e) { error.value = e }
 }
 async function pruneOffsite() {
@@ -77,7 +74,6 @@ async function pruneOffsite() {
     const record = await createJob({ verb: 's3-prune', target: { project: project.value }, args: {}, consent: true })
     trackJob(record.id)
     d.open = false
-    router.push(`/jobs/${record.id}`)
   } catch (e) { error.value = e }
 }
 watch(() => d.open, (open) => { if (open) { project.value = d.project || instances.value[0]?.project || null; plan.value = null; refresh() } })
@@ -106,7 +102,6 @@ async function prune() {
     const record = await createJob({ verb: 'prune-backups', target: { project: project.value }, args: {}, consent: true })
     trackJob(record.id)
     d.open = false
-    router.push(`/jobs/${record.id}`)
   } catch (e) { error.value = e } finally { pruning.value = false }
 }
 </script>

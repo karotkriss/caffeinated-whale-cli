@@ -49,7 +49,7 @@ const pages = [
   ['Instances', 'lucide-boxes', '/instances'],
   ['Apps', 'lucide-package', '/apps'],
   ['Sites', 'lucide-globe', '/sites'],
-  ['Health check', 'lucide-stethoscope', '/health'],
+  ['Health check', 'lucide-stethoscope', 'settings:health'],
   ['Settings', 'lucide-settings', 'settings'],
 ]
 const commands = computed(() =>
@@ -64,7 +64,7 @@ const commands = computed(() =>
 
 function select(value) {
   paletteOpen.value = false
-  if (value.to === 'settings') openSettings()
+  if (value.to?.startsWith('settings')) openSettings(value.to.split(':')[1])
   else if (value.to) router.push(value.to)
   else if (value.action) openAction(value.action, value.ctx || {})
 }

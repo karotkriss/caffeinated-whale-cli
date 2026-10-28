@@ -1,17 +1,16 @@
 <script setup>
 // Clone or move sites (phase 2): the sources (one, or picked from a bench), the target
-// instance and bench, a name per copy, the config rule, and for a move a typed confirm.
+// instance and bench, a name per copy, the config rule, and for a move or a copy that
+// replaces an existing site a typed confirm.
 // One job runs them in order with x of N progress; a failure stops before the next source.
 import { computed, ref, watch } from 'vue'
 import { Alert, Button, Checkbox, Dialog, ErrorMessage, FormControl, Select } from 'frappe-ui'
-import { useRouter } from 'vue-router'
 import { transferDialog } from '../data/transfer'
 import { instances, details, loadDetail } from '../data/fleet'
 import { createJob } from '../data/jobs'
 import { trackJob } from '../data/job-toasts'
 import { ensureRunning } from '../data/start-gate'
 
-const router = useRouter()
 const d = transferDialog
 const mode = ref('clone')
 const chosen = ref([])
@@ -57,8 +56,14 @@ const pairs = computed(() => chosen.value.map((site) => ({ site, target_site: ta
 const clashes = computed(() => pairs.value.filter((p) => samePlace.value && p.site === p.target_site).map((p) => p.site))
 const overwrites = computed(() => pairs.value.filter((p) => targetSites.value.has(p.target_site) && !(samePlace.value && p.site === p.target_site)).map((p) => p.target_site))
 const valid = computed(() => pairs.value.length > 0 && pairs.value.every((p) => nameOk(p.target_site)) && !clashes.value.length && targetProject.value && targetBench.value != null)
-const confirmWord = computed(() => (mode.value === 'move' ? (pairs.value.length === 1 ? pairs.value[0].site : `move ${pairs.value.length} sites`) : ''))
-const confirmed = computed(() => mode.value !== 'move' || typed.value.trim() === confirmWord.value)
+const needsConsent = computed(() => mode.value === 'move' || overwrites.value.length > 0)
+const confirmWord = computed(() => {
+  if (overwrites.value.length) return overwrites.value.length === 1 ? overwrites.value[0] : `replace ${overwrites.value.length} sites`
+  if (mode.value === 'move') return pairs.value.length === 1 ? pairs.value[0].site : `move ${pairs.value.length} sites`
+  return ''
+})
+const confirmWhat = computed(() => (overwrites.value.length ? (mode.value === 'move' ? 'the move and the replacement' : 'the replacement') : 'the move'))
+const confirmed = computed(() => !needsConsent.value || typed.value.trim() === confirmWord.value)
 function toggle(site) {
   chosen.value = chosen.value.includes(site) ? chosen.value.filter((s) => s !== site) : [...chosen.value, site]
 }
@@ -72,11 +77,10 @@ async function start() {
       verb: mode.value === 'move' ? 'move-sites' : 'clone-sites',
       target: { project: d.project, bench: d.bench },
       args: { sites: pairs.value, target_project: targetProject.value, target_bench: targetBench.value, config_mode: keepConfig.value ? 'keep' : 'carry', with_files: withFiles.value },
-      consent: mode.value === 'move',
+      consent: needsConsent.value,
     })
     trackJob(record.id)
     d.open = false
-    router.push(`/jobs/${record.id}`)
   } catch (e) {
     error.value = e
   } finally {
@@ -113,21 +117,21 @@ async function start() {
         <p v-if="clashes.length" class="text-xs text-ink-red-5">{{ clashes.join(', ') }} cannot be copied onto itself; give the copy another name.</p>
         <p v-else-if="pairs.some((p) => !nameOk(p.target_site))" class="text-xs text-ink-red-5">lowercase letters, digits, dots and dashes</p>
       </div>
-      <Alert v-if="overwrites.length" theme="amber" title="Existing sites will be replaced" :description="`${overwrites.join(', ')} already exist on the target bench; the copy replaces every byte of them (the target keeps its own database name and credentials).`" />
+      <Alert v-if="overwrites.length" theme="amber" title="Existing sites will be replaced" :description="`${overwrites.join(', ')} already exist on the target bench; each is backed up into the store first (a verified before-overwrite set), then the copy replaces every byte of it (the target keeps its own database name and credentials).`" />
       <div class="space-y-2">
         <Checkbox v-model="withFiles" label="Include public and private files" />
         <Checkbox v-model="keepConfig" label="Keep the target's site config as is (default: carry the source's app settings, keep the target's db_* keys)" />
       </div>
       <p class="text-xs text-ink-gray-5">Each site is backed up into the store first (a verified set; a failed one stops before anything is created), the copy is created if it does not exist, restored, migrated and checked.<template v-if="mode === 'move'"> Then the source is dropped through the ordinary site-removal gate, so its own archive lands in the store too.</template> {{ pairs.length > 1 ? 'Sites run in order with x of N progress; a failure stops before the next source is touched.' : '' }}</p>
-      <div v-if="mode === 'move'" class="flex items-end gap-2">
-        <FormControl v-model="typed" class="w-80" :label="`Type ${confirmWord} to confirm the move`" :placeholder="confirmWord" autocomplete="off" />
+      <div v-if="needsConsent" class="flex items-end gap-2">
+        <FormControl v-model="typed" class="w-80" :label="`Type ${confirmWord} to confirm ${confirmWhat}`" :placeholder="confirmWord" autocomplete="off" />
       </div>
       <ErrorMessage :message="error?.message || error" />
     </div>
     <template #actions="{ close }">
       <div class="flex justify-end gap-2">
         <Button variant="ghost" label="Cancel" @click="close" />
-        <Button variant="solid" :theme="mode === 'move' ? 'red' : 'gray'" :label="mode === 'move' ? `Move ${pairs.length || ''}`.trim() : `Clone ${pairs.length || ''}`.trim()" :disabled="!valid || !confirmed" :loading="running" @click="start" />
+        <Button variant="solid" :theme="needsConsent ? 'red' : 'gray'" :label="mode === 'move' ? `Move ${pairs.length || ''}`.trim() : `Clone ${pairs.length || ''}`.trim()" :disabled="!valid || !confirmed" :loading="running" @click="start" />
       </div>
     </template>
   </Dialog>

@@ -77,7 +77,9 @@ _POST_MIGRATE_SETTLE = 0.5
 # ------------------------------------------------------------------------------ DTOs
 
 
-# The apps a core update resets to their remote branch; every other app is left alone.
+# The core apps (the backups spec's "core updates": frappe / erpnext). A core update
+# resets only the core apps it is NAMED for, so `apps update <p> frappe` never touches
+# erpnext; every other app is left alone.
 CORE_APPS = ("frappe", "erpnext")
 
 

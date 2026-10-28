@@ -90,6 +90,7 @@ export const REASON_LABEL = {
   'before-migrate': 'Before migrate',
   'before-install': 'Before app install',
   'before-app-remove': 'Before app removal',
+  'before-overwrite': 'Before overwrite',
   drill: 'Restore drill',
   clone: 'For a clone',
   move: 'For a move',

@@ -2,7 +2,8 @@
 (backups spec phase 2).
 
 A clone is a fresh verified set of the source site restored into the target site
-(created first when it does not exist); a move is a clone whose source is dropped
+(created first when it does not exist; an existing one is replaced only with consent,
+after a verified ``before-overwrite`` set of it lands in the store); a move is a clone whose source is dropped
 afterwards through the ordinary ``rm-site`` gate (its own verified archive lands in
 the store too), and only after the restored site answered its post-checks. A batch
 is the same per site, in order, with ``x of N`` progress; one site's failure stops
@@ -34,7 +35,7 @@ from . import backup_store
 from . import new_site as core_new_site
 from . import rm_site as core_rm_site
 from .backup_store import StoreNotice, StoreStep
-from .envelope import Result, Status
+from .envelope import Choice, Result, Status
 from .errors import CwcliError, ErrorKind
 
 OnEvent = Callable[[Any], None]
@@ -74,6 +75,7 @@ class TransferItem:
     site: str
     target_site: str
     set_key: str | None = None
+    safety_set_key: str | None = None
     created: bool = False
     restored: bool = False
     dropped: bool = False
@@ -111,7 +113,9 @@ def transfer_sites(
     on_event: OnEvent | None = None,
 ) -> Result[TransferReport]:
     """Clone or move ``sites`` (``(source, target_name)`` pairs) from ``project``/``bench``
-    to ``target_project``/``target_bench``. A move needs ``consent`` (it drops sources)."""
+    to ``target_project``/``target_bench``. A move needs ``consent`` (it drops sources), and
+    so does replacing a target site that already exists (``NEEDS_CHOICE`` ``confirm_overwrite``
+    without it)."""
     emit = on_event or _noop
     if mode not in ("clone", "move"):
         raise CwcliError(ErrorKind.USAGE, "transfer.mode", "mode must be clone or move")
@@ -134,6 +138,20 @@ def transfer_sites(
                 f"{src} cannot be {mode}d onto itself; give the copy another name.",
             )
         core_new_site.check_site_name(dst)
+    existing = [dst for _src, dst in sites if _site_exists(tproject, tbench, dst)]
+    if existing and not consent:
+        return Result(
+            status=Status.NEEDS_CHOICE,
+            choice=Choice(
+                kind="confirm_overwrite",
+                param="consent",
+                prompt=(
+                    f"{', '.join(existing)} already exist{'s' if len(existing) == 1 else ''} on "
+                    f"{tproject}; replace {'it' if len(existing) == 1 else 'them'} with the copy? "
+                    "Each is backed up into the store first."
+                ),
+            ),
+        )
     report = TransferReport(mode, project, tproject, tbench)
     total = len(sites)
     for n, (src, dst) in enumerate(sites, 1):
@@ -161,7 +179,25 @@ def transfer_sites(
                     f"The fresh set of {src} did not verify; {src} is left untouched.",
                 )
             item.set_key = bset.key
-            if not _site_exists(tproject, tbench, dst):
+            if _site_exists(tproject, tbench, dst):
+                emit(StoreStep("backup", f"Backing up {dst} on {tproject} before it is replaced"))
+                safety = backup_store.capture(
+                    tproject,
+                    site=dst,
+                    bench=tbench,
+                    with_files=with_files,
+                    reason="before-overwrite",
+                    note=f"before {mode} of {project}:{src}",
+                    on_event=emit,
+                )
+                if safety.data is None or not safety.data.verified:
+                    raise CwcliError(
+                        ErrorKind.PRECONDITION,
+                        "transfer.overwrite_backup_unverified",
+                        f"The safety backup of {dst} did not verify; {dst} is left untouched.",
+                    )
+                item.safety_set_key = safety.data.key
+            else:
                 emit(StoreStep("create", f"Creating {dst} on {tproject}"))
                 made = core_new_site.new_site(
                     tproject,

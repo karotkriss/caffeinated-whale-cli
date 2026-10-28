@@ -1,4 +1,4 @@
-"""``cwcli admin reset-password`` on both surfaces: back to admin / admin, change forced."""
+"""``cwcli admin reset-password``: back to admin / admin, change forced; human CLI only."""
 
 from __future__ import annotations
 
@@ -27,17 +27,14 @@ def test_the_human_verb_resets_and_says_so():
     assert accounts.verify("admin", "correct horse battery") is None
 
 
-def test_the_agent_verb_is_one_toon_document():
+def test_agents_cannot_reset_the_account():
     result = runner.invoke(app, ["axi", "admin", "reset-password"])
-    assert result.exit_code == 0, result.output
-    assert "reset: true" in result.output and "must_change_password: true" in result.output
-    assert accounts.verify("admin", "admin") is not None
+    assert result.exit_code != 0
+    assert accounts.verify("admin", "correct horse battery") is not None, "nothing changed"
 
 
-def test_a_shared_install_without_root_refuses_on_both_surfaces(monkeypatch):
+def test_a_shared_install_without_root_refuses(monkeypatch):
     monkeypatch.setattr(accounts.shared_home, "shared_mode", lambda: True)
     monkeypatch.setattr(accounts.os, "geteuid", lambda: 1000, raising=False)
     assert runner.invoke(app, ["admin", "reset-password"]).exit_code == 1
-    result = runner.invoke(app, ["axi", "admin", "reset-password"])
-    assert result.exit_code == 1 and "needs root" in result.output
     assert accounts.verify("admin", "correct horse battery") is not None, "nothing changed"

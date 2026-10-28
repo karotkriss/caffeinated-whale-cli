@@ -3,13 +3,11 @@
 // job and every set in it is filed into this machine's store, where Restore takes over.
 import { computed, ref, watch } from 'vue'
 import { Button, Dialog, ErrorMessage, FormControl, Select } from 'frappe-ui'
-import { useRouter } from 'vue-router'
 import { receiveDialog } from '../data/transfer'
 import { instances } from '../data/fleet'
 import { createJob } from '../data/jobs'
 import { trackJob } from '../data/job-toasts'
 
-const router = useRouter()
 const ticket = ref('')
 const project = ref('')
 const site = ref('')
@@ -26,7 +24,6 @@ async function start() {
     const record = await createJob({ verb: 'receive-backup', target: {}, args: { ticket: clean.value, project: project.value || null, site: project.value ? site.value.trim() : null } })
     trackJob(record.id)
     receiveDialog.open = false
-    router.push(`/jobs/${record.id}`)
   } catch (e) {
     error.value = e
   } finally {

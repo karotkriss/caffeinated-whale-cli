@@ -53,6 +53,7 @@ REASONS = (
     "before-migrate",
     "before-install",
     "before-app-remove",
+    "before-overwrite",
     "drill",
     "clone",  # phase 2: the fresh set a clone/move restores from
     "move",
@@ -82,7 +83,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # Phase 3: one daily backup of every site at this local time, pruned after.
     "schedule": {"enabled": False, "daily_at": "02:00", "last_run": None},
 }
-SAFETY_REASONS = ("before-core-update", "before-migrate", "before-install", "before-app-remove")
+SAFETY_REASONS = (
+    "before-core-update",
+    "before-migrate",
+    "before-install",
+    "before-app-remove",
+    "before-overwrite",
+)
 
 
 # --------------------------------------------------------------------------- events
@@ -1118,6 +1125,9 @@ def _plan_for(
         keep: dict[str, str] = {}
         if last_good is not None:
             keep[last_good.id] = "the site's last good backup"
+        for b in sets:
+            if not b.verified:
+                keep[b.id] = "it did not verify; kept until you delete it by hand"
         safety = [b for b in sets if b.reason in SAFETY_REASONS and b.verified]
         for n, b in enumerate(safety):
             age_days = (now - _epoch(b.created_at)) / 86400
@@ -1146,6 +1156,7 @@ def _plan_for(
             if (
                 why is not None
                 and low_disk
+                and b.verified
                 and b.offsite
                 and last_good is not None
                 and b.id != last_good.id
@@ -1155,7 +1166,7 @@ def _plan_for(
                     "disk under the floor; it has an off-site copy, only the newest stays local"
                 )
             elif why is None:
-                reason = "outside every retention slot" if b.verified else "it did not verify"
+                reason = "outside every retention slot"
             else:
                 reason = why
             out.append(PruneDecision(b.key, site, why is not None, reason, b.size, bool(b.offsite)))

@@ -4,7 +4,6 @@
 // Timeline looks were dropped). Plus the store's disk budget and each instance's
 // retention settings.
 import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
 import { Alert, Badge, Button, Dropdown, Select, TextInput, Tooltip } from 'frappe-ui'
 import PageHead from '../components/PageHead.vue'
 import EmptyState from '../components/EmptyState.vue'
@@ -18,7 +17,6 @@ import { copyOffsite, openReceive, sendSet } from '../data/transfer'
 import { openBackupSettings, downloadSet, uploadSet } from '../data/backups'
 import { toast } from 'frappe-ui'
 
-const router = useRouter()
 const query = ref('')
 const project = ref('all')
 const reason = ref('all')
@@ -49,8 +47,8 @@ function menu(s) {
   return [{ group: 'Set', options: [
     { label: 'Restore…', icon: 'rotate-ccw', onClick: () => openRestoreWizard(s) },
     { label: 'Verify again', icon: 'shield-check', onClick: () => verify(s) },
-    { label: 'Send to another machine…', icon: 'send', onClick: () => sendSet(s, router) },
-    { label: s.offsite ? 'Copy off-site again' : 'Copy off-site (S3)', icon: 'cloud-upload', onClick: () => copyOffsite(s, router) },
+    { label: 'Send to another machine…', icon: 'send', onClick: () => sendSet(s) },
+    { label: s.offsite ? 'Copy off-site again' : 'Copy off-site (S3)', icon: 'cloud-upload', onClick: () => copyOffsite(s) },
     { label: 'Download (.tar)', icon: 'download', onClick: () => downloadSet(s).catch((e) => toast.error(e.message)) },
     { label: 'Delete', icon: 'trash-2', theme: 'red', onClick: () => remove(s) },
   ] }]
@@ -84,7 +82,7 @@ async function onUpload(ev) {
     <div class="grid gap-px overflow-hidden rounded-7 border border-outline-gray-1 bg-surface-gray-2 sm:grid-cols-2 lg:grid-cols-4">
       <div class="bg-surface-elevation-1 px-4 py-3"><div class="text-sm text-ink-gray-5">Sites with a backup</div><div class="mt-1 text-2xl font-semibold tabular-nums text-ink-gray-9">{{ data ? totals.sites : '…' }}</div><div class="mt-0.5 text-xs text-ink-gray-5">{{ totals.sets }} {{ totals.sets === 1 ? 'set' : 'sets' }}, {{ sizeText(totals.size) }} in the store</div></div>
       <div class="bg-surface-elevation-1 px-4 py-3"><div class="text-sm text-ink-gray-5">Needing attention</div><div class="mt-1 text-2xl font-semibold tabular-nums" :class="siteRows.filter((r) => r.fresh.tone !== 'green').length ? 'text-ink-amber-6' : 'text-ink-gray-9'">{{ data ? siteRows.filter((r) => r.fresh.tone !== 'green').length : '…' }}</div><div class="mt-0.5 text-xs text-ink-gray-5">sites whose last good backup is older than their limit, or missing</div></div>
-      <div class="bg-surface-elevation-1 px-4 py-3"><div class="text-sm text-ink-gray-5">Failed verification</div><div class="mt-1 text-2xl font-semibold tabular-nums" :class="totals.failed ? 'text-ink-red-6' : 'text-ink-gray-9'">{{ data ? totals.failed : '…' }}</div><div class="mt-0.5 text-xs text-ink-gray-5">sets kept but not trusted; the bench copies were left in place</div></div>
+      <div class="bg-surface-elevation-1 px-4 py-3"><div class="text-sm text-ink-gray-5">Failed verification</div><div class="mt-1 text-2xl font-semibold tabular-nums" :class="totals.failed ? 'text-ink-red-6' : 'text-ink-gray-9'">{{ data ? totals.failed : '…' }}</div><div class="mt-0.5 text-xs text-ink-gray-5">unverified sets are never pruned; they stay until you delete them by hand</div></div>
       <div class="bg-surface-elevation-1 px-4 py-3"><div class="text-sm text-ink-gray-5">Store disk</div><div class="mt-1 text-2xl font-semibold tabular-nums" :class="data?.budget?.warn ? 'text-ink-amber-6' : 'text-ink-gray-9'">{{ data?.budget ? `${data.budget.free_gb} GB free` : '…' }}</div><div class="mt-0.5 truncate text-xs text-ink-gray-5" :title="data?.budget?.root">{{ data?.budget ? `${data.budget.store_gb} GB used · floor ${data.budget.min_free_gb} GB · ${data.budget.root}` : '' }}</div></div>
     </div>
     <Alert v-if="data?.budget?.warn" theme="amber" title="The store's disk is under its floor" :description="`${data.budget.free_gb} GB free, floor ${data.budget.min_free_gb} GB. Only the newest set per site is kept locally until space returns; off-machine copies carry the rest (phase 3).`" />
@@ -105,9 +103,9 @@ async function onUpload(ev) {
         <div v-for="r in siteRows" :key="`${r.project}/${r.site}`" class="grid grid-cols-[minmax(0,1.4fr)_9rem_6rem_6rem_minmax(0,1.6fr)_8rem] items-center gap-3 border-b border-outline-gray-1 px-3 py-2.5 text-sm last:border-b-0 max-lg:grid-cols-[minmax(0,1fr)_8rem]">
           <span class="min-w-0"><router-link :to="`/instances/${r.project}/benches/${r.sets[0]?.bench_index ?? 0}/sites/${r.site}?tab=backups`" class="block truncate text-base-medium text-ink-gray-9 hover:underline">{{ r.site }}</router-link><span class="block truncate text-xs text-ink-gray-5">{{ r.project }}<template v-if="r.sets[0]?.bench_index != null"> · bench {{ r.sets[0].bench_index }}</template></span></span>
           <span class="inline-flex items-center gap-1.5 text-sm max-lg:hidden" :class="FRESH_TEXT[r.fresh.tone]"><span class="size-2 rounded-full" :class="FRESH_DOT[r.fresh.tone]" aria-hidden="true" />{{ r.fresh.label }}</span>
-          <span class="tabular-nums text-ink-gray-7 max-lg:hidden">{{ r.sets.length }}</span>
+          <span class="inline-flex items-center gap-1.5 tabular-nums text-ink-gray-7 max-lg:hidden">{{ r.sets.length }}<Badge v-if="r.sets.some((s) => !s.verified)" theme="red" variant="subtle" :label="`${r.sets.filter((s) => !s.verified).length} unverified`" title="Kept until you delete them by hand; retention never removes them" /></span>
           <span class="tabular-nums text-ink-gray-7 max-lg:hidden">{{ sizeText(r.size) }}</span>
-          <span class="flex min-w-0 flex-wrap items-center gap-1 max-lg:hidden"><template v-for="s in r.sets.slice(0, 3)" :key="s.key"><button type="button" class="inline-flex items-center gap-1 rounded-4 border border-outline-gray-1 px-1.5 py-0.5 text-xs hover:bg-surface-gray-1" :class="s.verified ? 'text-ink-gray-7' : 'text-ink-red-6'" :title="`${REASON_LABEL[s.reason] || s.reason} · ${s.parts.map((p) => PART_LABEL[p.kind]).join(', ')} · ${sizeText(s.size)}`" @click="openRestoreWizard(s)"><span :class="s.verified ? 'lucide-shield-check' : 'lucide-shield-x'" class="size-3" aria-hidden="true" />{{ whenText(s.created_at) }}<span v-if="s.offsite" class="lucide-cloud size-3 text-ink-gray-4" aria-hidden="true" title="copied off-site" /></button></template><span v-if="r.sets.length > 3" class="text-xs text-ink-gray-4">+{{ r.sets.length - 3 }}</span></span>
+          <span class="flex min-w-0 flex-wrap items-center gap-1 max-lg:hidden"><template v-for="s in r.sets.slice(0, 3)" :key="s.key"><button type="button" class="inline-flex items-center gap-1 rounded-4 border border-outline-gray-1 px-1.5 py-0.5 text-xs hover:bg-surface-gray-1" :class="s.verified ? 'text-ink-gray-7' : 'text-ink-red-6'" :title="`${s.verified ? '' : 'Unverified, kept until deleted by hand · '}${REASON_LABEL[s.reason] || s.reason} · ${s.parts.map((p) => PART_LABEL[p.kind]).join(', ')} · ${sizeText(s.size)}`" @click="openRestoreWizard(s)"><span :class="s.verified ? 'lucide-shield-check' : 'lucide-shield-x'" class="size-3" aria-hidden="true" />{{ whenText(s.created_at) }}<span v-if="s.offsite" class="lucide-cloud size-3 text-ink-gray-4" aria-hidden="true" title="copied off-site" /></button></template><span v-if="r.sets.length > 3" class="text-xs text-ink-gray-4">+{{ r.sets.length - 3 }}</span></span>
           <span class="flex items-center justify-end gap-1"><Button size="sm" variant="subtle" label="Back up" @click="backupNow(r)" /><Dropdown :options="menu(r.sets[0])" align="end"><Button size="sm" variant="ghost" icon="lucide-ellipsis" aria-label="Newest set actions" /></Dropdown></span>
         </div>
       </div>

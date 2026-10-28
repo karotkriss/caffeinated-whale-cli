@@ -58,49 +58,48 @@ Exit codes: **0** success (a completed operation, including one with warnings, a
 ## Verbs
 
 ```
-  ls                    List all Frappe/ERPNext instances; emit them as TOON.
-  where                 Search cached instances for apps/sites matching a string; emit matches as TOON.
-  backup                Back up a site's database (and optionally files); emit the outcome as TOON.
-  unlock                Remove a site's locks folder; emit the outcome as TOON.
-  new-site              Create a site on an existing bench; emit the report as TOON.
-  new-bench             Add a bench to a running instance; emit the report as TOON.
-  stop                  Stop a project's containers, or one bench's dev processes; emit TOON.
-  start                 Start a project's containers + bench; emit the outcome as TOON (never prompts).
-  status                Report every bench's per-process health; emit the report as TOON (`overall` first).
-  logs                  Read a bounded tail of a bench's per-process logs; emit them as ONE TOON document.
-  url                   Resolve a bench's host URL and probe it fresh; emit both as TOON.
-  restart               Restart ONE supervised process; emit the outcome as TOON (never prompts, no --watch).
-  scale                 Widen the instance's published port range; emit the new port map as TOON.
-  inspect               Inspect a project's benches, sites, and apps; emit the report as TOON.
-  benches               List a project's benches with their indices, labels, and existence state; TOON.
-  label                 Set or clear a bench's durable user label; emit the outcome as TOON.
-  migrate               Run 'bench migrate' against ONE site under maintenance mode; emit the report as TOON.
-  run-tests             Run 'bench run-tests' for ONE app against ONE named site; emit the report as TOON.
-  build                 Run 'bench build' to compile the bench's assets; emit the report as TOON.
-  setup-wizard          Headlessly complete an EXISTING site's Frappe setup wizard; emit the report as TOON.
-  config                Report the effective cwcli configuration; emit it as one TOON document; READ-ONLY.
-  doctor                Run the system-wide, read-only environment preflight; emit it as one TOON document.
-  init                  Provision a new instance, bench, and site; emit the report as TOON (never prompts).
-  rm                    Permanently remove an instance; emit the outcome as TOON (never prompts).
-  rm-site               Permanently drop ONE site; emit the outcome as TOON (never prompts).
-  rm-bench              Permanently remove ONE bench; emit the outcome as TOON (never prompts).
-  self-update           Report whether a newer cwcli is available; emit the check as TOON; READ-ONLY.
-  setup                 Install the SessionStart hook into every detected agent harness; emit TOON.
-  apps list             List a bench's available apps, and (with --installed/--site) installed per site.
-  apps update           Update app(s) and migrate affected sites; emit the report as TOON.
-  apps checkout         Fetch and check out a ref into an app already in the bench; emit the report as TOON.
-  apps install          Ensure and install ONE app on ONE named site; emit the report as TOON.
-  backups list          Every backup set in the store, newest first, with its verdict; TOON.
-  backups prune         What the instance's retention policy keeps and removes; `--apply` removes it.
-  backups settings      The instance's backup settings: retention, safety, disk floor, schedule; TOON.
-  backups capture       Back a site up INTO the store: verified copy-out, in-bench copies removed once
-  backups verify        Re-run every check on a stored set; TOON. Exit 1 when a check fails.
-  db-access check       Which sites' database users would be refused from the container's current address.
-  schedule list         Every schedule with its next run, last result and the upcoming runs (7 days).
-  schedule add          Add a schedule (cron or once). Removals can never be scheduled.
-  schedule run-now      Start the schedule's job now; the job record is the answer.
-  schedule remove       Remove a schedule.
-  admin reset-password  Reset the web UI account to admin / admin; the next sign-in must choose a new password.
+  ls                List all Frappe/ERPNext instances; emit them as TOON.
+  where             Search cached instances for apps/sites matching a string; emit matches as TOON.
+  backup            Back up a site's database (and optionally files); emit the outcome as TOON.
+  unlock            Remove a site's locks folder; emit the outcome as TOON.
+  new-site          Create a site on an existing bench; emit the report as TOON.
+  new-bench         Add a bench to a running instance; emit the report as TOON.
+  stop              Stop a project's containers, or one bench's dev processes; emit TOON.
+  start             Start a project's containers + bench; emit the outcome as TOON (never prompts).
+  status            Report every bench's per-process health; emit the report as TOON (`overall` first).
+  logs              Read a bounded tail of a bench's per-process logs; emit them as ONE TOON document.
+  url               Resolve a bench's host URL and probe it fresh; emit both as TOON.
+  restart           Restart ONE supervised process; emit the outcome as TOON (never prompts, no --watch).
+  scale             Widen the instance's published port range; emit the new port map as TOON.
+  inspect           Inspect a project's benches, sites, and apps; emit the report as TOON.
+  benches           List a project's benches with their indices, labels, and existence state; TOON.
+  label             Set or clear a bench's durable user label; emit the outcome as TOON.
+  migrate           Run 'bench migrate' against ONE site under maintenance mode; emit the report as TOON.
+  run-tests         Run 'bench run-tests' for ONE app against ONE named site; emit the report as TOON.
+  build             Run 'bench build' to compile the bench's assets; emit the report as TOON.
+  setup-wizard      Headlessly complete an EXISTING site's Frappe setup wizard; emit the report as TOON.
+  config            Report the effective cwcli configuration; emit it as one TOON document; READ-ONLY.
+  doctor            Run the system-wide, read-only environment preflight; emit it as one TOON document.
+  init              Provision a new instance, bench, and site; emit the report as TOON (never prompts).
+  rm                Permanently remove an instance; emit the outcome as TOON (never prompts).
+  rm-site           Permanently drop ONE site; emit the outcome as TOON (never prompts).
+  rm-bench          Permanently remove ONE bench; emit the outcome as TOON (never prompts).
+  self-update       Report whether a newer cwcli is available; emit the check as TOON; READ-ONLY.
+  setup             Install the SessionStart hook into every detected agent harness; emit TOON.
+  apps list         List a bench's available apps, and (with --installed/--site) installed per site.
+  apps update       Update app(s) and migrate affected sites; emit the report as TOON.
+  apps checkout     Fetch and check out a ref into an app already in the bench; emit the report as TOON.
+  apps install      Ensure and install ONE app on ONE named site; emit the report as TOON.
+  backups list      Every backup set in the store, newest first, with its verdict; TOON.
+  backups prune     What the instance's retention policy keeps and removes; `--apply` removes it.
+  backups settings  The instance's backup settings: retention, safety, disk floor, schedule; TOON.
+  backups capture   Back a site up INTO the store: verified copy-out, in-bench copies removed once
+  backups verify    Re-run every check on a stored set; TOON. Exit 1 when a check fails.
+  db-access check   Which sites' database users would be refused from the container's current address.
+  schedule list     Every schedule with its next run, last result and the upcoming runs (7 days).
+  schedule add      Add a schedule (cron or once). Removals can never be scheduled.
+  schedule run-now  Start the schedule's job now; the job record is the answer.
+  schedule remove   Remove a schedule.
 ```
 
 Run `uvx --from caffeinated-whale-cli cwcli axi <verb> --help` for a verb's flags.
