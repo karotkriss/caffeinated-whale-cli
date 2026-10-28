@@ -414,9 +414,10 @@ class TestRestoreApply:
             x
             for x in c.exec_calls
             if "site_config.json" in FakeContainer._s(x["cmd"])
-            and "EOF" in FakeContainer._s(x["cmd"])
+            and (x["environment"] or {}).get("CWCLI_JSON")
         ]
-        assert writes and "KEY-FROM-BACKUP" in FakeContainer._s(writes[0]["cmd"])
+        assert writes and "KEY-FROM-BACKUP" in writes[0]["environment"]["CWCLI_JSON"]
+        assert not any("KEY-FROM-BACKUP" in FakeContainer._s(x["cmd"]) for x in c.exec_calls)
 
     def test_invalid_username_raises_usage(self, monkeypatch):
         c = FakeContainer()
@@ -731,3 +732,33 @@ class TestSelectBackupSet:
             [a, b], [], latest=False, backup_file=DB_FILENAME, warnings=warnings
         )
         assert any(w.code == "backup.multi_match" for w in warnings)
+
+
+def test_the_merged_site_config_keeps_its_secrets_off_the_exec_argv(monkeypatch):
+    import json
+
+    class Configs:
+        def __init__(self):
+            self.calls = []
+
+        def exec_run(self, cmd, workdir=None, environment=None):
+            self.calls.append((cmd, environment))
+            s = " ".join(cmd)
+            if CONFIG_FILENAME in s:
+                return (0, b'{"encryption_key": "SET-KEY", "db_password": "set-pw"}')
+            if "site_config.json" in s and environment is None:
+                return (0, b'{"db_name": "t", "db_password": "TARGET-PW"}')
+            return (0, b"")
+
+    c = Configs()
+    monkeypatch.setattr(core_restore.core_docker, "get_frappe_container", lambda name: c)
+    assert core_restore.merge_site_config(
+        _plan(site_config_backup_path=f"{BACKUP_DIR}/{CONFIG_FILENAME}")
+    )
+    (written,) = [env["CWCLI_JSON"] for _cmd, env in c.calls if env]
+    assert json.loads(written) == {
+        "db_name": "t",
+        "db_password": "TARGET-PW",
+        "encryption_key": "SET-KEY",
+    }
+    assert not any("TARGET-PW" in " ".join(cmd) or "SET-KEY" in " ".join(cmd) for cmd, _ in c.calls)

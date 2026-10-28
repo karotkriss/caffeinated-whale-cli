@@ -54,6 +54,15 @@ class TestPasswordChange:
         accounts.change_password("admin", "battery staple", current="correct horse", now=T0)
         assert accounts.verify("admin", "battery staple") is not None
 
+    def test_a_change_signs_out_every_other_session_of_the_account(self):
+        accounts.ensure_default(now=T0)
+        stale = accounts.open_session("admin", remember=False, now=T0)
+        here = accounts.open_session("admin", remember=False, now=T0)
+        accounts.change_password("admin", "correct horse", keep=here, now=T0)
+        assert accounts.session_account(stale, now=T0) is None
+        acct = accounts.session_account(here, now=T0)
+        assert acct is not None and acct.must_change is False
+
     @pytest.mark.parametrize("bad", ["short", "admin", "ADMIN", "a" * 7])
     def test_weak_passwords_are_refused(self, bad):
         accounts.ensure_default(now=T0)
@@ -131,20 +140,32 @@ class TestLockout:
     def test_five_failures_lock_the_key_for_a_minute(self):
         lo = accounts.Lockout()
         for i in range(4):
-            lo.failed("admin", "10.0.0.1", now=T0 + i)
+            assert lo.attempt("10.0.0.1", "admin", now=T0 + i) == 0
         assert lo.retry_after("admin", now=T0 + 4) == 0
-        lo.failed("admin", "10.0.0.1", now=T0 + 4)
+        assert lo.attempt("10.0.0.1", "admin", now=T0 + 4) == 0
         assert 0 < lo.retry_after("admin", now=T0 + 4) <= accounts.LOCKOUT_S
-        assert lo.retry_after("10.0.0.1", now=T0 + 4) > 0  # the address is locked too
+        assert lo.attempt("10.0.0.1", "other", now=T0 + 4) > 0  # the address is locked too
         assert lo.retry_after("admin", now=T0 + 4 + accounts.LOCKOUT_S) == 0
 
     def test_old_failures_fall_out_of_the_window_and_success_clears(self):
         lo = accounts.Lockout()
         for i in range(4):
-            lo.failed("admin", now=T0 + i)
-        lo.failed("admin", now=T0 + accounts.LOCKOUT_WINDOW_S + 10)  # the four are stale
+            lo.attempt("admin", now=T0 + i)
+        lo.attempt("admin", now=T0 + accounts.LOCKOUT_WINDOW_S + 10)  # the four are stale
         assert lo.retry_after("admin", now=T0 + accounts.LOCKOUT_WINDOW_S + 10) == 0
         for i in range(5):
-            lo.failed("other", now=T0 + i)
+            lo.attempt("other", now=T0 + i)
         lo.succeeded("other")
         assert lo.retry_after("other", now=T0 + 5) == 0
+
+    def test_attempts_still_in_flight_count_before_they_finish(self):
+        lo = accounts.Lockout()
+        admitted = [lo.attempt("10.0.0.1", "admin", now=T0) for _ in range(8)]
+        assert admitted.count(0) == accounts.LOCKOUT_AFTER
+
+    def test_a_locked_username_does_not_refuse_a_fresh_address(self):
+        lo = accounts.Lockout()
+        for i in range(5):
+            lo.attempt(f"10.0.0.{i}", "admin", now=T0)
+        assert lo.retry_after("admin", now=T0) > 0
+        assert lo.attempt("192.0.2.1", "admin", now=T0) == 0

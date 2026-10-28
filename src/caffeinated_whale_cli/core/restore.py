@@ -888,10 +888,9 @@ def _restore_encryption_key(
         current_config = json.loads(_decode(output))
         current_config["encryption_key"] = encryption_key
 
-        updated_json = json.dumps(current_config, indent=1)
-        write_cmd = f"cat > {quoted_site_config} << 'EOF'\n{updated_json}\nEOF"
-        exit_code, _ = frappe_container.exec_run(["sh", "-c", write_cmd], workdir=plan.bench_path)
-        if exit_code == 0:
+        if _write_json_in_container(
+            frappe_container, site_config_path, current_config, plan.bench_path
+        ):
             return True
         warnings.append(
             Message(
@@ -921,9 +920,11 @@ def _read_json_in_container(frappe_container, path: str, workdir: str) -> dict |
 
 
 def _write_json_in_container(frappe_container, path: str, data: dict, workdir: str) -> bool:
-    body = json.dumps(data, indent=1, sort_keys=True)
-    cmd = f"cat > {shlex.quote(path)} << 'CWCLI_EOF'\n{body}\nCWCLI_EOF"
-    code, _ = frappe_container.exec_run(["sh", "-c", cmd], workdir=workdir)
+    code, _ = frappe_container.exec_run(
+        ["sh", "-c", f'printf "%s\\n" "$CWCLI_JSON" > {shlex.quote(path)}'],
+        workdir=workdir,
+        environment={"CWCLI_JSON": json.dumps(data, indent=1, sort_keys=True)},
+    )
     return bool(code == 0)
 
 

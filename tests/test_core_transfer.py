@@ -185,6 +185,52 @@ def test_the_transfer_reasons_are_store_reasons():
     assert {"clone", "move", "received"} <= set(store.REASONS)
 
 
+def test_a_move_whose_copy_fails_its_post_checks_keeps_the_source(composed, monkeypatch):
+    def failing_checks(key, **kw):
+        composed.log.append(("restore", key))
+        rep = _restored()
+        return Result(
+            status=Status.WARNING,
+            data=store.RestoreFromSetReport(
+                **{
+                    **{f: getattr(rep, f) for f in rep.__dataclass_fields__},
+                    "post_checks": [store.BackupCheck("login", False, "no answer")],
+                }
+            ),
+        )
+
+    monkeypatch.setattr(transfer.backup_store, "restore_set", failing_checks)
+    r = transfer.transfer_sites(
+        "p",
+        [("a.localhost", "b.localhost")],
+        mode="move",
+        admin_password="x",
+        mariadb_root_password="root",
+        consent=True,
+    )
+    assert not r.data.ok and not r.data.items[0].dropped
+    assert not any(c[0] == "drop" for c in composed.log)
+
+
+def test_the_same_bench_named_two_ways_is_still_refused_as_onto_itself(composed, monkeypatch):
+    from caffeinated_whale_cli.core import resolvers
+
+    monkeypatch.setattr(
+        resolvers, "cached_benches", lambda p: [{"index": 0, "path": "/workspace/frappe-bench"}]
+    )
+    with pytest.raises(CwcliError) as e:
+        transfer.transfer_sites(
+            "p",
+            [("a.localhost", "a.localhost")],
+            mode="move",
+            target_bench="0",
+            admin_password="x",
+            mariadb_root_password="root",
+            consent=True,
+        )
+    assert e.value.code == "transfer.same_site" and composed.log == []
+
+
 def test_cloning_a_site_onto_itself_is_refused_before_anything_runs(composed):
     with pytest.raises(CwcliError) as e:
         transfer.transfer_sites(

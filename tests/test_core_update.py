@@ -462,9 +462,22 @@ class TestFrappeFork:
         assert report.frappe_reset is True
         assert report.ok is True
 
+    @staticmethod
+    def _serve_cleared(container, listing):
+        real = container.exec_run
+
+        def exec_run(cmd, workdir=None, **kwargs):
+            if isinstance(cmd, list) and cmd[:2] == ["sh", "-c"] and 'for d in "$@"' in cmd[2]:
+                container.calls.append(" ".join(cmd))
+                return 0, listing.encode()
+            return real(cmd, workdir=workdir, **kwargs)
+
+        container.exec_run = exec_run
+
     def test_every_site_s_locks_are_cleared_first_and_listed(self, wired):
         events = []
-        wired.unlock_output = f"{BENCH}/sites/a.localhost/locks/Module Profile-x.lock\n"
+        wired.unlock_output = "a.localhost\n"
+        self._serve_cleared(wired, "sites/a.localhost/locks/Module Profile-x.lock\n")
 
         _update(apps=["frappe"], on_event=events.append)
 
@@ -473,6 +486,51 @@ class TestFrappeFork:
         assert "cleared 1 lock" in ends[0].message and "Module Profile" in ends[0].message
         order = [e.phase for e in events if isinstance(e, UpdateStepStart)]
         assert order.index("unlock_all") < order.index("reset")
+
+    @pytest.mark.parametrize("preflight", [True, False])
+    def test_a_live_migrate_lock_refuses_before_any_lock_is_cleared(
+        self, monkeypatch, wired, preflight
+    ):
+        wired.unlock_output = "a.localhost\nb.localhost\n"
+        monkeypatch.setattr(
+            core_update.update_preflight,
+            "run_preflight",
+            lambda *a, **k: update_preflight.PreflightOutcome(
+                findings=[], apps=1, sites=2, elapsed=0.1, bench_path=BENCH
+            ),
+        )
+        monkeypatch.setattr(
+            core_update.bench_ops,
+            "migrate_lock_held",
+            lambda container, bench_path, site: site == "b.localhost",
+        )
+
+        with pytest.raises(CwcliError) as exc:
+            _update(apps=["frappe"], preflight=preflight)
+
+        assert exc.value.kind is ErrorKind.CONFLICT and "b.localhost" in exc.value.message
+        calls = [c if isinstance(c, str) else " ".join(c) for c in wired.calls]
+        assert not any('for d in "$@"' in c for c in calls)
+        assert not any("git reset --hard" in c or "migrate" in c for c in calls)
+
+    def test_a_lock_that_cannot_be_checked_keeps_that_site_s_locks(self, monkeypatch, wired):
+        wired.unlock_output = "a.localhost\nb.localhost\n"
+        self._serve_cleared(wired, "")
+
+        def probe(container, bench_path, site):
+            if site == "b.localhost":
+                raise CwcliError(ErrorKind.PRECONDITION, "migrate.lock_probe_failed", "no flock")
+            return False
+
+        monkeypatch.setattr(core_update.bench_ops, "migrate_lock_held", probe)
+
+        result = _update(apps=["frappe"])
+
+        cleared = [c for c in wired.calls if 'for d in "$@"' in c]
+        assert len(cleared) == 1
+        assert "sites/a.localhost/locks" in cleared[0]
+        assert "sites/b.localhost/locks" not in cleared[0]
+        assert any(w.code == "unlock_all.lock_unverified" for w in result.warnings)
 
     def test_the_core_path_migrates_every_affected_site_under_maintenance(self, wired):
         report = _update(apps=["frappe"]).data
@@ -502,13 +560,15 @@ class TestFrappeFork:
         assert report.failed_maintenance_disable == []
         assert report.ok is False
 
-    def test_failed_requirements_fail_the_core_apps_before_any_migrate(self, wired):
+    def test_failed_requirements_migrate_nothing_and_are_named_as_such(self, wired):
         wired.fail_on = ["bench setup requirements"]
 
         result = _update(apps=["frappe"])
         report = result.data
 
-        assert report.failed_apps == ["frappe"] and report.migrated_sites == []
+        assert report.requirements == "failed" and report.migrated_sites == []
+        assert report.failed_apps == []  # the reset itself worked; the stage is named
+        assert report.ok is False
         assert any(w.code == "requirements.failed" for w in result.warnings)
 
     def test_erpnext_is_a_core_app_too_and_payments_rides_the_plain_pull(self, wired):
@@ -532,6 +592,19 @@ class TestFrappeFork:
 
         assert report.unreadable_sites == ["a.localhost"]
         assert report.migrated_sites == [] and report.ok is False
+
+    def test_an_unreadable_site_excluded_by_site_does_not_fail_the_run(self, monkeypatch, wired):
+        def discover(project, bench_path, app, container, warnings, unreadable=None):
+            if unreadable is not None:
+                unreadable.append("b.localhost")
+            return ["a.localhost"]
+
+        monkeypatch.setattr(core_update, "_sites_with_app", discover)
+
+        report = _update(sites=["a.localhost"]).data
+
+        assert report.unreadable_sites == []
+        assert report.migrated_sites == ["a.localhost"] and report.ok is True
 
     def test_discovery_names_the_site_it_could_not_read(self, monkeypatch):
         # No `wired` here: that fixture fakes _sites_with_app itself, and this test

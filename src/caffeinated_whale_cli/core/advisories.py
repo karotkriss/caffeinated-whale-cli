@@ -60,7 +60,7 @@ from packaging.version import InvalidVersion, Version
 from ..utils.config_utils import cwcli_home
 from . import docker as core_docker
 from . import git_refs
-from .app_catalog import credential
+from .app_catalog import _OPENER, _safe_remote_url, credential, remote_key
 from .list import list_instances
 
 UA = "cwcli-advisories/1.0 (+https://github.com/karotkriss/caffeinated-whale-cli)"
@@ -130,7 +130,7 @@ class Fetcher:
             h["If-Modified-Since"] = m["last_modified"]
         req = urllib.request.Request(url, headers=h)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310
+            with _OPENER.open(req, timeout=timeout) as r:
                 body = r.read()
                 digest = hashlib.sha256(body).hexdigest()
                 changed = digest != m.get("sha256")
@@ -429,7 +429,7 @@ def collect_inventory(catalog_apps: list) -> dict[str, Any]:
                             "version": cols[1] or None,
                             "head": cols[2] or None,
                             "branch": cols[3] or None,
-                            "remote": cols[4] or None,
+                            "remote": _safe_remote_url(cols[4]),
                             "version_source": "source __version__" if cols[1] else None,
                         }
             except Exception:
@@ -1426,11 +1426,7 @@ def match(aset: AdvisorySet, inv: dict[str, Any]) -> None:
                             continue
                         status, reason = range_verdict(a.get("version"), rows)
                         if status in ("affected", "possible"):
-                            fork = bool(a.get("remote")) and not (
-                                a["remote"] or ""
-                            ).lower().startswith(
-                                f"https://github.com/{FRAPPE_FAMILY.get(name, '').lower()}"
-                            )
+                            fork = _is_fork(name, a.get("remote"))
                             iv = ver(a.get("version"))
                             fixed = next(
                                 (
@@ -1661,6 +1657,11 @@ _DEP_BLOCK = re.compile(r"^dependencies\s*=\s*\[(.*?)^\]", re.M | re.S)
 _DEP_ITEM = re.compile(r"""["']([^"']+)["']""")
 
 
+def _is_fork(name: str, remote: str | None) -> bool:
+    upstream = FRAPPE_FAMILY.get(name)
+    return bool(upstream and remote) and remote_key(remote) != f"github.com/{upstream}"
+
+
 def _newest_tag(remote: str | None, major: int | None) -> str | None:
     """The newest ``v<major>.x.y`` tag on the app's OWN remote (fork or upstream),
     read with one ``git ls-remote`` on the host; None when it cannot be read."""
@@ -1686,6 +1687,7 @@ def _pins(
         return None
     base = f"https://raw.githubusercontent.com/{m.group(1)}/{m.group(2)}/{branch}"
     out: dict[str, Any] = {"python": {}, "node": {}}
+    missing = 0
     for fname, kind in (("pyproject.toml", "python"), ("package.json", "node")):
         url = f"{base}/{fname}"
         status, body, _ = fetcher.get(url)
@@ -1693,7 +1695,7 @@ def _pins(
             out[kind] = cache[url]
             continue
         if status == 404:
-            cache[url] = {}
+            missing += 1
             continue
         if status != 200 or body is None:
             if url in cache:
@@ -1720,7 +1722,7 @@ def _pins(
                     pins[str(name)] = str(spec)
         cache[url] = pins
         out[kind] = pins
-    return out
+    return None if missing == 2 else out
 
 
 def _spec_min(spec: str) -> Version | None:
@@ -1765,10 +1767,7 @@ def _app_fix(
     branch, remote = app.get("branch"), app.get("remote")
     bm = _BRANCH_MAJOR.match(branch or "")
     major = int(bm.group(1)) if bm else None
-    upstream = FRAPPE_FAMILY.get(name)
-    fork = bool(upstream and remote) and not re.match(
-        rf"^https?://github\.com/{re.escape(upstream or '')}(\.git)?/?$", remote or "", re.I
-    )
+    fork = _is_fork(name, remote)
     who = f"the fork at {remote}" if fork else name
     if not fixed:
         return _fix("nofix", "no fix stated yet", short="no fix stated yet")
@@ -2155,6 +2154,8 @@ class AdvisoriesStore:
                         aset.alias[AdvisorySet._norm(i)] = a["id"]
                 self._progress = "osv"
                 osv = source_osv(inv, aset, prior.get("osv", {}))
+                if not osv.get("ok"):
+                    return
                 self._progress = "matching"
                 match(aset, inv)
                 fp = self._fix_paths(aset, inv, fetcher, prior)

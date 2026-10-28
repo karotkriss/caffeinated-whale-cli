@@ -375,14 +375,15 @@ def check_updates(catalog_apps: list) -> list[dict[str, Any]]:
             bench_index = path_to_index[bench_path]
             remote_head = remote_heads.get((url, branch), "")
             hp = _host_path(url) if url else None
-            behind = bool(head and remote_head and head != remote_head)
+            differs = bool(head and remote_head and head != remote_head)
             with memo_lock:
                 count = (
                     _count_behind(hp[0], hp[1], head, remote_head, memo)
-                    if (behind and hp)
+                    if (differs and hp)
                     else (0 if head and remote_head else None)
                 )
                 release = _release_facts(app, versions.get((project, bench_index, app)), memo)
+            behind = differs and count != 0
             rows.append(
                 {
                     "project": project,

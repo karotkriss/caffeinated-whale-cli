@@ -288,3 +288,138 @@ def test_a_set_filed_with_a_collision_suffix_is_still_addressable(retention_home
     _manifest(home, "p", "s.localhost", "20260101_000000-b0-48439", _days_ago(0))
     assert store.find_set("p/s.localhost/20260101_000000-b0-48439") is not None
     assert store.find_set("p/s.localhost/junk") is None
+
+
+def test_an_unverified_set_never_takes_a_retention_slot(retention_home):
+    home = retention_home
+    store.save_settings("p", {"local": {"daily": 2, "weekly": 0, "monthly": 0}})
+    _manifest(home, "p", "s.localhost", "20260103_000000-b0", _days_ago(0), verified=False)
+    _manifest(home, "p", "s.localhost", "20260102_000000-b0", _days_ago(1))
+    _manifest(home, "p", "s.localhost", "20260101_000000-b0", _days_ago(2))
+    plan = {d.key.split("/")[-1]: d for d in store.retention_plan("p")}
+    assert sorted(k for k, d in plan.items() if d.keep) == [
+        "20260101_000000-b0",
+        "20260102_000000-b0",
+    ]
+    assert plan["20260103_000000-b0"].why == "it did not verify"
+
+
+def test_the_store_is_private_to_its_owner(home):
+    assert oct(store.store_root().stat().st_mode & 0o777) == "0o700"
+
+
+def test_verify_notices_a_part_that_no_longer_matches_its_sha256(home):
+    bset = store.adopt_dir("p1", "shop.localhost", _archive_dir(home))
+    assert bset is not None and bset.verified
+    cfg = Path(bset.path) / bset.part("site_config").filename
+    cfg.write_text(json.dumps({"db_name": "other"}))
+    again = store.verify_set(bset)
+    assert not again.verified
+    assert any(c.name == "sha256" and not c.ok for c in again.checks)
+
+
+class FakeBucket:
+    objects: dict[str, bytes] = {}
+
+    def __init__(self, target):
+        self.target = target
+
+    def ensure_bucket(self):
+        return None
+
+    def list(self, prefix=""):
+        return [{"key": k} for k in sorted(self.objects) if k.startswith(prefix)]
+
+    def put_file(self, key, path, **_kw):
+        self.objects[key] = Path(path).read_bytes()
+
+    def put_bytes(self, key, data, **_kw):
+        self.objects[key] = data
+
+    def get_bytes(self, key):
+        return self.objects[key]
+
+    def get_to_file(self, key, path):
+        Path(path).write_bytes(self.objects[key])
+        return len(self.objects[key])
+
+    def delete(self, key):
+        self.objects.pop(key, None)
+
+
+@pytest.fixture
+def bucket(home, monkeypatch):
+    from caffeinated_whale_cli.core import backup_crypto, s3
+
+    monkeypatch.setattr(backup_crypto, "cwcli_home", lambda: home / ".cwcli")
+    monkeypatch.setattr(s3, "S3Client", FakeBucket)
+    monkeypatch.setattr(FakeBucket, "objects", {})
+    for project in ("erp", "erp-staging"):
+        store.save_settings(
+            project, {"s3_target": {"enabled": True, "endpoint": "http://x", "bucket": "b"}}
+        )
+        store.set_s3_secret(f"secret-{project}", project=project)
+    return FakeBucket.objects
+
+
+def _remote_manifest(objects, project, site, sid, created_at):
+    objects[f"cwcli-backups/{project}/{site}/{sid}/{sid}-database.sql.gz.cwenc"] = b"x"
+    objects[f"cwcli-backups/{project}/{site}/{sid}/set.json"] = json.dumps(
+        {
+            "id": sid,
+            "project": project,
+            "site": site,
+            "created_at": created_at,
+            "verified": True,
+            "parts": [{"kind": "database", "filename": f"{sid}-database.sql.gz", "size": 1}],
+        }
+    ).encode()
+
+
+class TestOffsite:
+    def test_each_instance_keeps_its_own_s3_secret(self, bucket):
+        assert store.offsite_target("erp").secret_key == "secret-erp"
+        assert store.offsite_target("erp-staging").secret_key == "secret-erp-staging"
+
+    def test_a_copy_fetches_back_into_a_verified_set(self, bucket, home):
+        bset = store.adopt_dir("erp", "shop.localhost", _archive_dir(home))
+        store.offsite_copy(bset)
+        import shutil
+
+        shutil.rmtree(bset.path)
+        fetched = store.offsite_fetch("erp", bset.key)
+        assert fetched.verified and fetched.key == bset.key
+
+    def test_listing_and_pruning_never_reach_a_neighbouring_project_or_set(self, bucket):
+        _remote_manifest(bucket, "erp", "s.localhost", "20260101_000000-b10", _days_ago(0))
+        _remote_manifest(bucket, "erp", "s.localhost", "20260101_000000-b1", _days_ago(1))
+        _remote_manifest(bucket, "erp-staging", "s.localhost", "20260101_000000-b0", _days_ago(2))
+        listed = {d["key"] for d in store.offsite_list("erp")}
+        assert listed == {
+            "erp/s.localhost/20260101_000000-b10",
+            "erp/s.localhost/20260101_000000-b1",
+        }
+        store.save_settings("erp", {"s3": {"daily": 1, "weekly": 0, "monthly": 0}})
+        done = store.offsite_prune("erp", consent=True)
+        assert [d["key"] for d in done.data["removed"]] == ["erp/s.localhost/20260101_000000-b1"]
+        assert not any("-b1/" in k for k in bucket)
+        assert any("-b10/" in k for k in bucket)
+        assert any(k.startswith("cwcli-backups/erp-staging/") for k in bucket)
+
+    def test_a_fetch_refuses_a_manifest_naming_a_path_outside_the_set(self, bucket, home):
+        from caffeinated_whale_cli.core import backup_crypto
+
+        backup_crypto.load_key()
+        sid = "20260101_000000-b0"
+        _remote_manifest(bucket, "erp", "s.localhost", sid, _days_ago(0))
+        man = f"cwcli-backups/erp/s.localhost/{sid}/set.json"
+        d = json.loads(bucket[man])
+        d["parts"][0]["filename"] = "../../escaped-database.sql.gz"
+        bucket[man] = json.dumps(d).encode()
+        with pytest.raises(CwcliError) as e:
+            store.offsite_fetch("erp", f"erp/s.localhost/{sid}")
+        assert e.value.code == "offsite.bad_manifest"
+        assert not list(home.rglob("escaped-database.sql.gz"))
+        with pytest.raises(CwcliError) as e:
+            store.offsite_fetch("erp", "erp/s.localhost/../../x")
+        assert e.value.code == "offsite.bad_key"

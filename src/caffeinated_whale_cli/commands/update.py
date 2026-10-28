@@ -432,6 +432,7 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
             report.failed_migrations
             or report.unknown_migrations
             or report.unreadable_sites
+            or report.requirements not in (None, "ok")
             or report.failed_maintenance_enable
             or report.failed_maintenance_disable
         )
@@ -447,7 +448,9 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
 
     # bench can fail before it reaches its git reset, so an unfinished run only MAY have
     # discarded the work - never state that loss as fact.
-    reset_finished = "frappe" not in report.failed_apps + report.unknown_apps
+    reset_finished = not any(
+        app in core_update_mod.CORE_APPS for app in report.failed_apps + report.unknown_apps
+    )
     reset_lead = (
         "--force let the core reset"
         if reset_finished
@@ -526,11 +529,7 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
             what = (
                 "reset to its remote branch failed"
                 if report.frappe_reset and app in core_update_mod.CORE_APPS
-                else (
-                    "requirements could not be reinstalled"
-                    if report.frappe_reset
-                    else "Git pull failed"
-                )
+                else "Git pull failed"
             )
             console.print(f"  • {app}: {what}")
             # Fold in git's own error (network/auth/dubious-ownership/conflict) so
@@ -541,6 +540,12 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
             if tail:
                 for text_line in tail.splitlines()[-4:]:
                     console.print("      " + text_line, markup=False, highlight=False, style="dim")
+
+    if report.requirements == "failed":
+        console.print(
+            "[bold red]✗[/bold red] bench setup requirements failed, so no site was "
+            "migrated onto the new code"
+        )
 
     if report.failed_maintenance_enable:
         console.print(
@@ -671,6 +676,11 @@ def _report_unknown(report: UpdateReport) -> None:
         ("app(s)", report.unknown_apps, "its update may still be running"),
         ("site(s)", report.unknown_migrations, "its migration may still be running"),
         ("app(s)", report.unknown_builds, "its build may still be running"),
+        (
+            "step(s)",
+            ["bench setup requirements"] if report.requirements == "unknown" else [],
+            "it may still be running",
+        ),
     )
     for noun, items, what in unknown:
         if not items:

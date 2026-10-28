@@ -15,6 +15,8 @@ import threading
 import time
 from dataclasses import dataclass, field
 
+from .app_catalog import gitlab_hosts
+
 _TIMEOUT_S = 20
 _TTL_S = 300
 _URL = re.compile(r"^(https?://|git@|ssh://)[^\s'\"]+$")
@@ -37,8 +39,8 @@ _lock = threading.Lock()
 def _git_env() -> dict[str, str]:
     """The caller's environment (HOME and PATH included, so the user's own git config
     and credential helpers apply) with prompts off, plus the credential bridge's
-    dispatch as git config: github.com asks ``gh``, every other host asks ``glab``,
-    each only when installed. Config given through the environment sits after the
+    dispatch as git config: github.com asks ``gh``, each host glab is configured for
+    asks ``glab``, each only when installed. Config given through the environment sits after the
     user's helpers, so it answers only when nothing of theirs did."""
     env = dict(os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
@@ -46,7 +48,10 @@ def _git_env() -> dict[str, str]:
     if shutil.which("gh"):
         entries.append(("credential.https://github.com.helper", "!gh auth git-credential"))
     if shutil.which("glab"):
-        entries.append(("credential.helper", "!glab auth git-credential"))
+        entries.extend(
+            (f"credential.https://{host}.helper", "!glab auth git-credential")
+            for host in gitlab_hosts()
+        )
     base = int(env.get("GIT_CONFIG_COUNT") or 0)
     for i, (key, value) in enumerate(entries):
         env[f"GIT_CONFIG_KEY_{base + i}"] = key

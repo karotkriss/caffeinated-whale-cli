@@ -7,7 +7,6 @@ import { instance } from '../data/fleet'
 import { dialogState, runAction } from '../data/dialog'
 
 const typed = ref('')
-watch(() => dialogState.open, () => (typed.value = ''))
 
 const action = computed(() => (dialogState.id ? ACTIONS[dialogState.id] : null))
 const ctx = computed(() => dialogState.ctx)
@@ -34,6 +33,7 @@ const avail = computed(() =>
 const needsTyped = computed(() => action.value?.confirm === 'typed')
 const textFields = computed(() => (action.value?.fields || []).filter((f) => f.type !== 'checkbox'))
 const checkboxes = computed(() => (action.value?.fields || []).filter((f) => f.type === 'checkbox'))
+watch(() => [dialogState.open, ...checkboxes.value.map((f) => !!dialogState.values[f.name])], () => (typed.value = ''))
 // Every non-password text field is required; a password field left blank means its default.
 const fieldsFilled = computed(() =>
   textFields.value.every((f) => f.type === 'password' || String(dialogState.values[f.name] || '').trim()),

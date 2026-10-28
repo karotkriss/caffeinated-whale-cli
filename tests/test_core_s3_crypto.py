@@ -58,9 +58,9 @@ def test_encrypt_decrypt_round_trip_across_frame_boundaries(tmp_path, monkeypatc
     for size in (0, 10, bc.FRAME, bc.FRAME + 1, 2 * bc.FRAME + 123):
         plain = os.urandom(size)
         enc, dec = io.BytesIO(), io.BytesIO()
-        assert bc.encrypt_stream(io.BytesIO(plain), enc, key) == size
+        assert bc.encrypt_stream(io.BytesIO(plain), enc, key, context=b"p/s/id/f") == size
         enc.seek(0)
-        assert bc.decrypt_stream(enc, dec, key) == size
+        assert bc.decrypt_stream(enc, dec, key, context=b"p/s/id/f") == size
         assert dec.getvalue() == plain
 
 
@@ -69,18 +69,33 @@ def test_wrong_key_truncation_and_reordering_are_refused(tmp_path, monkeypatch):
     key = bc.load_key()
     plain = os.urandom(bc.FRAME + 5)
     enc = io.BytesIO()
-    bc.encrypt_stream(io.BytesIO(plain), enc, key)
+    bc.encrypt_stream(io.BytesIO(plain), enc, key, context=b"c")
     data = enc.getvalue()
     with pytest.raises(CwcliError) as e:
-        bc.decrypt_stream(io.BytesIO(data), io.BytesIO(), os.urandom(32))
+        bc.decrypt_stream(io.BytesIO(data), io.BytesIO(), os.urandom(32), context=b"c")
     assert e.value.code == "crypto.bad_key_or_tampered"
     with pytest.raises(CwcliError) as e:
-        bc.decrypt_stream(io.BytesIO(data[:-7]), io.BytesIO(), key)
+        bc.decrypt_stream(io.BytesIO(data[:-7]), io.BytesIO(), key, context=b"c")
     assert e.value.code == "crypto.truncated"
     # drop the last frame entirely: the first frame is not flagged last, so it is noticed
     first_len = int.from_bytes(data[14:18], "big")
     with pytest.raises(CwcliError):
-        bc.decrypt_stream(io.BytesIO(data[: 14 + 4 + first_len]), io.BytesIO(), key)
+        bc.decrypt_stream(io.BytesIO(data[: 14 + 4 + first_len]), io.BytesIO(), key, context=b"c")
+
+
+def test_a_copy_does_not_decrypt_as_another_set_or_part(tmp_path, monkeypatch):
+    monkeypatch.setattr(bc, "cwcli_home", lambda: tmp_path)
+    key = bc.load_key()
+    enc = io.BytesIO()
+    bc.encrypt_stream(io.BytesIO(b"dump"), enc, key, context=b"p/s/20260101_000000-b0/db.sql.gz")
+    with pytest.raises(CwcliError) as e:
+        bc.decrypt_stream(
+            io.BytesIO(enc.getvalue()),
+            io.BytesIO(),
+            key,
+            context=b"p/s/20260101_000000-b1/db.sql.gz",
+        )
+    assert e.value.code == "crypto.bad_key_or_tampered"
 
 
 def test_key_export_and_import_never_silently_replace(tmp_path, monkeypatch):

@@ -6,8 +6,9 @@ imported there; it is never printed.
 
 File format (``.cwenc``): ``CWENC1`` + 8-byte nonce prefix, then frames of
 ``[4-byte big-endian ciphertext length][ciphertext+tag]``; frame ``i`` uses nonce
-``prefix + i`` (96 bits) and authenticates its index and the total frame flag as
-associated data, so frames cannot be dropped, reordered or truncated unnoticed.
+``prefix + i`` (96 bits) and authenticates its index, the last-frame flag and the
+caller's context (the set and part it belongs to) as associated data, so frames cannot
+be dropped, reordered or truncated, nor a part swapped for another, unnoticed.
 """
 
 from __future__ import annotations
@@ -90,7 +91,7 @@ def _nonce(prefix: bytes, index: int) -> bytes:
     return prefix + struct.pack(">I", index)
 
 
-def encrypt_stream(src: BinaryIO, dst: BinaryIO, key: bytes) -> int:
+def encrypt_stream(src: BinaryIO, dst: BinaryIO, key: bytes, *, context: bytes) -> int:
     """Encrypt ``src`` into ``dst``; returns the plaintext size."""
     aead = AESGCM(key)
     prefix = os.urandom(8)
@@ -99,7 +100,9 @@ def encrypt_stream(src: BinaryIO, dst: BinaryIO, key: bytes) -> int:
     while True:
         chunk = src.read(FRAME)
         last = len(chunk) < FRAME
-        ct = aead.encrypt(_nonce(prefix, index), chunk, struct.pack(">IB", index, 1 if last else 0))
+        ct = aead.encrypt(
+            _nonce(prefix, index), chunk, struct.pack(">IB", index, 1 if last else 0) + context
+        )
         dst.write(struct.pack(">I", len(ct)) + ct)
         total += len(chunk)
         index += 1
@@ -107,7 +110,7 @@ def encrypt_stream(src: BinaryIO, dst: BinaryIO, key: bytes) -> int:
             return total
 
 
-def decrypt_stream(src: BinaryIO, dst: BinaryIO, key: bytes) -> int:
+def decrypt_stream(src: BinaryIO, dst: BinaryIO, key: bytes, *, context: bytes) -> int:
     head = src.read(len(MAGIC) + 8)
     if head[: len(MAGIC)] != MAGIC or len(head) != len(MAGIC) + 8:
         raise CwcliError(
@@ -130,7 +133,9 @@ def decrypt_stream(src: BinaryIO, dst: BinaryIO, key: bytes) -> int:
             )
         for last in (0, 1):
             try:
-                pt = aead.decrypt(_nonce(prefix, index), ct, struct.pack(">IB", index, last))
+                pt = aead.decrypt(
+                    _nonce(prefix, index), ct, struct.pack(">IB", index, last) + context
+                )
                 break
             except InvalidTag:
                 pt = None
@@ -147,11 +152,11 @@ def decrypt_stream(src: BinaryIO, dst: BinaryIO, key: bytes) -> int:
             return total
 
 
-def encrypt_file(src: Path, dst: Path, key: bytes) -> int:
+def encrypt_file(src: Path, dst: Path, key: bytes, *, context: bytes) -> int:
     with open(src, "rb") as i, open(dst, "wb") as o:
-        return encrypt_stream(i, o, key)
+        return encrypt_stream(i, o, key, context=context)
 
 
-def decrypt_file(src: Path, dst: Path, key: bytes) -> int:
+def decrypt_file(src: Path, dst: Path, key: bytes, *, context: bytes) -> int:
     with open(src, "rb") as i, open(dst, "wb") as o:
-        return decrypt_stream(i, o, key)
+        return decrypt_stream(i, o, key, context=context)

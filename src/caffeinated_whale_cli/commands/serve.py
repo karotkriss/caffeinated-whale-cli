@@ -233,6 +233,7 @@ from ..core.errors import CwcliError, ErrorKind
 from ..core.rm import is_valid_project_name
 from ..utils import agent_hooks, cache, daemon_identity
 from ..utils.console import console, stderr_console
+from . import schedule as schedule_cmd
 
 DEFAULT_PORT = 8765
 DEFAULT_HOST = "127.0.0.1"
@@ -773,9 +774,12 @@ class _Handler(BaseHTTPRequestHandler):
         """``POST /api/v1/session``: username + password for the session cookie.
 
         Failures are counted per username and per address (``core.accounts.Lockout``);
-        a locked key answers 429 with ``retry_after`` and never runs the hash. The
-        cookie carries a random session id whose hash the store keeps; ``remember``
-        makes it a 30-day persistent cookie, otherwise it dies with the browser.
+        a locked address answers 429 with ``retry_after`` and never runs the hash, and
+        a locked username answers 429 to anything but its correct password. On a
+        remote bind the default password signs in only alongside the bearer token.
+        The cookie carries a random session id whose hash the store keeps;
+        ``remember`` makes it a 30-day persistent cookie, otherwise it dies with the
+        browser.
         """
         try:
             body = _parse_action_body(raw)
@@ -785,8 +789,14 @@ class _Handler(BaseHTTPRequestHandler):
         username = str(body.get("username") or "").strip()
         password = str(body.get("password") or "")
         remember = bool(body.get("remember"))
-        keys = (f"user:{username.lower()}", f"addr:{self.client_address[0]}")
-        wait = self.lockout.retry_after(*keys)
+        address, user = f"addr:{self.client_address[0]}", f"user:{username.lower()}"
+        user_wait = self.lockout.retry_after(user)
+        wait = self.lockout.attempt(address, user)
+        acct = None
+        if not wait:
+            acct = core_accounts.verify(username, password) if username and password else None
+            if acct is None:
+                wait = user_wait
         if wait:
             self._send_error(
                 429,
@@ -796,9 +806,7 @@ class _Handler(BaseHTTPRequestHandler):
                 retry_after=wait,
             )
             return
-        acct = core_accounts.verify(username, password) if username and password else None
         if acct is None:
-            self.lockout.failed(*keys)
             self._send_error(
                 401,
                 ErrorKind.PRECONDITION.value,
@@ -806,7 +814,18 @@ class _Handler(BaseHTTPRequestHandler):
                 "That username and password do not match.",
             )
             return
-        self.lockout.succeeded(*keys)
+        self.lockout.succeeded(address, user)
+        if acct.must_change and self.remote_bind and not self._bearer_authenticated():
+            self._send_error(
+                403,
+                ErrorKind.PRECONDITION.value,
+                "auth.default_password_remote",
+                "The account still has the default password, so it cannot sign in "
+                "from the network.",
+                hint="Sign in on this machine's loopback address and change it first, "
+                f"or send 'Authorization: Bearer <token>' matching {TOKEN_ENV}.",
+            )
+            return
         session_id = core_accounts.open_session(
             acct.username, remember=remember, agent=(self.headers.get("User-Agent") or "")
         )
@@ -858,6 +877,7 @@ class _Handler(BaseHTTPRequestHandler):
                 acct.username,
                 new,
                 current=None if acct.must_change else str(current or ""),
+                keep=self._session_cookie(),
             )
         except CwcliError as e:
             self._send_core_error(e)
@@ -998,12 +1018,15 @@ class _Handler(BaseHTTPRequestHandler):
             if not key:
                 self._send_error(400, ErrorKind.USAGE.value, "backups.key", "key is required")
                 return
+            outbox = core_backup_store.store_root() / ".outbox"
+            outbox.mkdir(parents=True, exist_ok=True)
+            work = Path(tempfile.mkdtemp(dir=outbox))
             try:
-                tar_path = core_transfer.export_tar(key, core_backup_store.store_root() / ".outbox")
-            except CwcliError as e:
-                self._send_core_error(e)
-                return
-            try:
+                try:
+                    tar_path = core_transfer.export_tar(key, work)
+                except CwcliError as e:
+                    self._send_core_error(e)
+                    return
                 size = tar_path.stat().st_size
                 self.send_response(200)
                 self.send_header("Content-Type", "application/x-tar")
@@ -1015,7 +1038,7 @@ class _Handler(BaseHTTPRequestHandler):
                 with open(tar_path, "rb") as f:
                     shutil.copyfileobj(f, self.wfile, 1 << 20)
             finally:
-                tar_path.unlink(missing_ok=True)
+                shutil.rmtree(work, ignore_errors=True)
         elif path == "/api/v1/backups/offsite":
             project = _optional_str((query.get("project") or [None])[0])
             if not project:
@@ -1940,7 +1963,19 @@ class _Handler(BaseHTTPRequestHandler):
         when ``?project=`` names one (empty for a stopped or unknown instance -
         never a flat fake line), plus the host series either way."""
         project = (query.get("project") or [None])[0]
-        since = time.time() - float((query.get("window") or ["3600"])[0])
+        try:
+            window = float((query.get("window") or ["3600"])[0])
+        except ValueError:
+            window = -1.0
+        if not 0 < window <= 366 * 24 * 3600:
+            self._send_error(
+                400,
+                ErrorKind.USAGE.value,
+                "metrics.window_invalid",
+                "window must be a number of seconds greater than 0.",
+            )
+            return
+        since = time.time() - window
         body: dict = {"host": self.metrics.host_series(since), "window": {"since": since}}
         if project:
             body["project"] = project
@@ -2099,7 +2134,7 @@ class _Handler(BaseHTTPRequestHandler):
         secret = payload.get("secret_key")
         try:
             if isinstance(secret, str) and secret:
-                core_backup_store.set_s3_secret(secret)
+                core_backup_store.set_s3_secret(secret, project=project)
             allowed = {
                 k: values[k]
                 for k in (
@@ -2733,19 +2768,8 @@ def run_daemon(
         "apps-install",
     }
 
-    finished_since: list[dict] = []
-    finished_lock = threading.Lock()
-
     def _on_job(record: dict) -> None:
         hub.publish_job(record)
-        if record.get("state") in core_jobs.TERMINAL_STATES:
-            with finished_lock:
-                finished_since.append(record)
-            if (record.get("origin") or {}).get("schedule"):
-                try:
-                    core_schedules.record_outcome(record)
-                except Exception as e:  # pragma: no cover - bookkeeping never breaks delivery
-                    _warn(e)
         if record.get("state") in ("succeeded", "failed") and record.get("verb") in backup_verbs:
             try:
                 hub.publish_event("backups", backups_snapshot())
@@ -2769,7 +2793,7 @@ def run_daemon(
         """Once a minute: the backup settings' daily run (phase 3), then every schedule
         (``core.schedules.tick``: due slots, guards, recipes and event triggers). A busy
         instance is retried on the next tick; the tick never takes the daemon down."""
-        was_running: set[str] = set(fleet.running_projects())
+        tick_state: dict = {}
         while not stop.wait(60):
             try:
                 for project in [d.project_name for d in (core_list.list_instances().data or [])]:
@@ -2786,22 +2810,7 @@ def run_daemon(
                     except CwcliError as e:
                         if e.code != "job.project_busy":
                             _warn(e)
-                running = set(fleet.running_projects())
-                started, was_running = running - was_running, running
-                with finished_lock:
-                    batch, finished_since[:] = list(finished_since), []
-                known = {s.project for s in [fleet.get(p) for p in running] if s} | running
-
-                def _status(
-                    project: str, running: set[str] = running, known: set[str] = known
-                ) -> str | None:
-                    if project in running:
-                        return "running"
-                    return "stopped" if fleet.get(project) is not None or project in known else None
-
-                core_schedules.tick(
-                    core_jobs.create_job, _status, finished_jobs=batch, started_projects=started
-                )
+                schedule_cmd.tick_once(tick_state)
             except Exception as e:  # the tick must never take the daemon down
                 _warn(e)
 

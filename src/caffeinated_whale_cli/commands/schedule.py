@@ -184,24 +184,32 @@ def disable(schedule_id: str = typer.Argument(...)) -> None:
     console.print(f"[green]✓[/green] {schedule_id} disabled")
 
 
-def tick_once() -> list[dict]:
-    """One scheduler pass outside the UI daemon (the service, or a test)."""
+def tick_once(state: dict | None = None) -> list[dict]:
+    """One scheduler pass outside the UI daemon (the service, or a test). ``state``
+    carries what the previous pass saw (finished job ids, running instances) so an
+    after_job trigger fires once per job and on_start fires on a stopped -> running
+    change; the first pass, with nothing seen yet, takes the jobs that finished in
+    the last minute and a half."""
     from .. import jobs as core_jobs
 
-    running = {
-        d.project_name for d in (core_list.list_instances().data or []) if d.status == "running"
-    }
-    known = {d.project_name for d in (core_list.list_instances().data or [])}
-    finished = [
-        j
-        for j in core_jobs.list_jobs()
-        if j.get("state") in core_jobs.TERMINAL_STATES and _recent(j)
-    ]
-    return core_schedules.tick(
+    state = {} if state is None else state
+    instances = core_list.list_instances().data or []
+    running = {d.project_name for d in instances if d.status == "running"}
+    known = {d.project_name for d in instances}
+    finished = [j for j in core_jobs.list_jobs() if j.get("state") in core_jobs.TERMINAL_STATES]
+    seen = state.get("seen")
+    fresh = [j for j in finished if (j.get("id") not in seen if seen is not None else _recent(j))]
+    started = running - state["running"] if "running" in state else set()
+    created = core_schedules.tick(
         core_jobs.create_job,
         lambda p: "running" if p in running else ("stopped" if p in known else None),
-        finished_jobs=finished,
+        finished_jobs=fresh,
+        started_projects=started,
+        read_job=core_jobs.read_job,
     )
+    state["seen"] = {j.get("id") for j in finished}
+    state["running"] = running
+    return created
 
 
 def _recent(job: dict) -> bool:
@@ -247,10 +255,11 @@ def daemon(
         raise typer.Exit(code=0 if ok else 1)
     console.print("cwcli scheduler: ticking once a minute (Ctrl-C to stop)")
     stop = threading.Event()
+    state: dict = {}
     try:
         while not stop.is_set():
             try:
-                for rec in tick_once():
+                for rec in tick_once(state):
                     console.print(f"  started {rec['verb']} job {rec['id']}")
             except Exception as e:  # the loop must outlive one bad tick
                 stderr_console.print(f"[yellow]scheduler:[/yellow] {e}")

@@ -6,6 +6,7 @@
 // they stop landing as banners on whatever page is open.
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useIntervalFn, useMediaQuery } from '@vueuse/core'
 import { DesktopShell, Sidebar, SidebarItem, SidebarLabel, ScrollArea, Alert, Dialog, KeyboardShortcut, Badge, Button, useKeyboardShortcut } from 'frappe-ui'
 import StatusDot from './StatusDot.vue'
 import { loadUpdates, updateCount } from '../data/updates'
@@ -39,9 +40,9 @@ import { settingsDialog, openSettings } from '../data/settings-dialog'
 
 const route = useRoute()
 const router = useRouter()
-const narrow = window.matchMedia('(max-width: 639px)')
-const collapsed = ref(narrow.matches)
-narrow.addEventListener('change', (e) => (collapsed.value = e.matches))
+const narrow = useMediaQuery('(max-width: 639px)')
+const collapsed = ref(narrow.value)
+watch(narrow, (m) => (collapsed.value = m))
 doctor.load()
 loadCatalog()
 loadSchedules() // the digest notification reads the schedules' settings
@@ -51,7 +52,7 @@ const live = computed(() => fleet.connection === 'live')
 const DOWN_AFTER_MS = 15000
 const reconnectingSince = ref(null)
 const tick = ref(Date.now())
-setInterval(() => (tick.value = Date.now()), 2000)
+useIntervalFn(() => (tick.value = Date.now()), 2000)
 watch(() => fleet.connection, (c) => { reconnectingSince.value = c === 'reconnecting' ? Date.now() : null }, { immediate: true })
 const daemonDown = computed(() => reconnectingSince.value != null && tick.value - reconnectingSince.value > DOWN_AFTER_MS)
 // Ctrl+Enter (Cmd+Enter) invokes the topmost open dialog's primary action (captain
@@ -69,6 +70,7 @@ useKeyboardShortcut({
     if (primary) primary.click()
   },
 })
+function reload() { window.location.reload() }
 const siteCount = computed(() => instances.value.reduce((n, i) => n + countSites(details[i.project]?.data), 0))
 
 // Notifications: what needs a person, unread only; opening one marks it read.
@@ -166,8 +168,8 @@ watch(() => route.name, (name) => {
         </Sidebar>
       </template>
       <div v-if="session.protocolMismatch" class="px-3 pt-3 sm:px-5">
-        <Alert v-if="session.meta && session.meta.protocol < PROTOCOL" theme="amber" title="cwcli was updated but this daemon is still the old version" description="Run cwcli ui in a terminal. It restarts the daemon onto the new version, then reload this page." :primary-action="{ label: 'Reload', onClick: () => location.reload() }" />
-        <Alert v-else theme="amber" title="This page was built for a different cwcli daemon" description="Reload to pick up the daemon that is running now." :primary-action="{ label: 'Reload', onClick: () => location.reload() }" />
+        <Alert v-if="session.meta && session.meta.protocol < PROTOCOL" theme="amber" title="cwcli was updated but this daemon is still the old version" description="Run cwcli ui in a terminal. It restarts the daemon onto the new version, then reload this page." :primary-action="{ label: 'Reload', onClick: reload }" />
+        <Alert v-else theme="amber" title="This page was built for a different cwcli daemon" description="Reload to pick up the daemon that is running now." :primary-action="{ label: 'Reload', onClick: reload }" />
       </div>
       <div v-if="daemonDown" class="flex items-center gap-2 border-b border-outline-red-1 bg-surface-red-1 px-4 py-1.5 text-sm text-ink-red-6">
         <span class="lucide-unplug size-3.5" aria-hidden="true" />The cwcli daemon is not reachable. Start it with <code class="rounded bg-surface-red-2 px-1 font-mono text-xs">cwcli ui</code> in a terminal; this page reconnects by itself.

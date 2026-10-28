@@ -44,11 +44,12 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 from ..utils import config_utils, db_utils
 from ..utils.config_utils import cwcli_home
@@ -57,6 +58,7 @@ from . import editors as core_editors
 from . import inspect as core_inspect
 from .errors import CwcliError, ErrorKind
 from .list import list_instances
+from .rm import is_valid_project_name
 
 CATALOG_VERSION = 1
 LOGO_MAX_BYTES = 2 * 1024 * 1024
@@ -259,7 +261,7 @@ def store_logo(raw: bytes | None, *, source: str, kind: str = "icon") -> dict[st
     logos_dir().mkdir(parents=True, exist_ok=True)
     path = logos_dir() / name
     if not path.exists():
-        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp = path.with_suffix(f"{path.suffix}.{uuid.uuid4().hex}.tmp")
         tmp.write_bytes(raw)
         os.replace(tmp, path)
     return {
@@ -335,7 +337,12 @@ def _parse_app_line(entry: str) -> dict[str, Any]:
 
 def credential(host: str) -> str | None:
     """The host tool's token for ``host``, in memory only. None when not signed in."""
-    tool = "gh" if host.endswith("github.com") else "glab"
+    if host == "github.com":
+        tool = "gh"
+    elif host in gitlab_hosts():
+        tool = "glab"
+    else:
+        return None
     try:
         out = subprocess.run(
             [tool, "auth", "git-credential", "get"],
@@ -374,6 +381,28 @@ def gitlab_hosts() -> list[str]:
     return hosts
 
 
+class _SameHostAuthRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: http.client.HTTPMessage,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and (
+            urllib.parse.urlparse(newurl).hostname != urllib.parse.urlparse(req.full_url).hostname
+        ):
+            new.remove_header("Authorization")
+            new.remove_header("Private-token")
+        return new
+
+
+_OPENER = urllib.request.build_opener(_SameHostAuthRedirect)
+
+
 class _Http:
     def __init__(self, token: str | None, auth: str) -> None:
         self._token = token
@@ -393,7 +422,7 @@ class _Http:
     def get(self, url: str, *, accept: str | None = None) -> tuple[int, bytes, dict[str, str]]:
         req = urllib.request.Request(url, headers=self._headers(accept))
         try:
-            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as r:  # noqa: S310
+            with _OPENER.open(req, timeout=_HTTP_TIMEOUT) as r:
                 return (
                     r.status,
                     r.read(LOGO_MAX_BYTES + 1),
@@ -416,10 +445,13 @@ class _Http:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=max(_HTTP_TIMEOUT, 90)) as r:  # noqa: S310
-                return json.loads(r.read().decode("utf-8"))
+            with _OPENER.open(req, timeout=max(_HTTP_TIMEOUT, 90)) as r:
+                body = json.loads(r.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             raise CatalogHTTPError(e.code, url) from e
+        if not isinstance(body, dict) or not body.get("data"):
+            raise ValueError(f"GraphQL answered without data: {(body or {}).get('errors')}")
+        return body
 
 
 class CatalogHTTPError(Exception):
@@ -430,6 +462,8 @@ class CatalogHTTPError(Exception):
 
 def _fetch_public(url: str) -> bytes | None:
     """An unauthenticated fetch of a public image URL (the GitHub social card)."""
+    if not url.startswith(("https://", "http://")):
+        return None
     try:
         with urllib.request.urlopen(
             urllib.request.Request(url, headers={"User-Agent": _UA}), timeout=_HTTP_TIMEOUT
@@ -1164,9 +1198,15 @@ _GIT_REMOTE_RE = re.compile(r'^\[remote "([^"]+)"\]\s*$')
 _GIT_URL_RE = re.compile(r"^\s*url\s*=\s*(.+?)\s*$")
 
 
+def _scanned_by(key: str, entry: dict[str, Any], host: str) -> bool:
+    return key.startswith(f"{host}/") and (entry.get("source") or {}).get("kind") != "marketplace"
+
+
 def _host_bench_dir(project: str, bench_path: str) -> Path | None:
-    base = cwcli_home() / "projects" / project
     name = Path(bench_path).name
+    if not is_valid_project_name(project) or name in ("", ".", ".."):
+        return None
+    base = cwcli_home() / "projects" / project
     for candidate in (base / "data" / name, base / name):
         if (candidate / "apps").is_dir():
             return candidate
@@ -1484,6 +1524,7 @@ def _merge(
                 remote_state="verified" if not key.startswith("local:") else "unverified",
                 hooks_logo=local.get("hooks_logo"),
                 source=_source_from_key(key),
+                official=key.startswith(OFFICIAL_PREFIX),
             )
         else:
             target.state = "both"
@@ -1615,20 +1656,8 @@ class CatalogStore:
             gh_source, gh_apps = scan_github(previous, gh_orgs)
             sources.append(gh_source)
             if gh_source.error is None:
-                remote = {k: v for k, v in remote.items() if not k.startswith("github.com/")}
+                remote = {k: v for k, v in remote.items() if not _scanned_by(k, v, "github.com")}
                 remote.update(gh_apps)
-            mk_source, mk_apps = scan_marketplace(previous)
-            sources.append(mk_source)
-            if mk_source.error is None:
-                remote = {
-                    k: v
-                    for k, v in remote.items()
-                    if (v.get("source") or {}).get("kind") != "marketplace"
-                }
-                for key, entry in mk_apps.items():
-                    remote[key] = (
-                        _enrich_from_registry(remote[key], entry) if key in remote else entry
-                    )
             for host in gitlab_hosts():
                 groups = [v.split(":", 1)[1] for v in extras if v.startswith(f"{host}:")]
 
@@ -1643,8 +1672,20 @@ class CatalogStore:
                 gl_source, gl_apps = scan_gitlab(host, previous, groups, progress=_progress)
                 sources.append(gl_source)
                 if gl_source.error is None:
-                    remote = {k: v for k, v in remote.items() if not k.startswith(f"{host}/")}
+                    remote = {k: v for k, v in remote.items() if not _scanned_by(k, v, host)}
                     remote.update(gl_apps)
+            mk_source, mk_apps = scan_marketplace(previous)
+            sources.append(mk_source)
+            if mk_source.error is None:
+                remote = {
+                    k: v
+                    for k, v in remote.items()
+                    if (v.get("source") or {}).get("kind") != "marketplace"
+                }
+                for key, entry in mk_apps.items():
+                    remote[key] = (
+                        _enrich_from_registry(remote[key], entry) if key in remote else entry
+                    )
             with self._lock:
                 for s in sources:
                     self._remote_state[s.host] = "verified" if s.error is None else "unverified"

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import threading
+import time
 from datetime import datetime, timedelta
 
 import pytest
@@ -37,6 +40,19 @@ class Fleet:
 
     def instance_status(self, project):
         return self.status
+
+    def read(self, job_id):
+        found = [j for j in self.jobs if j["id"] == job_id]
+        if not found:
+            raise CwcliError(sch.ErrorKind.NOT_FOUND, "job.not_found", "gone")
+        return found[0]
+
+    def finish(self, job, state="succeeded"):
+        job["state"] = state
+
+
+def run_tick(fleet, **kw):
+    return sch.tick(fleet.create, fleet.instance_status, read_job=fleet.read, **kw)
 
 
 def nightly(**over):
@@ -125,91 +141,130 @@ class TestTick:
     def test_fires_at_the_slot_once_then_waits_for_the_next(self):
         fleet = Fleet()
         sch.save(nightly(), now=T0)
-        assert sch.tick(fleet.create, fleet.instance_status, now=T0.replace(hour=1, minute=59)) == []
-        made = sch.tick(fleet.create, fleet.instance_status, now=T0.replace(hour=2))
+        assert run_tick(fleet, now=T0.replace(hour=1, minute=59)) == []
+        made = run_tick(fleet, now=T0.replace(hour=2))
         assert [j["verb"] for j in made] == ["backup-sites"]
         assert made[0]["origin"]["account"] == "schedule" and made[0]["consent"] is True
-        assert sch.tick(fleet.create, fleet.instance_status, now=T0.replace(hour=2, minute=1)) == []
+        assert run_tick(fleet, now=T0.replace(hour=2, minute=1)) == []
         row = sch.list_schedules(now=T0.replace(hour=2, minute=1))["schedules"][0]
         assert row["last_run"]["job_id"] == "j1" and row["next_run"].startswith("2026-11-03T02:00")
-        made = sch.tick(fleet.create, fleet.instance_status, now=T0 + timedelta(days=1, hours=1))
+        made = run_tick(fleet, now=T0 + timedelta(days=1, hours=1))
         assert len(made) == 1
 
     def test_a_new_schedule_does_not_fire_for_a_slot_that_already_passed(self):
         fleet = Fleet()
         sch.save(nightly(cron="0 0 * * *"), now=T0)  # 00:00 passed an hour ago
-        assert sch.tick(fleet.create, fleet.instance_status, now=T0) == []
+        assert run_tick(fleet, now=T0) == []
 
     def test_missed_runs_run_once_on_wake_or_skip(self):
         fleet = Fleet()
         sch.save(nightly(name="run"), now=T0)
         sch.save(nightly(name="skip", missed="skip"), now=T0)
-        made = sch.tick(fleet.create, fleet.instance_status, now=T0 + timedelta(hours=9))  # machine was off at 02:00
+        made = run_tick(fleet, now=T0 + timedelta(hours=9))  # machine was off at 02:00
         assert len(made) == 1
         rows = {r["name"]: r for r in sch.list_schedules(now=T0 + timedelta(hours=9))["schedules"]}
         assert rows["skip"]["last_run"]["state"] == "skipped"
         assert rows["skip"]["next_run"].startswith("2026-11-03T02:00")
 
-    def test_updates_need_the_unattended_flag_for_consent(self):
+    def test_updates_and_migrate_never_start_without_the_unattended_flag(self):
         fleet = Fleet()
         upd = {"name": "u", "verb": "apps-update", "target": {"project": "p", "bench": "0"}, "cron": "0 2 * * *", "args": {"apps": ["frappe"]}}
         sch.save(upd, now=T0)
         sch.save({**upd, "name": "u2", "unattended": True}, now=T0)
-        made = sch.tick(fleet.create, fleet.instance_status, now=T0.replace(hour=2))
-        assert sorted(j["consent"] for j in made) == [False, True]
+        sch.save({"name": "m", "verb": "migrate", "target": {"project": "p", "site": "s"}, "cron": "0 2 * * *", "start_if_stopped": True}, now=T0)
+        sch.save({"name": "r", "verb": "recipe", "target": {"project": "p", "site": "s"}, "cron": "0 2 * * *", "steps": [{"verb": "backup-sites"}, {"verb": "migrate"}]}, now=T0)
+        made = run_tick(fleet, now=T0.replace(hour=2))
+        assert [(j["verb"], j["origin"]["schedule"]) for j in made] == [("apps-update", made[0]["origin"]["schedule"])]
+        rows = {r["name"]: r for r in sch.list_schedules(now=T0.replace(hour=2))["schedules"]}
+        assert rows["u2"]["id"] == made[0]["origin"]["schedule"]
+        for name in ("u", "m", "r"):
+            assert "unattended" in rows[name]["last_skip"]["reason"]
+            assert rows[name]["last_run"]["state"] == "skipped"
+            assert rows[name]["next_run"].startswith("2026-11-03T02:00")
+        fleet.status = "stopped"
+        assert run_tick(fleet, now=T0 + timedelta(days=1, hours=1)) == []
 
     def test_a_busy_instance_is_retried_next_minute(self):
         fleet = Fleet()
         fleet.busy = True
         sch.save(nightly(), now=T0)
-        assert sch.tick(fleet.create, fleet.instance_status, now=T0.replace(hour=2)) == []
+        assert run_tick(fleet, now=T0.replace(hour=2)) == []
         fleet.busy = False
-        assert len(sch.tick(fleet.create, fleet.instance_status, now=T0.replace(hour=2, minute=1))) == 1
+        assert len(run_tick(fleet, now=T0.replace(hour=2, minute=1))) == 1
 
     def test_a_stopped_instance_is_skipped_or_started_first(self):
         fleet = Fleet(status="stopped")
         sch.save(nightly(name="skip"), now=T0)
         sch.save(nightly(name="start", start_if_stopped=True), now=T0)
-        made = sch.tick(fleet.create, fleet.instance_status, now=T0.replace(hour=2))
+        made = run_tick(fleet, now=T0.replace(hour=2))
         assert [j["verb"] for j in made] == ["start"]
         rows = {r["name"]: r for r in sch.list_schedules(now=T0)["schedules"]}
         assert rows["skip"]["last_skip"]["reason"] == "the instance is stopped"
         fleet.status = "running"
-        made = sch.tick(fleet.create, fleet.instance_status, now=T0.replace(hour=2, minute=1))
+        made = run_tick(fleet, now=T0.replace(hour=2, minute=1))
         assert [j["verb"] for j in made] == ["backup-sites"]
 
     def test_the_maintenance_window_and_quiet_hours_hold_a_run_until_they_allow_it(self):
         fleet = Fleet()
         sch.save_settings(windows={"p": {"start": "03:00", "end": "05:00"}})
         sch.save(nightly(name="windowed", respect_window=True), now=T0)
-        assert sch.tick(fleet.create, fleet.instance_status, now=T0.replace(hour=2)) == []
-        assert len(sch.tick(fleet.create, fleet.instance_status, now=T0.replace(hour=3))) == 1
+        assert run_tick(fleet, now=T0.replace(hour=2)) == []
+        assert len(run_tick(fleet, now=T0.replace(hour=3))) == 1
         sch.save_settings(quiet_hours={"start": "22:00", "end": "06:00"})
         sch.save(nightly(name="quiet"), now=T0.replace(hour=4))
-        assert sch.tick(fleet.create, fleet.instance_status, now=T0 + timedelta(days=1, hours=1)) == []
-        assert len(sch.tick(fleet.create, fleet.instance_status, now=T0 + timedelta(days=1, hours=5, minutes=1))) == 1
+        assert run_tick(fleet, now=T0 + timedelta(days=1, hours=1)) == []
+        assert len(run_tick(fleet, now=T0 + timedelta(days=1, hours=5, minutes=1))) == 1
 
     def test_low_disk_or_memory_holds_everything_but_a_stop(self, monkeypatch):
         fleet = Fleet()
         monkeypatch.setattr(sch, "_free_disk_gb", lambda: 1.0)
         sch.save(nightly(name="backup"), now=T0)
         sch.save(nightly(name="stop", verb="stop"), now=T0)
-        made = sch.tick(fleet.create, fleet.instance_status, now=T0.replace(hour=2))
+        made = run_tick(fleet, now=T0.replace(hour=2))
         assert [j["verb"] for j in made] == ["stop"]
         assert "GB free" in sch.list_schedules(now=T0)["schedules"][0]["last_skip"]["reason"]
+
+    def test_a_one_off_that_is_skipped_retires_instead_of_retrying_every_minute(self):
+        fleet = Fleet(status="stopped")
+        sch.save({"name": "once", "verb": "restart", "target": {"project": "p"}, "kind": "once", "at": T0.replace(hour=2).strftime("%Y-%m-%dT%H:%M:%S%z")}, now=T0)
+        assert run_tick(fleet, now=T0.replace(hour=2)) == []
+        fleet.status = "running"
+        assert run_tick(fleet, now=T0.replace(hour=2, minute=1)) == []
+        row = sch.list_schedules(now=T0.replace(hour=3))["schedules"][0]
+        assert row["enabled"] is False and row["last_run"]["state"] == "skipped"
+
+    def test_re_enabling_or_editing_waits_for_the_next_slot_not_a_stale_one(self):
+        fleet = Fleet()
+        row = sch.save(nightly(), now=T0)
+        assert len(run_tick(fleet, now=T0.replace(hour=2))) == 1
+        sch.set_enabled(row["id"], False, now=T0.replace(hour=3))
+        sch.set_enabled(row["id"], True, now=T0 + timedelta(days=3, hours=9))  # Thursday 10:00
+        assert run_tick(fleet, now=T0 + timedelta(days=3, hours=9, minutes=1)) == []
+        assert len(run_tick(fleet, now=T0 + timedelta(days=4, hours=1))) == 1
+        sch.save({**nightly(cron="0 4 * * *"), "id": row["id"]}, now=T0 + timedelta(days=6, hours=9))
+        assert run_tick(fleet, now=T0 + timedelta(days=6, hours=9, minutes=1)) == []
+        assert len(run_tick(fleet, now=T0 + timedelta(days=7, hours=3))) == 1
+
+    def test_the_last_run_outcome_comes_from_the_job_record(self):
+        fleet = Fleet()
+        sch.save(nightly(), now=T0)
+        made = run_tick(fleet, now=T0.replace(hour=2))
+        fleet.finish(made[0], "failed")
+        run_tick(fleet, now=T0.replace(hour=2, minute=1))
+        assert sch.list_schedules(now=T0)["schedules"][0]["last_run"]["state"] == "failed"
 
     def test_a_one_off_fires_once_and_disables_itself(self):
         fleet = Fleet()
         sch.save({"name": "once", "verb": "restart", "target": {"project": "p"}, "kind": "once", "at": T0.replace(hour=2).strftime("%Y-%m-%dT%H:%M:%S%z")}, now=T0)
-        assert len(sch.tick(fleet.create, fleet.instance_status, now=T0.replace(hour=2))) == 1
+        assert len(run_tick(fleet, now=T0.replace(hour=2))) == 1
         row = sch.list_schedules(now=T0.replace(hour=3))["schedules"][0]
         assert row["enabled"] is False
-        assert sch.tick(fleet.create, fleet.instance_status, now=T0.replace(hour=3)) == []
+        assert run_tick(fleet, now=T0.replace(hour=3)) == []
 
     def test_the_outcome_of_a_scheduled_job_is_recorded(self):
         fleet = Fleet()
         sch.save(nightly(), now=T0)
-        made = sch.tick(fleet.create, fleet.instance_status, now=T0.replace(hour=2))
+        made = run_tick(fleet, now=T0.replace(hour=2))
         sch.record_outcome({**made[0], "state": "failed", "finished_at": "x"})
         row = sch.list_schedules(now=T0)["schedules"][0]
         assert row["last_run"]["state"] == "failed"
@@ -227,32 +282,89 @@ class TestRecipesAndTriggers:
             "unattended": True,
         }
         sch.save(recipe, now=T0)
-        made = sch.tick(fleet.create, fleet.instance_status, now=T0.replace(hour=2))
+        made = run_tick(fleet, now=T0.replace(hour=2))
         assert [j["verb"] for j in made] == ["backup-sites"] and made[0]["origin"]["recipe_step"] == 0
-        done = {**made[0], "state": "succeeded"}
-        made = sch.tick(fleet.create, fleet.instance_status, now=T0.replace(hour=2, minute=5), finished_jobs=[done])
+        assert run_tick(fleet, now=T0.replace(hour=2, minute=1)) == []  # still running
+        fleet.finish(made[0])
+        made = run_tick(fleet, now=T0.replace(hour=2, minute=5))  # no finished_jobs: read from the records
         assert [j["verb"] for j in made] == ["migrate"] and made[0]["consent"] is True
         # its own slot coming round again does not start a second copy mid-recipe
-        assert sch.tick(fleet.create, fleet.instance_status, now=T0 + timedelta(days=1, hours=1)) == []
-        failed = {**made[0], "state": "failed"}
-        made = sch.tick(fleet.create, fleet.instance_status, now=T0.replace(hour=2, minute=9), finished_jobs=[failed])
+        assert run_tick(fleet, now=T0 + timedelta(days=1, hours=1)) == []
+        fleet.finish(made[0], "failed")
+        made = run_tick(fleet, now=T0.replace(hour=2, minute=9))
         assert made == []
         assert sch.list_schedules(now=T0)["schedules"][0]["last_run"]["state"] == "failed"
+
+    def test_a_later_recipe_step_retries_a_busy_instance_and_obeys_the_guards(self):
+        fleet = Fleet()
+        sch.save({"name": "r", "verb": "recipe", "target": {"project": "p"}, "cron": "0 2 * * *", "steps": [{"verb": "backup-sites"}, {"verb": "restart"}]}, now=T0)
+        first = run_tick(fleet, now=T0.replace(hour=2))[0]
+        fleet.finish(first)
+        fleet.busy = True
+        assert run_tick(fleet, now=T0.replace(hour=2, minute=1)) == []
+        fleet.busy = False
+        sch.save_settings(quiet_hours={"start": "02:00", "end": "03:00"})
+        assert run_tick(fleet, now=T0.replace(hour=2, minute=2)) == []
+        made = run_tick(fleet, now=T0.replace(hour=3))
+        assert [j["verb"] for j in made] == ["restart"]
+        fleet.finish(made[0])
+        fleet.status = "stopped"
+        run_tick(fleet, now=T0.replace(hour=3, minute=1))
+        assert sch.list_schedules(now=T0)["schedules"][0].get("recipe") is None
 
     def test_after_job_and_on_start_triggers(self):
         fleet = Fleet()
         sch.save({"name": "after", "verb": "restart", "target": {"project": "p"}, "kind": "event", "trigger": {"type": "after_job", "verb": "apps-update"}}, now=T0)
         sch.save({"name": "boot", "verb": "backup-sites", "target": {"project": "q"}, "kind": "event", "trigger": {"type": "on_start"}}, now=T0)
-        assert sch.tick(fleet.create, fleet.instance_status, now=T0) == []
+        assert run_tick(fleet, now=T0) == []
         finished = [{"id": "x", "verb": "apps-update", "state": "succeeded", "target": {"project": "p"}, "origin": {}}]
-        made = sch.tick(fleet.create, fleet.instance_status, now=T0, finished_jobs=finished, started_projects={"q"})
+        made = run_tick(fleet, now=T0, finished_jobs=finished, started_projects={"q"})
         assert sorted(j["verb"] for j in made) == ["backup-sites", "restart"]
         # a failed update or another instance's update does not fire it
         finished = [{"id": "y", "verb": "apps-update", "state": "failed", "target": {"project": "p"}, "origin": {}}]
-        assert sch.tick(fleet.create, fleet.instance_status, now=T0, finished_jobs=finished) == []
+        assert run_tick(fleet, now=T0, finished_jobs=finished) == []
 
     def test_templates_are_valid_once_a_target_is_added(self):
         for t in sch.templates():
             body = {k: v for k, v in t.items() if k not in {"key", "note", "process"}}
             body["target"] = {"project": "p", "bench": "0", "process": t.get("process", "")}
             sch.validate(body)
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs time.tzset")
+def test_a_daily_slot_keeps_its_wall_clock_time_across_daylight_saving(monkeypatch):
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    try:
+        before = datetime(2026, 10, 31, 12, 0).astimezone()  # EDT; the clocks go back on Nov 1
+        nxt = sch.next_cron("0 2 * * *", before)
+        assert nxt.astimezone().replace(tzinfo=None) == datetime(2026, 11, 1, 2, 0)
+        assert sch.next_cron("0 2 * * *", nxt).astimezone().replace(tzinfo=None) == datetime(2026, 11, 2, 2, 0)
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+
+class TestStoreLock:
+    def test_an_edit_waits_for_the_lock_another_scheduler_holds(self):
+        fcntl = pytest.importorskip("fcntl")
+        row = sch.save(nightly(), now=T0)
+        fd = os.open(sch.store_path().with_suffix(".lock"), os.O_RDWR)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        t = threading.Thread(target=sch.delete, args=(row["id"],))
+        t.start()
+        t.join(0.3)
+        try:
+            assert t.is_alive() and row["id"] in sch.store_path().read_text()
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        t.join(5)
+        assert sch.list_schedules(now=T0)["schedules"] == []
+
+    def test_a_lock_that_cannot_be_taken_refuses_the_write(self):
+        pytest.importorskip("fcntl")
+        sch.store_path().with_suffix(".lock").mkdir(parents=True)
+        with pytest.raises(CwcliError) as e:
+            sch.save(nightly(), now=T0)
+        assert e.value.code == "schedules.lock_unavailable"

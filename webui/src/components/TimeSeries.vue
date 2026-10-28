@@ -108,7 +108,7 @@ function render() {
       animation: false,
       grid: { left: 48, right: 12, top: visible.value.length > 1 ? 28 : 10, bottom: 22 },
       legend: visible.value.length > 1 ? { top: 0, left: 0, icon: 'roundRect', itemWidth: 10, itemHeight: 10, textStyle: { color: gray, fontSize: 11 } } : { show: false },
-      tooltip: { trigger: 'axis', valueFormatter: (v) => f(v), axisPointer: { type: 'line', lineStyle: { color: line } }, textStyle: { fontSize: 12 } },
+      tooltip: { trigger: 'axis', renderMode: 'richText', valueFormatter: (v) => f(v), axisPointer: { type: 'line', lineStyle: { color: line } }, textStyle: { fontSize: 12 } },
       xAxis: { type: 'time', axisLine: { lineStyle: { color: line } }, axisTick: { show: false }, axisLabel: { color: gray, fontSize: 11, hideOverlap: true }, splitLine: { show: false } },
       yAxis: { type: 'value', min: 0, max: yMax.value, axisLabel: { color: gray, fontSize: 11, formatter: (v) => f(v) }, splitLine: { lineStyle: { color: line } } },
       series: visible.value.map((s) => ({

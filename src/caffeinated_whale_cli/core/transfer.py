@@ -125,8 +125,9 @@ def transfer_sites(
             "transfer.consent",
             "A move drops each source site once its copy answers; it needs explicit consent.",
         )
+    same_bench = tproject == project and _bench_key(project, tbench) == _bench_key(project, bench)
     for src, dst in sites:
-        if tproject == project and (tbench or "") == (bench or "") and src == dst:
+        if same_bench and src == dst:
             raise CwcliError(
                 ErrorKind.USAGE,
                 "transfer.same_site",
@@ -187,7 +188,12 @@ def transfer_sites(
                 on_event=emit,
             )
             rep = restored.data
-            if rep is None or not rep.restored or (rep.migrate_ran and not rep.migrate_ok):
+            if (
+                rep is None
+                or not rep.restored
+                or (rep.migrate_ran and not rep.migrate_ok)
+                or not all(c.ok for c in rep.post_checks)
+            ):
                 raise CwcliError(
                     ErrorKind.PRECONDITION,
                     "transfer.restore_failed",
@@ -227,6 +233,16 @@ def transfer_sites(
             )
             break
     return Result(status=Status.OK if report.ok else Status.WARNING, data=report)
+
+
+def _bench_key(project: str, bench: str | None) -> str:
+    from . import resolvers
+
+    try:
+        res = resolvers.resolve_bench(project, bench or None, None)
+    except CwcliError:
+        return bench or ""
+    return res.data if res is not None and res.data else (bench or "")
 
 
 def _site_exists(project: str, bench: str | None, site: str) -> bool:
@@ -447,6 +463,7 @@ def export_tar(key: str, dest_dir: Path) -> Path:
         for f in sorted(Path(bset.path).iterdir()):
             if f.is_file():
                 tar.add(f, arcname=f"{bset.project}/{bset.site}/{bset.id}/{f.name}")
+    os.chmod(out, shared_home.file_mode(0o600))
     return out
 
 

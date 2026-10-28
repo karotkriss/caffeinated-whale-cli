@@ -1081,3 +1081,21 @@ def test_a_core_update_takes_the_safety_backup_first_and_a_failed_one_stops_it(
         )
     assert exc.value.code == "backups.safety_failed"
     assert order == []  # the update never ran
+
+
+def test_a_self_update_worker_with_the_daemon_context_schedules_the_ui_restart(
+    fake_spawn, monkeypatch
+):
+    jobs.create_job(
+        "self-update",
+        {},
+        {},
+        ui_context={"pid": 99, "start": "start-99", "port": 8765, "token": "daemon-token"},
+    )
+    for name, value in fake_spawn[0][1]["env"].items():
+        if name.startswith("CWCLI_JOB_UI_"):
+            monkeypatch.setenv(name, value)
+
+    jobs._schedule_ui_restart()
+
+    assert fake_spawn[-1][0][-1] == "restart-ui"

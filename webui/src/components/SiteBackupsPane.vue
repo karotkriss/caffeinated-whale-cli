@@ -9,12 +9,13 @@ import { createJob } from '../data/jobs'
 import { trackJob } from '../data/job-toasts'
 import { openJob } from '../data/job-dialog'
 import { openRestoreWizard } from '../data/restore-wizard'
-import { sendSet } from '../data/transfer'
+import { copyOffsite, sendSet } from '../data/transfer'
 import { downloadSet, lastDrill } from '../data/backups'
 import { toast } from 'frappe-ui'
 import { useRouter } from 'vue-router'
 import { openAction } from '../data/dialog'
 
+const router = useRouter()
 const props = defineProps({
   project: { type: String, required: true },
   bench: { type: String, required: true },
@@ -39,14 +40,14 @@ function verify(s) {
   createJob({ verb: 'verify-backup', target: { project: s.project, site: s.site }, args: { set_key: s.key } })
 }
 function remove(s) {
-  openAction({ title: `Delete backup ${s.id}?`, description: `${s.site} on ${s.project}, ${sizeText(s.size)}, ${REASON_LABEL[s.reason] || s.reason}. A site's last good backup is never deleted.`, confirmLabel: 'Delete', theme: 'red', run: () => createJob({ verb: 'delete-backup', target: { project: s.project, site: s.site }, args: { set_key: s.key }, consent: true }) })
+  openAction('delete_backup', { project: s.project, site: s.site, set: s })
 }
 function menu(s) {
   return [{ group: 'Set', options: [
     { label: 'Restore…', icon: 'rotate-ccw', onClick: () => openRestoreWizard(s) },
     { label: 'Verify again', icon: 'shield-check', onClick: () => verify(s) },
     { label: 'Send to another machine…', icon: 'send', onClick: () => sendSet(s, router) },
-    { label: s.offsite ? 'Copy off-site again' : 'Copy off-site (S3)', icon: 'cloud-upload', onClick: () => copyOffsite(s) },
+    { label: s.offsite ? 'Copy off-site again' : 'Copy off-site (S3)', icon: 'cloud-upload', onClick: () => copyOffsite(s, router) },
     { label: 'Download (.tar)', icon: 'download', onClick: () => downloadSet(s).catch((e) => toast.error(e.message)) },
     { label: 'Delete', icon: 'trash-2', theme: 'red', onClick: () => remove(s) },
   ] }]

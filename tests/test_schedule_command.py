@@ -62,7 +62,7 @@ def test_the_agent_surface_is_toon():
     r = runner.invoke(app, ["axi", "schedule", "list"])
     assert r.exit_code == 0 and "schedules[1]" in r.output and "upcoming[" in r.output
     r = runner.invoke(app, ["axi", "schedule", "add", "Bad", "--verb", "rm-site", "--project", "p", "--cron", "0 2 * * *"])
-    assert r.exit_code == 1 and "can never be scheduled" in r.output
+    assert r.exit_code == 2 and "can never be scheduled" in r.output
 
 
 def test_the_json_listing_is_the_core_view():
@@ -70,3 +70,31 @@ def test_the_json_listing_is_the_core_view():
     r = runner.invoke(app, ["schedule", "list", "--json"])
     data = json.loads(r.output)
     assert data["schedules"][0]["name"] == "N" and "guards" in data and "upcoming" in data
+
+
+def test_the_service_fires_after_job_once_per_job_and_on_start_on_a_start(monkeypatch):
+    from types import SimpleNamespace
+
+    from caffeinated_whale_cli import jobs as core_jobs
+    from caffeinated_whale_cli.commands import schedule as schedule_cmd
+    from caffeinated_whale_cli.core import list as core_list
+
+    instances = [SimpleNamespace(project_name="p", status="running"), SimpleNamespace(project_name="q", status="exited")]
+    history: list = []
+    made: list = []
+    monkeypatch.setattr(core_list, "list_instances", lambda: SimpleNamespace(data=instances))
+    monkeypatch.setattr(core_jobs, "list_jobs", lambda: list(history))
+    monkeypatch.setattr(core_jobs, "create_job", lambda verb, target, args, **kw: made.append(verb) or {"id": f"j{len(made)}", "verb": verb, "state": "queued"})
+    monkeypatch.setattr(core_jobs, "read_job", lambda job_id: {"id": job_id, "state": "queued"})
+    monkeypatch.setattr(sch, "_free_disk_gb", lambda: 100.0)
+    monkeypatch.setattr(sch, "_free_mem_mb", lambda: 4096.0)
+    sch.save({"name": "after", "verb": "restart", "target": {"project": "p"}, "kind": "event", "trigger": {"type": "after_job", "verb": "apps-update"}})
+    sch.save({"name": "boot", "verb": "backup-sites", "target": {"project": "q"}, "kind": "event", "trigger": {"type": "on_start"}})
+    state: dict = {}
+    assert schedule_cmd.tick_once(state) == []
+    history.append({"id": "u1", "verb": "apps-update", "state": "succeeded", "target": {"project": "p"}, "origin": {}, "finished_at": "2000-01-01T00:00:00+00:00"})
+    assert [r["verb"] for r in schedule_cmd.tick_once(state)] == ["restart"]
+    assert schedule_cmd.tick_once(state) == []
+    instances[1] = SimpleNamespace(project_name="q", status="running")
+    assert [r["verb"] for r in schedule_cmd.tick_once(state)] == ["backup-sites"]
+    assert schedule_cmd.tick_once(state) == []

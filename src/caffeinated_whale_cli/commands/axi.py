@@ -1666,7 +1666,7 @@ def axi_schedule_add(
         emit_result(core_schedules.save(sched, by="axi"))
     except CwcliError as e:
         emit_axi_error(e)
-        raise typer.Exit(1) from e
+        raise typer.Exit(exit_for(e.kind)) from e
 
 
 @schedule_app.command("run-now")
@@ -1688,7 +1688,7 @@ def axi_schedule_run(schedule: str = typer.Argument(..., help="The schedule id."
         )
     except CwcliError as e:
         emit_axi_error(e)
-        raise typer.Exit(1) from e
+        raise typer.Exit(exit_for(e.kind)) from e
     emit_result({"job_id": rec["id"], "verb": rec["verb"], "state": rec.get("state")})
 
 
@@ -1701,7 +1701,7 @@ def axi_schedule_rm(schedule: str = typer.Argument(..., help="The schedule id.")
         core_schedules.delete(schedule)
     except CwcliError as e:
         emit_axi_error(e)
-        raise typer.Exit(1) from e
+        raise typer.Exit(exit_for(e.kind)) from e
     emit_result({"removed": schedule})
 
 
@@ -1723,7 +1723,7 @@ def axi_admin_reset_password(
         core_accounts.reset_password(username)
     except CwcliError as e:
         emit_axi_error(e)
-        raise typer.Exit(1) from e
+        raise typer.Exit(exit_for(e.kind)) from e
     emit_result({"username": username, "reset": True, "must_change_password": True})
 
 
@@ -1742,25 +1742,15 @@ def axi_db_access_check(
     repair is ``cwcli db-access repair <project> --yes``.
     """
     from ..core import db_access as core_db_access
-    from ..core import docker as core_docker
     from ..core import resolvers as core_resolvers
-    from ..core.envelope import Status
 
     try:
-        container = core_docker.get_frappe_container(project)
-        resolved = core_resolvers.resolve_bench(project, bench, None)
-        if (
-            resolved is not None
-            and resolved.status is Status.NEEDS_CHOICE
-            and resolved.choice is not None
-        ):
+        resolved = core_resolvers.resolve_container_and_bench(project, bench, None)
+        if not isinstance(resolved, tuple):
+            assert resolved.choice is not None
             emit_axi_choice_as_usage_error(resolved.choice)
             raise typer.Exit(2)
-        path = (
-            resolved.data
-            if resolved is not None and resolved.data
-            else core_resolvers.DEFAULT_BENCH_PATH
-        )
+        container, path, _ = resolved
         rows = core_db_access.check(container, path, project=project)
     except CwcliError as error:
         emit_axi_error(error)
@@ -1823,7 +1813,7 @@ def axi_backups_capture(
         )
     except CwcliError as e:
         emit_axi_error(e)
-        raise typer.Exit(code=1) from None
+        raise typer.Exit(exit_for(e.kind)) from None
     if result.status is CoreStatus.NEEDS_CHOICE and result.choice is not None:
         emit_axi_choice_as_usage_error(result.choice)
         raise typer.Exit(code=2)

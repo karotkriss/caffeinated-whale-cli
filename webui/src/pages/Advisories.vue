@@ -6,6 +6,7 @@
 // the right pane (a dialog below lg). Affects you / Possible / Exploited / Everything
 // else per the spec; the research's rules show through in the detail.
 import { computed, onMounted, ref, watch } from 'vue'
+import { useMediaQuery } from '@vueuse/core'
 import { Alert, Badge, Button, Dialog, Select, TabButtons, TextInput, Tooltip } from 'frappe-ui'
 import PageHead from '../components/PageHead.vue'
 import EmptyState from '../components/EmptyState.vue'
@@ -22,9 +23,7 @@ const unreadOnly = ref(false)
 const selected = ref(null)
 const SEVERITIES = ['critical', 'high', 'medium', 'low']
 // Below lg there is no room for two panes: the list stays, a tap opens the detail as a dialog.
-const mq = window.matchMedia('(min-width: 1024px)')
-const wide = ref(mq.matches)
-mq.addEventListener('change', (e) => (wide.value = e.matches))
+const wide = useMediaQuery('(min-width: 1024px)')
 const sheetOpen = ref(false)
 function pick(a) {
   selected.value = a

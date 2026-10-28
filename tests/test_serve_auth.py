@@ -26,6 +26,7 @@ import re
 import secrets
 import socket
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -850,6 +851,24 @@ class TestAccountSignIn:
         assert status == 200 and "Max-Age=0" in headers["Set-Cookie"]
         assert _request(daemon + "/api/v1/session", headers={"Cookie": here})[0] == 401
 
+    def test_a_password_change_signs_out_the_sessions_opened_before_it(self, daemon):
+        stale = _jar(_sign_in(daemon)[2])
+        here = _signed_in(daemon)
+        assert _request(daemon + "/api/v1/session", headers={"Cookie": stale})[0] == 401
+        assert _request(daemon + "/api/v1/instances", headers={"Cookie": here})[0] == 200
+
+    def test_a_remote_bind_admits_the_default_password_only_with_the_token(self, stopped):
+        port, shutdown = _serve_on("0.0.0.0", _TOKEN)  # noqa: S104 - the remote-bind shape
+        try:
+            base = f"http://127.0.0.1:{port}"
+            status, body, headers = _sign_in(base)
+            assert status == 403 and "Set-Cookie" not in headers
+            assert json.loads(body)["errors"][0]["title"] == "auth.default_password_remote"
+            status, _, headers = _sign_in(base, headers={"Authorization": f"Bearer {_TOKEN}"})
+            assert status == 200 and "Set-Cookie" in headers
+        finally:
+            shutdown()
+
     def test_a_host_reset_signs_everyone_out_and_forces_the_change_again(self, daemon):
         from caffeinated_whale_cli.core import accounts as core_accounts
 
@@ -961,3 +980,34 @@ class TestMeta:
         monkeypatch.setattr(serve_cmd, "_running_build", "3.4.0:abcd")
         _status, body, _ = _request(daemon + "/api/v1/meta")
         assert json.loads(body)["build"] == "3.4.0:abcd"
+
+
+class TestDaemonQueries:
+    _AUTH = {"Authorization": f"Bearer {_TOKEN}"}
+
+    @pytest.mark.parametrize("window", ["abc", "0", "-5", "nan"])
+    def test_a_bad_metrics_window_is_a_usage_error(self, guarded, window):
+        status, body, _ = _request(f"{guarded}/api/v1/metrics?window={window}", headers=self._AUTH)
+        assert status == 400
+        assert json.loads(body)["errors"][0]["title"] == "metrics.window_invalid"
+
+    def test_each_download_builds_its_tar_in_its_own_directory(self, guarded, monkeypatch):
+        used = []
+
+        def _export(key, dest_dir):
+            used.append(dest_dir)
+            out = dest_dir / f"{key}.tar"
+            out.write_bytes(key.encode())
+            return out
+
+        monkeypatch.setattr(serve_cmd.core_transfer, "export_tar", _export)
+        bodies = [
+            _request(f"{guarded}/api/v1/backups/download?key=k1", headers=self._AUTH)[1]
+            for _ in range(2)
+        ]
+        assert bodies == [b"k1", b"k1"]
+        assert used[0] != used[1]
+        deadline = time.monotonic() + 2
+        while any(d.exists() for d in used) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not any(d.exists() for d in used)

@@ -195,15 +195,18 @@ class BackupSet:
 
 def store_root() -> Path:
     root = cwcli_home() / STORE_DIRNAME
-    root.mkdir(parents=True, exist_ok=True)
-    shared_home.secure_dir_shared_only(root)
+    shared_home.ensure_private_dir(root)
     return root
+
+
+def _check_project(project: str) -> None:
+    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$", project):
+        raise CwcliError(ErrorKind.USAGE, "project.invalid", f"Invalid project name {project!r}")
 
 
 def _site_dir(project: str, site: str) -> Path:
     resolvers.validate_site_name(site)
-    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$", project):
-        raise CwcliError(ErrorKind.USAGE, "project.invalid", f"Invalid project name {project!r}")
+    _check_project(project)
     d = store_root() / project / site
     return d
 
@@ -399,6 +402,15 @@ def verify_set(bset: BackupSet) -> BackupSet:
     """Re-run every check on a stored set and record the verdict in its manifest."""
     set_dir = Path(bset.path)
     checks = _run_checks(set_dir, bset.parts)
+    for p in bset.parts:
+        if (
+            p.sha256
+            and (set_dir / p.filename).is_file()
+            and _sha256(set_dir / p.filename) != p.sha256
+        ):
+            checks.append(
+                BackupCheck("sha256", False, f"{p.filename} does not match its recorded sha256")
+            )
     updated = BackupSet(
         **{
             **asdict(bset),
@@ -757,13 +769,14 @@ def delete_set(bset: BackupSet, *, consent: bool = False) -> Result[dict[str, An
 # ---------------------------------------------------------------------------- off-site
 
 
-def _s3_secret_path() -> Path:
-    return cwcli_home() / "backups" / "keys" / "s3.secret"
+def _s3_secret_path(project: str) -> Path:
+    _check_project(project)
+    return cwcli_home() / "backups" / "keys" / f"s3-{project}.secret"
 
 
-def set_s3_secret(secret: str) -> None:
-    """Store the S3 secret key on this machine only (mode 0600); never in settings."""
-    p = _s3_secret_path()
+def set_s3_secret(secret: str, *, project: str) -> None:
+    """Store an instance's S3 secret key on this machine only (mode 0600); never in settings."""
+    p = _s3_secret_path(project)
     p.parent.mkdir(parents=True, exist_ok=True)
     shared_home.secure_dir_shared_only(p.parent)
     fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -787,7 +800,7 @@ def offsite_target(project: str, *, require: bool = True):
             )
         return None
     try:
-        secret = _s3_secret_path().read_text(encoding="utf-8").strip()
+        secret = _s3_secret_path(project).read_text(encoding="utf-8").strip()
     except OSError:
         raise CwcliError(
             ErrorKind.PRECONDITION,
@@ -803,6 +816,10 @@ def offsite_target(project: str, *, require: bool = True):
         secret_key=secret,
         prefix=str(cfg.get("prefix") or ""),
     )
+
+
+def _crypto_context(bset: BackupSet, filename: str) -> bytes:
+    return f"{bset.project}/{bset.site}/{bset.id}/{filename}".encode()
 
 
 def _offsite_key(target: Any, bset: BackupSet, filename: str) -> str:
@@ -827,7 +844,7 @@ def offsite_copy(bset: BackupSet, *, on_event: OnEvent | None = None) -> BackupS
         for part in bset.parts:
             src = set_dir / part.filename
             emit(StoreStep("offsite", f"Encrypting and uploading {part.filename}"))
-            backup_crypto.encrypt_file(src, tmp, key)
+            backup_crypto.encrypt_file(src, tmp, key, context=_crypto_context(bset, part.filename))
             remote = _offsite_key(target, bset, part.filename + ".cwenc")
             client.put_file(remote, tmp)
             uploaded.append(
@@ -868,7 +885,7 @@ def offsite_list(project: str) -> list[dict[str, Any]]:
     client = core_s3.S3Client(target)
     local = {b.key for b in list_sets(project)}
     out = []
-    for obj in client.list(target.key(project)):
+    for obj in client.list(target.key(project) + "/"):
         if not obj["key"].endswith("/set.json"):
             continue
         try:
@@ -893,11 +910,20 @@ def offsite_fetch(project: str, key: str, *, on_event: OnEvent | None = None) ->
     target = offsite_target(project)
     client = core_s3.S3Client(target)
     crypto_key = backup_crypto.load_key(create=False)
-    _p, site, set_id = key.split("/", 2)
+    _p, site, set_id = (key.split("/", 2) + ["", ""])[:3]
+    if _p != project or not _SET_ID.match(set_id):
+        raise CwcliError(ErrorKind.USAGE, "offsite.bad_key", f"{key!r} is not a set of {project}")
+    set_dir = _site_dir(project, site) / set_id
     manifest_key = target.key(_p, site, set_id, "set.json")
     d = json.loads(client.get_bytes(manifest_key).decode("utf-8"))
     remote = BackupSet.from_dict(d)
-    set_dir = _site_dir(project, site) / set_id
+    for part in remote.parts:
+        if part.filename != os.path.basename(part.filename) or _kind_of(part.filename) is None:
+            raise CwcliError(
+                ErrorKind.PRECONDITION,
+                "offsite.bad_manifest",
+                f"The bucket's manifest for {key} names an unsafe part {part.filename!r}.",
+            )
     if set_dir.exists():
         raise CwcliError(
             ErrorKind.CONFLICT, "offsite.local_exists", f"{key} is already in the local store."
@@ -910,7 +936,12 @@ def offsite_fetch(project: str, key: str, *, on_event: OnEvent | None = None) ->
         for part in remote.parts:
             emit(StoreStep("offsite", f"Downloading and decrypting {part.filename}"))
             client.get_to_file(target.key(_p, site, set_id, part.filename + ".cwenc"), tmp)
-            backup_crypto.decrypt_file(tmp, set_dir / part.filename, crypto_key)
+            backup_crypto.decrypt_file(
+                tmp,
+                set_dir / part.filename,
+                crypto_key,
+                context=f"{project}/{site}/{set_id}/{part.filename}".encode(),
+            )
             shared_home.secure_file_shared_only(set_dir / part.filename)
             emit(StoreStep("offsite", f"Fetched {part.filename}", "ok"))
     except Exception:
@@ -918,7 +949,9 @@ def offsite_fetch(project: str, key: str, *, on_event: OnEvent | None = None) ->
         raise
     finally:
         tmp.unlink(missing_ok=True)
-    local = _replace(remote, path=str(set_dir), in_bench_removed=True)
+    local = _replace(
+        remote, project=project, site=site, id=set_id, path=str(set_dir), in_bench_removed=True
+    )
     _write_manifest(set_dir, local)
     verified = verify_set(local)
     emit(
@@ -977,7 +1010,7 @@ def offsite_prune(
     for dec in doomed:
         _p, site, set_id = dec.key.split("/", 2)
         emit(StoreStep("offsite_prune", f"Removing s3 copy {dec.key} ({dec.why})"))
-        for obj in client.list(target.key(_p, site, set_id)):
+        for obj in client.list(target.key(_p, site, set_id) + "/"):
             client.delete(obj["key"])
         removed.append(asdict(dec))
         emit(StoreStep("offsite_prune", f"Removed {dec.key}", "ok"))
@@ -1085,7 +1118,7 @@ def _plan_for(
         keep: dict[str, str] = {}
         if last_good is not None:
             keep[last_good.id] = "the site's last good backup"
-        safety = [b for b in sets if b.reason in SAFETY_REASONS]
+        safety = [b for b in sets if b.reason in SAFETY_REASONS and b.verified]
         for n, b in enumerate(safety):
             age_days = (now - _epoch(b.created_at)) / 86400
             if n < safety_max and age_days <= safety_days:
@@ -1093,7 +1126,7 @@ def _plan_for(
                     b.id,
                     f"safety backup, {age_days:.0f}d old (kept {safety_days:.0f}d, max {safety_max})",
                 )
-        regular = [b for b in sets if b.reason not in SAFETY_REASONS]
+        regular = [b for b in sets if b.reason not in SAFETY_REASONS and b.verified]
         for label, count, bucket in (
             ("daily", int(policy["daily"]), lambda d: d.strftime("%Y-%m-%d")),
             ("weekly", int(policy["weekly"]), lambda d: "{}-W{:02d}".format(*d.isocalendar()[:2])),
@@ -1122,7 +1155,7 @@ def _plan_for(
                     "disk under the floor; it has an off-site copy, only the newest stays local"
                 )
             elif why is None:
-                reason = "outside every retention slot"
+                reason = "outside every retention slot" if b.verified else "it did not verify"
             else:
                 reason = why
             out.append(PruneDecision(b.key, site, why is not None, reason, b.size, bool(b.offsite)))

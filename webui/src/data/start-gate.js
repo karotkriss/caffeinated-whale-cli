@@ -21,6 +21,7 @@ let settle = null
 export function ensureRunning(project, verb = '', { bench = null, benchLabel = null } = {}) {
   if (!project || (instance(project)?.container_running && benchRunning(project, bench))) return Promise.resolve(true)
   return new Promise((resolve) => {
+    settle?.(false)
     settle = resolve
     startGate.project = project
     startGate.bench = bench

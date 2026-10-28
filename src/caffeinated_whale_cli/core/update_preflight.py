@@ -1215,23 +1215,18 @@ def _content_facts(record: dict) -> list[dict]:
                     f"frappe-dependency {dep} {spec!r} could not be compared with {dep_version!r}",
                 )
             elif not ok:
-                # The fix: when the app wants another frappe, the APP moves to the bench's
-                # frappe line; when it wants another version of a sibling app, the
-                # SIBLING moves to the line the spec asks for (its lower bound's major).
+                # The fix moves whichever side is off the bench's frappe line onto it:
+                # the APP when it wants another frappe, or a sibling already on that
+                # line; the SIBLING when it is the one off the line. The spec's lower
+                # bound only answers when frappe's own major cannot be read.
                 frappe_major = _semver(
                     version(installed("frappe")) if "frappe" in manifests else None
                 )
+                dep_major = _semver(dep_version)
                 wanted = _spec_floor_major(spec)
-                if dep == "frappe":
-                    fix_app = app
-                    fix_major = frappe_major[0] if frappe_major else wanted
-                else:
-                    fix_app = dep
-                    fix_major = (
-                        wanted
-                        if wanted is not None
-                        else (frappe_major[0] if frappe_major else None)
-                    )
+                on_line = bool(frappe_major and dep_major and dep_major[0] == frappe_major[0])
+                fix_app = app if dep == "frappe" or on_line else dep
+                fix_major = frappe_major[0] if frappe_major else wanted
                 facts.append(
                     {
                         "code": "app.frappe_dependency_unsatisfied",

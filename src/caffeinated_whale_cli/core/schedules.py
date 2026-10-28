@@ -18,8 +18,9 @@ job (``origin.schedule = <id>``), so history, logs and Retry work unchanged.
   respects one), quiet hours, a stopped instance (started first when the
   schedule says so, else skipped), free disk and memory thresholds, and one job
   per instance at a time (the job lock; retried on the next tick).
-* Two schedulers must never fire the same minute twice: ``tick`` takes the
-  store's lock file, so the UI daemon and the machine-wide service coexist.
+* Two schedulers must never fire the same minute twice: every write (``tick``
+  and each edit) takes the store's lock file, so the UI daemon, the machine-wide
+  service and the CLI coexist.
 
 Everything takes ``now`` so a test controls the clock.
 """
@@ -189,17 +190,18 @@ def _day_matches(c: dict[str, Any], d: datetime) -> bool:
 
 def next_cron(expr: str, after: datetime) -> datetime | None:
     """The first minute strictly after ``after`` that the expression matches, within
-    366 days, or None."""
+    366 days, or None. Matched against the machine's local wall clock, so a daily
+    02:00 stays 02:00 across a daylight-saving change."""
     c = parse_cron(expr)
     start = after.replace(second=0, microsecond=0) + timedelta(minutes=1)
     hours = sorted(c["hour"])
     minutes = sorted(c["minute"])
-    day = start.replace(hour=0, minute=0)
+    day = start.astimezone().replace(tzinfo=None, hour=0, minute=0)
     for _ in range(367):
         if _day_matches(c, day):
             for hh in hours:
                 for mm in minutes:
-                    cand = day.replace(hour=hh, minute=mm)
+                    cand = day.replace(hour=hh, minute=mm).astimezone()
                     if cand >= start:
                         return cand
         day += timedelta(days=1)
@@ -421,7 +423,7 @@ def save(sched: dict[str, Any], *, by: str = "", now: datetime | None = None) ->
     """Create (no ``id``) or update a schedule; validated first. Returns the public row."""
     now = now or _now()
     validate(sched)
-    with _lock:
+    with _lock, _StoreLock():
         data = _load()
         sid = str(sched.get("id") or "")
         existing = data["schedules"].get(sid) if sid else None
@@ -430,11 +432,15 @@ def save(sched: dict[str, Any], *, by: str = "", now: datetime | None = None) ->
         if not sid:
             sid = "sch-" + secrets.token_hex(4)
         rec = dict(existing or {})
-        keep = {"last_run", "history", "owner", "created_at", "await_start", "recipe"}
+        keep = {"last_run", "history", "owner", "created_at", "await_start", "recipe", "due_from"}
         rec.update({k: v for k, v in sched.items() if k not in keep and k != "id"})
         rec.setdefault("enabled", True)
         rec.setdefault("kind", "cron")
         rec.setdefault("missed", "run")
+        if existing and any(
+            rec.get(k) != existing.get(k) for k in ("kind", "cron", "at", "enabled")
+        ):
+            _rearm(rec, now)
         rec.setdefault("created_at", _iso(now))
         rec.setdefault("owner", by or "")
         hist = list(rec.get("history") or [])
@@ -448,7 +454,7 @@ def save(sched: dict[str, Any], *, by: str = "", now: datetime | None = None) ->
 
 
 def delete(sid: str) -> None:
-    with _lock:
+    with _lock, _StoreLock():
         data = _load()
         if sid not in data["schedules"]:
             raise CwcliError(ErrorKind.NOT_FOUND, "schedule.unknown", f"No schedule '{sid}'.")
@@ -458,11 +464,13 @@ def delete(sid: str) -> None:
 
 def set_enabled(sid: str, enabled: bool, *, by: str = "", now: datetime | None = None) -> None:
     now = now or _now()
-    with _lock:
+    with _lock, _StoreLock():
         data = _load()
         s = data["schedules"].get(sid)
         if s is None:
             raise CwcliError(ErrorKind.NOT_FOUND, "schedule.unknown", f"No schedule '{sid}'.")
+        if enabled and not s.get("enabled", True):
+            _rearm(s, now)
         s["enabled"] = bool(enabled)
         s.setdefault("history", []).append(
             {"at": _iso(now), "by": by, "action": "enabled" if enabled else "disabled"}
@@ -479,7 +487,7 @@ def save_settings(
 ) -> None:
     """Maintenance windows (``{project: {start, end, days}}``), quiet hours
     (``{start, end}``; pass ``None`` to clear), guards and the digest choice."""
-    with _lock:
+    with _lock, _StoreLock():
         data = _load()
         if windows is not None:
             for w in windows.values():
@@ -602,10 +610,68 @@ def templates() -> list[dict[str, Any]]:
 
 CreateJob = Callable[..., dict[str, Any]]
 InstanceStatus = Callable[[str], str | None]  # project -> "running" | "stopped" | None (unknown)
+ReadJob = Callable[[str], dict[str, Any]]
+
+_START_STOP = frozenset({"start", "stop", "stop-bench"})
+_ACTIVE = frozenset({"queued", "running", "interrupting"})
+_STOPPED = "the instance is stopped"
+
+
+def _read_job(job_id: str) -> dict[str, Any]:
+    from .. import jobs
+
+    return jobs.read_job(job_id)
 
 
 def _consent_for(s: dict[str, Any], verb: str) -> bool:
     return verb not in NEEDS_UNATTENDED_FLAG or bool(s.get("unattended"))
+
+
+def _rearm(s: dict[str, Any], now: datetime) -> None:
+    """Wait for the first slot after ``now``, not one that passed while the schedule
+    was off or before it was edited."""
+    s["due_from"] = _iso(now)
+    if s.get("last_run"):
+        s["last_run"] = {k: v for k, v in s["last_run"].items() if k != "due"}
+
+
+def _advance(s: dict[str, Any], now: datetime) -> str | None:
+    """The slot after ``now`` the schedule waits on next; a one-off retires instead."""
+    if s.get("kind") == "once":
+        s["enabled"] = False
+        return None
+    return _iso(compute_next(s, now))
+
+
+def _skip_reason(
+    s: dict[str, Any], verb: str, data: dict[str, Any], now: datetime, status: str | None
+) -> str | None:
+    """Why ``verb`` cannot start for the schedule right now (the fire-time guards), or None."""
+    guards = {**DEFAULT_GUARDS, **(data.get("guards") or {})}
+    quiet = data.get("quiet_hours")
+    project = str((s.get("target") or {}).get("project") or "")
+    verbs = [str(step.get("verb") or "") for step in s.get("steps") or []] or [verb]
+    if not all(_consent_for(s, v) for v in verbs):
+        return "updates and migrate run on a schedule only when it allows unattended runs"
+    if quiet and _in_window(quiet, now) and verb not in _START_STOP:
+        return "quiet hours"
+    if s.get("respect_window") and not _in_window((data.get("windows") or {}).get(project), now):
+        return "outside the maintenance window"
+    if verb not in {"stop", "stop-bench"}:
+        if _free_disk_gb() < float(guards["min_free_disk_gb"]):
+            return f"less than {guards['min_free_disk_gb']} GB free on disk"
+        if _free_mem_mb() < float(guards["min_free_mem_mb"]):
+            return f"less than {int(guards['min_free_mem_mb'])} MB of memory available"
+    if verb not in _START_STOP and status == "stopped":
+        return _STOPPED
+    return None
+
+
+def _waits(reason: str) -> bool:
+    """Windows, quiet hours and low resources hold the slot; everything else skips it."""
+    return reason in {"quiet hours", "outside the maintenance window"} or reason.startswith(
+        "less than"
+    )
 
 
 def _fire(
@@ -649,8 +715,8 @@ def _fire(
             "state": "failed",
             "error": e.message,
         }
-        if s.get("kind") != "event":
-            s["last_run"]["due"] = _iso(compute_next(s, now))
+        if s.get("kind") != "event" and not (origin_extra or {}).get("manual"):
+            s["last_run"]["due"] = _advance(s, now)
         return None
     s["last_run"] = {
         "due": due,
@@ -670,17 +736,18 @@ def tick(
     now: datetime | None = None,
     finished_jobs: list[dict[str, Any]] | None = None,
     started_projects: set[str] | None = None,
+    read_job: ReadJob | None = None,
 ) -> list[dict[str, Any]]:
     """One scheduler pass: fire what is due (and allowed), advance, record. Returns
     the job records it created. ``finished_jobs`` (terminal records since the last
     tick) and ``started_projects`` (instances seen going stopped -> running) feed the
-    event triggers and the recipes."""
+    event triggers; the last run's outcome and a recipe's next step come from the
+    job records themselves (``read_job``), so they move on with no page open."""
     now = now or _now()
+    read_job = read_job or _read_job
     created: list[dict[str, Any]] = []
     with _lock, _StoreLock():
         data = _load()
-        guards = {**DEFAULT_GUARDS, **(data.get("guards") or {})}
-        quiet = data.get("quiet_hours")
         changed = False
         for sid, s in data["schedules"].items():
             if not s.get("enabled", True):
@@ -702,65 +769,34 @@ def tick(
                 if s.get("missed", "run") == "skip" and now - nxt > timedelta(minutes=2):
                     s["last_run"] = {
                         **(s.get("last_run") or {}),
-                        "due": _iso(compute_next(s, now)),
+                        "due": _advance(s, now),
                         "state": "skipped",
                         "at": _iso(now),
                         "reason": "missed while the machine was off",
                     }
                     changed = True
                     continue
-            # ---- guards
-            skip = None
-            if quiet and _in_window(quiet, now) and verb not in {"start", "stop", "stop-bench"}:
-                skip = "quiet hours"
-            elif s.get("respect_window") and not _in_window(
-                (data.get("windows") or {}).get(project), now
-            ):
-                skip = "outside the maintenance window"
-            elif _free_disk_gb() < float(guards["min_free_disk_gb"]) and verb not in {
-                "stop",
-                "stop-bench",
-            }:
-                skip = f"less than {guards['min_free_disk_gb']} GB free on disk"
-            elif _free_mem_mb() < float(guards["min_free_mem_mb"]) and verb not in {
-                "stop",
-                "stop-bench",
-            }:
-                skip = f"less than {int(guards['min_free_mem_mb'])} MB of memory available"
-            if skip is None and verb not in {"start", "stop", "stop-bench"}:
-                status = instance_status(project)
-                if status == "stopped":
-                    if s.get("start_if_stopped") and not s.get("await_start"):
-                        rec = _fire(
-                            sid,
-                            s,
-                            "start",
-                            {"project": project},
-                            {},
-                            create_job,
-                            now,
-                            {"for": verb},
-                        )
-                        if rec:
-                            created.append(rec)
-                            s["await_start"] = True
-                        changed = True
-                        continue  # the real job fires on a later tick, once the instance is up
-                    skip = "the instance is stopped"
-                    if s.get("await_start"):
-                        skip = "the instance did not start"
-                        s.pop("await_start", None)
+            status = instance_status(project) if verb not in _START_STOP else None
+            skip = _skip_reason(s, verb, data, now, status)
+            if skip == _STOPPED:
+                if s.get("start_if_stopped") and not s.get("await_start"):
+                    rec = _fire(
+                        sid, s, "start", {"project": project}, {}, create_job, now, {"for": verb}
+                    )
+                    if rec:
+                        created.append(rec)
+                        s["await_start"] = True
+                    changed = True
+                    continue  # the real job fires on a later tick, once the instance is up
+                if s.get("await_start"):
+                    skip = "the instance did not start"
+                    s.pop("await_start", None)
             if skip:
-                # Windows and quiet hours wait (the slot stays due); everything else skips this slot.
-                waits = skip in {
-                    "quiet hours",
-                    "outside the maintenance window",
-                } or skip.startswith("less than")
                 s["last_skip"] = {"at": _iso(now), "reason": skip}
-                if not waits and s.get("kind") != "event":
+                if not _waits(skip) and s.get("kind") != "event":
                     s["last_run"] = {
                         **(s.get("last_run") or {}),
-                        "due": _iso(compute_next(s, now)),
+                        "due": _advance(s, now),
                         "state": "skipped",
                         "at": _iso(now),
                         "reason": skip,
@@ -787,38 +823,56 @@ def tick(
                 created.append(rec)
                 if steps:
                     s["recipe"] = {"job_id": rec.get("id"), "step": 0}
-                s["last_run"]["due"] = (
-                    _iso(compute_next(s, now)) if s.get("kind") != "event" else _iso(now)
-                )
-                if s.get("kind") == "once":
-                    s["enabled"] = False
+                s["last_run"]["due"] = _advance(s, now) if s.get("kind") != "event" else _iso(now)
             changed = True
-        # ---- recipes: the next step after a successful one
+        # ---- outcomes and recipes, read from the job records
         for sid, s in data["schedules"].items():
+            last = s.get("last_run") or {}
             recipe, steps = s.get("recipe"), s.get("steps") or []
-            if not recipe or not steps:
+            if recipe and steps:
+                job_id = recipe.get("job_id")
+            elif last.get("state") in _ACTIVE:
+                job_id = last.get("job_id")
+            else:
                 continue
-            done = next(
-                (j for j in (finished_jobs or []) if j.get("id") == recipe.get("job_id")), None
-            )
-            if done is None:
+            try:
+                done = read_job(str(job_id))
+            except CwcliError:
+                done = {"id": job_id, "state": "unknown"}
+            if done.get("state") in _ACTIVE:
+                continue
+            if last.get("job_id") == job_id and last.get("state") != done.get("state"):
+                s["last_run"] = last = {
+                    **last,
+                    "state": done.get("state"),
+                    "finished_at": done.get("finished_at"),
+                }
+                changed = True
+            if not (recipe and steps):
                 continue
             nxt_i = int(recipe.get("step", 0)) + 1
             if done.get("state") != "succeeded" or nxt_i >= len(steps):
-                s["last_run"] = {
-                    **(s.get("last_run") or {}),
-                    "state": done.get("state"),
-                    "job_id": done.get("id"),
-                }
+                s["last_run"] = {**last, "state": done.get("state"), "job_id": job_id}
                 s.pop("recipe", None)
                 changed = True
                 continue
             step = steps[nxt_i]
+            step_verb = str(step["verb"])
             target = dict(s.get("target") or {})
+            project = str(target.get("project") or "")
+            status = instance_status(project) if step_verb not in _START_STOP else None
+            skip = _skip_reason(s, step_verb, data, now, status)
+            if skip:
+                s["last_skip"] = {"at": _iso(now), "reason": skip}
+                if not _waits(skip):
+                    s["last_run"] = {**last, "state": "skipped", "at": _iso(now), "reason": skip}
+                    s.pop("recipe", None)
+                changed = True
+                continue
             rec = _fire(
                 sid,
                 s,
-                str(step["verb"]),
+                step_verb,
                 {**target, **(step.get("target") or {})},
                 step.get("args") or {},
                 create_job,
@@ -836,15 +890,16 @@ def tick(
 
 def _next_due(s: dict[str, Any], now: datetime) -> datetime | None:
     """The slot the schedule is waiting on: the recorded ``due`` after its last run,
-    else the first occurrence after creation (so a new schedule does not fire for a
-    slot that passed before it existed)."""
+    else the first occurrence after creation, an edit or a re-enable (so it does not
+    fire for a slot that passed before then)."""
+    base = _parse(s.get("due_from"))
+    if s.get("kind") == "once":
+        at = _parse(s.get("at"))
+        return at if at and (base is None or at > base) else None
     recorded = _parse((s.get("last_run") or {}).get("due"))
     if recorded:
         return recorded
-    base = _parse(s.get("created_at")) or now
-    if s.get("kind") == "once":
-        return _parse(s.get("at"))
-    return compute_next(s, base)
+    return compute_next(s, base or _parse(s.get("created_at")) or now)
 
 
 def _event_fires(
@@ -869,7 +924,7 @@ def run_now(sid: str, create_job: CreateJob, *, now: datetime | None = None) -> 
     """Start the schedule's job this minute, guards aside (a person asked); the
     timetable is untouched."""
     now = now or _now()
-    with _lock:
+    with _lock, _StoreLock():
         data = _load()
         s = data["schedules"].get(sid)
         if s is None:
@@ -917,7 +972,7 @@ def record_outcome(job: dict[str, Any]) -> None:
     sid = (job.get("origin") or {}).get("schedule")
     if not sid:
         return
-    with _lock:
+    with _lock, _StoreLock():
         data = _load()
         s = data["schedules"].get(sid)
         if s is None:
@@ -931,19 +986,30 @@ def record_outcome(job: dict[str, Any]) -> None:
 
 
 class _StoreLock:
-    """``flock`` on the store, so two schedulers (the UI daemon and the machine-wide
-    service) never fire the same slot twice; a platform without flock runs unlocked."""
+    """``flock`` on the store, held by every write, so two schedulers (the UI daemon
+    and the machine-wide service) never fire the same slot twice and an edit from the
+    CLI never races a tick. A platform without flock runs unlocked; a lock that cannot
+    be taken refuses the write."""
 
     def __enter__(self):
         self._fd = None
         try:
             import fcntl
-
-            store_path().parent.mkdir(parents=True, exist_ok=True)
-            self._fd = os.open(store_path().with_suffix(".lock"), os.O_RDWR | os.O_CREAT, 0o600)
+        except ImportError:
+            return self
+        path = store_path().with_suffix(".lock")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._fd = os.open(path, os.O_RDWR | os.O_CREAT, shared_home.file_mode(0o600))
+            shared_home.secure_file_shared_only(path)
             fcntl.flock(self._fd, fcntl.LOCK_EX)
-        except (ImportError, OSError):
-            pass
+        except OSError as e:
+            if self._fd is not None:
+                os.close(self._fd)
+                self._fd = None
+            raise CwcliError(
+                ErrorKind.PRECONDITION, "schedules.lock_unavailable", f"Cannot lock {path}: {e}"
+            ) from e
         return self
 
     def __exit__(self, *exc):

@@ -1892,7 +1892,7 @@ def run_job(job_id: str) -> int:
 
 
 def _schedule_ui_restart() -> None:
-    required = [_UI_ENV[key] for key in ("pid", "start", "port", "token", "session")]
+    required = [_UI_ENV[key] for key in ("pid", "start", "port", "token")]
     if not all(os.environ.get(name) for name in required):
         return
     creationflags = 0x00000008 | 0x00000200 if sys.platform == "win32" else 0
@@ -1909,7 +1909,7 @@ def _schedule_ui_restart() -> None:
 
 
 def restart_ui() -> int:
-    """Replace the daemon after self-update, preserving its token and browser session."""
+    """Replace the daemon after self-update, preserving its token."""
     from .commands import serve as serve_cmd
     from .commands import ui as ui_cmd
 

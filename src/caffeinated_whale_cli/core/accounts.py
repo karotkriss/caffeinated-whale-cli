@@ -11,9 +11,11 @@ in its cookie - the file never contains a password or a usable session id.
   only records the flag.
 * Sessions: 8 hours idle, 7 days absolute; "keep me signed in" makes both 30 days.
 * Failed sign-ins are counted per username and per address; after
-  ``LOCKOUT_AFTER`` failures inside ``LOCKOUT_WINDOW_S`` the next attempts are
-  refused for ``LOCKOUT_S`` seconds. The counters live in this process only - a
-  restart clears them, which is a shorter lockout, never a longer one.
+  ``LOCKOUT_AFTER`` failures inside ``LOCKOUT_WINDOW_S`` the key is locked for
+  ``LOCKOUT_S`` seconds. A locked address is refused before the hash; a locked
+  username still admits its correct password, so nobody can lock the owner out.
+  The counters live in this process only - a restart clears them, which is a
+  shorter lockout, never a longer one.
 
 Every function takes ``now`` so a test controls the clock; nothing here sleeps.
 """
@@ -176,10 +178,17 @@ def verify(username: str, password: str) -> Account | None:
 
 
 def change_password(
-    username: str, new_password: str, *, current: str | None = None, now: float | None = None
+    username: str,
+    new_password: str,
+    *,
+    current: str | None = None,
+    keep: str = "",
+    now: float | None = None,
 ) -> None:
     """Set a new password. ``current`` must be right unless the change is the forced
-    one (``must_change``), where the sign-in a moment ago already proved it."""
+    one (``must_change``), where the sign-in a moment ago already proved it. Every
+    other session of the account is closed; only ``keep`` (the session making the
+    change) stays signed in."""
     now = time.time() if now is None else now
     reason = check_new_password(new_password, username=username)
     if reason:
@@ -201,6 +210,10 @@ def change_password(
                 ErrorKind.USAGE, "password.unchanged", "The new password is the current one."
             )
         data["accounts"][username] = _record(new_password, must_change=False, now=now)
+        kept = _key(keep) if keep else ""
+        data["sessions"] = {
+            k: v for k, v in data["sessions"].items() if k == kept or v.get("username") != username
+        }
         _save(data)
 
 
@@ -338,16 +351,23 @@ class Lockout:
             until = max((self._locked_until.get(k, 0.0) for k in keys), default=0.0)
         return max(0, int(until - now + 0.999)) if until > now else 0
 
-    def failed(self, *keys: str, now: float | None = None) -> None:
+    def attempt(self, address: str, *others: str, now: float | None = None) -> int:
+        """Seconds ``address`` must wait, else 0 with this attempt already counted as a
+        failure for ``address`` and ``others`` until ``succeeded`` clears it, so
+        concurrent attempts cannot all pass the check before any is counted."""
         now = time.time() if now is None else now
         with self._lock:
-            for k in keys:
+            until = self._locked_until.get(address, 0.0)
+            if until > now:
+                return max(1, int(until - now + 0.999))
+            for k in (address, *others):
                 recent = [t for t in self._failures.get(k, []) if now - t <= LOCKOUT_WINDOW_S]
                 recent.append(now)
                 self._failures[k] = recent
                 if len(recent) >= LOCKOUT_AFTER:
                     self._locked_until[k] = now + LOCKOUT_S
                     self._failures[k] = []
+        return 0
 
     def succeeded(self, *keys: str) -> None:
         with self._lock:
