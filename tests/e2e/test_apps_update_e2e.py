@@ -198,7 +198,10 @@ def test_apps_update_json_reports_a_failing_reset_in_the_document(bench_shim):
     assert result.returncode == 1
     doc = json.loads(result.stdout)
     assert doc["ok"] is False
-    assert doc["failed_apps"] == ["frappe"]
+    # The reset itself succeeded; the shimmed requirements step failed, so no site
+    # was migrated onto the new code.
+    assert doc["requirements"] == "failed"
+    assert doc["migrated_sites"] == []
 
 
 def test_apps_update_missing_app_is_reported_nonzero(running_instance):

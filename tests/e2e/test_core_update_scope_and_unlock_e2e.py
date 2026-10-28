@@ -57,8 +57,10 @@ def test_core_update_resets_only_frappe_and_clears_every_site_s_locks(running_in
             )
         text = harness.collapse_ws(harness.strip_ansi(result.stdout + result.stderr))
         assert result.returncode == 0, text
-        # The stale lock was cleared BEFORE the reset, and the log names it.
-        assert "Stale locks: cleared 1 lock" in text and LOCK in text, text
+        # The stale lock was cleared BEFORE the reset, and the log names it. Not an exact
+        # count: frappe's filelock never unlinks bench_migrate.lock, so an earlier
+        # migrate on this shared site leaves that file for the same step to clear.
+        assert "Stale locks: cleared" in text and LOCK in text, text
         assert (
             harness.exec_in_frappe(
                 inst.name, f"test -e {locks}/{shlex.quote(LOCK)}", workdir=inst.bench

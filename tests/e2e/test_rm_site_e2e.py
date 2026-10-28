@@ -308,7 +308,7 @@ def test_rm_site_backs_up_before_dropping_and_the_backup_restores(running_instan
         assert len(dirs) == 1, dirs
         assert f"archived_host_path: {dirs[0]}" in result.stdout, result.stdout
         assert (dirs[0] / f"{site}.tar").stat().st_size > 0, "the site archive is missing"
-        backup_files = sorted((dirs[0] / "backups").iterdir())
+        backup_files = harness.removal_backup_files(inst.name, site)
         names = [f.name for f in backup_files]
         dumps = [f for f in backup_files if f.name.endswith("-database.sql.gz")]
         assert len(dumps) == 1, names

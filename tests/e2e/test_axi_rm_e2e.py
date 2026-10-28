@@ -104,13 +104,6 @@ def _project_dir(project: str) -> Path:
     return Path(os.environ["CWCLI_HOME"]) / "projects" / project
 
 
-def _archive_backup_dir(project: str, site: str) -> Path:
-    archive_root = Path(os.environ["CWCLI_HOME"]) / "archive"
-    matches = sorted(archive_root.glob(f"{project}_*"))
-    assert matches, f"no archive directory for {project!r} found under {archive_root}"
-    return matches[-1] / "backups" / site
-
-
 @v16_only
 def test_axi_rm_deletes_honestly_and_the_backup_genuinely_restores(port_allocator):
     """The full arc, real Docker only:
@@ -168,9 +161,7 @@ def test_axi_rm_deletes_honestly_and_the_backup_genuinely_restores(port_allocato
         assert not _project_dir(project).exists(), "the project directory survived removal"
 
         # --- 5. the backup genuinely restores, into a FRESH second instance ---
-        backups_dir = _archive_backup_dir(project, site)
-        backup_files = sorted(backups_dir.glob("*"))
-        assert backup_files, f"no backup artifacts found in {backups_dir}"
+        backup_files = harness.removal_backup_files(project, site)
         sql_dumps = [f for f in backup_files if f.name.endswith(".sql.gz")]
         assert sql_dumps, f"no database dump in the archived backup: {backup_files}"
         assert all(f.stat().st_size > 0 for f in sql_dumps), "the archived database dump is empty"
