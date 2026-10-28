@@ -881,6 +881,22 @@ class TestHookPoints:
         monkeypatch.setattr(integrations, "provider", lambda hook: None)
         assert serve._offsite_summary() is None
 
+    def test_a_target_whose_secret_cannot_be_read_is_reported_not_raised(self, home):
+        from caffeinated_whale_cli.commands import serve
+
+        integrations.configure(
+            "s3",
+            {"endpoint": "https://s3.example.org", "bucket": "b", "access_key": "k"},
+            {"secret_key": "s"},
+        )
+        data = json.loads(integrations.store_path().read_text())
+        data["integrations"]["s3"]["enabled"] = True
+        integrations.store_path().write_text(json.dumps(data))
+        integrations.key_path().write_bytes(os.urandom(32))
+        summary = serve._offsite_summary()
+        assert summary is not None and summary["error"]
+        assert summary["name"] == "The backup target"
+
 
 def test_the_verifier_runs_in_its_own_process(home, repo):
     rec = community.install(_url(repo), commit=_write(repo))
