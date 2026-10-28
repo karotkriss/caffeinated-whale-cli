@@ -780,24 +780,66 @@ def delete_set(bset: BackupSet, *, consent: bool = False) -> Result[dict[str, An
 # ---------------------------------------------------------------------------- off-site
 
 
-def offsite_target(project: str, *, require: bool = True):
-    """The S3 backup target integration's bucket (with its secret), or None when it is
-    off. ``project`` only names the instance in the error."""
+class OffsiteTarget:
+    """The backup target integration that is on, as the store off-site copies go to
+    (``integrations.BackupTarget``), with its ``integration_id`` and ``name``. A failure
+    inside the target, community code included, arrives as a ``CwcliError``."""
+
+    def __init__(self, integration_id: str, name: str, store: Any) -> None:
+        self.integration_id, self.name, self._store = integration_id, name, store
+        self.location = str(getattr(store, "location", "") or name)
+
+    def __getattr__(self, attr: str) -> Any:
+        if attr.startswith("_"):
+            raise AttributeError(attr)
+        value = getattr(self._store, attr)
+        if not callable(value):
+            return value
+
+        def call(*args, **kwargs):
+            try:
+                return value(*args, **kwargs)
+            except CwcliError:
+                raise
+            except Exception as e:  # noqa: BLE001 - the target may be community code
+                raise CwcliError(
+                    ErrorKind.PRECONDITION,
+                    "offsite.target_failed",
+                    f"{self.name} failed ({attr}): {e or type(e).__name__}",
+                ) from e
+
+        return call
+
+
+def offsite_target(project: str, *, require: bool = True) -> OffsiteTarget | None:
+    """The backup target integration that is on (the S3 bucket, or a community one), or
+    None when none is. ``project`` only names the instance in the error."""
     from . import integrations
 
-    found = integrations.active("s3")
+    found = integrations.provider("backup_target")
     if found is None:
         if require:
             raise CwcliError(
                 ErrorKind.PRECONDITION,
                 "offsite.disabled",
-                f"Off-site copies of {project} need the S3 backup target, which is off.",
-                hint="Turn it on in Settings > Integrations, or run: cwcli backups s3 "
-                "configure --endpoint ... --bucket ... --access-key ... (the secret key "
-                "from CWCLI_S3_SECRET_KEY)",
+                f"Off-site copies of {project} need a backup target, and none is on.",
+                hint="Turn one on in Settings > Integrations (the S3 backup target, or a "
+                "community one), or run: cwcli backups s3 configure --endpoint ... "
+                "--bucket ... --access-key ... (the secret key from CWCLI_S3_SECRET_KEY)",
             )
         return None
-    return integrations.s3_target(*found)
+    integ, settings_, secrets = found
+    try:
+        store = integ.hooks["backup_target"](settings_, secrets)
+    except CwcliError:
+        raise
+    except Exception as e:  # noqa: BLE001 - the target may be community code
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "offsite.target_failed",
+            f"{integ.name} could not open its backup target: {e or type(e).__name__}",
+        ) from e
+    return OffsiteTarget(integ.id, integ.name, store)
 
 
 def copies_on_backup(project: str) -> bool:
@@ -893,13 +935,12 @@ def offsite_copy(bset: BackupSet, *, on_event: OnEvent | None = None) -> BackupS
     """Encrypt every part under this machine's key and upload it with the manifest.
     The manifest in the bucket is the local one plus ``offsite`` (no secrets ride in it)."""
     from . import backup_crypto
-    from . import s3 as core_s3
 
     emit = on_event or _noop
     target = offsite_target(bset.project)
+    assert target is not None
     key = backup_crypto.load_key()
-    client = core_s3.S3Client(target)
-    client.ensure_bucket()
+    target.ensure()
     set_dir = Path(bset.path)
     tmp = set_dir / ".offsite.tmp"
     uploaded = []
@@ -909,7 +950,7 @@ def offsite_copy(bset: BackupSet, *, on_event: OnEvent | None = None) -> BackupS
             emit(StoreStep("offsite", f"Encrypting and uploading {part.filename}"))
             backup_crypto.encrypt_file(src, tmp, key, context=_crypto_context(bset, part.filename))
             remote = _offsite_key(target, bset, part.filename + ".cwenc")
-            client.put_file(remote, tmp)
+            target.put_file(remote, tmp)
             uploaded.append(
                 {
                     "kind": part.kind,
@@ -925,8 +966,10 @@ def offsite_copy(bset: BackupSet, *, on_event: OnEvent | None = None) -> BackupS
     updated = _replace(
         bset,
         offsite={
-            "endpoint": target.endpoint,
-            "bucket": target.bucket,
+            "target": target.integration_id,
+            "location": target.location,
+            "endpoint": str(getattr(target, "endpoint", "") or ""),
+            "bucket": str(getattr(target, "bucket", "") or ""),
             "prefix": remote_prefix,
             "uploaded_at": _now(),
             "parts": uploaded,
@@ -934,25 +977,23 @@ def offsite_copy(bset: BackupSet, *, on_event: OnEvent | None = None) -> BackupS
         },
     )
     _write_manifest(set_dir, updated)
-    client.put_bytes(_offsite_key(target, bset, "set.json"), json.dumps(updated.to_dict()).encode())
-    emit(StoreNotice(f"{bset.key} copied off-site to s3://{target.bucket}/{remote_prefix}"))
+    target.put_bytes(_offsite_key(target, bset, "set.json"), json.dumps(updated.to_dict()).encode())
+    emit(StoreNotice(f"{bset.key} copied off-site to {target.location}/{remote_prefix}"))
     return updated
 
 
 def offsite_list(project: str) -> list[dict[str, Any]]:
     """Every set the bucket holds for ``project`` (its manifests), newest first, each
     marked ``local`` when this machine's store still has it."""
-    from . import s3 as core_s3
-
     target = offsite_target(project)
-    client = core_s3.S3Client(target)
+    assert target is not None
     local = {b.key for b in list_sets(project)}
     out = []
-    for obj in client.list(target.key(project) + "/"):
+    for obj in target.list(target.key(project) + "/"):
         if not obj["key"].endswith("/set.json"):
             continue
         try:
-            d = json.loads(client.get_bytes(obj["key"]).decode("utf-8"))
+            d = json.loads(target.get_bytes(obj["key"]).decode("utf-8"))
         except (ValueError, CwcliError):
             continue
         d["key"] = f"{d.get('project')}/{d.get('site')}/{d.get('id')}"
@@ -967,18 +1008,17 @@ def offsite_fetch(project: str, key: str, *, on_event: OnEvent | None = None) ->
     """Download and decrypt a set from the bucket into this machine's store (the set
     keeps its id and reason; it is verified again on arrival)."""
     from . import backup_crypto
-    from . import s3 as core_s3
 
     emit = on_event or _noop
     target = offsite_target(project)
-    client = core_s3.S3Client(target)
+    assert target is not None
     crypto_key = backup_crypto.load_key(create=False)
     _p, site, set_id = (key.split("/", 2) + ["", ""])[:3]
     if _p != project or not _SET_ID.match(set_id):
         raise CwcliError(ErrorKind.USAGE, "offsite.bad_key", f"{key!r} is not a set of {project}")
     set_dir = _site_dir(project, site) / set_id
     manifest_key = target.key(_p, site, set_id, "set.json")
-    d = json.loads(client.get_bytes(manifest_key).decode("utf-8"))
+    d = json.loads(target.get_bytes(manifest_key).decode("utf-8"))
     remote = BackupSet.from_dict(d)
     for part in remote.parts:
         if part.filename != os.path.basename(part.filename) or _kind_of(part.filename) is None:
@@ -998,7 +1038,7 @@ def offsite_fetch(project: str, key: str, *, on_event: OnEvent | None = None) ->
     try:
         for part in remote.parts:
             emit(StoreStep("offsite", f"Downloading and decrypting {part.filename}"))
-            client.get_to_file(target.key(_p, site, set_id, part.filename + ".cwenc"), tmp)
+            target.get_to_file(target.key(_p, site, set_id, part.filename + ".cwenc"), tmp)
             backup_crypto.decrypt_file(
                 tmp,
                 set_dir / part.filename,
@@ -1019,7 +1059,7 @@ def offsite_fetch(project: str, key: str, *, on_event: OnEvent | None = None) ->
     verified = verify_set(local)
     emit(
         StoreNotice(
-            f"{key} fetched from s3://{target.bucket}; {'verified' if verified.verified else 'did NOT verify'}"
+            f"{key} fetched from {target.location}; {'verified' if verified.verified else 'did NOT verify'}"
         )
     )
     return verified
@@ -1030,8 +1070,6 @@ def offsite_prune(
 ) -> Result[dict[str, Any]]:
     """Apply the S3 tier's retention (7 daily / 4 weekly / 12 monthly by default) to the
     bucket's copies of ``project``; the newest verified copy per site is never removed."""
-    from . import s3 as core_s3
-
     emit = on_event or _noop
     remote = offsite_list(project)
     sets = []
@@ -1068,13 +1106,13 @@ def offsite_prune(
             ),
         )
     target = offsite_target(project)
-    client = core_s3.S3Client(target)
+    assert target is not None
     removed = []
     for dec in doomed:
         _p, site, set_id = dec.key.split("/", 2)
-        emit(StoreStep("offsite_prune", f"Removing s3 copy {dec.key} ({dec.why})"))
-        for obj in client.list(target.key(_p, site, set_id) + "/"):
-            client.delete(obj["key"])
+        emit(StoreStep("offsite_prune", f"Removing the off-site copy {dec.key} ({dec.why})"))
+        for obj in target.list(target.key(_p, site, set_id) + "/"):
+            target.delete(obj["key"])
         removed.append(asdict(dec))
         emit(StoreStep("offsite_prune", f"Removed {dec.key}", "ok"))
         local = find_set(dec.key)

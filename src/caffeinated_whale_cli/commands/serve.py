@@ -69,8 +69,10 @@ envelope frappe-ui's fetch layer reads natively (``type`` is the core's
   the Phase 2 page sends lifecycle work to jobs, while older built pages keep
   their original guarded behavior until they reload
 * ``POST /api/v1/integrations``             - ``{op: test|configure|disable|action}``:
-  test settings, save them (turning on only behind a passing test), turn off, or
-  run a named check such as LDAP's ``lookup_user``; and the community life cycle
+  test settings, save them (turning on only behind a passing test, and switching a
+  hook point another integration serves only with ``take_over: true``; without it
+  the answer is 409 ``integration.hook_taken``), turn off, or run a named check such
+  as LDAP's ``lookup_user``; and the community life cycle
   (``core.community``): ``community_preview`` (the trust screen for a repository URL
   and ref), ``community_add`` (installs the reviewed ``commit``),
   ``community_check``, ``community_update`` (the reviewed newer ``commit``) and
@@ -597,23 +599,30 @@ def _sse_frame(event: str, data: dict, event_id: int | None = None) -> bytes:
 
 
 def _directory_on() -> bool:
-    """Whether directory sign-in is on. An unreadable integrations store reads as off,
-    so it can never stand between the local admin and the sign-in."""
+    """Whether a sign-in integration (LDAP, or a community one) is on. An unreadable
+    integrations store reads as off, so it can never stand between the local admin
+    and the sign-in."""
     try:
-        return core_integrations.active("ldap") is not None
+        return core_integrations.provider("sign_in") is not None
     except CwcliError:
         return False
 
 
 def _offsite_summary() -> dict | None:
-    """Where off-site copies go (the S3 backup target integration), without its keys."""
+    """Where off-site copies go (the backup target integration that is on), without
+    its keys: its id, name and location, plus an S3 bucket's endpoint and bucket."""
     try:
-        found = core_integrations.active("s3")
+        target = core_backup_store.offsite_target("", require=False)
     except CwcliError:
         return None
-    if found is None:
+    if target is None:
         return None
-    return {k: found[0].get(k) for k in ("endpoint", "bucket", "prefix")}
+    summary = {"id": target.integration_id, "name": target.name, "location": target.location}
+    for key in ("endpoint", "bucket", "prefix"):
+        value = getattr(target, key, None)
+        if isinstance(value, str):
+            summary[key] = value
+    return summary
 
 
 def _account_info(acct: core_accounts.Account) -> dict:
@@ -861,7 +870,7 @@ class _Handler(BaseHTTPRequestHandler):
                 try:
                     found = core_directory.authenticate(username, password)
                     acct = core_accounts.Account(
-                        found.username, False, role=found.role, source="ldap", name=found.name
+                        found.username, False, role=found.role, source=found.source, name=found.name
                     )
                 except CwcliError as e:
                     refusal = e
@@ -2301,6 +2310,7 @@ class _Handler(BaseHTTPRequestHandler):
                     settings,
                     secret_values,
                     enable=enable if isinstance(enable, bool) else None,
+                    take_over=payload.get("take_over") is True,
                     by=by,
                 )
             return 200, {"data": {"check": asdict(check) if check else None, "integration": view}}

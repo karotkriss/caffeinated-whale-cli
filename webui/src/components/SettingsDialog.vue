@@ -15,7 +15,7 @@ import { session, signOut, listSessions, can, ROLE_LABEL } from '../data/session
 import PasswordForm from './PasswordForm.vue'
 import IntegrationDialog from './IntegrationDialog.vue'
 import CommunityDialog from './CommunityDialog.vue'
-import { integrations, loadIntegrations, disableIntegration, openIntegration, openCommunity, STATE, PUBLISHER } from '../data/integrations'
+import { integrations, loadIntegrations, disableIntegration, openIntegration, openCommunity, isDirectorySource, STATE, PUBLISHER } from '../data/integrations'
 import { openJob } from '../data/job-dialog'
 import { applySetting, settings } from '../data/settings'
 import { catalog, loadCatalog, scanCatalog, sources, hostLabel } from '../data/catalog'
@@ -46,8 +46,8 @@ watch(tab, (t) => { if (t === 'account') loadSessions() }, { immediate: true })
 watch(open, (v) => { if (v && tab.value === 'account') loadSessions() })
 async function signOutOthers() { signingOutOthers.value = true; try { await signOut({ others: true }); await loadSessions() } finally { signingOutOthers.value = false } }
 async function doSignOut() { open.value = false; await signOut() }
-const directoryUser = computed(() => session.user?.source === 'ldap')
-const signInOn = computed(() => integrations.list.some((i) => i.id === 'ldap' && i.enabled))
+const directoryUser = computed(() => isDirectorySource(session.user?.source))
+const signInOn = computed(() => integrations.list.some((i) => i.provides.includes('sign_in') && i.enabled))
 
 // --- integrations -----------------------------------------------------------
 const official = computed(() => integrations.list.filter((i) => i.publisher === 'official'))
@@ -59,8 +59,8 @@ const communityMenu = (i) => [
 ]
 const repoName = (u) => { try { return new URL(u).pathname.replace(/^\/|\.git$/g, '') || u } catch { return u } }
 const turnOffText = (i) => {
-  if (i?.id === 'ldap') return 'Directory users can no longer sign in, and every directory user signed in now is signed out. The local admin account keeps working.'
-  if (i?.id === 's3') return 'New backups are no longer copied off-site; the copies already in the bucket stay there.'
+  if (i?.provides?.includes('sign_in')) return 'Directory users can no longer sign in, and every directory user signed in now is signed out. The local admin account keeps working.'
+  if (i?.provides?.includes('backup_target')) return 'New backups are no longer copied off-site; the copies already there stay.'
   return `${i?.name || 'It'} stops running.`
 }
 const turningOff = ref(null)

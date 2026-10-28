@@ -23,31 +23,110 @@ from caffeinated_whale_cli.core.errors import CwcliError, ErrorKind
 
 PYPROJECT = """\
 [project]
-name = "cwcli-integration-hello"
+name = "cwcli-integration-{iid}"
 version = "{version}"
 
 [project.entry-points."cwcli.integrations"]
-hello = "cwcli_hello:INTEGRATION"
+{iid} = "cwcli_{iid}:INTEGRATION"
 
 [tool.cwcli.integration]
-name = "Hello webhook"
+name = "Hello {iid}"
 publisher = "Example Org"
 description = "Says hello."
-provides = ["notifications"]
+provides = ["{hook}"]
 """
 
-MODULE = """\
-from caffeinated_whale_cli.core.integrations import COMMUNITY, Check, Field, Integration
+# A sign-in check: ``users`` names who may sign in and their role; one shared password.
+SIGN_IN = """\
+from caffeinated_whale_cli.core.integrations import Check, Field, Integration
 
+
+def _users(settings):
+    return dict(p.split("=", 1) for p in settings["users"].split(",") if "=" in p)
+
+
+def _sign_in(settings, secrets, username, password):
+    role = _users(settings).get(username)
+    if role and password == secrets.get("password"):
+        return {{"username": username, "role": role, "name": username.title()}}
+    return None
+"""
+
+# A backup target in a local directory.
+BACKUP_TARGET = """\
+import shutil
+from pathlib import Path
+
+from caffeinated_whale_cli.core.integrations import Check, Field, Integration
+
+
+class Store:
+    def __init__(self, root):
+        self.root = Path(root)
+        self.location = str(self.root)
+
+    def key(self, *parts):
+        return "/".join(p.strip("/") for p in parts if p and p.strip("/"))
+
+    def ensure(self):
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    def _path(self, key):
+        path = self.root / key
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def put_file(self, key, path):
+        shutil.copyfile(path, self._path(key))
+
+    def put_bytes(self, key, data):
+        self._path(key).write_bytes(data)
+
+    def get_to_file(self, key, path):
+        shutil.copyfile(self.root / key, path)
+        return Path(path).stat().st_size
+
+    def get_bytes(self, key):
+        return (self.root / key).read_bytes()
+
+    def delete(self, key):
+        (self.root / key).unlink(missing_ok=True)
+
+    def list(self, prefix=""):
+        files = sorted(p for p in self.root.rglob("*") if p.is_file())
+        keys = [p.relative_to(self.root).as_posix() for p in files]
+        return [{{"key": k}} for k in keys if k.startswith(prefix)]
+"""
+
+HOOKS = {
+    "sign_in": (
+        SIGN_IN,
+        '(Field("users", "Users", required=True), '
+        'Field("password", "Password", kind="secret", required=True))',
+        'lambda s: {{"users": str(s.get("users") or "")}}',
+        "bool(_users(s))",
+        '{{"sign_in": _sign_in}}',
+    ),
+    "backup_target": (
+        BACKUP_TARGET,
+        '(Field("path", "Directory", required=True),)',
+        'lambda s: {{"path": str(s.get("path") or "")}}',
+        's["path"].startswith("/")',
+        '{{"backup_target": lambda s, x: Store(s["path"])}}',
+    ),
+}
+
+TAIL = """
 INTEGRATION = Integration(
-    id="hello",
+    id="{iid}",
     name="ignored: the declaration names it",
     publisher="official",
     description="",
-    provides=({provides}),
-    fields=(Field("url", "Webhook URL", required=True),),
-    normalize=lambda s: {{"url": str(s.get("url") or "")}},
-    test=lambda s, x: Check(bool(s["url"]), "hello from {version}"),
+    provides=("{obj_hook}",),
+    fields={fields},
+    normalize={normalize},
+    test=lambda s, x: Check({ok}, "hello from {version}"),
+    hooks={hooks},
 )
 """
 
@@ -89,13 +168,29 @@ def _git(cwd: Path, *args: str) -> str:
     ).stdout.strip()
 
 
-def _write(repo: Path, version: str = "1", provides: str = '"notifications",') -> str:
-    """Write the hello integration and commit it; return the commit."""
-    (repo / "src" / "cwcli_hello").mkdir(parents=True, exist_ok=True)
-    (repo / "pyproject.toml").write_text(PYPROJECT.format(version=version))
-    (repo / "src" / "cwcli_hello" / "__init__.py").write_text(
-        MODULE.format(version=version, provides=provides)
+def _write(
+    repo: Path,
+    version: str = "1",
+    *,
+    hook: str = "sign_in",
+    iid: str = "hello",
+    obj_hook: str | None = None,
+) -> str:
+    """Write a throwaway integration providing ``hook`` and commit it; return the commit.
+    ``obj_hook`` makes the code provide a different hook than the declaration."""
+    module, fields, normalize, ok, hooks = HOOKS[hook]
+    code = module.format() + TAIL.format(
+        iid=iid,
+        obj_hook=obj_hook or hook,
+        fields=fields.format(),
+        normalize=normalize.format(),
+        ok=ok,
+        version=version,
+        hooks=hooks.format(),
     )
+    (repo / "src" / f"cwcli_{iid}").mkdir(parents=True, exist_ok=True)
+    (repo / "pyproject.toml").write_text(PYPROJECT.format(version=version, iid=iid, hook=hook))
+    (repo / "src" / f"cwcli_{iid}" / "__init__.py").write_text(code)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", f"v{version}")
     return _git(repo, "rev-parse", "HEAD")
@@ -118,6 +213,9 @@ def repo(home):
     path.mkdir()
     _git(path, "init", "-q", "-b", "main")
     return path
+
+
+ANA = ({"users": "ana=admin"}, {"password": "pw"})
 
 
 def _url(path: Path) -> str:
@@ -146,14 +244,17 @@ class TestDeclaration:
             (lambda t: t.replace("hello = ", '"Hello!" = '), "is not 2-40"),
             (lambda t: t.replace("[tool.cwcli.integration]", "[tool.other]"), "[tool.cwcli"),
             (lambda t: t.replace('publisher = "Example Org"', ""), "needs a publisher"),
-            (lambda t: t.replace('["notifications"]', '["shell"]'), "unknown hook points"),
+            (lambda t: t.replace('["sign_in"]', '["shell"]'), "unknown hook points"),
+            (lambda t: t.replace('["sign_in"]', "[]"), "provides no hook point"),
             (lambda t: t.replace("hello = ", "ldap = "), "official integration"),
             (lambda t: t + "[[[", "cannot be read"),
         ],
     )
     def test_an_invalid_declaration_is_refused(self, home, repo, edit, reason):
         _write(repo)
-        (repo / "pyproject.toml").write_text(edit(PYPROJECT.format(version="1")))
+        (repo / "pyproject.toml").write_text(
+            edit(PYPROJECT.format(version="1", iid="hello", hook="sign_in"))
+        )
         _git(repo, "commit", "-qam", "edit")
         with pytest.raises(CwcliError) as e:
             community.preview(_url(repo))
@@ -171,10 +272,10 @@ class TestDeclaration:
         assert found.signed_in_with is None
         assert found.declaration == community.Declaration(
             "hello",
-            "Hello webhook",
+            "Hello hello",
             "Example Org",
             "Says hello.",
-            ("notifications",),
+            ("sign_in",),
             "cwcli-integration-hello",
         )
         assert not community.root().exists()
@@ -217,7 +318,7 @@ class TestInstall:
         assert (community.root() / rec["dir"]).is_dir()
         (card,) = [c for c in integrations.view() if c["id"] == "hello"]
         assert card["publisher"] == integrations.COMMUNITY
-        assert card["name"] == "Hello webhook"
+        assert card["name"] == "Hello hello"
         assert card["state"] == "off" and not card["enabled"]
         assert card["community"]["commit"] == found.commit
         assert card["community"]["publisher"] == "Example Org"
@@ -258,16 +359,16 @@ class TestInstall:
         assert community.records() == {}
 
     def test_a_package_that_does_not_provide_what_it_declares_is_removed_again(self, home, repo):
-        commit = _write(repo, provides='"sign_in",')
+        commit = _write(repo, obj_hook="backup_target")
         with pytest.raises(CwcliError) as e:
             community.install(_url(repo), commit=commit)
         assert e.value.code == "community.invalid_package"
-        assert "not the declared ['notifications']" in e.value.message
+        assert "not the declared ['sign_in']" in e.value.message
         assert [p.name for p in community.root().iterdir()] == []
 
     def test_it_turns_on_through_its_own_test(self, home, repo):
         community.install(_url(repo), commit=_write(repo))
-        check, view = integrations.configure("hello", {"url": "https://x"}, enable=True)
+        check, view = integrations.configure("hello", *ANA, enable=True)
         assert check is not None and check.ok and check.message == "hello from 1"
         assert view["state"] == "on"
 
@@ -276,20 +377,20 @@ class TestUpdate:
     def test_check_then_update_shows_old_and_new_and_turns_it_off(self, home, repo):
         old = _write(repo)
         community.install(_url(repo), commit=old)
-        integrations.configure("hello", {"url": "https://x"}, enable=True)
+        integrations.configure("hello", *ANA, enable=True)
         assert integrations.test("hello").message == "hello from 1"
         assert community.check_update("hello")["update_available"] is False
 
         new = _write(repo, version="2")
         found = community.check_update("hello")
         assert (found["current"], found["latest"], found["update_available"]) == (old, new, True)
-        assert found["declaration"]["name"] == "Hello webhook"
+        assert found["declaration"]["name"] == "Hello hello"
         done = community.update("hello", commit=new, by="ana")
         assert (done["old"], done["new"], done["was_on"]) == (old, new, True)
 
         (card,) = [c for c in integrations.view() if c["id"] == "hello"]
         assert card["state"] == "off"
-        assert card["settings"] == {"url": "https://x"}
+        assert card["settings"] == {"users": "ana=admin"}
         # The new code, in this same process.
         assert integrations.test("hello").message == "hello from 2"
         assert [p.name for p in community.root().iterdir() if p.name != ".pip"] == [
@@ -310,7 +411,7 @@ class TestUpdate:
 class TestRemove:
     def test_remove_leaves_nothing_behind(self, home, repo):
         community.install(_url(repo), commit=_write(repo))
-        integrations.configure("hello", {"url": "https://x"}, enable=True)
+        integrations.configure("hello", *ANA, enable=True)
         assert integrations.test("hello").ok
         community.remove("hello", by="ana")
         data = json.loads(integrations.store_path().read_text())
@@ -473,10 +574,169 @@ class TestSignIn:
         assert seen["env"]["GIT_ASKPASS"] == ""
 
 
+def _second_repo(home: Path, name: str) -> Path:
+    path = home / name
+    path.mkdir()
+    _git(path, "init", "-q", "-b", "main")
+    return path
+
+
+class TestHookPoints:
+    """An enabled community integration is called through the same hook points the
+    official LDAP sign-in and S3 backup target use, one provider per hook point."""
+
+    def test_a_community_sign_in_signs_people_in_with_their_role(self, home, repo):
+        from caffeinated_whale_cli.core import accounts, directory
+
+        accounts.ensure_default()
+        community.install(_url(repo), commit=_write(repo))
+        with pytest.raises(CwcliError) as off:
+            directory.authenticate("ana", "pw")
+        assert off.value.code == "auth.invalid"  # installed but off: it signs nobody in
+
+        integrations.configure("hello", {"users": "ana=admin,otto=operator,admin=admin"},
+                               {"password": "pw"}, enable=True)  # fmt: skip
+        user = directory.authenticate("otto", "pw")
+        assert (user.username, user.role, user.name, user.source) == (
+            "otto", "operator", "Otto", "hello",
+        )  # fmt: skip
+        for name, password, code in (
+            ("otto", "wrong", "auth.invalid"),
+            ("zed", "pw", "auth.invalid"),
+            ("admin", "pw", "auth.directory_reserved"),
+        ):
+            with pytest.raises(CwcliError) as e:
+                directory.authenticate(name, password)
+            assert e.value.code == code, name
+
+        integrations.disable("hello")
+        with pytest.raises(CwcliError) as e:
+            directory.authenticate("otto", "pw")
+        assert e.value.code == "auth.invalid"
+
+    def test_a_failing_sign_in_reads_as_unreachable_and_shows_on_the_card(
+        self, home, repo, monkeypatch
+    ):
+        from caffeinated_whale_cli.core import directory
+
+        community.install(_url(repo), commit=_write(repo))
+        integrations.configure("hello", *ANA, enable=True)
+        integ, settings, secrets = integrations.provider("sign_in")
+
+        def boom(*args):
+            raise OSError("the user list is gone")
+
+        broken = dataclasses.replace(integ, hooks={"sign_in": boom})
+        monkeypatch.setattr(integrations, "provider", lambda hook: (broken, settings, secrets))
+        with pytest.raises(CwcliError) as e:
+            directory.authenticate("ana", "pw")
+        assert e.value.code == "auth.directory_unreachable"
+        (card,) = [c for c in integrations.view() if c["id"] == "hello"]
+        assert card["state"] == "error" and "the user list is gone" in card["last_error"]["message"]
+
+    def test_a_role_it_cannot_confirm_without_a_password_is_said_so(self, home, repo):
+        from caffeinated_whale_cli.core import directory
+
+        community.install(_url(repo), commit=_write(repo))
+        integrations.configure("hello", *ANA, enable=True)
+        with pytest.raises(CwcliError) as e:
+            directory.current_role("ana", "hello")
+        assert e.value.code == "auth.role_unconfirmable"
+        assert directory.current_role("ana", "ldap") is None  # not the sign-in that is on
+
+    def test_one_provider_per_hook_point_and_switching_is_the_admins_choice(self, home, repo):
+        community.install(_url(repo), commit=_write(repo))
+        hola = _second_repo(home, "hola")
+        community.install(_url(hola), commit=_write(hola, iid="hola"))
+        integrations.configure("hello", *ANA, enable=True)
+
+        with pytest.raises(CwcliError) as e:
+            integrations.configure("hola", *ANA, enable=True)
+        assert e.value.code == "integration.hook_taken"
+        assert e.value.detail == {
+            "hook": "sign_in", "current": "hello", "current_name": "Hello hello",
+        }  # fmt: skip
+        ldap = {
+            "server_url": "ldaps://dc.example.org",
+            "bind_dn": "cn=svc",
+            "base_dn": "dc=example,dc=org",
+            "group_roles": [{"group": "staff", "role": "viewer"}],
+        }
+        with pytest.raises(CwcliError) as e:  # nor does LDAP silently take it over
+            integrations.configure("ldap", ldap, {"bind_password": "p"}, enable=True)
+        assert e.value.code == "integration.hook_taken"
+        states = {c["id"]: c["state"] for c in integrations.view()}
+        assert states["hello"] == "on" and states["hola"] == "off"
+
+        check, view = integrations.configure("hola", *ANA, enable=True, take_over=True)
+        assert check is not None and check.ok and view["state"] == "on"
+        states = {c["id"]: c["state"] for c in integrations.view()}
+        assert states["hello"] == "off" and states["hola"] == "on"
+        assert integrations.provider("sign_in")[0].id == "hola"
+
+    def test_switching_runs_the_new_ones_test_first(self, home, repo):
+        community.install(_url(repo), commit=_write(repo))
+        hola = _second_repo(home, "hola")
+        community.install(_url(hola), commit=_write(hola, iid="hola"))
+        integrations.configure("hello", *ANA, enable=True)
+        check, view = integrations.configure(
+            "hola", {"users": "nobody"}, {"password": "pw"}, enable=True, take_over=True
+        )
+        assert check is not None and not check.ok and view["state"] != "on"
+        assert integrations.provider("sign_in")[0].id == "hello"
+
+    def test_a_community_backup_target_carries_a_set_off_site_and_back(self, home, repo):
+        import shutil
+
+        from caffeinated_whale_cli.core import backup_store as store
+
+        archive = home / "archive"
+        archive.mkdir()
+        ts, site = "20261028_120000", "shop_localhost"
+        import gzip
+
+        with gzip.open(archive / f"{ts}-{site}-database.sql.gz", "wb") as f:
+            f.write(b"CREATE TABLE `tabUser` (id int);\n-- Dump completed on 2026-10-28\n")
+        (archive / f"{ts}-{site}-site_config_backup.json").write_text('{"db_name": "x"}')
+        bset = store.adopt_dir("erp", "shop.localhost", archive)
+        assert bset is not None and bset.verified
+
+        community.install(_url(repo), commit=_write(repo, hook="backup_target"))
+        assert store.offsite_target("erp", require=False) is None  # installed, still off
+        offsite = home / "offsite"
+        integrations.configure("hello", {"path": str(offsite)}, enable=True)
+        target = store.offsite_target("erp")
+        assert (target.integration_id, target.location) == ("hello", str(offsite))
+
+        copied = store.offsite_copy(bset)
+        assert copied.offsite["target"] == "hello"
+        stored = sorted(p.name for p in offsite.rglob("*") if p.is_file())
+        assert "set.json" in stored and all(n.endswith(".cwenc") or n == "set.json" for n in stored)
+        assert [d["key"] for d in store.offsite_list("erp")] == [bset.key]
+
+        shutil.rmtree(bset.path)
+        fetched = store.offsite_fetch("erp", bset.key)
+        assert fetched.verified and fetched.key == bset.key
+
+        integrations.disable("hello")
+        assert store.offsite_target("erp", require=False) is None
+
+    def test_a_failure_inside_a_community_target_is_a_cwcli_error(self, home, repo):
+        from caffeinated_whale_cli.core import backup_store as store
+
+        community.install(_url(repo), commit=_write(repo, hook="backup_target"))
+        integrations.configure("hello", {"path": str(home / "offsite")}, enable=True)
+        with pytest.raises(CwcliError) as e:
+            store.offsite_target("erp").get_bytes("missing/set.json")
+        assert e.value.code == "offsite.target_failed" and "Hello hello" in e.value.message
+
+
 def test_the_verifier_runs_in_its_own_process(home, repo):
     rec = community.install(_url(repo), commit=_write(repo))
     payload = {"dir": str(community.root() / rec["dir"]), **{k: rec[k] for k in ("id", "name")}}
-    payload.update(publisher="x", description="x", project=rec["project"], provides=["sign_in"])
+    payload.update(
+        publisher="x", description="x", project=rec["project"], provides=["backup_target"]
+    )
     done = subprocess.run(
         [
             sys.executable,
@@ -489,7 +749,7 @@ def test_the_verifier_runs_in_its_own_process(home, repo):
         text=True,
     )
     assert done.returncode == 1
-    assert "not the declared ['sign_in']" in done.stderr
+    assert "not the declared ['backup_target']" in done.stderr
 
 
 def test_no_axi_verb_installs_community_code():

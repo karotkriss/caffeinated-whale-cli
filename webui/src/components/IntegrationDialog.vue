@@ -4,8 +4,8 @@
 // own. Turning one on always tests it first and enables it only when the test
 // passes; a secret is never shown again once saved, only replaced.
 import { computed, ref, watch } from 'vue'
-import { Badge, Button, Checkbox, Dialog, ErrorMessage, FormControl, FormLabel, Select } from 'frappe-ui'
-import { configureIntegration, integrationAction, integrationDialog, integrations, loadIntegrations, PUBLISHER, STATE, testIntegration } from '../data/integrations'
+import { Alert, Badge, Button, Checkbox, Dialog, ErrorMessage, FormControl, FormLabel, Select } from 'frappe-ui'
+import { configureIntegration, HOOK_POINT, integrationAction, integrationDialog, integrations, loadIntegrations, PUBLISHER, STATE, testIntegration } from '../data/integrations'
 
 const d = integrationDialog
 const integ = computed(() => integrations.list.find((i) => i.id === d.id) || null)
@@ -14,6 +14,8 @@ const secrets = ref({})
 const check = ref(null)
 const error = ref(null)
 const busy = ref(null) // 'test' | 'save' | 'lookup'
+// Another integration serves this one's hook point: the server's detail, until the Admin chooses to switch.
+const switching = ref(null)
 const lookupName = ref('')
 const lookup = ref(null)
 const advanced = ref(false)
@@ -44,6 +46,7 @@ watch(() => d.open, (open) => {
   secrets.value = {}
   check.value = null
   error.value = null
+  switching.value = null
   lookup.value = null
   lookupName.value = ''
   advanced.value = false
@@ -72,15 +75,19 @@ async function runTest() {
   error.value = null
   try { check.value = (await testIntegration(d.id, ...payload())).check } catch (e) { error.value = e; check.value = null } finally { busy.value = null }
 }
-async function save() {
+async function save(takeOver = false) {
   busy.value = 'save'
   error.value = null
   try {
-    const data = await configureIntegration(d.id, ...payload(), true)
+    const data = await configureIntegration(d.id, ...payload(), true, takeOver)
     check.value = data.check
+    switching.value = null
     await loadIntegrations()
     if (data.integration.enabled && data.check?.ok !== false) { secrets.value = {}; d.open = false }
-  } catch (e) { error.value = e } finally { busy.value = null }
+  } catch (e) {
+    if (e.code === 'integration.hook_taken' && e.detail) switching.value = e.detail
+    else error.value = e
+  } finally { busy.value = null }
 }
 async function runLookup() {
   if (!lookupName.value.trim()) return
@@ -99,7 +106,7 @@ const ROLE_LABEL = { admin: 'Admin', operator: 'Operator', viewer: 'Viewer' }
         <Badge size="sm" variant="subtle" :theme="STATE[integ.state]?.theme" :label="STATE[integ.state]?.label" />
         <p class="min-w-0 flex-1 text-p-sm text-ink-gray-6">{{ integ.description }}</p>
       </div>
-      <form class="grid gap-3 sm:grid-cols-2" autocomplete="off" @submit.prevent="save">
+      <form class="grid gap-3 sm:grid-cols-2" autocomplete="off" @submit.prevent="save(false)">
         <template v-for="f in visible" :key="f.key">
           <div v-if="f.kind === 'group_roles'" class="space-y-2 sm:col-span-2">
             <FormLabel :label="f.label" />
@@ -151,13 +158,15 @@ const ROLE_LABEL = { admin: 'Admin', operator: 'Operator', viewer: 'Viewer' }
       <p v-if="check" class="flex items-start gap-1.5 text-p-sm" :class="check.ok ? 'text-ink-green-6' : 'text-ink-red-6'">
         <span class="mt-0.5 size-4 shrink-0" :class="check.ok ? 'lucide-circle-check' : 'lucide-circle-x'" aria-hidden="true" />{{ check.message }}
       </p>
+      <Alert v-if="switching" theme="amber" :title="`${switching.current_name} is the ${HOOK_POINT[switching.hook]?.toLowerCase() || switching.hook} now`" :description="`Only one integration serves it at a time. Switching tests ${integ.name} first; if the test passes, ${integ.name} turns on and ${switching.current_name} turns off, keeping its settings.`" />
       <ErrorMessage :message="error ? (error.hint ? `${error.message} ${error.hint}` : error.message) : null" />
     </div>
     <template #actions="{ close }">
       <div class="flex flex-wrap justify-end gap-2">
         <Button label="Cancel" @click="close" />
         <Button label="Test connection" icon-left="lucide-plug-zap" :loading="busy === 'test'" @click="runTest" />
-        <Button variant="solid" data-primary :label="integ?.enabled ? 'Test and save' : 'Test and turn on'" :loading="busy === 'save'" @click="save" />
+        <Button v-if="switching" variant="solid" data-primary :label="`Test and switch to ${integ?.name}`" :loading="busy === 'save'" @click="save(true)" />
+        <Button v-else variant="solid" data-primary :label="integ?.enabled ? 'Test and save' : 'Test and turn on'" :loading="busy === 'save'" @click="save()" />
       </div>
     </template>
   </Dialog>

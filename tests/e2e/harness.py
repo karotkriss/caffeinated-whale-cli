@@ -492,6 +492,56 @@ def wait_until(predicate, *, timeout: int = 180, interval: float = 3, desc: str 
     raise TimeoutError(f"Timed out after {timeout}s waiting for {desc} (last result: {last!r})")
 
 
+def api_call(base: str, path: str, payload=None, *, token: str | None = None):
+    """One web UI API request: ``(status, body)``; ``token`` sends it as the bearer."""
+    import urllib.error
+    import urllib.request
+
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(base + path, data=data, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:  # noqa: S310 - loopback
+            return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read() or b"{}")
+
+
+@contextmanager
+def ui_daemon(token: str, env: dict | None = None) -> Iterator[str]:
+    """``cwcli ui --foreground`` on a free loopback port with ``token`` as its bearer
+    token (the run files land in the isolated ``CWCLI_HOME``); yields its base URL."""
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    proc = subprocess.Popen(
+        [CWCLI, "ui", "--foreground", "--no-browser", "--port", str(port)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env={**(env or os.environ), "CWCLI_SERVE_TOKEN": token},
+    )
+    base = f"http://127.0.0.1:{port}"
+    try:
+        wait_until(
+            lambda: api_call(base, "/api/v1/meta")[0] == 200,
+            timeout=60,
+            interval=0.5,
+            desc="cwcli ui listening",
+        )
+        yield base
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:  # pragma: no cover - defensive
+            proc.kill()
+
+
 def wait_for_site_ready(
     project: str, site: str, bench: str = DEFAULT_BENCH_PATH, *, timeout: int = 300
 ) -> None:

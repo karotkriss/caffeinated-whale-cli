@@ -63,6 +63,7 @@ class DirectoryUser:
     name: str
     email: str
     role: str
+    source: str = "ldap"  # the sign-in integration that signed them in
 
 
 # --------------------------------------------------------------------- settings
@@ -320,32 +321,112 @@ def lookup_user(settings: dict, secrets: dict, args: dict) -> dict:
     }
 
 
-def current_role(username: str) -> str | None:
-    """The role ``username`` would sign in with now, without a password, or None (not
-    found, disabled, outside the allowed groups, or directory sign-in off). Raises
-    ``CwcliError`` when the directory cannot be asked."""
-    found = integrations.active("ldap")
-    if found is None:
-        return None
-    out = lookup_user(*found, {"username": username})
+def _ldap_current_role(settings: dict, secrets: dict, username: str) -> str | None:
+    out = lookup_user(settings, secrets, {"username": username})
     return out["role"] if out.get("allowed") else None
+
+
+def current_role(username: str, source: str = "ldap") -> str | None:
+    """The role ``username`` would sign in with now through the sign-in integration
+    ``source``, without a password, or None (not found, disabled, outside the allowed
+    groups, or that sign-in is no longer the one on). Raises ``CwcliError`` when it
+    cannot be asked, or cannot answer without a password."""
+    found = integrations.provider("sign_in")
+    if found is None or found[0].id != source:
+        return None
+    integ, settings, secrets = found
+    hook = integ.hooks.get("current_role")
+    if hook is None:
+        raise CwcliError(
+            ErrorKind.PRECONDITION,
+            "auth.role_unconfirmable",
+            f"{integ.name} cannot confirm a role without a sign-in.",
+        )
+    try:
+        role = hook(settings, secrets, username)
+    except CwcliError:
+        raise
+    except Exception as e:  # noqa: BLE001 - community code
+        raise CwcliError(ErrorKind.PRECONDITION, "auth.directory_unreachable", str(e)) from e
+    return role if role in accounts.ROLES else None
 
 
 def _refused(code: str, message: str) -> CwcliError:
     return CwcliError(ErrorKind.PRECONDITION, code, message)
 
 
+def _unreachable() -> CwcliError:
+    return CwcliError(
+        ErrorKind.PRECONDITION,
+        "auth.directory_unreachable",
+        "The directory could not check your sign-in.",
+        hint="Try again shortly; an administrator can sign in with the local admin "
+        "account and check Settings > Integrations.",
+    )
+
+
 def authenticate(username: str, password: str) -> DirectoryUser:
-    """Sign a directory user in, or raise: ``auth.invalid`` for an unknown name or a
-    wrong password (the same answer for both), ``auth.directory_disabled`` /
-    ``_locked`` / ``_password_expired`` / ``_no_group`` once the password was right,
-    ``auth.directory_unreachable`` when the directory cannot be asked."""
-    found = integrations.active("ldap")
-    if found is None:
+    """Sign a user in through the sign-in integration that is on (LDAP, or a community
+    one), or raise: ``auth.invalid`` for an unknown name or a wrong password (the same
+    answer for both), ``auth.directory_disabled`` / ``_locked`` /
+    ``_password_expired`` / ``_no_group`` / ``_reserved`` once the password was right,
+    ``auth.directory_unreachable`` when it cannot be asked."""
+    found = integrations.provider("sign_in")
+    if found is None or not username or not password:
         raise _refused("auth.invalid", "That username and password do not match.")
-    settings, secrets = _with_defaults(found[0]), found[1]
-    if not username or not password:
+    integ, settings, secrets = found
+    user: DirectoryUser
+    if integ.publisher == integrations.OFFICIAL:
+        user = integ.hooks["sign_in"](settings, secrets, username, password)
+    else:
+        try:
+            answer = integ.hooks["sign_in"](settings, secrets, username, password)
+        except CwcliError as e:
+            if e.code.startswith("auth."):
+                integrations.record_outcome(integ.id, None)
+                raise
+            integrations.record_outcome(integ.id, e.message)
+            raise _unreachable() from None
+        except Exception as e:  # noqa: BLE001 - community code
+            integrations.record_outcome(integ.id, f"Sign-in failed: {e}")
+            raise _unreachable() from None
+        integrations.record_outcome(integ.id, None)
+        user = _signed_in(integ.id, answer)
+    if accounts.is_local(user.username):
+        raise _refused(
+            "auth.directory_reserved",
+            f"'{user.username}' is the name of the local break-glass account; sign in with "
+            "its own password.",
+        )
+    return user
+
+
+def _signed_in(source: str, answer: object) -> DirectoryUser:
+    """A community sign-in hook's answer as a ``DirectoryUser``; None is a refusal."""
+    if answer is None:
         raise _refused("auth.invalid", "That username and password do not match.")
+    if isinstance(answer, DirectoryUser):
+        answer = {f: getattr(answer, f) for f in ("username", "dn", "name", "email", "role")}
+    if not isinstance(answer, dict) or not str(answer.get("username") or "").strip():
+        raise _unreachable()
+    if answer.get("role") not in accounts.ROLES:
+        raise _refused(
+            "auth.directory_no_group", "Your account is not allowed to sign in to cwcli."
+        )
+    username = str(answer["username"]).strip()
+    return DirectoryUser(
+        username=username,
+        dn=str(answer.get("dn") or ""),
+        name=str(answer.get("name") or username),
+        email=str(answer.get("email") or ""),
+        role=str(answer["role"]),
+        source=source,
+    )
+
+
+def _ldap_sign_in(settings: dict, secrets: dict, username: str, password: str) -> DirectoryUser:
+    """LDAP's ``sign_in`` hook: the steps in the module docstring."""
+    settings = _with_defaults(settings)
     try:
         with _service(settings, secrets) as conn:
             entry = _find(conn, settings, username)
@@ -364,13 +445,7 @@ def authenticate(username: str, password: str) -> DirectoryUser:
             raise _refused("auth.invalid", "That username and password do not match.") from None
         message = _describe(e, settings)
         integrations.record_outcome("ldap", message)
-        raise CwcliError(
-            ErrorKind.PRECONDITION,
-            "auth.directory_unreachable",
-            "The directory could not check your sign-in.",
-            hint="Try again shortly; an administrator can sign in with the local admin "
-            "account and check Settings > Integrations.",
-        ) from None
+        raise _unreachable() from None
     integrations.record_outcome("ldap", None)
     canonical = entry.first(settings["username_attribute"]) or username
     if _disabled(entry):
@@ -454,6 +529,7 @@ INTEGRATION = integrations.Integration(
     normalize=_normalize,
     test=_test,
     actions={"lookup_user": lookup_user},
+    hooks={"sign_in": _ldap_sign_in, "current_role": _ldap_current_role},
     on_change=accounts.close_directory_sessions,
     secrets_bound_to=("server_url", "starttls", "ca_certificate", "bind_dn"),
 )

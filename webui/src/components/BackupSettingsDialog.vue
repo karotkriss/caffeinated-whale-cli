@@ -17,9 +17,10 @@ const plan = ref(null)
 const saving = ref(false)
 const pruning = ref(false)
 const error = ref(null)
-// Off-site copies: the bucket is the machine's S3 backup target integration
-// (Settings > Integrations); this instance only chooses whether new backups go there,
-// and lists the bucket's sets with Fetch for the ones not local.
+// Off-site copies: the target is the machine's backup target integration (the S3
+// bucket or a community one, Settings > Integrations); this instance only chooses
+// whether new backups go there, and lists the target's sets with Fetch for the ones
+// not local.
 const offsiteOn = ref(false)
 const offsite = ref(null)
 const offsiteBusy = ref(false)
@@ -107,9 +108,9 @@ async function prune() {
         <FormControl v-model="form.daily" type="number" label="Keep daily (local)" />
         <FormControl v-model="form.weekly" type="number" label="Keep weekly (local)" />
         <FormControl v-model="form.monthly" type="number" label="Keep monthly (local)" />
-        <FormControl v-model="form.s3_daily" type="number" label="Keep daily (S3)" />
-        <FormControl v-model="form.s3_weekly" type="number" label="Keep weekly (S3)" />
-        <FormControl v-model="form.s3_monthly" type="number" label="Keep monthly (S3)" />
+        <FormControl v-model="form.s3_daily" type="number" label="Keep daily (off-site)" />
+        <FormControl v-model="form.s3_weekly" type="number" label="Keep weekly (off-site)" />
+        <FormControl v-model="form.s3_monthly" type="number" label="Keep monthly (off-site)" />
         <FormControl v-model="form.safety_days" type="number" label="Safety backups: days" />
         <FormControl v-model="form.safety_max" type="number" label="Safety backups: max per site" />
         <FormControl v-model="form.min_free_gb" type="number" label="Disk floor (GB free)" />
@@ -132,18 +133,18 @@ async function prune() {
       </div>
       <div class="rounded-6 border border-outline-gray-1 p-3">
         <div class="flex flex-wrap items-center gap-3">
-          <h3 class="text-base font-medium text-ink-gray-8">Off-site copies (S3)</h3>
+          <h3 class="text-base font-medium text-ink-gray-8">Off-site copies</h3>
           <Checkbox v-if="offsiteOn" v-model="form.copy_on_backup" label="Copy every new backup of this instance" />
-          <span v-if="offsiteOn" class="text-xs text-ink-gray-5">to {{ plan.offsite_target.bucket }} · saved with the settings above</span>
+          <span v-if="offsiteOn" class="text-xs text-ink-gray-5">to {{ plan.offsite_target.location }} ({{ plan.offsite_target.name }}) · saved with the settings above</span>
         </div>
         <div v-if="!offsiteOn" class="mt-2 flex flex-wrap items-center gap-2">
-          <p class="min-w-0 flex-1 text-p-sm text-ink-gray-6">The S3 backup target is off. It is one bucket for every instance, set up in Settings › Integrations.</p>
-          <Button v-if="can('admin')" label="Set up the S3 backup target" icon-left="lucide-blocks" @click="setUpTarget" />
+          <p class="min-w-0 flex-1 text-p-sm text-ink-gray-6">No backup target is on. It is one target for every instance (the S3 backup target, or a community one), set up in Settings › Integrations.</p>
+          <Button v-if="can('admin')" label="Set up a backup target" icon-left="lucide-blocks" @click="setUpTarget" />
           <span v-else class="text-p-sm text-ink-gray-5">Ask an Admin to set it up.</span>
         </div>
         <p class="mt-2 text-xs text-ink-gray-5">Copies are encrypted on this machine before upload (AES-256-GCM) under a key kept in cwcli's home; export it with <code class="font-mono">cwcli backups key export</code> to restore them elsewhere.</p>
         <div v-if="offsiteOn" class="mt-3 rounded-6 border border-outline-gray-1">
-          <div class="flex items-center justify-between border-b border-outline-gray-1 bg-surface-gray-1 px-3 py-1.5 text-xs text-ink-gray-5"><span>In the bucket{{ offsite?.sets ? `: ${offsite.sets.length} set${offsite.sets.length === 1 ? '' : 's'}` : '' }}</span><span class="flex gap-1"><Button size="sm" variant="ghost" label="Refresh" :loading="offsiteBusy" @click="loadOffsiteList" /><Button v-if="can('admin')" size="sm" variant="ghost" label="Prune off-site now" @click="pruneOffsite" /></span></div>
+          <div class="flex items-center justify-between border-b border-outline-gray-1 bg-surface-gray-1 px-3 py-1.5 text-xs text-ink-gray-5"><span>Off-site{{ offsite?.sets ? `: ${offsite.sets.length} set${offsite.sets.length === 1 ? '' : 's'}` : '' }}</span><span class="flex gap-1"><Button size="sm" variant="ghost" label="Refresh" :loading="offsiteBusy" @click="loadOffsiteList" /><Button v-if="can('admin')" size="sm" variant="ghost" label="Prune off-site now" @click="pruneOffsite" /></span></div>
           <p v-if="offsite?.error" class="px-3 py-2 text-xs text-ink-red-6">{{ offsite.error }}</p>
           <div v-else class="max-h-48 divide-y divide-outline-gray-1 overflow-auto">
             <div v-for="x in offsite?.sets || []" :key="x.key" class="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 px-3 py-1.5 text-xs"><span class="truncate"><span class="font-mono text-ink-gray-8">{{ x.key }}</span><span class="ml-2 text-ink-gray-5">{{ whenText(x.created_at) }} · {{ REASON_LABEL[x.reason] || x.reason }}</span></span><span class="text-ink-gray-5">{{ x.local ? 'also local' : 'off-site only' }}</span><Button v-if="!x.local" size="sm" variant="subtle" label="Fetch" @click="fetchOffsite(x.key)" /><span v-else /></div>

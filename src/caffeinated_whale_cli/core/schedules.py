@@ -717,11 +717,11 @@ def _owner_refusal(s: dict[str, Any]) -> str | None:
         source = "local" if accounts.account(owner) else "host"
     if source in ("host", "api") or (source == "local" and accounts.account(owner)):
         return None
-    if source == "ldap":
+    if source != "local":  # signed in through a sign-in integration (LDAP, community)
         from . import directory
 
         try:
-            if directory.current_role(owner) == "admin":
+            if directory.current_role(owner, str(source)) == "admin":
                 return None
         except CwcliError as e:
             return f"its owner {owner}'s Admin role could not be confirmed: {e.message}"

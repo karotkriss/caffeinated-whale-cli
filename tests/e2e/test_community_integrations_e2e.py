@@ -3,9 +3,11 @@
 The binary is ``harness.CWCLI``: in CI's ``e2e_pkg`` job that is the runtime-only
 ``uv tool install .`` build, which has no pip of its own, exactly like a user's uv
 tool install - so this proves cwcli makes its private pip venv, builds the package
-from the repository with the real build backend, loads it, updates it and removes
-it. The repository is a local git repo (``file://``); the sign-in paths against
-GitHub and GitLab are unit-tested in ``tests/test_core_community.py``.
+from the repository with the real build backend, loads it, signs a person in to the
+real web UI daemon through its ``sign_in`` hook once an Admin turns it on (and stops
+once it is off), updates it and removes it. The repository is a local git repo
+(``file://``); fetching from GitHub and GitLab with a sign-in is unit-tested in
+``tests/test_core_community.py``.
 """
 
 from __future__ import annotations
@@ -35,24 +37,35 @@ requires-python = ">=3.10"
 hello = "cwcli_hello:INTEGRATION"
 
 [tool.cwcli.integration]
-name = "Hello webhook"
+name = "Hello sign-in"
 publisher = "cwcli E2E"
-description = "Checks a webhook URL."
-provides = ["notifications"]
+description = "Lets the listed users sign in as Viewers."
+provides = ["sign_in"]
 """
 
 MODULE = """\
 from caffeinated_whale_cli.core.integrations import COMMUNITY, Check, Field, Integration
 
+
+def _sign_in(settings, secrets, username, password):
+    if username in settings["users"].split(",") and password == secrets.get("password"):
+        return {{"username": username, "role": "viewer"}}
+    return None
+
+
 INTEGRATION = Integration(
     id="hello",
-    name="Hello webhook",
+    name="Hello sign-in",
     publisher=COMMUNITY,
-    description="Checks a webhook URL.",
-    provides=("notifications",),
-    fields=(Field("url", "Webhook URL {version}", required=True),),
-    normalize=lambda s: {{"url": str(s.get("url") or "")}},
-    test=lambda s, x: Check(bool(s["url"]), "hello"),
+    description="Lets the listed users sign in as Viewers.",
+    provides=("sign_in",),
+    fields=(
+        Field("users", "Users {version}", required=True),
+        Field("password", "Password", kind="secret", required=True),
+    ),
+    normalize=lambda s: {{"users": str(s.get("users") or "")}},
+    test=lambda s, x: Check(bool(s["users"]), "hello"),
+    hooks={{"sign_in": _sign_in}},
 )
 """
 
@@ -95,6 +108,34 @@ def _commit(repo: Path, version: str) -> str:
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", f"v{version}")
     return _git(repo, "rev-parse", "HEAD")
+
+
+TOKEN = "cwe2e-community-token"
+
+
+def _signs_in_through_the_hook(env: dict) -> None:
+    """The real daemon: the community sign-in signs a person in only while it is on."""
+    with harness.ui_daemon(TOKEN, env) as base:
+        vic = {"username": "vic", "password": "vic-pw"}
+        assert harness.api_call(base, "/api/v1/session", vic)[0] == 401  # installed, off
+        configure = {
+            "op": "configure",
+            "id": "hello",
+            "settings": {"users": "vic"},
+            "secrets": {"password": "vic-pw"},
+            "enable": True,
+        }
+        status, body = harness.api_call(base, "/api/v1/integrations", configure, token=TOKEN)
+        assert status == 200 and body["data"]["integration"]["state"] == "on", body
+        assert harness.api_call(base, "/api/v1/meta")[1]["directory_sign_in"] is True
+        status, body = harness.api_call(base, "/api/v1/session", vic)
+        assert status == 200, body
+        assert (body["data"]["username"], body["data"]["role"], body["data"]["source"]) == (
+            "vic", "viewer", "hello",
+        )  # fmt: skip
+        off = {"op": "disable", "id": "hello"}
+        assert harness.api_call(base, "/api/v1/integrations", off, token=TOKEN)[0] == 200
+        assert harness.api_call(base, "/api/v1/session", vic)[0] == 401
 
 
 def test_add_update_and_remove_a_community_integration(tmp_path):
@@ -146,7 +187,8 @@ def test_add_update_and_remove_a_community_integration(tmp_path):
     assert installed["community"]["commit"] == first
     assert installed["community"]["load_error"] is None
     # The package's own code loaded: its settings field came from the built package.
-    assert [f["label"] for f in installed["fields"]] == ["Webhook URL 1"]
+    assert [f["label"] for f in installed["fields"]] == ["Users 1", "Password"]
+    _signs_in_through_the_hook(env)
 
     second = _commit(repo, "2")
     check = cwcli("update", "hello", "--check")
@@ -156,7 +198,7 @@ def test_add_update_and_remove_a_community_integration(tmp_path):
     assert updated.returncode == 0, updated.stderr
     assert f"{first[:12]} -> {second[:12]}" in updated.stdout
     assert card()["community"]["commit"] == second
-    assert [f["label"] for f in card()["fields"]] == ["Webhook URL 2"]
+    assert [f["label"] for f in card()["fields"]] == ["Users 2", "Password"]
 
     removed = cwcli("remove", "hello", "--yes")
     assert removed.returncode == 0, removed.stderr

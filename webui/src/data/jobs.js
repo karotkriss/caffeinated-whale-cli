@@ -1,5 +1,6 @@
 import { computed, reactive, ref } from 'vue'
 import { getJson, postJson } from './api'
+import { isDirectorySource } from './integrations'
 
 export const jobs = reactive({
   records: {},
@@ -172,7 +173,7 @@ export function elapsed(job) {
 // scheduled runs, "api" for a bearer-token client, "cli" for the terminal.
 export function jobAccount(job) {
   const o = job?.origin || {}
-  if (o.account) return o.account_source === 'ldap' ? `${o.account} (directory)` : o.account
+  if (o.account) return isDirectorySource(o.account_source) ? `${o.account} (directory)` : o.account
   if (o.schedule) return 'schedule'
   if (o.via === 'web') return 'api'
   return o.via || 'cli'

@@ -20,7 +20,8 @@ export async function loadIntegrations() {
 
 const post = (payload) => postJson('/api/v1/integrations', payload)
 export const testIntegration = (id, settings, secrets) => post({ op: 'test', id, settings, secrets })
-export const configureIntegration = (id, settings, secrets, enable) => post({ op: 'configure', id, settings, secrets, enable })
+// takeOver: the Admin chose to switch a hook point another integration serves (409 integration.hook_taken otherwise).
+export const configureIntegration = (id, settings, secrets, enable, takeOver = false) => post({ op: 'configure', id, settings, secrets, enable, take_over: takeOver })
 export const disableIntegration = (id) => post({ op: 'disable', id })
 export const integrationAction = (id, action, args, settings, secrets) => post({ op: 'action', id, action, args, settings, secrets })
 
@@ -43,8 +44,9 @@ export function openCommunity(mode, id = null) {
 export const HOOK_POINT = {
   sign_in: 'Sign-in provider',
   backup_target: 'Backup target',
-  notifications: 'Notifications',
 }
+// A session signed in through a sign-in integration (LDAP or a community one).
+export const isDirectorySource = (source) => !!source && source !== 'local' && source !== 'api'
 
 // The dialog that sets one up; Settings > Integrations opens it.
 export const integrationDialog = reactive({ open: false, id: null })
