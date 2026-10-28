@@ -244,6 +244,14 @@ class TestDeclaration:
             (lambda t: t.replace("hello = ", 'other = "m:I"\nhello = '), "registers 2"),
             (lambda t: t.replace("hello = ", '"Hello!" = '), "is not 2-40"),
             (lambda t: t.replace("[tool.cwcli.integration]", "[tool.other]"), "[tool.cwcli"),
+            (
+                lambda t: 'tool = "x"\n' + t.replace("[tool.cwcli.integration]", "[x]"),
+                "[tool.cwcli",
+            ),
+            (
+                lambda t: t.replace("[tool.cwcli.integration]", '[tool]\ncwcli = "x"\n[x]'),
+                "[tool.cwcli",
+            ),
             (lambda t: t.replace('publisher = "Example Org"', ""), "needs a publisher"),
             (lambda t: t.replace('["sign_in"]', '["shell"]'), "unknown hook points"),
             (lambda t: t.replace('["sign_in"]', "[]"), "provides no hook point"),
