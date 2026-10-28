@@ -45,6 +45,14 @@ AUTO_INSPECT = BootUnit(
     start_args=("config", "auto-inspect", "start"),
 )
 
+SCHEDULER = BootUnit(
+    label="com.cwcli.scheduler",
+    service_name="cwcli-scheduler.service",
+    task_name="CaffeinatedWhaleCliScheduler",
+    description="Caffeinated Whale CLI Scheduler",
+    start_args=("schedule", "daemon"),
+)
+
 CRED_BRIDGE = BootUnit(
     label="com.cwcli.cred-bridge",
     service_name="cwcli-cred-bridge.service",

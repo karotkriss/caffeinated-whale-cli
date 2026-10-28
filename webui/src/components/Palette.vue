@@ -16,6 +16,7 @@ import { instances, details, benchName, search } from '../data/fleet'
 import { paletteOpen } from '../data/palette'
 import { openAction } from '../data/dialog'
 import { availability } from '../data/actions'
+import { openSettings } from '../data/settings-dialog'
 
 const router = useRouter()
 const query = ref('')
@@ -46,8 +47,10 @@ const benches = computed(() => Object.entries(details).flatMap(([p, d]) => (d.da
 const sites = computed(() => benches.value.flatMap(({ p, b }) => (b.sites || []).map((s) => ({ p, b, s: s.name }))))
 const pages = [
   ['Instances', 'lucide-boxes', '/instances'],
+  ['Apps', 'lucide-package', '/apps'],
+  ['Sites', 'lucide-globe', '/sites'],
   ['Health check', 'lucide-stethoscope', '/health'],
-  ['Settings', 'lucide-settings', '/settings'],
+  ['Settings', 'lucide-settings', 'settings'],
 ]
 const commands = computed(() =>
   instances.value.flatMap((i) => {
@@ -61,7 +64,8 @@ const commands = computed(() =>
 
 function select(value) {
   paletteOpen.value = false
-  if (value.to) router.push(value.to)
+  if (value.to === 'settings') openSettings()
+  else if (value.to) router.push(value.to)
   else if (value.action) openAction(value.action, value.ctx || {})
 }
 </script>
@@ -78,7 +82,7 @@ function select(value) {
       </CommandPaletteGroup>
       <CommandPaletteGroup label="Instances">
         <CommandPaletteItem v-for="i in instances" :key="i.project" :value="{ to: `/instances/${i.project}` }">
-          <template #prefix><StatusDot :token="i.overall" /></template>
+          <template #prefix><StatusDot :token="i.overall" class="mr-2" /></template>
           {{ i.project }}
         </CommandPaletteItem>
       </CommandPaletteGroup>

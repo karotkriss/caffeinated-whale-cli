@@ -38,7 +38,9 @@ class _NoisyContainer(FakeFrappeContainer):
         cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
         # fail_on still wins: the base fake owns failure, this only adds output.
         if not any(sub in cmd_str for sub in self.fail_on) and (
-            "migrate" in cmd_str or "bench update --reset" in cmd_str or cmd_str == "git pull"
+            "migrate" in cmd_str
+            or cmd_str in ("git pull", "bench setup requirements")
+            or cmd_str.startswith(("git fetch", "git reset --hard"))
         ):
             self.calls.append(cmd_str)
             return 0, self.NOISE
@@ -321,139 +323,64 @@ class TestAxiWrongCopy:
         assert "other copy" in out.lower()
 
 
-# ------------------------------------------- a failed reset that leaves the bench down
+# ------------------------------------------ a failed migrate names its site and the state
 
 
-class _BenchUpdateContainer(_NoisyContainer):
-    """Models what bench 5.31.0 does to ``sites/common_site_config.json``.
+class TestAFailedMigrateNamesTheSiteAndTheBenchState:
+    """The captain's staging16 run (2026-10-28): the failure was in migrate on one site,
+    yet cwcli reported "frappe: Git pull failed" and said nothing about which sites had
+    migrated or what the bench was left in. A core update now runs the ordinary
+    per-site state machine, so every surface names the stage, the site and the state."""
 
-    ``bench update`` writes ``maintenance_mode: 1, pause_scheduler: 1`` before its
-    first site backup and writes 0 back only when the whole update succeeds - there
-    is no ``finally`` - so a reset that fails leaves both set.
-    """
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.common = {"maintenance_mode": 0, "pause_scheduler": 0}
-
-    def _run(self, cmd, workdir=None):
-        cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
-        if cmd_str == "cat sites/common_site_config.json":
-            self.calls.append(cmd_str)
-            return 0, json.dumps(self.common)
-        if cmd_str == "bench update --reset":
-            failing = any(sub in cmd_str for sub in self.fail_on)
-            self.common = dict.fromkeys(self.common, 1 if failing else 0)
-        return super()._run(cmd, workdir)
-
-
-@pytest.fixture()
-def bench_like(wired, monkeypatch):
-    container = _BenchUpdateContainer(available_apps=["frappe", "payments"])
-    _wire_update(monkeypatch, container)
-    return container
-
-
-_REMEDY = (
-    "cwcli run proj set-config --global --parse maintenance_mode 0 && "
-    "cwcli run proj set-config --global --parse pause_scheduler 0"
-)
-
-
-class TestFailedResetLeavesTheBenchInMaintenance:
-    """A failed ``bench update --reset`` used to be reported as ``failed_apps:
-    [frappe]`` and nothing else, while every site on the bench sat at 503 with its
-    scheduler paused. Every surface now says so, with the commands that clear it."""
-
-    def test_axi_reports_the_flag_the_warning_and_exits_one(self, bench_like, capsys):
-        bench_like.fail_on = ["bench update --reset"]
+    def test_axi_names_the_site_and_leaves_nothing_bench_wide(self, wired, capsys):
+        wired.fail_on = ["migrate"]
 
         with pytest.raises(typer.Exit) as exc:
             _axi_update(apps=["frappe"])
 
         assert exc.value.exit_code == 1
         out = capsys.readouterr().out
-        assert "bench_left_in_maintenance: true" in out
-        assert "left maintenance_mode and pause_scheduler set bench-wide" in out
-        assert _REMEDY in out
-
-    def test_axi_success_twin_reports_neither(self, bench_like, capsys):
-        with pytest.raises(typer.Exit) as exc:
-            _axi_update(apps=["frappe"])
-
-        assert exc.value.exit_code == 0
-        out = capsys.readouterr().out
+        assert "failed_migrations" in out and "a.localhost" in out
+        assert "failed_apps[0]" in out or "failed_apps: []" in out or "failed_apps[]" in out
         assert "bench_left_in_maintenance: false" in out
-        assert "set-config" not in out
+        assert "Git pull" not in out
 
-    def test_json_carries_the_field_and_stderr_the_way_out(self, bench_like, capsys):
-        bench_like.fail_on = ["bench update --reset"]
+    def test_json_carries_the_stage(self, wired, capsys):
+        wired.fail_on = ["migrate"]
 
         with pytest.raises(typer.Exit) as exc:
             _json_update(apps=["frappe"])
 
         assert exc.value.exit_code == 1
-        captured = capsys.readouterr()
-        doc = json.loads(captured.out)  # the remedy never corrupts the document
-        assert doc["bench_left_in_maintenance"] is True
+        doc = json.loads(capsys.readouterr().out)
+        assert doc["failed_migrations"] == ["a.localhost"]
+        assert doc["failed_apps"] == []
+        assert doc["failed_maintenance_disable"] == []
         assert doc["ok"] is False
-        assert _REMEDY in " ".join(captured.err.split())
 
-    def test_the_human_summary_names_the_way_out(self, bench_like, capsys):
-        bench_like.fail_on = ["bench update --reset"]
-
-        with pytest.raises(typer.Exit) as exc:
-            apps_mod.update_apps(
-                "proj",
-                ["frappe"],
-                bench=None,
-                bench_path=BENCH,
-                sites=None,
-                clear_cache=False,
-                clear_website_cache=False,
-                build=False,
-                skip_maintenance=False,
-                no_recache=True,
-                no_preflight=False,
-                force=False,
-                json_output=False,
-                yes=True,
-                verbose=False,
-            )
-
-        assert exc.value.exit_code == 1
-        captured = capsys.readouterr()
-        err = " ".join(captured.err.split())
-        assert "every site on the bench that does not override them answers HTTP 503" in err
-        assert _REMEDY in err
-        # The reset is not a git pull, so the summary does not call it one.
-        assert "frappe: bench update --reset failed" in captured.out
-        assert "Git pull failed" not in captured.out
-
-    def test_the_human_remedy_names_the_bench_on_a_multi_bench_instance(
-        self, bench_like, monkeypatch, capsys
-    ):
-        # The human frontend resolves the bench itself and hands the core only the
-        # path; the remedy must still carry the --bench that clears THAT bench.
-        monkeypatch.setattr(
-            core_update.resolvers,
-            "cached_benches",
-            lambda _p: [
-                {"path": "/workspace/other-bench", "index": 0, "label": None},
-                {"path": BENCH, "index": 1, "label": None},
-            ],
-        )
-        bench_like.fail_on = ["bench update --reset"]
+    def test_the_human_summary_names_the_stage_the_site_and_the_bench_state(self, wired, capsys):
+        wired.fail_on = ["migrate"]
 
         with pytest.raises(typer.Exit) as exc:
             update_mod.run_app_update("proj", ["frappe"], bench_path=BENCH, yes=True)
 
         assert exc.value.exit_code == 1
-        err = " ".join(capsys.readouterr().err.split())
-        assert (
-            "cwcli run proj --bench 1 set-config --global --parse maintenance_mode 0 && "
-            "cwcli run proj --bench 1 set-config --global --parse pause_scheduler 0"
-        ) in err
+        out = " ".join(capsys.readouterr().out.split())
+        assert "a.localhost: Migration failed" in out
+        assert "Bench state after this run:" in out
+        assert "not migrated: a.localhost (migration failed)" in out
+        assert "maintenance mode: cleared on every site cwcli touched" in out
+        assert "Git pull failed" not in out and "bench update --reset" not in out
+
+    def test_a_failed_core_reset_is_named_as_a_reset_not_a_pull(self, wired, capsys):
+        wired.fail_on = ["git reset --hard"]
+
+        with pytest.raises(typer.Exit):
+            update_mod.run_app_update("proj", ["frappe"], bench_path=BENCH, yes=True)
+
+        out = capsys.readouterr().out
+        assert "frappe: reset to its remote branch failed" in out
+        assert "Git pull failed" not in out
 
 
 # ------------------------------------------------------------- the frappe preflight
@@ -471,7 +398,7 @@ def preflight_finds(monkeypatch):
                 update_preflight.PreflightFinding(
                     severity=severity,
                     code=code,
-                    app="localbranch",
+                    app="frappe",
                     site=None,
                     message="branch 'feature-x' does not exist on remote 'upstream'",
                     remedy="cwcli apps checkout proj localbranch <published-branch>",
@@ -503,11 +430,11 @@ class TestPreflightOnTheStructuredSurfaces:
         assert exc.value.exit_code == 1  # a precondition failure, not a usage error
         out = capsys.readouterr().out
         assert "preflight[1]{severity,code,app,site,message,remedy}:" in out
-        assert "blocker,git.branch_not_on_remote,localbranch,null," in out
+        assert "blocker,git.branch_not_on_remote,frappe,null," in out
         assert "preflight_blocked: true" in out
         assert "ok: false" in out
         assert out.count("project: proj") == 1  # one document
-        assert not any("bench update --reset" in c for c in wired.calls)
+        assert not any("git reset --hard" in c for c in wired.calls)
 
     def test_axi_clean_twin_runs_the_reset_and_exits_zero(self, wired, preflight_finds, capsys):
         calls = preflight_finds()
@@ -520,7 +447,7 @@ class TestPreflightOnTheStructuredSurfaces:
         assert "preflight[0]" in out and "preflight_blocked: false" in out
         assert "Updating DocType" not in out  # bench's output still never reaches stdout
         assert calls == [("proj", False)]
-        assert any("bench update --reset" in c for c in wired.calls)
+        assert any("git reset --hard" in c for c in wired.calls)
 
     def test_axi_no_preflight_skips_it_and_runs_bench(self, wired, preflight_finds, capsys):
         calls = preflight_finds(_BLOCKER)
@@ -530,7 +457,7 @@ class TestPreflightOnTheStructuredSurfaces:
 
         assert exc.value.exit_code == 0
         assert calls == [("proj", True)]  # only the data-loss guard's local tier
-        assert any("bench update --reset" in c for c in wired.calls)
+        assert any("git reset --hard" in c for c in wired.calls)
 
     def test_human_json_blocked_carries_the_findings_and_exits_one(
         self, wired, preflight_finds, capsys
@@ -544,7 +471,7 @@ class TestPreflightOnTheStructuredSurfaces:
         doc = json.loads(capsys.readouterr().out)  # still exactly one document
         assert doc["preflight_blocked"] is True
         assert doc["data_loss_refused"] is True  # both reasons, reported apart
-        assert doc["data_loss_apps"] == ["localbranch"]
+        assert doc["data_loss_apps"] == ["frappe"]
         assert [f["code"] for f in doc["preflight"]] == [
             "git.branch_not_on_remote",
             "git.uncommitted",

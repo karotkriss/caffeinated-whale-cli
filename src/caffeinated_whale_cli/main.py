@@ -4,21 +4,28 @@ import signal
 import click
 import typer
 
+from .commands import admin as admin_cmd
 from .commands import apps as apps_cmd
 from .commands import axi as axi_cmd
+from .commands import backups as backups_cmd
 from .commands import config as config_cmd
+from .commands import db_access as db_access_cmd
 from .commands import list as list_cmd
 from .commands import restart as restart_cmd
 from .commands import rm as rm_cmd
+from .commands import schedule as schedule_cmd
 from .commands import setup as setup_cmd
 from .commands import start as start_cmd
 from .commands import stop as stop_cmd
 from .commands.backup import backup as _backup_cmd
+from .commands.dev_mode import dev_mode as _dev_mode_cmd
 from .commands.doctor import doctor as _doctor_cmd
 from .commands.init import init as _init_cmd
 from .commands.inspect import inspect as inspect_cmd_func
 from .commands.label import label as _label_cmd
 from .commands.logs import logs as _logs_cmd
+from .commands.new_bench import new_bench as _new_bench_cmd
+from .commands.new_site import new_site as _new_site_cmd
 from .commands.open import open_bench as _open_cmd
 from .commands.restore import restore as _restore_cmd
 from .commands.rm_bench import rm_bench as _rm_bench_cmd
@@ -130,8 +137,15 @@ def main(
 app.command("init")(_init_cmd)
 app.command("inspect")(inspect_cmd_func)
 app.command("label")(_label_cmd)
+app.command("dev-mode")(_dev_mode_cmd)
+app.command("new-site")(_new_site_cmd)
+app.command("new-bench")(_new_bench_cmd)
 
 app.add_typer(list_cmd.app, name="ls")
+app.add_typer(backups_cmd.app, name="backups")
+app.add_typer(db_access_cmd.app, name="db-access")
+app.add_typer(admin_cmd.app, name="admin")
+app.add_typer(schedule_cmd.app, name="schedule")
 # `list`/`instances` are the natural guesses for `ls`; hidden so `--help` still
 # advertises one canonical name, but registered so the guess just works (#231).
 app.add_typer(list_cmd.app, name="list", hidden=True)

@@ -26,6 +26,7 @@ from rich.status import Status as RichStatus
 from rich.table import Table
 
 from ..core import update as core_update
+from ..core import update as core_update_mod
 from ..core import update_preflight
 from ..core.envelope import Status
 from ..core.errors import CwcliError
@@ -48,13 +49,13 @@ _PHASES = {
     "preflight": {
         "header": (
             "[bold green]→[/bold green] Preflight: checking apps, remotes and sites "
-            "before 'bench update --reset'"
+            "before the core update"
         ),
         "spinner": "Preflight: checking apps, remotes and sites...",
     },
     "local_work": {
         "header": (
-            "[bold green]→[/bold green] Checking apps for local work 'bench update --reset' "
+            "[bold green]→[/bold green] Checking the core apps for local work the reset "
             "would discard"
         ),
         "spinner": "Checking apps for local work...",
@@ -65,11 +66,22 @@ _PHASES = {
         "ok": "[bold green]✓[/bold green] Successfully updated '{item}'",
         "failed": "[bold red]✗[/bold red] Failed to update app '{item}'",
     },
-    "frappe_reset": {
-        "banner": "[bold cyan]Updating the frappe framework with 'bench update --reset'[/bold cyan]\n",
-        "spinner": "Running bench update --reset...",
-        "ok": "[bold green]✓[/bold green] Frappe framework updated",
-        "failed": "[bold red]✗[/bold red] 'bench update --reset' failed",
+    "unlock_all": {
+        "spinner": "Clearing stale locks on every site...",
+        "ok": "[bold green]✓[/bold green] Stale locks: {message}",
+        "failed": "[bold red]✗[/bold red] Could not clear every site's locks",
+    },
+    "reset": {
+        "header": "[bold green]→[/bold green] Resetting [cyan]{item}[/cyan] to its remote branch",
+        "spinner": "Resetting {item} to its remote branch ({index}/{total})",
+        "ok": "[bold green]✓[/bold green] '{item}' is at its remote branch",
+        "failed": "[bold red]✗[/bold red] Failed to reset '{item}' to its remote branch",
+    },
+    "requirements": {
+        "header": "[bold green]→[/bold green] Reinstalling the bench's requirements",
+        "spinner": "Reinstalling requirements (bench setup requirements)...",
+        "ok": "[bold green]✓[/bold green] Requirements reinstalled",
+        "failed": "[bold red]✗[/bold red] bench setup requirements failed",
     },
     "force_reset": {
         "header": (
@@ -237,7 +249,7 @@ class _Renderer:
     def _on_output(self, event) -> None:
         # Capture the tail of each app's pull output regardless of verbosity, so the
         # summary can surface git's real error on a failed pull.
-        if event.phase == "pull" and event.item:
+        if event.phase in ("pull", "reset", "requirements", "migrate") and event.item:
             self._pull_tails[event.item] = (self._pull_tails.get(event.item, "") + event.text)[
                 -_PULL_TAIL_CHARS:
             ]
@@ -289,26 +301,27 @@ class _Renderer:
             return
         if line := spec.get("ok"):
             # The noisy per-item success lines are verbose-only, exactly as before;
-            # the quiet run says nothing and lets the summary speak.
+            # the quiet run says nothing and lets the summary speak. The unlock step
+            # always prints what it cleared (captain 2026-10-28: the log lists it).
             if self.verbose or event.phase in (
-                "frappe_reset",
+                "unlock_all",
                 "clear_cache",
                 "clear_website_cache",
                 "clear_locks",
             ):
-                console.print(line.format(item=event.item))
+                console.print(line.format(item=event.item, message=event.message or ""))
 
 
 # Severity -> (group heading, row marker), in the order the groups print.
 _PREFLIGHT_GROUPS = (
     (
         update_preflight.BLOCKER,
-        "Blocking - bench update --reset would fail:",
+        "Blocking - the core update would fail:",
         "[bold red]✗[/bold red]",
     ),
     (
         update_preflight.DATA_LOSS,
-        "Data loss - bench update --reset discards this local work:",
+        "Data loss - the core reset discards this local work:",
         "[bold yellow]![/bold yellow]",
     ),
     (update_preflight.UNVERIFIED, "Could not verify:", "[yellow]?[/yellow]"),
@@ -378,7 +391,7 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
             blockers = [f for f in report.preflight if f.severity == update_preflight.BLOCKER]
             console.print(
                 f"[bold red]Refusing to start: {len(blockers)} blocking problem(s). "
-                "'bench update --reset' did not run.[/bold red]"
+                "The core update did not run.[/bold red]"
             )
             console.print(
                 "Re-run with --no-preflight to run bench anyway"
@@ -392,16 +405,14 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
             losing, unchecked = _split_local_work(report)
             parts = []
             if losing:
-                parts.append(
-                    f"'bench update --reset' would discard local work in {', '.join(losing)}"
-                )
+                parts.append(f"the core reset would discard local work in {', '.join(losing)}")
             if unchecked:
                 parts.append(
-                    "cwcli could not check for local work 'bench update --reset' would discard "
+                    "cwcli could not check for local work the core reset would discard "
                     f"in {', '.join(unchecked)}"
                 )
             what = "; ".join(parts) or (
-                "cwcli could not check for local work 'bench update --reset' would discard"
+                "cwcli could not check for local work the core reset would discard"
             )
             console.print(
                 f"[bold red]Refusing to start: {escape(what)}, so it did not run.[/bold red]"
@@ -415,15 +426,32 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
     successful_apps = len(report.apps) - len(report.failed_apps) - len(report.unknown_apps)
 
     if successful_apps > 0 and not report.aborted:
-        console.print(f"\n[bold green]✓ Successfully updated {successful_apps} app(s)[/bold green]")
+        # "Successfully" only when the run IS a success: a site the update could not
+        # migrate makes it "updated the code, but" (captain, staging16 2026-10-28).
+        site_trouble = bool(
+            report.failed_migrations
+            or report.unknown_migrations
+            or report.unreadable_sites
+            or report.failed_maintenance_enable
+            or report.failed_maintenance_disable
+        )
+        if not site_trouble:
+            console.print(
+                f"\n[bold green]✓ Successfully updated {successful_apps} app(s)[/bold green]"
+            )
+        else:
+            console.print(
+                f"\n[bold yellow]![/bold yellow] Updated the code of {successful_apps} app(s), "
+                "but the run did not complete:"
+            )
 
     # bench can fail before it reaches its git reset, so an unfinished run only MAY have
     # discarded the work - never state that loss as fact.
     reset_finished = "frappe" not in report.failed_apps + report.unknown_apps
     reset_lead = (
-        "--force let 'bench update --reset'"
+        "--force let the core reset"
         if reset_finished
-        else "'bench update --reset' did not finish, so it may have"
+        else "the core reset did not finish, so it may have"
     )
     if report.frappe_reset and report.data_loss_apps:
         # --force accepted it: bench hard-resets every app it reaches.
@@ -445,7 +473,7 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
         not f.app for f in update_preflight.local_work(report.preflight)
     ):
         console.print(
-            f"[bold yellow]![/bold yellow] {reset_lead} reset every app "
+            f"[bold yellow]![/bold yellow] {reset_lead} reset the core apps "
             "although cwcli could not check any app's local work"
         )
 
@@ -495,7 +523,15 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
     if report.failed_apps:
         console.print(f"[bold red]✗ Failed to update {len(report.failed_apps)} app(s):[/bold red]")
         for app in report.failed_apps:
-            what = "bench update --reset failed" if report.frappe_reset else "Git pull failed"
+            what = (
+                "reset to its remote branch failed"
+                if report.frappe_reset and app in core_update_mod.CORE_APPS
+                else (
+                    "requirements could not be reinstalled"
+                    if report.frappe_reset
+                    else "Git pull failed"
+                )
+            )
             console.print(f"  • {app}: {what}")
             # Fold in git's own error (network/auth/dubious-ownership/conflict) so
             # the default (non-verbose) output is actionable - not just "Git pull
@@ -520,6 +556,20 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
         )
         for site in report.failed_migrations:
             console.print(f"  • {site}: Migration failed")
+            # The migrate's own last lines (the failing patch, fixture or lock) - the
+            # reason lives nowhere else (captain, staging16 2026-10-28: the report
+            # named the wrong stage).
+            tail = (pull_tails or {}).get(site, "").strip()
+            for text_line in tail.splitlines()[-4:]:
+                console.print("      " + text_line, markup=False, highlight=False, style="dim")
+    if report.unreadable_sites:
+        console.print(
+            f"[bold red]✗ {len(report.unreadable_sites)} site(s) could not be opened, so "
+            "they were not migrated:[/bold red]"
+        )
+        for site in report.unreadable_sites:
+            console.print(f"  • {site}: the warning above names the cause")
+    _report_bench_state(report)
 
     if report.failed_builds:
         console.print(
@@ -573,6 +623,48 @@ def _report_summary(report: UpdateReport, pull_tails: dict[str, str] | None = No
             )
 
 
+def _report_bench_state(report: UpdateReport) -> None:
+    """What the bench was left in when any site did not migrate: which sites did,
+    which did not and why, and the maintenance state - never implied."""
+    not_done = (
+        set(report.failed_migrations)
+        | set(report.unknown_migrations)
+        | set(report.failed_maintenance_enable)
+        | set(report.unreadable_sites)
+        | (set(report.affected_sites) - set(report.migrated_sites))
+    )
+    if not not_done and not report.aborted:
+        return
+    done = [
+        s
+        for s in report.migrated_sites
+        if s not in report.failed_migrations and s not in report.unknown_migrations
+    ]
+    console.print("[bold]Bench state after this run:[/bold]")
+    console.print(f"  • migrated: {', '.join(done) if done else 'none'}")
+    why = {}
+    for s in report.failed_migrations:
+        why[s] = "migration failed"
+    for s in report.unknown_migrations:
+        why[s] = "outcome unknown, may still be running"
+    for s in report.failed_maintenance_enable:
+        why[s] = "could not enter maintenance mode"
+    for s in report.unreadable_sites:
+        why[s] = "could not be opened, so it was never migrated"
+    for s in sorted(set(report.affected_sites) - set(report.migrated_sites)):
+        why.setdefault(s, "not reached")
+    console.print(
+        "  • not migrated: "
+        + (", ".join(f"{s} ({r})" for s, r in sorted(why.items())) if why else "none")
+    )
+    stuck = report.failed_maintenance_disable
+    console.print(
+        "  • maintenance mode: "
+        + (f"still ON for {', '.join(stuck)}" if stuck else "cleared on every site cwcli touched")
+    )
+    console.print("  • scheduler: never paused bench-wide (cwcli does not run bench's own update)")
+
+
 def _report_unknown(report: UpdateReport) -> None:
     """Report every step whose outcome could not be established."""
     unknown = (
@@ -604,6 +696,7 @@ def run_app_update(
     no_recache: bool = False,
     force: bool = False,
     no_preflight: bool = False,
+    fix_branches: bool = False,
     yes: bool = False,
     sites: list[str] | None = None,
     json_output: bool = False,
@@ -662,6 +755,7 @@ def run_app_update(
             no_recache=no_recache,
             force=force,
             preflight=not no_preflight,
+            fix_branches=fix_branches,
             auto_start=yes,
             on_event=renderer,
         )
@@ -711,8 +805,13 @@ _BENCH_LEFT_DOWN_CODES = frozenset(
 )
 
 # Shared by all three surfaces (apps update, the deprecated update, axi apps update).
+FIX_BRANCHES_HELP = (
+    "Updating frappe: when an app's declared frappe-dependencies do not fit this bench "
+    "(the preflight refuses otherwise), switch that app to the matching version-N branch "
+    "first (cwcli apps checkout; a dirty tree still refuses), then re-check and update."
+)
 NO_PREFLIGHT_HELP = (
-    "Updating frappe only: skip the checks that run before 'bench update --reset' "
+    "Core updates only: skip the checks that run before the frappe/erpnext reset "
     "(app remotes and branches, sites, services, migrate locks). Use when a check is "
     "a false positive; bench then fails wherever it fails. The check for local work "
     "the reset would discard still runs; only --force passes it."
@@ -854,6 +953,7 @@ def update(
         "--no-preflight",
         help=NO_PREFLIGHT_HELP,
     ),
+    fix_branches: bool = typer.Option(False, "--fix-branches", help=FIX_BRANCHES_HELP),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Auto-start stopped containers without prompting."
     ),
@@ -862,7 +962,7 @@ def update(
     [DEPRECATED] Update apps - use 'cwcli apps update' instead.
 
     Kept as a working alias for 'cwcli apps update'. This command will:
-    1. Navigate to each app directory and run 'git pull' (or 'bench update --reset' for frappe)
+    1. Navigate to each app directory and run 'git pull' (frappe/erpnext: fetch + reset to the remote branch)
     2. Find all sites where the app is installed
     3. Enable maintenance mode for affected sites (unless --skip-maintenance is used)
     4. Run 'bench --site <site> migrate' for each site that entered maintenance mode
@@ -894,6 +994,7 @@ def update(
         no_recache=no_recache,
         force=force,
         no_preflight=no_preflight,
+        fix_branches=fix_branches,
         yes=yes,
         sites=sites,
     )

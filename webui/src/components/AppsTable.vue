@@ -1,9 +1,15 @@
 <script setup>
 import { computed } from 'vue'
-import { Badge, Button, Dropdown } from 'frappe-ui'
+import { Button, Dropdown } from 'frappe-ui'
 import { List, ListHeader, ListHeaderCell, ListRows, ListRow, ListCell } from 'frappe-ui/list'
 import { parseApp } from '../data/fleet'
+import AppIcon from './AppIcon.vue'
+import { catalogApp } from '../data/catalog'
+import { openApp } from '../data/app-panel'
 import { menuOption, dangerGroup } from '../data/dialog'
+import UpdatePill from './UpdatePill.vue'
+import { updateItem } from '../data/updates'
+import { openJob } from '../data/job-dialog'
 
 const props = defineProps({
   bench: { type: Object, required: true },
@@ -25,7 +31,7 @@ const rows = computed(() =>
 )
 const ctx = (name) => ({ project: props.project, bench: String(props.bench.index), benchName: props.bench.label, app: name })
 // Per-app menu: the plain checkout, then the reset form behind its own typed confirm.
-const menu = (name) => [menuOption('app.checkout', ctx(name)), dangerGroup(['app.checkout_reset'], ctx(name))]
+const menu = (name) => [{ group: 'Update', options: [{ label: `Update ${name}`, icon: 'lucide-package-check', onClick: () => openJob('apps-update', { ...ctx(name), args: { apps: name, sites: '' } }) }] }, menuOption('app.checkout', ctx(name)), dangerGroup(['app.checkout_reset'], ctx(name))]
 </script>
 
 <template>
@@ -38,15 +44,12 @@ const menu = (name) => [menuOption('app.checkout', ctx(name)), dangerGroup(['app
       <ListHeaderCell />
     </ListHeader>
     <ListRows :items="rows" row-key="name" v-slot="{ item }">
-      <ListRow>
-        <ListCell><span class="font-mono text-sm text-ink-gray-8">{{ item.name }}</span></ListCell>
+      <ListRow @click="openApp(catalogApp(item.name))">
+        <ListCell class="gap-2 overflow-hidden"><AppIcon :app="catalogApp(item.name)" size="sm" /><span class="truncate text-base text-ink-gray-8">{{ catalogApp(item.name).title }}</span><span class="truncate font-mono text-xs text-ink-gray-4">{{ item.name }}</span><UpdatePill :item="updateItem(project, bench.index, item.name)" compact /></ListCell>
         <ListCell><span class="tabular-nums text-sm text-ink-gray-6">{{ item.versions.join(', ') || 'unknown' }}</span></ListCell>
         <ListCell class="gap-1 overflow-hidden max-md:hidden">
           <span v-if="!item.branches.length" class="text-sm text-ink-gray-5">not installed on a site</span>
-          <Badge v-for="b in item.branches.slice(0, 2)" :key="b" size="sm" variant="outline" theme="gray">
-            <template #prefix><span class="lucide-git-branch size-3" aria-hidden="true" /></template>
-            {{ b }}
-          </Badge>
+          <span v-else class="truncate font-mono text-xs text-ink-gray-6"><span class="lucide-git-branch mr-1 inline-block size-3 align-[-2px] text-ink-gray-4" aria-hidden="true" />{{ item.branches.slice(0, 2).join(' · ') }}</span>
         </ListCell>
         <ListCell class="max-md:hidden"><span class="tabular-nums text-sm text-ink-gray-6">{{ item.installs.length }} / {{ bench.sites.length }}</span></ListCell>
         <ListCell class="justify-end">

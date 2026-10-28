@@ -5,3 +5,30 @@ html,
 body {
   height: 100%;
 }
+
+/* Dialogs stack in portal order, so a dialog or menu opened from INSIDE the
+   Settings modal (Update cwcli, Clear everything) would land behind it. The
+   Settings modal marks itself with data-settings-dialog and sits one layer
+   lower than every other dialog, menu and popover; the job cards sit above all
+   of them. */
+.dialog-scroll-container:has([data-settings-dialog]) { z-index: 40; }
+.dialog-overlay:has(+ .dialog-scroll-container [data-settings-dialog]) { z-index: 40; }
+
+/* Motion tokens (strong curves; the built-in ease-out is too weak for UI). */
+:root {
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+}
+
+/* Job cards: enter and leave through the right edge (transform + opacity only,
+   transitions so a second card a moment later retargets instead of restarting);
+   the stack closes up with a move transition. Leaving cards drop out of flow so
+   the ones below slide up instead of jumping. */
+.jobcard-enter-active { transition: transform 200ms var(--ease-out), opacity 200ms var(--ease-out); }
+.jobcard-leave-active { transition: transform 150ms var(--ease-out), opacity 150ms var(--ease-out); position: absolute; right: 0; bottom: 0; width: 100%; }
+.jobcard-move { transition: transform 200ms var(--ease-in-out); }
+.jobcard-enter-from, .jobcard-leave-to { opacity: 0; transform: translateX(16px) scale(0.97); }
+@media (prefers-reduced-motion: reduce) {
+  .jobcard-enter-from, .jobcard-leave-to { transform: none; }
+  .jobcard-move { transition: none; }
+}

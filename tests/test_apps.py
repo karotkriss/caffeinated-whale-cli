@@ -74,6 +74,8 @@ class FakeFrappeContainer:
         apps_txt=None,
     ):
         self.calls = []
+        self.workdirs = []  # the workdir of every exec, so "nothing ran in apps/x" is checkable
+        self.unlock_output = ""  # what the core update's unlock-every-site script lists
         self.available_apps = available_apps if available_apps is not None else []
         self.installed = installed or {}  # site -> [app names]
         self.fail_on = fail_on or []  # substrings that make a command fail
@@ -97,6 +99,9 @@ class FakeFrappeContainer:
         # startswith) works uniformly.
         cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
         self.calls.append(cmd_str)
+        self.workdirs.append(workdir)
+        if "for d in sites/*/locks" in cmd_str:
+            return 0, self.unlock_output
         if cmd_str.startswith("rm -rf apps/"):
             dirname = cmd_str[len("rm -rf apps/") :].strip().strip("'\"")
             if dirname in self.available_apps:
@@ -118,6 +123,8 @@ class FakeFrappeContainer:
             return 0, "9000\n"
         if cmd_str.strip() == "git remote":
             return 0, "upstream\n"
+        if cmd_str.strip() == "git rev-parse --abbrev-ref HEAD":
+            return 0, "version-16\n"
         if cmd_str.strip() == "git status --porcelain":
             return 0, self.porcelain
         if cmd_str.startswith("ls -1") and cmd_str.rstrip().endswith("apps"):
@@ -761,7 +768,7 @@ def test_checkout_fetches_and_checks_out_the_ref_and_refreshes(wired, monkeypatc
     )
     out = json.loads(capsys.readouterr().out)
     assert out["ok"] is True
-    assert [r["action"] for r in out["results"]] == ["fetch", "checkout"]
+    assert [r["action"] for r in out["results"]] == ["fetch", "checkout", "track"]
     assert "git fetch upstream -- feature/x" in container.calls
     assert "git checkout -B feature/x FETCH_HEAD" in container.calls
     assert not any("reset --hard" in c for c in container.calls)
@@ -785,7 +792,7 @@ def test_checkout_reset_adds_hard_reset(wired, monkeypatch, capsys):
         verbose=False,
     )
     out = json.loads(capsys.readouterr().out)
-    assert [r["action"] for r in out["results"]] == ["fetch", "reset", "checkout"]
+    assert [r["action"] for r in out["results"]] == ["fetch", "reset", "checkout", "track"]
     assert "git reset --hard" in container.calls
 
 
@@ -881,18 +888,21 @@ def _wire_update(monkeypatch, container):
     _wire_stopped_bench(monkeypatch)
 
 
-def test_update_frappe_runs_bench_update_reset(monkeypatch):
-    container = FakeFrappeContainer(available_apps=["frappe"])
+def test_update_frappe_resets_frappe_to_its_remote_branch_and_nothing_bench_wide(monkeypatch):
+    container = FakeFrappeContainer(available_apps=["frappe", "payments"])
     _wire_update(monkeypatch, container)
 
     update_mod.run_app_update("proj", ["frappe"], verbose=True)
 
-    assert any("bench update --reset" in c for c in container.calls)
+    assert "git reset --hard upstream/version-16" in container.calls
+    assert "git fetch upstream version-16" in container.calls
+    assert not any("bench update" in c for c in container.calls)
     assert not any("git pull" in c for c in container.calls)
+    assert not any("apps/payments" in str(wd) for wd in container.workdirs)
 
 
 class _NoisyFrappeContainer(FakeFrappeContainer):
-    """A container whose ``bench update --reset`` actually emits output.
+    """A container whose core reset actually emits output.
 
     The base fake returns "" for that command, which is exactly why the hardcoded
     ``verbose=True`` was invisible: with no bytes to stream, streaming and not
@@ -903,7 +913,7 @@ class _NoisyFrappeContainer(FakeFrappeContainer):
 
     def _run(self, cmd, workdir=None):
         cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
-        if "bench update --reset" in cmd_str:
+        if cmd_str.startswith("git reset --hard upstream/"):
             self.calls.append(cmd_str)
             return 0, self.RESET_OUTPUT
         return super()._run(cmd, workdir)
@@ -925,9 +935,9 @@ def test_update_frappe_reset_writes_no_bench_output_to_stdout_when_not_verbose(m
     out = capsys.readouterr().out
     assert "Updating apps" not in out
     assert "Migrating site" not in out
-    # The reset still ran, and the human still gets the banner.
-    assert any("bench update --reset" in c for c in container.calls)
-    assert "Frappe framework updated" in " ".join(out.split())
+    # The reset still ran, and the human still gets the summary.
+    assert "git reset --hard upstream/version-16" in container.calls
+    assert "Successfully updated" in " ".join(out.split())
 
 
 def test_update_frappe_reset_streams_bench_output_when_verbose(monkeypatch, capsys):
@@ -942,7 +952,7 @@ def test_update_frappe_reset_streams_bench_output_when_verbose(monkeypatch, caps
 
 
 def test_update_frappe_reset_failure_exits_nonzero(monkeypatch):
-    container = FakeFrappeContainer(available_apps=["frappe"], fail_on=["bench update --reset"])
+    container = FakeFrappeContainer(available_apps=["frappe"], fail_on=["git reset --hard"])
     _wire_update(monkeypatch, container)
 
     with pytest.raises(typer.Exit) as exc:
@@ -950,9 +960,9 @@ def test_update_frappe_reset_failure_exits_nonzero(monkeypatch):
     assert exc.value.exit_code == 1
 
 
-def test_update_frappe_announces_ignored_per_app_flags(monkeypatch, capsys):
-    # bench update --reset is bench-wide, so per-app/per-site flags do not apply and
-    # must be reported as ignored (not silently dropped).
+def test_update_frappe_honours_the_per_site_flags(monkeypatch, capsys):
+    # The core update runs the same per-site state machine as any app, so --site
+    # and --clear-cache apply instead of being announced as ignored.
     container = FakeFrappeContainer(available_apps=["frappe"])
     _wire_update(monkeypatch, container)
 
@@ -961,10 +971,8 @@ def test_update_frappe_announces_ignored_per_app_flags(monkeypatch, capsys):
     )
 
     err = capsys.readouterr().err.lower()
-    assert "ignoring" in err
-    assert "--clear-cache" in err
-    assert "--site" in err
-    assert any("bench update --reset" in c for c in container.calls)
+    assert "ignoring" not in err  # the flags apply (pinned on the core in test_core_update)
+    assert "git reset --hard upstream/version-16" in container.calls
 
 
 def _arm_preflight(monkeypatch, *pairs):
@@ -1038,11 +1046,11 @@ def test_update_frappe_preflight_blocker_refuses_and_names_the_fix(monkeypatch, 
     assert exc.value.exit_code == 1
     out = " ".join(capsys.readouterr().out.split())
     assert "Preflight: 3 app(s), 6 site(s) on /workspace/frappe-bench (0.4s)" in out
-    assert "Blocking - bench update --reset would fail:" in out
+    assert "Blocking - the core update would fail:" in out
     assert "localbranch git.branch_not_on_remote message" in out
     assert "fix: cwcli apps checkout proj localbranch <published-branch>" in out
     assert "Notices:" in out
-    assert "Refusing to start: 1 blocking problem(s). 'bench update --reset' did not run." in out
+    assert "Refusing to start: 1 blocking problem(s). The core update did not run." in out
     assert "Re-run with --no-preflight" in out
     assert "Update completed with errors" not in out
     assert not any("bench update --reset" in c for c in container.calls)
@@ -1072,7 +1080,7 @@ def test_update_frappe_preflight_long_rows_wrap_under_their_own_column(monkeypat
         core_update.UpdatePreflight(findings=[finding], summary="1 app(s)", blocked=True)
     )
 
-    rows = out.getvalue().split("Blocking - bench update --reset would fail:")[1]
+    rows = out.getvalue().split("Blocking - the core update would fail:")[1]
     lines = [line for line in rows.splitlines() if line.strip()]
     assert len(lines) > 2  # the message and the remedy both wrapped
     text_column = lines[0].index("remote 'upstream'")
@@ -1083,20 +1091,19 @@ def test_update_frappe_preflight_warnings_print_before_the_reset_runs(monkeypatc
     # A data-loss warning printed after bench has reset the app warns about nothing.
     container = FakeFrappeContainer(available_apps=["frappe"])
     _wire_update(monkeypatch, container)
-    _arm_preflight(monkeypatch, ("data_loss", "git.uncommitted", "dirty"))
+    _arm_preflight(monkeypatch, ("data_loss", "git.uncommitted", "frappe"))
 
     update_mod.run_app_update("proj", ["frappe"], verbose=False, force=True)
 
     captured = capsys.readouterr()
     out = " ".join(captured.out.split())
-    assert "Data loss - bench update --reset discards this local work:" in out
-    assert out.index("git.uncommitted message") < out.index("Frappe framework updated")
+    assert "Data loss - the core reset discards this local work:" in out
+    assert out.index("git.uncommitted message") < out.index("Successfully updated")
     # The forced loss is announced before the reset and named again after it.
-    assert (
-        "--force: 'bench update --reset' will discard any uncommitted or unpushed work in dirty"
-        in (" ".join(captured.err.split()))
+    assert "--force: the core reset will discard any uncommitted or unpushed work in frappe" in (
+        " ".join(captured.err.split())
     )
-    assert "--force let 'bench update --reset' discard local work in 1 app(s): dirty" in out
+    assert "--force let the core reset discard local work in 1 app(s): frappe" in out
 
 
 def test_update_frappe_forced_reset_that_failed_does_not_claim_the_work_is_gone(
@@ -1104,18 +1111,18 @@ def test_update_frappe_forced_reset_that_failed_does_not_claim_the_work_is_gone(
 ):
     # bench can die before it reaches its git reset, so a failed run may have left
     # the work in place: the summary must not state the discard as fact.
-    container = FakeFrappeContainer(available_apps=["frappe"], fail_on=["bench update --reset"])
+    container = FakeFrappeContainer(available_apps=["frappe"], fail_on=["git reset --hard"])
     _wire_update(monkeypatch, container)
-    _arm_preflight(monkeypatch, ("data_loss", "git.uncommitted", "dirty"))
+    _arm_preflight(monkeypatch, ("data_loss", "git.uncommitted", "frappe"))
 
     with pytest.raises(typer.Exit):
         update_mod.run_app_update("proj", ["frappe"], verbose=False, force=True)
 
     out = " ".join(capsys.readouterr().out.split())
-    assert "--force let 'bench update --reset' discard local work" not in out
+    assert "--force let the core reset discard local work" not in out
     assert (
-        "'bench update --reset' did not finish, so it may have discarded local work in "
-        "1 app(s): dirty" in out
+        "the core reset did not finish, so it may have discarded local work in "
+        "1 app(s): frappe" in out
     )
 
 
@@ -1138,7 +1145,7 @@ def test_update_frappe_local_work_refuses_without_force_in_both_modes(
     # script, and --force is the one way through on either.
     container = FakeFrappeContainer(available_apps=["frappe"])
     _wire_update(monkeypatch, container)
-    _arm_preflight(monkeypatch, ("data_loss", "git.unpushed", "dirty"))
+    _arm_preflight(monkeypatch, ("data_loss", "git.unpushed", "frappe"))
     monkeypatch.setattr("sys.stdin", types.SimpleNamespace(isatty=lambda: tty))
     for prompt in ("confirm", "prompt"):
         monkeypatch.setattr(typer, prompt, lambda *a, **k: pytest.fail("prompted"))
@@ -1150,24 +1157,24 @@ def test_update_frappe_local_work_refuses_without_force_in_both_modes(
     out = " ".join(capsys.readouterr().out.split())
     assert ("Local work check:" if no_preflight else "Preflight:") in out
     assert (
-        "Refusing to start: 'bench update --reset' would discard local work in dirty, "
+        "Refusing to start: the core reset would discard local work in frappe, "
         "so it did not run."
     ) in out
     assert "re-run with --force to discard it; --no-preflight does not skip this check" in out
     assert "Re-run with --no-preflight" not in out  # it would not help
-    assert not any("bench update --reset" in c for c in container.calls)
+    assert not any("git reset --hard" in c for c in container.calls)
 
     update_mod.run_app_update(
         "proj", ["frappe"], verbose=False, no_preflight=no_preflight, force=True
     )
 
-    assert any("bench update --reset" in c for c in container.calls)
+    assert any("git reset --hard" in c for c in container.calls)
 
 
 def test_update_frappe_unchecked_local_work_refuses_without_claiming_a_loss(monkeypatch, capsys):
     container = FakeFrappeContainer(available_apps=["frappe"])
     _wire_update(monkeypatch, container)
-    _arm_preflight(monkeypatch, ("unverified", "git.local_work_unverified", "dirty"))
+    _arm_preflight(monkeypatch, ("unverified", "git.local_work_unverified", "frappe"))
 
     with pytest.raises(typer.Exit) as exc:
         update_mod.run_app_update("proj", ["frappe"], verbose=False)
@@ -1175,37 +1182,37 @@ def test_update_frappe_unchecked_local_work_refuses_without_claiming_a_loss(monk
     assert exc.value.exit_code == 1
     out = " ".join(capsys.readouterr().out.split())
     assert (
-        "Refusing to start: cwcli could not check for local work 'bench update --reset' "
-        "would discard in dirty, so it did not run."
+        "Refusing to start: cwcli could not check for local work the core reset "
+        "would discard in frappe, so it did not run."
     ) in out
 
 
 def test_update_frappe_mixed_local_work_names_unchecked_apps_apart(monkeypatch, capsys):
-    container = FakeFrappeContainer(available_apps=["frappe"])
+    container = FakeFrappeContainer(available_apps=["frappe", "erpnext"])
     _wire_update(monkeypatch, container)
     _arm_preflight(
         monkeypatch,
-        ("data_loss", "git.unpushed", "ahead"),
-        ("unverified", "git.local_work_unverified", "timedout"),
+        ("data_loss", "git.unpushed", "frappe"),
+        ("unverified", "git.local_work_unverified", "erpnext"),
     )
 
     with pytest.raises(typer.Exit):
-        update_mod.run_app_update("proj", ["frappe"], verbose=False)
+        update_mod.run_app_update("proj", ["frappe", "erpnext"], verbose=False)
 
     out = " ".join(capsys.readouterr().out.split())
     assert (
-        "Refusing to start: 'bench update --reset' would discard local work in ahead; "
-        "cwcli could not check for local work 'bench update --reset' would discard in "
-        "timedout, so it did not run."
+        "Refusing to start: the core reset would discard local work in frappe; "
+        "cwcli could not check for local work the core reset would discard in "
+        "erpnext, so it did not run."
     ) in out
 
-    update_mod.run_app_update("proj", ["frappe"], verbose=False, force=True)
+    update_mod.run_app_update("proj", ["frappe", "erpnext"], verbose=False, force=True)
 
     out = " ".join(capsys.readouterr().out.split())
-    assert "--force let 'bench update --reset' discard local work in 1 app(s): ahead" in out
+    assert "--force let the core reset discard local work in 1 app(s): frappe" in out
     assert (
-        "--force let 'bench update --reset' reset 1 app(s) whose local work could not be "
-        "checked: timedout"
+        "--force let the core reset reset 1 app(s) whose local work could not be "
+        "checked: erpnext"
     ) in out
 
 
@@ -1218,7 +1225,7 @@ def test_update_frappe_forced_past_checks_that_never_ran_says_so(monkeypatch, ca
 
     out = " ".join(capsys.readouterr().out.split())
     assert (
-        "--force let 'bench update --reset' reset every app although cwcli could not check "
+        "--force let the core reset reset the core apps although cwcli could not check "
         "any app's local work"
     ) in out
 
@@ -1268,7 +1275,7 @@ def test_no_preflight_reaches_the_core_from_both_human_spellings(monkeypatch, su
 
     # Only the data-loss guard's local tier ran, and a local blocker does not stop it.
     assert calls == [("proj", True)]
-    assert any("bench update --reset" in c for c in container.calls)
+    assert any("git reset --hard" in c for c in container.calls)
 
 
 @pytest.mark.parametrize("surface", ["apps_update", "deprecated_update"])

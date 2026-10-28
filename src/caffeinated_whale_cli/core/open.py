@@ -30,13 +30,12 @@ with no desktop.
 
 from __future__ import annotations
 
-import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from . import docker as core_docker
+from . import editors, resolvers
 from . import inspect as core_inspect
-from . import resolvers
 from .envelope import Choice, Message, Result, Status
 from .errors import CwcliError, ErrorKind
 
@@ -123,7 +122,7 @@ def _resolve_editor(editor: str | None) -> Result[str]:
                 f"Unknown editor '{editor}'. Use one of: code, code-insiders, cursor, docker.",
             )
         name, url = _EDITOR_INSTALL[editor]
-        if shutil.which(editor) is None:
+        if editors.find_editor(editor) is None:
             raise CwcliError(
                 ErrorKind.NOT_FOUND,
                 "editor.not_installed",
@@ -132,7 +131,7 @@ def _resolve_editor(editor: str | None) -> Result[str]:
             )
         return Result(status=Status.OK, data=editor)
 
-    installed = [e for e in ("code", "code-insiders", "cursor") if shutil.which(e)]
+    installed = editors.installed_editors()
     if not installed:
         return Result(status=Status.OK, data="docker")
 

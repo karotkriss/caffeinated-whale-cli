@@ -1443,6 +1443,28 @@ def init_bench(
         )
         emit(InitStepEnd(phase="new_site"))
         site_created = True
+        # Frappe grants the new db user on the address it connected from, so the
+        # user dies with the container's IP; widen it to '%' (steering 041).
+        from . import db_access
+
+        widened, widen_warning = db_access.widen_after_create(
+            frappe_container,
+            bench_full_path,
+            project=project_name,
+            site=site_name,
+            root_password=db_root_password,
+        )
+        if widened:
+            emit(
+                InitStepStart(
+                    phase="db_access",
+                    item=site_name,
+                    message=f"{site_name}: database user now connects from any host",
+                )
+            )
+            emit(InitStepEnd(phase="db_access"))
+        if widen_warning is not None:
+            warnings.append(widen_warning)
 
     # Final configuration: enable developer mode and server script support.
     emit(

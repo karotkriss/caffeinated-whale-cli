@@ -405,6 +405,19 @@ def drop_backed_up_site(
         if _copy_out_archived_site(container, source, site_tar):
             archived_host_path = str(drop_dir)
             emit(DropSiteNotice(text=f"Archived dropped site to {drop_dir}"))
+            # The site is gone and its backup proven twice; keep that backup where every
+            # other set lives (captain decision 1, 2026-10-27). Fail-soft, never a refusal.
+            from . import backup_store as _store
+
+            adopted = _store.adopt_dir(
+                project_name,
+                site,
+                drop_dir / "backups",
+                bench_path=bench_path,
+                reason="before-removal",
+            )
+            if adopted is not None:
+                emit(DropSiteNotice(text=f"Backup kept in the store as {adopted.key}"))
             archive_pruned = _prune_archived_site(container, source)
             if not archive_pruned:
                 warnings.append(

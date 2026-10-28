@@ -1124,6 +1124,7 @@ def test_checkout_fetches_then_checks_out_the_ref_in_the_app_dir(monkeypatch, co
     assert [(r.action, r.ok) for r in result.data.results] == [
         ("fetch", True),
         ("checkout", True),
+        ("track", True),
     ]
     # The fetch is authed through the bridge, and both git ops run in apps/<app>.
     assert entered["count"] == 1
@@ -1317,7 +1318,7 @@ def test_checkout_reset_adds_a_hard_reset_step(monkeypatch, container):
     result = core_apps.checkout_app("proj", "payments", "v1.2.0", reset=True)
 
     assert result.data.ok is True
-    assert [r.action for r in result.data.results] == ["fetch", "reset", "checkout"]
+    assert [r.action for r in result.data.results] == ["fetch", "reset", "checkout", "track"]
     assert "git reset --hard" in container.calls
 
 
@@ -1413,7 +1414,7 @@ class TestCheckoutRefusesADirtyTree:
         result = core_apps.checkout_app("proj", "payments", "feature/x", reset=True)
 
         assert result.data.ok is True
-        assert [r.action for r in result.data.results] == ["fetch", "reset", "checkout"]
+        assert [r.action for r in result.data.results] == ["fetch", "reset", "checkout", "track"]
         assert not any(c.startswith("git status") for c in container.calls)
 
     def test_reset_discards_a_local_edit_the_target_ref_also_changes(
@@ -1429,7 +1430,9 @@ class TestCheckoutRefusesADirtyTree:
 
         origin, app = tmp_path / "origin", tmp_path / "app"
         git(tmp_path, "init", "-q", "-b", "main", str(origin))
-        for k, v in {"user.email": "t@t", "user.name": "t"}.items():
+        # Hermetic commits: the developer's global config may sign commits (gpg/ssh),
+        # which waits on an agent and once made this test take 20 s instead of 1.
+        for k, v in {"user.email": "t@t", "user.name": "t", "commit.gpgsign": "false"}.items():
             git(origin, "config", k, v)
         (origin / "hooks.py").write_text("v = 1\n")
         git(origin, "add", ".")

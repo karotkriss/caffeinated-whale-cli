@@ -473,6 +473,7 @@ def test_apps_update_uses_the_cli_preflight_and_records_its_findings(fake_spawn,
         return Result(status=Status.OK, data={"ok": True})
 
     monkeypatch.setattr(jobs.core_update, "update", update)
+    monkeypatch.setattr(jobs, "_safety_backups", lambda *a, **k: None)  # pinned on its own below
     recorder = jobs._Recorder(record["id"], [])
 
     result = jobs._dispatch(
@@ -762,7 +763,7 @@ def test_rm_refuses_a_stopped_project_before_the_core_when_volumes_would_go(monk
     assert calls[0]["no_backup"] is False
 
 
-def test_rm_runs_the_core_with_consent_and_can_never_skip_the_backup(monkeypatch):
+def test_rm_runs_the_core_with_consent_and_keeps_the_backup_unless_force_is_explicit(monkeypatch):
     calls = []
     monkeypatch.setattr(jobs.rm_cmd, "_project_run_state", lambda project: "running")
     monkeypatch.setattr(
@@ -772,10 +773,15 @@ def test_rm_runs_the_core_with_consent_and_can_never_skip_the_backup(monkeypatch
     )
 
     emit = lambda e: None  # noqa: E731 - identity matters below
-    result = jobs._dispatch("rm", {"project": "p"}, {"no_backup": True}, True, {}, emit)
+    result = jobs._dispatch("rm", {"project": "p"}, {}, True, {}, emit)
 
+    # The default keeps the verified backup gate.
     assert calls == [{"remove_volumes": True, "no_backup": False, "on_event": emit}]
     assert jobs._result_ok(result) is True
+    # The page's Force checkbox (captain's rule 2026-10-27, behind a typed confirmation and
+    # a red warning) is the one way past it, and only when sent explicitly.
+    jobs._dispatch("rm", {"project": "p"}, {"no_backup": True}, True, {}, emit)
+    assert calls[-1]["no_backup"] is True
 
 
 def test_a_gate_blocked_removal_is_a_failed_job_naming_the_terminal_escape_hatch(monkeypatch):
@@ -1011,3 +1017,67 @@ def test_a_failed_report_records_no_cause_from_earlier_output(fake_spawn, monkey
     monkeypatch.setattr(jobs, "_dispatch", dispatch_with(True))
     assert jobs.run_job(succeeded["id"]) == 0
     assert jobs.read_job(succeeded["id"])["cause"] is None
+
+
+def test_a_core_update_takes_the_safety_backup_first_and_a_failed_one_stops_it(
+    fake_spawn, monkeypatch
+):
+    """Captain decision 5 (2026-10-27): the ONE automatic backup is the one before a core
+    update, taken by cwcli's store before `core.update` runs; a set that does not verify
+    stops the update before anything moves. A non-core update takes none."""
+    order = []
+    monkeypatch.setattr(
+        jobs,
+        "_bench_sites_from_cache",
+        lambda project, bench: ("/workspace/frappe-bench", ["a.localhost", "b.localhost"]),
+    )
+
+    class _Set:
+        def __init__(self, site, ok):
+            self.key, self.verified, self.checks, self.site = f"p/{site}/x", ok, [], site
+
+    def capture(project, *, site, bench, with_files, reason, on_event):
+        order.append(("capture", site, reason))
+        return Result(status=Status.OK, data=_Set(site, ok=True))
+
+    def update(project, apps, **kwargs):
+        order.append(("update", tuple(apps)))
+        return Result(status=Status.OK, data={"ok": True})
+
+    monkeypatch.setattr(jobs.core_backup_store, "capture", capture)
+    monkeypatch.setattr(jobs.core_update, "update", update)
+    record = jobs.create_job("apps-update", {"project": "p1", "bench": "0"}, {"apps": ["frappe"]})
+    jobs._dispatch(
+        "apps-update", record["target"], record["args"], True, {}, jobs._Recorder(record["id"], [])
+    )
+    assert order == [
+        ("capture", "a.localhost", "before-core-update"),
+        ("capture", "b.localhost", "before-core-update"),
+        ("update", ("frappe",)),
+    ]
+
+    order.clear()
+    record = jobs.create_job("apps-update", {"project": "p2", "bench": "0"}, {"apps": ["hrms"]})
+    jobs._dispatch(
+        "apps-update", record["target"], record["args"], True, {}, jobs._Recorder(record["id"], [])
+    )
+    assert order == [("update", ("hrms",))]
+
+    order.clear()
+    monkeypatch.setattr(
+        jobs.core_backup_store,
+        "capture",
+        lambda project, **k: Result(status=Status.WARNING, data=_Set(k["site"], ok=False)),
+    )
+    record = jobs.create_job("apps-update", {"project": "p3", "bench": "0"}, {"apps": ["erpnext"]})
+    with pytest.raises(CwcliError) as exc:
+        jobs._dispatch(
+            "apps-update",
+            record["target"],
+            record["args"],
+            True,
+            {},
+            jobs._Recorder(record["id"], []),
+        )
+    assert exc.value.code == "backups.safety_failed"
+    assert order == []  # the update never ran

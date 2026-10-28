@@ -1232,20 +1232,18 @@ A bench that was not running is left alone.
 
 **`apps uninstall`** - removes each app from the target site(s) (`bench --site <site> uninstall-app`). This destroys site data, so it is gated by `-y`/`--yes` or an interactive confirmation (a non-TTY without `--yes` refuses). It uses the same resynchronise-and-verify step as install, so no supervised process - web, scheduler, or worker - can keep running against the code and tables of an app that is gone.
 
-**`apps update`** - the canonical app-update path (what the deprecated `cwcli update` now delegates to). Updating the `frappe` framework app runs `bench update --reset`; other apps use the normal git-pull + migrate flow. After the migrations finish and maintenance mode is lifted, it runs the same **resynchronise** step as `apps install`, so a `git pull` cannot leave the bench's web, scheduler, and workers on the code that was there before it; every migrated site must answer Frappe before the run reports success. `--site` narrows which affected sites are migrated; if none of the named site(s) actually have the app installed, the command refuses and exits non-zero rather than silently migrating nothing (a genuine typo/mismatch guard - a bench with no affected sites at all still exits zero). It accepts the same migration flags as the [deprecated `update` command](#update---update-apps-and-migrate) (`--clear-cache`, `--clear-website-cache`, `--build`, `--skip-maintenance`, `--no-recache`). When updating the `frappe` framework app the flow runs the bench-wide `bench update --reset`, so `--site` and those per-app migration flags do not apply and are reported as ignored.
-`bench update` puts the whole bench into maintenance mode and pauses its scheduler (`maintenance_mode` and `pause_scheduler` in `sites/common_site_config.json`) before it backs up the first site, and clears them only when everything succeeds.
-So when the reset fails, cwcli reads them back and reports what was left: the report's `bench_left_in_maintenance` is `true`, and a warning names the commands that clear them (`cwcli run <project> set-config --global --parse maintenance_mode 0`, and the same for `pause_scheduler`).
-`bench_left_in_maintenance` is `null` when cwcli cannot tell: the reset failed and that file could not be read, or the connection to the reset was lost, so it may still be running with both flags set legitimately; the lost-connection warning names the same commands to run if the bench is still in maintenance once it has stopped.
-cwcli does not clear them itself, because a reset that failed part-way can leave some apps on new code against databases that were never migrated; bring the sites back once the bench is fixed.
+**`apps update`** - the canonical app-update path (what the deprecated `cwcli update` now delegates to). Updating the `frappe` framework app (or `erpnext`) is a **core update**: that app alone is reset to its remote branch (`git fetch` then `git reset --hard @{u}`, never bench's bench-wide `bench update --reset`, which hard-reset every app on the bench), every site's stale `locks` folder is cleared first and listed, the bench's requirements are reinstalled, then every affected site migrates under the same per-site maintenance lifecycle as any other app; other apps use the normal git-pull + migrate flow. After the migrations finish and maintenance mode is lifted, it runs the same **resynchronise** step as `apps install`, so a `git pull` cannot leave the bench's web, scheduler, and workers on the code that was there before it; every migrated site must answer Frappe before the run reports success. `--site` narrows which affected sites are migrated; if none of the named site(s) actually have the app installed, the command refuses and exits non-zero rather than silently migrating nothing (a genuine typo/mismatch guard - a bench with no affected sites at all still exits zero). It accepts the same migration flags as the [deprecated `update` command](#update---update-apps-and-migrate) (`--clear-cache`, `--clear-website-cache`, `--build`, `--skip-maintenance`, `--no-recache`). When updating the `frappe` framework app the flow runs the bench-wide `bench update --reset`, so `--site` and those per-app migration flags do not apply and are reported as ignored.
+Because the core update never runs bench's own bench-wide update, nothing is set in `sites/common_site_config.json`: a site that fails to migrate is named as such (`failed_migrations`), its maintenance mode is cleared by cwcli's `finally`, and the summary states the bench state - which sites migrated, which did not and why, and whether any site is still in maintenance.
 `--force` is an opt-in, **destructive** recovery for a conflicting update (updating `frappe` gives it a different meaning, described under [the data-loss guard](#apps---manage-frappe-apps) below): if an app's `git pull` hits a **conflict** (local changes that would be overwritten, or a conflicted merge), it hard-resets that app to its remote tracking branch (`git fetch` then `git reset --hard @{u}`), discarding the local changes, so the update completes instead of failing. It fires **only on a conflict** - a clean update is untouched, and a pull that failed for another reason (network, auth) is left as the failure it is rather than having work discarded. Without `--force`, a conflict fails safely and discards nothing. Every force-reset app is reported (`force_reset_apps`) and a warning is printed at the reset. `--force` does not delete untracked files (it never runs `git clean`), matching `apps checkout --reset`. `--force` also clears a git **"dubious ownership"** refusal before pulling: when an app's repository is owned by a different user than the container runs as - common on a shared-mode or migrated instance whose app sources are owned by a pre-migration uid - it re-owns the repository to the container user so the pull proceeds, rather than surfacing a raw git ownership error. A `cwcli start`/`cwcli restart` self-heals the same ownership so a plain `apps update` works too; `--force` fixes it inline without a restart.
-**The `frappe` preflight.** `bench update --reset` backs up every site on the bench before it touches any app's git checkout, and sets `maintenance_mode` and `pause_scheduler` bench-wide before that, so a git problem in any one app used to surface only after every backup had run, leaving the whole bench in maintenance mode.
+**The `frappe` preflight.** A core update resets the core app's git checkout and reinstalls the bench's requirements before any site migrates, so a git problem (a branch the remote lacks, an unreachable remote, a detached HEAD) or a code requirement the bench cannot meet would otherwise surface mid-run.
 Updating `frappe` therefore runs a preflight first that predicts those failures in seconds, by evaluating bench's own rules against the same state bench reads.
 It reports everything it finds at once, grouped as blockers, data loss, could-not-verify and notices, each with the cwcli command that fixes it.
 Any blocker refuses the update with nothing changed and exits 1.
 Blockers are: an app on a branch its remote does not have, or one its remote's fetch refspec does not cover (a single-branch clone after `cwcli apps checkout` of another branch), an unreachable remote (bench contacts every remote unless `shallow_clone` is set), a detached HEAD, `frappe`/`erpnext` on `master` or not a git checkout, `frappe` without an `upstream` remote, a remote bench would pick by mistake, a repository git refuses for dubious ownership, a path the container user cannot write, a missing `mariadb-dump`/`gzip`/`yarn`/`node`, an unreachable database or `redis_cache`, a site that cannot be opened, a held migrate lock, a nearly full disk, an unreadable `common_site_config.json`, and `release_bench`.
 The preflight also reads the code the reset would install, from the same `git fetch` of each app's branch that bench runs, which moves only the remote-tracking branch and never the checked-out code.
 It blocks when that code needs a newer Python than the bench's environment (`requires-python`) or a newer Node than the container's (`engines.node`), since bench would fail reinstalling it after every backup and every reset, and when it is a frappe major-version upgrade, which bench stops to confirm and cwcli's run cannot answer.
-A `[tool.bench.frappe-dependencies]` the update would leave unmet is a notice, because bench only warns about it.
+A `[tool.bench.frappe-dependencies]` the bench cannot satisfy - an app on `develop` declaring `frappe >=17` on a frappe 16 bench, or one app requiring another app's older line - is a blocker, because bench only warns and the site migrate then fails: the finding names the switch (`cwcli apps checkout <project> <app> version-N`), and `--fix-branches` has cwcli perform it before the update (a dirty tree still refuses).
+A checked-out branch the remote's fetch refspec does not cover (a narrow clone switched by hand) is widened in place - `git remote set-branches --add <remote> <branch>` plus a fetch - and logged, since the reset needs `<remote>/<branch>` to exist; `cwcli apps checkout` tracks a branch the same way.
 Uncommitted changes and unpushed commits that the reset would discard are reported as data loss, and refuse the update through the data-loss guard below.
 Any other check that cannot run or times out is reported as unverified and never blocks.
 No preflight can predict a failing patch, schema sync or asset build in the new code; those still surface only in the real run.
@@ -1253,11 +1251,11 @@ No preflight can predict a failing patch, schema sync or asset build in the new 
 It does not skip the data-loss guard below.
 The findings ride the report as `preflight` (each with a stable `code`, `severity`, `app`/`site`, `message` and `remedy`) plus `preflight_blocked`, on `--json` and `cwcli axi apps update` alike.
 
-**The data-loss guard.** `bench update --reset` hard-resets every app it updates to its remote branch, so it silently discards uncommitted changes to tracked files and commits that exist on no remote, branch or tag.
+**The data-loss guard.** The core reset hard-resets the named core apps (`frappe`, `erpnext`) to their remote branch, so it silently discards their uncommitted changes to tracked files and commits that exist on no remote, branch or tag; other apps are not touched, so their local work is not at risk.
 Untracked files survive, because `git reset --hard` leaves them in place.
-Updating `frappe` therefore refuses, with nothing run, while any app holds such work, and exits 1 naming each app.
+Updating `frappe` therefore refuses, with nothing run, while a core app being reset holds such work, and exits 1 naming each app.
 An app whose local work cannot be checked refuses the same way, rather than being assumed clean.
-`--force` accepts the loss: bench runs and discards that work.
+`--force` accepts the loss: the reset runs and discards that work.
 On this path `--force` also re-owns an app repository git refuses for dubious ownership before the checks run, and it never gets past a blocker.
 The guard is a safety check, not a prediction, so `--no-preflight` does not skip it; under `--no-preflight` it runs alone, with no remote or service probe.
 A terminal gets the same refusal as a script: there is no prompt, and `--force` is the only way through.
@@ -1321,7 +1319,7 @@ cwcli apps uninstall frappe-one --app payments --yes
 
 # Update an app (or the framework) - multi-bench aware
 cwcli apps update frappe-one erpnext
-cwcli apps update frappe-one frappe        # runs 'bench update --reset'
+cwcli apps update frappe-one frappe        # core update: frappe only, locks cleared, requirements, migrate
 
 # Check a feature branch out into an already-installed app (private repo authed via the bridge)
 cwcli apps checkout frappe-one erpnext feature/new-report
@@ -1335,7 +1333,7 @@ cwcli apps checkout frappe-one erpnext feature/new-report --reset   # force a cl
 > **Deprecated:** use [`cwcli apps update`](#apps---manage-frappe-apps) instead. `cwcli update` keeps working as an alias (and now prints a deprecation notice), so existing scripts are unaffected.
 
 Updates specified Frappe apps and migrates all sites where they are installed.
-Updating the `frappe` framework app runs `bench update --reset`.
+Updating the `frappe` framework app is the core update described under [`apps update`](#apps---manage-frappe-apps).
 
 ```bash
 cwcli update [OPTIONS] PROJECT_NAME
@@ -1360,8 +1358,9 @@ cwcli update [OPTIONS] PROJECT_NAME
 | `-w`, `--clear-website-cache` | Clear website cache for all affected sites after migration |
 | `-b`, `--build` | Build assets after updating apps |
 | `--skip-maintenance` | Skip enabling maintenance mode for affected sites during update |
-| `--force` | Destructive. Updating `frappe`: run `bench update --reset` even though it discards uncommitted or unpushed work in some app (see [the data-loss guard](#apps---manage-frappe-apps)). Other apps: hard-reset an app whose `git pull` hits a conflict instead of failing. Either way, re-own app repositories git refuses for dubious ownership |
-| `--no-preflight` | Updating `frappe` only: skip the checks that run before `bench update --reset` (see [the `frappe` preflight](#apps---manage-frappe-apps)); the data-loss guard still runs |
+| `--force` | Destructive. Updating `frappe`: run the core reset even though it discards uncommitted or unpushed work in that app (see [the data-loss guard](#apps---manage-frappe-apps)). Other apps: hard-reset an app whose `git pull` hits a conflict instead of failing. Either way, re-own app repositories git refuses for dubious ownership |
+| `--fix-branches` | Updating `frappe`: switch an app whose declared frappe-dependencies do not fit this bench to the matching `version-N` branch first, instead of refusing |
+| `--no-preflight` | Updating `frappe` only: skip the checks that run before the core reset (see [the `frappe` preflight](#apps---manage-frappe-apps)); the data-loss guard still runs |
 | `-y`, `--yes` | Auto-start stopped containers without prompting |
 
 **What It Does:**
@@ -1492,6 +1491,48 @@ Removed locks folder: /workspace/frappe-bench/sites/development.localhost/locks
 ```
 
 **Note:** The `update` command automatically clears locks after completion, so manual unlocking is typically only needed for interrupted operations.
+
+---
+
+### `db-access` - Check and Repair Site Database Users
+
+Frappe grants each site's database user on the address the frappe container had when the site was created (`'<user>'@'172.21.0.5'`).
+When a restart gives the container a new address, every site answers HTTP 500 with `OperationalError 1045 (Access denied)` while nothing in the site itself changed.
+cwcli closes this three ways: every site it creates or restores gets its user widened to `'<user>'@'%'` right away, `start`/`restart` and the core update check the sites afterwards and report "database login refused for site X" instead of a bare 500, and `db-access` is the read and the one repair.
+
+```bash
+cwcli db-access check PROJECT_NAME [--bench SELECTOR] [--json]
+cwcli db-access repair PROJECT_NAME [--bench SELECTOR] [--site NAME]... --yes [--json]
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--bench`, `-b` | Bench selector (index or label) on a multi-bench instance |
+| `--site`, `-s` | `repair` only: limit the repair to these sites (default: every refused site) |
+| `--mariadb-root-password` | MariaDB root password (default: the one stored for the instance; env `CWCLI_DB_ROOT_PASSWORD`) |
+| `--yes`, `-y` | `repair` only: rename the users without asking |
+| `--json` | Machine-readable output |
+
+**Examples:**
+
+```bash
+# Which sites would be refused from the container's current address? (exit 1 if any)
+cwcli db-access check staging16
+
+# Rename each refused site's user to '%' so any container address may connect
+cwcli db-access repair staging16 --yes
+```
+
+**Output:**
+
+```
+tmpcore.localhost  _a72993d7fe8f325a@{172.99.0.9}  container 172.21.0.5  REFUSED
+```
+
+The repair is a `RENAME USER` of the host part only: the user name, password and grants are untouched, and a user already on `'%'` is left alone.
+The web UI shows the same finding on the restart or update job with a "Repair database access" button, and `cwcli axi db-access check` is the agent read.
 
 ---
 
@@ -1984,12 +2025,16 @@ cwcli ui [OPTIONS]
 | `-p`, `--port INTEGER` | Port to listen on (default: 8765) |
 | `--foreground` | Run the daemon in this terminal (Ctrl-C to stop) instead of detached |
 | `--stop` | Stop the detached daemon |
-| `--no-browser` | Print the one-time sign-in link instead of opening a browser |
+| `--no-browser` | Print the address instead of opening a browser |
 
-**How it runs:** `cwcli ui` starts the daemon detached if none is running (otherwise it reuses the live one, unless cwcli was reinstalled since that daemon started, in which case it restarts it onto the new code), then opens your browser on a **one-time sign-in link**.
+**How it runs:** `cwcli ui` starts the daemon detached if none is running (otherwise it reuses the live one, unless cwcli was reinstalled since that daemon started, in which case it restarts it onto the new code), then opens your browser on `http://127.0.0.1:8765/`.
 It also starts auto-inspect or the credential bridge when either is enabled with its boot unit but not running, and says so, or says why it could not.
-The daemon requires sign-in even on loopback: each launch gets its own random token, the browser trades a single-use code for a session cookie, and a used link is dead, so a link copied from scrollback signs nobody else in.
-Run `cwcli ui` again for a fresh link for a second browser on this machine.
+The page asks for the **administrator account**: the username is `admin` and the first password is `admin`, and that first sign-in (and every sign-in after a reset) has to choose a new password - at least 8 characters, not the default - before anything else in the UI answers.
+Sessions last 8 hours idle and 7 days at most; "Keep me signed in" makes both 30 days.
+Five failed sign-ins lock the username and the address for a minute.
+Your account (in Settings) changes the password, lists the other signed-in browsers, signs them out, and signs out.
+If the password is lost, `cwcli admin reset-password` on the host puts the account back to `admin` / `admin` with the change forced again (see below).
+Programmatic clients (scripts, the self-update restart) keep using the bearer token in `CWCLI_SERVE_TOKEN`; nothing about a sign-in is ever in a URL.
 `cwcli ui --stop` stops it.
 While the daemon runs it polls process health for every running instance; the web check only runs for an instance a page has open.
 That check is a bare TCP connect to the bench's web port, not an HTTP request, so polling writes nothing to the bench's web access log; the Bench page shows its verdict as `Listening` or `Not listening` next to the web port, or `unknown` while the latest health probe has failed and the page is showing the last successful probe's readings.
@@ -2007,6 +2052,7 @@ The `self-update` job restarts the local daemon and the open page reloads after 
 The guarded destructive verbs run as jobs too, each behind a typed confirmation of the exact name of what it destroys: remove an instance (`rm`: every site backed up first, the named volumes deletable only while the instance runs, and no way to skip the backup, mirroring `cwcli axi rm`), drop a site (`rm-site`), remove a stopped bench (`rm-bench`), check out an app ref discarding local changes (`apps checkout --reset`, typed back as the app's name), and force a `frappe` update past the data-loss guard (`apps update` with Force ticked, typed back as the bench's name).
 A failed backup drops nothing, exactly as on the command line, and the job page shows bench's own reason.
 Settings is writable: cache on/off, forget one remembered project or clear the whole cache (confirmed first), add, remove and prune bench search paths (the prune check names any stopped instance that keeps it from pruning), auto-inspect and its interval and boot hook, the persistent credential bridge and its boot unit, a Start (or Restart) button for either daemon while its feature is enabled, with the daemon log's last line shown while it is down, tips, and the agent SessionStart hooks `cwcli axi setup` installs; every control sits beside the terminal command that does the same.
+Schedules puts any of those jobs on a timetable (templates, a friendly recurrence picker with the cron underneath, one-off runs, recipes of chained steps, "after a successful job" and "when the instance starts" triggers, a week's timeline, and "Schedule this…" on every job's page); see `schedule` below.
 `restore`, `apps uninstall`, `run`, `open`, an in-browser terminal, access from another machine and the shared multi-user mode are not in the UI; each needs its own decision first.
 
 **Honest states:** the UI distinguishes `unknown` (not probed) from `offline`,
@@ -2014,19 +2060,53 @@ labels cache-backed data as remembered versus verified, and never guesses a
 port - a site whose host port cannot be resolved reads "not serving".
 
 **Under WSL:** a Windows browser reaches `http://localhost:8765` through WSL's
-localhost forwarding; the link `cwcli ui` prints already works from there.
+localhost forwarding; the address `cwcli ui` prints already works from there.
 
 **Example:**
 
 ```bash
 cwcli ui                       # start (or reuse) and open the browser
-cwcli ui --no-browser          # print the sign-in link instead
+cwcli ui --no-browser          # print the address instead
 cwcli ui --stop                # stop the detached daemon
 cwcli ui --foreground -p 9000  # run in this terminal on port 9000
 ```
 
 There is deliberately no `cwcli axi ui`: an agent does not stand up a
 browser-facing daemon.
+
+---
+
+### `admin` - The Web UI Administrator Account
+
+```bash
+cwcli admin reset-password [--username admin]
+```
+
+Recovery from the host when the web UI password is lost: the account goes back to `admin` / `admin`, the next sign-in has to choose a new password, and every signed-in browser is signed out.
+The account store is `~/.cwcli/accounts.json` (0600; passwords are scrypt hashes, sessions are stored as hashes of their ids), or the shared state tree on a shared install, where the reset needs root like the rest of `cwcli setup`.
+`cwcli axi admin reset-password` is the agent spelling.
+
+---
+
+### `schedule` - Scheduled Jobs
+
+```bash
+cwcli schedule add NAME --verb VERB --project NAME [--bench SEL] [--site NAME] [--process LABEL] (--daily HH:MM | --weekly "DAY HH:MM" | --cron "m h dom mon dow" | --at ISO) [--arg k=v]... [--allow-unattended] [--missed skip] [--start-if-stopped] [--in-window]
+cwcli schedule list [--json]
+cwcli schedule run ID
+cwcli schedule enable ID | disable ID | rm ID
+cwcli schedule daemon [--install-service]
+```
+
+A schedule starts an ordinary job on a timetable (every run is a job with `origin.schedule = <id>`, so Jobs, logs and Retry work unchanged).
+Schedulable: backup (every site or one), prune, off-site copy and prune, restore drill, app or core update, migrate, restart, one process, start, stop, stop a bench, developer mode, clear maintenance, build.
+Removals can never be scheduled.
+Backups, restarts, starts and stops run unattended freely; an update or migrate needs `--allow-unattended` (the "Allowed unattended" tick in the UI), and a scheduled core update still takes its automatic backup first.
+A missed run (the machine was off) runs once on wake unless the schedule says `--missed skip`.
+Guards at fire time: the instance's maintenance window (`--in-window`), the quiet hours, a stopped instance (started first with `--start-if-stopped`, else skipped), free disk and memory thresholds, and one job per instance at a time (retried the next minute).
+Windows, quiet hours and thresholds are set in the web UI (Schedules › Windows and guards); the store is `~/.cwcli/schedules.json`.
+The scheduler ticks inside `cwcli ui`; on a shared install `sudo cwcli schedule daemon --install-service` installs the machine-wide `cwcli-scheduler.service` so schedules fire with no UI open (both lock the store, so a slot never fires twice).
+`cwcli axi schedule list|add|run-now|remove` is the agent spelling.
 
 ---
 

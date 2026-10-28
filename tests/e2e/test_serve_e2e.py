@@ -209,27 +209,44 @@ class TestThePage:
         assert response.startswith("HTTP/1.1 403")
         assert "host.forbidden" in response
 
-    def test_the_login_code_signs_a_browser_in_exactly_once(self, daemon):
-        # `cwcli ui` mints through the bearer endpoint, the page redeems it without one.
-        minted = _post(daemon.base + "/api/v1/session/code", {})
-        code = minted["data"]["code"]
+    def test_the_account_signs_a_browser_in_and_the_first_sign_in_picks_a_password(self, daemon):
         bare = urllib.request.build_opener()
-        req = urllib.request.Request(
-            daemon.base + "/api/v1/session",
-            data=json.dumps({"code": code}).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with bare.open(req, timeout=_HTTP_TIMEOUT) as resp:
+
+        def _post_bare(path, payload, cookie=None):
+            headers = {"Content-Type": "application/json"}
+            if cookie:
+                headers["Cookie"] = cookie
+            req = urllib.request.Request(
+                daemon.base + path,
+                data=json.dumps(payload).encode(),
+                headers=headers,
+                method="POST",
+            )
+            return bare.open(req, timeout=_HTTP_TIMEOUT)
+
+        with _post_bare("/api/v1/session", {"username": "admin", "password": "admin"}) as resp:
             cookie = resp.headers["Set-Cookie"].split(";", 1)[0]
-        with pytest.raises(urllib.error.HTTPError) as replay:
-            bare.open(req, timeout=_HTTP_TIMEOUT)
-        assert replay.value.code == 401
-        # The cookie reads the fleet without the token.
+            assert json.loads(resp.read())["data"]["must_change_password"] is True
+        # Nothing but the session answers until the password is changed.
         signed = urllib.request.Request(
             daemon.base + "/api/v1/instances", headers={"Cookie": cookie}
         )
+        with pytest.raises(urllib.error.HTTPError) as gated:
+            bare.open(signed, timeout=_HTTP_TIMEOUT)
+        assert gated.value.code == 403
+        with _post_bare(
+            "/api/v1/session/password", {"new": "correct horse battery"}, cookie
+        ) as resp:
+            assert resp.status == 200
         with bare.open(signed, timeout=_HTTP_TIMEOUT) as resp:
+            assert resp.status == 200
+        # The default pair is dead; the chosen one signs in.
+        with pytest.raises(urllib.error.HTTPError) as replay:
+            _post_bare("/api/v1/session", {"username": "admin", "password": "admin"})
+        assert replay.value.code == 401
+        with _post_bare(
+            "/api/v1/session", {"username": "admin", "password": "correct horse battery"}
+        ) as resp:
             assert resp.status == 200
 
 

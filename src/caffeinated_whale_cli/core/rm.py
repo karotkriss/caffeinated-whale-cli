@@ -38,19 +38,22 @@ unit, :func:`backup_site`, is public because ``core.rm_site`` (and through it
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import re
 import shutil
-import tarfile
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
 from ..utils import bench_sites, db_utils, shared_home
 from ..utils.config_utils import PROJECTS_DIR, cwcli_home
-from .docker import get_project_containers, get_project_networks, get_project_volumes
+from .docker import (
+    get_project_containers,
+    get_project_networks,
+    get_project_volumes,
+    stream_container_file,
+)
 from .envelope import Message, Result, Status
 from .errors import DOCKER_UNREACHABLE_HINT, CwcliError, ErrorKind
 from .resolvers import DEFAULT_BENCH_PATH
@@ -220,76 +223,8 @@ def _bench_archive_slug(bench_path: str) -> str:
     return f"{safe_basename}_{short_hash}"
 
 
-class _ChunkStreamReader(io.RawIOBase):
-    """Adapt docker-py's ``get_archive`` byte-chunk iterator to a readable stream.
-
-    ``get_archive`` yields the artifact's tar wrapper in chunks; wrapping those
-    chunks in this reader lets :mod:`tarfile` consume the tar incrementally
-    (streaming mode) so a multi-GB backup artifact is never buffered whole in
-    host RAM.
-    """
-
-    def __init__(self, chunks: Iterator[bytes]) -> None:
-        super().__init__()
-        self._chunks = iter(chunks)
-        self._buf = b""
-
-    def readable(self) -> bool:
-        return True
-
-    def readinto(self, b) -> int:
-        if not self._buf:
-            try:
-                self._buf = next(self._chunks)
-            except StopIteration:
-                return 0
-        n = min(len(b), len(self._buf))
-        b[:n] = self._buf[:n]
-        self._buf = self._buf[n:]
-        return n
-
-
-def _stream_container_file(
-    container,
-    source_path: str,
-    dest_file: Path,
-    chunk_size: int = 1024 * 1024,
-) -> bool:
-    """Copy a single file out of ``container`` to the host, streaming in chunks.
-
-    Uses ``get_archive`` (a tar stream) and extracts the single member
-    incrementally, so a multi-GB ``bench backup --with-files`` artifact is never
-    materialised in host RAM as one blob. Returns True only on a fully-written
-    copy. Any failure - a missing/unreadable file (``get_archive`` raises), a
-    tar/read error, or a truncated stream (bytes written do not match the member
-    size) - returns False, so the caller keeps the "a backup missing any part is
-    not trusted" fail-closed semantics.
-    """
-    try:
-        stream, _stat = container.get_archive(source_path)
-        reader = io.BufferedReader(_ChunkStreamReader(stream))
-        with tarfile.open(fileobj=reader, mode="r|") as tar:
-            for member in tar:
-                if not member.isfile():
-                    continue
-                extracted = tar.extractfile(member)
-                if extracted is None:
-                    return False
-                written = 0
-                with open(dest_file, "wb") as out:
-                    while True:
-                        chunk = extracted.read(chunk_size)
-                        if not chunk:
-                            break
-                        out.write(chunk)
-                        written += len(chunk)
-                # A truncated stream yields fewer bytes than the header promised:
-                # fail closed rather than trust a short copy.
-                return written == member.size
-    except Exception:
-        return False
-    # No regular-file member in the archive - nothing was copied.
-    return False
+# Promoted to core.docker.stream_container_file when the backup store became its second caller.
+_stream_container_file = stream_container_file
 
 
 def backup_site(
@@ -422,6 +357,23 @@ def _backup_sites(
             for site in sites
             if not backup_site(container, bench_path, site, backups_dir / site, emit)
         ]
+        # Captain decision 1 (2026-10-27): a removal's proven backup lives in the outside
+        # store with every other set (reason before-removal). Adopting is fail-soft: the
+        # gate above is the safety; a store hiccup never blocks or undoes it.
+        from . import backup_store as _store
+
+        for site in sites:
+            if site in failed_sites:
+                continue
+            adopted = _store.adopt_dir(
+                project_name,
+                site,
+                backups_dir / site,
+                bench_path=bench_path,
+                reason="before-removal",
+            )
+            if adopted is not None:
+                emit(RmNotice(text=f"Backup of '{site}' kept in the store as {adopted.key}"))
         backed_up_count = len(sites) - len(failed_sites)
 
         if backed_up_count > 0:

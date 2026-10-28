@@ -72,13 +72,21 @@ export const ACTIONS = {
     label: 'Remove instance',
     icon: 'lucide-trash-2',
     confirm: 'typed',
-    fields: [{ name: 'keep_volumes', type: 'checkbox', label: 'Keep the named volumes (databases, sites, files)' }],
-    cli: (c, v) => `cwcli rm ${q(c.project)}${v?.keep_volumes ? ' --no-volumes' : ''}`,
+    fields: [
+      { name: 'keep_volumes', type: 'checkbox', label: 'Keep the named volumes (databases, sites, files)' },
+      { name: 'force', type: 'checkbox', label: 'Force: skip the backup. Every database, site and file is deleted with NO copy kept.' },
+    ],
+    // Force is the page's --no-backup. It exists on the captain's instruction (2026-10-27);
+    // the dialog turns red and spells out what is lost before the typed confirmation.
+    danger_when: (v) => !!v?.force && !v?.keep_volumes,
+    cli: (c, v) => `cwcli rm ${q(c.project)}${v?.keep_volumes ? ' --no-volumes' : ''}${v?.force && !v?.keep_volumes ? ' --no-backup' : ''}`,
     says: (c, v) =>
       v?.keep_volumes
         ? `Removes ${c.project}'s containers, project network and project directory. Its named volumes (databases, sites, files) stay on Docker.`
-        : `Backs up every site on ${c.project} to the host archive, then deletes its containers, named volumes (databases, sites, files), project network and project directory. If any backup fails, nothing is deleted. The backup cannot be skipped here.`,
-    request: (c, v) => ({ verb: 'rm', target: { project: c.project }, args: { keep_volumes: !!v.keep_volumes }, consent: true }),
+        : v?.force
+          ? `FORCE: deletes ${c.project}'s containers, named volumes (every database, every site, all public and private files), project network and project directory WITHOUT taking a backup. There is no copy to restore from afterwards. Untick Force to keep the verified backup, or keep the volumes instead.`
+          : `Backs up every site on ${c.project} to the host archive, then deletes its containers, named volumes (databases, sites, files), project network and project directory. If any backup fails, nothing is deleted.`,
+    request: (c, v) => ({ verb: 'rm', target: { project: c.project }, args: { keep_volumes: !!v.keep_volumes, no_backup: !!v.force && !v.keep_volumes }, consent: true }),
     done: (c) => `${c.project} removed`,
   },
   'instance.scale': {
@@ -174,6 +182,30 @@ export const ACTIONS = {
     request: (c) => ({ verb: 'unlock', target: { project: c.project, bench: c.bench, site: c.site }, args: {} }),
     done: (c, out) => (out?.already_unlocked ? `${c.site} had no locks` : `${c.site} unlocked`),
   },
+  'site.dev_mode_on': {
+    job: true,
+    needsRunning: true,
+    label: 'Turn developer mode on',
+    icon: 'lucide-code',
+    confirm: 'confirm',
+    fields: [{ name: 'common', type: 'checkbox', label: 'Bench-wide: set it in common_site_config.json for every site on this bench' }],
+    cli: (c, v) => `cwcli dev-mode ${q(c.project)} ${q(c.site)} on${benchFlag(c)}${v?.common ? ' --common' : ''}`,
+    says: () => "Customisations save to the app's source files, errors show full tracebacks in the browser, assets rebuild on change; the site's cache is cleared afterwards. Never leave it on where real users work.",
+    request: (c, v) => ({ verb: 'dev-mode', target: { project: c.project, bench: c.bench, site: c.site }, args: { on: true, scope: v?.common ? 'common' : 'site' }, consent: true }),
+    done: (c) => `developer mode on for ${c.site}`,
+  },
+  'site.dev_mode_off': {
+    job: true,
+    needsRunning: true,
+    label: 'Turn developer mode off',
+    icon: 'lucide-code',
+    confirm: 'confirm',
+    fields: [{ name: 'common', type: 'checkbox', label: 'Bench-wide: unset it in common_site_config.json for every site on this bench' }],
+    cli: (c, v) => `cwcli dev-mode ${q(c.project)} ${q(c.site)} off${benchFlag(c)}${v?.common ? ' --common' : ''}`,
+    says: () => "Customisations stop writing to source files and tracebacks are hidden again; the site's cache is cleared afterwards.",
+    request: (c, v) => ({ verb: 'dev-mode', target: { project: c.project, bench: c.bench, site: c.site }, args: { on: false, scope: v?.common ? 'common' : 'site' }, consent: true }),
+    done: (c) => `developer mode off for ${c.site}`,
+  },
   'site.remove': {
     job: true,
     danger: true,
@@ -184,9 +216,20 @@ export const ACTIONS = {
     fields: [DB_ROOT_FIELD],
     cli: (c) => `cwcli rm-site ${q(c.project)} ${q(c.site)}${benchFlag(c)}`,
     says: (c) =>
-      `Backs up ${c.site} (database and files) to the host archive, then drops it: its database and files are deleted. If the backup fails, nothing is dropped. The instance and its other sites keep running.`,
+      `Backs up ${c.site} (database and files) into cwcli's backup store, then drops it: its database and files are deleted. If the backup fails, nothing is dropped. The instance and its other sites keep running.`,
     request: (c, v) => ({ verb: 'rm-site', target: { project: c.project, bench: c.bench, site: c.site }, args: {}, consent: true, ...secrets(v) }),
     done: (c) => `${c.site} dropped`,
+  },
+  delete_backup: {
+    job: true,
+    danger: true,
+    label: 'Delete backup',
+    icon: 'lucide-trash-2',
+    confirm: 'typed',
+    cli: (c) => `cwcli backups delete ${q(c.set?.key || '')}`,
+    says: (c) => `Deletes backup ${c.set?.id} of ${c.site} (${c.set ? (c.set.size / 1048576).toFixed(1) : '?'} MB) from cwcli's store. A site's last good backup is never deleted; this one is ${c.set?.verified ? 'verified' : 'not verified'}.`,
+    request: (c) => ({ verb: 'delete-backup', target: { project: c.project, site: c.site }, args: { set_key: c.set?.key }, consent: true }),
+    done: (c) => `backup ${c.set?.id} deleted`,
   },
   'site.maintenance_off': {
     job: true,
@@ -255,16 +298,15 @@ export function availability(id, inst, bench, values) {
   if (id === 'instance.start' && inst?.container_running) return { ok: false, reason: 'Already running' }
   if (id === 'bench.start' && benchUp) return { ok: false, reason: 'Already running' }
   if (id === 'instance.remove') {
-    if (values?.keep_volumes || inst?.container_running) return { ok: true, reason: null }
-    return {
-      ok: false,
-      reason: `Needs ${inst?.project || 'the instance'} running for the backup`,
-      detail: `The verified backup that gates deleting the volumes needs the instance running, and cwcli will not start it behind your back. Start ${inst?.project || 'it'} first, or keep the named volumes.`,
-    }
+    if (values?.keep_volumes || values?.force || inst?.container_running) return { ok: true, reason: null }
+    // The verified backup needs the instance up: the page asks to start it first, as `cwcli rm` does.
+    return { ok: true, reason: null, startFirst: true }
   }
   if (id === 'bench.remove' && inst?.container_running && benchUp) {
     return { ok: false, reason: 'Stop the bench first', detail: 'A bench that is still serving is never removed. Stop it, then retry.' }
   }
   if (!a?.needsRunning || inst?.container_running) return { ok: true, reason: null }
-  return { ok: false, reason: `Needs ${inst?.project || 'the instance'} running` }
+  if (id.endsWith('.stop')) return { ok: false, reason: 'Already stopped' }
+  // Not a refusal: the page asks to start the instance first, as the CLI does (note 24).
+  return { ok: true, reason: null, startFirst: true }
 }

@@ -56,7 +56,7 @@ def daemon(monkeypatch):
     fleet.set_publish(hub.publish)
     fleet.bootstrap()
 
-    httpd = serve_cmd.make_server("127.0.0.1", 0, fleet, hub, _TOKEN, "frontend-login-code")
+    httpd = serve_cmd.make_server("127.0.0.1", 0, fleet, hub, _TOKEN)
     # Authentication is always on, so every urllib request in this file carries
     # the bearer token. The gate itself is exercised in test_serve_auth.py.
     opener = urllib.request.build_opener()
@@ -82,12 +82,16 @@ def daemon(monkeypatch):
 
 
 def _get(url):
-    with urllib.request.urlopen(url, timeout=_TIMEOUT) as resp:  # noqa: S310 - fixed localhost
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {_TOKEN}"})
+    with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:  # noqa: S310 - fixed localhost
         return resp.status, json.loads(resp.read())
 
 
 def _post(url, payload, headers=None):
-    request_headers = {"Content-Type": "application/json"}
+    # The bearer rides on every request explicitly: the installed global opener also
+    # carries it, but urllib's opener is process-wide state and a request issued while
+    # it is reset (another fixture, a background thread) came back 401 once in the tier.
+    request_headers = {"Content-Type": "application/json", "Authorization": f"Bearer {_TOKEN}"}
     if headers:
         request_headers.update(headers)
     req = urllib.request.Request(
@@ -258,60 +262,6 @@ class TestWebUi:
             _get(daemon.base + "/api/v1/nope")
         assert e.value.code == 404
         assert json.loads(e.value.read())["errors"][0]["title"] == "route.not_found"
-
-
-class TestLoginCodeMint:
-    """``POST /api/v1/session/code``: how ``cwcli ui`` signs a second browser in."""
-
-    def test_a_bearer_caller_gets_a_fresh_single_use_code(self, daemon):
-        status, body = _post(daemon.base + "/api/v1/session/code", {})
-        assert status == 200
-        code = body["data"]["code"]
-        assert len(code) > 20
-        # It redeems exactly once.
-        req = urllib.request.Request(
-            daemon.base + "/api/v1/session",
-            data=json.dumps({"code": code}).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        bare = urllib.request.build_opener()  # the fixture's opener carries the bearer
-        with bare.open(req, timeout=_TIMEOUT) as resp:
-            assert resp.status == 200 and "Set-Cookie" in resp.headers
-        with pytest.raises(urllib.error.HTTPError) as e:
-            bare.open(req, timeout=_TIMEOUT)
-        assert e.value.code == 401
-
-    def test_minting_replaces_the_outstanding_code(self, daemon):
-        first = _post(daemon.base + "/api/v1/session/code", {})[1]["data"]["code"]
-        _post(daemon.base + "/api/v1/session/code", {})
-        req = urllib.request.Request(
-            daemon.base + "/api/v1/session",
-            data=json.dumps({"code": first}).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with pytest.raises(urllib.error.HTTPError) as e:
-            urllib.request.build_opener().open(req, timeout=_TIMEOUT)
-        assert e.value.code == 401
-
-    def test_a_session_cookie_cannot_mint(self, daemon):
-        """A signed-in page must not be able to make sign-in links for others."""
-        _status, _body = _post(daemon.base + "/api/v1/session", {})
-        # The opener carries the bearer; a cookie-only client is a fresh request.
-        port = daemon.base.rsplit(":", 1)[1]
-        handler = daemon.httpd.RequestHandlerClass
-        jar = f"{serve_cmd.SESSION_COOKIE}_{port}={handler.session_id}"
-        req = urllib.request.Request(
-            daemon.base + "/api/v1/session/code",
-            data=b"{}",
-            headers={"Content-Type": "application/json", "Cookie": jar},
-            method="POST",
-        )
-        opener = urllib.request.build_opener()  # no bearer header
-        with pytest.raises(urllib.error.HTTPError) as e:
-            opener.open(req, timeout=_TIMEOUT)
-        assert e.value.code == 401
 
 
 class TestEventStream:
@@ -958,7 +908,10 @@ class TestActions:
         """The allowed set is the captain's Tier A ruling and nothing more: no
         long-running Tier B verb (init/backup/install/update/migrate/run-tests/
         build/rm/rm-site) and no deferred Tier C verb (restore/uninstall/run/
-        open/config) may appear here without its own decision."""
+        config) may appear here without its own decision. ``open_editor`` is the
+        one Tier C addition with its decision: the captain asked for Open in
+        VS Code / Cursor on 2026-10-27 (steering 013); it launches the editor's
+        Dev Containers attach on the host and never opens a shell."""
         with pytest.raises(urllib.error.HTTPError) as e:
             _post(daemon.base + "/api/v1/actions", {"action": "nope", "project": "p"})
 
@@ -976,6 +929,7 @@ class TestActions:
             "clear_maintenance",
             "scale_instance",
             "checkout_app",
+            "open_editor",
         }
         assert named == set(serve_cmd.ACTIONS)
 
@@ -1850,7 +1804,7 @@ class TestDoctorEndpoint:
         hub = serve_cmd._Hub(fleet.set_focus)
         fleet.set_publish(hub.publish)
         fleet.bootstrap()
-        httpd = serve_cmd.make_server("127.0.0.1", 0, fleet, hub, token, "doctor-login-code")
+        httpd = serve_cmd.make_server("127.0.0.1", 0, fleet, hub, token)
         thread = threading.Thread(
             target=httpd.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
         )
