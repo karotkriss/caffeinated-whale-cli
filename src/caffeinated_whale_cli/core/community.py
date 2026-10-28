@@ -289,7 +289,9 @@ def read_declaration(src: Path) -> Declaration:
             f"its id {integration_id!r} is not 2-40 lower-case letters, digits, - or _, "
             "starting with a letter"
         )
-    decl = ((data.get("tool") or {}).get("cwcli") or {}).get("integration")
+    decl: Any = data
+    for key in ("tool", "cwcli", "integration"):
+        decl = decl.get(key) if isinstance(decl, dict) else None
     if not isinstance(decl, dict):
         raise _refuse("pyproject.toml has no [tool.cwcli.integration] table")
     text = {}
