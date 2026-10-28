@@ -13,7 +13,7 @@ import { createJob } from '../data/jobs'
 import { trackJob } from '../data/job-toasts'
 import { fleet, instances, details, publishedRange, countSites, cacheProjects, setFocus } from '../data/fleet'
 import { applySetting, settings } from '../data/settings'
-import { openAction, menuOption } from '../data/dialog'
+import { menuOption } from '../data/dialog'
 import { openJob } from '../data/job-dialog'
 import { can } from '../data/session'
 
@@ -47,9 +47,7 @@ const meta = (i) => {
 const QUIET = { running: null, online: 'started, not serving', degraded: 'degraded', offline: 'stopped', unknown: 'probing' }
 const DOT = { running: 'bg-surface-green-7', online: 'bg-surface-blue-7', degraded: 'bg-surface-amber-7', offline: 'bg-surface-gray-5', unknown: 'border border-outline-gray-4' }
 const menu = (i) => [
-  i.container_running
-    ? { label: 'Stop', icon: 'lucide-square', onClick: () => openAction('instance.stop', { project: i.project }) }
-    : { label: 'Start', icon: 'lucide-play', onClick: () => openAction('instance.start', { project: i.project }) },
+  menuOption(i.container_running ? 'instance.stop' : 'instance.start', { project: i.project }),
   menuOption('instance.restart', { project: i.project }),
   menuOption('instance.refresh', { project: i.project }),
   menuOption('instance.scale', { project: i.project }),
