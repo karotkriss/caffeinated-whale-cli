@@ -156,10 +156,14 @@ def registry() -> dict[str, Integration]:
     return {**official(), **community.load_all()}
 
 
-def get(integration_id: str) -> Integration:
+def _find(integration_id: str) -> Integration | None:
     from . import community
 
-    found = official().get(integration_id) or community.load(integration_id)
+    return official().get(integration_id) or community.load(integration_id)
+
+
+def get(integration_id: str) -> Integration:
+    found = _find(integration_id)
     if found is None:
         raise CwcliError(
             ErrorKind.NOT_FOUND, "integration.unknown", f"No integration '{integration_id}'."
@@ -343,15 +347,18 @@ def _community_view(integration_id: str, rec: dict) -> dict[str, Any]:
 
 
 def view(integration_id: str | None = None) -> list[dict[str, Any]]:
-    """What the Integrations page shows: never a secret, only whether one is set."""
-    known = registry()
+    """What the Integrations page shows: never a secret, only whether one is set. One
+    card loads only that integration."""
+    if integration_id is None:
+        known = list(registry().values())
+    else:
+        found = _find(integration_id)
+        known = [found] if found is not None else []
     with _locked():
         data = _load()
     records, installed = data["integrations"], data.get("community") or {}
     out = []
-    for integ in known.values():
-        if integration_id is not None and integ.id != integration_id:
-            continue
+    for integ in known:
         card = _view(integ, records.get(integ.id) or {})
         if integ.id in installed:
             card["community"] = _community_view(integ.id, installed[integ.id])

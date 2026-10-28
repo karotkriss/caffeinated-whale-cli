@@ -610,14 +610,20 @@ def _directory_on() -> bool:
 
 def _offsite_summary() -> dict | None:
     """Where off-site copies go (the backup target integration that is on), without
-    its keys: its id, name and location, plus an S3 bucket's endpoint and bucket."""
+    its keys: its id, name and location, plus an S3 bucket's endpoint and bucket. A
+    target that is on but cannot be opened carries the ``error``."""
+    found = core_integrations.provider("backup_target")
+    if found is None:
+        return None
+    integ = found[0]
+    summary: dict = {"id": integ.id, "name": integ.name, "location": integ.name}
     try:
         target = core_backup_store.offsite_target("", require=False)
-    except CwcliError:
-        return None
+    except CwcliError as e:
+        return {**summary, "error": e.message}
     if target is None:
         return None
-    summary = {"id": target.integration_id, "name": target.name, "location": target.location}
+    summary["location"] = target.location
     for key in ("endpoint", "bucket", "prefix"):
         try:
             value = getattr(target, key, None)
