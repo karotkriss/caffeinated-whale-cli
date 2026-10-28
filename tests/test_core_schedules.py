@@ -261,14 +261,6 @@ class TestTick:
         assert row["enabled"] is False
         assert run_tick(fleet, now=T0.replace(hour=3)) == []
 
-    def test_the_outcome_of_a_scheduled_job_is_recorded(self):
-        fleet = Fleet()
-        sch.save(nightly(), now=T0)
-        made = run_tick(fleet, now=T0.replace(hour=2))
-        sch.record_outcome({**made[0], "state": "failed", "finished_at": "x"})
-        row = sch.list_schedules(now=T0)["schedules"][0]
-        assert row["last_run"]["state"] == "failed"
-
 
 class TestRecipesAndTriggers:
     def test_a_recipe_runs_its_steps_one_after_another_and_stops_on_failure(self):

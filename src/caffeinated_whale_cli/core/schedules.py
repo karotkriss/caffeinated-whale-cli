@@ -967,24 +967,6 @@ def run_now(sid: str, create_job: CreateJob, *, now: datetime | None = None) -> 
     return rec
 
 
-def record_outcome(job: dict[str, Any]) -> None:
-    """Called when a scheduled job reaches a terminal state: keep the last result honest."""
-    sid = (job.get("origin") or {}).get("schedule")
-    if not sid:
-        return
-    with _lock, _StoreLock():
-        data = _load()
-        s = data["schedules"].get(sid)
-        if s is None:
-            return
-        last = s.get("last_run") or {}
-        if last.get("job_id") == job.get("id"):
-            last["state"] = job.get("state")
-            last["finished_at"] = job.get("finished_at")
-            s["last_run"] = last
-            _save(data)
-
-
 class _StoreLock:
     """``flock`` on the store, held by every write, so two schedulers (the UI daemon
     and the machine-wide service) never fire the same slot twice and an edit from the

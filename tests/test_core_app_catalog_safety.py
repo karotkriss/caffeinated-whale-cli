@@ -102,7 +102,12 @@ def test_stored_remotes_carry_no_credentials_and_ssh_upstream_is_not_a_fork():
     assert cat._safe_remote_url("https://u:tok@github.com/frappe/erpnext.git") == (
         "https://github.com/frappe/erpnext"
     )
-    assert not adv._is_fork("erpnext", cat._safe_remote_url("git@github.com:frappe/erpnext.git"))
+    assert adv._without_credentials("https://u:tok@gitlab.example.com:8443/grp/app.git") == (
+        "https://gitlab.example.com:8443/grp/app.git"
+    )
+    for ssh in ("git@gitlab.example.com:grp/app.git", "ssh://git@host:2222/grp/app.git"):
+        assert adv._without_credentials(ssh) == ssh
+    assert not adv._is_fork("erpnext", "git@github.com:frappe/erpnext.git")
     assert adv._is_fork("erpnext", "https://github.com/acme/erpnext")
 
 
