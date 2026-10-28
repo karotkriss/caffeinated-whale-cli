@@ -696,7 +696,9 @@ def init_instance(
     fallback), ``compose pull`` + ``up -d`` via captured subprocess. When this
     project's own frappe container is already running, image pulls are skipped
     and only
-    missing sibling services are started with ``--no-deps``. Then the bounded
+    missing sibling services are started with ``--no-deps``. When the project's
+    containers exist but frappe is stopped, nothing is pulled and ``up -d
+    --no-recreate`` starts them as they are. Then the bounded
     silent readiness poll runs. On poll timeout: ``confirm_start`` choice when
     ``auto_start=False``; typed ``NOT_RUNNING`` when ``auto_start=True`` (the
     structural cap - the caller claimed the start was handled and the
@@ -915,6 +917,32 @@ def init_instance(
                 phase="up",
                 emit=emit,
             )
+    elif core_docker.get_project_containers(project_name):
+        # The instance already exists but frappe is not running (a stopped
+        # instance being re-initialized to reuse its bench). Start its containers
+        # exactly as they are: no pull, and --no-recreate. frappe/bench tags are
+        # re-pushed upstream, so a pull - this one or another instance's - can move
+        # this instance's pinned tag to an image with different pyenv patch versions;
+        # a plain `up -d` then RECREATES frappe on it, /home/frappe reverts, and
+        # every bench venv's env/bin/python dangles. Containers that do not exist
+        # yet are still created, and compose pulls only images missing locally.
+        emit(
+            InitNotice(
+                code="instance.existing",
+                text=(
+                    f"Instance '{project_name}' already exists; starting its containers as "
+                    "they are, without pulling or recreating them."
+                ),
+            )
+        )
+        emit(InitStepStart(phase="up", message="Starting existing Docker Compose containers"))
+        _run_host_command(
+            compose_base + ["up", "-d", "--no-recreate"],
+            cwd=str(conf_dir),
+            phase="up",
+            emit=emit,
+            retry_credential_errors=True,
+        )
     else:
         emit(InitStepStart(phase="pull", message="Pulling Docker images"))
         pull_cmd = compose_base + ["pull"]

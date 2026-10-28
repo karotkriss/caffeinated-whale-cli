@@ -475,6 +475,21 @@ class TestAlreadyRunningNotice:
         assert "Instance 'proj' is already running" in err
         assert "skipping image pull and preserving its frappe container" in err
 
+    def test_verbose_output_reports_a_stopped_instance_is_started_as_is(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        services = [
+            SimpleNamespace(status="exited", labels={"com.docker.compose.service": service})
+            for service in ("frappe", "mariadb", "redis-cache", "redis-queue")
+        ]
+
+        result = run_init(monkeypatch, tmp_path, verbose=True, project_containers=services)
+
+        assert [call["cmd"][-3:] for call in result.host_calls] == [["up", "-d", "--no-recreate"]]
+        err = " ".join(capsys.readouterr().err.split())
+        assert "Instance 'proj' already exists" in err
+        assert "without pulling or recreating them" in err
+
 
 class TestRefusals:
     """Non-interactive mode: every prompt has a flag; no flag means honest exit 1."""
