@@ -3,16 +3,36 @@
 The contract (``Integration``) is what every integration implements: an id, a name,
 a publisher, a settings schema whose ``secret`` fields are write-only, a connection
 ``test``, optional named ``actions`` (a check the setup page can run, such as looking
-up a directory user), and the hook points it ``provides``. Two official
-integrations use it now:
+up a directory user), the hook points it ``provides``, and in ``hooks`` the function
+behind each one. cwcli calls a hook point through ``provider(hook)``, the one
+integration that is on and provides it, so official and community integrations plug
+in the same way:
+
+* ``sign_in``: ``(settings, secrets, username, password)`` -> the signed-in user
+  (``core.directory.DirectoryUser``, or a dict with ``username``, ``role`` and
+  optionally ``name`` and ``email``), or None for a wrong name or password. An
+  optional ``current_role`` hook, ``(settings, secrets, username)`` -> role or None,
+  lets a schedule confirm its owner is still an Admin.
+* ``backup_target``: ``(settings, secrets)`` -> the store off-site copies go to
+  (``BackupTarget``).
+
+Only one integration serves a hook point at a time: turning on a second one that
+provides it is refused (``integration.hook_taken``) unless the Admin chooses to
+switch (``take_over``), which turns the first one off - never silently.
+
+Two official integrations use it now:
 
 * ``ldap`` (``core.directory``) provides ``sign_in``: LDAP / Active Directory users
   sign in to the web UI with a role mapped from their directory groups.
 * ``s3`` provides ``backup_target``: the bucket that receives the backup store's
   encrypted off-site copies (``core.backup_store``).
 
-Community integrations (``publisher="community"``, shown as "Community, not
-reviewed", off until an Admin installs one) are a later phase.
+Community integrations (``core.community``) are installable packages an Admin adds
+from a repository URL. Each registers one ``Integration`` under the
+``cwcli.integrations`` entry-point group, shows as "Community, not reviewed"
+(``publisher="community"``) and starts off. Community code loads only for the
+Integrations page, its own id, and a hook point it is the one serving; while an
+official integration serves a hook point, using it loads no community code.
 
 The store is ``<cwcli home>/integrations.json`` (0600; 0660 to the cwcli group on a
 shared install). Settings are plain JSON; every ``secret`` field is sealed with
@@ -37,7 +57,7 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -96,20 +116,54 @@ class Integration:
     # Settings naming where the secrets are sent: a change to any of them needs the
     # secrets typed again, so a stored one never goes to a server the request names.
     secrets_bound_to: tuple[str, ...] = ()
+    # hook point -> the function cwcli calls for it (see the module docstring).
+    hooks: Mapping[str, Callable[..., Any]] = field(default_factory=dict)
 
     def secret_keys(self) -> tuple[str, ...]:
         return tuple(f.key for f in self.fields if f.kind == "secret")
 
 
-def registry() -> dict[str, Integration]:
-    """Every integration this install knows, in display order."""
+HOOK_LABEL = {"sign_in": "sign-in", "backup_target": "the backup target"}
+
+
+class BackupTarget(Protocol):
+    """Where off-site copies go (``core.backup_store``): objects under string keys."""
+
+    location: str  # shown to people, e.g. "s3://bucket" or "/srv/cwcli-offsite"
+
+    def key(self, *parts: str) -> str: ...
+    def ensure(self) -> None: ...
+    def put_file(self, key: str, path: Path) -> None: ...
+    def put_bytes(self, key: str, data: bytes) -> None: ...
+    def get_to_file(self, key: str, path: Path) -> int: ...
+    def get_bytes(self, key: str) -> bytes: ...
+    def delete(self, key: str) -> None: ...
+    def list(self, prefix: str = "") -> list[dict[str, Any]]: ...
+
+
+def official() -> dict[str, Integration]:
+    """The integrations cwcli ships, in display order."""
     from . import directory
 
     return {i.id: i for i in (directory.INTEGRATION, S3_INTEGRATION)}
 
 
+def registry() -> dict[str, Integration]:
+    """Every integration this install knows, in display order: the official ones,
+    then the installed community ones (``core.community``), which this loads."""
+    from . import community
+
+    return {**official(), **community.load_all()}
+
+
+def _find(integration_id: str) -> Integration | None:
+    from . import community
+
+    return official().get(integration_id) or community.load(integration_id)
+
+
 def get(integration_id: str) -> Integration:
-    found = registry().get(integration_id)
+    found = _find(integration_id)
     if found is None:
         raise CwcliError(
             ErrorKind.NOT_FOUND, "integration.unknown", f"No integration '{integration_id}'."
@@ -275,15 +329,41 @@ def _view(integ: Integration, rec: dict) -> dict[str, Any]:
         "notices": integ.notices() if integ.notices is not None else [],
         "updated_at": rec.get("updated_at"),
         "updated_by": rec.get("updated_by"),
+        "community": None,
+    }
+
+
+def _community_view(integration_id: str, rec: dict) -> dict[str, Any]:
+    from . import community
+
+    keys = ("url", "ref", "commit", "publisher", "signed_in_with", "installed_at")
+    return {
+        **{k: rec.get(k) for k in keys},
+        "installed_by": rec.get("installed_by"),
+        "updated_at": rec.get("updated_at"),
+        "updated_by": rec.get("updated_by"),
+        "load_error": community.load_error(integration_id),
     }
 
 
 def view(integration_id: str | None = None) -> list[dict[str, Any]]:
-    """What the Integrations page shows: never a secret, only whether one is set."""
+    """What the Integrations page shows: never a secret, only whether one is set. One
+    card loads only that integration."""
+    if integration_id is None:
+        known = list(registry().values())
+    else:
+        found = _find(integration_id)
+        known = [found] if found is not None else []
     with _locked():
-        records = _load()["integrations"]
-    out = [_view(i, records.get(i.id) or {}) for i in registry().values()]
-    return [v for v in out if integration_id is None or v["id"] == integration_id]
+        data = _load()
+    records, installed = data["integrations"], data.get("community") or {}
+    out = []
+    for integ in known:
+        card = _view(integ, records.get(integ.id) or {})
+        if integ.id in installed:
+            card["community"] = _community_view(integ.id, installed[integ.id])
+        out.append(card)
+    return out
 
 
 def active(integration_id: str) -> tuple[dict[str, Any], dict[str, str]] | None:
@@ -295,6 +375,57 @@ def active(integration_id: str) -> tuple[dict[str, Any], dict[str, str]] | None:
     if not rec.get("enabled"):
         return None
     return dict(rec.get("settings") or {}), _secrets(integ, rec)
+
+
+def _provides(integration_id: str, data: dict) -> tuple[str, ...]:
+    """The hook points an integration provides, read without loading community code."""
+    found = official().get(integration_id)
+    if found is not None:
+        return found.provides
+    rec = (data.get("community") or {}).get(integration_id) or {}
+    return tuple(rec.get("provides") or ())
+
+
+def _holders(data: dict, integration_id: str, hooks: tuple[str, ...]) -> list[tuple[str, str]]:
+    """(id, hook) for each OTHER integration that is on and provides one of ``hooks``."""
+    return [
+        (other, hook)
+        for other, rec in data["integrations"].items()
+        if other != integration_id and rec.get("enabled")
+        for hook in _provides(other, data)
+        if hook in hooks
+    ]
+
+
+def provider(hook: str) -> tuple[Integration, dict[str, Any], dict[str, str]] | None:
+    """The integration that is on and provides ``hook``, with its settings and
+    secrets, or None. How cwcli calls a hook point; only the one serving it loads."""
+    with _locked():
+        data = _load()
+    for integration_id, rec in data["integrations"].items():
+        if rec.get("enabled") and hook in _provides(integration_id, data):
+            integ = get(integration_id)
+            return integ, dict(rec.get("settings") or {}), _secrets(integ, rec)
+    return None
+
+
+def _name(integration_id: str, data: dict) -> str:
+    found = official().get(integration_id)
+    rec = (data.get("community") or {}).get(integration_id) or {}
+    return found.name if found is not None else str(rec.get("name") or integration_id)
+
+
+def _refuse_hook_taken(integ: Integration, holders: list[tuple[str, str]], data: dict) -> None:
+    other, hook = holders[0]
+    raise CwcliError(
+        ErrorKind.CONFLICT,
+        "integration.hook_taken",
+        f"{_name(other, data)} already provides {HOOK_LABEL.get(hook, hook)}, and only one "
+        f"integration serves it at a time. Turning {integ.name} on switches "
+        f"{HOOK_LABEL.get(hook, hook)} to it and turns {_name(other, data)} off.",
+        hint=f"Turn {_name(other, data)} off first, or choose to switch.",
+        detail={"hook": hook, "current": other, "current_name": _name(other, data)},
+    )
 
 
 # ---------------------------------------------------------------------- changes
@@ -395,6 +526,7 @@ def configure(
     secrets: dict | None = None,
     *,
     enable: bool | None = None,
+    take_over: bool = False,
     by: str = "",
     now: float | None = None,
 ) -> tuple[Check | None, dict[str, Any]]:
@@ -402,22 +534,38 @@ def configure(
 
     Whenever the result would be on (``enable``, or a change to one already on) the
     test runs first and nothing is applied unless it passes. A failed first setup is
-    still saved, off, as "needs setup", so the form is not lost. Returns the test's
-    answer (None when nothing was tested) and the integration's new view.
+    still saved, off, as "needs setup", so the form is not lost. Turning on one whose
+    hook point another integration serves is refused (``integration.hook_taken``)
+    unless ``take_over``, which turns the other one off once the test passes. Returns
+    the test's answer (None when nothing was tested) and the integration's new view.
     """
     integ = get(integration_id)
     now = time.time() if now is None else now
     with _locked():
-        rec = _record(integration_id)
+        data = _load()
+        rec = data["integrations"].get(integration_id) or {}
     merged, plain = _candidate(integ, rec, settings, secrets)
     on = bool(rec.get("enabled")) if enable is None else enable
+    holders = _holders(data, integration_id, integ.provides) if on else []
+    if holders and not take_over:
+        _refuse_hook_taken(integ, holders, data)
     # The test runs outside the lock: a slow server must not hold up sign-in.
     check = integ.test(merged, plain) if on else None
     if check is not None and not check.ok and rec.get("enabled"):
         return check, view(integration_id)[0]
     result = {"ok": check.ok, "message": check.message, "at": now} if check else None
+    switched: list[str] = []
     with _locked():
         data = _load()
+        if on and (check is None or check.ok):
+            holders = _holders(data, integration_id, integ.provides)
+            if holders and not take_over:
+                _refuse_hook_taken(integ, holders, data)
+            for other, _hook in holders:
+                data["integrations"][other].update(
+                    enabled=False, last_error=None, updated_at=now, updated_by=by
+                )
+                switched.append(other)
         data["integrations"][integration_id] = {
             "enabled": bool(on and (check is None or check.ok)),
             "settings": merged,
@@ -429,6 +577,10 @@ def configure(
             "updated_by": by,
         }
         _save(data)
+    for other in dict.fromkeys(switched):
+        changed = get(other)
+        if changed.on_change is not None:
+            changed.on_change()
     if integ.on_change is not None:
         integ.on_change()
     return check, view(integration_id)[0]
@@ -503,6 +655,29 @@ def s3_target(settings: dict[str, Any], secrets: dict[str, str]):
     )
 
 
+class S3Store:
+    """The S3 bucket as the backup store's ``BackupTarget``; the bucket's own settings
+    (``endpoint``, ``bucket``, ...) read through from the target."""
+
+    def __init__(self, target) -> None:
+        from . import s3 as core_s3
+
+        self.target = target
+        self._client = core_s3.S3Client(target)
+        self.location = f"s3://{target.bucket}"
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return getattr(self._client if hasattr(self._client, name) else self.target, name)
+
+    def key(self, *parts: str) -> str:
+        return str(self.target.key(*parts))
+
+    def ensure(self) -> None:
+        self._client.ensure_bucket()
+
+
 def _s3_test(settings: dict[str, Any], secrets: dict[str, str]) -> Check:
     from . import s3 as core_s3
 
@@ -552,6 +727,7 @@ S3_INTEGRATION = Integration(
     test=_s3_test,
     secrets_bound_to=("endpoint",),
     notices=_s3_notices,
+    hooks={"backup_target": lambda settings, secrets: S3Store(s3_target(settings, secrets))},
 )
 
 

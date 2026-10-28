@@ -541,6 +541,12 @@ def s3_configure_cmd(
     enable: bool = typer.Option(
         True, "--enable/--disable", help="Turn the S3 backup target on (tested first) or off."
     ),
+    switch: bool = typer.Option(
+        False,
+        "--switch",
+        help="When another integration is the backup target, switch to S3 once the bucket "
+        "answers (the other one turns off).",
+    ),
 ) -> None:
     """Set up the S3 backup target integration: one bucket for every instance's off-site
     copies. It turns on only when the bucket answers; the secret key never prints."""
@@ -561,9 +567,11 @@ def s3_configure_cmd(
     }
     try:
         check, view = core_integrations.configure(
-            "s3", values, {"secret_key": secret_key or ""}, enable=True, by="cli"
+            "s3", values, {"secret_key": secret_key or ""}, enable=True, take_over=switch, by="cli"
         )
     except CwcliError as e:
+        if e.code == "integration.hook_taken":
+            e.hint = "Turn it off first, or pass --switch to switch to S3."
         _fail(e)
     cfg = view["settings"]
     console.print(
@@ -583,7 +591,7 @@ def s3_list_cmd(
     project: str = typer.Argument(..., autocompletion=complete_project_names),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
-    """The sets the bucket holds for the instance, and whether each is still local."""
+    """The sets the off-site target holds for the instance, and whether each is still local."""
     try:
         rows = core_backup_store.offsite_list(project)
     except CwcliError as e:
@@ -603,7 +611,7 @@ def s3_list_cmd(
 @s3_app.command("copy")
 @handle_docker_errors
 def s3_copy_cmd(key: list[str] = typer.Argument(..., help="Set key(s): project/site/id")) -> None:
-    """Encrypt and upload the set(s) to the instance's bucket."""
+    """Encrypt and upload the set(s) to the off-site target (S3 or a community one)."""
     for k in key:
         found = core_backup_store.find_set(k)
         if found is None:
@@ -620,7 +628,7 @@ def s3_fetch_cmd(
     project: str = typer.Argument(..., autocompletion=complete_project_names),
     key: list[str] = typer.Argument(..., help="Set key(s) to download into the local store."),
 ) -> None:
-    """Download and decrypt set(s) from the bucket into this machine's store."""
+    """Download and decrypt set(s) from the off-site target into this machine's store."""
     for k in key:
         try:
             got = core_backup_store.offsite_fetch(project, k, on_event=_narrate)
@@ -638,7 +646,7 @@ def s3_prune_cmd(
     yes: bool = typer.Option(False, "--yes", "-y"),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Apply the S3 retention (7 daily / 4 weekly / 12 monthly by default) to the bucket."""
+    """Apply the off-site retention (7 daily / 4 weekly / 12 monthly by default) to the target."""
     try:
         result = core_backup_store.offsite_prune(
             project, consent=yes, dry_run=dry_run, on_event=None if as_json else _narrate

@@ -274,7 +274,7 @@ class TestAdminOnlySchedules:
         from caffeinated_whale_cli.core import accounts, directory
 
         accounts.ensure_default()
-        monkeypatch.setattr(directory, "current_role", lambda u: "admin")
+        monkeypatch.setattr(directory, "current_role", lambda u, source: "admin")
         fleet = Fleet()
         for i, (by, source) in enumerate([("admin", "local"), ("ana", "ldap"), ("me", "host")]):
             self._prune(by, source, target={"project": f"p{i}"})
@@ -284,10 +284,10 @@ class TestAdminOnlySchedules:
     @pytest.mark.parametrize(
         "lookup,why",
         [
-            (lambda u: "operator", "no longer an Admin"),
-            (lambda u: None, "no longer an Admin"),
+            (lambda u, source: "operator", "no longer an Admin"),
+            (lambda u, source: None, "no longer an Admin"),
             (
-                lambda u: (_ for _ in ()).throw(
+                lambda u, source: (_ for _ in ()).throw(
                     CwcliError(sch.ErrorKind.PRECONDITION, "ldap.lookup", "unreachable")
                 ),
                 "could not be confirmed",

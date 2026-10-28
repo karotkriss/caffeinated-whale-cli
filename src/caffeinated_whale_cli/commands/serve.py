@@ -69,8 +69,14 @@ envelope frappe-ui's fetch layer reads natively (``type`` is the core's
   the Phase 2 page sends lifecycle work to jobs, while older built pages keep
   their original guarded behavior until they reload
 * ``POST /api/v1/integrations``             - ``{op: test|configure|disable|action}``:
-  test settings, save them (turning on only behind a passing test), turn off, or
-  run a named check such as LDAP's ``lookup_user`` (Admin)
+  test settings, save them (turning on only behind a passing test, and switching a
+  hook point another integration serves only with ``take_over: true``; without it
+  the answer is 409 ``integration.hook_taken``), turn off, or run a named check such
+  as LDAP's ``lookup_user``; and the community life cycle
+  (``core.community``): ``community_preview`` (the trust screen for a repository URL
+  and ref), ``community_add`` (installs the reviewed ``commit``),
+  ``community_check``, ``community_update`` (the reviewed newer ``commit``) and
+  ``community_remove`` (Admin)
 * ``POST /api/v1/settings``                 - one settings write (``{"setting":
   <name>, ...}``) over the SAME core functions ``cwcli config`` and ``cwcli axi
   setup`` call: cache clear/enable/disable, search paths add/remove/prune,
@@ -214,6 +220,7 @@ from ..core import apps as core_apps
 from ..core import auto_inspect as core_auto_inspect
 from ..core import backup_store as core_backup_store
 from ..core import bench_ops as core_bench_ops
+from ..core import community as core_community
 from ..core import config as core_config
 from ..core import cred_bridge as core_cred_bridge
 from ..core import daemon_recovery
@@ -264,7 +271,8 @@ SESSION_COOKIE = "cwcli_serve_session"
 # 4: the settings endpoint and the guarded destructive job verbs (Phase 3).
 # 5: the apps catalog (/api/v1/apps, its logo route, the `catalog` SSE event).
 # 7: roles, directory sign-in, and /api/v1/integrations (the S3 target moved there).
-PROTOCOL_VERSION = 7
+# 8: community integrations (the community_* integration ops, a card's community block).
+PROTOCOL_VERSION = 8
 
 # The running process's install fingerprint (core.version.install_fingerprint), set
 # by run_daemon, so a page can tell a daemon running different code.
@@ -334,6 +342,7 @@ _GET_ROLES = {"/api/v1/integrations": "admin", "/api/v1/backups/download": "oper
 # The lock stripe every settings write shares: the config is one TOML file read,
 # modified and written whole, so two concurrent writes would lose one.
 _SETTINGS_LOCK_KEY = "@settings"
+_COMMUNITY_LOCK_KEY = "@community"
 
 # ------------------------------------------------------------------ the web UI
 
@@ -590,23 +599,43 @@ def _sse_frame(event: str, data: dict, event_id: int | None = None) -> bytes:
 
 
 def _directory_on() -> bool:
-    """Whether directory sign-in is on. An unreadable integrations store reads as off,
-    so it can never stand between the local admin and the sign-in."""
+    """Whether a sign-in integration (LDAP, or a community one) is on. An unreadable
+    integrations store reads as off, so it can never stand between the local admin
+    and the sign-in."""
     try:
-        return core_integrations.active("ldap") is not None
+        return core_integrations.provider("sign_in") is not None
     except CwcliError:
         return False
 
 
 def _offsite_summary() -> dict | None:
-    """Where off-site copies go (the S3 backup target integration), without its keys."""
+    """Where off-site copies go (the backup target integration that is on), without
+    its keys: its id, name and location, plus an S3 bucket's endpoint and bucket. A
+    target that is on but cannot be opened, or a store that cannot be read, carries
+    the ``error``."""
     try:
-        found = core_integrations.active("s3")
-    except CwcliError:
-        return None
+        found = core_integrations.provider("backup_target")
+    except CwcliError as e:
+        return {"id": None, "name": "The backup target", "location": "", "error": e.message}
     if found is None:
         return None
-    return {k: found[0].get(k) for k in ("endpoint", "bucket", "prefix")}
+    integ = found[0]
+    summary: dict = {"id": integ.id, "name": integ.name, "location": integ.name}
+    try:
+        target = core_backup_store.offsite_target("", require=False)
+    except CwcliError as e:
+        return {**summary, "error": e.message}
+    if target is None:
+        return None
+    summary["location"] = target.location
+    for key in ("endpoint", "bucket", "prefix"):
+        try:
+            value = getattr(target, key, None)
+        except CwcliError:
+            continue
+        if isinstance(value, str):
+            summary[key] = value
+    return summary
 
 
 def _account_info(acct: core_accounts.Account) -> dict:
@@ -854,7 +883,7 @@ class _Handler(BaseHTTPRequestHandler):
                 try:
                     found = core_directory.authenticate(username, password)
                     acct = core_accounts.Account(
-                        found.username, False, role=found.role, source="ldap", name=found.name
+                        found.username, False, role=found.role, source=found.source, name=found.name
                     )
                 except CwcliError as e:
                     refusal = e
@@ -2277,10 +2306,12 @@ class _Handler(BaseHTTPRequestHandler):
         answers the test either way.
         """
         op = str(payload.get("op") or "")
+        by = self._account_name()
+        if op.startswith("community_"):
+            return self._community_post(op, payload, by)
         integration_id = _required_str(payload, "id")
         settings = payload.get("settings")
         secret_values = payload.get("secrets")
-        by = self._account_name()
         if op == "test":
             tested = core_integrations.test(integration_id, settings, secret_values)
             return 200, {"data": {"check": asdict(tested)}}
@@ -2292,6 +2323,7 @@ class _Handler(BaseHTTPRequestHandler):
                     settings,
                     secret_values,
                     enable=enable if isinstance(enable, bool) else None,
+                    take_over=payload.get("take_over") is True,
                     by=by,
                 )
             return 200, {"data": {"check": asdict(check) if check else None, "integration": view}}
@@ -2310,7 +2342,44 @@ class _Handler(BaseHTTPRequestHandler):
         raise CwcliError(
             ErrorKind.USAGE,
             "integration.op_invalid",
-            "op must be test, configure, disable or action.",
+            "op must be test, configure, disable, action or a community_ op.",
+        )
+
+    def _community_post(self, op: str, payload: dict, by: str) -> tuple[int, dict]:
+        """Add, update and remove community integrations. Adding and updating install
+        only the ``commit`` the Admin reviewed; every change is audited with ``by``."""
+        ref = payload.get("ref")
+        ref = ref if isinstance(ref, str) else None
+        if op == "community_preview":
+            found = core_community.preview(_required_str(payload, "url"), ref)
+            return 200, {"data": {"preview": found.as_dict()}}
+        if op == "community_check":
+            return 200, {
+                "data": {"check": core_community.check_update(_required_str(payload, "id"))}
+            }
+        with self._action_lock(_COMMUNITY_LOCK_KEY):
+            if op == "community_add":
+                rec = core_community.install(
+                    _required_str(payload, "url"),
+                    ref,
+                    commit=_required_str(payload, "commit"),
+                    by=by,
+                )
+                return 200, {"data": {"integration": core_integrations.view(rec["id"])[0]}}
+            if op == "community_update":
+                done = core_community.update(
+                    _required_str(payload, "id"), commit=_required_str(payload, "commit"), by=by
+                )
+                done["integration"] = core_integrations.view(done["id"])[0]
+                return 200, {"data": done}
+            if op == "community_remove":
+                rec = core_community.remove(_required_str(payload, "id"), by=by)
+                return 200, {"data": {"removed": rec["id"]}}
+        raise CwcliError(
+            ErrorKind.USAGE,
+            "integration.op_invalid",
+            "A community op is community_preview, community_add, community_check, "
+            "community_update or community_remove.",
         )
 
     def _check_updates(self) -> tuple[int, dict]:

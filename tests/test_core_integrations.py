@@ -51,6 +51,7 @@ def fake(monkeypatch, tmp_path):
         on_change=_changed,
         secrets_bound_to=("port",),
     )
+    monkeypatch.setattr(integrations, "official", lambda: {"fake": integ})
     monkeypatch.setattr(integrations, "registry", lambda: {"fake": integ})
     return calls
 

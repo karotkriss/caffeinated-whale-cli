@@ -20,9 +20,33 @@ export async function loadIntegrations() {
 
 const post = (payload) => postJson('/api/v1/integrations', payload)
 export const testIntegration = (id, settings, secrets) => post({ op: 'test', id, settings, secrets })
-export const configureIntegration = (id, settings, secrets, enable) => post({ op: 'configure', id, settings, secrets, enable })
+// takeOver: the Admin chose to switch a hook point another integration serves (409 integration.hook_taken otherwise).
+export const configureIntegration = (id, settings, secrets, enable, takeOver = false) => post({ op: 'configure', id, settings, secrets, enable, take_over: takeOver })
 export const disableIntegration = (id) => post({ op: 'disable', id })
 export const integrationAction = (id, action, args, settings, secrets) => post({ op: 'action', id, action, args, settings, secrets })
+
+// Community integrations (core/community.py): every install and update names the
+// exact commit the Admin reviewed on the trust screen.
+export const previewCommunity = (url, ref) => post({ op: 'community_preview', url, ref })
+export const addCommunity = (url, ref, commit) => post({ op: 'community_add', url, ref, commit })
+export const checkCommunity = (id) => post({ op: 'community_check', id })
+export const updateCommunity = (id, commit) => post({ op: 'community_update', id, commit })
+export const removeCommunity = (id) => post({ op: 'community_remove', id })
+
+// mode: 'add' | 'update' | 'remove'; id names the installed one for update and remove.
+export const communityDialog = reactive({ open: false, mode: 'add', id: null })
+export function openCommunity(mode, id = null) {
+  communityDialog.mode = mode
+  communityDialog.id = id
+  communityDialog.open = true
+}
+
+export const HOOK_POINT = {
+  sign_in: 'Sign-in provider',
+  backup_target: 'Backup target',
+}
+// A session signed in through a sign-in integration (LDAP or a community one).
+export const isDirectorySource = (source) => !!source && source !== 'local' && source !== 'api'
 
 // The dialog that sets one up; Settings > Integrations opens it.
 export const integrationDialog = reactive({ open: false, id: null })

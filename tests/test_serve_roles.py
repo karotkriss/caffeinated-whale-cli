@@ -229,7 +229,9 @@ class TestRoles:
         )
         payload = {"project": "p", "values": {"local": {"daily": 1}}}
         for who in ("otto", "vic"):
-            status, body, _ = _req(daemon, "/api/v1/backups/settings", payload, self._as(daemon, who))
+            status, body, _ = _req(
+                daemon, "/api/v1/backups/settings", payload, self._as(daemon, who)
+            )
             assert status == 403 and _code(body) == "auth.role_forbidden", who
         assert saved == []
         assert _req(daemon, "/api/v1/backups/settings", payload, self._as(daemon, "ana"))[0] == 200
@@ -265,6 +267,34 @@ class TestRoles:
         for who in ("otto", "vic"):
             status, body, _ = _req(daemon, "/api/v1/integrations", payload, self._as(daemon, who))
             assert status == 403 and _code(body) == "auth.role_forbidden", who
+
+    def test_only_an_admin_adds_updates_or_removes_community_integrations(
+        self, daemon, monkeypatch
+    ):
+        added = []
+        monkeypatch.setattr(
+            serve_cmd.core_community,
+            "install",
+            lambda url, ref, *, commit, by: added.append((url, commit, by)) or {"id": "hello"},
+        )
+        monkeypatch.setattr(serve_cmd.core_integrations, "view", lambda i=None: [{"id": i}])
+        add = {"op": "community_add", "url": "https://github.com/o/r", "commit": "c0ffee"}
+        for payload in (
+            {"op": "community_preview", "url": "https://github.com/o/r"},
+            add,
+            {"op": "community_check", "id": "hello"},
+            {"op": "community_update", "id": "hello", "commit": "c0ffee"},
+            {"op": "community_remove", "id": "hello"},
+        ):
+            for who in ("otto", "vic"):
+                status, body, _ = _req(
+                    daemon, "/api/v1/integrations", payload, self._as(daemon, who)
+                )
+                assert status == 403 and _code(body) == "auth.role_forbidden", (who, payload)
+        assert added == []
+        status, body, _ = _req(daemon, "/api/v1/integrations", add, self._as(daemon, "ana"))
+        assert status == 200 and body["data"]["integration"] == {"id": "hello"}
+        assert added == [("https://github.com/o/r", "c0ffee", "ana")]
 
     def test_an_admin_from_the_directory_may_remove(self, daemon):
         cookie = self._as(daemon, "ana")
