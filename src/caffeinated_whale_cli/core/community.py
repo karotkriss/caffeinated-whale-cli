@@ -796,27 +796,42 @@ def load_all() -> dict[str, core_integrations.Integration]:
     """Every installed community integration, loaded (or a card naming why it did not).
     A changed commit reloads it; a removed one is unloaded."""
     recs = records()
-    out: dict[str, core_integrations.Integration] = {}
     with _lock:
         for gone in set(_loaded) - set(recs):
             _forget(gone)
-        for integration_id, rec in sorted(recs.items(), key=lambda kv: kv[1]["name"].lower()):
-            cached = _loaded.get(integration_id)
-            if cached is not None and cached[0] == rec["commit"]:
-                out[integration_id] = cached[1]
-                continue
+        return {
+            integration_id: _load_one(rec)
+            for integration_id, rec in sorted(recs.items(), key=lambda kv: kv[1]["name"].lower())
+        }
+
+
+def load(integration_id: str) -> core_integrations.Integration | None:
+    """One installed community integration, loaded (or its error card); None when it
+    is not installed. No other community package is imported."""
+    rec = records().get(integration_id)
+    with _lock:
+        if rec is None:
             _forget(integration_id)
-            site = str(root() / rec["dir"])
-            error = None
-            try:
-                integ = _import(site, rec)
-            except Exception as e:  # noqa: BLE001 - community code
-                _unload(site)
-                error = str(e) or type(e).__name__
-                integ = _broken(rec, error)
-            _loaded[integration_id] = (rec["commit"], integ, site, error)
-            out[integration_id] = integ
-    return out
+            return None
+        return _load_one(rec)
+
+
+def _load_one(rec: dict[str, Any]) -> core_integrations.Integration:
+    integration_id = rec["id"]
+    cached = _loaded.get(integration_id)
+    if cached is not None and cached[0] == rec["commit"]:
+        return cached[1]
+    _forget(integration_id)
+    site = str(root() / rec["dir"])
+    error = None
+    try:
+        integ = _import(site, rec)
+    except Exception as e:  # noqa: BLE001 - community code
+        _unload(site)
+        error = str(e) or type(e).__name__
+        integ = _broken(rec, error)
+    _loaded[integration_id] = (rec["commit"], integ, site, error)
+    return integ
 
 
 def load_error(integration_id: str) -> str | None:

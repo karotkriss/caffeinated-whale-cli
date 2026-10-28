@@ -492,8 +492,23 @@ class TestLoading:
     def test_official_hook_points_never_load_community_code(self, home, repo, monkeypatch):
         community.install(_url(repo), commit=_write(repo))
         monkeypatch.setattr(community, "load_all", lambda: pytest.fail("community code loaded"))
+        monkeypatch.setattr(community, "load", lambda _id: pytest.fail("community code loaded"))
         assert integrations.active("ldap") is None
         assert integrations.get("s3").id == "s3"
+
+    def test_one_community_id_loads_only_its_own_package(self, home, repo):
+        community.install(_url(repo), commit=_write(repo))
+        hola = _second_repo(home, "hola")
+        community.install(_url(hola), commit=_write(hola, iid="hola"))
+        integrations.view()
+        for integration_id in list(community._loaded):
+            community._forget(integration_id)
+        assert integrations.get("hello").id == "hello"
+        assert any("cwcli_hello" in m for m in sys.modules)
+        assert not any("cwcli_hola" in m for m in sys.modules)
+        with pytest.raises(CwcliError) as e:
+            integrations.get("nope")
+        assert e.value.code == "integration.unknown"
 
     def test_community_callbacks_never_raise_into_cwcli(self):
         def boom(*args):
