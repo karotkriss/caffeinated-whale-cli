@@ -180,6 +180,21 @@ class TestRoles:
         update["args"]["force"] = True
         status, body, _ = _req(daemon, "/api/v1/jobs", update, cookie)
         assert status == 403 and _code(body) == "auth.role_forbidden"
+
+    def test_only_the_value_the_role_check_gates_forces_an_update(self, daemon, monkeypatch):
+        """A truthy non-boolean ``force`` passes the Operator check, so it must not force."""
+        seen = []
+        monkeypatch.setattr(
+            core_jobs.core_update, "update", lambda *a, **kw: seen.append(kw["force"])
+        )
+        cookie = self._as(daemon, "otto")
+        for force in (1, "yes"):
+            args = {"apps": ["x"], "force": force}
+            payload = {"verb": "apps-update", "target": {"project": "p"}, "args": args}
+            assert _req(daemon, "/api/v1/jobs", payload, cookie)[0] == 202
+            core_jobs._dispatch("apps-update", {"project": "p"}, args, False, {}, None)
+        core_jobs._dispatch("apps-update", {"project": "p"}, {"force": True}, False, {}, None)
+        assert seen == [False, False, True]
         assert _req(daemon, "/api/v1/settings", {"setting": "tips.enable"}, cookie)[0] == 403
         assert _req(daemon, "/api/v1/integrations", cookie=cookie)[0] == 403
         assert (

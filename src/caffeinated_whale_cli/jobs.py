@@ -1498,7 +1498,7 @@ def _dispatch(
             build=bool(args.get("build")),
             skip_maintenance=bool(args.get("skip_maintenance")),
             no_recache=False,
-            force=bool(args.get("force")),
+            force=args.get("force") is True,
             preflight=not bool(args.get("no_preflight")),
             fix_branches=bool(args.get("fix_branches")),
             on_event=emit,
