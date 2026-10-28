@@ -343,7 +343,9 @@ class TestLoading:
         rec = community.install(_url(repo), commit=_write(repo))
         integrations.view()
         site = str(community.root() / rec["dir"])
-        assert sys.path.index(site) > sys.path.index(str(Path(integrations.__file__).parents[2]))
+        own = Path(integrations.__file__).resolve().parents[2]
+        mine = [i for i, entry in enumerate(sys.path) if entry and Path(entry).resolve() == own]
+        assert mine and sys.path.index(site) > mine[0]
 
     def test_official_hook_points_never_load_community_code(self, home, repo, monkeypatch):
         community.install(_url(repo), commit=_write(repo))
@@ -421,7 +423,8 @@ class TestSignIn:
         with pytest.raises(CwcliError) as e:
             self._fetch(url, tmp_path)
         assert e.value.code == "community.sign_in_missing"
-        assert fix in e.value.message
+        assert e.value.hint is not None and e.value.hint.startswith(fix)
+        assert e.value.detail is not None and f"Run: {e.value.detail['command']}" == fix
         assert calls[0] is None and "community credential" in calls[1]
 
     def test_a_sign_in_that_cannot_read_the_repository_says_so(self, calls, tmp_path):

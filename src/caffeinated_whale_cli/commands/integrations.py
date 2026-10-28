@@ -34,6 +34,8 @@ _WARNING = (
 
 def _fail(e: CwcliError) -> None:
     stderr_console.print(f"[bold red]Error:[/bold red] {e.message}", soft_wrap=True)
+    if e.hint:
+        stderr_console.print(e.hint, soft_wrap=True)
     raise typer.Exit(code=1)
 
 
@@ -121,8 +123,7 @@ def add_cmd(
     confirm_or_exit(
         f"Install {decl['name']} at {found.commit[:12]}?",
         assume_yes=yes,
-        refuse_message="Installing community code needs confirmation; pass --yes to install "
-        "the commit shown above.",
+        refuse_message="Pass --yes to install the commit shown above.",
     )
     try:
         rec = core_community.install(found.url, found.ref, commit=found.commit, by=_by())
@@ -162,8 +163,7 @@ def update_cmd(
     confirm_or_exit(
         f"Update {integration_id} from {found['current'][:12]} to {found['latest'][:12]}?",
         assume_yes=yes,
-        refuse_message="Updating community code needs confirmation; pass --yes to install "
-        "the commit shown above.",
+        refuse_message="Pass --yes to install the commit shown above.",
     )
     try:
         done = core_community.update(integration_id, commit=found["latest"], by=_by())
@@ -193,7 +193,7 @@ def remove_cmd(
     confirm_or_exit(
         f"Remove {integration_id} with its settings and secrets?",
         assume_yes=yes,
-        refuse_message="Removing an integration needs confirmation; pass --yes.",
+        refuse_message="Pass --yes to remove it.",
     )
     try:
         core_community.remove(integration_id, by=_by())

@@ -53,6 +53,7 @@ const signInOn = computed(() => integrations.list.some((i) => i.id === 'ldap' &&
 const official = computed(() => integrations.list.filter((i) => i.publisher === 'official'))
 const community = computed(() => integrations.list.filter((i) => i.publisher === 'community'))
 const communityMenu = (i) => [
+  ...(i.enabled ? [{ label: 'Turn off', icon: 'lucide-power', onClick: () => { turningOff.value = i } }] : []),
   { label: 'Check for update', icon: 'lucide-refresh-cw', onClick: () => openCommunity('update', i.id) },
   { label: 'Remove…', icon: 'lucide-trash-2', theme: 'red', onClick: () => openCommunity('remove', i.id) },
 ]
@@ -356,13 +357,11 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
                 <Button v-if="i.enabled" label="Turn off" @click="turningOff = i" />
               </div>
             </div>
-            <div class="flex items-center gap-8 pt-5">
-              <div class="min-w-0 flex-1">
-                <div class="text-sm font-medium text-ink-gray-5">Community</div>
-                <p class="mt-1 text-p-sm text-ink-gray-5">Added from a GitHub or GitLab repository and pinned to the commit you review. Nobody has reviewed community code: it runs with cwcli's own rights on this machine. Each starts off.</p>
-              </div>
+            <div class="flex items-center gap-4 pt-5">
+              <div class="min-w-0 flex-1 text-sm font-medium text-ink-gray-5">Community</div>
               <div class="flex shrink-0 items-center gap-1"><CommandCopy command="cwcli integrations add <repository-url>" /><Button icon-left="lucide-package-plus" label="Add from a repository…" @click="openCommunity('add')" /></div>
             </div>
+            <p class="mt-1 text-p-sm text-ink-gray-5">Added from a GitHub or GitLab repository and pinned to the commit you review. Nobody has reviewed community code: it runs with cwcli's own rights on this machine. Each starts off.</p>
             <div v-for="i in community" :key="i.id" class="flex items-center gap-8 py-3.5">
               <div class="min-w-0 flex-1">
                 <div class="flex flex-wrap items-center gap-2">
@@ -370,7 +369,7 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
                   <Badge size="sm" variant="subtle" :theme="PUBLISHER[i.publisher]?.theme" :label="PUBLISHER[i.publisher]?.label" />
                 </div>
                 <div class="mt-1 text-base leading-5 text-ink-gray-6">{{ i.description }}</div>
-                <div v-if="i.community" class="mt-1 truncate text-sm leading-5 text-ink-gray-5" :title="`${i.community.url} @ ${i.community.commit}`">{{ repoName(i.community.url) }} @ <span class="font-mono">{{ i.community.commit.slice(0, 12) }}</span>{{ i.community.ref ? ` (${i.community.ref})` : '' }} · by {{ i.community.publisher }}</div>
+                <div v-if="i.community" class="mt-1 break-words text-sm leading-5 text-ink-gray-5" :title="`${i.community.url} @ ${i.community.commit}`">{{ repoName(i.community.url) }} @ <span class="font-mono">{{ i.community.commit.slice(0, 12) }}</span>{{ i.community.ref ? ` (${i.community.ref})` : '' }} · by {{ i.community.publisher }}</div>
                 <div v-if="i.community?.load_error" class="mt-1 text-sm leading-5 text-ink-red-6">Does not load: {{ i.community.load_error }}</div>
                 <div v-else-if="i.state !== 'off'" class="mt-1 text-sm leading-5" :class="i.state === 'on' ? 'text-ink-gray-5' : 'text-ink-red-6'">{{ stateLine(i) }}</div>
                 <div v-for="n in i.notices || []" :key="n" class="mt-1 text-sm leading-5 text-ink-amber-6">{{ n }}</div>
@@ -378,7 +377,6 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
               <div class="flex shrink-0 items-center gap-2">
                 <Badge size="sm" variant="subtle" :theme="STATE[i.state]?.theme" :label="STATE[i.state]?.label" />
                 <Button v-if="!i.community?.load_error" :label="i.enabled ? 'Settings…' : i.state === 'needs_setup' ? 'Finish setup…' : 'Turn on…'" @click="openIntegration(i.id)" />
-                <Button v-if="i.enabled" label="Turn off" @click="turningOff = i" />
                 <Dropdown :options="communityMenu(i)" align="end"><Button icon="lucide-ellipsis" :aria-label="`More for ${i.name}`" /></Dropdown>
               </div>
             </div>

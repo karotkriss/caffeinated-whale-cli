@@ -6,6 +6,7 @@
 // the same way before anything changes. Removing asks for the id typed back.
 import { computed, ref, watch } from 'vue'
 import { Alert, Badge, Button, Dialog, ErrorMessage, FormControl, LoadingText } from 'frappe-ui'
+import CommandLine from './CommandLine.vue'
 import { addCommunity, checkCommunity, communityDialog, HOOK_POINT, integrations, loadIntegrations, previewCommunity, removeCommunity, updateCommunity } from '../data/integrations'
 
 const d = communityDialog
@@ -131,7 +132,14 @@ const errorText = computed(() => (error.value ? (error.value.hint ? `${error.val
         <FormControl v-model="typed" :label="`Type ${d.id} to confirm`" :placeholder="d.id" autocomplete="off" spellcheck="false" />
       </template>
 
-      <ErrorMessage :message="errorText" />
+      <template v-if="error?.detail?.command">
+        <ErrorMessage :message="error.message" />
+        <div class="space-y-1.5">
+          <div class="text-sm text-ink-gray-5">Sign this machine in, then review again</div>
+          <CommandLine :command="error.detail.command" />
+        </div>
+      </template>
+      <ErrorMessage v-else :message="errorText" />
     </div>
     <template #actions="{ close }">
       <div class="flex flex-wrap justify-end gap-2">
