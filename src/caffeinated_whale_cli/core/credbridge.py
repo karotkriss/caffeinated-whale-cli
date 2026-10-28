@@ -280,6 +280,11 @@ def _prefer_tcp() -> bool:
     return os.name == "nt" or sys.platform == "darwin"
 
 
+def tool_for_host(host: str) -> str:
+    """The host tool whose sign-in answers for ``host``: ``gh`` for GitHub, else ``glab``."""
+    return "gh" if host.endswith("github.com") else "glab"
+
+
 def host_credential(
     request: bytes,
     *,
@@ -314,7 +319,7 @@ def host_credential(
         if audit is not None:
             audit(host, False)
         return b""
-    tool = "gh" if host.endswith("github.com") else "glab"
+    tool = tool_for_host(host)
     try:
         out = subprocess.run(
             [tool, "auth", "git-credential", "get"],

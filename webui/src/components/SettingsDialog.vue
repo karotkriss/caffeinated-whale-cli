@@ -5,7 +5,7 @@
 // you were. Every write still goes through applySetting -> POST /api/v1/settings,
 // and each row keeps its terminal twin as a compact copy affordance.
 import { computed, ref, watch } from 'vue'
-import { Badge, Button, Checkbox, Dialog, FormControl, Switch, LoadingText, ErrorMessage, SettingsDialog, SettingsSidebar, SettingsNavGroup, SettingsNavItem, SettingsContent, SettingsPanel, SettingsHeader, SettingsBody, SettingsRow } from 'frappe-ui'
+import { Badge, Button, Checkbox, Dialog, Dropdown, FormControl, Switch, LoadingText, ErrorMessage, SettingsDialog, SettingsSidebar, SettingsNavGroup, SettingsNavItem, SettingsContent, SettingsPanel, SettingsHeader, SettingsBody, SettingsRow } from 'frappe-ui'
 import CommandLine from '../components/CommandLine.vue'
 import CommandCopy from '../components/CommandCopy.vue'
 import DoctorView from '../components/DoctorView.vue'
@@ -14,7 +14,8 @@ import { settingsDialog, ADMIN_SECTIONS } from '../data/settings-dialog'
 import { session, signOut, listSessions, can, ROLE_LABEL } from '../data/session'
 import PasswordForm from './PasswordForm.vue'
 import IntegrationDialog from './IntegrationDialog.vue'
-import { integrations, loadIntegrations, disableIntegration, openIntegration, STATE, PUBLISHER } from '../data/integrations'
+import CommunityDialog from './CommunityDialog.vue'
+import { integrations, loadIntegrations, disableIntegration, openIntegration, openCommunity, STATE, PUBLISHER } from '../data/integrations'
 import { openJob } from '../data/job-dialog'
 import { applySetting, settings } from '../data/settings'
 import { catalog, loadCatalog, scanCatalog, sources, hostLabel } from '../data/catalog'
@@ -49,6 +50,18 @@ const directoryUser = computed(() => session.user?.source === 'ldap')
 const signInOn = computed(() => integrations.list.some((i) => i.id === 'ldap' && i.enabled))
 
 // --- integrations -----------------------------------------------------------
+const official = computed(() => integrations.list.filter((i) => i.publisher === 'official'))
+const community = computed(() => integrations.list.filter((i) => i.publisher === 'community'))
+const communityMenu = (i) => [
+  { label: 'Check for update', icon: 'lucide-refresh-cw', onClick: () => openCommunity('update', i.id) },
+  { label: 'Remove…', icon: 'lucide-trash-2', theme: 'red', onClick: () => openCommunity('remove', i.id) },
+]
+const repoName = (u) => { try { return new URL(u).pathname.replace(/^\/|\.git$/g, '') || u } catch { return u } }
+const turnOffText = (i) => {
+  if (i?.id === 'ldap') return 'Directory users can no longer sign in, and every directory user signed in now is signed out. The local admin account keeps working.'
+  if (i?.id === 's3') return 'New backups are no longer copied off-site; the copies already in the bucket stay there.'
+  return `${i?.name || 'It'} stops running.`
+}
 const turningOff = ref(null)
 const offBusy = ref(false)
 async function turnOff() {
@@ -327,7 +340,7 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
             <ErrorMessage :message="integrations.error?.message || errorText" />
             <LoadingText v-if="integrations.loading && !integrations.list.length" class="py-3" />
             <div class="pt-3 text-sm font-medium text-ink-gray-5">Official</div>
-            <div v-for="i in integrations.list" :key="i.id" class="flex items-center gap-8 py-3.5">
+            <div v-for="i in official" :key="i.id" class="flex items-center gap-8 py-3.5">
               <div class="min-w-0 flex-1">
                 <div class="flex flex-wrap items-center gap-2">
                   <span class="text-base-medium leading-tighter text-ink-gray-8">{{ i.name }}</span>
@@ -343,8 +356,33 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
                 <Button v-if="i.enabled" label="Turn off" @click="turningOff = i" />
               </div>
             </div>
-            <div class="pt-5 text-sm font-medium text-ink-gray-5">Community</div>
-            <SettingsRow title="Community integrations" description="Integrations from other publishers will be installable packages, marked Community, not reviewed. Each will start off, and only an Admin will be able to install one. Not available yet." />
+            <div class="flex items-center gap-8 pt-5">
+              <div class="min-w-0 flex-1">
+                <div class="text-sm font-medium text-ink-gray-5">Community</div>
+                <p class="mt-1 text-p-sm text-ink-gray-5">Added from a GitHub or GitLab repository and pinned to the commit you review. Nobody has reviewed community code: it runs with cwcli's own rights on this machine. Each starts off.</p>
+              </div>
+              <div class="flex shrink-0 items-center gap-1"><CommandCopy command="cwcli integrations add <repository-url>" /><Button icon-left="lucide-package-plus" label="Add from a repository…" @click="openCommunity('add')" /></div>
+            </div>
+            <div v-for="i in community" :key="i.id" class="flex items-center gap-8 py-3.5">
+              <div class="min-w-0 flex-1">
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class="text-base-medium leading-tighter text-ink-gray-8">{{ i.name }}</span>
+                  <Badge size="sm" variant="subtle" :theme="PUBLISHER[i.publisher]?.theme" :label="PUBLISHER[i.publisher]?.label" />
+                </div>
+                <div class="mt-1 text-base leading-5 text-ink-gray-6">{{ i.description }}</div>
+                <div v-if="i.community" class="mt-1 truncate text-sm leading-5 text-ink-gray-5" :title="`${i.community.url} @ ${i.community.commit}`">{{ repoName(i.community.url) }} @ <span class="font-mono">{{ i.community.commit.slice(0, 12) }}</span>{{ i.community.ref ? ` (${i.community.ref})` : '' }} · by {{ i.community.publisher }}</div>
+                <div v-if="i.community?.load_error" class="mt-1 text-sm leading-5 text-ink-red-6">Does not load: {{ i.community.load_error }}</div>
+                <div v-else-if="i.state !== 'off'" class="mt-1 text-sm leading-5" :class="i.state === 'on' ? 'text-ink-gray-5' : 'text-ink-red-6'">{{ stateLine(i) }}</div>
+                <div v-for="n in i.notices || []" :key="n" class="mt-1 text-sm leading-5 text-ink-amber-6">{{ n }}</div>
+              </div>
+              <div class="flex shrink-0 items-center gap-2">
+                <Badge size="sm" variant="subtle" :theme="STATE[i.state]?.theme" :label="STATE[i.state]?.label" />
+                <Button v-if="!i.community?.load_error" :label="i.enabled ? 'Settings…' : i.state === 'needs_setup' ? 'Finish setup…' : 'Turn on…'" @click="openIntegration(i.id)" />
+                <Button v-if="i.enabled" label="Turn off" @click="turningOff = i" />
+                <Dropdown :options="communityMenu(i)" align="end"><Button icon="lucide-ellipsis" :aria-label="`More for ${i.name}`" /></Dropdown>
+              </div>
+            </div>
+            <p v-if="!community.length && !integrations.loading" class="py-3 text-p-sm text-ink-gray-5">No community integrations yet.</p>
           </SettingsBody>
         </SettingsPanel>
       </template>
@@ -395,8 +433,9 @@ const removeSource = async (source) => { await applySetting('catalog.source_remo
   </SettingsDialog>
 
   <IntegrationDialog />
+  <CommunityDialog />
   <Dialog :open="!!turningOff" :title="`Turn off ${turningOff?.name || ''}?`" icon="lucide-power" @update:open="(v) => { if (!v) turningOff = null }">
-    <p class="text-p-base text-ink-gray-7">{{ turningOff?.id === 'ldap' ? 'Directory users can no longer sign in, and every directory user signed in now is signed out. The local admin account keeps working.' : 'New backups are no longer copied off-site; the copies already in the bucket stay there.' }} Its settings are kept for the next time it is turned on.</p>
+    <p class="text-p-base text-ink-gray-7">{{ turnOffText(turningOff) }} Its settings are kept for the next time it is turned on.</p>
     <template #actions="{ close }">
       <div class="flex justify-end gap-2">
         <Button label="Cancel" @click="close" />

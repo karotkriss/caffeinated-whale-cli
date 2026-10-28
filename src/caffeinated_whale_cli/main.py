@@ -10,6 +10,7 @@ from .commands import axi as axi_cmd
 from .commands import backups as backups_cmd
 from .commands import config as config_cmd
 from .commands import db_access as db_access_cmd
+from .commands import integrations as integrations_cmd
 from .commands import list as list_cmd
 from .commands import restart as restart_cmd
 from .commands import rm as rm_cmd
@@ -146,6 +147,7 @@ app.add_typer(backups_cmd.app, name="backups")
 app.add_typer(db_access_cmd.app, name="db-access")
 app.add_typer(admin_cmd.app, name="admin")
 app.add_typer(schedule_cmd.app, name="schedule")
+app.add_typer(integrations_cmd.app, name="integrations")
 # `list`/`instances` are the natural guesses for `ls`; hidden so `--help` still
 # advertises one canonical name, but registered so the guess just works (#231).
 app.add_typer(list_cmd.app, name="list", hidden=True)

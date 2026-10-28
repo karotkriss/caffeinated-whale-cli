@@ -2242,7 +2242,7 @@ Turning one on opens its setup, tests the connection, and turns it on only when 
 Each integration shows one of four states: Off, Needs setup (the last attempt to turn it on failed its test), On, or Error (it is on, and its last use failed).
 Secrets are stored encrypted (AES-256-GCM) in `~/.cwcli/integrations.json` under a key in `~/.cwcli/keys/integrations.key`, both 0600; after a save the page shows only that a secret is set, and a new value replaces it.
 A change to where a secret is sent (the LDAP server URL, StartTLS, CA certificate or service account, or the S3 endpoint) is refused with `integration.secret_retype` unless the secret is typed again, so a stored secret never goes to a server it was not saved for.
-Two official integrations ship now; community integrations (installable packages marked "Community, not reviewed", off by default, installed only by an Admin) come later.
+Two official integrations ship with cwcli, and an Admin can add community integrations from a repository (below).
 
 - **LDAP / Active Directory sign-in:** the server URL (`ldaps://` preferred, or `ldap://` with StartTLS; cwcli refuses to send passwords in clear text), the CA certificate that signed the directory's certificate (empty uses this machine's trusted CAs), Active Directory or OpenLDAP, a read-only service account and its password, the base DN, the user search filter (`{username}` is the typed name, escaped), the username, email and display-name attributes, and the allowed groups, each mapped to a role.
   At every sign-in cwcli finds the user with the service account, reads their groups (Active Directory: nested groups too; OpenLDAP: `groupOfNames`, `groupOfUniqueNames` and `posixGroup`), checks the password by binding as the user, and refuses an account the directory reports as disabled and anyone outside the allowed groups.
@@ -2256,6 +2256,16 @@ Two official integrations ship now; community integrations (installable packages
   Copies of an instance that used a different bucket are paused, never silently: the S3 card here and the Backups page name the instance and its old endpoint and bucket until its copies are turned back on.
   Every per-instance plaintext secret file (`~/.cwcli/backups/keys/s3-<instance>.secret`) is removed; type the secret key again in this integration if you set up that bucket here.
   `cwcli backups s3 configure` sets up the same integration from a terminal.
+- **Community integrations:** **Add from a repository…** takes a GitHub, GitLab.com or self-hosted GitLab repository URL and an optional branch or tag.
+  cwcli fetches the repository and reads its declaration without building or running anything, then shows the trust screen: the integration's name, publisher, description, the hook points it declares, the repository, and the exact commit the branch or tag points at.
+  Nothing is installed until the Admin clicks **Install**, and then only that commit; if the branch moved in the meantime, cwcli refuses and asks for a new review.
+  A public repository needs no sign-in.
+  A private one is read with the sign-in this machine already has, the same way the credential bridge works: `gh` for GitHub, `glab` for GitLab.com and self-hosted GitLab.
+  When that sign-in is missing, the error names the command to run, for example `glab auth login --hostname gitlab.example.org`.
+  The card is marked **Community, not reviewed** and shows the repository and commit; it starts off and turns on through its own connection test like any other.
+  **Check for update** shows the installed and the latest commit with the trust screen, and **Update** installs only that reviewed commit and turns the integration off, keeping its settings and secrets, so the new code's test runs before it is on again; nothing updates by itself.
+  **Remove…** deletes the package, its settings and its secrets after the id is typed back.
+  See `integrations` below for the terminal commands, the declaration a repository needs, and where the code is installed.
 
 **Honest states:** the UI distinguishes `unknown` (not probed) from `offline`,
 labels cache-backed data as remembered versus verified, and never guesses a
@@ -2288,6 +2298,51 @@ Recovery from the host when the web UI password is lost: the account goes back t
 This local account always stays an Admin and always signs in with its own password, including while LDAP / Active Directory sign-in is on.
 The account store is `~/.cwcli/accounts.json` (0600; passwords are scrypt hashes, sessions are stored as hashes of their ids), or the shared state tree on a shared install, where the reset needs root like the rest of `cwcli setup`.
 There is deliberately no `cwcli axi` spelling: an agent must not reset a person's web UI credential.
+
+---
+
+### `integrations` - Community Integrations
+
+```bash
+cwcli integrations list [--json]
+cwcli integrations add URL [--ref BRANCH_OR_TAG] [--yes]
+cwcli integrations update ID [--check] [--yes]
+cwcli integrations remove ID [--yes]
+```
+
+`list` shows every integration, official and community, with its state; a community one also shows its repository, commit, publisher and who installed it.
+`add` fetches the repository (an `https://` GitHub, GitLab.com or self-hosted GitLab URL), prints what it declares and the exact commit, and installs that commit after you confirm; `--yes` confirms in a script, and without it a non-interactive run refuses.
+A public repository is read with no sign-in: cwcli switches off every git credential helper and prompt for that first attempt.
+Only when the host answers that a sign-in is required does git ask this machine's `gh` (GitHub) or `glab` (GitLab) sign-in, and a missing one fails with the command that fixes it.
+A URL that carries a user name or token is refused; cwcli stores no token.
+`update` shows the installed and the latest commit on the integration's branch or tag; `--check` stops there, otherwise it installs the latest commit after you confirm and turns the integration off until it is turned on again.
+`remove` deletes the package, its settings and its secrets.
+Every `add`, `update` and `remove` appends a line to `~/.cwcli/integrations-audit.log` with who did it, the URL and the commit.
+On a shared install only an Admin changes community integrations: root here, or an Admin in the web UI.
+There is deliberately no `cwcli axi` spelling: installing third-party code is a person's decision.
+
+A community integration is a Python package whose repository declares it in `pyproject.toml`, which cwcli reads before running anything; a repository without a valid declaration is refused before anything is installed:
+
+```toml
+[project]
+name = "cwcli-integration-hello"
+version = "0.1.0"
+dependencies = []          # only your own; cwcli provides itself
+
+[project.entry-points."cwcli.integrations"]
+hello = "cwcli_hello:INTEGRATION"   # one per repository; the name is the integration's id
+
+[tool.cwcli.integration]
+name = "Hello webhook"
+publisher = "Example Org"
+description = "Posts to a webhook."
+provides = ["notifications"]        # any of sign_in, backup_target, notifications
+```
+
+The entry point names a `caffeinated_whale_cli.core.integrations.Integration` (its settings fields, connection test, optional actions); cwcli refuses one whose id or hook points differ from the declaration, and shows the declared name and description.
+The hook points are shown on the card and the trust screen; cwcli's own sign-in and off-site backups keep using the official integrations.
+cwcli installs each package with pip into its own directory under `~/.cwcli/integrations/community/`, never into cwcli's environment or the system, using a private venv there for pip; cwcli's own packages take precedence over any copy a package brings along.
+The standalone Windows build cannot install packages.
 
 ---
 
