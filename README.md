@@ -15,7 +15,7 @@ A command-line interface (CLI) for managing Frappe/ERPNext Docker instances duri
 - **Cache System** - Fast project inspection with SQLite-based caching and configuration storage
 - **Multi-Bench Support** - Address individual benches in a multi-bench instance by numeric index or a durable label with `--bench`
 - **Default Site Support** - Optional `--site` flag when default site is configured
-- **Backup & Restore** - Interactive site restoration with automatic file archive detection and P2P transfer support
+- **Backup & Restore** - Interactive site restoration with automatic file archive detection and P2P transfer support, plus a verified backup store outside the instances with `cwcli backups` (retention, clone and move, off-site S3 copies)
 - **App Management** - List, install, uninstall, and update Frappe apps per bench and per site with `cwcli apps` (multi-site by default, `--json`, honest exit codes)
 - **Private App Repos** - `apps install`/`apps update` authenticate private GitHub/GitLab app fetches through your host's already-signed-in `gh`/`glab`, with no token ever entering the container
 - **Update Management** - App updates with automatic migrations and lock cleanup
@@ -396,6 +396,78 @@ Without a reuse flag, a non-interactive session (non-TTY) where the bench alread
 
 ---
 
+### `new-bench` - Add a Bench to an Instance
+
+Adds a bench to an existing instance with the same provisioning `init` gives bench 0: `bench init` for the chosen version or fork, the bench configs, a first site, and optionally ERPNext.
+It then starts the bench's processes and fetches and installs any extra apps on the first site.
+The other benches in the instance keep running.
+
+```bash
+cwcli new-bench [OPTIONS] PROJECT_NAME BENCH_NAME
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--site TEXT` | The first site's name (default: `<BENCH_NAME>.localhost`) |
+| `--version TEXT` | Frappe version: a major (`16`, the default) or a tag (`16.3.0`) |
+| `--frappe-branch TEXT` | A raw Frappe git ref instead of `--version` |
+| `--frappe-url TEXT` | A Frappe fork to build from (private forks use the credential bridge) |
+| `--erpnext` | Install ERPNext on the first site |
+| `-a`, `--app TEXT` | An extra app (git URL or name) to fetch and install on the first site (repeatable) |
+| `--admin-password TEXT` | Administrator password for the first site |
+| `--db-root-password TEXT` | MariaDB root password (default: the one remembered at init; env `CWCLI_DB_ROOT_PASSWORD`) |
+| `-y`, `--yes` | Auto-start a stopped instance without prompting |
+| `-v`, `--verbose` | Stream bench's output |
+
+The Administrator password comes from `--admin-password`, else the `CWCLI_ADMIN_PASSWORD` environment variable, else a hidden prompt.
+A non-interactive session with neither refuses with exit 2.
+A bench name that already exists is refused, never reused.
+The command exits 1 when an extra app fails to install or the bench's processes did not start, even though the bench was created.
+
+```bash
+CWCLI_ADMIN_PASSWORD=... cwcli new-bench my-project bench-v15 --version 15 --erpnext
+cwcli new-bench my-project hrms-bench --app https://github.com/frappe/hrms
+```
+
+**Agent surface:** `cwcli axi new-bench` is the TOON spelling.
+
+---
+
+### `new-site` - Add a Site to a Bench
+
+Creates a site on an existing bench: `bench new-site`, then `install-app` for each `--app`, `bench use` with `--default`, and developer mode with `--dev-mode`.
+
+```bash
+cwcli new-site [OPTIONS] PROJECT_NAME SITE
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--bench TEXT` | Which bench: its numeric index or label |
+| `-a`, `--app TEXT` | An app already on the bench to install on the site (repeatable) |
+| `--default` | Make it the bench's default site |
+| `--dev-mode` | Turn developer mode on for the new site |
+| `--admin-password TEXT` | Administrator password |
+| `--db-root-password TEXT` | MariaDB root password (default: the one remembered at init; env `CWCLI_DB_ROOT_PASSWORD`) |
+| `-y`, `--yes` | Auto-start a stopped instance without prompting |
+| `-v`, `--verbose` | Stream bench's output |
+
+The Administrator password is resolved the same way as for `new-bench`: the flag, then `CWCLI_ADMIN_PASSWORD`, then a hidden prompt, and a non-interactive session with neither refuses with exit 2.
+A site name that already exists on the bench is refused, and every `--app` must already be in the bench's `apps/` folder (fetch one first with `cwcli apps install <project> <app> --fetch-only`).
+
+```bash
+CWCLI_ADMIN_PASSWORD=... cwcli new-site my-project shop.localhost --app erpnext --default
+cwcli new-site my-project shop.localhost --bench 1 --dev-mode
+```
+
+**Agent surface:** `cwcli axi new-site` is the TOON spelling.
+
+---
+
 ### `ls` - List Projects
 
 Scans Docker for Frappe/ERPNext projects and displays their status and ports.
@@ -731,6 +803,7 @@ Removes a Frappe project: its containers, named Docker volumes, own Docker Compo
 **WARNING:** This action is destructive and cannot be undone.
 Before deleting anything, the command re-caches the project, backs up the databases and files for all sites across every bench (a live `bench backup --with-files`, run once per bench on a multi-bench project), and archives the `docker-compose.yml`, `site_config.json`, and the project's `conf/` directory into a timestamped folder under `~/.cwcli/archive/` (or `$CWCLI_HOME/archive/` when the `CWCLI_HOME` override is set).
 The backup and the config archive are written first, and the named volumes and project directory are only deleted once both have succeeded.
+Each site's verified backup is then moved into the [backup store](#backups---the-backup-store) as a `before-removal` set, which outlives the instance.
 When volumes are being deleted (the default `--volumes`), a backup that cannot be fully created and verified blocks removal: each backup artifact is copied out of the container to the host archive, and the database dump must be present and non-empty.
 If verification fails, the command aborts before any container is removed and exits non-zero, so data is never destroyed without a confirmed backup.
 Aborting before removal keeps the whole project intact (containers, volumes, network, directory, and cache), so a retry can still take a live backup from the running container.
@@ -818,7 +891,9 @@ Left there it would grow, unpruned, forever, for the rest of the bench's life.
 So `cwcli rm-site` copies that one archive out beside the backup (as `{site}.tar` in the same directory) and, only once that copy is verified non-empty on disk, deletes the in-container copy.
 If anything cannot be verified, the in-container archive is left in place rather than deleted unbacked, and the command exits non-zero so the leftover credentials are never silently missed.
 
-To restore a dropped site, recreate it, copy the files from its `backups/` directory into the new site's `private/backups/`, and run `cwcli restore <project> --site <site> --latest`.
+Once the drop has finished, the verified backup files are moved into the [backup store](#backups---the-backup-store) as a `before-removal` set (the `{site}.tar` stays in the archive directory).
+To restore the dropped site, run `cwcli backups restore <project>/<site>/<id> <project> --site <site>`; `cwcli backups list <project>` shows the set's key.
+If the move into the store fails, the files stay in the archive's `backups/` directory and nothing is lost.
 
 ```bash
 cwcli rm-site [OPTIONS] PROJECT_NAME SITE
@@ -1494,6 +1569,33 @@ Removed locks folder: /workspace/frappe-bench/sites/development.localhost/locks
 
 ---
 
+### `dev-mode` - Developer Mode for a Site
+
+Shows, turns on, or turns off Frappe's developer mode for one site.
+Frappe reads `developer_mode` from `common_site_config.json` (bench-wide), and a site's `site_config.json` overrides it, so the read names where the value you see comes from.
+
+```bash
+cwcli dev-mode [OPTIONS] PROJECT_NAME SITE [on|off]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--bench TEXT` | Which bench: its numeric index or label |
+| `--common` | Set it bench-wide in `common_site_config.json` instead of the site's `site_config.json` |
+| `-y`, `--yes` | Skip the confirmation (and auto-start a stopped instance) |
+
+Without `on` or `off` the command only reads the state.
+A change asks for confirmation, runs `bench set-config developer_mode 1|0` for the site (or with `-g` for `--common`), and then clears the site's cache.
+The command exits 1 if the cache could not be cleared.
+
+```bash
+cwcli dev-mode my-project example.localhost
+cwcli dev-mode my-project example.localhost on
+cwcli dev-mode my-project example.localhost off --common
+```
+
+---
+
 ### `db-access` - Check and Repair Site Database Users
 
 Frappe grants each site's database user on the address the frappe container had when the site was created (`'<user>'@'172.21.0.5'`).
@@ -1576,6 +1678,76 @@ cwcli backup my-project --with-files
 # Back up a specific bench in a multi-bench project
 cwcli backup my-project --bench staging --with-files
 ```
+
+---
+
+### `backups` - The Backup Store
+
+`cwcli backup` leaves its files inside the bench.
+`cwcli backups` keeps backup sets outside every instance, under `~/.cwcli/backups/<project>/<site>/<id>/`, so they survive `cwcli rm`.
+A set is identified by its key, `project/site/id`.
+Taking a set copies the bench backup out to the host and checks every part: the database dump must be complete, the file archives must list, and the site config must parse.
+Only a fully verified set has its copies inside the bench removed, and a set that fails a check is kept and marked unverified.
+
+```bash
+cwcli backups list [PROJECT] [--site NAME] [--json]
+cwcli backups capture PROJECT [--site NAME] [--bench SEL] [--no-files] [--reason REASON] [--note TEXT] [--json]
+cwcli backups verify KEY [--json]
+cwcli backups delete KEY [--yes]
+cwcli backups restore KEY PROJECT --site NAME [--bench SEL] [--admin-password PW] [--keep-config] [--no-migrate] [--yes] [--json]
+cwcli backups transfer PROJECT --site SOURCE[:TARGET]... [--mode clone|move] [--to-project NAME] [--to-bench SEL] [--no-files] [--keep-config] [--yes] [--json]
+cwcli backups send KEY...
+cwcli backups receive TICKET [--project NAME --site NAME] [--json]
+cwcli backups download KEY [--to DIR]
+cwcli backups upload TAR [--project NAME --site NAME] [--json]
+cwcli backups drill PROJECT --site NAME [--bench SEL] [--set KEY] [--json]
+cwcli backups prune PROJECT [--dry-run] [--yes] [--json]
+cwcli backups settings PROJECT [--daily N] [--weekly N] [--monthly N] [--safety-days N] [--safety-max N] [--min-free-gb N] [--stale-after-days N] [--schedule on|off] [--daily-at HH:MM] [--json]
+cwcli backups s3 configure|list|copy|fetch|prune ...
+cwcli backups key export --to FILE | import --from FILE [--replace]
+```
+
+| Subcommand | What it does |
+|------------|--------------|
+| `list` | Lists the sets, newest first, with each set's verdict and the store's disk use |
+| `capture` | Takes a verified set of one site into the store (the site defaults like `cwcli backup`); exits 1 if the set did not verify |
+| `verify` | Runs every check on a stored set again |
+| `delete` | Deletes a set; a site's last verified set is never deleted |
+| `restore` | Restores a set into a site: the same site, a new one, another bench, or another instance. It replaces all of the target site's data, so it asks first; a non-interactive session needs `--yes`. By default the set's app settings are carried over and the target's `db_*` keys are kept |
+| `transfer` | Clones (default) or moves one or more sites to another name, bench, or instance, one site at a time |
+| `send` / `receive` | Sends sets to another machine as a sendme ticket, and files a received ticket into this machine's store |
+| `download` / `upload` | Writes one set as a plain (unencrypted) tar, and files such a tar into a store |
+| `drill` | Restores the site's latest verified set into a throwaway site, checks that it answers, drops it, and records the result |
+| `prune` | Applies the instance's retention policy; `--dry-run` lists what would be removed, and removing needs `--yes` |
+| `settings` | Shows or changes the instance's retention, safety, disk floor, and daily schedule |
+| `s3` | Encrypted off-site copies in an S3 bucket (AWS, MinIO, ...): `configure`, `list`, `copy`, `fetch`, `prune` |
+| `key` | Exports or imports the key that encrypts off-site copies; restoring an off-site copy on another machine needs it |
+
+**Safety rules:**
+
+- A clone or move onto a target site that already exists asks for confirmation (the web UI asks you to type the site name), and a non-interactive session needs `--yes`. Before the target is replaced, cwcli takes a verified `before-overwrite` set of it into the store; if that set does not verify, the target is left alone.
+- A move needs `--yes`, and drops each source only after its copy answered its checks, through the same backup gate `cwcli rm-site` uses.
+- Retention keeps a site's newest verified set always, keeps safety sets (`before-*` reasons) for 14 days with at most 5 per site, and keeps the newest set of each of the last 7 days and 4 weeks (S3: 7 days, 4 weeks, 12 months). Change these with `cwcli backups settings`.
+- `prune`, the scheduled prune, and the S3 prune never delete an unverified set. An unverified set takes no retention slot and stays until you delete it with `cwcli backups delete`.
+- Apart from the daily backup you can switch on with `cwcli backups settings --schedule on`, cwcli takes an automatic backup in one case only: a core (frappe or erpnext) update started from the web UI or a schedule first takes a verified `before-core-update` set of every site on the bench, and stops before changing anything if one does not verify. `cwcli rm`, `rm-site`, and `rm-bench` also move their removal backups into the store as `before-removal` sets.
+
+```bash
+# Take a verified set of the default site, then list the store
+cwcli backups capture my-project
+cwcli backups list my-project
+
+# Restore a set into a new site on bench 1
+cwcli backups restore my-project/example.localhost/20261027_020000-b0 my-project --site copy.localhost --bench 1
+
+# Clone a site to another instance under a new name
+cwcli backups transfer my-project --site example.localhost:staging.localhost --to-project other-project
+
+# See what the retention policy would remove, then remove it
+cwcli backups prune my-project --dry-run
+cwcli backups prune my-project --yes
+```
+
+**Agent surface:** `cwcli axi backups list|capture|verify|prune|settings` is the TOON spelling.
 
 ---
 
@@ -2870,6 +3042,7 @@ The CLI uses:
 - **Cache**: `~/.cwcli/cache/cwc-cache.db` - Project inspection cache
 - **Runtime**: `~/.cwcli/run/` - PID and log files for background services
 - **Archive**: `~/.cwcli/archive/` - Pre-deletion backups and config snapshots from `cwcli rm`, plus dropped-site archives from `cwcli rm-site` and `cwcli rm-bench`
+- **Backups**: `~/.cwcli/backups/<project>/<site>/<id>/` - The backup store managed by [`cwcli backups`](#backups---the-backup-store), outside every instance
 - **Transfers**: `~/.cwcli/tmp/` by default, or `$TMPDIR/cwcli/`, `$TEMP/cwcli/`, or `$TMP/cwcli/` when the first non-empty variable in that order is set. Temporary files used by `restore --send` and `restore --receive`; each attempt is removed when it finishes or fails
 
 **Relocating cwcli's data (`CWCLI_HOME`):**
