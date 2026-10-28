@@ -33,7 +33,8 @@ import json
 import os
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,7 @@ OFFICIAL = "official"
 COMMUNITY = "community"
 
 _lock = threading.RLock()
+_depth = 0
 # Stores already checked for a pre-integration S3 target (one scan per store per process).
 _legacy_checked: set[Path] = set()
 
@@ -124,6 +126,36 @@ def store_path() -> Path:
 
 def key_path() -> Path:
     return config_utils.cwcli_home() / "keys" / "integrations.key"
+
+
+@contextmanager
+def _locked() -> Iterator[None]:
+    """This process's lock plus the store's file lock, so a job process writing an
+    outcome never undoes a change the daemon just saved. Reentrant within a thread."""
+    global _depth
+    with _lock:
+        if _depth:
+            _depth += 1
+            try:
+                yield
+            finally:
+                _depth -= 1
+            return
+        from .schedules import StoreLock
+
+        with StoreLock(store_path()):
+            _depth = 1
+            try:
+                yield
+            finally:
+                _depth = 0
+
+
+def ensure_adopted() -> None:
+    """Run the one-time adoption of a pre-integration S3 target now (it otherwise runs
+    on the first store read), so a backup-settings write can never drop it first."""
+    with _locked():
+        _load()
 
 
 def _load() -> dict:
@@ -248,7 +280,7 @@ def _view(integ: Integration, rec: dict) -> dict[str, Any]:
 
 def view(integration_id: str | None = None) -> list[dict[str, Any]]:
     """What the Integrations page shows: never a secret, only whether one is set."""
-    with _lock:
+    with _locked():
         records = _load()["integrations"]
     out = [_view(i, records.get(i.id) or {}) for i in registry().values()]
     return [v for v in out if integration_id is None or v["id"] == integration_id]
@@ -258,7 +290,7 @@ def active(integration_id: str) -> tuple[dict[str, Any], dict[str, str]] | None:
     """(settings, secrets) of an integration that is on, else None. The runtime read
     a hook point uses (sign-in, an off-site copy)."""
     integ = get(integration_id)
-    with _lock:
+    with _locked():
         rec = _load()["integrations"].get(integration_id) or {}
     if not rec.get("enabled"):
         return None
@@ -328,7 +360,7 @@ def _record(integration_id: str) -> dict:
 def test(integration_id: str, settings: dict | None = None, secrets: dict | None = None) -> Check:
     """Test the stored settings with the request's laid over them. Saves nothing."""
     integ = get(integration_id)
-    with _lock:
+    with _locked():
         rec = _record(integration_id)
     merged, plain = _candidate(integ, rec, settings, secrets, complete=False)
     return integ.test(merged, plain)
@@ -351,7 +383,7 @@ def run_action(
             "integration.action_unknown",
             f"{integ.name} has no action '{action}'.",
         )
-    with _lock:
+    with _locked():
         rec = _record(integration_id)
     merged, plain = _candidate(integ, rec, settings, secrets, complete=False)
     return fn(merged, plain, args or {})
@@ -375,7 +407,7 @@ def configure(
     """
     integ = get(integration_id)
     now = time.time() if now is None else now
-    with _lock:
+    with _locked():
         rec = _record(integration_id)
     merged, plain = _candidate(integ, rec, settings, secrets)
     on = bool(rec.get("enabled")) if enable is None else enable
@@ -384,7 +416,7 @@ def configure(
     if check is not None and not check.ok and rec.get("enabled"):
         return check, view(integration_id)[0]
     result = {"ok": check.ok, "message": check.message, "at": now} if check else None
-    with _lock:
+    with _locked():
         data = _load()
         data["integrations"][integration_id] = {
             "enabled": bool(on and (check is None or check.ok)),
@@ -406,7 +438,7 @@ def disable(integration_id: str, *, by: str = "", now: float | None = None) -> d
     """Turn an integration off; its settings and secrets stay for the next time."""
     integ = get(integration_id)
     now = time.time() if now is None else now
-    with _lock:
+    with _locked():
         data = _load()
         rec = data["integrations"].get(integration_id)
         if rec is not None and rec.get("enabled"):
@@ -421,7 +453,7 @@ def record_outcome(integration_id: str, error: str | None, *, now: float | None 
     """A hook point's runtime outcome: an error turns an "on" integration's state to
     "error" until the next success. Writes only when the state changes."""
     now = time.time() if now is None else now
-    with _lock:
+    with _locked():
         data = _load()
         rec = data["integrations"].get(integration_id)
         if rec is None or not rec.get("enabled"):

@@ -180,6 +180,11 @@ class TestRoles:
         update["args"]["force"] = True
         status, body, _ = _req(daemon, "/api/v1/jobs", update, cookie)
         assert status == 403 and _code(body) == "auth.role_forbidden"
+        assert _req(daemon, "/api/v1/settings", {"setting": "tips.enable"}, cookie)[0] == 403
+        assert _req(daemon, "/api/v1/integrations", cookie=cookie)[0] == 403
+        assert (
+            _req(daemon, "/api/v1/integrations", {"op": "disable", "id": "ldap"}, cookie)[0] == 403
+        )
 
     def test_only_the_value_the_role_check_gates_forces_an_update(self, daemon, monkeypatch):
         """A truthy non-boolean ``force`` passes the Operator check, so it must not force."""
@@ -195,11 +200,6 @@ class TestRoles:
             core_jobs._dispatch("apps-update", {"project": "p"}, args, False, {}, None)
         core_jobs._dispatch("apps-update", {"project": "p"}, {"force": True}, False, {}, None)
         assert seen == [False, False, True]
-        assert _req(daemon, "/api/v1/settings", {"setting": "tips.enable"}, cookie)[0] == 403
-        assert _req(daemon, "/api/v1/integrations", cookie=cookie)[0] == 403
-        assert (
-            _req(daemon, "/api/v1/integrations", {"op": "disable", "id": "ldap"}, cookie)[0] == 403
-        )
 
     def test_an_operator_cannot_retry_an_admin_only_job(self, daemon, monkeypatch):
         cookie = self._as(daemon, "otto")
@@ -213,6 +213,27 @@ class TestRoles:
         monkeypatch.setattr(core_jobs, "read_job", lambda job_id, **kw: job)
         status, body, _ = _req(daemon, "/api/v1/jobs/abcdefgh1/retry", {}, cookie)
         assert status == 403 and _code(body) == "auth.role_forbidden"
+
+    def test_an_operator_cannot_continue_a_job_into_a_forced_update(self, daemon, monkeypatch):
+        cookie = self._as(daemon, "otto")
+        job = {"verb": "apps-update", "args": {"apps": ["x"]}, "state": "needs_choice"}
+        monkeypatch.setattr(core_jobs, "read_job", lambda job_id, **kw: job)
+        answer = {"target": {"project": "p", "bench": "1"}, "args": {"apps": ["x"], "force": True}}
+        status, body, _ = _req(daemon, "/api/v1/jobs/abcdefgh1/continue", answer, cookie)
+        assert status == 403 and _code(body) == "auth.role_forbidden"
+
+    def test_only_an_admin_changes_retention(self, daemon, monkeypatch):
+        saved = []
+        monkeypatch.setattr(
+            serve_cmd.core_backup_store, "save_settings", lambda p, v: saved.append(p) or v
+        )
+        payload = {"project": "p", "values": {"local": {"daily": 1}}}
+        for who in ("otto", "vic"):
+            status, body, _ = _req(daemon, "/api/v1/backups/settings", payload, self._as(daemon, who))
+            assert status == 403 and _code(body) == "auth.role_forbidden", who
+        assert saved == []
+        assert _req(daemon, "/api/v1/backups/settings", payload, self._as(daemon, "ana"))[0] == 200
+        assert saved == ["p"]
 
     def test_only_an_admin_schedules_a_prune(self, daemon):
         otto, ana = self._as(daemon, "otto"), self._as(daemon, "ana")

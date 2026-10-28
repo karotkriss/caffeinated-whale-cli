@@ -106,6 +106,22 @@ class TestSecrets:
         assert integrations.test("fake", {"host": "good"}).ok  # the port kept: stored secret
 
 
+    def test_a_write_waits_while_another_process_holds_the_store(self, fake):
+        import threading
+
+        from caffeinated_whale_cli.core.schedules import StoreLock
+
+        integrations.configure("fake", {"host": "good"}, {"token": SECRET}, enable=True)
+        writer = threading.Thread(target=integrations.record_outcome, args=("fake", "failed"))
+        with StoreLock(integrations.store_path()):
+            writer.start()
+            writer.join(0.3)
+            assert writer.is_alive()
+            assert json.loads(_stored())["integrations"]["fake"]["last_error"] is None
+        writer.join(5)
+        assert json.loads(_stored())["integrations"]["fake"]["last_error"]["message"] == "failed"
+
+
 class TestTurningOn:
     def test_everything_starts_off(self, fake):
         assert integrations.view("fake")[0]["state"] == "off"

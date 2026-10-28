@@ -480,6 +480,26 @@ class TestOffsite:
         store.save_settings("other", {"offsite": {"copy_on_backup": True}})
         assert store.paused_legacy() == {} and integrations.view("s3")[0]["notices"] == []
 
+    def test_a_settings_save_first_after_the_upgrade_still_pauses_another_bucket(
+        self, home, monkeypatch
+    ):
+        target = {"enabled": True, "endpoint": "http://minio:9000", "bucket": "old"}
+        for name, cfg in (("a", target), ("b", {**target, "bucket": "elsewhere"})):
+            d = home / ".cwcli" / "projects" / name
+            d.mkdir(parents=True)
+            (d / "backups.json").write_text(json.dumps({"s3_target": cfg}))
+        keys = home / ".cwcli" / "backups" / "keys"
+        keys.mkdir(parents=True)
+        for name in ("a", "b"):
+            (keys / f"s3-{name}.secret").write_text(f"{name}-secret")
+        monkeypatch.setattr(integrations, "_legacy_checked", set())
+        store.save_settings("b", {"local": {"daily": 5}})
+        assert store.settings("b")["local"]["daily"] == 5
+        assert not store.copies_on_backup("b")
+        assert store.paused_legacy()["b"]["bucket"] == "elsewhere"
+        assert store.offsite_target("a").bucket == "old"
+        assert not list(keys.iterdir())
+
     def test_a_copy_fetches_back_into_a_verified_set(self, bucket, home):
         bset = store.adopt_dir("erp", "shop.localhost", _archive_dir(home))
         store.offsite_copy(bset)

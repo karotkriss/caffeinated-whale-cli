@@ -955,7 +955,7 @@ class _Handler(BaseHTTPRequestHandler):
         """The least role a POST needs. Viewers only read; Operators run the fleet;
         Admins also change settings and integrations, remove instances, sites, benches
         and backups, and update cwcli itself."""
-        if path in ("/api/v1/settings", "/api/v1/integrations"):
+        if path in ("/api/v1/settings", "/api/v1/integrations", "/api/v1/backups/settings"):
             return "admin"
         if path == "/api/v1/jobs":
             admin = core_accounts.admin_only(payload.get("verb"), payload.get("args"))
@@ -966,7 +966,10 @@ class _Handler(BaseHTTPRequestHandler):
                 job = core_jobs.read_job(job_id)
             except CwcliError:
                 job = {}
-            admin = core_accounts.admin_only(job.get("verb"), job.get("args"))
+            admin = any(
+                core_accounts.admin_only(job.get("verb"), args)
+                for args in (job.get("args"), payload.get("args"))
+            )
             return "admin" if admin else "operator"
         if path == "/api/v1/schedules" and payload.get("op") in ("save", "enable", "run"):
             sched = payload.get("schedule") if payload.get("op") == "save" else None
