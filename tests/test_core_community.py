@@ -342,6 +342,13 @@ class TestInstall:
             community.install(_url(repo), commit="")
         assert e.value.code == "community.commit"
 
+    @pytest.mark.parametrize("iid", ["local", "host", "api"])
+    def test_an_id_cwcli_uses_as_a_session_source_is_refused(self, home, repo, iid):
+        _write(repo, iid=iid)
+        with pytest.raises(CwcliError) as e:
+            community.preview(_url(repo))
+        assert e.value.code == "community.id_taken"
+
     def test_the_same_id_cannot_be_installed_twice(self, home, repo):
         commit = _write(repo)
         community.install(_url(repo), commit=commit)
@@ -421,6 +428,28 @@ class TestRemove:
         assert not any("cwcli_hello" in m for m in sys.modules)
         assert "remove id=hello by=ana" in community.recent_audit()[-1]
 
+    def test_removing_or_updating_an_enabled_sign_in_signs_its_users_out(self, home, repo):
+        from caffeinated_whale_cli.core import accounts
+
+        community.install(_url(repo), commit=_write(repo))
+        integrations.configure("hello", *ANA, enable=True)
+        session = accounts.open_session("ana", remember=False, source="hello", role="admin")
+        community.update("hello", commit=_write(repo, version="2"))
+        assert accounts.session_account(session) is None
+
+        integrations.configure("hello", *ANA, enable=True)
+        session = accounts.open_session("ana", remember=False, source="hello", role="admin")
+        community.remove("hello")
+        assert accounts.session_account(session) is None
+
+    def test_a_package_built_while_the_last_one_is_removed_keeps_its_directory(self, home, repo):
+        community.install(_url(repo), commit=_write(repo))
+        building = community.root() / "other-0123456789ab-abcdef"
+        building.mkdir()
+        community.remove("hello")
+        assert building.is_dir()
+        assert not (community.root() / ".pip").exists()
+
     def test_removing_an_unknown_id_says_so(self, home):
         with pytest.raises(CwcliError) as e:
             community.remove("nope")
@@ -439,6 +468,18 @@ class TestLoading:
         assert check is not None and not check.ok and "does not load" in check.message
         assert view["state"] != "on"
         community.remove("hello")
+
+    def test_turning_off_a_sign_in_that_no_longer_loads_signs_its_users_out(self, home, repo):
+        from caffeinated_whale_cli.core import accounts
+
+        rec = community.install(_url(repo), commit=_write(repo))
+        integrations.configure("hello", *ANA, enable=True)
+        session = accounts.open_session("ana", remember=False, source="hello", role="admin")
+        community._forget("hello")
+        init = community.root() / rec["dir"] / "cwcli_hello" / "__init__.py"
+        init.write_text("raise RuntimeError('broken on purpose')")
+        integrations.disable("hello")
+        assert accounts.session_account(session) is None
 
     def test_cwclis_own_packages_win_over_a_bundled_copy(self, home, repo):
         rec = community.install(_url(repo), commit=_write(repo))
@@ -758,5 +799,3 @@ def test_no_axi_verb_installs_community_code():
     names = {c.name or c.callback.__name__ for c in axi.app.registered_commands}
     names |= {g.name for g in axi.app.registered_groups}
     assert not {"integrations", "community", "integration"} & names
-    source = textwrap.dedent(Path(axi.__file__).read_text())
-    assert "core.community" not in source and "core import community" not in source

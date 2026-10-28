@@ -74,6 +74,7 @@ from .errors import CwcliError, ErrorKind
 ENTRY_POINT_GROUP = "cwcli.integrations"
 HOOK_POINTS = ("sign_in", "backup_target")  # the hook points cwcli calls
 _ID = re.compile(r"^[a-z][a-z0-9_-]{1,39}$")
+_RESERVED_IDS = ("local", "host", "api")  # session and schedule-owner sources
 _SIGN_IN_MISSING = "cwcli-community: no sign-in for "
 _AUTH_MARKERS = (
     "terminal prompts disabled",
@@ -474,6 +475,12 @@ def preview(url: str, ref: str | None = None) -> Preview:
 
 
 def _refuse_taken(integration_id: str, installed: dict) -> None:
+    if integration_id in _RESERVED_IDS:
+        raise CwcliError(
+            ErrorKind.CONFLICT,
+            "community.id_taken",
+            f"'{integration_id}' is reserved by cwcli; a community integration cannot use it.",
+        )
     if integration_id in core_integrations.official():
         raise CwcliError(
             ErrorKind.CONFLICT,
@@ -615,6 +622,8 @@ def update(integration_id: str, *, commit: str, by: str = "") -> dict[str, Any]:
         if settings is not None:
             settings.update(enabled=False, last_error=None, updated_at=time.time(), updated_by=by)
         core_integrations._save(data)
+    if was_on and "sign_in" in current.get("provides", ()):
+        accounts.close_directory_sessions()
     shutil.rmtree(root() / current["dir"], ignore_errors=True)
     _audit("update", new, by, old=old)
     return {"id": integration_id, "old": old, "new": commit, "was_on": was_on, "record": new}
@@ -631,15 +640,20 @@ def remove(integration_id: str, *, by: str = "") -> dict[str, Any]:
                 "community.unknown",
                 f"No community integration '{integration_id}' is installed.",
             )
-        data["integrations"].pop(integration_id, None)
+        settings = data["integrations"].pop(integration_id, None)
         core_integrations._save(data)
-        left = bool(data.get("community"))
+    if settings and settings.get("enabled") and "sign_in" in rec.get("provides", ()):
+        accounts.close_directory_sessions()
     _forget(integration_id)
     shutil.rmtree(root() / rec["dir"], ignore_errors=True)
-    if not left:  # the last one: the pip venv and the empty directories go too
-        shutil.rmtree(root(), ignore_errors=True)
-        with contextlib.suppress(OSError):
-            root().parent.rmdir()
+    with core_integrations._locked():
+        if not core_integrations._load().get("community"):
+            # The last one: the pip venv and the empty directories go too; a package
+            # another process is installing keeps its directory.
+            shutil.rmtree(root() / ".pip", ignore_errors=True)
+            for path in (root(), root().parent):
+                with contextlib.suppress(OSError):
+                    path.rmdir()
     _audit("remove", rec, by)
     return rec
 
@@ -737,17 +751,24 @@ def _guarded(integ: core_integrations.Integration) -> core_integrations.Integrat
 def _broken(rec: dict[str, Any], error: str) -> core_integrations.Integration:
     """A card for an installed integration whose code does not load: it cannot be
     turned on, and it can still be updated or removed."""
+    provides = tuple(rec.get("provides") or ())
+
+    def on_change():
+        if "sign_in" in provides:
+            accounts.close_directory_sessions()
+
     return core_integrations.Integration(
         id=rec["id"],
         name=rec["name"],
         publisher=core_integrations.COMMUNITY,
         description=rec["description"],
-        provides=tuple(rec.get("provides") or ()),
+        provides=provides,
         fields=(),
         normalize=lambda settings: {},
         test=lambda settings, secret_values: core_integrations.Check(
             False, f"The package does not load: {error}"
         ),
+        on_change=on_change,
     )
 
 
