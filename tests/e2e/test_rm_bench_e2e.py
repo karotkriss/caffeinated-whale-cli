@@ -335,9 +335,10 @@ def test_rm_bench_backs_up_every_site_drops_them_and_the_dump_restores(bench_ins
     drop_dir = _dropped_site_dir(name, TARGET_SITE)
     second_dir = _dropped_site_dir(name, SECOND_SITE)
     assert f"archived_host_paths[2]: {drop_dir},{second_dir}" in out, out
-    assert any(f.name.endswith("-database.sql.gz") for f in (second_dir / "backups").iterdir())
+    second_files = harness.removal_backup_files(name, SECOND_SITE)
+    assert any(f.name.endswith("-database.sql.gz") for f in second_files), second_files
     assert (drop_dir / f"{TARGET_SITE}.tar").stat().st_size > 0, "site archive missing"
-    backup_files = sorted((drop_dir / "backups").iterdir())
+    backup_files = harness.removal_backup_files(name, TARGET_SITE)
     dumps = [f for f in backup_files if f.name.endswith("-database.sql.gz")]
     assert len(dumps) == 1, backup_files
     sql = gzip.decompress(dumps[0].read_bytes())

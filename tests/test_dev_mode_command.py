@@ -37,6 +37,7 @@ def test_exit_code_follows_the_cache_clear(monkeypatch, cleared, code):
         lambda *a, **k: Result(status=Status.OK if cleared else Status.WARNING, data=outcome),
     )
     app = typer.Typer()
-    app.command()(cmd.dev_mode)
+    # __wrapped__ skips @handle_docker_errors' live Docker preflight.
+    app.command()(cmd.dev_mode.__wrapped__)
     result = CliRunner().invoke(app, ["p", "s.localhost", "on", "--yes"])
     assert result.exit_code == code

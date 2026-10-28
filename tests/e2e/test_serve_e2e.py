@@ -459,11 +459,13 @@ class TestDetachedJobs:
         assert created["pid"] != daemon.proc.pid, "the daemon must not own the long work"
         finished = _wait_for_job(daemon.base, created["id"])
         assert finished["state"] == "succeeded", finished
+        # A backup job captures a verified set into the backup store by default.
         assert finished["result"]["site"] == harness.DEFAULT_SITE
-        assert finished["result"]["artifact_path"].endswith(".sql.gz")
-        event_types = [event["type"] for event in finished["events"]]
-        assert "backup_step_start" in event_types
-        assert "backup_step_end" in event_types
+        assert finished["result"]["verified"] is True, finished["result"]
+        database = [p for p in finished["result"]["parts"] if p["kind"] == "database"]
+        assert len(database) == 1 and database[0]["filename"].endswith(".sql.gz"), database
+        assert (Path(finished["result"]["path"]) / database[0]["filename"]).stat().st_size > 0
+        assert "store_step" in [event["type"] for event in finished["events"]]
 
         # A fresh read after the worker exited is the same durable result. This is
         # the browser reattach path after its tab or SSE stream has gone away.
@@ -727,6 +729,7 @@ class TestSafeActions:
             assert [row["action"] for row in checked_out["data"]["outcome"]["results"]] == [
                 "fetch",
                 "checkout",
+                "track",
                 "restart-processes",
             ]
 
@@ -832,7 +835,9 @@ class TestGuardedDestructiveJobs:
             dirs = _dropped_site_dirs(inst, site)
             assert len(dirs) == 1 and finished["result"]["archived_host_path"] == str(dirs[0])
             dumps = [
-                f for f in (dirs[0] / "backups").iterdir() if f.name.endswith("-database.sql.gz")
+                f
+                for f in harness.removal_backup_files(inst.name, site)
+                if f.name.endswith("-database.sql.gz")
             ]
             assert len(dumps) == 1
             assert MARKER.encode() in gzip.decompress(

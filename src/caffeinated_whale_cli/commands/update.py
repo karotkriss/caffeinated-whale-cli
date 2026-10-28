@@ -77,6 +77,8 @@ _PHASES = {
         "ok": "[bold green]✓[/bold green] '{item}' is at its remote branch",
         "failed": "[bold red]✗[/bold red] Failed to reset '{item}' to its remote branch",
     },
+    "fix_branch": {"ok": "[bold green]✓[/bold green] --fix-branches: {message}"},
+    "fix_refspec": {"ok": "[bold green]✓[/bold green] '{item}': {message}"},
     "requirements": {
         "header": "[bold green]→[/bold green] Reinstalling the bench's requirements",
         "spinner": "Reinstalling requirements (bench setup requirements)...",
@@ -302,9 +304,12 @@ class _Renderer:
         if line := spec.get("ok"):
             # The noisy per-item success lines are verbose-only, exactly as before;
             # the quiet run says nothing and lets the summary speak. The unlock step
-            # always prints what it cleared (captain 2026-10-28: the log lists it).
+            # always prints what it cleared (captain 2026-10-28: the log lists it), and
+            # a fix step always says what it changed in another app's git state.
             if self.verbose or event.phase in (
                 "unlock_all",
+                "fix_branch",
+                "fix_refspec",
                 "clear_cache",
                 "clear_website_cache",
                 "clear_locks",

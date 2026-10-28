@@ -1024,6 +1024,29 @@ class TestStaging16PreflightFixes:
         assert any(w.code == "preflight.branch_switched" for w in result.warnings)
         assert result.data.preflight_blocked is False and result.data.ok is True
 
+    def test_a_quiet_human_run_says_what_each_fix_changed(self, monkeypatch, wired, capsys):
+        from caffeinated_whale_cli.commands import update as update_mod
+
+        untracked = {
+            "code": "git.branch_not_tracked",
+            "app": "frappe",
+            "remote": "upstream",
+            "branch": "version-16",
+            "shallow_repo": True,
+        }
+        self._arm(monkeypatch, [untracked, self._MISMATCH], [])
+        monkeypatch.setattr(
+            core_update.core_apps,
+            "checkout_app",
+            lambda *a, **k: Result(status=Status.OK, data=types.SimpleNamespace(ok=True)),
+        )
+
+        _update(apps=["frappe"], fix_branches=True, on_event=update_mod._Renderer(verbose=False))
+
+        out = " ".join(capsys.readouterr().out.split())
+        assert "--fix-branches: switched 'payments' to version-16" in out, out
+        assert "'frappe': remote.upstream.fetch now covers version-16" in out, out
+
     def test_a_failed_switch_keeps_the_refusal(self, monkeypatch, wired):
         calls = self._arm(monkeypatch, [self._MISMATCH])
 

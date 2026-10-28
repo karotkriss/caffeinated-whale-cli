@@ -372,12 +372,13 @@ def _backup_sites(
                 bench_path=bench_path,
                 reason="before-removal",
             )
-            if adopted is not None:
-                emit(RmNotice(text=f"Backup of '{site}' kept in the store as {adopted.key}"))
+            # Adopting MOVES the files, so name wherever this site's backup now is.
+            where = f"the store as {adopted.key}" if adopted is not None else backups_dir / site
+            emit(RmNotice(text=f"Backup of '{site}' kept in {where}"))
         backed_up_count = len(sites) - len(failed_sites)
 
         if backed_up_count > 0:
-            emit(RmNotice(text=f"Backed up {backed_up_count} site(s) to {backups_dir}"))
+            emit(RmNotice(text=f"Backed up {backed_up_count} site(s)"))
 
         # Success requires EVERY site to have a confirmed dump. Any failure means
         # the caller must not delete data that was not safely captured.

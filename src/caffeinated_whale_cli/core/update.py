@@ -848,7 +848,7 @@ def _switch_mismatched_apps(
                 phase="fix_branch",
                 item=app,
                 status="ok" if ok else "failed",
-                message=f"'{app}' is now on {branch}" if ok else detail,
+                message=f"switched '{app}' to {branch}" if ok else detail,
             )
         )
         warnings.append(
